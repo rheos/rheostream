@@ -82,7 +82,7 @@ permission check and returns a `RecordHead`:
 | `display` | A short label safe to show the caller (a title, a display name) |
 | `readable` | Whether `ctx` may read the full record |
 | `state` | `live`, `deleted`, or `unavailable` (module absent or disabled) |
-| `revision` | The record's current revision when `live`: a mutable type's `revision` column, incremented on every write; the constant `1` for an immutable type (an observation, a receipt, a qualification). Null when not `live`. What `RecordStateGuard` compares with `approval.subject_revision` ([guards](confirmation-and-safety.md#execution-guards)). |
+| `revision` | The record's current revision when `live`: a mutable type's `revision` column, advanced only by a compare-and-set write ([storage adapter seam](storage-and-workspaces.md#revision-is-a-compare-and-set-not-a-counter)), never by a bare increment; the constant `1` for an immutable type (an observation, a receipt, a qualification). Null when not `live`. What `RecordStateGuard` compares with `approval.subject_revision` ([guards](confirmation-and-safety.md#execution-guards)). |
 
 A caller that gets `readable = false` learns that the record exists in this workspace and nothing
 else. A caller from another workspace gets `Unavailable`, indistinguishable from a reference that

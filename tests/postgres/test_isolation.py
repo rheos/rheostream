@@ -208,7 +208,12 @@ def test_pool_keys_engines_by_database_name_and_evicts_the_least_recent(
     cluster: ClusterSession, two_workspaces: tuple[WorkspaceRow, WorkspaceRow]
 ) -> None:
     a, b = two_workspaces
-    small = EnginePool(cluster.backend.pools.cluster_url, cache_size=1, pool_size=1)
+    small = EnginePool(
+        cluster.backend.pools.cluster_url,
+        cache_size=1,
+        pool_size=1,
+        idle_close_seconds=300.0,
+    )
     try:
         engine_a = small.engine_for(a.database_name)
         assert engine_a.url.database == a.database_name

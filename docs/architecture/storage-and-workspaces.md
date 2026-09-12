@@ -31,10 +31,31 @@ Why a database and not a schema:
 
 What it costs, and how the cost is bounded:
 
-- **One connection pool per workspace.** The core keeps an LRU of workspace pools (deployment
-  setting `storage.pool_cache_size`, default 32) each capped at `storage.pool_max_connections`
-  (default 5). Release one runs one human's workspaces; the hosted edition revisits this
-  ([later phases](later-phases.md#phase-8-the-hosted-edition)).
+- **One connection pool per workspace, bounded by idle close and then by a count cap.** An
+  engine untouched for `storage.pool_idle_close_seconds` (default 300) is disposed on the next
+  call; `storage.pool_cache_size` (default 16) is the hard ceiling behind that, evicting
+  least-recently-used; each pool is capped at `storage.pool_max_connections` (default 5).
+
+  **Two bounds, because the scarce resource is connections and not pools.** The product of the
+  last two is the process's worst-case connection count — 80 on the defaults — and the core and
+  the worker are separate processes each holding their own, against a stock Postgres
+  `max_connections` of 100. An earlier default pair of 32 and 5 put one process at 160, over-
+  subscribing a default cluster before the cache ever filled, which is why the ceiling is stated
+  here as arithmetic an operator can check rather than as a number in isolation. `rheo doctor`
+  reports it.
+
+  **Idle close is the bound that normally binds, and that is the point.** A count cap on its own
+  is adversarial to any caller that walks workspaces in turn: under a pure LRU the
+  least-recently-used engine is always the one the walk is about to reach next, so past the cap
+  every visit evicts the engine it needs and the deployment thrashes rather than degrades.
+  Expiry by idleness reclaims the engines nobody wanted instead, so the walk pays for the
+  workspaces it is actually serving.
+
+  **The worker must not defeat this** ([jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16)):
+  it visits workspaces with due work, not every active workspace, so an idle workspace costs no
+  engine at all. A worker that polled all of them would hold every pool hot and put the count cap
+  back in charge. Release one runs one human's workspaces; the hosted edition revisits the whole
+  scheme ([later phases](later-phases.md#phase-8-the-hosted-edition)).
 - **`CREATE DATABASE` cannot run inside a transaction.** Provisioning is therefore an idempotent,
   registry-tracked operation with an explicit state machine (below), not a step inside workspace
   creation's transaction.
@@ -213,7 +234,7 @@ Three layers, each with a defined owner:
 | --- | --- | --- |
 | `StorageBackend` protocol | `packages/core` | `open_unit_of_work(ctx) -> UnitOfWork`, `provision(workspace)`, `migrate(workspace, chains)`, `advisory_lock(key)`, capability flags (`supports_vector`, `supports_lexical`, `supports_skip_locked`). |
 | `UnitOfWork` | `packages/core` | One transaction against one workspace database. Carries the session, the outbox writer, the audit writer, and commit/rollback. Every service operation runs inside exactly one. |
-| Repository protocols | each module, in `packages/contracts` for shared ones and in the module for private ones | Typed methods (`OpportunityRepository.get(id)`, `.list(filter)`, `.save(record)`) returning contract models, never rows. |
+| Repository protocols | each module, in `packages/contracts` for shared ones and in the module for private ones | Typed methods (`OpportunityRepository.get(id)`, `.list(filter)`, `.save(record)`) returning contract models, never rows. A `save` of a record type carrying `revision` is a **compare-and-set**: `... WHERE id = $id AND revision = $expected`, with the increment in the same statement, and zero rows affected raises `StaleRecord`, which the dispatcher surfaces as the refusal `record_stale`. See [below](#revision-is-a-compare-and-set-not-a-counter). |
 
 The reference implementation is SQLAlchemy 2.x Core with explicit mapped classes and psycopg 3.
 Raw SQL is allowed inside a repository implementation and nowhere else; a static check greps for
@@ -223,10 +244,37 @@ facade imports a database driver or a repository directly" is the same check app
 
 The behavioural test suite (FR 8) is written against the protocols with a `backend` fixture.
 Release one runs it against Postgres only. D2 asks the seam to be provable later, so the suite
-must contain the cases where backends are known to differ: concurrent `SKIP LOCKED` leasing,
+must contain the cases where backends are known to differ: concurrent compare-and-set on a
+`revision` column, concurrent `SKIP LOCKED` leasing,
 serialization failures under concurrent receipt insert, advisory locks, generated `tsvector`
 columns, vector distance ordering, and `ON CONFLICT` semantics. Each is a named test today so the
 future SQLite adapter has a contract to fail against rather than a vague promise.
+
+### `revision` is a compare-and-set, not a counter
+
+`revision` is not bookkeeping. It is the optimistic-concurrency token the approval binding rests
+on: `RecordStateGuard` refuses an approved destructive, external, or financial operation when the
+subject's current revision differs from the `approval.subject_revision` recorded when the person
+looked at it ([guards](confirmation-and-safety.md#execution-guards)). That is the mechanism
+stopping an approved effect from landing on a record that changed after it was approved.
+
+"Incremented on every write" implemented as a plain `UPDATE ... SET revision = revision + 1`
+under `READ COMMITTED` is a lost update: two writers read *n*, both write, one write is discarded,
+and the revision lands at *n+1* either way. The guard then compares equal against a revision that
+does not describe the state the approver saw. The failure is silent, and it is in the safety path.
+
+So the rule belongs to the repository protocol and not to each module's memory of it: every write
+of a record type carrying `revision` names the revision it read, and a write that matches nothing
+is a refusal rather than a no-op. A module cannot opt out, because a module does not write SQL
+outside its repository.
+
+An immutable type (an observation, a receipt, a qualification) carries no `revision` column and
+reports the constant `1`, so the guard on it can only fail by deletion
+([identifiers](identifiers.md#resolution-under-permission)).
+
+Release one has no subject for this: the six core tables carry no mutable domain record type, so
+the first repository it binds is the first one 1a writes. It is stated here rather than there so
+that the first module author inherits the rule instead of inventing it.
 
 ## Retrieval adapter (D9, FR 30)
 

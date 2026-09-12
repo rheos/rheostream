@@ -146,7 +146,7 @@ def test_deployment_scope_key_with_a_row_is_ignored(
         cluster, workspace, "storage.pool_cache_size", "1", ValueType.INT
     )
     resolved = resolve(workspace_id=workspace, source=source)
-    assert resolved["storage.pool_cache_size"] == 32
+    assert resolved["storage.pool_cache_size"] == 16
     ignored = [
         record
         for record in caplog.records

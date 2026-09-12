@@ -421,8 +421,17 @@ consumer is complete on commit with zero deliveries.
 | `job` | `id uuid`, `kind text`, `state text`, `input jsonb`, `operation_id uuid null`, `depends_on_ref text null`, `attempts`, `max_attempts`, `next_run_at`, `lease_owner null`, `lease_until null`, `cancel_requested boolean`, `last_error null`, `created_at`, `finished_at null` | `state` in `queued`, `leased`, `succeeded`, `failed`, `cancelled`. `input` is the job kind's declared model serialised and never queried. `depends_on_ref` lets the deletion coordinator cancel dependents. |
 | `schedule` | `id`, `module_id`, `name`, `job_kind`, `cron text`, `enabled`, `last_run_at null`, `next_run_at` | Created at module enable from the manifest. |
 
-Worker loop, visiting each active workspace in the registry in turn, with a one-second idle
-interval:
+Worker loop, with a one-second idle interval. It visits the active workspaces that **have due
+work** — a `job` that is `queued` with `next_run_at <= now()` or a lease past expiry, an
+`event_delivery` in the same condition, or a `schedule` due — not every active workspace in the
+registry. An idle workspace is never opened, which is what keeps the worker from holding every
+workspace's connection pool hot and putting the engine cache's count cap in charge of eviction
+([pools](storage-and-workspaces.md#a1-the-per-workspace-unit-is-a-database)). Release one finds
+the due set by asking each registered workspace database in a bounded sweep and closing the ones
+with nothing to do; a deployment large enough for that sweep to cost more than it saves is the
+hosted edition's problem, and the notify-based alternative is recorded there.
+
+The loop, per workspace with due work:
 
 1. Lease: `UPDATE ... SET state = 'leased', lease_owner = $worker, lease_until = now() + 60s`
    for one row selected `FOR UPDATE SKIP LOCKED` where `state = 'queued' AND next_run_at <= now()`

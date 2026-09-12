@@ -17,8 +17,9 @@ profile = "development"
 cluster_dsn_ref = "secret://env/RHEO_CLUSTER_DSN"
 control_database = "rheo_control"
 template_database = "template1"
-pool_cache_size = 32
+pool_cache_size = 16
 pool_max_connections = 5
+pool_idle_close_seconds = 300
 
 [identity.token_max_days]
 cli = 90
