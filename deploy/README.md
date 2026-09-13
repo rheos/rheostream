@@ -98,6 +98,27 @@ instead of guessing at a URL. A deployment where web is not on the container
 network has no route to the internal listener at all, by construction — not by
 an oversight left to fix later.
 
+`make spike`, run 0v's throwaway end-to-end driver, runs a different topology on
+purpose and does not read this file's `base_host`. It brings up only `postgres`
+from `deploy/compose.yaml` and starts `core` and `web` on the host, because the
+rule above still holds: the internal listener is container-network-only, so a
+host-run `web` could not reach a compose-run `core` on 8100 at all, and neither
+publishing 8100 nor containerizing `web` is on the table (decision D-4). It sets
+`RHEO__routing__mode=path`, `RHEO__routing__scheme=http` and a **port-free**
+`RHEO__routing__base_host=localhost` (decision D-37), all three explicitly:
+`scheme` is the one of the three that is not already the packaged default
+(`config/defaults.toml` ships `https`), so leaving it unset would silently change
+the routing config the web tier reads. The port-free spelling is what lets a
+browser request carrying `Host: localhost:3000` reach `/auth/*` at all, since
+`normalize_host` strips the port before the application-host match; the
+`localhost:3000` this directory's own `compose.yaml` sets is a separate open
+issue and is deliberately left alone here. Three further variables are
+`make spike`'s alone and no other target sets them: `RHEO_CORE_PUBLIC_URL`,
+`RHEO_SPIKE_WORKSPACE_IDS` and `RHEO_MODULES`. `.env.example` documents what each
+one is for, including why the public base URL is spelled `localhost` rather than
+`127.0.0.1`; `RHEO_CORE_INTERNAL_API_URL` and `RHEO_INTERNAL_SECRET` are already
+documented there too.
+
 Rate limiting of the webhook receiver and of `/auth/*` is the reverse proxy's
 responsibility in release one; it is not implemented by `core` itself. This is a
 recorded decision, not an omission — the reverse proxy is operator-provided and
