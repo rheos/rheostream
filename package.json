@@ -2,7 +2,7 @@
   "name": "rheo-stream",
   "private": true,
   "engines": {
-    "node": ">=22 <23"
+    "node": ">=22.12 <23"
   },
   "packageManager": "pnpm@9.15.9"
 }
