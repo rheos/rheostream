@@ -64,8 +64,12 @@ os.environ["RHEO_DATA_ROOT"] = str(_session_tmp_data_root)
 
 from harness.settings_keys import register_harness_keys  # noqa: E402
 from rheo_core.migrations.orchestrator import migrate_control  # noqa: E402
+from rheo_core.modules import load_modules  # noqa: E402
+from rheo_core.operations.registry import REGISTRY  # noqa: E402
 from rheo_core.refs import uuid7  # noqa: E402
+from rheo_core.refs.resolver import RESOLVERS  # noqa: E402
 from rheo_core.settings import current_profile, resolve  # noqa: E402
+from rheo_core.storage.backend import UnitOfWork  # noqa: E402
 from rheo_core.storage.control_plane import (  # noqa: E402
     WorkspaceRow,
     get_workspace,
@@ -82,6 +86,11 @@ from rheo_core.storage.provisioning import (  # noqa: E402
     database_name_for,
     provision,
 )
+
+# ``modules/spike`` is run 0v's throwaway module and is deleted at 0c0's branch cut,
+# together with the ``install_spike`` fixture at the bottom of this file. Importing
+# it registers nothing: registration happens in the loader, from the manifest.
+from rheo_spike.devtools import install_into  # noqa: E402
 
 # The two halves of the profile pin, and the name guard. All three read back
 # through the settings resolver: asserting the local strings would prove only that
@@ -226,6 +235,91 @@ def make_workspace(
 def workspace(make_workspace: MakeWorkspace) -> UUID:
     """One provisioned, active workspace."""
     return make_workspace()
+
+
+SPIKE_MODULE_ID = "spike"
+InstallSpike = Callable[[UUID], None]
+
+
+def _forget_registrations(
+    operations: frozenset[str], record_types: frozenset[str]
+) -> None:
+    """Drop every operation and record type registered since the given snapshots.
+
+    **This reaches two private tables, and it is deliberate rather than lazy.**
+    ``rheo_core.audit`` has ``reset_sinks()`` and ``rheo_core.modules`` has
+    ``reset_surfaces()`` — C1 gave both process-wide tables a reset precisely because
+    a test that writes one must be able to unwrite it. ``OperationRegistry`` and
+    ``ResolverRegistry`` predate that and have none, so there is no public way to undo
+    a registration, and this run may not edit ``operations/registry.py`` (it is on the
+    plan's own outside-the-map list).
+
+    Why it is needed at all, which is a finding in its own right:
+    ``rheo_core.tokens.sets.read_only()`` is evaluated over the **whole** process-wide
+    registry at issue time, so registering ``spike.note.list`` — a ``read``-class
+    operation — silently widens the named set ``read_only`` for every token issued
+    afterwards, in every workspace of the deployment, including workspaces the spike
+    was never installed into. ``tests/postgres/test_tokens.py`` lines 174 and 202
+    assert that set exactly, and this run may not edit that file. The plan predicted
+    a growth in ``cli_full()`` and reasoned it was safe; it did not predict
+    ``read_only()``, which is not.
+    """
+    registry_table = REGISTRY._operations
+    for name in tuple(registry_table):
+        if name not in operations:
+            del registry_table[name]
+    resolver_table = RESOLVERS._resolvers
+    for module_id, record_type in tuple(resolver_table):
+        if f"{module_id}.{record_type}" not in record_types:
+            del resolver_table[(module_id, record_type)]
+
+
+@pytest.fixture
+def install_spike(cluster: ClusterSession) -> Iterator[InstallSpike]:
+    """Opt-in: put ``modules/spike`` into one workspace. **Never ``autouse``.**
+
+    Returns ``(workspace_id) -> None``. Each call loads the spike through the real
+    ``rheo.modules`` entry point, then creates schema ``spike`` and writes the
+    enabled ``core.module_state`` row in that workspace's own database — the same
+    :func:`~rheo_spike.devtools.install_into` the ``rheo-spike install`` command runs.
+
+    **Both halves of what it does are process-wide, and that is why it is opt-in.**
+    ``load_modules`` registers three operations and a resolver on the process-wide
+    registries and installs the module's audit sink; the sink lands **under the module
+    id ``spike``**, which is what keeps it off every later ``core.*`` dispatch in the
+    same pytest process (C1, finding F19). The per-workspace half is not process-wide,
+    and it is the half that matters here: ``tests/postgres/test_workspace_status.py``
+    (line 119), ``test_identity.py`` and ``test_context_routing.py`` each assert an
+    **exact** ``enabled_modules`` set for workspaces of their own, and all three are
+    outside this run's file map. Folding this into ``make_workspace`` or ``workspace``,
+    or marking it ``autouse``, turns all three red.
+
+    A workspace this is never called for is what drives FR 2's ``module_disabled``
+    branch: the operations are registered, and ``authorize`` still refuses because that
+    workspace carries no enabled row.
+
+    ``RHEO_MODULES`` is deliberately not set — ``allow`` is passed explicitly instead,
+    because ``tests/test_module_loader.py::test_the_process_variable_is_not_set_by_the
+    _suite`` asserts the suite never exports it.
+    """
+
+    def _install(workspace_id: UUID) -> None:
+        loaded = load_modules(allow=frozenset({SPIKE_MODULE_ID}))
+        assert loaded == (SPIKE_MODULE_ID,), (
+            f"the rheo.modules entry point for {SPIKE_MODULE_ID!r} was not "
+            f"discovered (loaded {loaded}); run `uv sync` so the rheo-spike "
+            "distribution is installed in this environment"
+        )
+        row = cluster.registry_row(workspace_id)
+        engine = cluster.backend.pools.engine_for(row.database_name)
+        with UnitOfWork(engine, row.database_name) as uow:
+            install_into(uow.connection)
+            uow.commit()
+
+    operations = frozenset(REGISTRY.names())
+    record_types = frozenset(RESOLVERS.record_types())
+    yield _install
+    _forget_registrations(operations, record_types)
 
 
 def run_pytest_in_subprocess(

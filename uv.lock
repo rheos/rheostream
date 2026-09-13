@@ -17,6 +17,7 @@ members = [
     "rheo-recallatron",
     "rheo-relationships",
     "rheo-runtimes",
+    "rheo-spike",
 ]
 
 [manifest.dependency-groups]
@@ -634,6 +635,21 @@ source = { editable = "modules/relationships" }
 name = "rheo-runtimes"
 version = "0.1.0"
 source = { editable = "runtimes" }
+
+[[package]]
+name = "rheo-spike"
+version = "0.1.0"
+source = { editable = "modules/spike" }
+dependencies = [
+    { name = "rheo-contracts" },
+    { name = "rheo-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "rheo-contracts", editable = "packages/contracts" },
+    { name = "rheo-core", editable = "packages/core" },
+]
 
 [[package]]
 name = "ruff"
