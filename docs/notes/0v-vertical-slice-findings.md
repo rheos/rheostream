@@ -1371,3 +1371,65 @@ built to report one rather than to manufacture a concern.
   under this repository's lint configuration. It is not — the rule does not fire on a
   `Mapping`-annotated `{}` default — and that was established on a minimal
   reproduction rather than reasoned about.
+
+## The checking made the same mistake the artefacts did
+
+The defect shape this note keeps returning to is a check that is correct on one side
+of a pair and absent or wrong on the other: a consumer with no producer (F21), a
+guard in a different file from the thing it guards (F30), a rule stated in a
+docstring and violated by the configuration shipped beside it. That shape did not
+stay in the artefacts. It kept appearing in the work of checking them, which is worth
+writing down, because a reader who takes this note's evidence on trust is trusting
+exactly those checks.
+
+The instances below are the ones with evidence behind them. They are not a complete
+list of everything that went wrong, and the count is deliberately not rounded up.
+
+- **A boundary guard matched its own documentation.** The scan that protects the
+  benchmark boundary greps the raw text of a diff. F54 records the first half: it
+  matched git's own hunk headers, so a diff touching a workflow file was read as
+  evidence that a job subsystem had been built. The second half arrived later and is
+  sharper. Once this note was written, the scan matched the note — eight hits, every
+  one an added line inside the section that names what was cut. The finding cannot be
+  stated without writing those words down, so the only way to make the scan return
+  zero was to delete the evidence for the finding. It was resolved by waiving those
+  eight specific hits against per-hit evidence, rather than by excluding the
+  documentation from the scan or by rewording the finding.
+
+- **A point-in-time measurement was recorded as a standing property.** After the
+  guard's token list was narrowed, it was measured against the diff as it then stood
+  and scored zero. That result was written down as though it were a property of the
+  narrowed list. It was a property of that diff. The next commit — prose only, no code
+  — produced eight hits from the same list against a range that had not otherwise
+  changed. A measurement taken at one moment says nothing about a set's behaviour at
+  the next, and the sentence recording it should carry the moment.
+
+- **A test proved the property it was easiest to test.** The same narrowing was
+  cleared by building a synthetic boundary crossing and confirming the guard fired.
+  That is a real test and it passed, but it was assembled out of words already on the
+  list, so it could only ever demonstrate that the guard matches what it contains. It
+  was structurally incapable of showing what the list was missing, which is F56.
+  Fidelity and coverage are different properties; only one was measured, and the
+  conclusion was written as though the one covered the other.
+
+- **An ignore-rule probe returned a false negative by asking about a path that did
+  not exist.** The question was whether a directory was excluded from version control.
+  The probe named a file inside it that had not been created yet, and the answer came
+  back clean. The exclusion was real; F52 is the consequence, and the probe had simply
+  asked a question whose answer could not distinguish the two cases.
+
+- **A count of spawn events was inflated by prose that matched its own marker.** The
+  run's log records structured events with a literal marker string. Counting those
+  events by searching the log for that string also counts every sentence that
+  discusses them, and this run's log discusses them at length.
+
+The common property is not carelessness. Each of these checks ran, produced output,
+and the output looked like the answer. What caught them was asking a second question:
+what would this evidence look like if the thing being checked were *correct*, and can
+this check tell the two cases apart? Several times it could not, and the number that
+came back was about the method rather than about the code.
+
+Two of these were caught by the run's own legs and two by the gating layer above it,
+which is the argument for keeping both. None was caught by the three rounds of cold
+document review, because none of them is visible in a document — they are only visible
+when the check is run and its output is interrogated.
