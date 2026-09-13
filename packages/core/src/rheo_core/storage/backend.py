@@ -14,6 +14,12 @@ hand-build a ``WorkspaceContext``. Under ``profile = test`` ``__enter__`` assert
 profile is resolved once, by the backend: see ``UnitOfWork.verify_database``); that
 assertion plus the registry read in ``route()`` are the backstop for the run's worst
 silent failure, a write landing in the wrong workspace database.
+
+``HandlerUnitOfWork`` is the sealed view ``dispatch()`` hands a handler: the same
+connection, with ``commit``, ``rollback`` and ``__enter__`` refused. It lives here
+rather than in ``operations/`` because it needs the four private slots above, and it
+is a subclass rather than a flag on ``UnitOfWork`` because that class's public
+surface is a pinned 0c-boundary invariant. See its own docstring.
 """
 
 from collections.abc import Callable, Sequence
@@ -38,6 +44,10 @@ SLUG_TAKEN: Final = "slug_taken"
 DATABASE_MISMATCH: Final = "database_mismatch"
 SCHEMA_AHEAD: Final = "schema_ahead"
 UNIT_OF_WORK_CLOSED: Final = "unit_of_work_closed"
+HANDLER_MAY_NOT_COMMIT: Final = "handler_may_not_commit"
+"""The state :class:`HandlerUnitOfWork` refuses ``commit``/``rollback``/``__enter__``
+with. Re-exported from ``rheo_core.operations.refusals`` because the dispatcher is
+where a caller meets it, as an outcome state."""
 
 
 class StorageRefusal(Exception):
@@ -141,6 +151,75 @@ class UnitOfWork:
             raise StorageRefusal(UNIT_OF_WORK_CLOSED, "nothing to roll back")
         self._transaction = None
         transaction.rollback()
+
+
+class HandlerUnitOfWork(UnitOfWork):
+    """The view ``dispatch()`` hands a handler: the same connection, sealed.
+
+    A handler runs *inside* the dispatcher's one transaction, so ending that
+    transaction is the dispatcher's job. This subclass refuses the three entry
+    points a handler would reach for — ``commit``, ``rollback`` and ``__enter__``
+    — with ``StorageRefusal(HANDLER_MAY_NOT_COMMIT, ...)``, which ``dispatch()``'s
+    existing ``except StorageRefusal`` already folds into a refusal outcome whose
+    state is that name.
+
+    **A subclass beside ``UnitOfWork``, not a change to it.**
+    ``tests/postgres/test_isolation.py`` pins ``UnitOfWork``'s public surface to
+    exactly four names and its ``__slots__`` to exactly four slots, so a ``sealed``
+    flag or a fifth slot would edit a ratified 0c-boundary guard. A subclass adds
+    nothing to ``dir(UnitOfWork)``, leaves every existing ``uow: UnitOfWork``
+    annotation compiling (``core_ops.py``, ``tokens/issue.py``, ``resolve_in`` and
+    the test harness need no edit), and reaches the four private slots only because
+    it lives in the module that declares them. ``__slots__ = ()``: it adds none of
+    its own.
+
+    **The seal is over those three names and claims no more.** ``connection`` is
+    inherited and still returns a live SQLAlchemy ``Connection``, so
+    ``view.connection.commit()`` still ends the transaction. Closing that would mean
+    narrowing the *handler protocol* — handing handlers something that is not a
+    ``UnitOfWork`` at all, which changes every registered handler's signature and the
+    ``Handler`` alias — and that is a different change from this one. Run 0v's
+    findings note carries the remaining gap as F1; ``overview.md``'s "a handler cannot
+    commit on its own" is true of the two named methods after this and still false of
+    the connection.
+    """
+
+    __slots__ = ()
+
+    def __init__(self, uow: UnitOfWork) -> None:
+        """Share an already-entered unit of work's connection and transaction.
+
+        Not ``(engine, expected_database)``: the view never opens anything, it
+        borrows what the dispatcher already opened. The four assignments are the
+        parent's own slots, reachable here because this class sits in that module.
+        """
+        if not isinstance(uow, UnitOfWork):
+            raise TypeError("HandlerUnitOfWork wraps a UnitOfWork")
+        self._engine = uow._engine
+        self._expected_database = uow._expected_database
+        self._connection = uow._connection
+        self._transaction = uow._transaction
+
+    def __enter__(self) -> Self:
+        raise StorageRefusal(
+            HANDLER_MAY_NOT_COMMIT,
+            "a handler runs inside the dispatcher's unit of work and may not enter "
+            "another",
+        )
+
+    def commit(self) -> None:
+        raise StorageRefusal(
+            HANDLER_MAY_NOT_COMMIT,
+            "a handler may not commit: the dispatcher commits once, after the "
+            "handler returns",
+        )
+
+    def rollback(self) -> None:
+        raise StorageRefusal(
+            HANDLER_MAY_NOT_COMMIT,
+            "a handler may not roll back: raise OperationRefused and the dispatcher "
+            "rolls back",
+        )
 
 
 class StorageBackend(Protocol):

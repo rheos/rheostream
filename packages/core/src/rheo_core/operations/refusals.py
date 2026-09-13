@@ -5,9 +5,16 @@ State names are string constants, matching ``rheo_core.boundary.context``. The
 dispatcher folds every refusal into an ``OperationOutcome`` whose ``state`` is one of
 these (or a state a handler raised through :class:`OperationRefused`), so the API
 envelope's ``error_code`` (C8, 0b2) is always a name from this vocabulary.
+
+``HANDLER_MAY_NOT_COMMIT`` is re-exported, not declared: it is raised as a
+``StorageRefusal`` by ``HandlerUnitOfWork``, so it is declared beside that class in
+``rheo_core.storage.backend`` with the other storage states. It appears here because
+a caller meets it as a dispatch outcome state, alongside the names in this module.
 """
 
 from typing import Final
+
+from rheo_core.storage.backend import HANDLER_MAY_NOT_COMMIT as HANDLER_MAY_NOT_COMMIT
 
 OPERATION_UNKNOWN: Final = "operation_unknown"
 OPERATION_NOT_PERMITTED: Final = "operation_not_permitted"
