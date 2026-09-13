@@ -32,7 +32,7 @@ review and the two cold-review rounds after it. None of them was found during th
 build. A finding found by reading is still a finding; this run's deliverable is the
 list, not its provenance.
 
-**F23–F51 came from the build, and from the independent verification of it.** They
+**F23–F54 came from the build, and from the independent verification of it.** They
 were measured against this run's own branch, which is cut from `main` at `8f243e5`.
 That is a different base from the one F1–F22 were written against: `main` moved on
 while this run was paused, so a line number quoted in a design-pass finding and one
@@ -501,7 +501,7 @@ caller. So the failure is in the component under test rather than in the test fi
 and `import React from "react"` written inside the test could never have fixed it.
 Restoring the line returned all twelve to green.
 
-## Findings from the build (F23–F51)
+## Findings from the build (F23–F54)
 
 These are what building the slice added. Every one was found by running code, or by
 verifying a claim about running code, rather than by reading it. They are ordered by
@@ -986,6 +986,74 @@ exactly who would.
 
 **Disposition: amend the spec.** Name the `ref_template` in the clause, so that
 "match `model_json_schema()`" means the comparison that can actually pass.
+
+### F52 — a gate runner kept in a git-ignored directory does not exist inside a git worktree.
+
+This repository's canonical gate runner is `.bureau/regression/run.sh`, a one-line
+script that invokes `make lint typecheck test check`. `.gitignore` matches `.bureau/`,
+so the directory is deliberately untracked. `git worktree add` populates a worktree
+from tracked content only, which means the runner is **present in the main checkout and
+absent from every worktree cut from it**.
+
+Anything that resolves the project's gates by executing that path gets exit 127, a
+missing interpreter target, not a failing suite. From an exit code alone those two are
+indistinguishable, and the failure mode is worse than a plain error because it looks
+like the gates ran and went red. Checking the runner from the main checkout, where the
+file does exist, confirms it works and hides the problem entirely.
+
+This is not hypothetical for this project: an earlier run spent a checkpoint
+adjudicating a gate that came back red with exit 2 and could not be reproduced, and
+this is a credible cause.
+
+**Disposition: amend the plan.** Either track the runner, or have anything that depends
+on it resolve the path in the repository root rather than in the worktree, and
+distinguish "runner missing" from "suite failed" before reporting a red.
+
+### F53 — the repository's default ports collide with ordinary developer machines, and the default test DSN points wherever port 5432 happens to lead.
+
+`tests/conftest.py` defaults `RHEO_TEST_CLUSTER_DSN` to `localhost:5432`. On the machine
+this run was built on, port 5432 was held by an unrelated project's Postgres container,
+which rejected this project's credentials. The suite does not fail with "no database
+here"; it fails with an authentication error against **someone else's database**, which
+reads as a credential problem in this repository rather than as a port collision.
+
+The same shape defeats `make spike` harder, and that half is recorded as F27: the
+composition entry point hardcodes 8000 and 8100 and reads no environment, so the driver
+cannot run at all while anything else holds 8000. Between them, this project assumes
+three standard ports are free on a developer's machine and gives a usable override for
+only one of them.
+
+Worth stating as one finding because the two halves share a cause. The compose file
+already parameterises its Postgres port, which is the pattern the rest should follow.
+
+**Disposition: amend the plan.** Give the test DSN and the composition entry point the
+same override the compose file already has, and make a connection failure name the port
+it tried.
+
+### F54 — a boundary guard that greps raw diff text matches the diff's own metadata.
+
+The benchmark-boundary guard protecting this run scans for a list of forbidden symbols.
+It greps the **raw text of the diff**, which includes git's own hunk headers. A hunk
+header carries the enclosing syntactic context, so a diff touching a GitHub Actions
+workflow produces lines like `@@ -82,6 +82,26 @@ jobs:` — and the guard read `jobs` as
+evidence that this run had built a job subsystem. It had built nothing of the sort; the
+match came from YAML belonging to an unrelated file, reproduced by git as context.
+
+The same scan cannot distinguish an implementation from a sentence saying the thing was
+deliberately not implemented. That matters more here than it would elsewhere, because
+this document's entire purpose is to name what was cut, so the more honestly the cut is
+documented the louder the guard complains. Four symbols matched on this run and every
+one was prose or a comment stating the negative, verified line by line.
+
+A guard that fires on its own documentation trains people to wave it through, which is
+how a guard stops working. The structural checks alongside it stayed meaningful
+throughout — the core schema still defines exactly six tables, and the two boundary
+tests are untouched — because they assert about the shape of the code rather than about
+the presence of a word.
+
+**Disposition: amend the plan.** Scan added lines rather than raw diff text, and prefer
+identifier-shaped symbols over English words for anything whose absence is also
+discussed in prose.
 
 ## What this run adds to the trust boundary
 
