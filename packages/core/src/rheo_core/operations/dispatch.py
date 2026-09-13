@@ -24,6 +24,12 @@ behaves exactly as it did before the seam existed.
 And nothing else. No audit *table*, no operation record, no outbox event, no
 ``operation_id`` minted — run 0c's scored work, deliberately absent here. See the
 comment in the dispatcher body.
+
+**The sink call itself is provisional, pending E0c.** The build plan's benchmark
+schedule keeps audit-dispatch behaviour out of the 0c substrate, while run 0v's card
+commissioned exactly this call; finding F55 records the conflict and its two
+routes. This hook may be deleted at 0c0's branch cut rather than inherited, so do
+not build on it without reading F55 first.
 """
 
 import logging
@@ -164,6 +170,10 @@ def dispatch(
     # is that a declaration carrying an ``AuditSpec`` reaches the sink. Classes above
     # ``mutate`` are 0c's. Run 0v's finding F14 records that ``overview.md`` reads as
     # though the class were enforced today.
+    #
+    # The sink call below is PROVISIONAL pending E0c: the build plan's benchmark
+    # schedule keeps audit-dispatch behaviour out of the 0c substrate, and run 0v's
+    # card commissioned it. Finding F55 carries the conflict and how to close it.
     with uow:
         try:
             # The handler gets the sealed view; everything below uses the real ``uow``.

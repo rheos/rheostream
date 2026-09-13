@@ -7,6 +7,18 @@ audit row — the table, its columns, the operation record, the outbox — is ru
 and nothing here writes a core table: ``NullAuditSink`` is the production default and
 does exactly what ``main`` does today, which is nothing.
 
+**PROVISIONAL, pending E0c. Do not read this module as settled substrate.** Run 0v's
+card commissioned it (shape 3: the audit row is written by the dispatcher and not by
+the module), while the build plan's benchmark schedule keeps audit-dispatch
+behaviour *out* of the 0c substrate and scores the 0c2 cohort on mandatory audit
+dispatch and the missing-registration case. Those two ratified documents disagree,
+and the disagreement is upstream of run 0v, which is why the code is here rather
+than deleted. It is recorded as finding F55
+in ``docs/notes/0v-vertical-slice-findings.md``, with two routes — 0c0 deletes this
+module at the branch cut, or E0c's packet declares it as pre-built substrate and
+accepts that 0c2's task is smaller by that much. Until that is decided, treat every
+shape below as a proposal that 0c2 may overrule, not as an inherited contract.
+
 **Why a table and not one global slot.** Every core mutate operation already declares
 ``AuditSpec(subject_field=None)`` (``operations/core_ops.py``: ``core.settings.set``,
 ``core.settings.set_member``, ``core.token.issue``, ``core.token.revoke``). A single
@@ -25,9 +37,12 @@ the underlying gap — that an ``AuditSpec`` names what to record but not who re
 operation, subject_ref)`` — two keyword parameters, no more. ``outcome_state`` has one
 possible value at the only call site (the operation is about to succeed, or the sink is
 never reached), and the ``AuditSpec`` itself is redundant with the ``subject_ref``
-``dispatch()`` has already resolved from it. 0c2 must inherit no guessed shape: if the
-real audit record needs an outcome, 0c2 adds the parameter against a real requirement
-rather than finding it pre-decided here.
+``dispatch()`` has already resolved from it. The intent was that 0c2 inherit no
+guessed shape — if the real audit record needs an outcome, 0c2 adds the parameter
+against a real requirement. F55 is the honest qualification of that intent: a
+two-parameter ``record`` and a ``sink_for`` that returns the no-op on a missing
+registration *are* shapes, and they are pre-decided here whether or not they were
+meant to be. 0c2 is free to replace both.
 
 The sink is handed the **real** ``UnitOfWork``, not the handler's sealed view: the sink
 is core, not a module, and it writes in the same transaction the dispatcher is about to

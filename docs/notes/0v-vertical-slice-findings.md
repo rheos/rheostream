@@ -10,7 +10,7 @@ driver are deleted at 0c0's branch cut. The point was to find out where the
 ratified documents and the running code disagree while that is still cheap, and
 this note is what survives.
 
-Fifty-one findings. Each carries its evidence — a `file:line` citation wherever there
+Fifty-six findings. Each carries its evidence — a `file:line` citation wherever there
 is a line to cite — one of three dispositions, and the run that should act on it.
 
 ## How to read this
@@ -32,8 +32,11 @@ review and the two cold-review rounds after it. None of them was found during th
 build. A finding found by reading is still a finding; this run's deliverable is the
 list, not its provenance.
 
-**F23–F54 came from the build, and from the independent verification of it.** They
+**F23–F56 came from the build, and from the independent verification of it.** They
 were measured against this run's own branch, which is cut from `main` at `8f243e5`.
+F55 and F56 arrived last, from a second-pass review run after this run's own
+integration gate had already returned its verdict, and they are the two that
+correct this note rather than the repository.
 That is a different base from the one F1–F22 were written against: `main` moved on
 while this run was paused, so a line number quoted in a design-pass finding and one
 quoted in a build finding are not always read against the same tree. They are
@@ -501,7 +504,7 @@ caller. So the failure is in the component under test rather than in the test fi
 and `import React from "react"` written inside the test could never have fixed it.
 Restoring the line returned all twelve to green.
 
-## Findings from the build (F23–F54)
+## Findings from the build (F23–F56)
 
 These are what building the slice added. Every one was found by running code, or by
 verifying a claim about running code, rather than by reading it. They are ordered by
@@ -1055,13 +1058,119 @@ the presence of a word.
 identifier-shaped symbols over English words for anything whose absence is also
 discussed in prose.
 
+### F55 — the audit-dispatch seam lives in the substrate, and two ratified documents disagree about whether it may.
+
+This run built the audit seam into `packages/core`, not into the throwaway module,
+so it is not deleted at 0c0's branch cut. Concretely: `packages/core/src/rheo_core/
+audit/sink.py` holds the `AuditSink` protocol, `NullAuditSink`/`NULL_SINK`, and a
+table of installed sinks keyed by owning module id; `operations/dispatch.py:181-195`
+resolves a sink by the operation's owning module and calls `.record(...)` **inside
+the transaction**, immediately before `uow.commit()`; `sink.py:116-121`'s `sink_for`
+returns `NULL_SINK` for a module with no registration; `dispatch.py:92-115` resolves
+the subject reference the `AuditSpec` names. `tests/test_audit_sink.py` is 366 lines
+pinning the transaction placement, rollback when the sink raises, exactly one call
+per dispatch, and the silent no-op. None of that is under `modules/spike/`.
+
+The build plan's benchmark schedule says otherwise. That document is a private
+planning file and is not reproduced here, but its substance is: the 0c0 substrate is
+to carry the contracts and schemas the later cohorts need and to keep five
+behaviours *out* — leasing, retries, cancellation, delivery, and audit dispatch. Any
+behaviour moved into the substrate reduces the benchmark task and has to be declared
+in the packet rather than given quietly to one candidate. The 0c2 cohort is then
+scored on, among other things, mandatory audit dispatch and the missing-registration
+case. So `sink_for`'s `NULL_SINK` return is a pre-decided answer to one of the exact
+cases 0c2 is scored on testing, sitting in the substrate under every competitor.
+
+Run 0v's own card authorises the build. Shape 3, the third of the five things the
+slice exists to prove, is *"audit row written by the dispatcher and not by the
+module"* (card line 67), and the card's out-of-scope list names no audit token at
+all. So this is not a run that exceeded its brief: two ratified documents disagree,
+and the disagreement is upstream of this run. **The code stays** — removing it here
+would delete shape 3's proof, which is the thing the run was commissioned to
+produce.
+
+Two routes close it, and **choosing between them is Robin's call, not this run's**:
+
+1. **0c0 removes the hook at the branch cut.** `dispatch()` goes back to what `main`
+   does today, `rheo_core/audit/**` is deleted with the spike, and 0c2 builds the
+   seam from nothing against a real requirement. This keeps 0c2's scored task at its
+   ratified size, and is the more expensive of the two only in that it throws away
+   working, tested code.
+2. **E0c's packet declares it.** `rheo_core/audit/**` and the `dispatch()` hook are
+   named in the benchmark packet as pre-built substrate, with the shape every
+   candidate inherits stated plainly, and 0c2's task is knowingly smaller by that
+   much. The schedule's own sentence already requires this of anything moved into
+   the substrate, so it is the smaller edit — but it does reduce a scored task, and
+   the incumbency it creates sits under every competitor equally.
+
+The reason this is worth a finding rather than a footnote: a 0c0 or E0c author
+reading this note before the correction would have concluded the hook was settled
+substrate and never declared it in the packet. That is the specific harm the
+schedule's sentence exists to prevent, and this note came within one paragraph of
+causing it.
+
+**Disposition: amend the plan.** Whichever of the two routes above Robin takes, the
+benchmark schedule and the 0v card should stop disagreeing about whether the
+dispatcher may own the audit call.
+
+### F56 — the benchmark-boundary token list was never derived from the sentence it enforces, and the test that vetted it could not have noticed.
+
+`scope.cut_symbols` is the list of forbidden tokens the benchmark-boundary guard
+scans a run's diff for. At this run's second checkpoint it was narrowed from bare
+English words (`outbox`, `worker`, `jobs`, `retries`) to identifier-shaped tokens
+(`outbox_event`, `worker_loop`, `job_dispatcher`, `retry_count`), because the bare
+words appear throughout this repository's own ratified documents — `outbox` 53 times
+across 24 files on `main` — and throughout a note whose entire purpose is to name
+what was cut. F54 records that half of the problem.
+
+The narrowing did not cause F55, and that was checked rather than assumed: the
+pre-narrowing list was recovered from the run's own round-1 staged state, and
+**neither list ever contained an audit token**, so the guard could not have fired on
+the audit seam under either version.
+
+What the check turned up instead is worse, because it is general. Tokenising both
+lists against the schedule sentence's own five named behaviours:
+
+| behaviour named in the schedule | original list | narrowed list |
+| --- | --- | --- |
+| leasing | `leases` | `acquire_lease`, `lease_expires_at` |
+| retries | `retries` | `retry_count`, `max_retries` |
+| cancellation | `cancellation` | **absent** |
+| delivery | **absent** | `event_delivery` |
+| audit-dispatch | **absent** | **absent** |
+
+The list was never derived from the sentence it exists to enforce. It was assembled
+independently and happened to overlap. The narrowing then silently dropped one of
+the sentence's own names while adding another, and neither the party doing the
+narrowing nor the cold reviewer who examined it noticed.
+
+The mutation test that vetted the narrowed list assembled a synthetic boundary
+crossing from tokens already in the list and confirmed the guard fired on it. That
+is a real test and it passed. But it proves **fidelity** — the guard matches what the
+set contains — and it structurally cannot prove **coverage**, because a mutant built
+only from listed tokens can never exercise an unlisted one. Two different properties;
+only one was tested, and the verdict was written as though the one covered the other.
+That is the same defect shape this run kept finding in the artefacts, occurring in
+the checking of them.
+
+**Disposition: amend the plan.** Derive the token list from the benchmark schedule's
+own 0c0 and 0c2 enumerations rather than assembling it by hand, and assert
+mechanically that every behaviour named there has at least one token standing for it
+— so a future narrowing that drops one of those names fails instead of passing
+quietly.
+
 ## What this run adds to the trust boundary
 
-`POST /internal/v1/operations/{name}` is the one piece of this run that is **not**
-deleted at 0c0's branch cut, and it is the most security-relevant thing the run adds.
-It is named here on purpose, so that it is met in a document rather than discovered
-in a diff. It is not a numbered finding: it is not a disagreement between the
-specification and the code, and it carries no disposition.
+`POST /internal/v1/operations/{name}` is the most security-relevant thing this run
+adds, and it is one of the pieces that survive 0c0's branch cut rather than being
+deleted with the spike. It is named here on purpose, so that it is met in a document
+rather than discovered in a diff. It is not a numbered finding: it is not a
+disagreement between the specification and the code, and it carries no disposition.
+
+An earlier version of this paragraph called it *the one piece* of this run not
+deleted at the cut. That was false, and the correction is F55: `rheo_core/audit/**`
+and the `dispatch()` hook that calls it survive too, and so do nine others.
+The next section lists all of them, each verified at the file.
 
 **What it does.** It dispatches any registered operation, by name, against a real
 session. It is the web tier's only way to reach `dispatch()` at all — before this run
@@ -1115,6 +1224,125 @@ two listeners one contract with two bases.
 One property it shares with the surface it mirrors, named rather than left implicit:
 it calls the synchronous, database-blocking `dispatch()` directly inside an
 `async def`, exactly as the bearer surface does. That is F42.
+
+## What survives 0c0's branch cut, and what deleting the spike has to touch
+
+The spike is throwaway. Not everything this run added is, and an earlier version of
+this note said otherwise. Every item below was checked at the file rather than
+transcribed from a plan.
+
+**Survives as it stands:**
+
+- **`packages/core/src/rheo_core/audit/**`** — `sink.py` and the package `__init__`:
+  the `AuditSink` protocol, `NullAuditSink`/`NULL_SINK`, the module-keyed sink table,
+  and `install_sink`/`sink_for`/`reset_sinks`. Neither file contains spike code.
+  This is F55's subject and the one entry on this list whose presence is contested.
+- **`packages/core/src/rheo_core/modules/**`** — `manifest.py`, `loader.py` and the
+  package `__init__`: manifest validation, entry-point discovery, the `RHEO_MODULES`
+  allowlist, and `module_surfaces()`. The `spike` *value* goes at the cut; the loader
+  does not. The `RHEO_MODULES` environment read itself goes later, when the real
+  `modules.installed` settings key lands (F5).
+- **`HandlerUnitOfWork`** (`packages/core/src/rheo_core/storage/backend.py`) — the
+  sealed view the dispatcher hands every handler, with `commit`, `rollback` and
+  `__enter__` refused.
+- **`packages/core/src/rheo_core/operations/openapi.py`** —
+  `build_document(registry)` and the `/api/v1/operations/<name>` path-key template
+  the web tier's generated client is indexed by. Its docstring uses `spike.note.add`
+  as the worked example and will want a different one.
+- **`apps/cli/src/rheo_app_cli/commands/openapi.py`** — the `rheo openapi`
+  subcommand, the one that does not bootstrap.
+- **`RoutingConfig.from_settings(modules=...)` and `surface_for()`**
+  (`packages/core/src/rheo_core/routing/config.py`) — the one part of the routing
+  config that comes from loaded manifests rather than from settings.
+- **`scripts/check_routing_literals.py`'s `apps/web/src/generated/` exclusion** — a
+  third allowlist mechanism, structural by directory rather than by content or by
+  filename. It permanently widens a gate 0b2 shipped, which is exactly why it belongs
+  on this list rather than reading as spike scaffolding: it outlives the spike, and
+  it is safe only because it is paired with the byte-exact regeneration gate below.
+  Neither of those two is sufficient alone.
+
+**Survives, but the cut has to edit it:**
+
+- **`make codegen`** — the target is permanent and its own comment says so, but the
+  recipe hardcodes `RHEO_MODULES=spike`. That value goes; the target does not.
+- **The CI step "Generated API artifacts are reproducible"**, and the two steps
+  installing and syncing `uv` in the `web` job
+  (`.github/workflows/repository-checks.yml`). The step stays. The committed
+  artifacts it diffs against currently carry the spike's operation paths, so the
+  deletion commit must regenerate `apps/web/src/generated/*` in the same commit or
+  this step goes red on the cut itself.
+- **`apps/web/vitest.config.ts`'s `esbuild: { jsx: "automatic", jsxImportSource:
+  "react" }`** — nothing deletes it, but its only consumer goes.
+  `src/app/spike/page.test.tsx` is this repository's only `.tsx` test, so after the
+  cut the line is inert. It was measured inert for `.ts` tests (F22), so keeping it
+  costs nothing and spares whoever adds the next component test the same half-day.
+  It should be a deliberate keep rather than an oversight, which is why it is named
+  here.
+
+**The deletion checklist.** Removing `modules/spike/**` and `apps/web/src/app/spike/**`
+is not the whole cut. The same commit has to touch:
+
+- **`tests/conftest.py` — `from rheo_spike.devtools import install_into` is a
+  module-scope import at line 94**, so the entire Python suite fails to collect the
+  moment the `rheo-spike` distribution is gone. This is the one entry that turns a
+  tidy deletion into a red suite. Also `SPIKE_MODULE_ID`, the `install_spike` fixture
+  and the surface-reset it performs.
+- `pyproject.toml` and `uv.lock` — the `modules/spike/src` path entry and the
+  `rheo-spike` workspace member, and the lock edges that follow.
+- `Makefile` — the whole `spike` target, and `RHEO_MODULES=spike` inside `codegen`.
+- `.env.example` — `RHEO_SPIKE_WORKSPACE_IDS` and the `RHEO_MODULES` paragraphs.
+- `deploy/README.md` — the `make spike` topology section and the three variables it
+  documents as that target's alone.
+- `apps/web/src/lib/routing/links.ts` — `spikePath`, `spikeHref` and the `SPIKE`
+  constant, with their cases in `links.test.ts`.
+- `apps/web/src/components/spike-notes.tsx` and `apps/web/src/lib/spike/**`.
+- `apps/web/src/generated/openapi.json` and `api-types.ts` — regenerated by
+  `make codegen`, never hand-edited, or the CI step above fails.
+- `tests/postgres/test_spike_slice.py`, `tests/postgres/test_spike_isolation.py`, and
+  the spike-dependent half of `tests/postgres/test_internal_operations.py`, which
+  exercises the *surviving* internal route through the spike's operations and so needs
+  a replacement subject rather than deletion.
+
+## Three things recorded after the gate, without a finding number
+
+These came from a second-pass review run after this run's own integration gate had
+returned its verdict. None is a disagreement between a ratified document and the
+code, so none is numbered. None was fixed here.
+
+**The card's production exit criterion is not met as worded.** The 0v card asks that
+"a production-profile start refuses to register the spike module". There is no profile
+branch in the registration path: `apps/core/src/rheo_app_core/startup.py` calls
+`load_modules()` with no profile test, and the only production branch in that file is
+`_check_production_scheme`, which is about `routing.scheme`. The production refusal
+that does exist is the spike CLI's own
+(`modules/spike/src/rheo_spike/devtools.py`, `_refuse_in_production`), and it refuses
+the `rheo-spike` command, not registration. What stands in the criterion's place is
+AC 8 and D-3: nothing loads unless `RHEO_MODULES` names it. That is default-deny, and
+in the common case it is the stronger guarantee — the loader's own docstring argues
+precisely that a profile branch would not help, since `development` is not
+`production`, and F5 treats the allowlist as the shape the eventual correction should
+take. The gap is that nothing in the run log or in F5 says the criterion was replaced
+rather than met. Concretely, and worth stating because the card's wording implies the
+opposite: **a production start with `RHEO_MODULES=spike` set would register the
+spike**, and per F24 that widens `read_only` deployment-wide.
+
+**One test name claims more than its body proves.**
+`test_no_internal_secret_is_401_before_the_session_is_even_read`
+(`tests/postgres/test_internal_operations.py`) asserts a 401 and an empty notes
+table. It does not assert that the session went unread. The property is structurally
+true — `require_internal_secret` is a router dependency, so it runs before the
+handler body, and the docstring says so — but the name reads as though the assertion
+established it. Rename it, or keep the name and let the docstring carry the
+distinction in its own sentence.
+
+**`HandlerUnitOfWork.__init__` copies four private slots without calling
+`super().__init__`** (`packages/core/src/rheo_core/storage/backend.py:189-201`). This
+is correct today and deliberately so: the view borrows an already-entered unit of
+work rather than opening anything, and the comment says the four assignments are the
+parent's own slots. But a fifth slot added to `UnitOfWork` later would simply be
+absent from the view, with no error at the point of the mistake and a failure
+somewhere else entirely. Worth a guard in whichever run next touches that class —
+0c0, by the current plan.
 
 ## Checked and found correct
 
