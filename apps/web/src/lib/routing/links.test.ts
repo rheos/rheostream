@@ -3,13 +3,14 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { RoutingConfig } from "@/lib/routing/config";
+import type { RoutingConfig, SurfaceConfig } from "@/lib/routing/config";
 import {
   callbackUrl,
   continueHref,
   loginHref,
   logoutAction,
   postLoginReturn,
+  spikePath,
   switcherAction,
 } from "@/lib/routing/links";
 
@@ -133,5 +134,68 @@ describe("links across both modes", () => {
       expect(switcherAction(CONFIGS[mode])).toBe("/auth/session/workspace");
       expect(logoutAction(CONFIGS[mode])).toBe("/auth/logout");
     }
+  });
+});
+
+/**
+ * `spikePath` (0v), deleted with the rest of the spike at 0c0's branch cut.
+ *
+ * Built over object literals rather than the shared `path-mode.json` /
+ * `subdomain-mode.json` fixtures on purpose: those live under
+ * `tests/fixtures/routing/`, outside this run's file map, and carry **no** module
+ * surfaces at all — so neither the present-surface case nor the absent-surface
+ * case could be expressed against them, and adding a `spike` entry to a ratified
+ * cross-language fixture to test a throwaway module would be the wrong trade.
+ */
+const SURFACE: SurfaceConfig = { host: "circuit" };
+const WITH_SPIKE: RoutingConfig = {
+  mode: "path",
+  scheme: "https",
+  base_host: "example.test",
+  surfaces: {
+    shell: { host: "circuit", path: "/" },
+    identity: { host: "auth", path: "/auth", fixed_path: true },
+    api: SURFACE,
+    mcp: SURFACE,
+    docs: SURFACE,
+    integration: SURFACE,
+    modules: { spike: { host: "spike", path: "/spike" } },
+  },
+};
+const WITHOUT_SPIKE: RoutingConfig = {
+  ...WITH_SPIKE,
+  surfaces: { ...WITH_SPIKE.surfaces, modules: {} },
+};
+
+describe("the spike surface's own link", () => {
+  it("stays relative, so the 303 lands on the origin the browser is already on", () => {
+    // The load-bearing assertion, and the home for the `urlFor`-instead-of-
+    // `spikePath` mutant: `urlFor` is absolute in both modes, and under the
+    // driver's port-free `base_host` (D-37) an absolute spike URL evaluates to
+    // `http://localhost/spike` — port 80, nothing listening — so `curl -L`
+    // fails to connect on a redirect that still looks like a success.
+    const target = spikePath(WITH_SPIKE, "/");
+    expect(target).toBe("/spike/");
+    expect(target.startsWith("/")).toBe(true);
+    expect(target.startsWith("//")).toBe(false);
+    expect(target).not.toMatch(/^https?:/);
+    expect(() => new URL(target)).toThrow();
+  });
+
+  it("carries the query the driver asserts on without an absolute host", () => {
+    expect(`${spikePath(WITH_SPIKE, "/")}?workspace=selected`).toBe(
+      "/spike/?workspace=selected",
+    );
+  });
+
+  it("throws when the module surface is absent rather than degrading to the root", () => {
+    // D-6 populates `surfaces.modules` from the loaded manifests, so an absent
+    // `spike` surface means that wiring is broken. Falling back to an empty
+    // prefix would redirect to `/` — the shell root — while still carrying
+    // `?workspace=selected`, and the driver would print PASS for a page that
+    // never rendered.
+    expect(() => spikePath(WITHOUT_SPIKE, "/")).toThrow(
+      /unknown routing surface 'spike'/,
+    );
   });
 });

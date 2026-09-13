@@ -1,5 +1,5 @@
 import { IDENTITY, SHELL, type RoutingConfig } from "@/lib/routing/config";
-import { identityPath, urlFor } from "@/lib/routing/url-for";
+import { identityPath, joinPrefix, urlFor } from "@/lib/routing/url-for";
 
 /**
  * Every link, form action and redirect target the shell produces (C9, B10).
@@ -75,4 +75,38 @@ export function continueHref(
     nonce: options.nonce,
   });
   return urlFor(config, IDENTITY, `/continue?${query.toString()}`);
+}
+
+/** The module surface run 0v's throwaway spike declares in its own manifest. */
+const SPIKE = "spike";
+
+/**
+ * The spike page's own path, **relative**, under its module surface (0v).
+ *
+ * Deleted with the rest of the spike at 0c0's branch cut.
+ *
+ * Built the way `identityPath` is — `joinPrefix` over the surface's own prefix —
+ * and deliberately **not** with `urlFor`. `urlFor` is absolute in both modes, and
+ * this run's driver sets a port-free `RHEO__routing__base_host=localhost` (D-37)
+ * while `web` listens on 3000, so an absolute spike URL evaluates to
+ * `http://localhost/spike`: port 80, where nothing listens. A 303 to that is a
+ * dead redirect and the driver's `curl -L` fails to connect. There is no
+ * `spikeHref` for the same reason.
+ *
+ * One difference from `identityPath`, and it is the point of the function rather
+ * than an edge case: the `identity` surface is always present in a
+ * `RoutingConfig`, while a **module** surface is present only because D-6
+ * populated it from a loaded manifest. So an absent `spike` surface **throws**,
+ * the way `urlFor` already throws for an unknown surface, and never falls back to
+ * an empty prefix. A silent fallback would redirect to `/` — the shell root —
+ * while still carrying the `?workspace=…` query the driver asserts on, so the
+ * driver would print PASS for a page that never rendered. An absent surface means
+ * D-6's wiring is broken, and it should say so.
+ */
+export function spikePath(config: RoutingConfig, path: string): string {
+  const surface = config.surfaces.modules[SPIKE];
+  if (surface === undefined) {
+    throw new Error(`unknown routing surface '${SPIKE}'`);
+  }
+  return joinPrefix(surface.path ?? "", path);
 }
