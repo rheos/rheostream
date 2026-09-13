@@ -66,13 +66,22 @@ def _bearer(request: Request) -> str | None:
     return value
 
 
-def _envelope(
+def envelope(
     state: str,
     *,
     result: dict[str, object] | None = None,
     error_code: str | None = None,
     error_text: str | None = None,
 ) -> dict[str, object]:
+    """The operation envelope both listeners answer with: ``{"state",
+    "operation_id": null, "result" | "error"}``.
+
+    Public, and shared: run 0v's ``POST /internal/v1/operations/{name}``
+    (``internal_routes.py``) answers with this same shape over the same
+    ``dispatch()``, so the two surfaces cannot drift apart by being written twice.
+    The generated OpenAPI document (``rheo_core.operations.openapi``) describes
+    exactly this envelope as the 200 response for every operation.
+    """
     body: dict[str, object] = {"state": state, "operation_id": None}
     if result is not None:
         body["result"] = result
@@ -81,7 +90,10 @@ def _envelope(
     return body
 
 
-def _outcome_status(outcome: OperationOutcome) -> int:
+def outcome_status(outcome: OperationOutcome) -> int:
+    """The HTTP status for a dispatch outcome. Public for the same reason
+    :func:`envelope` is: the internal operations route maps outcomes identically,
+    because the mapping belongs to the operation contract, not to one listener."""
     return _STATUS_BY_STATE.get(outcome.state, _DEFAULT_ERROR_STATUS)
 
 
@@ -90,7 +102,7 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
     value = _bearer(request)
     if value is None:
         return JSONResponse(
-            _envelope(
+            envelope(
                 TOKEN_MALFORMED,
                 error_code=TOKEN_MALFORMED,
                 error_text="no bearer token was presented",
@@ -100,7 +112,7 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
     ctx = context_from_token(value, "api")
     if isinstance(ctx, Refusal):
         return JSONResponse(
-            _envelope(ctx.state, error_code=ctx.state, error_text=str(ctx)),
+            envelope(ctx.state, error_code=ctx.state, error_text=str(ctx)),
             status_code=_TOKEN_REFUSAL_STATUS,
         )
     payload: dict[str, object] = dict(request.query_params)
@@ -111,15 +123,15 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
     if isinstance(body, dict):
         payload.update(body)
     outcome = dispatch(ctx, name, payload)
-    status = _outcome_status(outcome)
+    status = outcome_status(outcome)
     if outcome.ok:
         result = (
             None if outcome.result is None else outcome.result.model_dump(mode="json")
         )
-        return JSONResponse(_envelope(outcome.state, result=result), status_code=status)
+        return JSONResponse(envelope(outcome.state, result=result), status_code=status)
     error = outcome.error
     return JSONResponse(
-        _envelope(
+        envelope(
             outcome.state,
             error_code=None if error is None else error.error_code,
             error_text=None if error is None else error.error_text,

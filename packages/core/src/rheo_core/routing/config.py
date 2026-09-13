@@ -18,8 +18,11 @@ the house split already in the tree: payloads crossing a boundary are frozen
 host to ``core`` in both modes. It is hardcoded below rather than read from a setting:
 an operator who relocated it would break that invariant.
 
-``modules`` is always empty in 0b — no settings key backs it — so it is a static empty
-mapping here, not a settings-driven one.
+``modules`` is not settings-driven and never will be: a module surface is named by the
+manifest of whatever module a deployment loaded, so :meth:`RoutingConfig.from_settings`
+takes it as an optional argument (default empty, reproducing a module-less deployment
+exactly) and the internal listener passes what ``rheo_core.modules.module_surfaces()``
+kept from startup (run 0v, D-6).
 """
 
 from collections.abc import Mapping
@@ -122,11 +125,24 @@ class RoutingConfig(BaseModel):
     surfaces: Surfaces
 
     @classmethod
-    def from_settings(cls, settings: ResolvedSettings) -> "RoutingConfig":
+    def from_settings(
+        cls,
+        settings: ResolvedSettings,
+        *,
+        modules: Mapping[str, SurfaceConfig] = {},
+    ) -> "RoutingConfig":
         """Build the configuration from the sixteen resolved ``routing.*`` keys.
 
         No database and no secret store: the routing configuration is deployment
         settings and nothing else.
+
+        ``modules`` is the one part that does not come from settings — no key backs
+        it, because the surfaces a deployment has are the ones its loaded modules
+        declare (D-6). The default is empty and reproduces a module-less deployment
+        byte for byte, which is what keeps ``tests/fixtures/routing/*.json`` and
+        every shipped ``from_settings`` caller unchanged. The keyword is read
+        keyword-only so a positional second argument can never be mistaken for one
+        of the settings.
         """
         return cls(
             mode=RoutingMode(settings.get_str(MODE_KEY)),
@@ -160,6 +176,6 @@ class RoutingConfig(BaseModel):
                     external=settings.get_bool(surface_key(INTEGRATION, "external")),
                     reserved=settings.get_bool(surface_key(INTEGRATION, "reserved")),
                 ),
-                modules={},
+                modules=dict(modules),
             ),
         )

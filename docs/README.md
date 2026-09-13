@@ -8,6 +8,8 @@
   requirements, and the phased build plan with its acceptance criteria. Awaiting
   the maintainer's ratification; not yet accepted.
 - [Architecture](architecture/README.md): future contracts, designs, and decisions.
+- [Notes](notes/0v-vertical-slice-findings.md): findings from build spikes, each
+  with its evidence and a proposed disposition against the documents above.
 
 The idea document is the starting point and the requirements documents propose
 closures for the decisions it left open. Neither requirements document is

@@ -15,7 +15,7 @@ Runs under the system python3 (3.9-compatible, no third-party deps), mirroring
 (`.ts`/`.tsx`) and `apps/core/src/**` (`.py`) — for a literal `http://`, `https://`,
 `/auth/`, `/api/`, or `/mcp` route string.
 
-Two allowlist mechanisms, not one, and they are deliberately different in kind:
+Three allowlist mechanisms, not one, and they are deliberately different in kind:
 
 1. **Content allowlist** (the run's own family of route-literal owners): the
    `apps/web/src/lib/routing/` package and `apps/core/src/rheo_app_core/
@@ -35,6 +35,22 @@ Two allowlist mechanisms, not one, and they are deliberately different in kind:
    `check_web_platform.py`'s `SKIP_DIRS` in spirit (both exclude something that is
    not "application code producing a link"), even though the mechanism here is a
    filename suffix rather than a directory.
+3. **Structural exclusion, by directory** (`apps/web/src/generated/`): the
+   generated OpenAPI document and the TypeScript types derived from it. Every
+   operation path key in that document is the literal string
+   `/api/v1/operations/<name>`, so `openapi-typescript` emits those literals as
+   object keys — and unlike every other hit this scan can produce, **a generated
+   file cannot be hand-fixed to satisfy the lint**: the fix would be reverted by
+   the next `make codegen`. Deliberately a third mechanism rather than a new
+   entry in `_ALLOWLISTED_DIRS`: the content allowlist means "this file is a
+   legitimate owner of route literals", which is a claim about authorship that is
+   false of a file nobody wrote.
+
+   The exclusion is paired with `make codegen`'s own byte-exact CI check (run 0v,
+   AC 3: `git diff --exit-code -- apps/web/src/generated` after regenerating), so
+   the directory cannot quietly become a place to hide hand-written code — a
+   hand-edit there fails that gate instead of this one. Neither gate alone would
+   be enough; together they cover the whole directory.
 
 A third piece keeps both scans honest without either allowlist mechanism becoming
 a place to hide a real link: comments, JSDoc, and Python docstrings are stripped
@@ -73,6 +89,12 @@ PY_SUFFIXES = frozenset({".py"})
 # which is outside both scanned roots already.
 _TEST_SUFFIXES = ("test.ts", "test.tsx", "spec.ts", "spec.tsx")
 
+# Structural exclusion by directory (see module docstring, point 3): relative to
+# whichever web root is being scanned, so the self-test's scratch tree behaves
+# exactly like the real one. Its planted literal lives under `components/`, which
+# this does not cover, so the anti-vacuity check is unaffected.
+_GENERATED_DIR = "generated"
+
 # Generated/vendored dirs a walk of a src/ root should never meet in this repo,
 # kept anyway so this scan degrades the same way check_web_platform.py's does if
 # one ever appears (e.g. a stray __pycache__ from a local interpreter run).
@@ -98,6 +120,20 @@ _LITERAL = re.compile(r"https?://|/auth/|/api/|/mcp")
 
 def _is_test_file(path: Path) -> bool:
     return any(path.name.endswith(suffix) for suffix in _TEST_SUFFIXES)
+
+
+def _is_generated(path: Path, root: Path) -> bool:
+    """True for anything under `<web root>/generated/` — a machine-written file.
+
+    The first path segment only, not "a `generated` segment anywhere": one known
+    directory is excluded, and a `lib/spike/generated/` invented later would have
+    to be added here deliberately rather than inheriting the exemption by name.
+    """
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    return relative.parts[:1] == (_GENERATED_DIR,)
 
 
 def _is_allowlisted(path: Path) -> bool:
@@ -236,7 +272,11 @@ def _relative(path: Path) -> str:
 def check(*, web_root: Path = WEB_ROOT, core_root: Path = CORE_ROOT) -> list[str]:
     errors: list[str] = []
     for path in sorted(_iter_files(web_root, TS_SUFFIXES)):
-        if _is_allowlisted(path) or _is_test_file(path):
+        if (
+            _is_allowlisted(path)
+            or _is_test_file(path)
+            or _is_generated(path, web_root)
+        ):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -304,7 +344,8 @@ def main() -> int:
         print(
             "Routing literal checks passed (self-test verified the scan still "
             "catches a planted literal): no hard-coded route string outside "
-            "apps/web/src/lib/routing/ or the two FastAPI route modules."
+            "apps/web/src/lib/routing/, apps/web/src/generated/, or the two "
+            "FastAPI route modules."
         )
     return 1 if findings else 0
 

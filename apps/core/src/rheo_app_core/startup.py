@@ -3,14 +3,19 @@
 In order: settings → the production/https invariant → data root → the
 ``secret://env/*`` reference check → ensure the control database and run the
 ``control`` chain → the identity-provider sync → migrate active workspaces serially
-→ build the operation registry. "Ensure the control database" treats psycopg's
-``DuplicateDatabase`` as success (``PostgresBackend.ensure_database``), mirroring
-provisioning's "already exists is a retry": the advisory lock covers the migration
-chain, not the ``CREATE DATABASE`` before it, and at ``make demo`` this lifespan and
-the host-side ``rheo migrate`` start within seconds of each other against one
-cluster. A workspace whose chain fails is marked ``unavailable`` by the orchestrator
-and startup completes; a control-chain failure raises, because without the control
-plane nothing is routable.
+→ build the operation registry → load the modules ``RHEO_MODULES`` names.
+"Ensure the control database" treats psycopg's ``DuplicateDatabase`` as success
+(``PostgresBackend.ensure_database``), mirroring provisioning's "already exists is a
+retry": the advisory lock covers the migration chain, not the ``CREATE DATABASE``
+before it, and at ``make demo`` this lifespan and the host-side ``rheo migrate``
+start within seconds of each other against one cluster. A workspace whose chain fails
+is marked ``unavailable`` by the orchestrator and startup completes; a control-chain
+failure raises, because without the control plane nothing is routable.
+
+Module loading comes last because a module registers against the registry the step
+before it builds. With ``RHEO_MODULES`` unset — a fresh clone, ``make demo``, and
+every image ``make build`` produces — it loads nothing, so that line is a no-op
+there by design rather than by luck. See ``rheo_core.modules.loader``.
 """
 
 import logging
@@ -23,6 +28,7 @@ from rheo_core.migrations.orchestrator import (
     migrate_active_workspaces,
     migrate_control,
 )
+from rheo_core.modules import load_modules
 from rheo_core.operations import register_core_operations
 from rheo_core.routing import SCHEME_KEY
 from rheo_core.secrets import check_env_references
@@ -85,6 +91,7 @@ def run_startup() -> StartupReport:
     sync_providers(backend, settings)
     workspaces = migrate_active_workspaces(backend)
     operations = tuple(sorted(op.name for op in register_core_operations()))
+    modules = load_modules()
     report = StartupReport(
         profile=settings.get_str(PROFILE_KEY),
         data_root=root,
@@ -102,6 +109,9 @@ def run_startup() -> StartupReport:
             "workspaces_migrated": sum(1 for w in workspaces if w.ok),
             "workspaces_unavailable": sum(1 for w in workspaces if not w.ok),
             "operations": len(operations),
+            # Not a ``StartupReport`` field: nothing reads the ids, and that
+            # dataclass is asserted on by tests outside this run's file map.
+            "modules": ",".join(modules),
         },
     )
     return report

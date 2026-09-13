@@ -82,6 +82,26 @@ jobs:
           cache: pnpm
       - name: Install (frozen)
         run: pnpm install --frozen-lockfile
+      # uv is installed in THIS job, not only in `python`, because `make codegen`
+      # needs both toolchains: `rheo openapi` builds the document and
+      # `pnpm -C apps/web exec openapi-typescript` derives the TypeScript from it.
+      # The same SHA-pinned action and the same version the `python` job uses —
+      # this repository pins every action by SHA.
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.29"
+      - name: Sync (frozen)
+        run: uv sync --frozen
+      # The generated artifacts are generated, not hand-maintained: regenerating
+      # them from the operation registry must leave the tree clean. This is the
+      # byte-exact gate — `tests/test_generated_artifacts.py` asserts only the
+      # banners, because a byte-exactness assertion inside pytest would need Node
+      # and pnpm and the `python` job has neither. That is also why this step is
+      # here and not there, and why it is not a separate `codegen` job, which
+      # would duplicate both installs for one command.
+      - name: Generated API artifacts are reproducible
+        run: make codegen && git diff --exit-code -- apps/web/src/generated
       - name: ESLint
         run: pnpm -C apps/web lint
       - name: Type check

@@ -1,0 +1,884 @@
+{
+  "components": {
+    "schemas": {
+      "ModuleStatus": {
+        "properties": {
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          },
+          "package_version": {
+            "title": "Package Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Version"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id",
+          "package_version",
+          "state",
+          "schema_version"
+        ],
+        "title": "ModuleStatus",
+        "type": "object"
+      },
+      "NoteAddInput": {
+        "properties": {
+          "body": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "NoteAddInput",
+        "type": "object"
+      },
+      "NoteAdded": {
+        "description": "``spike.note.add``'s output: the reference the caller can resolve, and the row\nas written.",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ref",
+          "body",
+          "created_at",
+          "revision"
+        ],
+        "title": "NoteAdded",
+        "type": "object"
+      },
+      "NoteCommitEarlyInput": {
+        "description": "The test-only third operation's input; the same ``body`` rule as the real one.",
+        "properties": {
+          "body": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "NoteCommitEarlyInput",
+        "type": "object"
+      },
+      "NoteHead": {
+        "description": "One item of ``spike.note.list``.\n\nThe same four fields as :class:`NoteAdded` and deliberately a separate model: the\ngenerated OpenAPI document names each operation's own output type, and collapsing\nthe two would make ``spike.note.add``'s response schema read as a list item.",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ref",
+          "body",
+          "created_at",
+          "revision"
+        ],
+        "title": "NoteHead",
+        "type": "object"
+      },
+      "NoteList": {
+        "properties": {
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/NoteHead"
+            },
+            "title": "Notes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "notes"
+        ],
+        "title": "NoteList",
+        "type": "object"
+      },
+      "NoteListInput": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "NoteListInput",
+        "type": "object"
+      },
+      "SettingWrite": {
+        "description": "One key and its natively typed value (a list for ``list[str]`` keys).",
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "title": "SettingWrite",
+        "type": "object"
+      },
+      "SettingWritten": {
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "scope"
+        ],
+        "title": "SettingWritten",
+        "type": "object"
+      },
+      "TokenIssueInput": {
+        "description": "Exactly one of ``set_name``/``operations``. ``account_id`` is required for\nan operator issuer (who has no account of their own) and ignored for a\nsession issuer (whose own account is always the target -- never a payload\nfield, the same reasoning ``core.settings.set_member`` applies to its own\nactor).",
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Account Id"
+          },
+          "kind": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operations"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Purpose"
+          },
+          "set_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Set Name"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "TokenIssueInput",
+        "type": "object"
+      },
+      "TokenIssued": {
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "token_id": {
+            "format": "uuid",
+            "title": "Token Id",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token_id",
+          "value",
+          "kind",
+          "expires_at",
+          "operations"
+        ],
+        "title": "TokenIssued",
+        "type": "object"
+      },
+      "TokenRevokeInput": {
+        "properties": {
+          "token_id": {
+            "format": "uuid",
+            "title": "Token Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token_id"
+        ],
+        "title": "TokenRevokeInput",
+        "type": "object"
+      },
+      "TokenRevoked": {
+        "properties": {
+          "token_id": {
+            "format": "uuid",
+            "title": "Token Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token_id"
+        ],
+        "title": "TokenRevoked",
+        "type": "object"
+      },
+      "WorkspaceStatus": {
+        "description": "FR-9's readable product data for one workspace.",
+        "properties": {
+          "core_contract_version": {
+            "title": "Core Contract Version",
+            "type": "integer"
+          },
+          "core_version": {
+            "title": "Core Version",
+            "type": "string"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/ModuleStatus"
+            },
+            "title": "Modules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "core_version",
+          "core_contract_version",
+          "modules"
+        ],
+        "title": "WorkspaceStatus",
+        "type": "object"
+      },
+      "WorkspaceStatusInput": {
+        "description": "No fields: the workspace comes from the context.",
+        "properties": {},
+        "title": "WorkspaceStatusInput",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "rheoStream operations",
+    "version": "0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/operations/core.settings.set": {
+      "post": {
+        "operationId": "core.settings.set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "type": "null"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/SettingWritten"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.settings.set (mutate)"
+      }
+    },
+    "/api/v1/operations/core.settings.set_member": {
+      "post": {
+        "operationId": "core.settings.set_member",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "type": "null"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/SettingWritten"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.settings.set_member (mutate)"
+      }
+    },
+    "/api/v1/operations/core.token.issue": {
+      "post": {
+        "operationId": "core.token.issue",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenIssueInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "type": "null"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/TokenIssued"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.token.issue (mutate)"
+      }
+    },
+    "/api/v1/operations/core.token.revoke": {
+      "post": {
+        "operationId": "core.token.revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRevokeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "type": "null"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/TokenRevoked"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.token.revoke (mutate)"
+      }
+    },
+    "/api/v1/operations/core.workspace.status": {
+      "post": {
+        "operationId": "core.workspace.status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceStatusInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "type": "null"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/WorkspaceStatus"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.workspace.status (read)"
+      }
+    },
+    "/api/v1/operations/spike.note.add": {
+      "post": {
+        "operationId": "spike.note.add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteAddInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "type": "null"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/NoteAdded"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "spike.note.add (mutate)"
+      }
+    },
+    "/api/v1/operations/spike.note.commit_early": {
+      "post": {
+        "operationId": "spike.note.commit_early",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteCommitEarlyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "type": "null"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/NoteAdded"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "spike.note.commit_early (mutate)"
+      }
+    },
+    "/api/v1/operations/spike.note.list": {
+      "post": {
+        "operationId": "spike.note.list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "type": "null"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/NoteList"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "spike.note.list (read)"
+      }
+    }
+  },
+  "x-rheo-generated": "generated by `make codegen`; do not edit"
+}
