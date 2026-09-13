@@ -63,8 +63,9 @@ os.environ["RHEO__storage__control_database"] = _control_db
 os.environ["RHEO_DATA_ROOT"] = str(_session_tmp_data_root)
 
 from harness.settings_keys import register_harness_keys  # noqa: E402
+from rheo_core.audit import reset_sinks  # noqa: E402
 from rheo_core.migrations.orchestrator import migrate_control  # noqa: E402
-from rheo_core.modules import load_modules  # noqa: E402
+from rheo_core.modules import load_modules, reset_surfaces  # noqa: E402
 from rheo_core.operations.registry import REGISTRY  # noqa: E402
 from rheo_core.refs import uuid7  # noqa: E402
 from rheo_core.refs.resolver import RESOLVERS  # noqa: E402
@@ -320,6 +321,16 @@ def install_spike(cluster: ClusterSession) -> Iterator[InstallSpike]:
     record_types = frozenset(RESOLVERS.record_types())
     yield _install
     _forget_registrations(operations, record_types)
+    # The registries are only two of the four process-wide tables this fixture
+    # writes. C1 shipped these resets for exactly this reason, and the docstring
+    # above already names them; not calling them left a real leak. The surface
+    # one is observable through a shipped route: `/internal/v1/routing` reported
+    # a `spike` module surface for the rest of the pytest session, in every file,
+    # after any install_spike test. Nothing asserts against it today, but C4
+    # consumes module_surfaces() and would have been able to pass on a phantom
+    # surface even with D-6's wiring broken -- a gate that cannot fail.
+    reset_surfaces()
+    reset_sinks()
 
 
 def run_pytest_in_subprocess(
