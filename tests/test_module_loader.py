@@ -39,7 +39,7 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
-from rheo_core.audit import NULL_SINK, reset_sinks, sink_for
+from rheo_core.audit import reset_sinks, sink_for
 from rheo_core.modules import (
     ALLOWLIST_VARIABLE,
     ENTRY_POINT_GROUP,
@@ -257,7 +257,7 @@ def test_no_module_loads_unless_it_is_named(
     assert registry.names() == frozenset()
     assert resolvers.record_types() == frozenset()
     assert module_surfaces() == {}
-    assert sink_for(MODULE_ID) is NULL_SINK
+    assert sink_for(MODULE_ID) is None
 
 
 def test_a_named_module_registers_its_operations(
@@ -281,7 +281,7 @@ def test_a_named_module_registers_its_operations(
     assert resolvers.lookup(MODULE_ID, RECORD_TYPE) is _resolver
     # The sink lands under the manifest's own module id, and never under ``core``.
     assert sink_for(MODULE_ID) is SINK
-    assert sink_for("core") is NULL_SINK
+    assert sink_for("core") is None
 
 
 def test_only_the_named_module_loads_when_two_are_discoverable(
