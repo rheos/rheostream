@@ -76,6 +76,22 @@ REQUIRED_CONTENT = {
     "rename rejection 1 — the name is pinned twice": "pinned twice",
     "rename rejection 2 — the sibling probes": "sibling probes",
     "rename rejection 3 — the hit is a false positive": "false positive",
+    # The probes' second bound. The naming limitation above and this one fail
+    # differently: an entrant can defeat the first by choosing a name and the second
+    # by choosing a file, and only the first is obvious from reading a probe.
+    "the probes' reach, bounded to the two stubs": "stayed stubs",
+    # The architecture amendment names the read and neither writer, so an entrant
+    # working from that document alone is never told a visit must be recorded.
+    "the amendment's unnamed writers, to be carried across": "carry it across",
+    # The two substrate declarations added after the first four. Each shrinks a
+    # cohort's task, which is the whole reason section 5 is itemised.
+    "the operation_id foreign keys, declared": "foreign keys",
+    "the envelope's pre-decided delivery shape": "per consumer and per attempt",
+    # The process record. A boundary note that states how it was checked is worth
+    # more than one that states only what it found, and this is the half a freeze
+    # would otherwise have to take on trust.
+    "no per-chunk cold diff review, stated": "No per-chunk cold diff review",
+    "the different-model commitment, not kept": "commitment made and not kept",
 }
 
 

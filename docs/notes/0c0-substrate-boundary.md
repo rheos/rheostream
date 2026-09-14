@@ -108,6 +108,17 @@ Everything below is 0c1's to build. None of it exists in the substrate.
   enqueue path that marks work due, the visitor that records its visit, and the worker
   that sweeps idle engines between passes are 0c1's.
 
+**The ratified text does not say two of those three exist.** The architecture amendment
+in `docs/architecture/intake-and-events.md` names `workspaces_with_due_work`, the read,
+and names neither `mark_work_due` nor `record_visit`. An entrant working from that
+document alone is told how to discover due work and is never told that an enqueue has to
+mark it or that a visit has to be recorded — and a visitor that never records its visit
+still works, quietly, by re-visiting on every pass. The gap is recorded here rather than
+closed there deliberately: that amendment's line range is fixed by this run's acceptance
+criteria, and widening it would pull a guarded token into the scanned diff for the reason
+section 6(a) gives. So this note is where an entrant learns it, and whoever briefs a
+cohort has to carry it across rather than assume the architecture document carries it.
+
 A visitor must build **its own exclusion**. The index is a hint: two readers may
 observe the same `due_at` and both visit the same workspace. Whether a unit of work
 actually runs is decided by the workspace's own tables and by the visitor's own
@@ -146,10 +157,12 @@ than something a comparison discovers afterwards.
 | The due-work index: `workspace_work_due`, its three functions, and `work.due_reconcile_seconds` | discovery — **absent** from 0c1's scored list | Workspace discovery is answered for every entrant identically, so the comparison is of worker behaviour rather than of who invented a better scan. Recorded as **issue #46**. |
 | `consumer_processed`'s composite primary key on `(consumer_id, event_id)` | 11 | The idempotency ledger's uniqueness is a schema fact rather than something an entrant must get right in application code. |
 | `operation`'s `operation_terminal_check_required` check constraint | 13 | A `succeeded` operation is unrepresentable without a recorded terminal check. The schema enforces the half of criterion 13 that would otherwise be an entrant's invariant to maintain. |
+| `job.operation_id` and `audit_record.operation_id` as **foreign keys** to `core.operation.id` | 13, and through the two referring tables 12 and 14 | The ratified rows give both as `operation_id uuid null` and name no foreign key; the substrate adds one to each. Referential integrity between a unit of work and the operation it belongs to is therefore the database's, not an invariant a cohort maintains — and neither row can be written before its operation row exists, an ordering the schema now imposes rather than one an entrant chooses. |
+| `EventEnvelope`'s `consumer_id` and `attempt` fields | 11 | The ratified `outbox_event` row carries neither: both are delivery context, read off the `event_delivery` row. Putting them in the frozen envelope decides that an event reaches a consumer **per consumer and per attempt**, with the attempt number visible to the handler — which is the fan-out and redelivery shape 0c2 would otherwise have chosen for itself. The delivery state machine is still the cohort's; the shape it has to fit is not. |
 
-Two things to read alongside this table, both recorded in section 6 because they bear
-on how far the boundary guard can be trusted: the guard's actual mechanism, and one
-bounded limitation in criterion-12's coverage.
+Three things to read alongside this table, all recorded in section 6 because they bear
+on how far the boundary guard can be trusted: the guard's actual mechanism, two bounded
+limitations in the absence coverage, and how much independent review this record has had.
 
 ---
 
@@ -236,18 +249,32 @@ twelve times out of twelve, by construction, and that is a precondition of the
 deliverable rather than a surprise: a record whose job is to name what was cut has to
 name the tokens.
 
-### (b) One bounded limitation in criterion-12's coverage
+### (b) Two bounded limitations in the absence coverage
 
-Criterion 12's coverage rests on tokens 1 and 2, `acquire_lease` and `worker_loop`.
-Both assume an entrant names things `verb_noun` the way this repository does —
-`open_unit_of_work`, `install_sink`. **An entrant that takes a lease inline, or under a
-differently-named function, would trip neither token.**
+**The first is naming.** Criterion 12's coverage rests on tokens 1 and 2,
+`acquire_lease` and `worker_loop`. Both assume an entrant names things `verb_noun` the
+way this repository does — `open_unit_of_work`, `install_sink`. **An entrant that takes
+a lease inline, or under a differently-named function, would trip neither token.**
 
-This is recorded as a known limitation, not filed as a defect, and the reason is that
-the tokens which would close the gap are exactly the four that measurement disqualifies
-above. It sits here beside the two substrate declarations of section 5 — the retained
-audit protocol (**issue #45**) and the due-work index (**issue #46**) — so that a
-cohort freeze inherits a **known limitation rather than a false guarantee**.
+**The second is reach, and it is a different failure.** The two probes carrying criteria
+11 and 12 in `tests/test_absent_behaviour.py` are token searches over the substrate's own
+two stub files and nothing else — criterion 11's reads
+`packages/core/src/rheo_core/work/__init__.py`, criterion 12's reads
+`apps/worker/src/rheo_app_worker/__init__.py`, one path each. So an entrant that builds
+outbox delivery in a **new** file, `rheo_core/work/delivery.py` say, or a worker in
+`rheo_app_worker/main.py`, **trips neither probe** — not because it was named cleverly,
+but because neither file is read. What those two probes assert is that these two stubs
+stayed stubs. They do not scan the tree, and nothing in this note should be read as
+though they did.
+
+Both are recorded as known limitations, not filed as defects. For the first, the tokens
+that would close it are exactly the four that measurement disqualifies above. For the
+second, a tree-wide scan is the boundary guard's job rather than the harness's, and
+that guard's own reach is stated in (a) — the probes are a check on the declared stubs,
+and the guard is the check on everything else. They sit here beside the substrate
+declarations of section 5 — the retained audit protocol (**issue #45**) and the
+due-work index (**issue #46**) — so that a cohort freeze inherits **known limitations
+rather than a false guarantee**.
 
 ### (c) The two self-declared exemptions to this guard
 
@@ -285,6 +312,30 @@ reasons:
    **behaviour**; this probe asserts that behaviour's **absence**. The token appears in
    the tree precisely because something is checking that the thing it names is not
    there. Silencing that by renaming would hide the check rather than the crossing.
+
+### (d) How much independent review this record has had
+
+A boundary record is worth what the review behind it is worth, so this is stated plainly
+rather than left for a later reader to infer from what is missing.
+
+**No per-chunk cold diff review ran anywhere in this run.** Each chunk was verified, and
+that verification was done by the same orchestrating context that had directed the chunk.
+It was thorough; it was not independent.
+
+**This run also recorded a commitment to route the cold review of its two highest-risk
+items to a model different from the one that wrote them, and did not keep it.** The
+commitment was made on evidence rather than taste: across earlier runs in this repository
+a long series of same-model reviews passed a defect that a single deliberately
+different-model pass then caught. In the event, every coder and every cold reviewer here
+ran on one model, so no review was ever the different-model read the commitment
+described.
+
+A different-model pass did run at the end, over the whole diff, and found the two
+highest-risk chunks sound. That discharges the gap **after the fact**, which is not the
+same as having met it: one read at the end is not a read per chunk, where a defect is
+cheapest to catch and where the review was promised. It is recorded as a
+**commitment made and not kept**, because a cohort freeze weighing this note should know
+how it was checked and not only what it claims.
 
 ---
 
