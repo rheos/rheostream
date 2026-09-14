@@ -21,9 +21,13 @@ updates:
       day: "monday"
     open-pull-requests-limit: 3
     ignore:
-      # ESLint 10 breaks eslint-config-next's @rushstack/eslint-patch, which
-      # recognises a fixed set of ESLint internals (PR #28). Drop this once
-      # eslint-config-next supports v10. Minor and patch still flow.
+      # ESLint 10 is still blocked, but no longer for the reason PR #28 hit.
+      # That was eslint-config-next 15's @rushstack/eslint-patch; since the
+      # Next 16 upgrade (#53) the blocker is eslint-plugin-react 7.37.5, a
+      # transitive of eslint-config-next 16, whose declared peer range is
+      # "^3 || ^4 || ^5 || ^6 || ^7 || ^8 || ^9.7" and which crashes in
+      # testReactVersion under 10. Retest when that plugin ships ESLint 10
+      # support. Minor and patch still flow.
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
     groups:
