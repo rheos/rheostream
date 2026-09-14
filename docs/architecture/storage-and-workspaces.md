@@ -238,7 +238,7 @@ Three layers, each with a defined owner:
 | --- | --- | --- |
 | `StorageBackend` protocol | `packages/core` | `open_unit_of_work(ctx) -> UnitOfWork`, `provision(workspace)`, `migrate(workspace, chains)`, `advisory_lock(key)`, capability flags (`supports_vector`, `supports_lexical`, `supports_skip_locked`). |
 | `UnitOfWork` | `packages/core` | One transaction against one workspace database. Carries the session, the outbox writer, the audit writer, and commit/rollback. Every service operation runs inside exactly one. |
-| Repository protocols | each module, in `packages/contracts` for shared ones and in the module for private ones | Typed methods (`OpportunityRepository.get(id)`, `.list(filter)`, `.save(record)`) returning contract models, never rows. |
+| Repository protocols | each module, in `packages/contracts` for shared ones and in the module for private ones | Typed methods (`OpportunityRepository.get(id)`, `.list(filter)`, `.save(record)`) returning contract models, never rows. A `save` of a record type carrying `revision` is a **compare-and-set**: `... WHERE id = $id AND revision = $expected`, with the increment in the same statement, and zero rows affected raises `StaleRecord`, which the dispatcher surfaces as the refusal `record_stale`. See [below](#revision-is-a-compare-and-set-not-a-counter). |
 
 The reference implementation is SQLAlchemy 2.x Core with explicit mapped classes and psycopg 3.
 Raw SQL is allowed inside a repository implementation and nowhere else; a static check greps for
@@ -248,10 +248,37 @@ facade imports a database driver or a repository directly" is the same check app
 
 The behavioural test suite (FR 8) is written against the protocols with a `backend` fixture.
 Release one runs it against Postgres only. D2 asks the seam to be provable later, so the suite
-must contain the cases where backends are known to differ: concurrent `SKIP LOCKED` leasing,
+must contain the cases where backends are known to differ: concurrent compare-and-set on a
+`revision` column, concurrent `SKIP LOCKED` leasing,
 serialization failures under concurrent receipt insert, advisory locks, generated `tsvector`
 columns, vector distance ordering, and `ON CONFLICT` semantics. Each is a named test today so the
 future SQLite adapter has a contract to fail against rather than a vague promise.
+
+### `revision` is a compare-and-set, not a counter
+
+`revision` is not bookkeeping. It is the optimistic-concurrency token the approval binding rests
+on: `RecordStateGuard` refuses an approved destructive, external, or financial operation when the
+subject's current revision differs from the `approval.subject_revision` recorded when the person
+looked at it ([guards](confirmation-and-safety.md#execution-guards)). That is the mechanism
+stopping an approved effect from landing on a record that changed after it was approved.
+
+"Incremented on every write" implemented as a plain `UPDATE ... SET revision = revision + 1`
+under `READ COMMITTED` is a lost update: two writers read *n*, both write, one write is discarded,
+and the revision lands at *n+1* either way. The guard then compares equal against a revision that
+does not describe the state the approver saw. The failure is silent, and it is in the safety path.
+
+So the rule belongs to the repository protocol and not to each module's memory of it: every write
+of a record type carrying `revision` names the revision it read, and a write that matches nothing
+is a refusal rather than a no-op. A module cannot opt out, because a module does not write SQL
+outside its repository.
+
+An immutable type (an observation, a receipt, a qualification) carries no `revision` column and
+reports the constant `1`, so the guard on it can only fail by deletion
+([identifiers](identifiers.md#resolution-under-permission)).
+
+Release one has no subject for this: the six core tables carry no mutable domain record type, so
+the first repository it binds is the first one 1a writes. It is stated here rather than there so
+that the first module author inherits the rule instead of inventing it.
 
 ## Retrieval adapter (D9, FR 30)
 
