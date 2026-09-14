@@ -42,7 +42,7 @@ share one image.
 | Process | Directory | Serves | Notes |
 | --- | --- | --- | --- |
 | `core` | `apps/core` | HTTP API on the `api` surface, MCP on the `mcp` surface, identity endpoints under `/auth/*` on every application host, the internal API for the web tier | FastAPI under uvicorn. Holds every module's Python package. |
-| `worker` | `apps/worker` | Nothing over HTTP | Same image as `core`, worker entry point. Polls every active workspace's `core.job` and `core.event_delivery` tables. May run inside the `core` process in development (`--with-worker`). |
+| `worker` | `apps/worker` | Nothing over HTTP | Same image as `core`, worker entry point. Visits only the workspaces the control plane's due-work index (`control.workspace_work_due`) reports as due, never every active workspace in turn, and serves their `core.job` and `core.event_delivery` tables ([jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16)). May run inside the `core` process in development (`--with-worker`). |
 | `web` | `apps/web` | The application shell, the workspace switcher, and every module's screens | Next.js under `next start`. No database access; every read and write goes to `core`'s internal API. No platform-only feature (FR 48, criterion 23). |
 | `postgres` | `deploy/` | The control-plane database and every workspace database | A standard image with pgvector and `pg_trgm` available (requirements assumption). |
 | reverse proxy | operator-provided | TLS, host routing | Generic: any proxy that can route by host and path and terminate a wildcard certificate. `deploy/` ships a placeholder configuration, never a product name (D10). |

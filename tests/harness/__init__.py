@@ -6,12 +6,35 @@ will find none of it.
 
 ``tests/`` has no ``__init__.py``, so pytest puts ``tests/`` itself on ``sys.path`` and
 test modules import this package as ``harness`` (``from harness import ...``).
+
+The three absence probes are re-exported here rather than left to
+``from harness.absence import ...``, because a probe written without its mandatory
+positive control must not be expressible and the shortest import is the one a later
+author will reach for.
 """
 
 import os
 from pathlib import Path
 
 import pytest
+
+from harness.absence import (
+    Covers,
+    absent_attribute,
+    absent_call,
+    absent_token,
+    covered_by_probe,
+)
+
+__all__ = [
+    "RHEO_ENV_PREFIX",
+    "Covers",
+    "absent_attribute",
+    "absent_call",
+    "absent_token",
+    "covered_by_probe",
+    "isolate_rheo_environment",
+]
 
 RHEO_ENV_PREFIX = "RHEO_"
 

@@ -18,11 +18,16 @@ import { defineConfig } from "vitest/config";
  *   neither: it is one Vite option, not `@vitejs/plugin-react`.
  *
  * That second bullet used to read "nothing renders a component, so no DOM
- * environment and no React transform are needed". Run 0v's
- * `src/app/spike/page.test.tsx` is the first `.tsx` test in this repository and
- * the first thing here that executes JSX, so half of that stopped being true. The
- * half that stayed true is worth keeping: `environment: "node"` is still correct,
- * because nothing needs a DOM — `renderToStaticMarkup` does not.
+ * environment and no React transform are needed". A throwaway vertical-slice
+ * surface briefly made the second half of that untrue by adding this
+ * repository's first `.tsx` test; that surface was deleted again at 0c0's branch
+ * cut, so no test under `include` executes JSX today. **The `esbuild.jsx` block
+ * below is retained for the next `.tsx` test this repository writes, and is
+ * inert until there is one** — it costs nothing while no test executes JSX
+ * (measured; run 0v's finding F22, cited again below), and re-deriving it from a
+ * `ReferenceError` later would cost more than keeping it. The half that never
+ * stopped being true is worth keeping too: `environment: "node"` is still
+ * correct, because nothing needs a DOM — `renderToStaticMarkup` does not.
  *
  * **Why `esbuild.jsx` is set here rather than in `tsconfig.json`.** Vite copies
  * the nearest tsconfig's `compilerOptions.jsx` into its esbuild call unless this
@@ -51,7 +56,7 @@ import { defineConfig } from "vitest/config";
  * over this default.
  */
 export default defineConfig({
-  // The automatic JSX runtime, for the one test that executes JSX. See the
+  // The automatic JSX runtime, kept for the next test that executes JSX. See the
   // docstring above: without it esbuild emits classic `React.createElement`, and
   // nothing in `apps/web` imports the `React` namespace.
   esbuild: { jsx: "automatic", jsxImportSource: "react" },

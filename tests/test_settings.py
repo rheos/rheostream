@@ -59,8 +59,9 @@ PRODUCTION_KEYS = {
     "storage.cluster_dsn_ref": "secret://env/RHEO_CLUSTER_DSN",
     "storage.control_database": "rheo_control",
     "storage.template_database": "template1",
-    "storage.pool_cache_size": 32,
+    "storage.pool_cache_size": 16,
     "storage.pool_max_connections": 5,
+    "storage.pool_idle_close_seconds": 300,
     "profile": "development",
     "identity.token_max_days.cli": 90,
     "identity.token_max_days.mcp": 30,
@@ -88,6 +89,7 @@ PRODUCTION_KEYS = {
     "identity.providers.github.client_id": "",
     "identity.providers.github.client_secret_ref": "",
     "internal.secret_ref": "",
+    "work.due_reconcile_seconds": 900,
 }
 
 
@@ -155,6 +157,26 @@ def test_the_registry_declares_every_production_key_and_its_shape() -> None:
 
 def test_defaults_toml_loads_from_the_installed_package() -> None:
     assert load_package_defaults() == PRODUCTION_KEYS
+
+
+def test_the_reconcile_floor_exceeds_the_pool_idle_window() -> None:
+    """AC 18, the packaged-defaults half.
+
+    A reconcile pass that came round faster than ``storage.pool_idle_close_seconds``
+    would re-touch every cached engine inside its idle window, so nothing would ever
+    be reclaimed by idleness and the count cap would be the only bound left — the
+    thrash issue #12 removed. The relation is a property of the shipped pair, so it is
+    asserted on the values, not on a hard-coded 900 and 300.
+
+    This is only half of AC 18: both keys are deployment-scope, so an operator can
+    break the relation through ``RHEO__work__…`` or ``RHEO__storage__…`` without this
+    test noticing. ``_check_reconcile_interval`` in ``rheo doctor`` is the half that
+    reads the *resolved* settings.
+    """
+    reconcile = PRODUCTION_KEYS["work.due_reconcile_seconds"]
+    idle_close = PRODUCTION_KEYS["storage.pool_idle_close_seconds"]
+    assert isinstance(reconcile, int) and isinstance(idle_close, int)
+    assert reconcile > idle_close, (reconcile, idle_close)
 
 
 def test_identity_check_names_an_undeclared_toml_key() -> None:
@@ -298,7 +320,7 @@ def test_deployment_scope_row_is_ignored_and_logged(
 ) -> None:
     caplog.set_level(logging.WARNING, logger="rheo_core.settings")
     rows = Rows(workspace={"storage.pool_cache_size": "1"})
-    assert resolve(workspace_id=WORKSPACE, source=rows)["storage.pool_cache_size"] == 32
+    assert resolve(workspace_id=WORKSPACE, source=rows)["storage.pool_cache_size"] == 16
     [record] = ignored_records(caplog)
     assert record.setting_key == "storage.pool_cache_size"  # type: ignore[attr-defined]
     assert record.state == "setting_scope"  # type: ignore[attr-defined]
@@ -466,7 +488,7 @@ def test_resolved_settings_is_a_frozen_typed_mapping(data_root: Path) -> None:
     handed_out.append("mutated")
     assert resolved[HARNESS_FLOOR_UNION] == ["harness.confirm"]
 
-    assert resolved.get_int("storage.pool_cache_size") == 32
+    assert resolved.get_int("storage.pool_cache_size") == 16
     assert resolved.get_str("profile") == "test"
     assert resolved.get_bool(HARNESS_FLOOR_AND) is False
     assert resolved.get_list(HARNESS_FLOOR_UNION) == ["harness.confirm"]

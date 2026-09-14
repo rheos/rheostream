@@ -8,8 +8,10 @@
 # this file and schema.py, and no run declares a key that only a later run reads. C2
 # (run 0b1) declared the first eight keys below; C6 (run 0b2) added the sixteen
 # routing.* keys under them, and C7a (run 0b2) adds the eight identity.*/internal.*
-# keys below those, so this file carries thirty-two. Harness keys (tests/harness/) are
-# registry-only by design and never appear here.
+# keys below those, for thirty-two; C4 (run 0c0) adds storage.pool_idle_close_seconds,
+# for thirty-three; C7 (run 0c0) adds work.due_reconcile_seconds, so this file carries
+# thirty-four. Harness keys (tests/harness/) are registry-only by design and never
+# appear here.
 
 profile = "development"
 
@@ -17,8 +19,9 @@ profile = "development"
 cluster_dsn_ref = "secret://env/RHEO_CLUSTER_DSN"
 control_database = "rheo_control"
 template_database = "template1"
-pool_cache_size = 32
+pool_cache_size = 16
 pool_max_connections = 5
+pool_idle_close_seconds = 300
 
 [identity.token_max_days]
 cli = 90
@@ -79,3 +82,11 @@ client_secret_ref = ""
 # `secret://env/RHEO_INTERNAL_SECRET` reference into deployment settings.
 [internal]
 secret_ref = ""
+
+# The due-work index's reconcile floor (C7, run 0c0). It must exceed
+# storage.pool_idle_close_seconds (300) or a reconcile pass re-touches every engine
+# inside the idle window and the count cap goes back to being the only bound; `rheo
+# doctor` checks the relation on the resolved settings, because both keys are
+# deployment-scope and either one can be overridden.
+[work]
+due_reconcile_seconds = 900

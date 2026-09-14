@@ -16,7 +16,9 @@ the TOML value are the same value in two places, which the identity check also a
 
 C2 (run 0b1) declared eight production keys; C6 (run 0b2) added the sixteen
 ``routing.*`` keys below them, for twenty-four; C7a (run 0b2) adds the eight
-``identity.*``/``internal.secret_ref`` keys below those, for thirty-two.
+``identity.*``/``internal.secret_ref`` keys below those, for thirty-two; C4 (run 0c0)
+adds ``storage.pool_idle_close_seconds``, for thirty-three, and C7 (run 0c0) adds
+``work.due_reconcile_seconds``, for thirty-four.
 ``api.cors_origins`` and ``modules.installed`` (the runs that read them) are not
 declared here: a key with no reader is machinery with no caller, and the
 registry/TOML identity check holds per merge SHA — every later chunk that adds a key
@@ -388,13 +390,31 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         explicit_per_workspace=False,
         default="template1",
     ),
+    # The hard ceiling on cached engines. Its product with
+    # ``storage.pool_max_connections``, plus the connections the backend reserves
+    # outside the cache (its control engine, itself sized at
+    # ``storage.pool_max_connections``), is this process's worst-case connection count,
+    # and core and worker are separate processes each holding their own: the default
+    # pair is 16 * 5 + 5 = 85 per process. The previous default of 32 put that at 165
+    # against a stock Postgres ``max_connections`` of 100 (issue #12).
     KeySpec(
         key="storage.pool_cache_size",
         type=ValueType.INT,
         scope=Scope.DEPLOYMENT,
         floor=None,
         explicit_per_workspace=False,
-        default=32,
+        default=16,
+    ),
+    # The bound that normally binds. An engine untouched this long is disposed, so a
+    # caller that walks every workspace reclaims what nobody wanted rather than
+    # evicting what it is about to need.
+    KeySpec(
+        key="storage.pool_idle_close_seconds",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=300,
     ),
     KeySpec(
         key="storage.pool_max_connections",
@@ -649,6 +669,20 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default="",
+    ),
+    # The due-work index's reconcile floor: the longest a lost mark can leave work
+    # undiscovered. It must stay **above** ``storage.pool_idle_close_seconds`` (300),
+    # or a reconcile pass re-touches every cached engine inside the idle window and
+    # the count cap becomes the only bound again — the thrash issue #12 removed. Both
+    # keys are deployment-scope, so the relation is checked on the *resolved* settings
+    # by ``rheo doctor`` as well as on the packaged defaults in the test suite.
+    KeySpec(
+        key="work.due_reconcile_seconds",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=900,
     ),
 )
 

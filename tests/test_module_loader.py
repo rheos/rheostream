@@ -8,20 +8,20 @@ does register its operations, its resolvers and its audit sink); and
 declares a ``web`` surface, keyed by that surface's own name rather than by the
 module id.
 
-**The entry point is fabricated, and that is not a shortcut.** At this checkpoint
-nothing in the checkout publishes a real ``rheo.modules`` entry point: the four
-``modules/*`` distributions are empty placeholders (run 0v's finding F17 records the
-same fact), and ``modules/spike`` — the first real one — is C2's. Driving the negative
-direction against that reality would pass **vacuously**, because nothing is discoverable
-to be refused, and the positive direction would have nothing to name at all. So
-``discovered()``'s own ``entry_points`` call is monkeypatched to yield a real
-``EntryPoint`` whose value points back at this test module.
+**The entry point is fabricated, and that is not a shortcut.** Nothing in the
+checkout publishes a real ``rheo.modules`` entry point: the four ``modules/*``
+distributions are empty placeholders (run 0v's finding F17 records the same fact).
+Driving the negative direction against that reality would pass **vacuously**,
+because nothing is discoverable to be refused, and the positive direction would have
+nothing to name at all. So ``discovered()``'s own ``entry_points`` call is
+monkeypatched to yield a real ``EntryPoint`` whose value points back at this test
+module.
 
-The fabricated module id is ``fixture_probe``, never ``spike``: once C2 ships
-``rheo-spike`` under the same entry-point group, a fixture that borrowed its id could
-collide with the real distribution. ``test_the_fixture_id_cannot_collide_with_a_real
-_distribution`` pins that, so the guard survives C2 rather than depending on nobody
-noticing.
+The fabricated ids are ``_probe``-suffixed rather than plausible product names,
+because a fixture that borrowed the id of a distribution shipped later would collide
+with it. ``test_the_fixture_id_cannot_collide_with_a_real_distribution`` pins that
+against the real, unmonkeypatched environment, so the guard survives the first real
+module rather than depending on nobody noticing.
 """
 
 import os
@@ -39,7 +39,7 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
-from rheo_core.audit import NULL_SINK, reset_sinks, sink_for
+from rheo_core.audit import reset_sinks, sink_for
 from rheo_core.modules import (
     ALLOWLIST_VARIABLE,
     ENTRY_POINT_GROUP,
@@ -216,9 +216,12 @@ def test_the_allowlist_variable_is_not_a_settings_override() -> None:
         ("", frozenset()),
         ("   ", frozenset()),
         (",", frozenset()),
-        ("spike", frozenset({"spike"})),
-        (" spike , fixture_probe ", frozenset({"spike", "fixture_probe"})),
-        ("spike,,spike", frozenset({"spike"})),
+        ("surface_probe", frozenset({"surface_probe"})),
+        (
+            " surface_probe , fixture_probe ",
+            frozenset({"surface_probe", "fixture_probe"}),
+        ),
+        ("surface_probe,,surface_probe", frozenset({"surface_probe"})),
     ],
 )
 def test_allowed_module_ids_reads_the_variable(
@@ -254,7 +257,7 @@ def test_no_module_loads_unless_it_is_named(
     assert registry.names() == frozenset()
     assert resolvers.record_types() == frozenset()
     assert module_surfaces() == {}
-    assert sink_for(MODULE_ID) is NULL_SINK
+    assert sink_for(MODULE_ID) is None
 
 
 def test_a_named_module_registers_its_operations(
@@ -278,7 +281,7 @@ def test_a_named_module_registers_its_operations(
     assert resolvers.lookup(MODULE_ID, RECORD_TYPE) is _resolver
     # The sink lands under the manifest's own module id, and never under ``core``.
     assert sink_for(MODULE_ID) is SINK
-    assert sink_for("core") is NULL_SINK
+    assert sink_for("core") is None
 
 
 def test_only_the_named_module_loads_when_two_are_discoverable(
@@ -446,11 +449,12 @@ def test_validate_accepts_the_fixture() -> None:
 
 
 def test_the_fixture_id_cannot_collide_with_a_real_distribution() -> None:
-    """``modules/spike`` (C2) publishes ``spike`` under the same entry-point group.
+    """The first real module distribution will publish under the same entry-point
+    group as these fixtures.
 
     This walks the *real* environment, unmonkeypatched, and asserts only that nothing
     claims the fabricated ids — not that the group is empty, which would go red the
-    moment C2 installs ``rheo-spike``.
+    moment a real module is installed.
     """
     fabricated = {MODULE_ID, SURFACE_ONLY_ID, NO_SURFACE_ID}
     assert fabricated.isdisjoint({entry.name for entry in discovered()})

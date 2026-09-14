@@ -10,6 +10,9 @@
 - [Architecture](architecture/README.md): future contracts, designs, and decisions.
 - [Notes](notes/0v-vertical-slice-findings.md): findings from build spikes, each
   with its evidence and a proposed disposition against the documents above.
+- [Substrate boundary](notes/0c0-substrate-boundary.md): what the durable-work
+  substrate provides, what each later run builds on top of it, and the tokens that
+  guard the line between them.
 
 The idea document is the starting point and the requirements documents propose
 closures for the decisions it left open. Neither requirements document is

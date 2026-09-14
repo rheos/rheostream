@@ -113,6 +113,9 @@ PUBLIC_PATHS = (
     # revision are public source, not runtime data.
     "packages/core/src/rheo_core/config/defaults.toml",
     "packages/core/src/rheo_core/migrations/core/versions/0001_core_schema.py",
+    # 0c0: each chain's second revision, public source by the same reasoning.
+    "packages/core/src/rheo_core/migrations/core/versions/0002_durable_work.py",
+    "packages/core/src/rheo_core/migrations/control/versions/0002_work_index.py",
 )
 
 

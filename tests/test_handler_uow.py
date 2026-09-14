@@ -8,9 +8,8 @@ workspace, not by calling a handler directly: the claim is about what the *dispa
 passes, and a direct call would prove only that the subclass raises.
 
 Each test registers its own handler under ``core.settings.set`` on a **local**
-``OperationRegistry``, so the process-wide registry is never touched. No ``spike.*``
-name is registered anywhere here: ``modules/spike`` does not exist until C2, and this
-chunk's checkpoint runs before it.
+``OperationRegistry``, so the process-wide registry is never touched and nothing
+registered here is visible to a file that runs later in the same pytest process.
 
 What is deliberately **not** asserted: that a handler cannot write at all.
 ``view.connection`` is inherited and hands back a live ``Connection``, so
