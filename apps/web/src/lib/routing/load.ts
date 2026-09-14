@@ -44,7 +44,7 @@ export const INTERNAL_SESSION_PATH = "/internal/v1/session";
  *
  * A prefix rather than a whole path because the route is
  * `POST /internal/v1/operations/{name}` and the operation name is the caller's:
- * `lib/spike/client.ts` appends one encoded segment and spells no route itself.
+ * a client appends one encoded segment and spells no route itself.
  * The third internal endpoint, and the same kind of constant as the two above —
  * served by the internal listener, never reachable from a browser, identical in
  * both topologies, so a constant rather than an `urlFor` call.
@@ -61,9 +61,10 @@ export const INTERNAL_OPERATIONS_PATH = "/internal/v1/operations";
  * The generated document's own path-key template (0v).
  *
  * `rheo openapi` emits one concrete path per registered operation, keyed by the
- * bearer `api` surface's prefix — so `spike.note.add` is the literal key
- * `/api/v1/operations/spike.note.add` — and `openapi-typescript` turns those keys
- * into `paths` in `src/generated/api-types.ts`. A typed client indexes them.
+ * bearer `api` surface's prefix — so `core.workspace.status` is the literal key
+ * `/api/v1/operations/core.workspace.status` — and `openapi-typescript` turns
+ * those keys into `paths` in `src/generated/api-types.ts`. A typed client indexes
+ * them.
  *
  * It is a **type**, not a value, and it is deliberately here rather than beside
  * the client that uses it. `scripts/check_routing_literals.py` matches `/api/` in
@@ -103,8 +104,8 @@ export function internalApiCredentials(): { baseUrl: string; secret: string } | 
  * A third base URL, and none of the three is interchangeable with another:
  * `RHEO_CORE_INTERNAL_API_URL` is the internal listener (8100),
  * `RHEO_CORE_INTERNAL_URL` is 0a's name for the public listener's `/healthz`, and
- * this is the public listener (8000) as a **forward target** for `/auth/*`. The
- * spike's workspace route handler is its only caller: `/auth/*` is served by
+ * this is the public listener (8000) as a **forward target** for `/auth/*`. A
+ * route handler that forwards is its only kind of caller: `/auth/*` is served by
  * `core`'s public listener while the browser's origin is Next.js, so a relative
  * `/auth/*` post from the browser reaches Next and 404s (finding F16) and only a
  * server-side forward can get there.
