@@ -7,6 +7,11 @@ are the only place control-plane SQL lives and ``text(`` stays greppable. The
 ``control`` migration chain imports these objects rather than re-declaring the columns,
 and its first revision creates all ten tables whole and is never edited afterwards.
 
+The control plane's eleventh table, ``workspace_work_due``, is deliberately **not**
+here: it is declared in ``work_index_tables.py`` under its own ``MetaData`` and created
+by the chain's second revision, ``0002_work_index``. Adding it to this module would
+silently change what that frozen first revision creates.
+
 Six of the ten (``session``, ``session_secret``, ``session_grant``, ``access_token``,
 ``access_token_operation``, ``identity_provider``) are DDL-only at this run's merge
 SHA: their repository functions arrive in 0b2 with their callers and tests.

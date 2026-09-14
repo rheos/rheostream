@@ -16,6 +16,9 @@ startup sequence through the FastAPI lifespan.
   85 connections per process against a ``max_connections`` of 100 carries one process
   and not the two release one ends up with. That is the truthful reading of the
   shipped defaults, not a fixture to size around.
+- ``doctor``'s reconcile-interval line names both keys and both resolved values, which
+  is the half of AC 18 a packaged-defaults assertion cannot reach: either key can be
+  overridden at deployment scope.
 - The lifespan runs startup (control chain, active workspaces, the registry) and
   ``/healthz`` answers inside it with no database call of its own.
 """
@@ -275,6 +278,14 @@ def test_migrate_and_doctor_return_zero(
         "storage.pool_max_connections",
     ):
         assert lever in budget, (lever, budget)
+
+    # The reconcile interval, AC 18's resolved-settings half. Asserted on the line's
+    # content, not merely that a line printed: a check naming neither key would leave
+    # an operator with a level and nothing to act on.
+    (reconcile,) = [line for line in report if "reconcile interval:" in line]
+    assert reconcile.startswith("ok   "), reconcile
+    assert "work.due_reconcile_seconds = 900" in reconcile, reconcile
+    assert "storage.pool_idle_close_seconds = 300" in reconcile, reconcile
 
     assert not any(line.startswith("FAIL") for line in report)
 

@@ -1,6 +1,6 @@
 """``rheo doctor``: data-root validity, cluster reachability, the control-plane head,
-the connection budget, per-workspace state, and the ``CREATE EXTENSION`` privilege
-report for ``vector`` and ``pg_trgm``.
+the connection budget, the reconcile interval, per-workspace state, and the
+``CREATE EXTENSION`` privilege report for ``vector`` and ``pg_trgm``.
 
 The privilege report is kept in this run per the run spec (Technical Risks item 11):
 nothing in 0b installs an extension, but ``storage.template_database`` and this
@@ -37,6 +37,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from rheo_app_cli.context import data_root
 
 EXTENSIONS: Final = ("vector", "pg_trgm")
+RECONCILE_KEY: Final = "work.due_reconcile_seconds"
+IDLE_CLOSE_KEY: Final = "storage.pool_idle_close_seconds"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +136,40 @@ def _check_connection_budget(backend: PostgresBackend) -> Check:
     return Check(name, "ok", detail)
 
 
+def _check_reconcile_interval() -> Check:
+    """The due-work index's reconcile floor against the pool's idle window.
+
+    AC 18's second half. ``tests/test_settings.py`` asserts the same relation on the
+    *packaged* defaults; this reads the **resolved** settings, because both keys are
+    deployment-scope and an operator overriding either through ``RHEO__work__…`` or
+    ``RHEO__storage__…`` breaks a relation a defaults-only assertion would never see.
+
+    ``warn`` rather than ``FAIL``: the deployment still works, it just stops reclaiming
+    engines by idleness, which is a tuning fault and not a broken install. The detail
+    names both keys and both current values either way, because the level on its own
+    does not tell an operator which number to move.
+    """
+    name = "reconcile interval"
+    try:
+        settings = resolve()
+        reconcile = settings.get_int(RECONCILE_KEY)
+        idle_close = settings.get_int(IDLE_CLOSE_KEY)
+    except SettingsError as refusal:
+        # Only ``SettingsError``: ``resolve()`` has no secret-reference step, so the
+        # ``SecretRefusal`` ``_check_settings`` also catches cannot reach here.
+        return Check(name, "FAIL", f"{refusal.state}: {refusal.detail}")
+    detail = f"{RECONCILE_KEY} = {reconcile}; {IDLE_CLOSE_KEY} = {idle_close}"
+    if reconcile <= idle_close:
+        return Check(
+            name,
+            "warn",
+            f"{detail} — a reconcile pass re-touches every cached engine inside the "
+            f"idle window, so nothing is reclaimed by idleness; raise "
+            f"{RECONCILE_KEY} above {IDLE_CLOSE_KEY}",
+        )
+    return Check(name, "ok", detail)
+
+
 def _check_workspaces(backend: PostgresBackend) -> Iterator[Check]:
     try:
         with backend.control_engine.connect() as connection:
@@ -194,6 +230,7 @@ def doctor(args: argparse.Namespace) -> int:
                 Check("control plane", "FAIL", f"{type(exc).__name__}: {exc}")
             )
         checks.append(_check_connection_budget(backend))
+        checks.append(_check_reconcile_interval())
         checks.extend(_check_workspaces(backend))
         checks.extend(_check_extensions(backend))
     for check in checks:

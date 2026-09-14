@@ -421,8 +421,11 @@ consumer is complete on commit with zero deliveries.
 | `job` | `id uuid`, `kind text`, `state text`, `input jsonb`, `operation_id uuid null`, `depends_on_ref text null`, `attempts`, `max_attempts`, `next_run_at`, `lease_owner null`, `lease_until null`, `cancel_requested boolean`, `last_error null`, `created_at`, `finished_at null` | `state` in `queued`, `leased`, `succeeded`, `failed`, `cancelled`. `input` is the job kind's declared model serialised and never queried. `depends_on_ref` lets the deletion coordinator cancel dependents. |
 | `schedule` | `id`, `module_id`, `name`, `job_kind`, `cron text`, `enabled`, `last_run_at null`, `next_run_at` | Created at module enable from the manifest. |
 
-Worker loop, visiting each active workspace in the registry in turn, with a one-second idle
-interval:
+Discovery is the control plane's due-work index, `control.workspace_work_due`, read through
+`workspaces_with_due_work`: a workspace with no row there is due now, and a row's timestamp is a
+hint bounding how long enqueued work can sit undiscovered, never a grant of exclusive access.
+Worker loop, visiting only the workspaces that index reports as due rather than every active
+workspace in the registry in turn, with a one-second idle interval:
 
 1. Lease: `UPDATE ... SET state = 'leased', lease_owner = $worker, lease_until = now() + 60s`
    for one row selected `FOR UPDATE SKIP LOCKED` where `state = 'queued' AND next_run_at <= now()`

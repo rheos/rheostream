@@ -56,10 +56,15 @@ What it costs, and how the cost is bounded:
   workspaces it is actually serving.
 
   **The worker must not defeat this** ([jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16)):
-  it visits workspaces with due work, not every active workspace, so an idle workspace costs no
-  engine at all. A worker that polled all of them would hold every pool hot and put the count cap
-  back in charge. Release one runs one human's workspaces; the hosted edition revisits the whole
-  scheme ([later phases](later-phases.md#phase-8-the-hosted-edition)).
+  it visits the workspaces the control plane's due-work index (`control.workspace_work_due`)
+  reports as due, not every active workspace, so an idle workspace costs no engine at all. A
+  worker that polled all of them would hold every pool hot and put the count cap back in charge.
+  `work.due_reconcile_seconds` (default 900) has to stay above `pool_idle_close_seconds` for the
+  same reason: a reconcile pass arriving inside the idle window would re-touch every cached
+  engine, and nothing would ever be reclaimed by idleness. `rheo doctor` checks that relation on
+  the resolved settings, since both keys are deployment-scope. Release one runs one human's
+  workspaces; the hosted edition revisits the whole scheme
+  ([later phases](later-phases.md#phase-8-the-hosted-edition)).
 - **`CREATE DATABASE` cannot run inside a transaction.** Provisioning is therefore an idempotent,
   registry-tracked operation with an explicit state machine (below), not a step inside workspace
   creation's transaction.

@@ -55,6 +55,7 @@ pytestmark = pytest.mark.postgres
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 CONTROL_TABLES = {
+    # 0001_control_plane
     "account",
     "identity",
     "workspace",
@@ -65,6 +66,8 @@ CONTROL_TABLES = {
     "access_token",
     "access_token_operation",
     "identity_provider",
+    # 0002_work_index
+    "workspace_work_due",
 }
 CORE_TABLES = {
     # 0001_core_schema
@@ -149,7 +152,7 @@ def test_env_refuses_without_the_orchestrator_connection(
             assert present is None, f"{qualified} appeared in the maintenance database"
 
 
-def test_no_alembic_ini_is_tracked_and_each_chain_knows_one_revision() -> None:
+def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
     tracked = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=_REPO_ROOT,
@@ -160,20 +163,24 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_one_revision() -> None:
     assert not [p for p in tracked if p.endswith("alembic.ini")]
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
-    assert known_revisions(CONTROL_CHAIN) == {"0001_control_plane"}
     # Every revision the script directory holds, not the one the database records:
-    # the core chain ships two files, so this is both ids.
+    # each chain now ships two files, so both of these are both ids.
+    assert known_revisions(CONTROL_CHAIN) == {"0001_control_plane", "0002_work_index"}
     assert known_revisions(CORE_CHAIN) == {"0001_core_schema", "0002_durable_work"}
 
 
 # --- the two chains, exactly ----------------------------------------------------------
 
 
-def test_control_chain_creates_exactly_the_ten_tables(cluster: ClusterSession) -> None:
+def test_control_chain_creates_exactly_the_eleven_tables(
+    cluster: ClusterSession,
+) -> None:
     engine = cluster.backend.control_engine
     assert tables_in(engine, "control") == CONTROL_TABLES | {"alembic_version_control"}
     with engine.connect() as connection:
-        assert recorded_revisions(connection, CONTROL_CHAIN) == {"0001_control_plane"}
+        # The version table holds one row on a linear chain: the head, not every
+        # revision the code carries.
+        assert recorded_revisions(connection, CONTROL_CHAIN) == {"0002_work_index"}
 
 
 def test_core_chain_creates_exactly_the_thirteen_tables(
