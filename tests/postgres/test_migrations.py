@@ -67,15 +67,14 @@ CONTROL_TABLES = {
     "identity_provider",
 }
 CORE_TABLES = {
+    # 0001_core_schema
     "workspace_composition",
     "module_state",
     "module_schema_version",
     "workspace_setting",
     "member_setting",
     "member_credential",
-}
-# Owned by run 0c's chain steps; their presence here would contaminate the trial.
-ZERO_C_TABLES = {
+    # 0002_durable_work
     "outbox_event",
     "event_delivery",
     "consumer_processed",
@@ -83,6 +82,13 @@ ZERO_C_TABLES = {
     "schedule",
     "operation",
     "audit_record",
+}
+# The approval family, owned by a later chain step; their presence here would
+# contaminate the trial. The seven durable-work tables left this set when
+# 0002_durable_work created them and joined CORE_TABLES above — that move is the
+# whole of the change, and this set is narrowed by name rather than by a comparison
+# operator so that a table slipping back in still fails.
+ZERO_C_TABLES = {
     "approval",
     "approval_payload",
     "standing_grant",
@@ -155,7 +161,9 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_one_revision() -> None:
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
     assert known_revisions(CONTROL_CHAIN) == {"0001_control_plane"}
-    assert known_revisions(CORE_CHAIN) == {"0001_core_schema"}
+    # Every revision the script directory holds, not the one the database records:
+    # the core chain ships two files, so this is both ids.
+    assert known_revisions(CORE_CHAIN) == {"0001_core_schema", "0002_durable_work"}
 
 
 # --- the two chains, exactly ----------------------------------------------------------
@@ -168,7 +176,7 @@ def test_control_chain_creates_exactly_the_ten_tables(cluster: ClusterSession) -
         assert recorded_revisions(connection, CONTROL_CHAIN) == {"0001_control_plane"}
 
 
-def test_core_chain_creates_exactly_the_six_tables(
+def test_core_chain_creates_exactly_the_thirteen_tables(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
     _, engine = workspace_engine(cluster, workspace)
@@ -176,7 +184,9 @@ def test_core_chain_creates_exactly_the_six_tables(
     assert names == CORE_TABLES | {"alembic_version_core"}
     assert not names & ZERO_C_TABLES
     with engine.connect() as connection:
-        assert recorded_revisions(connection, CORE_CHAIN) == {"0001_core_schema"}
+        # The version table holds one row on a linear chain: the head, not every
+        # revision the code carries.
+        assert recorded_revisions(connection, CORE_CHAIN) == {"0002_durable_work"}
 
 
 def test_migrate_control_is_idempotent_and_survives_an_existing_database(
@@ -276,11 +286,15 @@ def test_failing_core_revision_marks_unavailable_and_startup_completes(
     assert excinfo.value.workspace_state == "unavailable"
     assert tables_in(broken_engine, "core") == CORE_TABLES | {"alembic_version_core"}
 
-    # Restoring the version row and repairing brings the workspace back.
+    # Restoring the version row and repairing brings the workspace back. The row has
+    # to name the chain's head, because that is what the database physically holds:
+    # this workspace was provisioned against head, so naming an earlier revision would
+    # send repair's upgrade back through 0002's create_all against tables that already
+    # exist.
     with broken_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO core.alembic_version_core (version_num) VALUES (:v)"),
-            {"v": "0001_core_schema"},
+            {"v": "0002_durable_work"},
         )
     repair(broken)
     assert cluster.registry_row(broken).state is WorkspaceState.ACTIVE
@@ -313,11 +327,12 @@ def test_schema_ahead_marks_unavailable_and_refuses_repair(
     assert excinfo.value.state == SCHEMA_AHEAD
     assert cluster.registry_row(workspace).state is WorkspaceState.UNAVAILABLE
 
-    # Once the recorded revision is one the code knows, repair completes.
+    # Once the recorded revision is the head the code carries — the one matching what
+    # the database physically holds — repair completes with nothing left to upgrade.
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE core.alembic_version_core SET version_num = :v"),
-            {"v": "0001_core_schema"},
+            {"v": "0002_durable_work"},
         )
     repair(workspace)
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE

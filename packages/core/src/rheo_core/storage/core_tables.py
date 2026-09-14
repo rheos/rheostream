@@ -5,13 +5,15 @@ Columns are verbatim from ``docs/architecture/storage-and-workspaces.md`` § Com
 and schema versions and § A5. The ``core`` migration chain imports these objects; its
 first revision creates exactly these six and is never edited afterwards.
 
-**Deliberately absent** (the hard 0c boundary — run 0c is a scored benchmark trial and
-its tables are created by later chain steps it owns, never here): ``outbox_event``,
-``event_delivery``, ``consumer_processed``, ``job``, ``schedule``, ``operation``,
-``audit_record``, and the approval family (``approval``, ``approval_payload``,
-``standing_grant``, ``standing_grant_operation``, ``external_action``). The runtime,
-deletion and export tables are likewise later chain steps. A seventh table in this
-module is a boundary violation, not a head start.
+**Deliberately absent** (the hard 0c boundary — a table created here is a table revision
+0001 creates, and that revision is frozen). The seven durable-work tables
+(``outbox_event``, ``event_delivery``, ``consumer_processed``, ``job``, ``schedule``,
+``operation``, ``audit_record``) are declared in ``work_tables.py`` on their own
+``MetaData`` and created by revision ``0002_durable_work``, never here. The approval
+family (``approval``, ``approval_payload``, ``standing_grant``,
+``standing_grant_operation``, ``external_action``) belongs to a later chain step that
+owns it, as do the runtime, deletion and export tables. A seventh table in this module
+is a boundary violation, not a head start.
 """
 
 from typing import Final
