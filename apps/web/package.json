@@ -22,7 +22,7 @@
     "eslint": "^9",
     "eslint-config-next": "^16",
     "openapi-typescript": "7.13.0",
-    "typescript": "^5",
+    "typescript": "^7",
     "vite": "^7",
     "vitest": "^5"
   }
