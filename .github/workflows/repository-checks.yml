@@ -21,6 +21,28 @@ jobs:
       - name: Check public repository boundaries and links
         run: python3 scripts/check_repository.py
 
+  # The container image had no gate anywhere until this job (issue #49). The host
+  # half of `make build` stalls on a credential helper reaching ghcr.io, which the
+  # Dockerfile needs for the pinned uv binary, and F46 recorded that as unproven.
+  # `deploy/compose.yaml` does build this same Dockerfile for the `core` service and
+  # `make demo` drives it, so the image is exercised by hand — but by nothing
+  # automatic. Runner images ship Docker and pull public ghcr.io anonymously, so the
+  # helper that stalls locally is not in the way here. Plain `docker build` rather
+  # than a build action keeps the workflow's SHA-pinning convention free of another
+  # dependency; the build context is the checkout root, matching compose's
+  # `context: ..` and the Dockerfile's repo-root-relative COPYs.
+  docker:
+    name: Container image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the core/worker image
+        run: docker build -f Dockerfile .
+
   python:
     name: Python checks
     runs-on: ubuntu-latest
