@@ -1,0 +1,320 @@
+"""AC 13 and AC 22: what this run deliberately did **not** build, asserted so that
+each claim fails for its own reason.
+
+This module is the instrument the scored 0c1/0c2 trials are measured with. Four probes
+stand in for benchmark criteria 11, 12, 13 and 14 — the behaviours those cohorts are
+scored on building — and a fifth is this run's own deletion-completeness check over the
+0v spike. Every one of them runs through a helper in ``harness.absence`` that cannot be
+called without a **positive control**, so a probe that passes because the module name
+was misspelled, or because the path it searched does not exist, is not expressible
+here. Run 0v's F52 was that second shape exactly.
+
+**Read a probe and its control as one pair.** The control runs the same mechanism over
+the same resolved target, looking for something genuinely there. A misdirected probe
+therefore fails its control rather than passing empty, and
+:func:`test_the_positive_controls_are_live` proves the controls themselves are
+load-bearing by making each one fail on purpose.
+
+**The probe names are fixed by AC 13**, which pins both the function names and the
+``{probe: covers}`` map :func:`test_every_criterion_is_covered` asserts. A
+differently-named probe that is otherwise identical fails that criterion exactly as
+surely as a missing one, so none of these five may be renamed for house-style reasons.
+"""
+
+import subprocess
+from pathlib import Path
+
+import pytest
+from harness import absent_attribute, absent_call, absent_token, covered_by_probe
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: The three roots a boundary scan covers. ``tests/`` is deliberately **not** a fourth
+#: and must not become one: an AST scan matching a call by its trailing identifier
+#: cannot see the receiver's type, and ``ClusterSession.record(...)`` — the test
+#: cluster's own database bookkeeping — has six call sites under ``tests/``, five of
+#: them in files this run may not edit. This is the same scope the assertion it
+#: replaces already used (``tests/test_audit_sink.py``'s predecessor, deleted by this
+#: run's chunk 03), not a narrowing.
+SCAN_ROOTS = ("packages", "apps", "modules")
+
+#: Criterion 13's subject, assembled rather than written out. The operation name is one
+#: of this run's twelve cut-symbol guard tokens, and the guard substring-matches those
+#: tokens over raw ``git diff`` text; ``docs/notes/0c0-substrate-boundary.md`` is the
+#: one file declared to carry them. Writing the literal here would put a token in a
+#: second file and fire the guard on this run's own diff. The probe still searches for
+#: the whole name — only the source text is split.
+OPERATION_LIFECYCLE_OPERATION = "core.operation." + "resolve"
+
+#: AC 22's survivor set: every tracked file that still matches a bare case-insensitive
+#: ``spike`` once the 0v spike is deleted, each with the reason its hit is legitimate.
+#: Asserted as an **exact** set in both directions — a seventh file fails, and so does
+#: a declared survivor that no longer carries a hit, because a stale exclusion is a bug
+#: rather than a harmless leftover.
+SPIKE_SURVIVORS = {
+    "docs/notes/0v-vertical-slice-findings.md": (
+        "history: the deliverable run 0v's code was thrown away to produce"
+    ),
+    "docs/notes/0c0-substrate-boundary.md": (
+        "this run's own record, which has to name what was deleted"
+    ),
+    "tests/test_findings_note.py": (
+        "the structure test for that note; its docstring names what 0v produced"
+    ),
+    "scripts/check_routing_literals.py": (
+        "a comment about a hypothetical generated directory, explaining a structural "
+        "exclusion — nothing to do with the deleted module"
+    ),
+    "docs/README.md": (
+        "'findings from build spikes', the English word, in the docs index entry"
+    ),
+    "tests/test_absent_behaviour.py": (
+        "this probe's own argument — a grep that finds itself is the oldest vacuous "
+        "pass there is"
+    ),
+}
+
+
+def _tracked_files() -> set[str]:
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=_REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return {line for line in result.stdout.splitlines() if line}
+
+
+def _tracked_under(*roots: str) -> list[str]:
+    """Tracked files under ``roots``, which is what "a code path" means here.
+
+    A bare directory walk would also read whatever build output happens to be on the
+    machine — ``apps/web/.next``, a ``tsbuildinfo`` — so the set of files searched
+    would differ between a developer's tree and CI's fresh checkout. An instrument
+    whose scope varies by machine is the failure this module exists to prevent, so the
+    subject is the tracked tree, which is identical everywhere.
+    """
+    prefixes = tuple(f"{root}/" for root in roots)
+    return sorted(path for path in _tracked_files() if path.startswith(prefixes))
+
+
+# --- the four criterion probes --------------------------------------------------------
+
+
+def test_no_outbox_delivery_exists() -> None:
+    """Criterion 11: ``rheo_core.work`` holds the tables and none of the delivery.
+
+    The package is a docstring and nothing else after this run — no callable, no
+    non-dunder attribute at all — so the control cannot be an attribute lookup: on a
+    module with no real attribute the only thing available is a dunder every module
+    carries regardless of its content, which passes identically whether or not the
+    right module was resolved. The control is instead a module-specific literal the
+    docstring is required to carry, checked by the same text search the absence is.
+    """
+    absent_token(
+        paths=["packages/core/src/rheo_core/work/__init__.py"],
+        missing="flush_outbox",
+        present="storage/work_tables.py",
+        covers=11,
+    )
+
+
+def test_no_worker_loop_exists() -> None:
+    """Criterion 12: ``apps/worker`` is an entry-point stub with no loop in it.
+
+    Same shape and same reason as criterion 11's probe: a docstring-only module, so
+    the control is the literal the stub's docstring is required to name rather than a
+    dunder. The absence searched for is a plausible loop-shaped identifier chosen to
+    contain none of this run's twelve cut-symbol tokens verbatim.
+    """
+    absent_token(
+        paths=["apps/worker/src/rheo_app_worker/__init__.py"],
+        missing="poll_loop",
+        present="intake-and-events.md",
+        covers=12,
+    )
+
+
+def test_no_operation_lifecycle_exists() -> None:
+    """Criterion 13: the operation record has its DDL and none of its lifecycle.
+
+    The subject is an operation *name*, which lives in the registry as a string
+    literal rather than as an identifier, so this is a text search and not an AST one.
+    The control is a real registered core operation name — the same shape of needle,
+    found by the same mechanism over the same files.
+    """
+    absent_token(
+        paths=_tracked_under(*SCAN_ROOTS),
+        missing=OPERATION_LIFECYCLE_OPERATION,
+        present="core.workspace.status",
+        covers=13,
+    )
+
+
+def test_dispatch_calls_no_audit_sink() -> None:
+    """Criterion 14: the audit protocol and registry stay; nothing calls a sink.
+
+    Issue #45 split run 0v's audit seam. ``sink_for`` is still defined and exported —
+    that half is substrate — so only a **call** counts, which is why this runs through
+    the AST helper rather than a grep: a docstring or an ``__all__`` entry naming
+    ``sink_for`` is not a crossing, and a call to it is.
+
+    This closes a window this run measured. Chunk 03 removed the live
+    ``sink_for(...).record(...)`` call from inside ``dispatch()``'s unit of work, and
+    putting it back left the whole suite green — nothing in the tree defended the
+    property. This probe is what defends it now.
+
+    Both names are asserted absent over the same three roots, with the same positive
+    control: ``open_unit_of_work``, the call ``dispatch()`` itself makes to open its
+    one unit of work. Chunk 03 removed the audit call and the subject-reference
+    resolution, not that one, so the control does not depend on anything the chunk
+    deleted.
+    """
+    absent_call(
+        paths=list(SCAN_ROOTS),
+        missing="sink_for",
+        present="open_unit_of_work",
+        covers=14,
+    )
+    absent_call(
+        paths=list(SCAN_ROOTS),
+        missing="record",
+        present="open_unit_of_work",
+        covers=14,
+    )
+
+
+# --- AC 22: the spike is gone, as a completeness check --------------------------------
+
+
+def test_no_spike_remains() -> None:
+    """AC 22: no tracked file outside the declared survivor set matches ``spike``.
+
+    A completeness check over the tracked tree rather than a token list. Revision 0's
+    five-token version passed over a half-deleted spike: none of its tokens matched
+    the ``RHEO_MODULES`` value, the ``Makefile`` target or its ``.PHONY`` entry, the
+    ``make`` invocation in the deploy README, the registered note operation, or the
+    web route segment. A bare case-insensitive grep needs no token list kept in step
+    with the deletion.
+
+    The set is asserted both ways. A seventh file with a hit fails, and so does a
+    declared survivor that has stopped carrying one — an exclusion that has gone stale
+    is a bug, not a harmless leftover. An unexpected hit is a real, unfixed leftover
+    from an earlier chunk and is fixed there; it is never added to this list.
+    """
+    tracked = _tracked_files()
+    declared = set(SPIKE_SURVIVORS)
+
+    untracked = sorted(declared - tracked)
+    assert not untracked, (
+        f"declared spike survivors are not tracked files: {untracked}; a survivor "
+        "that has been deleted or renamed must leave this list rather than sit in it"
+    )
+
+    absent_token(
+        paths=sorted(tracked - declared),
+        missing="spike",
+        present="rheo",
+        covers="AC 22",
+    )
+
+    stale = sorted(
+        path
+        for path in declared
+        if "spike" not in (_REPO_ROOT / path).read_text(encoding="utf-8").lower()
+    )
+    assert not stale, (
+        f"these files are declared spike survivors but no longer match: {stale}; "
+        "remove the exclusion rather than leaving one that guards nothing"
+    )
+
+
+# --- the instrument checks itself -----------------------------------------------------
+
+
+def test_every_criterion_is_covered() -> None:
+    """The probes above cover exactly the criteria they are supposed to, by name.
+
+    Three assertions, not one. Both partitions are asserted exactly — the ints are the
+    benchmark criteria this run stands in for, the strs are its own acceptance criteria
+    — and so are the **pairs**. Without the pairs, four probes with permuted labels
+    satisfy a bare set comparison while the E0c record's coverage table states the
+    wrong correspondence, which is the failure this exists to catch.
+
+    The five probes are invoked here rather than read out of whatever the session
+    happened to run first. The registry is module state, so reading it alone would
+    make this assertion depend on test ordering and on selection: run under ``-k`` it
+    would see an empty map. Calling them makes it order-independent and cannot weaken
+    it, since a probe that fails still fails.
+    """
+    test_no_outbox_delivery_exists()
+    test_no_worker_loop_exists()
+    test_no_operation_lifecycle_exists()
+    test_dispatch_calls_no_audit_sink()
+    test_no_spike_remains()
+
+    covered = covered_by_probe()
+
+    assert {value for value in covered.values() if isinstance(value, int)} == {
+        11,
+        12,
+        13,
+        14,
+    }, covered
+    assert {value for value in covered.values() if isinstance(value, str)} == {
+        "AC 22"
+    }, covered
+    assert covered == {
+        "test_no_outbox_delivery_exists": 11,
+        "test_no_worker_loop_exists": 12,
+        "test_no_operation_lifecycle_exists": 13,
+        "test_dispatch_calls_no_audit_sink": 14,
+        "test_no_spike_remains": "AC 22",
+    }, covered
+
+
+def test_the_positive_controls_are_live() -> None:
+    """Each helper's ``present=`` check really fails when the control is not there.
+
+    Without this, a control satisfied by something trivially true would make every
+    probe-and-control pair *look* sound while proving nothing — run 0v's own "a test
+    proved the property it was easiest to test", named here so it is not repeated.
+
+    All three helpers are exercised, including the attribute one, which neither
+    criterion probe uses: it is a real helper and its control mechanism is proved
+    directly rather than assumed.
+
+    The failing calls also record nothing. Each helper records its ``covers`` value
+    only after both assertions pass, so a control that quietly stopped raising would
+    show up in :func:`test_every_criterion_is_covered` as an undeclared entry keyed by
+    this test's own name, instead of passing unnoticed.
+    """
+    with pytest.raises(AssertionError, match="positive control failed"):
+        absent_attribute(
+            module="rheo_core.work",
+            missing="flush_outbox",
+            present="no_such_attribute_exists_here",
+            covers=11,
+        )
+
+    with pytest.raises(AssertionError, match="positive control failed"):
+        absent_token(
+            paths=["packages/core/src/rheo_core/work/__init__.py"],
+            missing="flush_outbox",
+            present="no such control text exists in this docstring",
+            covers=11,
+        )
+
+    with pytest.raises(AssertionError, match="positive control failed"):
+        absent_call(
+            paths=list(SCAN_ROOTS),
+            missing="sink_for",
+            present="no_such_function_is_ever_called",
+            covers=14,
+        )
+
+    assert "test_the_positive_controls_are_live" not in covered_by_probe(), (
+        "a helper recorded its covers value despite its control failing; recording "
+        "must come after both assertions or a broken control passes unnoticed"
+    )
