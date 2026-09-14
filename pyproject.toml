@@ -58,9 +58,6 @@ mypy_path = [
     "modules/relationships/src",
     "modules/leads/src",
     "modules/current/src",
-    # modules/spike is run 0v's throwaway vertical-slice module, deleted at
-    # 0c0's branch cut; this line goes with it.
-    "modules/spike/src",
     "connectors/src",
     "runtimes/src",
     "channels/src",

@@ -1,9 +1,11 @@
-"""``POST /internal/v1/operations/{name}``: the run's one new trust boundary.
+"""``POST /internal/v1/operations/{name}``: the one piece of run 0v that survives
+its branch cut.
 
-**Every route-driven pytest test in run 0v lives here**, because this is the chunk
-that builds the route; ``tests/postgres/test_spike_slice.py`` holds only the tests
-that call ``dispatch()`` directly. What this module proves, in the order the route
-itself checks:
+The route is the subject. Run 0v drove it with its own throwaway module; 0c0's
+branch cut removed that, so the operations here are the shipped ``core.*`` ones and
+the suite's own ``harness.*`` registrations — the same pair
+``tests/postgres/test_api_surface.py`` drives the sibling bearer ``api`` surface
+with. What this module proves, in the order the route itself checks:
 
 1. ``require_internal_secret`` gates the route exactly as it gates the listener's
    other two — a request with a valid session and no shared secret is refused
@@ -19,10 +21,9 @@ itself checks:
    request. A payload naming another workspace in five different reserved keys,
    through both the query string and the JSON body, still writes into the
    session's own workspace.
-4. AC 9's three check-order refusals, each asserting the *first* refusal wins when
-   two conditions are simultaneously false.
-5. AC 5 and AC 6: the mutate and read operations, end to end through the real
-   route.
+4. The dispatcher's check-order refusals through the real route, each asserting
+   the *first* refusal wins when two conditions are simultaneously false.
+5. The mutate and read operations, end to end through the real route.
 
 ``operation_not_permitted`` is the one refusal in ``authorize``'s chain this module
 does not reach, and cannot: ``context_from_session`` sets ``operation_set =
@@ -37,8 +38,14 @@ from uuid import UUID
 
 import httpx
 import pytest
-from conftest import ClusterSession, InstallSpike, MakeWorkspace
-from harness.registry import add_member
+from conftest import ClusterSession, MakeWorkspace
+from harness.records import ensure_note_table, list_notes
+from harness.registry import (
+    NOTE_WRITE,
+    add_member,
+    enable_harness_module,
+    register_harness,
+)
 from rheo_app_core import internal_routes
 from rheo_app_core.main import internal_app
 from rheo_contracts import Role
@@ -48,6 +55,8 @@ from rheo_core.boundary.context import (
     SESSION_REVOKED,
     WORKSPACE_UNSELECTED,
 )
+from rheo_core.operations import register_core_operations
+from rheo_core.operations.core_ops import SETTINGS_SET, WORKSPACE_STATUS
 from rheo_core.operations.refusals import (
     MODULE_DISABLED,
     OPERATION_UNKNOWN,
@@ -61,25 +70,30 @@ from rheo_core.sessions import (
     switch_workspace,
 )
 from rheo_core.storage.backend import UnitOfWork
-from rheo_spike.manifest import MANIFEST
-from rheo_spike.operations import NOTE_ADD, NOTE_COMMIT_EARLY, NOTE_LIST
-from rheo_spike.records import NoteRow, list_notes
 
 pytestmark = pytest.mark.postgres
 
 BASE_HOST = "example.test"
 INTERNAL_SECRET_VALUE = "internal-operations-test-secret"
-SPIKE_SURFACE = MANIFEST.web
-assert SPIKE_SURFACE is not None, "the spike manifest declares a web surface"
+SETTING_KEY = "identity.token_max_days.cli"
 
-UNKNOWN_OPERATION = "spike.note.missing"
-"""A well-formed operation name the spike module does not declare. Deliberately in
-the ``spike`` module's own namespace: the point of AC 9's first case is that the
-*unknown* check wins over the *module* check when both would refuse, so the name has
-to name a module that really is disabled in the workspace under test."""
+UNKNOWN_OPERATION = "harness.note.missing"
+"""A well-formed operation name the harness does not declare. Deliberately in the
+``harness`` module's own namespace: the point of the first check-order case is that
+the *unknown* check wins over the *module* check when both would refuse, so the name
+has to name a module that really is disabled in the workspace under test."""
 
 
 # --- fixtures and helpers -------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def registrations(harness_keys: None) -> None:
+    """The shipped core operations and the suite's harness module, on the
+    process-wide registries — the pattern ``test_api_surface.py`` and
+    ``test_context_routing.py`` already establish. Both are idempotent."""
+    register_core_operations()
+    register_harness()
 
 
 @pytest.fixture(autouse=True)
@@ -135,9 +149,9 @@ def _member_session(cluster: ClusterSession, workspace_id: UUID, label: str) -> 
     """A fresh account with a ``member`` membership in ``workspace_id``, and a
     session already switched into it.
 
-    ``member`` rather than the workspace owner because AC 9's two role-order cases
-    need a role ``spike.note.commit_early`` (roles ``{owner}``) refuses, and the
-    fixture owner would be permitted.
+    ``member`` rather than the workspace owner because the two role-order cases need
+    a role ``core.settings.set`` (roles ``{owner}``) refuses, and the fixture owner
+    would be permitted.
     """
     account_id = add_member(
         cluster.backend, workspace_id, Role.MEMBER, display_name=label
@@ -145,26 +159,51 @@ def _member_session(cluster: ClusterSession, workspace_id: UUID, label: str) -> 
     return _session_for(account_id, workspace_id)
 
 
-def _notes(cluster: ClusterSession, workspace_id: UUID) -> tuple[NoteRow, ...]:
+def _notes(cluster: ClusterSession, workspace_id: UUID) -> tuple[str, ...]:
+    """The note bodies in one workspace's own database, oldest first.
+
+    Only ever called on a workspace ``_prepare`` has created the table in, so an
+    empty result means "no note was written" rather than "no table exists" — the
+    distinction the not-written assertions below depend on.
+    """
     row = cluster.registry_row(workspace_id)
     engine = cluster.backend.pools.engine_for(row.database_name)
     with UnitOfWork(engine, row.database_name) as uow:
-        return list_notes(uow.connection, limit=200)
+        return tuple(note.body for note in list_notes(uow.connection))
+
+
+def _prepare(cluster: ClusterSession, workspace_id: UUID, *, enable: bool) -> UUID:
+    """Create ``harness.note`` in one workspace's database, and optionally write the
+    enabled ``core.module_state`` row for ``harness``.
+
+    Two steps rather than one because they answer different questions, and
+    ``tests/postgres/test_context_routing.py`` pairs them the same way: the table is
+    what makes a read back well-defined, and the state row is what puts ``harness``
+    in a context's ``enabled_modules``. Module install proper is phase 2; this row is
+    the only way to drive the enabled direction of the module check.
+    """
+    row = cluster.registry_row(workspace_id)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    with UnitOfWork(engine, row.database_name) as uow:
+        ensure_note_table(uow.connection)
+        if enable:
+            enable_harness_module(uow.connection)
+        uow.commit()
+    return workspace_id
 
 
 @pytest.fixture
-def spike_workspace(workspace: UUID, install_spike: InstallSpike) -> UUID:
-    """A provisioned workspace with ``modules/spike`` installed and enabled. Asking
-    for this fixture is also what registers the module's operations in this process,
-    so every test below that names a ``spike.*`` operation requests it."""
-    install_spike(workspace)
-    return workspace
+def harness_workspace(cluster: ClusterSession, workspace: UUID) -> UUID:
+    """A provisioned workspace with the ``harness`` module enabled and its note
+    table created."""
+    return _prepare(cluster, workspace, enable=True)
 
 
 @pytest.fixture
-def plain_workspace(spike_workspace: UUID, make_workspace: MakeWorkspace) -> UUID:
-    """A second provisioned workspace the spike was **never installed into**, while
-    the module itself is registered in this process (``spike_workspace`` did that).
+def plain_workspace(make_workspace: MakeWorkspace) -> UUID:
+    """A second provisioned workspace the harness module was **never enabled in**,
+    while the module's operations are registered in this process (the autouse
+    ``registrations`` fixture did that).
 
     That combination is what makes ``module_disabled`` a real refusal rather than an
     absence: the operation exists and is found, and the workspace still refuses it.
@@ -173,34 +212,34 @@ def plain_workspace(spike_workspace: UUID, make_workspace: MakeWorkspace) -> UUI
 
 
 @pytest.fixture
-def owner_session(spike_workspace: UUID, owner_account_id: UUID) -> str:
-    return _session_for(owner_account_id, spike_workspace)
+def owner_session(harness_workspace: UUID, owner_account_id: UUID) -> str:
+    return _session_for(owner_account_id, harness_workspace)
 
 
 # --- the trust boundary: the shared secret --------------------------------------------
 
 
 async def test_no_internal_secret_is_401_before_the_session_is_even_read(
-    cluster: ClusterSession, spike_workspace: UUID, owner_session: str
+    cluster: ClusterSession, harness_workspace: UUID, owner_session: str
 ) -> None:
     """The route hangs off the listener's ``router``, so ``require_internal_secret``
     is a route dependency and runs before the handler body. A perfectly good session
     plus no shared secret is still 401, and nothing is written."""
     response = await _post(
-        NOTE_ADD,
+        NOTE_WRITE,
         None,
         {"body": "should never be written"},
         headers={"X-Rheo-Session": owner_session, "X-Rheo-Host": BASE_HOST},
     )
     assert response.status_code == 401
-    assert _notes(cluster, spike_workspace) == ()
+    assert _notes(cluster, harness_workspace) == ()
 
 
 async def test_a_wrong_internal_secret_is_401(
-    cluster: ClusterSession, spike_workspace: UUID, owner_session: str
+    cluster: ClusterSession, harness_workspace: UUID, owner_session: str
 ) -> None:
     response = await _post(
-        NOTE_ADD,
+        NOTE_WRITE,
         None,
         {"body": "should never be written"},
         headers={
@@ -210,56 +249,58 @@ async def test_a_wrong_internal_secret_is_401(
         },
     )
     assert response.status_code == 401
-    assert _notes(cluster, spike_workspace) == ()
+    assert _notes(cluster, harness_workspace) == ()
 
 
 # --- the trust boundary: every session refusal is a 401, before dispatch --------------
 
 
-async def test_no_session_header_is_401_session_missing(spike_workspace: UUID) -> None:
-    response = await _post(NOTE_ADD, None, {"body": "x"})
+async def test_no_session_header_is_401_session_missing(
+    harness_workspace: UUID,
+) -> None:
+    response = await _post(NOTE_WRITE, None, {"body": "x"})
     assert response.status_code == 401
     assert response.json()["state"] == SESSION_MISSING
 
 
 async def test_a_malformed_session_header_is_401_session_missing(
-    spike_workspace: UUID,
+    harness_workspace: UUID,
 ) -> None:
     """A non-hex ``X-Rheo-Session`` resolves the same as no session at all — it
     never reaches ``bytes.fromhex``'s ``ValueError`` as a 500."""
-    response = await _post(NOTE_ADD, "not-hex", {"body": "x"})
+    response = await _post(NOTE_WRITE, "not-hex", {"body": "x"})
     assert response.status_code == 401
     assert response.json()["state"] == SESSION_MISSING
 
 
 async def test_a_revoked_session_is_401_session_revoked(
-    cluster: ClusterSession, spike_workspace: UUID, owner_account_id: UUID
+    cluster: ClusterSession, harness_workspace: UUID, owner_account_id: UUID
 ) -> None:
     row = create_session(owner_account_id)
     secret = mint_host_secret(row.id, BASE_HOST)
-    assert switch_workspace(row.id, spike_workspace) is None
+    assert switch_workspace(row.id, harness_workspace) is None
     revoke(row.id)
-    response = await _post(NOTE_ADD, secret.hex(), {"body": "should not be written"})
+    response = await _post(NOTE_WRITE, secret.hex(), {"body": "should not be written"})
     assert response.status_code == 401
     assert response.json()["state"] == SESSION_REVOKED
-    assert _notes(cluster, spike_workspace) == ()
+    assert _notes(cluster, harness_workspace) == ()
 
 
 async def test_a_session_with_no_workspace_is_401_workspace_unselected(
-    spike_workspace: UUID, owner_account_id: UUID
+    harness_workspace: UUID, owner_account_id: UUID
 ) -> None:
     """Every browser session is created with ``active_workspace_id = NULL`` and only
     ``switch_workspace`` ever sets it (CF1, a ratified scope cut). The route refuses
     that session by name rather than dispatching into a missing workspace."""
     session_value = _session_for(owner_account_id, None)
-    response = await _post(NOTE_ADD, session_value, {"body": "x"})
+    response = await _post(NOTE_WRITE, session_value, {"body": "x"})
     assert response.status_code == 401
     assert response.json()["state"] == WORKSPACE_UNSELECTED
 
 
 async def test_a_session_refusal_never_reaches_the_dispatcher(
     monkeypatch: pytest.MonkeyPatch,
-    spike_workspace: UUID,
+    harness_workspace: UUID,
     owner_account_id: UUID,
     owner_session: str,
 ) -> None:
@@ -280,14 +321,14 @@ async def test_a_session_refusal_never_reaches_the_dispatcher(
     monkeypatch.setattr(internal_routes, "dispatch", _spy)
 
     for session_value in (None, "not-hex", _session_for(owner_account_id, None)):
-        response = await _post(NOTE_ADD, session_value, {"body": "x"})
+        response = await _post(NOTE_WRITE, session_value, {"body": "x"})
         assert response.status_code == 401
         # The boundary factory's own state, never the dispatcher's.
         assert response.json()["state"] != CONTEXT_REQUIRED
     assert seen == [], "a session refusal reached dispatch()"
 
-    ok = await _post(NOTE_ADD, owner_session, {"body": "the positive control"})
-    assert ok.status_code == 200
+    ok = await _post(NOTE_WRITE, owner_session, {"body": "the positive control"})
+    assert ok.status_code == 200, ok.text
     assert len(seen) == 1
 
 
@@ -296,8 +337,7 @@ async def test_a_session_refusal_never_reaches_the_dispatcher(
 
 async def test_a_workspace_naming_payload_is_ignored(
     cluster: ClusterSession,
-    install_spike: InstallSpike,
-    spike_workspace: UUID,
+    harness_workspace: UUID,
     make_workspace: MakeWorkspace,
     owner_session: str,
 ) -> None:
@@ -311,18 +351,19 @@ async def test_a_workspace_naming_payload_is_ignored(
     model that declares a reserved field, so no registered operation can read one;
     and the model's ``extra = "ignore"`` drops whatever arrives anyway.
     """
-    other = make_workspace()
-    install_spike(other)
+    # B gets the note table but not the module state row: it is prepared to receive
+    # a note, so the empty read below is about rows and not about a missing table.
+    other = _prepare(cluster, make_workspace(), enable=False)
     naming_b = {
         "workspace_id": str(other),
         "workspace": str(other),
         "database": f"rheo_ws_{other.hex}",
         "dsn": "postgresql://elsewhere/other",
         "connection_string": "postgresql://elsewhere/other",
-        "schema": "spike",
+        "schema": "harness",
     }
     response = await _post(
-        NOTE_ADD,
+        NOTE_WRITE,
         owner_session,
         {"body": "lands in A", **naming_b},
         params={key: value for key, value in naming_b.items()},
@@ -330,22 +371,21 @@ async def test_a_workspace_naming_payload_is_ignored(
     assert response.status_code == 200, response.text
     assert response.json()["state"] == SUCCEEDED
 
-    in_a = _notes(cluster, spike_workspace)
-    assert [row.body for row in in_a] == ["lands in A"]
+    assert _notes(cluster, harness_workspace) == ("lands in A",)
     assert _notes(cluster, other) == ()
 
 
-# --- AC 9: the dispatcher's check order, through the real route -----------------------
+# --- the dispatcher's check order, through the real route -----------------------------
 
 
 async def test_unknown_operation_refuses_before_the_module_check(
     plain_workspace: UUID, owner_account_id: UUID
 ) -> None:
     """Two conditions false at once: the operation is not registered, **and** the
-    ``spike`` module it names is not enabled in this workspace. ``operation_unknown``
-    wins, because ``authorize`` looks the operation up before it can know which
-    module owns it. A check order that derived the module id from the name string
-    would answer ``module_disabled`` here."""
+    ``harness`` module it names is not enabled in this workspace.
+    ``operation_unknown`` wins, because ``authorize`` looks the operation up before
+    it can know which module owns it. A check order that derived the module id from
+    the name string would answer ``module_disabled`` here."""
     response = await _post(
         UNKNOWN_OPERATION,
         _session_for(owner_account_id, plain_workspace),
@@ -357,101 +397,118 @@ async def test_unknown_operation_refuses_before_the_module_check(
 async def test_disabled_module_refuses_before_the_role_check(
     cluster: ClusterSession, plain_workspace: UUID
 ) -> None:
-    """Two conditions false at once: the ``spike`` module is not enabled in this
-    workspace, **and** the caller's ``member`` role is not one
-    ``spike.note.commit_early`` (roles ``{owner}``) permits. ``module_disabled``
-    wins."""
+    """Two conditions false at once: the ``harness`` module is not enabled in this
+    workspace, **and** the caller's ``member`` role is not one ``core.settings.set``
+    (roles ``{owner}``) permits — so the two operations differ, but the request that
+    names the harness one is refused for the module, not the role.
+
+    ``module_disabled`` is reachable only through a non-``core`` module:
+    ``authorize`` skips the check outright for ``core.*``. After 0c0's branch cut
+    the harness is the only such module in the tree, which is why this case is
+    driven through it rather than through a shipped operation.
+    """
     session_value = _member_session(cluster, plain_workspace, "member-disabled-case")
-    response = await _post(NOTE_COMMIT_EARLY, session_value, {"body": "x"})
+    response = await _post(NOTE_WRITE, session_value, {"body": "x"})
     assert response.json()["state"] == MODULE_DISABLED
 
 
 async def test_role_refuses_after_the_module_check(
-    cluster: ClusterSession, spike_workspace: UUID
+    cluster: ClusterSession, harness_workspace: UUID
 ) -> None:
-    """The enabled direction of the same pair: the module check now passes, so the
-    role check is reached and refuses. ``spike.note.commit_early`` is the only
-    reachable driver — ``spike.note.add`` permits ``{owner, member}`` and
-    ``spike.note.list`` permits ``{owner, member, operator}``, so neither can ever
-    produce this refusal from a session."""
-    session_value = _member_session(cluster, spike_workspace, "member-role-case")
-    response = await _post(NOTE_COMMIT_EARLY, session_value, {"body": "x"})
+    """The other side of the pair: a ``core.*`` operation reaches the role check
+    (the module check does not apply to it at all) and refuses there.
+
+    ``core.settings.set`` is the only reachable driver among the shipped core
+    operations — ``core.workspace.status`` permits ``{owner, member, operator}``
+    and so does ``core.settings.set_member``, so neither can ever produce this
+    refusal from a session.
+    """
+    session_value = _member_session(cluster, harness_workspace, "member-role-case")
+    response = await _post(
+        SETTINGS_SET, session_value, {"key": SETTING_KEY, "value": 45}
+    )
     assert response.status_code == 403
     assert response.json()["state"] == ROLE_NOT_PERMITTED
 
 
-# --- AC 5 and AC 6: the two real operations through the boundary ----------------------
+# --- the two real operations through the boundary -------------------------------------
 
 
-async def test_add_note_through_the_internal_boundary(
-    cluster: ClusterSession, spike_workspace: UUID, owner_session: str
+async def test_a_mutate_operation_through_the_internal_boundary(
+    cluster: ClusterSession, harness_workspace: UUID, owner_session: str
 ) -> None:
-    """AC 5, at the layer pytest can reach without Next.js: the envelope's own
-    ``state`` is the same ``succeeded`` the web route handler puts in its 303's
-    ``?add=`` parameter."""
-    response = await _post(NOTE_ADD, owner_session, {"body": "through the boundary"})
+    """The envelope's own ``state`` is the ``succeeded`` a caller acts on, and the
+    write really lands in the session's workspace."""
+    response = await _post(NOTE_WRITE, owner_session, {"body": "through the boundary"})
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["state"] == SUCCEEDED
     assert body["operation_id"] is None
     assert body["result"]["body"] == "through the boundary"
-    assert body["result"]["ref"].startswith("spike.note:")
+    assert body["result"]["ref"].startswith("harness.note:")
 
-    rows = _notes(cluster, spike_workspace)
-    assert len(rows) == 1
-    assert rows[0].body == "through the boundary"
+    assert _notes(cluster, harness_workspace) == ("through the boundary",)
 
 
-async def test_list_notes_through_the_internal_boundary(
-    spike_workspace: UUID, owner_session: str
+async def test_a_read_operation_through_the_internal_boundary(
+    harness_workspace: UUID, owner_session: str
 ) -> None:
-    """AC 6: the read operation over the same session, reading back what the mutate
-    operation wrote a request earlier."""
-    empty = await _post(NOTE_LIST, owner_session, {})
-    assert empty.status_code == 200, empty.text
-    assert empty.json()["result"] == {"notes": []}
+    """A read operation over the same session, reading back what the mutate
+    operation wrote a request earlier — through the route both times."""
+    written = await _post(NOTE_WRITE, owner_session, {"body": "first"})
+    assert written.status_code == 200, written.text
+    ref = written.json()["result"]["ref"]
 
-    assert (await _post(NOTE_ADD, owner_session, {"body": "first"})).status_code == 200
-    assert (await _post(NOTE_ADD, owner_session, {"body": "second"})).status_code == 200
+    read = await _post("harness.note.get", owner_session, {"ref": ref})
+    assert read.status_code == 200, read.text
+    assert read.json()["state"] == SUCCEEDED
+    assert read.json()["result"]["ref"] == ref
+    assert read.json()["result"]["display"] == "first"
 
-    listed = await _post(NOTE_LIST, owner_session, {"limit": 10})
-    assert listed.status_code == 200, listed.text
-    assert listed.json()["state"] == SUCCEEDED
-    bodies = [note["body"] for note in listed.json()["result"]["notes"]]
-    assert sorted(bodies) == ["first", "second"]
+
+async def test_a_core_read_operation_through_the_internal_boundary(
+    harness_workspace: UUID, owner_session: str
+) -> None:
+    """A shipped ``core.*`` operation over the same route, so the boundary is not
+    proved only against the suite's own registrations."""
+    response = await _post(WORKSPACE_STATUS, owner_session, {})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == SUCCEEDED
+    assert body["operation_id"] is None
+    assert "modules" in body["result"]
 
 
 async def test_input_validation_refuses_through_the_route(
-    cluster: ClusterSession, spike_workspace: UUID, owner_session: str
+    cluster: ClusterSession, harness_workspace: UUID, owner_session: str
 ) -> None:
-    """The envelope carries a refusal the same way it carries a success, and an
-    empty body never becomes a row: ``input_invalid`` maps to 422 through the
-    shared ``outcome_status``."""
-    response = await _post(NOTE_ADD, owner_session, {"body": ""})
+    """The envelope carries a refusal the same way it carries a success, and a
+    payload missing a required field never becomes a row: ``input_invalid`` maps to
+    422 through the shared ``outcome_status``."""
+    response = await _post(NOTE_WRITE, owner_session, {})
     assert response.status_code == 422
     assert response.json()["state"] == "input_invalid"
     assert "body" in response.json()["error"]["error_text"]
-    assert _notes(cluster, spike_workspace) == ()
+    assert _notes(cluster, harness_workspace) == ()
 
 
-# --- D-6: the loaded module's surface reaches the routing configuration -----------
+# --- the listener's routing route -----------------------------------------------
 
 
-async def test_the_routing_config_carries_the_loaded_module_surface(
-    spike_workspace: UUID,
-) -> None:
-    """D-6, end to end over the listener's own route.
+async def test_the_routing_config_serialises_every_named_surface() -> None:
+    """``/internal/v1/routing``'s response shape, over the listener's own route.
 
     ``modules`` is the one part of ``RoutingConfig`` no settings key backs: it is
-    whatever the manifests this process loaded declared. ``routing_config()``
-    converts each ``WebSurface`` into a ``SurfaceConfig`` at the point of use, so
-    ``rheo_core.modules`` never gains a dependency on ``rheo_core.routing``. Asking
-    for ``spike_workspace`` is what loads the module.
-
-    The six named surfaces are asserted unchanged in the same breath: the argument
-    is additive, and a deployment that loaded no module must still serialise exactly
-    what it serialised before the argument existed (which is what keeps
+    whatever the manifests this process loaded declared, and after 0c0's branch cut
+    no distribution publishes a ``rheo.modules`` entry point, so it is empty. That
+    empty value is asserted rather than skipped — it is what a fresh deployment
+    serialises, and the six named surfaces must still serialise exactly what they
+    serialised before the ``modules`` key existed (which is what keeps
     ``tests/fixtures/routing/*.json`` and ``tests/test_routing.py`` untouched).
+
+    D-6's other half — a loaded manifest's ``WebSurface`` reaching this payload —
+    went with the last module distribution. ``tests/test_module_loader.py`` drives
+    ``module_surfaces()`` against a fabricated entry point instead.
     """
     async with _client() as client:
         response = await client.get(
@@ -460,8 +517,7 @@ async def test_the_routing_config_carries_the_loaded_module_surface(
         )
     assert response.status_code == 200, response.text
     surfaces = response.json()["surfaces"]
-    assert surfaces["modules"]["spike"]["host"] == SPIKE_SURFACE.host
-    assert surfaces["modules"]["spike"]["path"] == SPIKE_SURFACE.path
+    assert surfaces["modules"] == {}
     assert set(surfaces) == {
         "shell",
         "identity",

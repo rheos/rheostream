@@ -1,29 +1,29 @@
 """AC 15: the OpenAPI document is built from the registry, one path per operation.
 
 The document is generated into a registry **of this test's own**, never the
-process-wide ``REGISTRY``. That is not tidiness: registering ``spike.note.list``
-(a ``read``-class operation) on the process registry silently widens
-``rheo_core.tokens.sets.read_only()`` for every token issued afterwards, and
-``tests/postgres/test_tokens.py`` asserts that set exactly — the landmine
-``tests/conftest.py``'s ``_forget_registrations`` exists for. A private registry
-sidesteps it entirely, and ``build_document(registry)`` takes the registry as an
-argument precisely so this is possible.
+process-wide ``REGISTRY``. That is not tidiness: ``rheo_core.tokens.sets`` is
+evaluated over the whole process-wide registry at issue time, so a registration
+made here would widen a named set for every token issued afterwards, in every
+file that runs later in the same pytest process — and ``tests/postgres/
+test_tokens.py`` asserts those sets exactly. A private registry sidesteps it
+entirely, and ``build_document(registry)`` takes the registry as an argument
+precisely so this is possible.
 
-The two process-wide tables the loader does write — the audit sinks and the module
-surfaces — are reset around each test, mirroring ``tests/test_module_loader.py``'s
-own autouse fixture.
+**The canonical generation environment is now "no ``RHEO_*`` variable at all".**
+0c0's branch cut removed the last distribution publishing a ``rheo.modules``
+entry point, so nothing is discoverable to load and ``make codegen`` passes no
+``RHEO_MODULES``. The subprocess tests at the bottom run with every ``RHEO_*``
+variable stripped, which is exactly what AC 3's byte-exact regeneration check
+depends on.
 """
 
 import json
 import os
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
-from rheo_core.audit import reset_sinks
-from rheo_core.modules import load_modules, reset_surfaces
 from rheo_core.operations import (
     GENERATED_BANNER,
     OPERATION_PATH_PREFIX,
@@ -32,45 +32,27 @@ from rheo_core.operations import (
     operation_path,
     register_core_operations,
 )
-from rheo_core.operations.openapi import REF_TEMPLATE
-from rheo_core.refs.resolver import ResolverRegistry
-from rheo_spike.operations import (
-    NOTE_ADD,
-    NOTE_COMMIT_EARLY,
-    NOTE_LIST,
-    NoteAddInput,
-    NoteList,
+from rheo_core.operations.core_ops import (
+    SETTINGS_SET,
+    SETTINGS_SET_MEMBER,
+    TOKEN_ISSUE,
+    TOKEN_REVOKE,
+    WORKSPACE_STATUS,
+    SettingWrite,
+    WorkspaceStatus,
 )
+from rheo_core.operations.openapi import REF_TEMPLATE
 
-SPIKE_MODULE_ID = "spike"
 GENERATED_DOCUMENT = "apps/web/src/generated/openapi.json"
-
-
-@pytest.fixture(autouse=True)
-def _clean_process_tables() -> Iterator[None]:
-    reset_surfaces()
-    reset_sinks()
-    yield
-    reset_surfaces()
-    reset_sinks()
 
 
 @pytest.fixture
 def registry() -> OperationRegistry:
-    """A private registry holding the core operations and the spike module, built
-    exactly the way ``rheo openapi`` builds the process one: register the core
-    operations, then load the allowed modules."""
+    """A private registry holding the core operations, built exactly the way
+    ``rheo openapi`` builds the process one."""
     registry = OperationRegistry()
-    register_core_operations(registry)
-    loaded = load_modules(
-        registry=registry,
-        resolvers=ResolverRegistry(),
-        allow=frozenset({SPIKE_MODULE_ID}),
-    )
-    assert loaded == (SPIKE_MODULE_ID,), (
-        f"the rheo.modules entry point for {SPIKE_MODULE_ID!r} was not discovered "
-        f"(loaded {loaded}); run `uv sync` so rheo-spike is installed here"
-    )
+    registered = register_core_operations(registry)
+    assert registered, "register_core_operations registered nothing"
     return registry
 
 
@@ -97,24 +79,32 @@ def test_every_registered_operation_has_a_path(registry: OperationRegistry) -> N
         assert document["paths"][operation_path(name)]["post"]["operationId"] == name
 
 
-def test_the_test_only_third_operation_is_in_the_document_too(
+def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
     registry: OperationRegistry,
 ) -> None:
-    """Three ``spike.*`` paths, not two.
+    """Five ``core.*`` paths, not three.
 
-    ``spike.note.commit_early`` is registered from the manifest exactly as FR 9b
-    requires, so AC 15's "a path for every registered operation" includes it. Pinned
-    here so a future reader does not "fix" the count down to the run card's two.
+    ``core.token.issue`` and ``core.token.revoke`` are declared **inside**
+    ``register_core_operations`` rather than in its module-level
+    ``CORE_OPERATIONS`` tuple, to avoid a real import cycle. A reader who counts
+    that tuple sees three. AC 15's "a path for every registered operation" is over
+    what the registrar actually registered, so it is five, and it is pinned here so
+    a future reader does not "fix" the count down to the tuple's length.
     """
     paths = build_document(registry)["paths"]
-    spike_paths = sorted(
-        key for key in paths if key.startswith(f"{OPERATION_PATH_PREFIX}spike.")
+    core_paths = sorted(
+        key for key in paths if key.startswith(f"{OPERATION_PATH_PREFIX}core.")
     )
-    assert spike_paths == [
-        operation_path(NOTE_ADD),
-        operation_path(NOTE_COMMIT_EARLY),
-        operation_path(NOTE_LIST),
-    ]
+    assert core_paths == sorted(
+        operation_path(name)
+        for name in (
+            WORKSPACE_STATUS,
+            SETTINGS_SET,
+            SETTINGS_SET_MEMBER,
+            TOKEN_ISSUE,
+            TOKEN_REVOKE,
+        )
+    )
 
 
 def test_no_path_is_templated(registry: OperationRegistry) -> None:
@@ -132,25 +122,28 @@ def test_no_path_is_templated(registry: OperationRegistry) -> None:
 def test_the_request_and_response_schemas_come_from_the_declared_models(
     registry: OperationRegistry,
 ) -> None:
-    """AC 15's second half: ``spike.note.add``'s request body is ``NoteAddInput``'s
-    own JSON Schema and ``spike.note.list``'s result is ``NoteList``'s, resolved
-    through the document's own ``$ref``s rather than restated here."""
+    """AC 15's second half: ``core.settings.set``'s request body is
+    ``SettingWrite``'s own JSON Schema and ``core.workspace.status``'s result is
+    ``WorkspaceStatus``'s, resolved through the document's own ``$ref``s rather
+    than restated here."""
     document = build_document(registry)
     schemas = document["components"]["schemas"]
 
-    add = document["paths"][operation_path(NOTE_ADD)]["post"]
-    request_ref = add["requestBody"]["content"]["application/json"]["schema"]["$ref"]
-    assert request_ref == REF_TEMPLATE.format(model="NoteAddInput")
-    assert schemas["NoteAddInput"] == _schema_without_defs(NoteAddInput)
+    written = document["paths"][operation_path(SETTINGS_SET)]["post"]
+    request_ref = written["requestBody"]["content"]["application/json"]["schema"][
+        "$ref"
+    ]
+    assert request_ref == REF_TEMPLATE.format(model="SettingWrite")
+    assert schemas["SettingWrite"] == _schema_without_defs(SettingWrite)
 
-    listed = document["paths"][operation_path(NOTE_LIST)]["post"]
-    envelope = listed["responses"]["200"]["content"]["application/json"]["schema"]
+    status = document["paths"][operation_path(WORKSPACE_STATUS)]["post"]
+    envelope = status["responses"]["200"]["content"]["application/json"]["schema"]
     assert envelope["properties"]["result"]["$ref"] == REF_TEMPLATE.format(
-        model="NoteList"
+        model="WorkspaceStatus"
     )
-    assert schemas["NoteList"] == _schema_without_defs(NoteList)
-    # NoteList's $defs were lifted into components, so its own $ref resolves.
-    assert "NoteHead" in schemas
+    assert schemas["WorkspaceStatus"] == _schema_without_defs(WorkspaceStatus)
+    # WorkspaceStatus's $defs were lifted into components, so its own $ref resolves.
+    assert "ModuleStatus" in schemas
     assert envelope["properties"]["operation_id"] == {"type": "null"}
 
 
@@ -160,32 +153,32 @@ def test_the_document_is_openapi_3_1(registry: OperationRegistry) -> None:
     assert set(document) == {"openapi", "info", "paths", "components"}
 
 
-def test_a_module_that_is_not_loaded_has_no_path() -> None:
-    """The registry is the only input: a document built from a registry the spike
-    was never loaded into carries the core operations and nothing else."""
-    registry = OperationRegistry()
-    register_core_operations(registry)
-    document = build_document(registry)
-    assert document["paths"]
-    assert not [key for key in document["paths"] if "spike." in key]
+def test_the_registry_is_the_only_input(registry: OperationRegistry) -> None:
+    """An empty registry yields an empty ``paths``, while the populated fixture
+    yields a full one: the document reflects what is registered and nothing else.
+
+    Both halves in one test on purpose — an empty document alone would also
+    satisfy "carries no unexpected path", which is the vacuous reading.
+    """
+    assert build_document(OperationRegistry())["paths"] == {}
+    assert build_document(registry)["paths"]
 
 
 # --- the shipped `rheo openapi` command, in its own process ---------------------------
 #
 # In a subprocess on purpose, and it is the only way to prove these two things:
 #
-# - `rheo openapi` registers the core operations **and then loads the allowed
-#   modules**. Calling `render()` in-process would register `spike.note.list` on the
-#   process-wide REGISTRY, which silently widens `rheo_core.tokens.sets.read_only()`
-#   for every token issued afterwards -- and `tests/postgres/test_tokens.py` asserts
-#   that set exactly. The child process pays that cost and exits.
+# - Calling `render()` in-process would register the core operations on the
+#   process-wide REGISTRY, which `rheo_core.tokens.sets` is evaluated over at issue
+#   time -- and `tests/postgres/test_tokens.py` asserts those sets exactly. The child
+#   process pays that cost and exits.
 # - It is the one subcommand that bootstraps nothing. The child runs with **every**
 #   `RHEO_*` variable stripped, so it has no profile, no data root, no cluster DSN
 #   and no database, and still emits the document. That is what makes AC 3's
 #   byte-exact regeneration check environment-independent.
 
 
-def _run_openapi(*, modules: str | None) -> str:
+def _run_openapi(*, modules: str | None = None) -> str:
     env = {
         key: value for key, value in os.environ.items() if not key.startswith("RHEO")
     }
@@ -203,30 +196,44 @@ def _run_openapi(*, modules: str | None) -> str:
     return completed.stdout
 
 
-def test_the_command_emits_module_paths_only_when_the_module_is_named() -> None:
-    """Both directions of the allowlist, through the real command.
+def test_the_command_emits_the_core_operations_and_nothing_else() -> None:
+    """The canonical generation environment, through the real command.
 
-    The negative half alone would be vacuous — an empty document, a truncated one
-    or an error string all "contain no spike path" — so the positive control on the
-    core operation is asserted in the same breath.
+    Nothing in the checkout publishes a ``rheo.modules`` entry point after 0c0's
+    branch cut, so the emitted document is the core registry exactly. Both
+    directions in one breath: the ``core.*`` paths really are there (which is what
+    keeps the second assertion from passing over an empty or errored document),
+    and no path outside the ``core.`` namespace is.
     """
-    named = json.loads(_run_openapi(modules=SPIKE_MODULE_ID))
-    assert operation_path(NOTE_ADD) in named["paths"]
-    assert operation_path(NOTE_LIST) in named["paths"]
-    assert operation_path(NOTE_COMMIT_EARLY) in named["paths"]
+    document = json.loads(_run_openapi())
+    assert operation_path("core.workspace.status") in document["paths"]
+    assert operation_path(SETTINGS_SET) in document["paths"]
+    outside = [
+        key
+        for key in document["paths"]
+        if not key.startswith(f"{OPERATION_PATH_PREFIX}core.")
+    ]
+    assert outside == []
 
-    unnamed = json.loads(_run_openapi(modules=None))
-    assert not [key for key in unnamed["paths"] if "spike." in key]
-    assert "spike" not in json.dumps(unnamed)
-    assert operation_path("core.workspace.status") in unnamed["paths"]
+
+def test_naming_a_module_that_does_not_exist_changes_nothing() -> None:
+    """``RHEO_MODULES`` still parses and still gates: naming an id no distribution
+    publishes loads nothing and emits the same bytes as naming none at all.
+
+    This is the surviving half of the allowlist's own check. Its positive half (a
+    named module's paths appearing) went with the last module distribution and is
+    unprovable here until a real one ships — ``tests/test_module_loader.py`` drives
+    both directions against a fabricated entry point instead.
+    """
+    assert _run_openapi(modules="no_such_module") == _run_openapi()
 
 
 def test_the_emitted_document_carries_the_banner_and_is_byte_stable() -> None:
     """Re-emitting an unchanged registry produces identical bytes — the property
     AC 3's `git diff --exit-code` depends on — and the document says it is
     generated."""
-    first = _run_openapi(modules=SPIKE_MODULE_ID)
-    second = _run_openapi(modules=SPIKE_MODULE_ID)
+    first = _run_openapi()
+    second = _run_openapi()
     assert first == second
     assert json.loads(first)["x-rheo-generated"] == GENERATED_BANNER
     assert first.endswith("\n")
@@ -235,8 +242,10 @@ def test_the_emitted_document_carries_the_banner_and_is_byte_stable() -> None:
 def test_the_committed_artifact_is_what_the_command_emits() -> None:
     """The committed `apps/web/src/generated/openapi.json` is the canonical
     environment's own output, byte for byte. A hand-edit fails here as well as at
-    AC 3's CI step — this one runs in the `python` job, which has no Node."""
+    AC 3's CI step — this one runs in the `python` job, which has no Node.
+
+    It also pins `make codegen`'s recipe from the other side: the recipe passes no
+    `RHEO_MODULES`, and so does this test.
+    """
     committed = Path(__file__).resolve().parents[1] / GENERATED_DOCUMENT
-    assert committed.read_text(encoding="utf-8") == _run_openapi(
-        modules=SPIKE_MODULE_ID
-    )
+    assert committed.read_text(encoding="utf-8") == _run_openapi()

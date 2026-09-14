@@ -3,12 +3,12 @@
 **The path-key template, stated here because the web tier's generated client is
 built against it and may not invent it.** One concrete path per registered
 operation, keyed ``/api/v1/operations/<the operation's registered name>`` — so
-``spike.note.add`` is the literal key ``/api/v1/operations/spike.note.add`` and
-``apps/web``'s typed client indexes
-``paths["/api/v1/operations/spike.note.add"]["post"]``. Not a FastAPI-style
-``{name}`` template: one path per operation is what carries each operation's
-distinct request and response schemas, and a single templated path could carry
-only one of them.
+``core.workspace.status`` is the literal key
+``/api/v1/operations/core.workspace.status`` and ``apps/web``'s typed client
+indexes ``paths["/api/v1/operations/core.workspace.status"]["post"]``. Not a
+FastAPI-style ``{name}`` template: one path per operation is what carries each
+operation's distinct request and response schemas, and a single templated path
+could carry only one of them.
 
 That prefix is the shipped bearer ``api`` surface's own
 (``apps/core/src/rheo_app_core/api_routes.py``'s ``POST
@@ -76,9 +76,10 @@ def _schema_and_defs(model: type[BaseModel]) -> tuple[Schema, dict[str, Schema]]
 def _merge(components: dict[str, Schema], name: str, schema: Schema) -> None:
     """Record one component schema, refusing a genuine name collision.
 
-    Two operations sharing an output model (``spike.note.add`` and
-    ``spike.note.commit_early`` both return ``NoteAdded``) merge to the identical
-    schema and are a no-op. Two *different* models with the same class name would
+    Two operations sharing a model (``core.settings.set`` and
+    ``core.settings.set_member`` both take ``SettingWrite`` and return
+    ``SettingWritten``) merge to the identical schema and are a no-op. Two
+    *different* models with the same class name would
     otherwise silently overwrite each other and hand one operation the other's
     contract, so that case raises rather than emitting a quietly wrong document.
     """
