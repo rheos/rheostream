@@ -31,10 +31,35 @@ Why a database and not a schema:
 
 What it costs, and how the cost is bounded:
 
-- **One connection pool per workspace.** The core keeps an LRU of workspace pools (deployment
-  setting `storage.pool_cache_size`, default 32) each capped at `storage.pool_max_connections`
-  (default 5). Release one runs one human's workspaces; the hosted edition revisits this
-  ([later phases](later-phases.md#phase-8-the-hosted-edition)).
+- **One connection pool per workspace, bounded by idle close and then by a count cap.** An
+  engine untouched for `storage.pool_idle_close_seconds` (default 300) is disposed on the next
+  call; `storage.pool_cache_size` (default 16) is the hard ceiling behind that, evicting
+  least-recently-used; each pool is capped at `storage.pool_max_connections` (default 5).
+
+  **Two bounds, because the scarce resource is connections and not pools.** A process's worst
+  case is `pool_cache_size * pool_max_connections` for the cached engines, plus the connections
+  it reserves outside the cache — its control-plane engine, itself sized at
+  `pool_max_connections` — so **16 * 5 + 5 = 85** on the defaults. The core and the worker are
+  separate processes each holding their own, so a deployment's worst case is **170**, against a
+  stock Postgres `max_connections` of 100: a stock cluster carries one process and not two. An
+  earlier default pair of 32 and 5 put a single process at 165, over-subscribing that cluster
+  before the cache ever filled, which is why the ceiling is stated here as arithmetic an
+  operator can check rather than as a number in isolation. `rheo doctor` reports it and names
+  the three levers — `max_connections`, `storage.pool_cache_size`,
+  `storage.pool_max_connections`.
+
+  **Idle close is the bound that normally binds, and that is the point.** A count cap on its own
+  is adversarial to any caller that walks workspaces in turn: under a pure LRU the
+  least-recently-used engine is always the one the walk is about to reach next, so past the cap
+  every visit evicts the engine it needs and the deployment thrashes rather than degrades.
+  Expiry by idleness reclaims the engines nobody wanted instead, so the walk pays for the
+  workspaces it is actually serving.
+
+  **The worker must not defeat this** ([jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16)):
+  it visits workspaces with due work, not every active workspace, so an idle workspace costs no
+  engine at all. A worker that polled all of them would hold every pool hot and put the count cap
+  back in charge. Release one runs one human's workspaces; the hosted edition revisits the whole
+  scheme ([later phases](later-phases.md#phase-8-the-hosted-edition)).
 - **`CREATE DATABASE` cannot run inside a transaction.** Provisioning is therefore an idempotent,
   registry-tracked operation with an explicit state machine (below), not a step inside workspace
   creation's transaction.

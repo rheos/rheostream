@@ -1,14 +1,14 @@
 """``rheo doctor``: data-root validity, cluster reachability, the control-plane head,
-per-workspace state, and the ``CREATE EXTENSION`` privilege report for ``vector``
-and ``pg_trgm``.
+the connection budget, per-workspace state, and the ``CREATE EXTENSION`` privilege
+report for ``vector`` and ``pg_trgm``.
 
 The privilege report is kept in this run per the run spec (Technical Risks item 11):
 nothing in 0b installs an extension, but ``storage.template_database`` and this
 report ship now so phase 2 meets a documented remedy rather than a surprise. The
 catalog reads live on the storage backend (``PostgresBackend.server_version`` /
-``extension_report``: read only, never a ``CREATE EXTENSION``); this module only
-formats them. An extension is creatable by a superuser, or by a role with ``CREATE``
-on the database when the extension is marked trusted (Postgres 13+).
+``max_connections`` / ``extension_report``: read only, never a ``CREATE EXTENSION``);
+this module only formats them. An extension is creatable by a superuser, or by a role
+with ``CREATE`` on the database when the extension is marked trusted (Postgres 13+).
 
 Each check is one line on stdout (``ok``, ``warn`` or ``FAIL``); the exit code is 1
 when any check failed. Every step runs even when an earlier one failed, so one
@@ -102,6 +102,38 @@ def _check_control_plane(backend: PostgresBackend) -> Check:
     return Check(name, "ok", f"at revision {', '.join(sorted(recorded))}")
 
 
+def _check_connection_budget(backend: PostgresBackend) -> Check:
+    """This process's worst-case connection count against the cluster's own ceiling.
+
+    Three tiers, because the honest answer on a correct fresh install is not "ok":
+    ``FAIL`` when this one process alone cannot fit, ``warn`` when the cluster cannot
+    carry two, ``ok`` otherwise. Two is the number that matters — the core and the
+    worker are separate processes, each holding its own engine cache and its own
+    control engine against the same ``max_connections``.
+
+    The detail always states the arithmetic and names all three levers, because the
+    level on its own tells an operator nothing about which number to move.
+    """
+    name = "connection budget"
+    pools = backend.pools
+    try:
+        ceiling = backend.max_connections()
+    except SQLAlchemyError as exc:
+        return Check(name, "FAIL", f"cannot read max_connections: {type(exc).__name__}")
+    worst_case = pools.worst_case_connections
+    detail = (
+        f"{pools.cache_size} * {pools.pool_size} + {pools.reserved_connections} = "
+        f"{worst_case} per process; 2 processes = {worst_case * 2}; "
+        f"cluster max_connections = {ceiling} — raise max_connections, or lower "
+        f"storage.pool_cache_size, or lower storage.pool_max_connections"
+    )
+    if worst_case > ceiling:
+        return Check(name, "FAIL", detail)
+    if worst_case * 2 > ceiling:
+        return Check(name, "warn", detail)
+    return Check(name, "ok", detail)
+
+
 def _check_workspaces(backend: PostgresBackend) -> Iterator[Check]:
     try:
         with backend.control_engine.connect() as connection:
@@ -161,6 +193,7 @@ def doctor(args: argparse.Namespace) -> int:
             checks.append(
                 Check("control plane", "FAIL", f"{type(exc).__name__}: {exc}")
             )
+        checks.append(_check_connection_budget(backend))
         checks.extend(_check_workspaces(backend))
         checks.extend(_check_extensions(backend))
     for check in checks:

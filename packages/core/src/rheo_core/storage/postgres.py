@@ -44,6 +44,7 @@ CONTROL_DATABASE_KEY: Final = "storage.control_database"
 TEMPLATE_DATABASE_KEY: Final = "storage.template_database"
 POOL_CACHE_SIZE_KEY: Final = "storage.pool_cache_size"
 POOL_MAX_CONNECTIONS_KEY: Final = "storage.pool_max_connections"
+POOL_IDLE_CLOSE_KEY: Final = "storage.pool_idle_close_seconds"
 
 STORAGE_SCOPE_COMPONENT: Final = "storage"
 STORAGE_SCOPE_PREFIXES: Final = (
@@ -136,6 +137,7 @@ class PostgresBackend:
         template_database: str,
         pool_cache_size: int,
         pool_max_connections: int,
+        pool_idle_close_seconds: float,
         verify_database: bool = False,
     ) -> None:
         self._cluster_url = cluster_url_from_dsn(cluster_url.render_as_string(False))
@@ -151,6 +153,14 @@ class PostgresBackend:
             self._cluster_url,
             cache_size=pool_cache_size,
             pool_size=pool_max_connections,
+            idle_close_seconds=pool_idle_close_seconds,
+            # The connections this backend holds outside the workspace cache:
+            # ``control_engine`` below is created with ``pool_size =
+            # self.pool_max_connections``, so that is the reservation. The pool
+            # cannot see it, so if ``control_engine``'s own sizing ever changes,
+            # this argument changes with it or ``worst_case_connections`` quietly
+            # understates the process.
+            reserved_connections=pool_max_connections,
         )
         self._maintenance_engine = create_engine(
             self._cluster_url, isolation_level="AUTOCOMMIT", poolclass=NullPool
@@ -160,7 +170,7 @@ class PostgresBackend:
 
     @classmethod
     def from_settings(cls) -> "PostgresBackend":
-        """Resolve the DSN through the storage scope and read the four storage keys."""
+        """Resolve the DSN through the storage scope and read the five storage keys."""
         settings = resolve()
         store = SecretStore(resolve_data_root().path)
         scope = SecretStore.scope_for(STORAGE_SCOPE_COMPONENT, *STORAGE_SCOPE_PREFIXES)
@@ -172,6 +182,7 @@ class PostgresBackend:
             template_database=settings.get_str(TEMPLATE_DATABASE_KEY),
             pool_cache_size=settings.get_int(POOL_CACHE_SIZE_KEY),
             pool_max_connections=settings.get_int(POOL_MAX_CONNECTIONS_KEY),
+            pool_idle_close_seconds=settings.get_int(POOL_IDLE_CLOSE_KEY),
             verify_database=settings.get_str(PROFILE_KEY) == "test",
         )
 
@@ -246,6 +257,15 @@ class PostgresBackend:
         """The cluster's ``server_version``, read on the maintenance connection."""
         with self.maintenance_connection() as connection:
             return str(connection.execute(text("SHOW server_version")).scalar_one())
+
+    def max_connections(self) -> int:
+        """The cluster's ``max_connections``, read on the maintenance connection.
+
+        The denominator ``rheo doctor`` compares ``pools.worst_case_connections``
+        against. Cluster-wide, and shared with every other process on it.
+        """
+        with self.maintenance_connection() as connection:
+            return int(connection.execute(text("SHOW max_connections")).scalar_one())
 
     def extension_report(self, names: Sequence[str]) -> ExtensionReport:
         """Availability, trust and the connecting role's privilege for ``names``."""

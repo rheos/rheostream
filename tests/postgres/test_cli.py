@@ -12,6 +12,10 @@ startup sequence through the FastAPI lifespan.
 - ``workspace create`` prints exactly the id; ``list``, ``status`` (JSON through the
   registry under an operator context), ``repair``, ``migrate`` and ``doctor``
   return ``0``; a refusal prints its state name on stderr and returns ``1``.
+- ``doctor``'s connection-budget line reads ``warn`` on a stock cluster and says why:
+  85 connections per process against a ``max_connections`` of 100 carries one process
+  and not the two release one ends up with. That is the truthful reading of the
+  shipped defaults, not a fixture to size around.
 - The lifespan runs startup (control chain, active workspaces, the registry) and
   ``/healthz`` answers inside it with no database call of its own.
 """
@@ -250,6 +254,28 @@ def test_migrate_and_doctor_return_zero(
         (line,) = [line for line in report if f"extension {extension}:" in line]
         assert "role may CREATE EXTENSION in" in line
         assert "trusted:" in line
+
+    # The connection budget, asserted on both halves. The level is the half a
+    # hard-coded ``"ok"`` would pass silently through, and it is a checkable fact on
+    # these exact numbers rather than a value chosen to make the test pass: the
+    # shipped defaults put one process at 16 * 5 + 5 = 85, a stock cluster allows
+    # 100, so one process fits and two (core and worker, from 0c1) do not.
+    (budget,) = [line for line in report if "connection budget:" in line]
+    assert "cluster max_connections = 100" in budget, (
+        "this cluster is not stock; the level below is asserted against 100",
+        budget,
+    )
+    assert budget.startswith("warn "), budget
+    assert "16 * 5 + 5 = 85 per process" in budget, budget
+    assert "2 processes = 170" in budget, budget
+    # The detail names every lever an operator could move, not merely a number.
+    for lever in (
+        "max_connections",
+        "storage.pool_cache_size",
+        "storage.pool_max_connections",
+    ):
+        assert lever in budget, (lever, budget)
+
     assert not any(line.startswith("FAIL") for line in report)
 
 
