@@ -1,5 +1,5 @@
-"""Every read and write against ``core.operation``: the mint, the four terminal
-writes, the unresolved marker and its clearing, and the two reads.
+"""Every read and write against ``core.operation``: the mint, the writes that end a
+record, the unresolved marker and its clearing, and the two reads.
 
 Shaped after ``work/jobs.py``, deliberately and in every respect that matters: each
 function takes the caller's ``Connection`` and runs inside the caller's transaction,
@@ -18,8 +18,12 @@ null. :func:`finish_succeeded` therefore takes both as required keywords and sup
 them; it does not re-check them in Python. A duplicated Python check would be a second
 place to keep in step, and would hide the constraint from the test that proves it.
 
-**The four terminal writes and :func:`mark_unresolved` are predicated on the record
-still being open** (``pending`` or ``running``), and each returns whether it applied. A
+**Every write in this module that ends a record is predicated on the record still
+being open** (``pending`` or ``running``) — :func:`finish_succeeded`,
+:func:`finish_failed`, :func:`finish_cancelled` and :func:`mark_unresolved`, plus
+:func:`mark_running`, which is not terminal but must not drag a finished record back.
+:func:`resolve` is predicated differently, on ``unresolved`` alone, and says why in its
+own docstring. Each returns whether it applied. A
 terminal record is terminal: a second write must not reopen it, move it between
 terminal states, or overwrite the outcome the first one recorded. The predicate is the
 same shape as ``work/jobs.py``'s ``_held``, and for the same reason — a conditional
@@ -52,9 +56,30 @@ SUCCEEDED: Final = "succeeded"
 FAILED: Final = "failed"
 CANCELLED: Final = "cancelled"
 UNRESOLVED: Final = "unresolved"
-"""The seven members of the ``operation_state`` check constraint
+"""The members of the ``operation_state`` check constraint
 (``work_tables.OPERATION_STATES``), named here so no predicate in this module spells
-one of them by hand."""
+one of them by hand, and checked against that tuple at import time just below."""
+
+# The names above are a second spelling of the DDL's own tuple, and until this check
+# nothing compared them: a drift would have surfaced as a Postgres check-constraint
+# violation at whatever call site happened to write the renamed state first — a driver
+# error three layers from its cause, and only on the path that happened to use it.
+# ``operation_ops.py`` already runs exactly this check one layer up, over its two
+# ``Literal`` aliases against this module's tuples; that pair was asymmetric until now,
+# with this module checking nothing against the tuple it claims to name.
+if set(t.OPERATION_STATES) != {  # pragma: no cover - import-time invariant
+    PENDING,
+    RUNNING,
+    APPROVAL_REQUIRED,
+    SUCCEEDED,
+    FAILED,
+    CANCELLED,
+    UNRESOLVED,
+}:
+    raise RuntimeError(
+        "this module's operation-state names and work_tables.OPERATION_STATES "
+        "disagree; they are the same set spelled twice and must be changed together"
+    )
 
 RECORD_EXISTS: Final = "record_exists"
 PROVIDER_STATUS: Final = "provider_status"
@@ -67,11 +92,15 @@ TERMINAL_CHECK_KINDS: Final = (
     SINK_RECORDED,
     HANDLER_RETURNED,
 )
-"""The four ratified kinds (``docs/architecture/intake-and-events.md:465``). The
-dispatcher mints nothing terminal, so ``handler_returned`` is the only one release
-one's own code writes; the other three are what an external effect's checker will
-supply, and they are named here so a later caller picks from a list rather than
-inventing a string."""
+"""The four ratified kinds (``docs/architecture/intake-and-events.md:465``).
+
+``handler_returned`` is what the **worker's success path** records, because that is
+exactly what it checked: the handler returned without raising. :func:`resolve` records
+whichever kind the person resolving an ``unresolved`` record supplies, which is why
+``provider_status`` and the rest are reachable from release one's own code and not
+only from a later external-effect checker. They are named here so a caller picks from
+a list rather than inventing a string, and ``operation_ops.py`` checks its own
+``Literal`` alias against this tuple at import time."""
 
 RESOLVABLE_OUTCOMES: Final = (SUCCEEDED, FAILED, CANCELLED)
 """The named outcomes :func:`resolve` may move an ``unresolved`` record to. Not

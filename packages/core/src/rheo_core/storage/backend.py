@@ -180,9 +180,9 @@ class HandlerUnitOfWork(UnitOfWork):
     before it opens the work transaction for a ``long_running`` declaration, and the
     handler has to learn that id to stamp it on the job it enqueues. Carrying it on
     the view the handler already receives is what keeps the ``(ctx, uow, input)``
-    handler signature — and therefore all seven shipped handlers and every test that
-    builds one — unchanged. It is ``None`` for every other dispatch and for every
-    view the worker loop constructs.
+    handler signature unchanged — and therefore every registered handler, and every
+    test that builds one, unedited. It is ``None`` for every other dispatch and for
+    every view the worker loop constructs.
 
     **The seal is over those three names and claims no more.** ``connection`` is
     inherited and still returns a live SQLAlchemy ``Connection``, so
