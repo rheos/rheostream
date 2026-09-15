@@ -18,8 +18,10 @@ a fresh third one. ``CancellationToken`` opens its own short transactions on top
 **The clock is injected, and there are two of them by design.**
 :func:`run_one_pass` holds one pass-level ``now`` that drives the due-work index only;
 :func:`visit_workspace` takes no ``now`` at all and calls ``clock()`` fresh at the top
-of every per-job iteration. A pass can run for seconds, and a single instant captured
-at pass start would be stale by the time it were written as a lease expiry or a retry's
+of every per-job iteration, and again at every outcome written after a handler ran —
+a handler's duration is unbounded, so its acquire instant is not the instant it
+finished. A pass can run for seconds, and a single instant captured at pass start
+would be stale by the time it were written as a lease expiry or a retry's
 ``next_run_at``. See each function's own docstring.
 
 **The controlled clock is wall-clock-anchored, not an arbitrary instant. This is a
@@ -278,7 +280,6 @@ def _run_leased_job(
         handler=handler,
         payload=payload,
         owner=owner,
-        now=now,
         clock=clock,
         jitter=jitter,
     )
@@ -314,7 +315,6 @@ def _run_handler(
     handler: Callable[[HandlerUnitOfWork, BaseModel, CancellationToken], None],
     payload: BaseModel,
     owner: str,
-    now: datetime,
     clock: Callable[[], datetime],
     jitter: random.Random | None,
 ) -> None:
@@ -325,6 +325,15 @@ def _run_handler(
     — reads the prose faithfully and duplicates every effect on lease theft: the
     loser's effects commit, then the winner runs and its effects land too, with success
     recorded once.
+
+    **This function takes ``clock`` and no ``now``, deliberately.** Every write it makes
+    happens *after* the handler returned or raised, and a handler's duration is
+    unbounded, so the acquire instant is not merely stale here, it is wrong: it would
+    make ``finished_at`` predate the work it closes and ``next_run_at`` land in the
+    past. Each outcome reads ``clock()`` at the point it writes — once per outcome, not
+    once per call, so the success arm and the failure arm each get their own reading.
+    The pre-handler instant stays where it belongs: :func:`_run_leased_job`'s two gates
+    and :func:`_fail_terminally`, none of which ever enters a handler.
     """
     token = CancellationToken(
         engine,
@@ -355,7 +364,7 @@ def _run_handler(
             failure = exc
         else:
             if finish_succeeded(
-                work_uow.connection, job_id=leased.id, owner=owner, now=now
+                work_uow.connection, job_id=leased.id, owner=owner, now=clock()
             ):
                 work_uow.commit()
                 return
@@ -375,12 +384,20 @@ def _run_handler(
             database,
             leased=leased,
             owner=owner,
-            now=now,
+            clock=clock,
             jitter=jitter,
             error=str(failure),
         )
+    # Unconditionally fresh, because the two paths that reach here do not agree on what
+    # they have already read. The generic-exception path has just had
+    # ``_write_failure_outcome`` take an instant, but that function computes it
+    # internally and never hands it back; the ``JobCancelled``/``JobLeaseLost`` path
+    # sets ``stopped`` directly and has taken no post-handler instant at all. One
+    # reading here is correct on both and cheaper than branching on which one this is.
     if stopped:
-        _resolve_zero_rowcount(engine, database, job_id=leased.id, owner=owner, now=now)
+        _resolve_zero_rowcount(
+            engine, database, job_id=leased.id, owner=owner, now=clock()
+        )
 
 
 def _write_failure_outcome(
@@ -389,11 +406,20 @@ def _write_failure_outcome(
     *,
     leased: LeasedJob,
     owner: str,
-    now: datetime,
+    clock: Callable[[], datetime],
     jitter: random.Random | None,
     error: str,
 ) -> bool:
-    """The exception arm's own write, and whether it applied."""
+    """The exception arm's own write, and whether it applied.
+
+    **``clock``, not ``now``, and it is read exactly once here.** This runs after the
+    handler raised, so the acquire instant would put ``next_run_at = now +
+    backoff_for(attempts)`` in the past for any handler slower than its own backoff —
+    the first step is five seconds — and the job would be re-leased immediately, back to
+    back, until its budget was gone. One reading serves both branches so the instant a
+    job failed at and the instant its retry is measured from cannot disagree.
+    """
+    now = clock()
     if leased.attempts >= leased.max_attempts:
         return _finish_alone(
             engine,
@@ -427,17 +453,29 @@ def visit_workspace(
 ) -> VisitResult:
     """Drain up to :data:`MAX_JOBS_PER_VISIT` jobs out of one workspace database.
 
-    **This function takes no ``now``, only ``clock``, and calls it fresh at the top of
-    every per-job iteration.** A pass can run for seconds — up to the cap, times the
-    workspaces the index returned, times handler time — so a single instant captured at
-    pass start would go stale as the pass ran: ``next_run_at = now + backoff_for(1)`` is
-    ``+5 s``, already in the past on any pass older than five seconds, and
-    ``lease_until = now + LEASE_SECONDS`` would lag real wall time by however long the
-    pass had been running, inviting a lease steal before the first heartbeat. Neither
-    threatens correctness — every ownership predicate holds no matter how stale ``now``
-    is — the cost is wasted work and inflated ``attempts``. The same ``clock`` is what
-    the per-attempt ``CancellationToken`` runs on, which is what makes a handler's
-    checkpoints controllable from a test.
+    **This function takes no ``now``, only ``clock``, calls it fresh at the top of every
+    per-job iteration for the acquire, and calls it again at every write made after a
+    handler ran.** Those are two different stalenesses with two different costs, and a
+    docstring here that named only the first is what let the second survive review.
+
+    *Between jobs — wasted work.* A pass can run for seconds — up to the cap, times the
+    workspaces the index returned, times handler time — so one instant captured at pass
+    start goes stale as the pass runs: ``lease_until = now + LEASE_SECONDS`` lags real
+    wall time by however long the pass has been going, inviting a lease steal before the
+    first heartbeat, and the cap branch below would report the visit due at a moment
+    already past. Ownership is never threatened — every predicate holds however stale
+    ``now`` is — so here the cost really is only wasted work and inflated ``attempts``.
+
+    *Within one job — a wrong instant, not a stale one.* The acquire instant reaching a
+    write made **after** the handler is worse, because the handler's own duration is
+    unbounded: ``next_run_at = now + backoff_for(1)`` is ``+5 s``, so a handler that
+    fails after longer than that is requeued at an instant already in the past and is
+    re-leased with no delay, burning its whole budget back to back; ``finished_at`` and
+    the lease release carry the same wrong instant on the path that runs most often.
+    That is why :func:`_run_handler` takes ``clock`` and no ``now``.
+
+    The same ``clock`` is what the per-attempt ``CancellationToken`` runs on, which is
+    what makes a handler's checkpoints controllable from a test.
 
     **``backend`` is typed ``PostgresBackend``, not the ``StorageBackend`` Protocol**:
     the Protocol declares neither ``pools`` nor ``control_engine``, and this package is
@@ -463,8 +501,6 @@ def visit_workspace(
     engine = backend.pools.engine_for(database)
     acquired = 0
     drained = False
-    # Bound before the loop so the capped branch below always has an instant to use.
-    now = clock()
     for _ in range(MAX_JOBS_PER_VISIT):
         now = clock()
         with UnitOfWork(engine, database) as uow:
@@ -490,10 +526,12 @@ def visit_workspace(
     with UnitOfWork(engine, database) as uow:
         remaining = earliest_due_at(uow.connection)
     # A visitor that stopped at the cap with work still to do must say so in the index
-    # immediately rather than let the workspace wait out the 900 s reconcile floor, and
-    # the freshest per-job ``now`` is the closest instant on hand to the moment it
-    # actually stopped. ``remaining is None`` means the cap and the drain coincided.
-    next_due_at = remaining if drained or remaining is None else now
+    # immediately rather than let the workspace wait out the 900 s reconcile floor, so
+    # the instant it reports is read *here*, once this branch is known to fire — after
+    # the last handler returned. The last job's acquire instant, which this line used to
+    # report, is stale by the whole of that handler's run.
+    # ``remaining is None`` means the cap and the drain coincided.
+    next_due_at = remaining if drained or remaining is None else clock()
     return VisitResult(next_due_at=next_due_at, jobs_acquired=acquired)
 
 

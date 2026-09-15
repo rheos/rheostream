@@ -82,6 +82,12 @@ OWNER = "worker-under-test"
 THIEF = "worker-that-stole-the-lease"
 RECONCILE_SECONDS = 900
 BACKOFF_FIRST_RETRY = timedelta(seconds=5)
+LONG_HANDLER = timedelta(seconds=30)
+"""How far the #66 tests below push the clock from inside a handler.
+
+Longer than ``BACKOFF_FIRST_RETRY``, which is the whole point: a handler that fails in
+less than its own backoff is requeued into the future even on the stale instant, so
+anything shorter than five seconds here would pass on the defect."""
 
 
 class NotePayload(BaseModel):
@@ -242,6 +248,25 @@ def _notes(engine: Engine) -> tuple[str, ...]:
         return tuple(note.body for note in list_notes(conn))
 
 
+def _visit_on(
+    workspace_id: UUID,
+    *,
+    kinds: JobKindRegistry,
+    backend: PostgresBackend,
+    clock: Callable[[], datetime],
+    owner: str = OWNER,
+) -> VisitResult:
+    """One visit of one workspace, on a clock the caller controls."""
+    return visit_workspace(
+        DueWorkspace(workspace_id=workspace_id, observed_due_at=None),
+        kinds=kinds,
+        backend=backend,
+        owner=owner,
+        clock=clock,
+        jitter=None,
+    )
+
+
 def _visit(
     workspace_id: UUID,
     *,
@@ -251,14 +276,54 @@ def _visit(
     owner: str = OWNER,
 ) -> VisitResult:
     """One visit of one workspace, on a clock pinned to ``at``."""
-    return visit_workspace(
-        DueWorkspace(workspace_id=workspace_id, observed_due_at=None),
-        kinds=kinds,
-        backend=backend,
-        owner=owner,
-        clock=lambda: at,
-        jitter=None,
+    return _visit_on(
+        workspace_id, kinds=kinds, backend=backend, clock=lambda: at, owner=owner
     )
+
+
+class AdvancingClock:
+    """A controlled clock a handler can push forward while it runs.
+
+    ``_visit`` above pins a **constant** instant, and that is exactly why issue #66's
+    within-job half was invisible to every test in this file: on a frozen clock "the
+    instant the job was leased" and "the instant its handler ended" are the same value,
+    so no assertion can tell a loop that confuses them from one that does not.
+
+    Wall-clock-anchored like everything else here — ``base`` is a real
+    ``datetime.now(UTC)`` reading and every instant returned is ``base + offset``, a
+    delta from the real clock rather than a chosen moment. See this module's docstring
+    for what ``record_visit`` does to a test that forgets that.
+    """
+
+    def __init__(self, base: datetime) -> None:
+        self.base = base
+        self.offset = timedelta()
+
+    def __call__(self) -> datetime:
+        return self.base + self.offset
+
+    def advance(self, delta: timedelta) -> datetime:
+        """Push the clock forward, and return the instant it now reads."""
+        self.offset += delta
+        return self()
+
+
+def _live_lease(engine: Engine, *, owner: str = OWNER) -> Row[Any]:
+    """This worker's one live lease, read on a second connection. Handlers only.
+
+    The acquire commits in its own transaction before the handler is entered, so the
+    row is visible here for the whole of that handler's life; every terminal and requeue
+    write then nulls ``lease_owner`` and ``lease_until``, so exactly one row matches
+    while a handler runs and none matches once the visit is over. ``.one()`` rather than
+    ``.first()``: a second matching row would mean two live leases and must fail rather
+    than be silently picked between.
+    """
+    with engine.connect() as conn:
+        return conn.execute(
+            select(job.c.id, job.c.lease_until).where(
+                job.c.lease_owner == owner, job.c.state == "leased"
+            )
+        ).one()
 
 
 class RecordingStop(threading.Event):
@@ -680,12 +745,178 @@ def test_a_visit_stops_at_its_cap_and_reports_itself_due_again_at_once(
     result = _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
 
     assert result.jobs_acquired == MAX_JOBS_PER_VISIT
-    assert result.next_due_at == now, "the freshest per-job now, not the computed value"
+    assert result.next_due_at == now, "a fresh instant, not the computed value"
     with engine.connect() as conn:
         still_queued = conn.execute(
             select(job.c.id).where(job.c.state == "queued")
         ).all()
     assert len(still_queued) == 1
+
+
+# --- issue #66 item 1: the outcome instant, on both sides of the handler --------------
+#
+# Four tests and four mutations, because this defect is pair-shaped and has recurred
+# three times: a fix that closes one half and leaves the other shipped once already,
+# past five internal gates. Each test below isolates one site, so a regression in either
+# half is caught mechanically rather than by re-reading the diff.
+
+
+def test_a_handler_slower_than_its_backoff_is_requeued_into_the_future(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """#66's **within-job** half: the requeue instant is read after the raise.
+
+    Thirty seconds is more than ``backoff_for(1)``'s five, and that gap is the defect:
+    computed from the acquire instant, ``next_run_at`` lands twenty-five seconds in the
+    past, the job is due again the moment it is written, and its whole retry budget is
+    spent back to back with no delay at all.
+
+    **The assertion is against the instant the handler ended, never against ``now``.**
+    Against ``now`` it would also hold for a loop that never refreshed anything, since
+    ``now + 5 s`` is in ``now``'s future too.
+    """
+    job_id = _put(engine, now=now, max_attempts=3)
+    clock = AdvancingClock(now)
+    ended: list[datetime] = []
+
+    def raises_after_its_own_backoff_elapsed(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        write_note(uow.connection, body="written then rolled back")
+        ended.append(clock.advance(LONG_HANDLER))
+        raise RuntimeError("handler raised")
+
+    _visit_on(
+        workspace,
+        kinds=_registry(raises_after_its_own_backoff_elapsed),
+        backend=cluster.backend,
+        clock=clock,
+    )
+
+    row = _read(engine, job_id)
+    assert row.state == "queued"
+    assert ended == [now + LONG_HANDLER], "the handler ran exactly once"
+    assert row.next_run_at > ended[0], (
+        "a retry instant computed before the handler ran is already in the past"
+    )
+    assert row.next_run_at >= ended[0] + BACKOFF_FIRST_RETRY
+    assert _notes(engine) == ()
+
+
+def test_each_job_in_one_visit_takes_its_lease_on_an_instant_of_its_own(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """#66's **between-jobs** half, asserted on leases that are still live.
+
+    Each handler records its own job's ``lease_until`` from a second connection while it
+    holds the lease. Reading the two rows back after the visit would compare two
+    ``NULL``s — every terminal and requeue write nulls ``lease_until`` — and pass
+    whatever the loop did. That vacuous shape is how this half went unguarded before,
+    so it is the shape the test deliberately avoids.
+
+    Which of the two jobs runs first is not decidable from here: both are enqueued at
+    the same instant, so ``acquire_lease``'s ``ORDER BY next_run_at`` does not order
+    them. The clock is advanced by whichever one runs first.
+    """
+    _put(engine, now=now, payload={"body": "one"})
+    _put(engine, now=now, payload={"body": "two"})
+    clock = AdvancingClock(now)
+    captured: list[Row[Any]] = []
+
+    def records_its_own_live_lease(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        captured.append(_live_lease(engine))
+        if len(captured) == 1:
+            clock.advance(LONG_HANDLER)
+
+    result = _visit_on(
+        workspace,
+        kinds=_registry(records_its_own_live_lease),
+        backend=cluster.backend,
+        clock=clock,
+    )
+
+    assert result.jobs_acquired == 2
+    assert len(captured) == 2
+    assert captured[0].id != captured[1].id, "two jobs, not one row read twice"
+    assert captured[1].lease_until - captured[0].lease_until >= LONG_HANDLER, (
+        "the second job's lease was taken on the first job's instant"
+    )
+
+
+def test_a_successful_job_is_finished_at_the_instant_its_handler_ended(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """#66 on the path that runs most often: ``finished_at`` is post-handler.
+
+    The success arm writes inside the handler's own transaction, which is what makes it
+    the easiest of the three sites to leave on the pre-handler instant by accident.
+    """
+    job_id = _put(engine, now=now)
+    clock = AdvancingClock(now)
+    ended: list[datetime] = []
+
+    def works_for_a_measurable_while(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        write_note(uow.connection, body=payload.body)
+        ended.append(clock.advance(LONG_HANDLER))
+
+    _visit_on(
+        workspace,
+        kinds=_registry(works_for_a_measurable_while),
+        backend=cluster.backend,
+        clock=clock,
+    )
+
+    row = _read(engine, job_id)
+    assert row.state == "succeeded"
+    assert ended == [now + LONG_HANDLER]
+    assert row.finished_at == ended[0], "finished_at is not the instant it was leased"
+    assert row.lease_owner is None and row.lease_until is None
+    assert _notes(engine) == ("done",)
+
+
+def test_a_visit_that_caps_out_reports_a_post_handler_instant(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """#66's third site: ``visit_workspace``'s cap branch.
+
+    The sibling above pins the branch itself, but on a frozen clock, where the last
+    job's acquire instant and the visit's end are the same value. Moving the clock
+    inside the last handler is the only thing that separates them — and the index row
+    this feeds decides when the workspace is offered again, so reporting the acquire
+    instant sends the next pass back before the work it left behind is really due.
+    """
+    for _ in range(MAX_JOBS_PER_VISIT + 1):
+        _put(engine, now=now)
+    clock = AdvancingClock(now)
+    ended: list[datetime] = []
+    runs = 0
+
+    def the_last_of_them_runs_long(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        nonlocal runs
+        write_note(uow.connection, body=payload.body)
+        runs += 1
+        if runs == MAX_JOBS_PER_VISIT:
+            ended.append(clock.advance(LONG_HANDLER))
+
+    result = _visit_on(
+        workspace,
+        kinds=_registry(the_last_of_them_runs_long),
+        backend=cluster.backend,
+        clock=clock,
+    )
+
+    assert result.jobs_acquired == MAX_JOBS_PER_VISIT
+    assert ended == [now + LONG_HANDLER]
+    assert result.next_due_at is not None
+    assert result.next_due_at >= ended[0], (
+        "the cap branch reported the last job's acquire instant, not the visit's end"
+    )
 
 
 # --- AC 14: discovery comes from the index and from nowhere else ----------------------
