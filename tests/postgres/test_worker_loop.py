@@ -54,7 +54,12 @@ from rheo_core.storage.work_index_tables import workspace_work_due
 from rheo_core.storage.work_tables import job
 from rheo_core.work import loop as loop_module
 from rheo_core.work.cancellation import CancellationToken
-from rheo_core.work.jobs import acquire_lease, enqueue, enqueue_job, request_cancellation
+from rheo_core.work.jobs import (
+    acquire_lease,
+    enqueue,
+    enqueue_job,
+    request_cancellation,
+)
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import (
     IDLE_INTERVAL_SECONDS,
@@ -320,6 +325,54 @@ def test_a_job_whose_lease_expired_is_reacquired_and_runs_to_completion(
     assert _notes(engine) == ("done",)
 
 
+# --- AC 4, loop half: two visitors, one workspace -------------------------------------
+
+
+def test_a_second_visitor_never_takes_the_job_the_first_is_still_running(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """AC 4's loop half: two visitors drain one workspace without overlapping.
+
+    The second visit runs from **inside** the first one's handler, so visitor A holds a
+    live, committed lease on its own job for the whole of B's visit. Visiting twice in
+    sequence would prove nothing here: A's job is already ``succeeded`` by then, so B
+    would skip it whatever the lease predicate did. ``attempts`` on A's job is the
+    assertion that B never took it — a second lease is the only thing that moves it.
+    """
+    mine = _put(engine, now=now, payload={"body": "a"})
+    theirs = _put(engine, now=now, payload={"body": "b"})
+    others: list[VisitResult] = []
+
+    def visits_again_while_still_leased(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        write_note(uow.connection, body=payload.body)
+        others.append(
+            _visit(
+                workspace,
+                kinds=_registry(),
+                backend=cluster.backend,
+                at=now,
+                owner=THIEF,
+            )
+        )
+
+    result = _visit(
+        workspace,
+        kinds=_registry(visits_again_while_still_leased),
+        backend=cluster.backend,
+        at=now,
+    )
+
+    assert result.jobs_acquired == 1, "A's second acquire found B had drained the rest"
+    assert [visit.jobs_acquired for visit in others] == [1]
+    assert _read(engine, mine).attempts == 1, "B must not lease a live-leased job"
+    assert _read(engine, mine).state == "succeeded"
+    assert _read(engine, theirs).attempts == 1
+    assert _read(engine, theirs).state == "succeeded"
+    assert sorted(_notes(engine)) == ["a", "b"], "each job ran exactly once"
+
+
 # --- AC 8's crash arm: the retry budget on the way back in ---------------------------
 
 
@@ -552,7 +605,10 @@ def test_a_cancelled_job_that_is_also_out_of_budget_ends_cancelled_not_failed(
 def test_a_raising_handler_under_budget_is_requeued_with_its_backoff(
     cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
 ) -> None:
-    """The exception arm's ordinary case: requeued, error recorded, effects discarded."""
+    """The exception arm's ordinary case.
+
+    Requeued at its backoff, the error recorded, the handler's effects discarded.
+    """
     job_id = _put(engine, now=now, max_attempts=3)
 
     def raises(
@@ -561,9 +617,7 @@ def test_a_raising_handler_under_budget_is_requeued_with_its_backoff(
         write_note(uow.connection, body="written then rolled back")
         raise RuntimeError("handler raised")
 
-    result = _visit(
-        workspace, kinds=_registry(raises), backend=cluster.backend, at=now
-    )
+    result = _visit(workspace, kinds=_registry(raises), backend=cluster.backend, at=now)
 
     row = _read(engine, job_id)
     assert row.state == "queued"
@@ -894,7 +948,9 @@ def test_the_loop_exits_on_its_stop_event_with_no_pass_bound(
             return super().wait(timeout)
 
     stop = StopsDuringItsFirstWait()
-    worker_loop(kinds=_registry(), backend=cluster.backend, stop=stop, clock=lambda: now)
+    worker_loop(
+        kinds=_registry(), backend=cluster.backend, stop=stop, clock=lambda: now
+    )
 
     assert passes == 1
     assert stop.waits == [IDLE_INTERVAL_SECONDS]
