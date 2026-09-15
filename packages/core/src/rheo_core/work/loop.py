@@ -388,12 +388,14 @@ def _run_handler(
             jitter=jitter,
             error=str(failure),
         )
-    # Unconditionally fresh, because the two paths that reach here do not agree on what
-    # they have already read. The generic-exception path has just had
-    # ``_write_failure_outcome`` take an instant, but that function computes it
-    # internally and never hands it back; the ``JobCancelled``/``JobLeaseLost`` path
-    # sets ``stopped`` directly and has taken no post-handler instant at all. One
-    # reading here is correct on both and cheaper than branching on which one this is.
+    # Unconditionally fresh, because the three paths that reach here disagree about
+    # whether a post-handler instant was taken at all, and none of them leaves one where
+    # this line could reuse it. The generic-exception path has just had
+    # ``_write_failure_outcome`` take one, but that function computes it internally and
+    # never hands it back; the ``finish_succeeded`` zero-rowcount path above took one
+    # too, inline in the call expression, and never bound it to a name; the
+    # ``JobCancelled``/``JobLeaseLost`` path took none. One reading here is correct on
+    # all three and cheaper than branching on which one this is.
     if stopped:
         _resolve_zero_rowcount(
             engine, database, job_id=leased.id, owner=owner, now=clock()
