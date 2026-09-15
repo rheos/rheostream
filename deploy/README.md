@@ -1,13 +1,18 @@
 # Deployment templates
 
-The local stack (`deploy/compose.yaml`): `make up` brings up two services, `postgres`
-(`pgvector/pgvector:pg16`) and `core` (the FastAPI app, built from the repository
-root `Dockerfile`). Both are published to the host — `core` on `RHEO_CORE_PORT`
-(default `8000`) and `postgres` on `RHEO_PG_PORT` (default `5432`); override either
-if its default is already bound by another project on your machine. Neither
-container's own port changes: `core` always answers on `8000` and `postgres` on
-`5432` inside the compose network regardless of a host-side remap. `make down`
-tears the stack down.
+The local stack (`deploy/compose.yaml`): `make up` brings up three services, `postgres`
+(`pgvector/pgvector:pg16`), `core` (the FastAPI app, built from the repository
+root `Dockerfile`), and `worker`. Both `postgres` and `core` are published to the
+host — `core` on `RHEO_CORE_PORT` (default `8000`) and `postgres` on `RHEO_PG_PORT`
+(default `5432`); override either if its default is already bound by another
+project on your machine. Neither container's own port changes: `core` always
+answers on `8000` and `postgres` on `5432` inside the compose network regardless
+of a host-side remap. `make down` tears the stack down.
+
+The **`worker` service** runs the same image as `core` — no separate build — with
+its command overridden to `python -m rheo_app_worker.main`. It publishes no port,
+shares the same `rheodata` volume `core` mounts, and starts and stops with `make
+up`/`make down` like every other compose service.
 
 The **data-root volume**: `core` writes checkout-external runtime state (the file
 secret backend, deployment config, per-workspace upload/export/scratch directories —

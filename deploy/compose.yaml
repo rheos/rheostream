@@ -36,6 +36,22 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    # Named explicitly (compose's own default tag for this service under
+    # `make up`'s project) so `worker` below can share it: two services with
+    # identical `build:` blocks but no shared `image:` tag are two
+    # byte-identical images, not one, and `docker compose build` would build
+    # and tag both rather than build once and reuse it. Either service can
+    # still be built standalone; only the tag is shared. This does change
+    # `core`'s behavior under `make demo` specifically: that target runs its
+    # own compose project (`-p rheo-stream-demo`), where compose's unpinned
+    # default for `core` would have been `rheo-stream-demo-core` — pinning
+    # this tag means `make up` and `make demo` now share one image tag for
+    # `core`, where before this they built to two distinct, never-shared
+    # tags. Low severity, since neither target passes `--build`, but real: a
+    # `make up`-built image under this tag can now be silently served by a
+    # later `make demo` run, or vice versa, without either target rebuilding
+    # it.
+    image: rheo-stream-core
     # Host port is parameterised for the same reason as postgres's: an unrelated
     # process on this machine may already hold 8000. The container always
     # listens on 8000 internally; only the host-side publish moves.
@@ -79,6 +95,37 @@ services:
     volumes:
       # Named volume, never a bind mount into the repo, so `make up`/`make demo`
       # write nothing into the tracked tree (criterion 2) — same rule as pgdata.
+      - rheodata:/var/lib/rheo-stream
+
+  worker:
+    # Same image as `core`, no separate build — see the `image:` note on
+    # `core` above. The `build:` block is repeated here (not just the tag) so
+    # `worker` can still be built standalone.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: rheo-stream-core
+    # `apps/worker/src/rheo_app_worker/main.py` (02), run as a module so it
+    # picks up the same interpreter and dependency set the image already has
+    # — no rebuild, only the command differs from `core`'s image default.
+    command: ["uv", "run", "python", "-m", "rheo_app_worker.main"]
+    # A worker publishes nothing to the host or the compose network — no
+    # `ports:`, and the image's own `EXPOSE` is for `core`'s listeners, not
+    # this service.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # `core`'s environment, minus the keys a worker never reads: routing and
+      # identity configuration only matters to something serving HTTP, and
+      # this service serves nothing. Same four keys, same values as `core`.
+      RHEO_CLUSTER_DSN: postgresql://rheo:rheo_dev_only@postgres:5432/postgres
+      RHEO_DATA_ROOT: /var/lib/rheo-stream
+      RHEO_IN_CONTAINER: "1"
+      RHEO_PROFILE: development
+    volumes:
+      # Same named volume, same mount point, same reason as `core` — never a
+      # bind mount into the repo.
       - rheodata:/var/lib/rheo-stream
 
 volumes:
