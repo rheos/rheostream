@@ -1,7 +1,8 @@
 """The core operations registered under the ``core`` origin, matching
-``docs/architecture/module-contract.md:96-101`` for names, classes and roles.
+``docs/architecture/module-contract.md:96-105`` for names, classes and roles.
 0b1 (C4) shipped the first three below; C8 (09, run 0b2) adds the two token
-operations at the end of this module.
+operations at the end of this module; C3 (run 0c1) adds ``core.work.failures``,
+whose own row is the ``:105`` the cited range now reaches.
 
 - ``core.workspace.status`` — ``read``; roles ``owner, member, operator``. Reads
   ``core.workspace_composition``, ``core.module_state`` and
@@ -17,11 +18,19 @@ operations at the end of this module.
   member, operator`` (see :data:`TOKEN_ISSUE_DECLARATION`'s own docstring for why
   ``operator`` is safe to declare here). Handlers live in
   ``rheo_core.tokens.issue`` — this module only registers them.
+- ``core.work.failures`` — ``read``; roles ``owner, operator``, and **not** the
+  declaration default ``owner, member``. Reads the failed jobs through C1's
+  ``rheo_core.work.jobs.list_failed_jobs``, never the ``core.job`` table
+  directly. Its models and handler live in ``rheo_core.work.operations``, beside
+  that repository; only the declaration is here. ``audit = None`` for the same
+  reason ``core.workspace.status`` carries it.
 
 Every mutate operation here declares ``AuditSpec(subject_field=None)``: C1 fixes
-``AuditSpec`` at exactly that one field, and none of these five operations acts on
-a record. Declaring it is required so 0c2's audit dispatcher re-declares nothing;
-acting on it (writing an audit row) is 0c2's and does not happen in this run.
+``AuditSpec`` at exactly that one field, and none of these six operations acts on
+a record (``core.work.failures`` is ``read``-class and declares no ``AuditSpec``
+at all, so it moves the count and nothing else in this paragraph). Declaring it
+is required so 0c2's audit dispatcher re-declares nothing; acting on it (writing
+an audit row) is 0c2's and does not happen in this run.
 
 Registration is explicit (:func:`register_core_operations`), not an import side
 effect, mirroring the settings harness.
@@ -67,6 +76,11 @@ from rheo_core.storage.repositories import (
     upsert_member_setting,
     upsert_workspace_setting,
 )
+from rheo_core.work.operations import (
+    FailureList,
+    FailureListInput,
+    failures_handler,
+)
 
 WORKSPACE_STATUS: Final = "core.workspace.status"
 SETTINGS_SET: Final = "core.settings.set"
@@ -77,6 +91,8 @@ TOKEN_REVOKE: Final = "core.token.revoke"
 ``rheo_core.tokens.policy.NON_TOKEN_ISSUABLE``'s own two hardcoded members — see
 that module's docstring for why they are duplicated rather than imported from
 each other (a real import cycle either way)."""
+
+WORK_FAILURES: Final = "core.work.failures"
 
 _TOKEN_OPERATION_ROLES: Final = frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR})
 """Shared by both token declarations, built inside :func:`register_core_operations`
@@ -253,24 +269,43 @@ SETTINGS_SET_MEMBER_DECLARATION: Final = OperationDeclaration(
     audit=AuditSpec(subject_field=None),
 )
 
+WORK_FAILURES_DECLARATION: Final = OperationDeclaration(
+    name=WORK_FAILURES,
+    safety_class=SafetyClass.READ,
+    # ``docs/architecture/module-contract.md:105`` ratifies ``owner, operator``.
+    # ``OperationDeclaration``'s own default is ``{OWNER, MEMBER}``, so leaving
+    # this field off would silently ship the wrong pair rather than fail.
+    roles=frozenset({Role.OWNER, Role.OPERATOR}),
+    input_model=FailureListInput,
+    output=FailureList,
+    idempotency=Idempotency.NONE,
+    # Audit is required only above ``READ`` — this module's own top-of-file
+    # docstring makes the point, and ``WORKSPACE_STATUS_DECLARATION`` above
+    # relies on the same sentence rather than on a comment of its own.
+    audit=None,
+)
+
 CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (WORKSPACE_STATUS_DECLARATION, _workspace_status),
     (SETTINGS_SET_DECLARATION, _settings_set),
     (SETTINGS_SET_MEMBER_DECLARATION, _settings_set_member),
+    (WORK_FAILURES_DECLARATION, failures_handler),
 )
-"""The three 0b1 operations only. The two token operations are not here: see
-:func:`register_core_operations`'s own docstring for why they are built inside
-the function instead of as module-level ``Final`` declarations like these
-three."""
+"""The three 0b1 operations, plus 0c1's ``core.work.failures``. The two token
+operations are not here: see :func:`register_core_operations`'s own docstring for
+why they are built inside the function instead of as module-level ``Final``
+declarations like these four. ``core.work.failures`` needs no such deferral —
+``rheo_core.work`` closes no cycle with ``rheo_core.operations`` — so it belongs
+in this tuple."""
 
 
 def register_core_operations(
     registry: OperationRegistry = REGISTRY,
 ) -> tuple[RegisteredOperation, ...]:
-    """Register the five core operations (idempotent) under the ``core`` origin.
+    """Register the six core operations (idempotent) under the ``core`` origin.
 
     The two token declarations are built **here**, inside the function, rather
-    than as module-level constants like :data:`CORE_OPERATIONS`'s three:
+    than as module-level constants like :data:`CORE_OPERATIONS`'s four:
     building them needs ``rheo_core.tokens.issue``'s handlers and models, and a
     module-level import of that module here would close a real cycle —
     ``rheo_core.operations``'s own ``__init__.py`` imports this module as its

@@ -171,7 +171,9 @@ def test_session_issued_token_row_shapes(
     ``access_token_operation`` rows equal to the expanded set."""
     value, token_id, operations = _issue(session_ctx, kind="cli", set_name="read_only")
     assert value.startswith("rheo_cli_")
-    assert operations == frozenset({"core.workspace.status", NOTE_GET})
+    assert operations == frozenset(
+        {"core.workspace.status", "core.work.failures", NOTE_GET}
+    )
     with cluster.backend.control_engine.connect() as connection:
         token_row_count = connection.execute(
             select(func.count())
@@ -199,7 +201,9 @@ def test_operator_issued_token_via_real_dispatch_path(
         ctx, kind="cli", set_name="read_only", account_id=owner_account_id
     )
     assert value.startswith("rheo_cli_")
-    assert operations == frozenset({"core.workspace.status", NOTE_GET})
+    assert operations == frozenset(
+        {"core.workspace.status", "core.work.failures", NOTE_GET}
+    )
     with cluster.backend.control_engine.connect() as connection:
         stored = list_access_token_operations(connection, token_id)
     assert stored == operations

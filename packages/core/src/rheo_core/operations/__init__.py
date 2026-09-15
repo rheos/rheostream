@@ -11,7 +11,9 @@
   and the re-exported ``handler_may_not_commit`` (declared in ``storage.backend``,
   beside the ``HandlerUnitOfWork`` that raises it).
 - ``core_ops.py`` — ``core.workspace.status``, ``core.settings.set``,
-  ``core.settings.set_member``, and ``register_core_operations()``.
+  ``core.settings.set_member``, ``core.work.failures`` (whose models and
+  handler live in ``rheo_core.work.operations``, beside the repository they
+  read), and ``register_core_operations()``.
 - ``openapi.py`` — ``build_document(registry)``: the OpenAPI 3.1 document the web
   tier's generated client is built from, one path per registered operation. Pure
   pydantic, no FastAPI, so ``apps/cli`` can emit it without ``apps/core``.
@@ -20,6 +22,7 @@
 from rheo_core.operations.core_ops import (
     SETTINGS_SET,
     SETTINGS_SET_MEMBER,
+    WORK_FAILURES,
     WORKSPACE_STATUS,
     SettingWrite,
     SettingWritten,
@@ -88,6 +91,7 @@ __all__ = [
     "SETTINGS_SET_MEMBER",
     "SUCCEEDED",
     "WORKSPACE_STATUS",
+    "WORK_FAILURES",
     "Authorized",
     "Handler",
     "OperationError",

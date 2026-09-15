@@ -72,6 +72,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.work.failures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.work.failures (read) */
+        post: operations["core.work.failures"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.workspace.status": {
         parameters: {
             query?: never;
@@ -93,6 +110,72 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * FailedJob
+         * @description One failed job as the operation publishes it.
+         *
+         *     ``rheo_core.work.jobs.FailedJobRow`` field for field, with that row's ``id``
+         *     published as ``job_id``: the response is about jobs and nothing else in it
+         *     carries an id, so the longer name costs nothing and reads unambiguously in a
+         *     generated client.
+         */
+        FailedJob: {
+            /** Attempts */
+            attempts: number;
+            /** Finished At */
+            finished_at: string | null;
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Kind */
+            kind: string;
+            /** Last Error */
+            last_error: string | null;
+            /** Max Attempts */
+            max_attempts: number;
+        };
+        /**
+         * FailureList
+         * @description The workspace's most recently failed jobs, newest first.
+         *
+         *     ``jobs`` is a **named collection field rather than a bare list**, deliberately:
+         *     0c2 adds sibling collections here — its own deliveries, its own unfinished
+         *     work — beside ``jobs``, additively, and every client generated against
+         *     today's document keeps reading ``jobs`` unchanged. A top-level
+         *     ``list[FailedJob]`` would make that same addition a breaking change to the
+         *     response's own type instead of a new field a reader may ignore.
+         */
+        FailureList: {
+            /** Jobs */
+            jobs: components["schemas"]["FailedJob"][];
+        };
+        /**
+         * FailureListInput
+         * @description How many of the most recent failures to return.
+         *
+         *     ``extra = "ignore"`` mirrors ``core_ops.py``'s ``_IGNORE_EXTRA``: a payload
+         *     that also names another workspace has those keys dropped and the operation
+         *     proceeds against the context's own workspace.
+         *
+         *     **``limit`` is bounded, not a bare ``int``.** A bare ``int`` lets ``-1`` reach
+         *     the ``SELECT``, where Postgres raises *LIMIT must not be negative*;
+         *     ``dispatch`` catches that as a handler exception and refuses ``handler_failed``
+         *     carrying only the exception's class name, when it is an input defect that
+         *     belongs in the ``input_invalid`` refusal pydantic already produces for a
+         *     constraint violation. ``500`` is a choice rather than a transcription: the use
+         *     is one screen of failures, and nothing prunes this table in release one, so an
+         *     unbounded ``limit`` is an unbounded read that grows for the life of the
+         *     deployment.
+         */
+        FailureListInput: {
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
         /** ModuleStatus */
         ModuleStatus: {
             /** Module Id */
@@ -341,6 +424,38 @@ export interface operations {
                         };
                         operation_id: null;
                         result?: components["schemas"]["TokenRevoked"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.work.failures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FailureListInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        operation_id: null;
+                        result?: components["schemas"]["FailureList"];
                         state: string;
                     };
                 };
