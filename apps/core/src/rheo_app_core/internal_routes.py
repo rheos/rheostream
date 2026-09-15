@@ -42,7 +42,7 @@ from rheo_core.storage.control_plane import list_memberships
 from rheo_core.storage.data_root import resolve_data_root
 from rheo_core.storage.postgres import get_backend
 
-from rheo_app_core.api_routes import envelope, outcome_status
+from rheo_app_core.api_routes import carries_result, envelope, outcome_status
 from rheo_app_core.auth_routes import normalize_host
 
 SESSION_REFUSAL_STATUS = 401
@@ -177,9 +177,13 @@ async def run_operation(
     (line 132) requires that this listener serve the operations the bearer surface
     serves, but it defines no path, headers or refusal mapping for them, so those
     are this run's own and are pinned here and in ``plan.md`` § C3. Answers with the
-    shared operation envelope and the shared status mapping (``api_routes.envelope``
-    / ``api_routes.outcome_status``), so the bearer ``api`` surface and this one
-    cannot drift.
+    shared operation envelope, the shared status mapping and the shared
+    result-or-error branch (``api_routes.envelope`` / ``api_routes.outcome_status`` /
+    ``api_routes.carries_result``), so the bearer ``api`` surface and this one cannot
+    drift. The third of those is shared for a reason the first two are not: the
+    obvious local spelling of that branch is ``outcome.ok``, which is false for a
+    ``pending`` outcome and would send a *successful* long-running dispatch down the
+    error path on whichever listener wrote it that way.
 
     Like ``api_routes.run_operation``, this coroutine calls the synchronous
     ``dispatch()`` directly rather than through a worker thread. That is the shipped
@@ -226,7 +230,7 @@ async def run_operation(
     # Never ``status``: this module imports FastAPI's own ``status`` namespace for
     # require_internal_secret's HTTP_401_UNAUTHORIZED.
     status_code = outcome_status(outcome)
-    if outcome.ok:
+    if carries_result(outcome):
         result = (
             None if outcome.result is None else outcome.result.model_dump(mode="json")
         )

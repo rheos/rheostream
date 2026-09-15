@@ -59,6 +59,9 @@ from rheo_core.operations.operation_ops import (
     OperationRef,
     OperationResolveInput,
 )
+from rheo_core.operations.records import (
+    PENDING,
+)
 from rheo_core.operations.refusals import (
     AUTHORIZATION_STATES,
     FAILED,
@@ -107,6 +110,7 @@ __all__ = [
     "OPERATION_STATE",
     "OPERATION_UNKNOWN",
     "OUTPUT_INVALID",
+    "PENDING",
     "REGISTRY",
     "ROLE_NOT_PERMITTED",
     "SETTINGS_SET",

@@ -14,7 +14,9 @@ dispatches, and returns the envelope ``{"state", "operation_id", "result"
 gives: 200 succeeded, 401 for every ``context_from_token`` refusal (including
 a missing/malformed ``Authorization`` header, before any token is even looked
 up), 403 ``operation_not_permitted``/``role_not_permitted``, 404 ``not_found``,
-422 ``input_invalid``; anything else maps to 400.
+422 ``input_invalid``; anything else maps to 400. Run 0c2 adds **202
+``pending``**, which is the answer a ``long_running`` dispatch gets: the work
+is accepted and queued, not done, and 202 Accepted is exactly that.
 
 ``operation_id`` is a nullable uuid rather than the literal ``null`` it was
 before run 0c2. Dispatching an operation whose declaration carries
@@ -37,6 +39,7 @@ from rheo_core.boundary.factories import context_from_token
 from rheo_core.operations import (
     INPUT_INVALID,
     OPERATION_NOT_PERMITTED,
+    PENDING,
     ROLE_NOT_PERMITTED,
     SUCCEEDED,
     OperationOutcome,
@@ -49,12 +52,19 @@ router = APIRouter()
 _TOKEN_REFUSAL_STATUS: Final = 401
 _STATUS_BY_STATE: Final[dict[str, int]] = {
     SUCCEEDED: 200,
+    # 202 Accepted, and the reason it is not 200: a ``long_running`` dispatch has
+    # queued the work and not done it, so a 200 would tell a caller the effect had
+    # landed. This is the only non-2xx-by-default state in the map that is not a
+    # refusal, which is why it needs an entry of its own — without one it falls
+    # through to ``_DEFAULT_ERROR_STATUS`` and a successful dispatch answers 400.
+    PENDING: 202,
     OPERATION_NOT_PERMITTED: 403,
     ROLE_NOT_PERMITTED: 403,
     NOT_FOUND: 404,
     INPUT_INVALID: 422,
 }
 _DEFAULT_ERROR_STATUS: Final = 400
+_RESULT_STATES: Final = frozenset({SUCCEEDED, PENDING})
 
 
 def _bearer(request: Request) -> str | None:
@@ -84,7 +94,12 @@ def envelope(
     (``internal_routes.py``) answers with this same shape over the same
     ``dispatch()``, so the two surfaces cannot drift apart by being written twice.
     The generated OpenAPI document (``rheo_core.operations.openapi``) describes
-    exactly this envelope as the 200 response for every operation.
+    exactly this envelope as the 200 response for every operation. It describes no
+    202, and that is accurate for every operation the document contains: 202 is
+    reachable only through a ``long_running`` declaration, and the only one in the
+    tree is the test harness's, which is never registered in a shipped profile. A run
+    that ships a ``long_running`` core operation has to add that response to the
+    document in the same change.
 
     **``operation_id`` is required and has no default, deliberately.** It is the
     outcome's own ``operation_id`` at the four call sites that run after
@@ -111,6 +126,25 @@ def outcome_status(outcome: OperationOutcome) -> int:
     :func:`envelope` is: the internal operations route maps outcomes identically,
     because the mapping belongs to the operation contract, not to one listener."""
     return _STATUS_BY_STATE.get(outcome.state, _DEFAULT_ERROR_STATUS)
+
+
+def carries_result(outcome: OperationOutcome) -> bool:
+    """Whether this outcome's body is a ``result`` rather than an ``error``.
+
+    Public and shared for the same reason :func:`envelope` and :func:`outcome_status`
+    are, and the third of the three for a sharper reason than symmetry.
+    ``OperationOutcome.ok`` is ``state == "succeeded"``, which is the right question
+    for a caller asking "did the effect land" and the wrong one for a listener
+    choosing which half of the envelope to fill: a ``pending`` outcome carries a
+    ``result`` and no ``error``, so a listener branching on ``ok`` sends the error
+    branch for a *successful* long-running dispatch — 400, the handler's output
+    dropped, and no ``error`` key either, because there is no error. Both listeners
+    ask this instead, so neither can answer the other's opposite.
+
+    Two states, and only two: ``succeeded`` and ``pending``. Every other state is a
+    refusal or ``failed``, each of which carries an ``error``.
+    """
+    return outcome.state in _RESULT_STATES
 
 
 @router.post("/api/v1/operations/{name}")
@@ -145,7 +179,7 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
         payload.update(body)
     outcome = dispatch(ctx, name, payload)
     status = outcome_status(outcome)
-    if outcome.ok:
+    if carries_result(outcome):
         result = (
             None if outcome.result is None else outcome.result.model_dump(mode="json")
         )

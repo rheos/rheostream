@@ -250,25 +250,16 @@ async def test_a_long_running_dispatch_carries_its_minted_id_in_the_envelope(
     assert read.result.state == "pending"  # type: ignore[attr-defined]
     assert read.result.name == NOTE_SCHEDULE  # type: ignore[attr-defined]
 
-    # A pinned gap, in the shape ``tests/test_handler_uow.py`` uses for F1 — stated
-    # as a fact rather than left to be rediscovered, and deliberately not fixed here.
-    #
-    # ``OperationOutcome.ok`` is ``state == "succeeded"``, and ``_STATUS_BY_STATE``
-    # has an entry for ``succeeded`` and for each refusal state and none for
-    # ``pending``. So a *successful* long-running dispatch takes both listeners'
-    # error branch: HTTP 400 from ``_DEFAULT_ERROR_STATUS``, no ``result`` key --
-    # the handler's own output model is dropped -- and no ``error`` key either,
-    # because there is no error. Only ``state`` and ``operation_id`` survive, which
-    # is why AC 20 still holds here and nothing else about this response does.
-    #
-    # Chunk 04's scope is the envelope's ``operation_id``, not the status map or the
-    # branch, and no shipped operation is ``long_running``, so nothing on ``main``
-    # behaves differently today. The fix is one map entry plus a branch that treats
-    # ``pending`` as success-shaped, in the one shared helper's two callers. When a
-    # run makes it, these three assertions go red: update them, do not delete them.
-    assert resp.status_code == 400, resp.text
-    assert "result" not in body, body
+    # 202 Accepted, and the handler's own output carried rather than dropped. A
+    # ``pending`` outcome is success-shaped: it has a ``result`` and no ``error``, so
+    # the listener takes the result branch through ``api_routes.carries_result``
+    # rather than through ``OperationOutcome.ok``, which is ``succeeded``-only and
+    # would send this response — a *successful* long-running dispatch — down the
+    # error path at 400 with neither key set.
+    assert resp.status_code == 202, resp.text
     assert "error" not in body, body
+    assert body["result"]["operation_id"] == minted, body
+    assert body["result"]["job_id"] is not None, body
 
 
 # --- B2's HTTP channels: reserved fields are ignored, either way ------------

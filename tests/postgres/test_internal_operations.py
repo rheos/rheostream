@@ -469,11 +469,12 @@ async def test_a_long_running_operation_through_the_internal_boundary(
     assert body["state"] == "pending", body
     assert body["operation_id"] is not None, body
 
-    # The same pinned gap the bearer-surface twin records, and the same reason it is
-    # pinned rather than fixed here. See that test's own comment.
-    assert response.status_code == 400, response.text
-    assert "result" not in body, body
+    # 202 with the handler's own output, identically to the bearer-surface twin,
+    # because both listeners take the result-or-error branch from the same shared
+    # ``api_routes.carries_result`` rather than from ``OperationOutcome.ok``.
+    assert response.status_code == 202, response.text
     assert "error" not in body, body
+    assert body["result"]["operation_id"] == body["operation_id"], body
 
 
 async def test_a_read_operation_through_the_internal_boundary(
