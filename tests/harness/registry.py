@@ -1,10 +1,11 @@
 """Harness registrations under ``profile = test`` with origin ``test_harness``: the
 ``harness.note`` record type (a resolver over the table ``tests/harness/records.py``
 creates through the storage backend, never a shipped migration), the operations
-``harness.note.get(ref)``, ``harness.note.write(body)`` and
+``harness.note.get(ref)``, ``harness.note.write(body)``,
 ``harness.note.explode(body, message)`` (a handler that raises after writing, for the
-dispatcher's rollback and failure envelope), and the scaffolding B2 needs to drive
-the reserved-field refusal.
+dispatcher's rollback and failure envelope) and ``harness.note.schedule(body)`` (the
+tree's one ``long_running`` declaration, which enqueues a job carrying the minted
+operation id), and the scaffolding B2 needs to drive the reserved-field refusal.
 
 Also two pieces of control-plane scaffolding the C4 tests share: ``add_member``
 (an account plus its ``control.membership`` row through C3's repositories, because
@@ -60,11 +61,13 @@ from rheo_core.refs.resolver import (
     Unavailable,
     resolve_in,
 )
-from rheo_core.settings import TEST_HARNESS_ORIGIN
+from rheo_core.settings import TEST_HARNESS_ORIGIN, resolve
 from rheo_core.storage import core_tables
-from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.control_plane import insert_account, insert_membership_if_absent
 from rheo_core.storage.postgres import PostgresBackend
+from rheo_core.work.cancellation import CancellationToken
+from rheo_core.work.jobs import enqueue_job
 from sqlalchemy import Connection, inspect
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -74,6 +77,16 @@ NOTE_RECORD_TYPE: Final = "note"
 NOTE_GET: Final = "harness.note.get"
 NOTE_WRITE: Final = "harness.note.write"
 NOTE_EXPLODE: Final = "harness.note.explode"
+NOTE_SCHEDULE: Final = "harness.note.schedule"
+NOTE_SCHEDULE_KIND: Final = "harness.note.schedule.job"
+"""The one ``long_running`` harness operation and the job kind it enqueues.
+
+The operation is ``MUTATE`` and declares ``long_running = True``, so dispatching it
+mints a ``core.operation`` record; its handler reads the minted id off the sealed view
+and stamps it on the job, which is what makes the worker terminalise that record when
+the job finishes. It is the only ``long_running`` declaration anywhere in the tree —
+no shipped ``core.*`` operation carries the flag — so it is what every criterion-13
+test drives the real path with."""
 
 _ALL_THREE_ROLES: Final = frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR})
 # See ``rheo_core.operations.core_ops`` for why ``ignore`` (the default) is stated.
@@ -181,6 +194,102 @@ def _explode(
     raise RuntimeError(model_input.message)
 
 
+class NoteScheduleInput(BaseModel):
+    """``body`` is what the enqueued job will write when the worker runs it.
+
+    ``max_attempts`` is a **test knob on a test-owned operation**, not a shape any
+    shipped operation has: omitted, the job takes the production budget from
+    ``work.max_attempts`` exactly as ``work.jobs.enqueue`` does. A test that needs to
+    watch a long-running job reach ``failed`` would otherwise have to drive eight
+    visits and eight backoffs to get there, and would be testing the retry budget —
+    which ``tests/postgres/test_worker_loop.py`` already pins — rather than the
+    terminalisation mapping it is actually about.
+    """
+
+    model_config = _IGNORE_EXTRA
+
+    body: str
+    max_attempts: int | None = None
+
+
+class NoteScheduled(BaseModel):
+    """What a ``long_running`` dispatch answers with: the job it queued, and the
+    operation record the caller can watch.
+
+    ``operation_id`` is published on the output model as well as on the envelope so a
+    test driving ``dispatch()`` directly — with no HTTP envelope to read — still sees
+    the id the handler was actually handed, rather than inferring it from the outcome
+    and assuming the two agree."""
+
+    model_config = ConfigDict(frozen=True)
+
+    job_id: UUID
+    operation_id: UUID | None
+
+
+class NoteSchedulePayload(BaseModel):
+    """The enqueued job's own stored input."""
+
+    body: str
+
+
+def _schedule_note(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: NoteScheduleInput
+) -> NoteScheduled:
+    """Queue the work and return, which is the whole shape of a long-running operation.
+
+    ``uow`` is annotated ``UnitOfWork`` because that is what the ``Handler`` alias
+    declares; ``dispatch()`` always hands a ``HandlerUnitOfWork``, and the narrowing
+    below is what lets this read the minted id without widening the handler signature
+    every registered operation shares.
+
+    ``ensure_note_table`` runs **here**, in the dispatcher's transaction, rather than
+    in the job: the job's own transaction is where its note is written, and a DDL
+    statement in there would be a second thing to roll back on a retry.
+    """
+    ensure_note_table(uow.connection)
+    operation_id = uow.operation_id if isinstance(uow, HandlerUnitOfWork) else None
+    job_id = enqueue_job(
+        uow.connection,
+        kind=NOTE_SCHEDULE_KIND,
+        payload={"body": model_input.body},
+        now=datetime.now(UTC),
+        max_attempts=(
+            resolve().get_int("work.max_attempts")
+            if model_input.max_attempts is None
+            else model_input.max_attempts
+        ),
+        operation_id=operation_id,
+    )
+    return NoteScheduled(job_id=job_id, operation_id=operation_id)
+
+
+def run_scheduled_note(
+    uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
+) -> None:
+    """The job kind :data:`NOTE_SCHEDULE_KIND` runs: write the note, and nothing else.
+
+    Registered into a ``JobKindRegistry`` by the test that needs it, never globally —
+    that registry is injected all the way down from ``worker_loop``, so there is no
+    process-wide instance for this module to reach.
+    """
+    assert isinstance(payload, NoteSchedulePayload)
+    write_note(uow.connection, body=payload.body)
+
+
+NOTE_SCHEDULE_DECLARATION: Final = OperationDeclaration(
+    name=NOTE_SCHEDULE,
+    safety_class=SafetyClass.MUTATE,
+    roles=_ALL_THREE_ROLES,
+    input_model=NoteScheduleInput,
+    output=NoteScheduled,
+    idempotency=Idempotency.NONE,
+    # ``MUTATE``, so the ``AuditSpec`` is required exactly as it is on the other two
+    # harness mutate declarations below.
+    audit=AuditSpec(subject_field=None),
+    long_running=True,
+)
+
 NOTE_EXPLODE_DECLARATION: Final = OperationDeclaration(
     name=NOTE_EXPLODE,
     safety_class=SafetyClass.MUTATE,
@@ -215,13 +324,26 @@ NOTE_WRITE_DECLARATION: Final = OperationDeclaration(
 def register_harness(
     *, registry: OperationRegistry = REGISTRY, resolvers: ResolverRegistry = RESOLVERS
 ) -> None:
-    """Register the note resolver and the two harness operations (idempotent)."""
+    """Register the note resolver and every ``harness.note.*`` operation this module
+    declares (idempotent).
+
+    Scoped rather than counted, deliberately: the previous wording named a number,
+    and the number went stale the first time a run added a declaration here.
+
+    **Every declaration above is registered here, and that matters.** A declaration
+    that exists as a module constant but is never passed to a registry is never
+    actually registered, and reads as present to anyone grepping for it while being
+    invisible to ``REGISTRY.names()`` and to anything derived from it.
+    """
     resolvers.register(
         HARNESS_MODULE_ID, NOTE_RECORD_TYPE, resolve_note, origin=TEST_HARNESS_ORIGIN
     )
     registry.register(NOTE_GET_DECLARATION, _get_note, origin=TEST_HARNESS_ORIGIN)
     registry.register(NOTE_WRITE_DECLARATION, _write_note, origin=TEST_HARNESS_ORIGIN)
     registry.register(NOTE_EXPLODE_DECLARATION, _explode, origin=TEST_HARNESS_ORIGIN)
+    registry.register(
+        NOTE_SCHEDULE_DECLARATION, _schedule_note, origin=TEST_HARNESS_ORIGIN
+    )
 
 
 # --- B2 scaffolding: input models a registration must refuse --------------------------

@@ -4,6 +4,57 @@
  */
 
 export interface paths {
+    "/api/v1/operations/core.operation.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.operation.get (read) */
+        post: operations["core.operation.get"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.operation.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.operation.list (read) */
+        post: operations["core.operation.list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.operation.resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.operation.resolve (mutate) */
+        post: operations["core.operation.resolve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.settings.set": {
         parameters: {
             query?: never;
@@ -223,6 +274,110 @@ export interface components {
             state: string;
         };
         /**
+         * OperationList
+         * @description The workspace's most recently created operation records, newest first.
+         *
+         *     ``operations`` is a named collection field rather than a bare list, mirroring
+         *     ``FailureList``: a later run adding a second collection beside it is then an
+         *     additive change a reader may ignore, not a change to the response's own type.
+         */
+        OperationList: {
+            /** Operations */
+            operations: components["schemas"]["OperationRecord"][];
+        };
+        /**
+         * OperationListInput
+         * @description How many of the most recently created records to return.
+         */
+        OperationListInput: {
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /**
+         * OperationRecord
+         * @description One operation record as these operations publish it.
+         *
+         *     :class:`~rheo_core.operations.records.OperationRow` field for field, with that
+         *     row's ``id`` published as ``operation_id`` — the same renaming
+         *     ``work/operations.py``'s ``FailedJob`` makes for the same reason: the response is
+         *     about one operation and the longer name reads unambiguously in a generated client.
+         */
+        OperationRecord: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Text */
+            error_text: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /** Result Ref */
+            result_ref: string | null;
+            /** Safety Class */
+            safety_class: string;
+            /** Started At */
+            started_at: string | null;
+            /** State */
+            state: string;
+            /** Terminal At */
+            terminal_at: string | null;
+            /** Terminal Check At */
+            terminal_check_at: string | null;
+            /** Terminal Check Kind */
+            terminal_check_kind: string | null;
+        };
+        /**
+         * OperationRef
+         * @description Which record to read. ``operation_id`` is not a reserved input field, so a
+         *     declaration may name it.
+         */
+        OperationRef: {
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+        };
+        /**
+         * OperationResolveInput
+         * @description An ``unresolved`` record, the outcome a person has decided it had, and why.
+         *
+         *     ``note`` is required and non-empty: AC 18's whole content is that clearing an
+         *     ``unresolved`` record is an *explicit act*, and a resolution with no stated reason
+         *     is indistinguishable from an accidental one. It is bounded so a note cannot become
+         *     an unbounded write into a column nothing prunes.
+         */
+        OperationResolveInput: {
+            /** Note */
+            note: string;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "succeeded" | "failed" | "cancelled";
+            /**
+             * Terminal Check Kind
+             * @default null
+             */
+            terminal_check_kind: ("record_exists" | "provider_status" | "sink_recorded" | "handler_returned") | null;
+        };
+        /**
          * SettingWrite
          * @description One key and its natively typed value (a list for ``list[str]`` keys).
          */
@@ -337,6 +492,105 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "core.operation.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["OperationRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.operation.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationListInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["OperationList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.operation.resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationResolveInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["OperationRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
     "core.settings.set": {
         parameters: {
             query?: never;
@@ -361,7 +615,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["SettingWritten"];
                         state: string;
                     };
@@ -393,7 +648,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["SettingWritten"];
                         state: string;
                     };
@@ -425,7 +681,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["TokenIssued"];
                         state: string;
                     };
@@ -457,7 +714,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["TokenRevoked"];
                         state: string;
                     };
@@ -489,7 +747,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["FailureList"];
                         state: string;
                     };
@@ -521,7 +780,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["WorkspaceStatus"];
                         state: string;
                     };

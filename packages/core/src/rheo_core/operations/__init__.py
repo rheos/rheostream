@@ -3,17 +3,24 @@
 - ``registry.py`` — ``OperationRegistry.register(decl, handler, *, origin)`` and
   ``authorize(ctx, name) -> Authorized | Refusal``; the process-wide ``REGISTRY``.
 - ``dispatch.py`` — ``dispatch(ctx, name, payload) -> OperationOutcome``: the
-  ``context_required`` check, ``authorize``, input validation, one unit of work
-  through ``route(ctx)``, the handler under a sealed ``HandlerUnitOfWork``, the
-  owning module's audit sink, commit. No audit table, no operation record, no
-  outbox (run 0c's).
+  ``context_required`` check, ``authorize``, input validation, the ``core.operation``
+  mint for a ``long_running`` declaration, one unit of work through ``route(ctx)``,
+  the handler under a sealed ``HandlerUnitOfWork``, commit. No audit table and no
+  outbox write here.
+- ``records.py`` — the ``core.operation`` repository: the mint, the terminal writes
+  the worker makes, the unresolved marker and its clearing, and the two reads.
+- ``operation_ops.py`` — ``core.operation.get`` / ``.list`` / ``.resolve``: their
+  models and handlers, beside that repository. Their declarations are in
+  ``core_ops.py``.
 - ``refusals.py`` — the state names, ``RegistrationRefused``, ``OperationRefused``,
   and the re-exported ``handler_may_not_commit`` (declared in ``storage.backend``,
   beside the ``HandlerUnitOfWork`` that raises it).
-- ``core_ops.py`` — ``core.workspace.status``, ``core.settings.set``,
-  ``core.settings.set_member``, ``core.work.failures`` (whose models and
-  handler live in ``rheo_core.work.operations``, beside the repository they
-  read), and ``register_core_operations()``.
+- ``core_ops.py`` — every core declaration and ``register_core_operations()``:
+  ``core.workspace.status``, ``core.settings.set``, ``core.settings.set_member``,
+  ``core.work.failures`` (whose models and handler live in
+  ``rheo_core.work.operations``, beside the repository they read), the three
+  ``core.operation`` operations, and the two token operations built inside the
+  function.
 - ``openapi.py`` — ``build_document(registry)``: the OpenAPI 3.1 document the web
   tier's generated client is built from, one path per registered operation. Pure
   pydantic, no FastAPI, so ``apps/cli`` can emit it without ``apps/core``.
@@ -40,6 +47,17 @@ from rheo_core.operations.openapi import (
     OPERATION_PATH_PREFIX,
     build_document,
     operation_path,
+)
+from rheo_core.operations.operation_ops import (
+    OPERATION_GET,
+    OPERATION_LIST,
+    OPERATION_RESOLVE,
+    OPERATION_STATE,
+    OperationList,
+    OperationListInput,
+    OperationRecord,
+    OperationRef,
+    OperationResolveInput,
 )
 from rheo_core.operations.refusals import (
     AUTHORIZATION_STATES,
@@ -81,8 +99,12 @@ __all__ = [
     "HARNESS_MODULE_ID",
     "INPUT_INVALID",
     "MODULE_DISABLED",
+    "OPERATION_GET",
+    "OPERATION_LIST",
     "OPERATION_NOT_PERMITTED",
     "OPERATION_PATH_PREFIX",
+    "OPERATION_RESOLVE",
+    "OPERATION_STATE",
     "OPERATION_UNKNOWN",
     "OUTPUT_INVALID",
     "REGISTRY",
@@ -95,9 +117,14 @@ __all__ = [
     "Authorized",
     "Handler",
     "OperationError",
+    "OperationList",
+    "OperationListInput",
     "OperationOutcome",
+    "OperationRecord",
+    "OperationRef",
     "OperationRefused",
     "OperationRegistry",
+    "OperationResolveInput",
     "RegisteredOperation",
     "RegistrationRefused",
     "SettingWrite",

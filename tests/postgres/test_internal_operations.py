@@ -23,7 +23,9 @@ with. What this module proves, in the order the route itself checks:
    session's own workspace.
 4. The dispatcher's check-order refusals through the real route, each asserting
    the *first* refusal wins when two conditions are simultaneously false.
-5. The mutate and read operations, end to end through the real route.
+5. The mutate, read and long-running operations, end to end through the real
+   route — the last of them carrying the minted ``operation_id`` its envelope
+   must report (AC 20).
 
 ``operation_not_permitted`` is the one refusal in ``authorize``'s chain this module
 does not reach, and cannot: ``context_from_session`` sets ``operation_set =
@@ -41,6 +43,7 @@ import pytest
 from conftest import ClusterSession, MakeWorkspace
 from harness.records import ensure_note_table, list_notes
 from harness.registry import (
+    NOTE_SCHEDULE,
     NOTE_WRITE,
     add_member,
     enable_harness_module,
@@ -431,7 +434,7 @@ async def test_role_refuses_after_the_module_check(
     assert response.json()["state"] == ROLE_NOT_PERMITTED
 
 
-# --- the two real operations through the boundary -------------------------------------
+# --- the real operations through the boundary -------------------------------------
 
 
 async def test_a_mutate_operation_through_the_internal_boundary(
@@ -448,6 +451,29 @@ async def test_a_mutate_operation_through_the_internal_boundary(
     assert body["result"]["ref"].startswith("harness.note:")
 
     assert _notes(cluster, harness_workspace) == ("through the boundary",)
+
+
+async def test_a_long_running_operation_through_the_internal_boundary(
+    harness_workspace: UUID, owner_session: str
+) -> None:
+    """AC 20, internal half: the same envelope, the same minted id, on this surface.
+
+    Both listeners build the envelope from the one shared ``api_routes.envelope``
+    helper, whose ``operation_id`` parameter is required and undefaulted — so this
+    assertion and its bearer-surface twin in ``test_api_surface.py`` cannot disagree
+    unless one of the two listeners stops typechecking. That is the whole reason the
+    parameter carries no default.
+    """
+    response = await _post(NOTE_SCHEDULE, owner_session, {"body": "queued"})
+    body = response.json()
+    assert body["state"] == "pending", body
+    assert body["operation_id"] is not None, body
+
+    # The same pinned gap the bearer-surface twin records, and the same reason it is
+    # pinned rather than fixed here. See that test's own comment.
+    assert response.status_code == 400, response.text
+    assert "result" not in body, body
+    assert "error" not in body, body
 
 
 async def test_a_read_operation_through_the_internal_boundary(

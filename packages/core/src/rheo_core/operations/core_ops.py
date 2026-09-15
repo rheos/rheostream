@@ -24,13 +24,21 @@ whose own row is the ``:105`` the cited range now reaches.
   directly. Its models and handler live in ``rheo_core.work.operations``, beside
   that repository; only the declaration is here. ``audit = None`` for the same
   reason ``core.workspace.status`` carries it.
+- ``core.operation.get`` / ``core.operation.list`` — ``read``; roles ``owner,
+  member, operator``. The supported reads of an operation record (run 0c2, C4).
+- ``core.operation.resolve`` — ``mutate``; roles ``owner, operator``. Clears an
+  ``unresolved`` record to a named outcome with a note, and refuses a record in
+  any other state. The models and handlers of all three live in
+  ``rheo_core.operations.operation_ops``, beside the repository they read; only
+  the declarations are here, the same split ``core.work.failures`` uses.
 
 Every mutate operation here declares ``AuditSpec(subject_field=None)``: C1 fixes
-``AuditSpec`` at exactly that one field, and none of these six operations acts on
-a record (``core.work.failures`` is ``read``-class and declares no ``AuditSpec``
-at all, so it moves the count and nothing else in this paragraph). Declaring it
-is required so 0c2's audit dispatcher re-declares nothing; acting on it (writing
-an audit row) is 0c2's and does not happen in this run.
+``AuditSpec`` at exactly that one field, and none of the mutate operations in
+this module acts on a *record type* — a ``RecordRef`` in an input model is what
+``subject_field`` names, and none of them has one. The read-class declarations
+carry no ``AuditSpec`` at all, which stays legal. Declaring it is required so
+0c2's audit dispatcher re-declares nothing; acting on it (writing an audit row)
+is 0c2's and does not happen in this run.
 
 Registration is explicit (:func:`register_core_operations`), not an import side
 effect, mirroring the settings harness.
@@ -49,6 +57,19 @@ from rheo_contracts import (
     WorkspaceContext,
 )
 
+from rheo_core.operations.operation_ops import (
+    OPERATION_GET,
+    OPERATION_LIST,
+    OPERATION_RESOLVE,
+    OperationList,
+    OperationListInput,
+    OperationRecord,
+    OperationRef,
+    OperationResolveInput,
+    get_handler,
+    list_handler,
+    resolve_handler,
+)
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import (
     REGISTRY,
@@ -285,27 +306,79 @@ WORK_FAILURES_DECLARATION: Final = OperationDeclaration(
     audit=None,
 )
 
+OPERATION_GET_DECLARATION: Final = OperationDeclaration(
+    name=OPERATION_GET,
+    safety_class=SafetyClass.READ,
+    # ``docs/architecture/module-contract.md:96`` ratifies ``owner, member,
+    # operator``; the declaration default is ``{OWNER, MEMBER}``, so leaving this
+    # field off would silently ship the wrong set rather than fail.
+    roles=frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR}),
+    input_model=OperationRef,
+    output=OperationRecord,
+    idempotency=Idempotency.NONE,
+    audit=None,
+)
+
+OPERATION_LIST_DECLARATION: Final = OperationDeclaration(
+    name=OPERATION_LIST,
+    safety_class=SafetyClass.READ,
+    roles=frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR}),
+    input_model=OperationListInput,
+    output=OperationList,
+    idempotency=Idempotency.NONE,
+    audit=None,
+)
+
+OPERATION_RESOLVE_DECLARATION: Final = OperationDeclaration(
+    name=OPERATION_RESOLVE,
+    safety_class=SafetyClass.MUTATE,
+    # ``docs/architecture/module-contract.md:107`` ratifies ``owner, operator``.
+    roles=frozenset({Role.OWNER, Role.OPERATOR}),
+    input_model=OperationResolveInput,
+    output=OperationRecord,
+    # Each resolution is its own act on its own record; nothing makes a repeat the
+    # same row, and the second call refuses because the record is no longer
+    # ``unresolved``.
+    idempotency=Idempotency.NONE,
+    # ``MUTATE``, so this is required and not optional: 0c2's registration rule
+    # refuses a non-``READ`` declaration carrying ``audit = None``, and
+    # ``register_core_operations()`` would then raise on every call, startup
+    # included. ``subject_field=None`` because ``AuditSpec.subject_field`` names an
+    # *input-model field carrying a RecordRef* (``manifest.py:60-72``) and
+    # ``core.operation`` is not a registered record type with a resolver — this
+    # operation's input names an operation id, which is not one.
+    audit=AuditSpec(subject_field=None),
+)
+
 CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (WORKSPACE_STATUS_DECLARATION, _workspace_status),
     (SETTINGS_SET_DECLARATION, _settings_set),
     (SETTINGS_SET_MEMBER_DECLARATION, _settings_set_member),
     (WORK_FAILURES_DECLARATION, failures_handler),
+    (OPERATION_GET_DECLARATION, get_handler),
+    (OPERATION_LIST_DECLARATION, list_handler),
+    (OPERATION_RESOLVE_DECLARATION, resolve_handler),
 )
-"""The three 0b1 operations, plus 0c1's ``core.work.failures``. The two token
-operations are not here: see :func:`register_core_operations`'s own docstring for
-why they are built inside the function instead of as module-level ``Final``
-declarations like these four. ``core.work.failures`` needs no such deferral —
-``rheo_core.work`` closes no cycle with ``rheo_core.operations`` — so it belongs
-in this tuple."""
+"""The three 0b1 operations, 0c1's ``core.work.failures``, and 0c2's three
+``core.operation`` operations. The two token operations are not here: see
+:func:`register_core_operations`'s own docstring for why they are built inside the
+function instead of as module-level ``Final`` declarations like these. Neither
+``core.work.failures`` nor the ``core.operation`` three needs that deferral —
+``rheo_core.work`` closes no cycle with ``rheo_core.operations``, and
+``operation_ops`` is inside this package — so all four belong in this tuple."""
 
 
 def register_core_operations(
     registry: OperationRegistry = REGISTRY,
 ) -> tuple[RegisteredOperation, ...]:
-    """Register the six core operations (idempotent) under the ``core`` origin.
+    """Register every core operation (idempotent) under the ``core`` origin.
+
+    Every declaration in :data:`CORE_OPERATIONS`, plus the two token operations
+    built below — deliberately not a count, because a count in this sentence goes
+    false the next time a run adds a declaration and nothing checks it.
 
     The two token declarations are built **here**, inside the function, rather
-    than as module-level constants like :data:`CORE_OPERATIONS`'s four:
+    than as module-level constants like :data:`CORE_OPERATIONS`'s:
     building them needs ``rheo_core.tokens.issue``'s handlers and models, and a
     module-level import of that module here would close a real cycle —
     ``rheo_core.operations``'s own ``__init__.py`` imports this module as its

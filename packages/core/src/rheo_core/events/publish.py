@@ -25,11 +25,22 @@ prevent. ``consumers`` has no module-level default because there is no process-w
 registry to fall back on; a test builds its own.
 
 **``correlation_id`` is derived here, not supplied.** The ratified column is "the
-originating operation's id" and it is NOT NULL, so it must always resolve, and
-:class:`NewEvent` therefore does not carry it. This chunk derives it from
-``ctx.request_id``, the only identifier for the causing call that exists yet. Recorded
-as a deviation for that window: until an operation record is minted to name, a
-published event's ``correlation_id`` is the request id.
+originating operation's id" (``intake-and-events.md:301``) and it is NOT NULL, so it
+must always resolve, and :class:`NewEvent` therefore does not carry it. It resolves in
+two steps, in this order:
+
+1. **The originating operation's id, when there is one.** A handler publishing inside
+   a ``long_running`` dispatch is handed a ``HandlerUnitOfWork`` carrying the id
+   ``dispatch()`` minted, and that id is what the ratified sentence actually names.
+2. **``ctx.request_id`` otherwise**, which is every other publish: no operation record
+   is minted for a declaration that is not ``long_running``, so the request id stays
+   the only identifier the causing call has. Recorded as the standing deviation for
+   that case rather than as a temporary one — it is what a non-long-running operation's
+   events will always carry.
+
+The branch reads the *unit of work*, not the context, because the id lives on the view
+the dispatcher built for this one call and ``WorkspaceContext`` is frozen at the
+boundary, long before anything is minted.
 """
 
 from dataclasses import dataclass
@@ -44,7 +55,7 @@ from rheo_core.events.consumers import ConsumerRegistry
 from rheo_core.events.deliveries import PENDING
 from rheo_core.refs import uuid7
 from rheo_core.storage import work_tables as t
-from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.postgres import get_backend
 from rheo_core.storage.work_index import mark_work_due
 
@@ -102,6 +113,13 @@ def publish(
     connection = uow.connection
     event_id = uuid7()
     module_id = event.type.split(".", 1)[0]
+    # The originating operation's id when this publish is inside a ``long_running``
+    # dispatch, and the request id otherwise. See the module docstring.
+    correlation_id = (
+        uow.operation_id
+        if isinstance(uow, HandlerUnitOfWork) and uow.operation_id is not None
+        else ctx.request_id
+    )
     position = connection.execute(
         insert(t.outbox_event)
         .values(
@@ -111,7 +129,7 @@ def publish(
             source=f"{SOURCE_PREFIX}{module_id}",
             subject_ref=event.subject_ref,
             subject_revision=event.subject_revision,
-            correlation_id=ctx.request_id,
+            correlation_id=correlation_id,
             causation_id=event.causation_id,
             actor_kind=ctx.actor.kind.value,
             actor_id=ctx.actor.id,

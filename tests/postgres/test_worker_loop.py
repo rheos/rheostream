@@ -50,7 +50,9 @@ from pydantic import BaseModel
 from rheo_app_worker.main import install_stop_signals
 from rheo_core.boundary import context_for_operator
 from rheo_core.events import ConsumerRegistry, NewEvent, publish
-from rheo_core.storage.backend import HandlerUnitOfWork
+from rheo_core.operations.records import AUDIENCE_NONE, mint
+from rheo_core.operations.records import get as read_operation
+from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.control_tables import workspace as workspace_table
 from rheo_core.storage.postgres import PostgresBackend
@@ -232,8 +234,13 @@ def _put(
     kind: str = KIND,
     payload: dict[str, object] | None = None,
     max_attempts: int = 3,
+    operation_id: UUID | None = None,
 ) -> UUID:
-    """One queued job, committed, without going through the control plane."""
+    """One queued job, committed, without going through the control plane.
+
+    ``operation_id`` defaults to ``None``, which is what every job in this file
+    except the two criterion-13 cases carries.
+    """
     with engine.begin() as conn:
         return enqueue_job(
             conn,
@@ -241,7 +248,44 @@ def _put(
             payload={"body": "done"} if payload is None else payload,
             now=now,
             max_attempts=max_attempts,
+            operation_id=operation_id,
         )
+
+
+def _mint_operation(engine: Engine, database: str, *, now: datetime) -> UUID:
+    """One committed ``pending`` operation record, minted directly.
+
+    The dispatcher's own minting path is driven end to end in
+    ``tests/postgres/test_operation_records.py``; the two tests below are about the
+    worker's **pre-handler gates**, which need a job carrying an operation id and
+    have no reason to route a dispatch to get one.
+    """
+    with UnitOfWork(engine, database) as uow:
+        operation_id = mint(
+            uow.connection,
+            name="harness.note.schedule",
+            safety_class="mutate",
+            actor_kind="operator",
+            actor_id=None,
+            entry="cli",
+            audience_kind=AUDIENCE_NONE,
+            audience_id=None,
+            now=now,
+        )
+        uow.commit()
+    return operation_id
+
+
+def _operation_state(engine: Engine, database: str, operation_id: UUID) -> str:
+    """The record's state, read through the repository rather than the table.
+
+    AC 19 forbids this run's tests from reading ``core.operation`` with a query of
+    their own, and the read is what these two tests assert on.
+    """
+    with UnitOfWork(engine, database) as uow:
+        row = read_operation(uow.connection, operation_id=operation_id)
+    assert row is not None, f"operation {operation_id} was not written"
+    return row.state
 
 
 def _read(engine: Engine, job_id: UUID) -> Row[Any]:
@@ -491,6 +535,87 @@ def test_a_job_that_dies_on_every_attempt_reaches_failed_rather_than_relooping(
     assert row.last_error == RETRY_BUDGET_EXHAUSTED
     assert row.finished_at == lapsed
     assert _notes(engine) == (), "gate 2 runs before the handler is ever entered"
+
+
+# --- criterion 13: the two PRE-HANDLER gates terminalise the operation record too -----
+#
+# These two cases live here rather than in ``test_operation_records.py`` because the
+# gates themselves do, and that file covers the other four sites. Skipping them as
+# "already covered there" would leave ``_run_leased_job``'s two gates with no test at
+# all — and those two are exactly what chunk 01's pre-handler exclusion would have
+# wrongly carried over, so they are the two a mutation has to be able to kill (M13f).
+# (``_fail_terminally`` is also pre-handler and is covered in the other file; the line
+# that matters here is the gate, not the handler.)
+
+
+def test_a_cancelled_long_running_job_terminalises_its_operation_record(
+    cluster: ClusterSession,
+    workspace: UUID,
+    database: str,
+    engine: Engine,
+    now: datetime,
+) -> None:
+    """Gate 1, before any handler: the job ends ``cancelled`` and so does its record.
+
+    The job is cancelled while still ``queued``, which sets ``cancel_requested`` and
+    terminalises the row outright, so the visit never leases it — that is the case
+    ``test_a_cancelled_queued_job_is_terminal_before_any_visit`` already pins. Here
+    the flag is set on a **leased** row instead, which is the one interleaving that
+    reaches gate 1 on the next acquire with the handler still never entered.
+    """
+    operation_id = _mint_operation(engine, database, now=now)
+    job_id = _put(engine, now=now, operation_id=operation_id)
+    with engine.begin() as conn:
+        assert (
+            acquire_lease(
+                conn, owner="worker-that-died", now=now, lease_seconds=LEASE_SECONDS
+            )
+            is not None
+        )
+        assert request_cancellation(conn, job_id, now=now) == "leased"
+
+    lapsed = now + timedelta(seconds=LEASE_SECONDS + 1)
+    _visit(workspace, kinds=_registry(), backend=cluster.backend, at=lapsed)
+
+    assert _read(engine, job_id).state == "cancelled"
+    assert _notes(engine) == (), "gate 1 runs before the handler is ever entered"
+    assert _operation_state(engine, database, operation_id) == "cancelled"
+
+
+def test_an_exhausted_long_running_job_terminalises_its_operation_record(
+    cluster: ClusterSession,
+    workspace: UUID,
+    database: str,
+    engine: Engine,
+    now: datetime,
+) -> None:
+    """Gate 2's crash arm, before any handler: the job ends ``failed`` and so does
+    its record.
+
+    Same shape as ``test_a_job_that_dies_on_every_attempt_reaches_failed_rather
+    _than_relooping``, with an operation record attached: the kind is registered with
+    a handler that **would** succeed if it were entered, so a gate that fell through
+    would end both the job and the record ``succeeded`` and this would fail for the
+    right reason.
+    """
+    operation_id = _mint_operation(engine, database, now=now)
+    job_id = _put(engine, now=now, max_attempts=1, operation_id=operation_id)
+    with engine.begin() as conn:
+        assert (
+            acquire_lease(
+                conn, owner="worker-that-died", now=now, lease_seconds=LEASE_SECONDS
+            )
+            is not None
+        )
+
+    lapsed = now + timedelta(seconds=LEASE_SECONDS + 1)
+    _visit(workspace, kinds=_registry(), backend=cluster.backend, at=lapsed)
+
+    row = _read(engine, job_id)
+    assert row.state == "failed"
+    assert row.last_error == RETRY_BUDGET_EXHAUSTED
+    assert _notes(engine) == (), "gate 2 runs before the handler is ever entered"
+    assert _operation_state(engine, database, operation_id) == "failed"
 
 
 # --- AC 6, loop half: the loser discards its own effects ------------------------------

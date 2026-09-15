@@ -26,7 +26,10 @@ import pytest
 from pydantic import BaseModel
 from rheo_core.operations import (
     GENERATED_BANNER,
+    OPERATION_GET,
+    OPERATION_LIST,
     OPERATION_PATH_PREFIX,
+    OPERATION_RESOLVE,
     OperationRegistry,
     build_document,
     operation_path,
@@ -83,14 +86,15 @@ def test_every_registered_operation_has_a_path(registry: OperationRegistry) -> N
 def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
     registry: OperationRegistry,
 ) -> None:
-    """Six ``core.*`` paths, not four.
+    """Every ``core.*`` path, including the two the module-level tuple does not hold.
 
     ``core.token.issue`` and ``core.token.revoke`` are declared **inside**
     ``register_core_operations`` rather than in its module-level
-    ``CORE_OPERATIONS`` tuple, to avoid a real import cycle. A reader who counts
-    that tuple sees four. AC 15's "a path for every registered operation" is over
-    what the registrar actually registered, so it is six, and it is pinned here so
-    a future reader does not "fix" the count down to the tuple's length.
+    ``CORE_OPERATIONS`` tuple, to avoid a real import cycle, so a reader who counts
+    that tuple comes up two short. AC 15's "a path for every registered operation" is
+    over what the registrar actually registered, and the enumeration below is that
+    set — pinned by **name** rather than by number, so a run that adds a declaration
+    updates a list it can read rather than a count it has to recompute.
     """
     paths = build_document(registry)["paths"]
     core_paths = sorted(
@@ -105,6 +109,9 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             TOKEN_ISSUE,
             TOKEN_REVOKE,
             WORK_FAILURES,
+            OPERATION_GET,
+            OPERATION_LIST,
+            OPERATION_RESOLVE,
         )
     )
 
@@ -146,7 +153,14 @@ def test_the_request_and_response_schemas_come_from_the_declared_models(
     assert schemas["WorkspaceStatus"] == _schema_without_defs(WorkspaceStatus)
     # WorkspaceStatus's $defs were lifted into components, so its own $ref resolves.
     assert "ModuleStatus" in schemas
-    assert envelope["properties"]["operation_id"] == {"type": "null"}
+    # A nullable uuid since run 0c2, not the literal ``null`` it was before: a
+    # ``long_running`` dispatch puts a real id here, and a generated client has to be
+    # able to read both. Every operation registered in release one still answers null,
+    # which ``tests/postgres/test_api_surface.py`` asserts over the wire.
+    assert envelope["properties"]["operation_id"] == {
+        "type": ["string", "null"],
+        "format": "uuid",
+    }
 
 
 def test_the_document_is_openapi_3_1(registry: OperationRegistry) -> None:

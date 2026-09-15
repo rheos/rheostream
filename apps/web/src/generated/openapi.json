@@ -180,6 +180,225 @@
         "title": "ModuleStatus",
         "type": "object"
       },
+      "OperationList": {
+        "description": "The workspace's most recently created operation records, newest first.\n\n``operations`` is a named collection field rather than a bare list, mirroring\n``FailureList``: a later run adding a second collection beside it is then an\nadditive change a reader may ignore, not a change to the response's own type.",
+        "properties": {
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationRecord"
+            },
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "title": "OperationList",
+        "type": "object"
+      },
+      "OperationListInput": {
+        "description": "How many of the most recently created records to return.",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "OperationListInput",
+        "type": "object"
+      },
+      "OperationRecord": {
+        "description": "One operation record as these operations publish it.\n\n:class:`~rheo_core.operations.records.OperationRow` field for field, with that\nrow's ``id`` published as ``operation_id`` \u2014 the same renaming\n``work/operations.py``'s ``FailedJob`` makes for the same reason: the response is\nabout one operation and the longer name reads unambiguously in a generated client.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Text"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "safety_class": {
+            "title": "Safety Class",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "terminal_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal At"
+          },
+          "terminal_check_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Check At"
+          },
+          "terminal_check_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Check Kind"
+          }
+        },
+        "required": [
+          "operation_id",
+          "name",
+          "safety_class",
+          "state",
+          "result_ref",
+          "error_code",
+          "error_text",
+          "terminal_check_kind",
+          "terminal_check_at",
+          "created_at",
+          "started_at",
+          "terminal_at"
+        ],
+        "title": "OperationRecord",
+        "type": "object"
+      },
+      "OperationRef": {
+        "description": "Which record to read. ``operation_id`` is not a reserved input field, so a\ndeclaration may name it.",
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "title": "OperationRef",
+        "type": "object"
+      },
+      "OperationResolveInput": {
+        "description": "An ``unresolved`` record, the outcome a person has decided it had, and why.\n\n``note`` is required and non-empty: AC 18's whole content is that clearing an\n``unresolved`` record is an *explicit act*, and a resolution with no stated reason\nis indistinguishable from an accidental one. It is bounded so a note cannot become\nan unbounded write into a column nothing prunes.",
+        "properties": {
+          "note": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "terminal_check_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "record_exists",
+                  "provider_status",
+                  "sink_recorded",
+                  "handler_returned"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Terminal Check Kind"
+          }
+        },
+        "required": [
+          "operation_id",
+          "outcome",
+          "note"
+        ],
+        "title": "OperationResolveInput",
+        "type": "object"
+      },
       "SettingWrite": {
         "description": "One key and its natively typed value (a list for ``list[str]`` keys).",
         "properties": {
@@ -431,6 +650,195 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/operations/core.operation.get": {
+      "post": {
+        "operationId": "core.operation.get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/OperationRecord"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.operation.get (read)"
+      }
+    },
+    "/api/v1/operations/core.operation.list": {
+      "post": {
+        "operationId": "core.operation.list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/OperationList"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.operation.list (read)"
+      }
+    },
+    "/api/v1/operations/core.operation.resolve": {
+      "post": {
+        "operationId": "core.operation.resolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationResolveInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/OperationRecord"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.operation.resolve (mutate)"
+      }
+    },
     "/api/v1/operations/core.settings.set": {
       "post": {
         "operationId": "core.settings.set",
@@ -466,7 +874,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/SettingWritten"
@@ -525,7 +937,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/SettingWritten"
@@ -584,7 +1000,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/TokenIssued"
@@ -643,7 +1063,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/TokenRevoked"
@@ -702,7 +1126,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/FailureList"
@@ -761,7 +1189,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/WorkspaceStatus"
