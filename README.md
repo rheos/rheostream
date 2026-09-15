@@ -27,11 +27,18 @@ sessions are host-only cookies with a one-time identity-host grant; the
 core issues its own tokens under a non-token-issuable rule enforced at both
 ends; routing supports path-based and subdomain topologies from one config;
 an operator CLI (`rheo account`, `workspace`, `member`, `token`, `routing`,
-`doctor`) and the first seam of the MCP façade both exist. **No product
-module has a line of code yet** — Leads, Current, and Recallatron are still
-empty stubs — and there is no durable background work either: no outbox, no
-worker, no scheduled jobs. Both are the next phase's job. The full module
-manifest and the license are still open.
+`doctor`) and the first seam of the MCP façade both exist. Durable background
+work now runs: a worker leases jobs with `SKIP LOCKED`, runs the handler, and
+applies retry with backoff, terminal failure, or cancellation — surviving the
+process dying mid-job, because a lease expires rather than a crash losing the
+work. Enqueueing is not yet atomic end to end: the job row and its due mark
+land in two different databases with no transaction spanning them, so a crash
+between the two leaves a job undue until reconciliation. The reference compose
+topology runs that worker as its own service. **No product module has a line
+of code yet** — Leads, Current, and Recallatron are still empty stubs — and
+the durable layer is not finished: there is no outbox, so a state change and
+its event delivery are not yet one transaction, and there are no scheduled
+jobs. The full module manifest and the license are still open.
 Directory names under `modules/`, `connectors/`, `channels/`, `runtimes/`,
 and `packs/` still mark intended boundaries, not implemented features; `apps/`
 and `packages/` no longer do.
@@ -54,8 +61,8 @@ built so that other people can run it too.
 
 ## How it is put together
 
-A small framework core provides workspaces, permissions, and module lifecycle,
-with durable background work as the next layer. Modules own their own records
+A small framework core provides workspaces, permissions, module lifecycle, and
+durable background work. Modules own their own records
 and cooperate through
 versioned contracts and events; none writes another's tables. rheo reaches the
 system through one MCP facade with goal-level tools, and every call is checked
