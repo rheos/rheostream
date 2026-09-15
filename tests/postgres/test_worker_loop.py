@@ -50,7 +50,7 @@ from pydantic import BaseModel
 from rheo_app_worker.main import install_stop_signals
 from rheo_core.boundary import context_for_operator
 from rheo_core.events import ConsumerRegistry, NewEvent, publish
-from rheo_core.operations.records import AUDIENCE_NONE, mint
+from rheo_core.operations.records import AUDIENCE_NONE, OperationRow, mint
 from rheo_core.operations.records import get as read_operation
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.control_tables import WorkspaceState
@@ -276,16 +276,23 @@ def _mint_operation(engine: Engine, database: str, *, now: datetime) -> UUID:
     return operation_id
 
 
-def _operation_state(engine: Engine, database: str, operation_id: UUID) -> str:
-    """The record's state, read through the repository rather than the table.
+def _operation_record(
+    engine: Engine, database: str, operation_id: UUID
+) -> OperationRow:
+    """One record, read through the repository rather than the table.
 
     AC 19 forbids this run's tests from reading ``core.operation`` with a query of
-    their own, and the read is what these two tests assert on.
+    their own, and the read is what the criterion-13 cases below assert on.
     """
     with UnitOfWork(engine, database) as uow:
         row = read_operation(uow.connection, operation_id=operation_id)
     assert row is not None, f"operation {operation_id} was not written"
-    return row.state
+    return row
+
+
+def _operation_state(engine: Engine, database: str, operation_id: UUID) -> str:
+    """Just the state, for the cases whose whole claim is which one it reached."""
+    return _operation_record(engine, database, operation_id).state
 
 
 def _read(engine: Engine, job_id: UUID) -> Row[Any]:
@@ -537,15 +544,19 @@ def test_a_job_that_dies_on_every_attempt_reaches_failed_rather_than_relooping(
     assert _notes(engine) == (), "gate 2 runs before the handler is ever entered"
 
 
-# --- criterion 13: the two PRE-HANDLER gates terminalise the operation record too -----
+# --- criterion 13: the terminal writes that happen before, or without, a handler -----
 #
-# These two cases live here rather than in ``test_operation_records.py`` because the
-# gates themselves do, and that file covers the other four sites. Skipping them as
+# These cases live here rather than in ``test_operation_records.py`` because the writes
+# themselves do, and that file covers the worker's post-handler sites. Skipping them as
 # "already covered there" would leave ``_run_leased_job``'s two gates with no test at
 # all — and those two are exactly what chunk 01's pre-handler exclusion would have
-# wrongly carried over, so they are the two a mutation has to be able to kill (M13f).
+# wrongly carried over, so they are two a mutation has to be able to kill (M13f).
 # (``_fail_terminally`` is also pre-handler and is covered in the other file; the line
 # that matters here is the gate, not the handler.)
+#
+# The last pair covers ``work.jobs.request_cancellation``, which is not in this module
+# at all: its **queued** branch ends a job outright, so it is the one place a job
+# carrying an operation id finishes without the worker loop ever running.
 
 
 def test_a_cancelled_long_running_job_terminalises_its_operation_record(
@@ -618,6 +629,66 @@ def test_an_exhausted_long_running_job_terminalises_its_operation_record(
     assert _operation_state(engine, database, operation_id) == "failed"
 
 
+def test_cancelling_a_queued_long_running_job_terminalises_its_operation_record(
+    cluster: ClusterSession,
+    workspace: UUID,
+    database: str,
+    engine: Engine,
+    now: datetime,
+) -> None:
+    """The one job-terminal-write site outside this module, and it is easy to miss.
+
+    ``request_cancellation``'s **queued** branch writes ``state = 'cancelled'`` in the
+    same statement that sets the flag, so such a job finishes right there: no worker
+    ever leases it, ``run_one_pass`` never sees it, and none of the loop's own terminal
+    writes runs. AC 16 is "a job carrying ``job.operation_id`` terminalises its
+    operation record when it finishes", and *this* is where that job finishes — so
+    without a write there the record of a job cancelled before its first visit sits
+    ``pending`` for ever, which is the same orphan the dispatcher's failure paths
+    produce by another route.
+
+    ``test_a_cancelled_queued_job_is_terminal_before_any_visit`` pins the job half of
+    this branch; what is new here is the record moving with it.
+    """
+    operation_id = _mint_operation(engine, database, now=now)
+    job_id = _put(engine, now=now, operation_id=operation_id)
+
+    with engine.begin() as conn:
+        assert request_cancellation(conn, job_id, now=now) == "cancelled"
+
+    result = _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
+
+    assert result.jobs_acquired == 0, "a cancelled queued row is never leased"
+    assert _read(engine, job_id).state == "cancelled"
+    record = _operation_record(engine, database, operation_id)
+    assert record.state == "cancelled"
+    assert record.terminal_at == now, "the caller's own instant, not a fresh reading"
+
+
+def test_cancelling_a_leased_long_running_job_leaves_its_record_to_the_worker(
+    engine: Engine, database: str, now: datetime
+) -> None:
+    """The other half of that branch, so the write above cannot have widened past it.
+
+    A ``leased`` row gets ``cancel_requested = true`` and nothing else: it has **not**
+    finished, its worker owns it, and the loop terminalises the pair together at
+    whichever gate or checkpoint catches the flag. A ``request_cancellation`` that
+    moved the record here would report an operation cancelled while its handler was
+    still running.
+    """
+    operation_id = _mint_operation(engine, database, now=now)
+    job_id = _put(engine, now=now, operation_id=operation_id)
+    with engine.begin() as conn:
+        assert (
+            acquire_lease(conn, owner=OWNER, now=now, lease_seconds=LEASE_SECONDS)
+            is not None
+        )
+        assert request_cancellation(conn, job_id, now=now) == "leased"
+
+    assert _read(engine, job_id).cancel_requested is True
+    assert _operation_state(engine, database, operation_id) == "pending"
+
+
 # --- AC 6, loop half: the loser discards its own effects ------------------------------
 
 
@@ -657,6 +728,72 @@ def test_a_worker_whose_lease_is_stolen_mid_handler_discards_its_own_effects(
     assert row.finished_at is None
     assert _notes(engine) == ("winner",), (
         "the loser's effects must be rolled back, not committed beside the winner's"
+    )
+
+
+def test_a_worker_whose_lease_is_stolen_writes_nothing_to_the_operation_record(
+    cluster: ClusterSession,
+    workspace: UUID,
+    database: str,
+    engine: Engine,
+    now: datetime,
+) -> None:
+    """AC 6 on the record: ``_with_operation``'s ``applied and`` is load-bearing.
+
+    Every existing theft case in this file runs with ``operation_id = None``, so the
+    guard that stops a worker recording the outcome of work it did not finish had no
+    test at all: deleting ``applied and`` from ``_with_operation`` left the whole suite
+    green. This is the one case that reaches that helper with ``applied`` false — the
+    handler steals its own lease and then raises with its budget already spent, so
+    ``_write_failure_outcome`` takes the **exhausted** branch, whose ``finish_failed``
+    is predicated on a lease this worker no longer holds and matches nothing.
+
+    Both directions are asserted, because either alone is satisfiable by the wrong
+    implementation: the loser writes nothing, and the write that *does* hold the lease
+    lands. Under the mutation the loser's write goes first, the record is terminal with
+    its error, and the winner's own write is then refused by the record's own
+    open-only predicate — so the first assertion fails and the second would have
+    reported the loser's text.
+    """
+    operation_id = _mint_operation(engine, database, now=now)
+    job_id = _put(engine, now=now, max_attempts=1, operation_id=operation_id)
+    stolen_at = now + timedelta(seconds=LEASE_SECONDS + 1)
+
+    def steals_its_own_lease_then_raises(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        with engine.begin() as conn:
+            taken = acquire_lease(
+                conn, owner=THIEF, now=stolen_at, lease_seconds=LEASE_SECONDS
+            )
+            assert taken is not None and taken.id == job_id
+        raise RuntimeError("the loser's attempt")
+
+    _visit(
+        workspace,
+        kinds=_registry(steals_its_own_lease_then_raises),
+        backend=cluster.backend,
+        at=now,
+    )
+
+    row = _read(engine, job_id)
+    assert row.state == "leased" and row.lease_owner == THIEF
+    assert _operation_state(engine, database, operation_id) == "pending", (
+        "a worker that lost its lease must not record the outcome of work it did not "
+        "finish, on a record whose job is about to end differently"
+    )
+
+    # And the write that does hold the lease lands: the thief's lease lapses, the next
+    # visit re-acquires past the budget and gate 2 ends both the job and the record.
+    later = stolen_at + timedelta(seconds=LEASE_SECONDS + 1)
+    _visit(workspace, kinds=_registry(), backend=cluster.backend, at=later, owner=THIEF)
+
+    assert _read(engine, job_id).state == "failed"
+    record = _operation_record(engine, database, operation_id)
+    assert record.state == "failed"
+    assert record.error_text == RETRY_BUDGET_EXHAUSTED, (
+        "the record carries the outcome of the attempt that actually ended the job, "
+        "never the one the losing worker would have written"
     )
 
 

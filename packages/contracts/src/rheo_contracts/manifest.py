@@ -121,10 +121,17 @@ class OperationDeclaration(BaseModel):
     today's behaviour: no record is minted and the operation envelope's
     ``operation_id`` stays null for it.
 
-    ``True`` has **one** meaning and one terminalisation rule: the work runs as a job,
-    the dispatcher mints a ``pending`` record and returns the id immediately, and the
-    worker that finishes the job terminalises the record. The dispatcher never writes
-    a terminal state for a ``long_running`` operation.
+    ``True`` has **one** meaning: the work runs as a job, the dispatcher mints a
+    ``pending`` record and returns the id immediately, and the worker that finishes
+    the job terminalises the record. **The dispatcher never writes ``succeeded``** —
+    reporting success is the worker's alone, because only the worker knows the work
+    was done rather than merely scheduled.
+
+    It does write ``failed``, and only on the paths where no worker will ever see the
+    record: the mint commits in a transaction of its own, so a dispatch that then
+    refuses, raises, returns the wrong output type or queues no job at all would
+    otherwise leave a committed ``pending`` row that nothing can move.
+    ``rheo_core.operations.dispatch``'s own module docstring enumerates those exits.
     """
 
 

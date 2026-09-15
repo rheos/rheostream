@@ -9,11 +9,17 @@ record built anywhere else would have left it green for ever; what defends crite
 
 Seams: ``dispatch()``'s ``long_running`` minting path (the id readable before the work
 runs), ``core.operation``'s own terminal-check constraint, and the worker's
-terminalisation of the record beside the job's terminal write. The two **pre-handler**
-gate cases — a job cancelled or found exhausted before its handler is entered — live
-in ``tests/postgres/test_worker_loop.py`` instead, beside the gates they exercise; the
-four cases here reach the other four, so between them the two files cover every one
-of the six job-terminal-write sites that can carry an operation id.
+terminalisation of the record beside the job's terminal write, and — new in this fix
+round — the dispatcher's **own** terminal write on every exit that abandons a record
+it just minted.
+
+The **pre-handler** gate cases — a job cancelled or found exhausted before its handler
+is entered — live in ``tests/postgres/test_worker_loop.py`` instead, beside the gates
+they exercise, and so does the one job-terminal write that happens outside the worker
+loop entirely (``work.jobs.request_cancellation``'s queued branch). The worker-side
+cases here reach the rest, so between them the two files cover every site that ends a
+job carrying an operation id. Counted rather than named, that inventory has gone stale
+once already; named, it stays true as a site is added.
 
 **Nothing here queries ``core.operation`` directly** (AC 19). Every read goes through
 ``core.operation.get`` or ``core.operation.list``, dispatched the way a caller would,
@@ -36,6 +42,7 @@ chosen instant makes correct code look flaky from three files away.
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from typing import Any
 from uuid import UUID
 
@@ -55,11 +62,16 @@ from pydantic import BaseModel
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.events import ConsumerRegistry
+from rheo_core.events.publish import NewEvent, publish
 from rheo_core.operations import (
+    HANDLER_FAILED,
     OPERATION_GET,
     OPERATION_LIST,
     OPERATION_RESOLVE,
     OPERATION_STATE,
+    OUTPUT_INVALID,
+    OperationOutcome,
+    OperationRefused,
     OperationRegistry,
     dispatch,
     register_core_operations,
@@ -80,12 +92,14 @@ from rheo_core.operations.records import (
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import NOT_FOUND
 from rheo_core.settings import TEST_HARNESS_ORIGIN
-from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
+from rheo_core.storage.backend import HandlerUnitOfWork, StorageRefusal, UnitOfWork
 from rheo_core.storage.postgres import PostgresBackend
+from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.storage.work_tables import job as job_table
+from rheo_core.storage.work_tables import outbox_event
 from rheo_core.work.cancellation import CancellationToken, JobCancelled
-from rheo_core.work.jobs import request_cancellation
+from rheo_core.work.jobs import enqueue_job, request_cancellation
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import LEASE_SECONDS, visit_workspace
 from sqlalchemy import Engine, select
@@ -279,6 +293,12 @@ def test_the_record_is_readable_from_outside_while_the_handler_is_still_running(
     The handler is registered on a **local** ``OperationRegistry`` — the pattern
     ``tests/test_handler_uow.py`` establishes — so the process-wide registry keeps
     the real ``harness.note.schedule`` and nothing registered here outlives the test.
+
+    It enqueues a real job rather than returning a fabricated id: a ``long_running``
+    handler that queues nothing is refused ``output_invalid`` by the dispatcher (see
+    :func:`test_a_long_running_handler_that_queues_no_job_is_refused_and_terminalised`),
+    so a fabricated id would make this test fail for a reason that has nothing to do
+    with what it is about.
     """
     seen: list[str] = []
 
@@ -292,7 +312,15 @@ def test_the_record_is_readable_from_outside_while_the_handler_is_still_running(
         assert read.result is not None
         result: Any = read.result
         seen.append(str(result.state))
-        return NoteScheduled(job_id=uuid7(), operation_id=operation_id)
+        job_id = enqueue_job(
+            uow.connection,
+            kind=NOTE_SCHEDULE_KIND,
+            payload={"body": NOTE},
+            now=datetime.now(UTC),
+            max_attempts=1,
+            operation_id=operation_id,
+        )
+        return NoteScheduled(job_id=job_id, operation_id=operation_id)
 
     registry = OperationRegistry()
     registry.register(
@@ -450,6 +478,211 @@ def test_a_retry_is_not_a_finish_and_leaves_the_record_pending(
     )
     assert record.terminal_at is None  # type: ignore[attr-defined]
     assert record.error_code is None  # type: ignore[attr-defined]
+
+
+# --- a dispatch that fails after the mint leaves no record stuck pending --------------
+#
+# ``_mint_operation`` commits on its own — that is what AC 15 is — so the work
+# transaction's rollback cannot undo it. Every exit below the mint therefore has to end
+# the record itself, or a caller who was told ``failed`` is left reading ``pending``
+# for ever on a record no worker will ever visit, on the criterion whose own content is
+# "reports one of a fixed set of terminal statuses". Five exits, one case each.
+
+
+def _dispatch_with(
+    ctx: WorkspaceContext, handler: Callable[..., BaseModel]
+) -> OperationOutcome:
+    """Dispatch the shipped ``long_running`` declaration with ``handler`` in its place.
+
+    A **local** ``OperationRegistry``, the pattern ``tests/test_handler_uow.py``
+    establishes, so nothing registered here outlives the test. The declaration is the
+    real ``NOTE_SCHEDULE_DECLARATION``, which is what makes the mint below the real
+    mint rather than a stand-in for one.
+    """
+    registry = OperationRegistry()
+    registry.register(NOTE_SCHEDULE_DECLARATION, handler, origin=TEST_HARNESS_ORIGIN)
+    return dispatch(ctx, NOTE_SCHEDULE, {"body": NOTE}, registry=registry)
+
+
+def test_a_handler_that_raises_terminalises_the_record_it_minted(
+    owner: WorkspaceContext,
+) -> None:
+    """A raise after the mint: the caller is told ``failed`` and so is the record."""
+
+    def raises(
+        ctx: WorkspaceContext, uow: UnitOfWork, model_input: BaseModel
+    ) -> BaseModel:
+        raise RuntimeError("the work never started")
+
+    outcome = _dispatch_with(owner, raises)
+
+    assert outcome.state == "failed", outcome
+    assert outcome.operation_id is not None, outcome
+    record = _read(owner, outcome.operation_id)
+    assert record.state == "failed", (  # type: ignore[attr-defined]
+        "the record the dispatcher minted and then abandoned must not stay pending: "
+        "no job carries its id, so nothing else will ever move it"
+    )
+    assert record.error_code == HANDLER_FAILED  # type: ignore[attr-defined]
+    # The exception's class name and never its message, exactly as the outcome's own
+    # ``error_text`` carries it — a driver error renders the statement and its
+    # parameters, and this column is read back through a supported operation.
+    assert record.error_text == "RuntimeError"  # type: ignore[attr-defined]
+    assert record.terminal_at is not None  # type: ignore[attr-defined]
+    # And terminal means terminal: ``resolve`` still refuses, but now because the
+    # record has an outcome rather than because it is stuck before one.
+    assert record.terminal_check_kind is None  # type: ignore[attr-defined]
+
+
+def test_a_handler_that_refuses_terminalises_the_record_and_hands_back_its_id(
+    owner: WorkspaceContext,
+) -> None:
+    """``OperationRefused`` after the mint, which is the same orphan by another route.
+
+    The outcome's ``operation_id`` is asserted as hard as the record's state: a
+    refusal that dropped the id would leave a row that is both wrong and unnameable,
+    and the caller could not look it up to find out what happened.
+    """
+
+    def refuses(
+        ctx: WorkspaceContext, uow: UnitOfWork, model_input: BaseModel
+    ) -> BaseModel:
+        raise OperationRefused(NOT_FOUND, "no such note")
+
+    outcome = _dispatch_with(owner, refuses)
+
+    assert outcome.state == NOT_FOUND, outcome
+    assert outcome.operation_id is not None, outcome
+    record = _read(owner, outcome.operation_id)
+    assert record.state == "failed", (  # type: ignore[attr-defined]
+        "a refusal is an outcome, and the record has to carry one"
+    )
+    # The refusal's own state as the code, so the record says which refusal it was.
+    assert record.error_code == NOT_FOUND  # type: ignore[attr-defined]
+    assert record.error_text == "no such note"  # type: ignore[attr-defined]
+
+
+def test_a_handler_whose_output_is_the_wrong_type_terminalises_the_record(
+    owner: WorkspaceContext,
+) -> None:
+    """``output_invalid`` after the mint: the third route to the same orphan."""
+
+    def wrong_type(
+        ctx: WorkspaceContext, uow: UnitOfWork, model_input: BaseModel
+    ) -> BaseModel:
+        return NoteSchedulePayload(body="not a NoteScheduled")
+
+    outcome = _dispatch_with(owner, wrong_type)
+
+    assert outcome.state == "failed", outcome
+    assert outcome.error is not None and outcome.error.error_code == OUTPUT_INVALID
+    assert outcome.operation_id is not None, outcome
+    record = _read(owner, outcome.operation_id)
+    assert record.state == "failed"  # type: ignore[attr-defined]
+    assert record.error_code == OUTPUT_INVALID  # type: ignore[attr-defined]
+
+
+def test_a_long_running_handler_that_queues_no_job_is_refused_and_terminalised(
+    owner: WorkspaceContext, engine: Engine
+) -> None:
+    """A handler that returned a well-formed output and queued nothing.
+
+    This is the shape with no exception anywhere in it: the dispatcher would commit a
+    perfectly ordinary transaction and answer ``pending``, and the record would be
+    correct in every respect except that nothing in the system will ever finish it.
+    ``long_running`` means the work is queued, so the check is exactly that — a job row
+    carrying this id, read inside the work transaction before the commit — and its
+    absence is ``output_invalid``, so the same terminaliser the other three use
+    applies here too.
+
+    Reading the job table directly is deliberate: AC 19's no-direct-query rule is about
+    ``core.operation``, and the claim under test is about ``core.job``.
+    """
+
+    def queues_nothing(
+        ctx: WorkspaceContext, uow: UnitOfWork, model_input: BaseModel
+    ) -> BaseModel:
+        operation_id = uow.operation_id if isinstance(uow, HandlerUnitOfWork) else None
+        return NoteScheduled(job_id=uuid7(), operation_id=operation_id)
+
+    outcome = _dispatch_with(owner, queues_nothing)
+
+    assert outcome.state == "failed", outcome
+    assert outcome.error is not None and outcome.error.error_code == OUTPUT_INVALID
+    assert outcome.operation_id is not None, outcome
+    assert _state(owner, outcome.operation_id) == "failed"
+    with engine.connect() as conn:
+        carried = conn.execute(
+            select(job_table.c.id).where(
+                job_table.c.operation_id == outcome.operation_id
+            )
+        ).all()
+    assert carried == [], "the refused dispatch's transaction was rolled back"
+
+
+def test_a_work_transaction_that_cannot_open_ends_the_record_it_just_minted(
+    owner: WorkspaceContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sharpest shape: the mint committed and the work never began.
+
+    ``open_unit_of_work`` is patched to refuse on the dispatcher's **second** call. The
+    first is the mint's own and must succeed, or there is no record to orphan; the
+    third is the terminaliser's, which is let through because the whole question is
+    whether the dispatcher reaches for it at all. Without the fix this branch answered
+    ``_refused(...)`` with no ``operation_id``, so the row was left ``pending`` *and*
+    the caller was handed nothing to look it up with.
+    """
+    real = open_unit_of_work
+    calls = {"n": 0}
+
+    def refuse_the_second(ctx: WorkspaceContext) -> UnitOfWork:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise StorageRefusal("workspace_unavailable", "the pool went away")
+        return real(ctx)
+
+    # The module object, fetched through ``importlib`` rather than named as a string
+    # or imported with ``import ... as``: ``rheo_core.operations.dispatch`` resolves by
+    # attribute to the re-exported **function** of that name, so both of those forms
+    # patch an attribute on a function object and the dispatcher never sees it.
+    dispatch_module = import_module("rheo_core.operations.dispatch")
+    monkeypatch.setattr(dispatch_module, "open_unit_of_work", refuse_the_second)
+
+    outcome = dispatch(owner, NOTE_SCHEDULE, {"body": NOTE})
+
+    assert outcome.state == "workspace_unavailable", outcome
+    assert outcome.operation_id is not None, (
+        "a refusal below the mint must hand back the id, or the row it left behind "
+        "has no name a caller can use"
+    )
+    monkeypatch.undo()
+    record = _read(owner, outcome.operation_id)
+    assert record.state == "failed"  # type: ignore[attr-defined]
+    assert record.error_code == "workspace_unavailable"  # type: ignore[attr-defined]
+
+
+def test_a_refusal_above_the_mint_writes_no_record_at_all(
+    owner: WorkspaceContext,
+) -> None:
+    """The other side of the boundary, so the fix cannot have widened past it.
+
+    ``input_invalid`` is refused before the mint, so the count of records must not
+    move and the outcome must carry no id. Asserting only the terminalising side would
+    pass for a dispatcher that minted a record for every refusal and then ended it.
+    """
+    before = dispatch(owner, OPERATION_LIST, {"limit": 500})
+    assert before.ok, before
+    assert before.result is not None
+    started_with = len(before.result.operations)  # type: ignore[attr-defined]
+
+    refused = dispatch(owner, NOTE_SCHEDULE, {"body": 17, "max_attempts": "no"})
+    assert refused.state == "input_invalid", refused
+    assert refused.operation_id is None, refused
+
+    after = dispatch(owner, OPERATION_LIST, {"limit": 500})
+    assert after.ok, after
+    assert after.result is not None
+    assert len(after.result.operations) == started_with  # type: ignore[attr-defined]
 
 
 # --- AC 17: the database refuses a succeeded row with no terminal check ---------------
@@ -681,6 +914,77 @@ def test_the_job_row_carries_the_minted_id_to_the_worker(
         ).scalar_one()
 
     assert carried == operation_id
+
+
+def test_an_event_published_inside_a_long_running_dispatch_is_correlated_to_it(
+    engine: Engine, owner: WorkspaceContext, now: datetime
+) -> None:
+    """D1a: the outbox row's ``correlation_id`` is the originating operation's id.
+
+    ``publish`` derives that column rather than taking it, and its branch is the one
+    place the minted id reaches the event stream: a ``HandlerUnitOfWork`` carrying a
+    non-``None`` ``operation_id`` supplies it, and ``ctx.request_id`` is the fallback
+    for everything else. Only the **fallback** was pinned before this test — by
+    ``tests/postgres/test_outbox.py``, which publishes outside any dispatch — so
+    deleting the branch outright left the suite green. Asserting the id rather than
+    merely "not the request id" is what makes that impossible: the two values are
+    distinct uuids and the assertion names which one must land.
+
+    The handler enqueues a real job because a ``long_running`` handler that queues
+    none is refused ``output_invalid``; an empty ``ConsumerRegistry`` because nothing
+    here consumes, and an event nobody consumes still writes its one outbox row.
+    """
+    published: list[UUID] = []
+
+    def publishes_an_event(
+        ctx: WorkspaceContext, uow: UnitOfWork, model_input: BaseModel
+    ) -> BaseModel:
+        operation_id = uow.operation_id if isinstance(uow, HandlerUnitOfWork) else None
+        assert operation_id is not None
+        published.append(
+            publish(
+                ctx,
+                uow,
+                NewEvent(
+                    type="harness.note.written",
+                    schema_version=1,
+                    subject_ref=f"harness.note:{uuid7()}",
+                    subject_revision=1,
+                    data={"body": NOTE},
+                ),
+                now=now,
+                consumers=ConsumerRegistry(),
+            )
+        )
+        job_id = enqueue_job(
+            uow.connection,
+            kind=NOTE_SCHEDULE_KIND,
+            payload={"body": NOTE},
+            now=now,
+            max_attempts=1,
+            operation_id=operation_id,
+        )
+        return NoteScheduled(job_id=job_id, operation_id=operation_id)
+
+    outcome = _dispatch_with(owner, publishes_an_event)
+
+    assert outcome.state == "pending", outcome
+    assert outcome.operation_id is not None
+    assert len(published) == 1
+    with engine.connect() as conn:
+        correlation_id = conn.execute(
+            select(outbox_event.c.correlation_id).where(
+                outbox_event.c.id == published[0]
+            )
+        ).scalar_one()
+    assert correlation_id == outcome.operation_id, (
+        "an event published inside a long-running dispatch is correlated to the "
+        "operation, not to the request that started it"
+    )
+    assert correlation_id != owner.request_id, (
+        "and the two are genuinely different values, so the assertion above is not "
+        "satisfied by the fallback"
+    )
 
 
 def test_an_abandoned_attempt_is_not_a_finish(

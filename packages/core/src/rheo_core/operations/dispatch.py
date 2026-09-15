@@ -30,10 +30,40 @@ this function writes a ``pending`` ``core.operation`` row in its **own committed
 transaction** before the work transaction is opened, so the id is readable through the
 supported read while the work has not run; carries that id on
 ``OperationOutcome.operation_id`` and into the sealed view the handler receives; and
-returns ``state = "pending"`` without ever writing a terminal state for it. The worker
-that finishes the job carrying the id is the only terminaliser. For every declaration
-that is not ``long_running`` nothing is minted and ``operation_id`` stays ``None``,
-exactly as before.
+returns ``state = "pending"``. For every declaration that is not ``long_running``
+nothing is minted and ``operation_id`` stays ``None``, exactly as before.
+
+**This function never writes ``succeeded`` for an operation record.** The worker that
+finishes the job carrying the id is the only thing that does, which is the whole of
+the "one terminaliser" rule: a dispatcher that reported success would be claiming the
+work was done at the moment it was merely scheduled.
+
+**It does write ``failed``, on every exit below the mint that does not commit the work
+transaction**, and it must. ``_mint_operation`` commits on its own, so a rollback of
+the work transaction cannot undo it: without this, a handler that raised, refused,
+returned the wrong type or queued nothing would leave a committed ``pending`` record
+that no worker will ever see and nothing can ever move — while the caller was told the
+dispatch failed. Six exits reach :func:`_fail_operation`: a ``StorageRefusal`` opening
+the work transaction, ``OperationRefused`` or ``StorageRefusal`` out of the handler,
+any other exception (a commit failure included, since the commit runs inside the same
+``try``), an output that is not the declared type, and a ``long_running`` handler that
+queued no job at all. The three refusals **above** the mint — ``context_required``,
+``authorize`` and ``input_invalid`` — return before anything is written, so none of
+them leaves a record behind.
+
+**A ``long_running`` dispatch does not mark its workspace due, and the work therefore
+waits for the reconcile floor.** ``work.jobs.enqueue`` calls ``mark_work_due`` after
+committing, so a job queued that way is visible to the very next pass; a
+``long_running`` handler instead calls ``enqueue_job`` inside *this* function's work
+transaction, where it has no control-plane connection to write that mark with, and
+this function has no post-commit hook to write it for it. So the job is discovered by
+``run_one_pass`` only once ``record_visit``'s floor — ``work.due_reconcile_seconds``,
+900 s by default — brings the workspace back round. **A long-running operation can sit
+up to that long before it starts**, which is stated here rather than left to be
+measured because ``tests/harness/registry.py``'s ``harness.note.schedule`` is the
+pattern a future long-running handler is told to copy, and it inherits this. Closing it
+means a post-commit ``mark_work_due`` here, the shape
+``events/publish.py``'s ``mark_due_after_publish`` already anticipates for the outbox.
 
 No audit row and no audit *table*, and no outbox event enqueued here — the audit half
 is still deliberately absent. See the comment in the dispatcher body.
@@ -50,7 +80,7 @@ from pydantic import BaseModel, ValidationError
 from rheo_contracts import OperationDeclaration, WorkspaceContext
 
 from rheo_core.boundary.context import CONTEXT_REQUIRED, Refusal
-from rheo_core.operations.records import AUDIENCE_NONE, PENDING, mint
+from rheo_core.operations.records import AUDIENCE_NONE, PENDING, finish_failed, mint
 from rheo_core.operations.refusals import (
     FAILED,
     HANDLER_FAILED,
@@ -62,6 +92,7 @@ from rheo_core.operations.refusals import (
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.storage.backend import HandlerUnitOfWork, StorageRefusal, UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
+from rheo_core.work.jobs import has_job_for_operation
 
 logger = logging.getLogger("rheo_core.operations")
 
@@ -165,6 +196,100 @@ def _mint_operation(ctx: WorkspaceContext, declaration: OperationDeclaration) ->
     return operation_id
 
 
+def _fail_operation(
+    ctx: WorkspaceContext,
+    operation_id: UUID | None,
+    *,
+    error_code: str,
+    error_text: str,
+) -> None:
+    """End a minted record ``failed``, in a short transaction of its own.
+
+    **Why the dispatcher writes a terminal state at all**, when the rule is that the
+    worker is the terminaliser: the worker only ever sees a record whose job exists,
+    and every exit that reaches here is one where no job does. :func:`_mint_operation`
+    committed on its own, so the work transaction's rollback leaves the record behind;
+    the caller has been told the dispatch failed; and nothing downstream will ever look
+    at that row again. ``pending`` for ever is the one answer criterion 13 forbids,
+    because the caller cannot tell it from work still in flight. **This never writes
+    ``succeeded``** — that stays the worker's alone, and is why the record's success
+    path still has exactly one writer.
+
+    ``operation_id`` is ``None`` for every declaration that is not ``long_running``,
+    which is every operation release one registers, so the common case returns without
+    touching the database and the call sites need no ``if`` of their own.
+
+    **Its own unit of work, and it may fail.** The work transaction has already been
+    rolled back before any call site reaches here, so this opens a fresh one rather
+    than reusing a dead connection. If the workspace has become unreachable between the
+    mint and now, the record stays ``pending`` and the line is logged: ``dispatch()``
+    answers its caller rather than raising, exactly as it does for a handler that
+    failed, and a bounded loss on an unreachable database is the same trade
+    ``events/publish.py``'s ``mark_due_after_publish`` documents one layer out.
+    """
+    if operation_id is None:
+        return
+    try:
+        with open_unit_of_work(ctx) as uow:
+            applied = finish_failed(
+                uow.connection,
+                operation_id=operation_id,
+                now=datetime.now(UTC),
+                error_code=error_code,
+                error_text=error_text[:_DETAIL_LIMIT],
+            )
+            uow.commit()
+    except Exception:
+        logger.error(
+            "operation_record_left_pending",
+            extra={
+                "operation_id": str(operation_id),
+                "workspace_id": str(ctx.workspace_id),
+                "request_id": str(ctx.request_id),
+            },
+        )
+        return
+    if not applied:
+        # The write is predicated on the record still being open, so a zero rowcount
+        # means something else terminalised it between the mint and here. Nothing in
+        # release one can: no job carries this id on any path that reaches this
+        # function. Logged rather than raised, because the record is terminal either
+        # way and the outcome the caller is about to receive is unaffected.
+        logger.warning(
+            "operation record %s was already terminal when its dispatch failed; "
+            "the record is left as it was",
+            operation_id,
+        )
+
+
+def _output_invalid(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    operation_id: UUID | None,
+    *,
+    detail: str,
+) -> OperationOutcome:
+    """Roll the work back, end any minted record, and answer ``output_invalid``.
+
+    Two branches reach it — a handler whose return value is not the declared output
+    type, and a ``long_running`` handler that queued no job — and they are one
+    function rather than two copies because the ordering is the part that has to be
+    right at both: roll back first, so the terminal write below opens its own
+    transaction against a connection this one is no longer holding.
+
+    The outcome's ``state`` stays ``failed`` with ``output_invalid`` as the code,
+    which is the shape this branch has answered since 0b1 and which the API envelope's
+    status map already knows.
+    """
+    _rollback(uow)
+    _fail_operation(ctx, operation_id, error_code=OUTPUT_INVALID, error_text=detail)
+    return OperationOutcome(
+        FAILED,
+        error=OperationError(OUTPUT_INVALID, detail),
+        operation_id=operation_id,
+    )
+
+
 def _rollback(uow: UnitOfWork) -> None:
     # A commit that failed has already closed the transaction; the ``with`` exit
     # rolls back anything still open, so a closed unit of work is not an error here.
@@ -199,16 +324,34 @@ def dispatch(
     except ValidationError as exc:
         return _refused(INPUT_INVALID, _describe_validation_error(exc))
     # Minted here and nowhere else: after authorization and validation have both
-    # passed, so a refused call never leaves a record behind, and before the work
-    # transaction is opened, so the id is readable while the work is still pending.
-    # ``None`` for every declaration that is not ``long_running``.
+    # passed, and before the work transaction is opened, so the id is readable while
+    # the work is still pending. ``None`` for every declaration that is not
+    # ``long_running``.
+    #
+    # **The three refusals above this line — and only those three — leave no record
+    # behind**, because they return before anything is written. Every exit below it
+    # can, which is why each of them calls ``_fail_operation``; the claim is scoped to
+    # the branches above rather than asserted over the function, so a later exit added
+    # below cannot quietly falsify it.
     operation_id: UUID | None = None
     try:
         if declaration.long_running:
             operation_id = _mint_operation(ctx, declaration)
+    except StorageRefusal as refusal:
+        # Nothing was minted: this refusal came out of the mint's own unit of work.
+        return _refused(refusal.state, refusal.detail)
+    try:
         uow = open_unit_of_work(ctx)
     except StorageRefusal as refusal:
-        return _refused(refusal.state, refusal.detail)
+        # The mint has already committed and the work cannot start, so the record is
+        # orphaned unless it is ended here — and the caller is handed the id either
+        # way, because a refusal that dropped it would leave a row nobody can name.
+        # ``_fail_operation`` opens a unit of work of its own and may be refused for
+        # the same reason this was; it logs and the record stays ``pending``.
+        _fail_operation(
+            ctx, operation_id, error_code=refusal.state, error_text=refusal.detail
+        )
+        return _refused(refusal.state, refusal.detail, operation_id=operation_id)
     # Deliberately: authorize, the mint for a long-running declaration, one unit of
     # work, the handler, the output-type check, commit — and nothing between the
     # handler and the commit. No audit row is written and no outbox event is
@@ -229,22 +372,49 @@ def dispatch(
                 model_input,
             )
             if not isinstance(output, declaration.output):
-                _rollback(uow)
-                return OperationOutcome(
-                    FAILED,
-                    error=OperationError(
-                        OUTPUT_INVALID,
+                return _output_invalid(
+                    ctx,
+                    uow,
+                    operation_id,
+                    detail=(
                         f"{name} returned {type(output).__name__}, not "
-                        f"{declaration.output.__name__}",
+                        f"{declaration.output.__name__}"
                     ),
-                    operation_id=operation_id,
+                )
+            if operation_id is not None and not has_job_for_operation(
+                uow.connection, operation_id=operation_id
+            ):
+                # A ``long_running`` declaration is a promise that the work is queued
+                # and that the record will be terminalised by the worker that runs it.
+                # A handler that returned a well-formed output without enqueuing
+                # anything has kept the shape of that promise and none of its content:
+                # no job carries the id, so no worker will ever visit the record. Read
+                # inside the work transaction, before the commit, so the job the
+                # handler *did* enqueue is visible and only its real absence refuses.
+                return _output_invalid(
+                    ctx,
+                    uow,
+                    operation_id,
+                    detail=(
+                        f"{name} is long-running and queued no job for its operation "
+                        f"record, which nothing would then terminalise"
+                    ),
                 )
             uow.commit()
         except OperationRefused as refusal:
             _rollback(uow)
+            _fail_operation(
+                ctx,
+                operation_id,
+                error_code=refusal.state,
+                error_text=refusal.detail or refusal.state,
+            )
             return _refused(refusal.state, refusal.detail, operation_id=operation_id)
         except StorageRefusal as refusal:
             _rollback(uow)
+            _fail_operation(
+                ctx, operation_id, error_code=refusal.state, error_text=refusal.detail
+            )
             return _refused(refusal.state, refusal.detail, operation_id=operation_id)
         except Exception as exc:
             _rollback(uow)
@@ -262,6 +432,12 @@ def dispatch(
                     "request_id": str(ctx.request_id),
                     "exception_type": type(exc).__name__,
                 },
+            )
+            _fail_operation(
+                ctx,
+                operation_id,
+                error_code=HANDLER_FAILED,
+                error_text=type(exc).__name__,
             )
             return OperationOutcome(
                 FAILED,

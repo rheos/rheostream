@@ -18,13 +18,21 @@ outcome rolls that second transaction back and writes the terminal or requeued s
 a fresh third one. ``CancellationToken`` opens its own short transactions on top.
 
 **A job carrying a ``core.operation`` id adds one write to whichever transaction ends
-it, and never a transaction of its own.** There are six sites that put a job row into a
-terminal state — this function's two pre-handler gates, :func:`_fail_terminally`,
+it, and never a transaction of its own.** The sites that put a job row into a terminal
+state are this function's two pre-handler gates, :func:`_fail_terminally`,
 :func:`_run_handler`'s success path, :func:`_write_failure_outcome`'s exhausted branch
-and :func:`_resolve_zero_rowcount`'s cancellation branch — and each of them writes the
-operation record's terminal state beside the job's, under the same commit, through
-:func:`_with_operation`. The requeue branch is not one of the six and writes nothing:
-see :func:`_write_failure_outcome`.
+and :func:`_resolve_zero_rowcount`'s cancellation branch, and each of them writes the
+operation record's terminal state beside the job's, under the same commit. The gates,
+:func:`_fail_terminally` and the exhausted branch go through :func:`_with_operation`,
+which is the shape they share; the success path and :func:`_resolve_zero_rowcount`
+write it inline, because each already sits inside a transaction it opened for other
+reasons and has nothing to hand that helper. The requeue branch ends nothing and writes
+nothing: see :func:`_write_failure_outcome`.
+
+**A job cancelled while still ``queued`` never reaches this module at all**, and its
+record is terminalised by ``work.jobs.request_cancellation`` instead — that statement
+is where such a job finishes, no worker ever leases it, and none of the sites above
+runs. That function's own docstring carries the reason.
 
 **Per delivery the map is the same three transactions, and the middle one carries one
 write more.** The lease commits alone; the consumer's own effects, the
@@ -246,10 +254,15 @@ def _with_operation(
     and the line is logged, because a silently dropped write is how a record ends up
     disagreeing with the job that owns it.
 
-    A helper rather than five copies of the same five lines: five is the shape where a
-    later edit updates four of them. It returns the ``Callable[[UnitOfWork], bool]``
-    :func:`_finish_alone` already takes, so no call site changes shape beyond naming
-    its two halves.
+    A helper rather than a copy of the same few lines at every site that pairs the two
+    writes: repeated inline, the one a later edit misses is the defect, and nothing
+    about the shape announces which one that is. It returns the
+    ``Callable[[UnitOfWork], bool]`` :func:`_finish_alone` already takes, so no call
+    site changes shape beyond naming its two halves. The two terminal-write sites that
+    do **not** use it — :func:`_run_handler`'s success path and
+    :func:`_resolve_zero_rowcount` — each already hold an open transaction of their own
+    and write the pair inline, under the same rule and with the same ``applied and``
+    ordering.
     """
 
     def write(uow: UnitOfWork) -> bool:
@@ -284,12 +297,12 @@ def _resolve_zero_rowcount(
     committed truth, and if another worker acquired in between, ``finish_cancelled``'s
     own ownership predicate returns zero rows and this branch correctly does nothing.
 
-    **This is the sixth of the six job-terminal-write sites**, and the only one whose
-    job may have entered a handler or may not, depending on which caller reached it.
-    It terminalises the operation record here for the same reason the other five do,
+    **This is a job-terminal-write site like the others**, and the only one whose job
+    may have entered a handler or may not, depending on which caller reached it. It
+    terminalises the operation record here for the same reason every other one does,
     and in the same transaction; ``operation_id`` is threaded in from the leased row
-    rather than read out of the ``SELECT`` above, so all six sites take the value from
-    one place.
+    rather than read out of the ``SELECT`` above, so every site in this module takes
+    the value from one place.
     """
     cancelled = False
     with UnitOfWork(engine, database) as uow:

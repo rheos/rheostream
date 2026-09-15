@@ -1,5 +1,5 @@
 """Every read and write against ``core.job``: the lease, the four finishes, the
-cancellation request, and the two queries a worker and a failure list need.
+cancellation request, and the queries a worker, a failure list and the dispatcher need.
 
 Shaped after ``storage/work_index.py``. Each function takes the caller's
 ``Connection`` and runs inside the caller's transaction, and **none of them commits**.
@@ -83,10 +83,10 @@ class LeasedJob:
 
     ``operation_id`` is the row's own column, carried on the lease rather than re-read
     at each terminal write. The worker terminalises a job's ``core.operation`` record
-    in the same transaction as the job's terminal write, and there are six such
-    writes; a value that never changes after :func:`enqueue_job` wrote it is read once,
-    by the acquire that already returns five other columns, rather than six more times
-    under six separate transactions.
+    in the same transaction as the job's terminal write, at every site that ends the
+    row; a value that never changes after :func:`enqueue_job` wrote it is read once, by
+    the acquire that already returns the rest of the row the worker needs, rather than
+    re-read at each of those writes under a transaction of its own.
     """
 
     id: UUID
@@ -105,8 +105,14 @@ class FailedJobRow:
     Six fields, deliberately: they are exactly what the read operation over this list
     publishes, so its handler maps one of these to one output model field for field
     and never reaches back into this module for anything else. A plain frozen
-    dataclass with no pydantic and no operations import — this module stays free of
-    any dependency on the operation package.
+    dataclass with no pydantic: **this class** pulls in nothing from the operation
+    package, which is what keeps ``core.work.failures``' own models free to live in
+    ``work/operations.py`` on the other side of that import direction.
+
+    The module is not free of the operation package outright —
+    :func:`request_cancellation` reaches ``operations.records`` to terminalise a
+    cancelled job's operation record — but it reaches it at **call** time, for the
+    import-direction reason that function's own docstring gives.
     """
 
     id: UUID
@@ -174,6 +180,24 @@ def enqueue_job(
         )
     )
     return job_id
+
+
+def has_job_for_operation(conn: Connection, *, operation_id: UUID) -> bool:
+    """Whether any row carries ``operation_id``. Reads in the caller's transaction.
+
+    The dispatcher's own check, and it has to run inside the transaction the handler
+    wrote in: a ``long_running`` handler enqueues its job there, uncommitted, so a
+    read on any other connection would answer ``False`` for every correct dispatch.
+    ``EXISTS`` rather than a count — the question is whether the record has a future
+    writer at all, and the answer stops mattering after the first row.
+    """
+    return bool(
+        conn.execute(
+            select(
+                select(t.job.c.id).where(t.job.c.operation_id == operation_id).exists()
+            )
+        ).scalar_one()
+    )
 
 
 def enqueue(
@@ -444,9 +468,37 @@ def request_cancellation(
     acquire takes the row lock first this ``UPDATE`` blocks, then re-evaluates against
     ``state = 'leased'`` and takes the flag-only branch; if this statement wins, the row
     is ``cancelled`` and the acquire's inner select no longer matches it.
+
+    **The queued branch terminalises the job's operation record too, and it is the only
+    site outside the worker loop that ever does.** AC 16 is "a job carrying
+    ``job.operation_id`` terminalises its operation record when it finishes", and a
+    queued row finishes *here*: it goes straight to ``cancelled`` in the statement
+    above, no worker ever leases it, and none of the loop's own terminal-write sites is
+    ever reached. Without this write the record of a job cancelled before its first
+    visit sits ``pending`` for ever. The leased branch writes nothing to the record —
+    that row has not finished, its worker owns it, and the loop terminalises both
+    together when the handler stops.
+
+    Both writes run in the caller's transaction, so the job's ``cancelled`` and its
+    record's commit together or neither does, exactly as they do in the loop.
+
+    **The operation repository is imported inside this function, and the reason is
+    structural rather than stylistic.** ``rheo_core.operations.__init__`` imports
+    ``core_ops`` as its first statement, ``core_ops`` imports ``rheo_core.work
+    .operations`` at module level, and that module imports this one — so a top-level
+    ``from rheo_core.operations.records import ...`` here closes the exact cycle
+    ``work/operations.py``'s own docstring forbids, and ``import rheo_core.work.jobs``
+    fails outright. The import is deferred to call time, when every module in that
+    chain is already loaded. ``rheo_core.operations.records`` itself imports nothing
+    from this package, so the dependency is one-way at run time; only the package's
+    eager ``__init__`` makes it two-way at import time.
     """
+    from rheo_core.operations.records import (
+        finish_cancelled as finish_operation_cancelled,
+    )
+
     was_queued = t.job.c.state == QUEUED
-    state = conn.execute(
+    row = conn.execute(
         update(t.job)
         .where(t.job.c.id == job_id)
         .where(t.job.c.state.in_((QUEUED, LEASED)))
@@ -455,9 +507,14 @@ def request_cancellation(
             finished_at=case((was_queued, now), else_=t.job.c.finished_at),
             cancel_requested=True,
         )
-        .returning(t.job.c.state)
-    ).scalar_one_or_none()
-    return None if state is None else str(state)
+        .returning(t.job.c.state, t.job.c.operation_id)
+    ).one_or_none()
+    if row is None:
+        return None
+    state = str(row.state)
+    if state == CANCELLED and row.operation_id is not None:
+        finish_operation_cancelled(conn, operation_id=row.operation_id, now=now)
+    return state
 
 
 def list_failed_jobs(conn: Connection, *, limit: int) -> tuple[FailedJobRow, ...]:
