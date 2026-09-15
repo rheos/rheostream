@@ -90,6 +90,7 @@ PRODUCTION_KEYS = {
     "identity.providers.github.client_secret_ref": "",
     "internal.secret_ref": "",
     "work.due_reconcile_seconds": 900,
+    "work.max_attempts": 8,
 }
 
 

@@ -9,9 +9,9 @@
 # (run 0b1) declared the first eight keys below; C6 (run 0b2) added the sixteen
 # routing.* keys under them, and C7a (run 0b2) adds the eight identity.*/internal.*
 # keys below those, for thirty-two; C4 (run 0c0) adds storage.pool_idle_close_seconds,
-# for thirty-three; C7 (run 0c0) adds work.due_reconcile_seconds, so this file carries
-# thirty-four. Harness keys (tests/harness/) are registry-only by design and never
-# appear here.
+# for thirty-three; C7 (run 0c0) adds work.due_reconcile_seconds, for thirty-four; C1
+# (run 0c1) adds work.max_attempts, so this file carries thirty-five. Harness keys
+# (tests/harness/) are registry-only by design and never appear here.
 
 profile = "development"
 
@@ -88,5 +88,9 @@ secret_ref = ""
 # inside the idle window and the count cap goes back to being the only bound; `rheo
 # doctor` checks the relation on the resolved settings, because both keys are
 # deployment-scope and either one can be overridden.
+# The default job retry budget (C1, run 0c1) sits beside it: `enqueue` writes this
+# into the row's max_attempts column when the caller names no budget, and the column
+# is the authority from then on.
 [work]
 due_reconcile_seconds = 900
+max_attempts = 8
