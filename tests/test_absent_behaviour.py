@@ -1,10 +1,13 @@
 """AC 13 and AC 22: what this run deliberately did **not** build, asserted so that
 each claim fails for its own reason.
 
-This module is the instrument the scored 0c1/0c2 trials are measured with. Four probes
-stand in for benchmark criteria 11, 12, 13 and 14 — the behaviours those cohorts are
-scored on building — and a fifth is this run's own deletion-completeness check over the
-0v spike. Every one of them runs through a helper in ``harness.absence`` that cannot be
+This module is the instrument the scored 0c1/0c2 trials are measured with. Three probes
+stand in for benchmark criteria 11, 13 and 14 — the behaviours those cohorts are
+scored on building — and a fourth is this run's own deletion-completeness check over the
+0v spike. Criterion 12 is no longer among them: its absence probe was removed in the
+same commit that landed the worker loop it denied, and criterion 12's **presence** is
+defended by ``tests/postgres/test_worker_loop.py`` instead. Every one of them runs
+through a helper in ``harness.absence`` that cannot be
 called without a **positive control**, so a probe that passes because the module name
 was misspelled, or because the path it searched does not exist, is not expressible
 here. Run 0v's F52 was that second shape exactly.
@@ -18,7 +21,7 @@ load-bearing by making each one fail on purpose.
 **The probe names are fixed by AC 13**, which pins both the function names and the
 ``{probe: covers}`` map :func:`test_every_criterion_is_covered` asserts. A
 differently-named probe that is otherwise identical fails that criterion exactly as
-surely as a missing one, so none of these five may be renamed for house-style reasons.
+surely as a missing one, so none of these four may be renamed for house-style reasons.
 """
 
 import subprocess
@@ -99,7 +102,7 @@ def _tracked_under(*roots: str) -> list[str]:
     return sorted(path for path in _tracked_files() if path.startswith(prefixes))
 
 
-# --- the four criterion probes --------------------------------------------------------
+# --- the three criterion probes -------------------------------------------------------
 
 
 def test_no_outbox_delivery_exists() -> None:
@@ -117,22 +120,6 @@ def test_no_outbox_delivery_exists() -> None:
         missing="flush_outbox",
         present="storage/work_tables.py",
         covers=11,
-    )
-
-
-def test_no_worker_loop_exists() -> None:
-    """Criterion 12: ``apps/worker`` is an entry-point stub with no loop in it.
-
-    Same shape and same reason as criterion 11's probe: a docstring-only module, so
-    the control is the literal the stub's docstring is required to name rather than a
-    dunder. The absence searched for is a plausible loop-shaped identifier chosen to
-    contain none of this run's twelve cut-symbol tokens verbatim.
-    """
-    absent_token(
-        paths=["apps/worker/src/rheo_app_worker/__init__.py"],
-        missing="poll_loop",
-        present="intake-and-events.md",
-        covers=12,
     )
 
 
@@ -242,14 +229,13 @@ def test_every_criterion_is_covered() -> None:
     satisfy a bare set comparison while the E0c record's coverage table states the
     wrong correspondence, which is the failure this exists to catch.
 
-    The five probes are invoked here rather than read out of whatever the session
+    The four probes are invoked here rather than read out of whatever the session
     happened to run first. The registry is module state, so reading it alone would
     make this assertion depend on test ordering and on selection: run under ``-k`` it
     would see an empty map. Calling them makes it order-independent and cannot weaken
     it, since a probe that fails still fails.
     """
     test_no_outbox_delivery_exists()
-    test_no_worker_loop_exists()
     test_no_operation_lifecycle_exists()
     test_dispatch_calls_no_audit_sink()
     test_no_spike_remains()
@@ -258,7 +244,6 @@ def test_every_criterion_is_covered() -> None:
 
     assert {value for value in covered.values() if isinstance(value, int)} == {
         11,
-        12,
         13,
         14,
     }, covered
@@ -267,7 +252,6 @@ def test_every_criterion_is_covered() -> None:
     }, covered
     assert covered == {
         "test_no_outbox_delivery_exists": 11,
-        "test_no_worker_loop_exists": 12,
         "test_no_operation_lifecycle_exists": 13,
         "test_dispatch_calls_no_audit_sink": 14,
         "test_no_spike_remains": "AC 22",

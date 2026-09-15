@@ -1,6 +1,8 @@
-"""Worker entry-point stub.
+"""The worker process. Its composition root is main.py, and it is runnable.
 
-The composition root apps/worker fills in 0c: it shares the core image, and the loop it
-runs is specified in docs/architecture/intake-and-events.md. No callable yet —
-an entry-point stub, not a runnable worker.
+main.py holds the process-wide job-kind registry, installs the stop signals, and runs
+rheo_core.work.loop.worker_loop until the container is asked to stop. This package
+shares the core image and is started with a command override
+(python -m rheo_app_worker.main); the loop it runs is specified in
+docs/architecture/intake-and-events.md.
 """
