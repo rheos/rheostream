@@ -246,6 +246,18 @@ def _schedule_note(
     ``ensure_note_table`` runs **here**, in the dispatcher's transaction, rather than
     in the job: the job's own transaction is where its note is written, and a DDL
     statement in there would be a second thing to roll back on a retry.
+
+    **The job this queues is not marked due, so a worker will not see it until the
+    reconcile floor comes round** — ``work.due_reconcile_seconds``, 900 s by default.
+    ``work.jobs.enqueue`` marks the workspace due immediately after committing; a
+    handler cannot, because it runs inside the dispatcher's transaction against a
+    workspace connection and ``mark_work_due`` writes the *control* database, and
+    ``dispatch()`` has no post-commit hook to do it afterwards. That is a property of
+    the seam and not of this handler, so **anything copying this pattern inherits a
+    start delay of up to fifteen minutes**; ``operations/dispatch.py``'s module
+    docstring carries the same statement and what closing it would take. The tests
+    here are unaffected because they call ``visit_workspace`` directly rather than
+    going through ``run_one_pass``'s due-work index.
     """
     ensure_note_table(uow.connection)
     operation_id = uow.operation_id if isinstance(uow, HandlerUnitOfWork) else None

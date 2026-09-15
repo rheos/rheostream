@@ -33,6 +33,9 @@ from conftest import ClusterSession
 from rheo_app_cli.main import main
 from rheo_app_core.main import app, lifespan
 from rheo_core.operations import (
+    OPERATION_GET,
+    OPERATION_LIST,
+    OPERATION_RESOLVE,
     REGISTRY,
     SETTINGS_SET,
     WORK_FAILURES,
@@ -306,11 +309,21 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now six: C8 (0b2) adds core.token.issue/revoke beside
-        # 0b1's three, and C3 (this run) adds core.work.failures. Sorted by
-        # the name string, so core.work.failures lands immediately before
-        # core.workspace.status ("." sorts before "s").
+        # Sorted, and now nine: 0b1's three, 0b2's C8 adds core.token.issue and
+        # core.token.revoke, 0c1's C3 adds core.work.failures, and 0c2's C4 adds
+        # core.operation.get/list/resolve. Sorted by the name string, so the three
+        # core.operation.* names lead and core.work.failures lands immediately
+        # before core.workspace.status ("." sorts before "s").
+        #
+        # **Written out as literals on purpose.** Deriving this tuple from the
+        # registry would make the assertion unfailable: an operation registered by
+        # accident, or one silently dropped, would match a derived expectation
+        # exactly. The literal list is the regression guard, and updating it by hand
+        # when a run adds an operation is the point rather than the cost.
         assert report.operations == (
+            OPERATION_GET,
+            OPERATION_LIST,
+            OPERATION_RESOLVE,
             SETTINGS_SET,
             "core.settings.set_member",
             TOKEN_ISSUE,
