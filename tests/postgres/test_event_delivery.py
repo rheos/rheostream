@@ -3,12 +3,21 @@ published inside a transaction is delivered to its consumer exactly once, agains
 real Postgres.
 
 Seam: ``rheo_core.work.loop.visit_workspace``'s delivery drain — the public entry point
-a worker pass actually calls — driven through ``rheo_core.events.publish``. Never the
-drain's private helpers and never a hand-written ``UPDATE`` of a delivery row's state:
-the defects this file exists to catch are a handler that ran twice, effects that
-committed without their ledger row, and a delivery marked ``delivered`` on work that
-was rolled back, and every one of them shows up in the rows rather than in a return
-value.
+a worker pass actually calls — driven through ``rheo_core.events.publish``. No test here
+calls one of the drain's private helpers, and **every assertion is a row read back in a
+fresh transaction**, never a return value: the defects this file exists to catch — a
+handler that ran twice, effects that committed without their ledger row, a delivery
+marked ``delivered`` on work that was rolled back — show up in the rows and not in the
+call.
+
+**Three tests write a delivery row directly, and each says so where it does it.** They
+are :func:`test_a_redelivery_of_a_processed_event_never_runs_the_handler_again`,
+:func:`test_a_delivery_whose_worker_kept_dying_ends_failed_at_its_budget_and_not_before`
+and :func:`test_a_stolen_lease_on_a_failing_handler_writes_no_outcome`, and in each the
+write is **setup**, standing in for a state the system reaches only after a lapsed
+lease or a run of crashes — never an assertion, and never a shortcut around the
+behaviour under test. The blanket form of this sentence was wrong the moment the second
+such test was added, which is why it now names the three.
 
 **The consumer is ``tests/harness/consumers.py``'s, and it records two things in two
 different ways on purpose.** Its domain effect is written on the
@@ -62,6 +71,7 @@ from rheo_core.events import (
     PENDING,
     ConsumerRegistry,
     NewEvent,
+    lease_delivery,
     publish,
 )
 from rheo_core.operations import WORK_FAILURES, dispatch, register_core_operations
@@ -69,15 +79,24 @@ from rheo_core.settings import resolve
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
-from rheo_core.storage.work_tables import consumer_processed, event_delivery
+from rheo_core.storage.work_tables import (
+    consumer_processed,
+    event_delivery,
+    outbox_event,
+)
 from rheo_core.work.kinds import JobKindRegistry
-from rheo_core.work.loop import visit_workspace
+from rheo_core.work.loop import (
+    RETRY_BUDGET_EXHAUSTED,
+    VisitResult,
+    visit_workspace,
+)
 from rheo_core.work.operations import FailureList
-from sqlalchemy import Engine, Row, func, select, update
+from sqlalchemy import Engine, Row, delete, func, select, update
 
 pytestmark = pytest.mark.postgres
 
 OWNER = "worker-under-test"
+THIEF = "worker-that-stole-the-lease"
 SUBJECT = "harness.note:one"
 BODY = "delivered once"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -203,13 +222,13 @@ def _visit(
     cluster: ClusterSession,
     consumers: ConsumerRegistry,
     at: datetime,
-) -> None:
+) -> VisitResult:
     """One whole workspace visit on a clock pinned to ``at``.
 
     The job registry is empty: this file publishes no job, so the drain's job half
     leases nothing and the delivery half is what runs.
     """
-    visit_workspace(
+    return visit_workspace(
         DueWorkspace(workspace_id=workspace_id, observed_due_at=None),
         kinds=JobKindRegistry(),
         consumers=consumers,
@@ -550,3 +569,256 @@ def test_a_delivery_that_exhausts_its_budget_ends_failed_and_is_listed(
     assert listed[0].last_error == failed.last_error
     assert listed[0].completed_at == failed.completed_at
     assert outcome.result.jobs == [], "no job failed here; the collections are separate"
+
+
+# --- AC 9, crash arm: the budget the exception arm can never see ----------------------
+
+
+def _crashed_worker_left_it(
+    engine: Engine, event_id: UUID, *, attempts: int, lapsed_at: datetime
+) -> None:
+    """Put a delivery into the state a worker that died mid-handler leaves behind.
+
+    A direct write, and setup rather than assertion: the state is ``leased`` by an
+    owner that is never coming back, with ``lease_until`` already past and ``attempts``
+    at whatever the run of crashes reached. Walking up to the budget by actually killing
+    that many subprocesses would cost one process spawn per attempt to observe a
+    boundary one row already describes exactly — and the boundary, not the arithmetic
+    that reaches it, is what this test is about.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            update(event_delivery)
+            .where(
+                event_delivery.c.event_id == event_id,
+                event_delivery.c.consumer_id == CONSUMER_ID,
+            )
+            .values(
+                state=LEASED,
+                lease_owner="worker-that-died",
+                lease_until=lapsed_at,
+                attempts=attempts,
+            )
+        )
+
+
+def test_a_delivery_whose_worker_kept_dying_ends_failed_at_its_budget_and_not_before(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    ctx: WorkspaceContext,
+    now: datetime,
+) -> None:
+    """AC 9's crash arm, and **both** sides of the boundary it turns on.
+
+    A crash raises nothing, so ``_write_delivery_failure``'s ``>=`` check is never
+    reached on this path: a consumer that kills its process is re-leased for ever,
+    never ``failed``, never in the failure list, and holding the head of its queue
+    behind a row no operator can release. The pre-handler gate is the only thing that
+    ends it.
+
+    **Both halves are asserted because the gate's comparison is off-by-one from the
+    exception arm's on purpose, and only one of the two halves can see the
+    difference.** ``attempts`` is incremented by the lease, so:
+
+    * ``granted`` was left at ``budget - 1``; re-leasing takes it to exactly ``budget``,
+      which is the last attempt the budget owes it, and the handler **must** run. A gate
+      written ``>=`` refuses this one and grants ``budget - 1`` runs where the job side
+      grants ``budget``.
+    * ``spent`` was left at ``budget``; re-leasing takes it to ``budget + 1``, one past
+      the budget, and the handler must **not** run.
+
+    A test that watched only the terminal state would pass on both forms: ``granted``
+    ends ``delivered`` either way under ``>``, and under ``>=`` it ends ``failed`` —
+    which is why the invocation count, not the state, is what separates them.
+    """
+    budget = resolve().get_int("work.max_attempts")
+    lapsed_at = now - timedelta(seconds=1)
+
+    granted = _publish(ctx, now=now, subject_ref="harness.note:granted")
+    _crashed_worker_left_it(engine, granted, attempts=budget - 1, lapsed_at=lapsed_at)
+    spent = _publish(ctx, now=now, subject_ref="harness.note:spent")
+    _crashed_worker_left_it(engine, spent, attempts=budget, lapsed_at=lapsed_at)
+
+    result = _visit(workspace, cluster=cluster, consumers=consumer_registry(), at=now)
+
+    assert result.deliveries_acquired == 2, "both lapsed leases are re-acquirable"
+
+    last_granted = _delivery(engine, granted)
+    assert last_granted.state == DELIVERED, (
+        "the attempt at exactly work.max_attempts is the last one the budget grants; "
+        "a gate written >= instead of > refuses it and grants one run fewer than the "
+        "job side does for the same configured budget"
+    )
+    assert last_granted.attempts == budget
+    with engine.connect() as conn:
+        assert invocation_count(conn, event_id=granted) == 1
+
+    one_past = _delivery(engine, spent)
+    assert one_past.state == FAILED
+    assert one_past.attempts == budget + 1
+    assert one_past.last_error == RETRY_BUDGET_EXHAUSTED
+    assert one_past.lease_owner is None and one_past.lease_until is None
+    with engine.connect() as conn:
+        assert invocation_count(conn, event_id=spent) == 0, (
+            "a delivery past its budget must be failed before the handler is entered"
+        )
+    assert _ledger_rows(engine, spent) == 0
+
+
+# --- AC 6: a lease stolen mid-handler writes no outcome at all ------------------------
+
+
+def _steal(engine: Engine, event_id: UUID, *, at: datetime) -> None:
+    """Re-lease the row to another worker, from inside the handler that holds it."""
+    with engine.begin() as conn:
+        taken = lease_delivery(conn, owner=THIEF, now=at, lease_seconds=60)
+    assert taken is not None and taken.event_id == event_id
+
+
+def test_a_worker_whose_lease_is_stolen_mid_handler_discards_its_own_effects(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    ctx: WorkspaceContext,
+    now: datetime,
+) -> None:
+    """``mark_delivered`` returns ``False``, so nothing of the attempt is committed.
+
+    The steal happens **inside** the handler, after it has already written, which is
+    the only ordering that separates a commit-then-check implementation from a
+    check-then-commit one — the same ordering ``test_worker_loop.py``'s job-side twin
+    uses, and the same defect it exists to catch.
+
+    This is also the case that closes the gap the mutation table left open. Marking the
+    delivery ``delivered`` in a transaction *after* the handler's own has committed
+    passes every other test in this file, because on a happy path the two shapes are
+    indistinguishable. Here they are not: under that shape the loser's effects and its
+    ledger row commit before ``mark_delivered`` is ever asked, and both assertions
+    below go red.
+    """
+    event_id = _publish(ctx, now=now)
+    stolen_at = now + timedelta(seconds=61)
+
+    def writes_then_loses_its_lease(
+        uow: HandlerUnitOfWork, envelope: EventEnvelope
+    ) -> None:
+        record_delivery(uow, envelope)
+        _steal(engine, event_id, at=stolen_at)
+
+    _visit(
+        workspace,
+        cluster=cluster,
+        consumers=consumer_registry(writes_then_loses_its_lease),
+        at=now,
+    )
+
+    recorded, invocations = _observed(engine, event_id)
+    assert recorded == (), (
+        "the loser's effects must be rolled back, not committed beside the winner's"
+    )
+    assert _ledger_rows(engine, event_id) == 0, (
+        "a ledger row from the loser would make the winner's own attempt a no-op"
+    )
+    assert invocations == 1
+
+    row = _delivery(engine, event_id)
+    assert row.state == LEASED, "the loser must not overwrite the winner's state"
+    assert row.lease_owner == THIEF
+    assert row.completed_at is None
+
+
+@pytest.mark.parametrize("at_the_budget", [False, True])
+def test_a_stolen_lease_on_a_failing_handler_writes_no_outcome(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    ctx: WorkspaceContext,
+    now: datetime,
+    at_the_budget: bool,
+) -> None:
+    """The other two ``False`` branches: ``requeue_delivery`` and ``fail_delivery``.
+
+    Both are predicated on the same ``_held``, and which one the failure arm reaches is
+    decided by the budget — so the two parameters are the two writes. ``fail_delivery``
+    is the one that matters most: ``failed`` is the state nothing moves a row out of,
+    so a lapsed owner landing it on the row its successor now holds would strand that
+    whole ``(consumer_id, subject_ref)`` queue on an event that was in fact processed
+    exactly once.
+
+    The direct write is setup, as in the crash-arm test above: it places ``attempts``
+    one short of the budget so the lease takes it to exactly the budget, which is where
+    the failure arm chooses ``fail_delivery`` over ``requeue_delivery``.
+    """
+    budget = resolve().get_int("work.max_attempts")
+    event_id = _publish(ctx, now=now)
+    if at_the_budget:
+        with engine.begin() as conn:
+            conn.execute(
+                update(event_delivery)
+                .where(
+                    event_delivery.c.event_id == event_id,
+                    event_delivery.c.consumer_id == CONSUMER_ID,
+                )
+                .values(attempts=budget - 1)
+            )
+    stolen_at = now + timedelta(seconds=61)
+
+    def raises_after_losing_its_lease(
+        uow: HandlerUnitOfWork, envelope: EventEnvelope
+    ) -> None:
+        record_delivery(uow, envelope)
+        _steal(engine, event_id, at=stolen_at)
+        raise RuntimeError("and then it failed")
+
+    _visit(
+        workspace,
+        cluster=cluster,
+        consumers=consumer_registry(raises_after_losing_its_lease),
+        at=now,
+    )
+
+    row = _delivery(engine, event_id)
+    assert row.state == LEASED, (
+        "a worker whose lease lapsed must not write the outcome of an attempt the "
+        "row's new owner is now making"
+    )
+    assert row.lease_owner == THIEF
+    assert row.last_error is None
+    assert row.completed_at is None
+    assert _ledger_rows(engine, event_id) == 0
+    assert _observed(engine, event_id)[0] == ()
+
+
+# --- the one raise that is terminal rather than retried -------------------------------
+
+
+def test_a_delivery_whose_event_is_missing_is_terminal_rather_than_retried(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    ctx: WorkspaceContext,
+    now: datetime,
+) -> None:
+    """``event_delivery.event_id`` carries no foreign key, so this state is reachable.
+
+    An outbox row that is not there now will not be there on the eighth attempt, so
+    the delivery ends ``failed`` on its **first** attempt rather than spending a budget
+    of retries and up to an hour of backoff each to reach the same place. That matches
+    ``_fail_terminally``'s rule on the job side for an input that cannot parse, and it
+    is why the raise carries its own exception type: a bare ``LookupError`` out of a
+    consumer handler is genuinely retryable and must stay so.
+    """
+    event_id = _publish(ctx, now=now)
+    with engine.begin() as conn:
+        conn.execute(delete(outbox_event).where(outbox_event.c.id == event_id))
+
+    _visit(workspace, cluster=cluster, consumers=consumer_registry(), at=now)
+
+    row = _delivery(engine, event_id)
+    assert row.state == FAILED, "a permanently unbuildable delivery is never requeued"
+    assert row.attempts == 1, "terminal on the first attempt, not after the budget"
+    assert row.last_error is not None and "has no outbox row" in row.last_error
+    assert row.lease_owner is None and row.lease_until is None
+    with engine.connect() as conn:
+        assert invocation_count(conn, event_id=event_id) == 0

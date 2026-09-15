@@ -1000,6 +1000,63 @@ def test_a_workspace_due_only_for_a_delivery_is_never_reported_idle(
     )
 
 
+def test_a_pass_that_drained_only_deliveries_is_not_idle(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    fresh_backend: PostgresBackend,
+    only_workspaces: Callable[..., None],
+    now: datetime,
+) -> None:
+    """``found_work`` reads both counts, so a delivery-only pass loops, never sleeps.
+
+    The cost of reading the job count alone is not merely a wasted second. A visit that
+    stops at :data:`MAX_JOBS_PER_VISIT` deliveries **with more still pending** would be
+    reported as idle and the loop would wait out ``IDLE_INTERVAL_SECONDS`` before
+    looking again, while the identical situation on the job side loops immediately —
+    two different throughputs for one bound, decided by which table the work happened
+    to be in.
+    """
+    only_workspaces(workspace)
+    with engine.begin() as conn:
+        enable_harness_module(conn)
+        ensure_consumer_tables(conn)
+    ctx = context_for_operator(workspace)
+    with open_unit_of_work(ctx) as uow:
+        publish(
+            ctx,
+            uow,
+            NewEvent(
+                type=EVENT_TYPE,
+                schema_version=1,
+                subject_ref="harness.note:due-now",
+                subject_revision=1,
+                data={"body": "due now"},
+            ),
+            now=now,
+            consumers=consumer_registry(),
+        )
+        uow.commit()
+
+    result = run_one_pass(
+        kinds=_registry(),
+        consumers=consumer_registry(),
+        backend=fresh_backend,
+        owner=OWNER,
+        now=now,
+        clock=lambda: now,
+        jitter=None,
+        reconcile_seconds=RECONCILE_SECONDS,
+    )
+
+    assert result.jobs_acquired == 0, "this workspace holds no job at all"
+    assert result.deliveries_acquired == 1
+    assert result.found_work, (
+        "a pass that leased only deliveries was reported idle; found_work reads both "
+        "counts because either one alone is a pass that found work"
+    )
+
+
 # --- AC 14: discovery comes from the index and from nowhere else ----------------------
 
 

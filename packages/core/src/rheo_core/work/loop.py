@@ -119,8 +119,10 @@ passes."""
 RETRY_BUDGET_EXHAUSTED: Final = (
     "retry budget exhausted: lease expired without a recorded outcome"
 )
-"""Pre-handler gate 2's error text. Fixed, because it is the only thing that
-distinguishes the crash arm's ``failed`` from every other route to ``failed``."""
+"""The pre-handler budget gate's error text, on **both** drains. Fixed, because it is
+the only thing that distinguishes the crash arm's ``failed`` from every other route to
+``failed``: a dead worker writes nothing, so this string is the whole of the record
+that a budget was spent by crashing rather than by raising."""
 
 logger = logging.getLogger("rheo_core.work")
 
@@ -138,11 +140,15 @@ class VisitResult:
 
     ``next_due_at`` is the value the caller hands ``record_visit``; ``jobs_acquired``
     counts leases taken, including the ones the pre-handler gates terminalised without
-    entering a handler, because those are work the pass did.
+    entering a handler, because those are work the pass did. ``deliveries_acquired``
+    counts the same thing on the delivery side, and exists for the same reason the
+    job count does: a visit that leased only deliveries did work, and a pass that
+    cannot see that sleeps through work it has already found.
     """
 
     next_due_at: datetime | None
     jobs_acquired: int
+    deliveries_acquired: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,11 +157,18 @@ class PassResult:
 
     workspaces_visited: int
     jobs_acquired: int
+    deliveries_acquired: int
 
     @property
     def found_work(self) -> bool:
-        """Whether any job was actually acquired. A busy worker does not idle."""
-        return self.jobs_acquired > 0
+        """Whether any job **or delivery** was acquired. A busy worker does not idle.
+
+        Both counts, because either one alone is a pass that found work: a visit that
+        stopped at :data:`MAX_JOBS_PER_VISIT` deliveries with more still pending has
+        exactly as much reason to loop again immediately as one that stopped at the
+        cap on jobs, and reading the job count alone would put it to sleep for
+        :data:`IDLE_INTERVAL_SECONDS` in between."""
+        return self.jobs_acquired > 0 or self.deliveries_acquired > 0
 
 
 def _validation_detail(exc: ValidationError) -> str:
@@ -468,21 +481,34 @@ def _write_failure_outcome(
     )
 
 
+class _EventMissing(LookupError):
+    """A leased delivery whose ``core.outbox_event`` row is not there.
+
+    Its own type, and raised specifically to be caught narrowly, the way
+    ``JobCancelled``/``JobLeaseLost`` are on the job side. It is the one raise out of
+    :func:`_run_consumer`'s transaction that must **not** be requeued: ``event_id``
+    carries no foreign key, so the state is reachable, and an outbox row that is not
+    there now will not be there on the eighth attempt either. A bare ``LookupError``
+    would be indistinguishable from one a consumer handler raised, and that handler's
+    failure is genuinely retryable."""
+
+
 def _envelope_for(conn: Connection, leased: LeasedDelivery) -> EventEnvelope:
     """What one consumer is handed for one attempt: the outbox row plus the delivery
     context the leased row already carries.
 
     ``publish`` writes the outbox row and every delivery row for it in one transaction,
-    so a delivery whose event is missing is a broken invariant rather than a race. It
-    raises, and the raise takes the same path a consumer handler's raise takes, which
-    puts the reason on the delivery row where an operator can read it instead of ending
-    the visit with a traceback.
+    so a delivery whose event is missing is a broken invariant rather than a race —
+    which is why :class:`_EventMissing` is terminal on first sight rather than
+    requeued, matching :func:`_fail_terminally`'s rule on the job side for an input
+    that cannot parse. The reason lands on the delivery row where an operator can read
+    it, rather than ending the visit with a traceback.
     """
     row = conn.execute(
         select(t.outbox_event).where(t.outbox_event.c.id == leased.event_id)
     ).one_or_none()
     if row is None:
-        raise LookupError(
+        raise _EventMissing(
             f"event {leased.event_id} has no outbox row, so the delivery to "
             f"{leased.consumer_id!r} cannot be built"
         )
@@ -532,13 +558,17 @@ def _fail_delivery_alone(
     clock: Callable[[], datetime],
     error: str,
 ) -> None:
-    """Terminal on first sight, in its own short transaction.
+    """Write ``failed`` in its own short transaction, for the three delivery outcomes
+    that are terminal without a retry.
 
-    The delivery-side counterpart of :func:`_fail_terminally`: a delivery naming a
-    consumer that is no longer registered, or an event with no outbox row, cannot
-    succeed on a later attempt, so neither is ever requeued. ``failed`` blocks the
-    head of that ``(consumer_id, subject_ref)`` queue until a person acts, which is
-    the ratified behaviour rather than a cost of this branch.
+    Named rather than described as a shape, because the three do not share one: the
+    **spent budget** (:func:`_run_leased_delivery`'s gate) is terminal because the
+    budget is gone; an **unknown consumer** and a **missing outbox row** are terminal
+    on first sight, because neither can succeed on a later attempt. The delivery-side
+    counterpart of :func:`_finish_alone` plus :func:`_fail_terminally` together.
+
+    ``failed`` blocks the head of that ``(consumer_id, subject_ref)`` queue until a
+    person acts, which is the ratified behaviour rather than a cost of this branch.
     """
     applied = _finish_alone(
         engine,
@@ -566,12 +596,43 @@ def _run_leased_delivery(
     clock: Callable[[], datetime],
     jitter: random.Random | None,
 ) -> None:
-    """One leased delivery, from its consumer lookup to its outcome write.
+    """One leased delivery, from the pre-handler budget gate to its outcome write.
 
-    The lookup is the delivery-side equivalent of :func:`_run_leased_job`'s
-    ``kinds.lookup``, and an unknown consumer ends the same way an unknown job kind
-    does: terminal, without entering a handler.
+    **The gate is the twin of :func:`_run_leased_job`'s gate 2, and it is the only
+    thing that ends a delivery whose worker keeps dying.** A crash raises nothing, so
+    it never reaches :func:`_write_delivery_failure`'s check; the next lease is the
+    first moment anything can observe that the budget is spent. Without this, a
+    consumer that kills its process is re-leased and re-run past ``work.max_attempts``
+    for ever, never ``failed``, never in the failure list, and holding the head of its
+    ``(consumer_id, subject_ref)`` queue behind a row no operator can release.
+
+    **``>``, one more than the exception arm's ``>=``, deliberately — and the
+    asymmetry is the accounting, not a typo.** ``attempts`` is incremented by the
+    lease, so the *n*-th attempt reads *n*. The raise arm fires at ``n >= budget``, on
+    the attempt that has just run and failed, so ``budget`` runs happened. This arm
+    fires on a freshly leased row *before* anything runs, so it must let ``budget``
+    through and refuse ``budget + 1``. Written ``>=`` it would refuse the *n*-th
+    attempt itself and grant one run fewer than the job side does for the same
+    configured budget — a difference no test that watches only the terminal state can
+    see, which is why ``test_event_delivery.py`` pins both sides of this boundary.
+
+    The lookup below is the delivery-side equivalent of ``kinds.lookup``, and an
+    unknown consumer ends the same way an unknown job kind does: terminal, without
+    entering a handler. It runs after the gate for the same reason gate 2 runs before
+    ``kinds.lookup``: a budget that is already spent is not worth resolving a
+    subscription for.
     """
+    if leased.attempts > resolve().get_int("work.max_attempts"):
+        _fail_delivery_alone(
+            engine,
+            database,
+            leased=leased,
+            owner=owner,
+            clock=clock,
+            error=RETRY_BUDGET_EXHAUSTED,
+        )
+        return
+
     try:
         subscription = consumers.lookup(leased.consumer_id)
     except ConsumerUnknown as exc:
@@ -630,6 +691,7 @@ def _run_consumer(
     taken on belongs to the lease.
     """
     failure: BaseException | None = None
+    missing: _EventMissing | None = None
     lost = False
     with UnitOfWork(engine, database) as uow:
         connection = uow.connection
@@ -651,6 +713,13 @@ def _run_consumer(
                 owner=owner,
                 now=clock(),
             )
+        except _EventMissing as exc:
+            # Caught before the generic branch: one exception type raised specifically
+            # to be caught, caught narrowly, exactly as :func:`_run_handler` catches
+            # ``JobCancelled``/``JobLeaseLost`` ahead of its own generic arm. This is
+            # the one raise out of this block that is terminal rather than retried.
+            uow.rollback()
+            missing = exc
         except Exception as exc:
             uow.rollback()
             failure = exc
@@ -663,6 +732,22 @@ def _run_consumer(
 
     if lost:
         _lease_lost(leased)
+        return
+    if missing is not None:
+        logger.warning(
+            "the delivery of event %s to %s cannot be built: %s",
+            leased.event_id,
+            leased.consumer_id,
+            missing,
+        )
+        _fail_delivery_alone(
+            engine,
+            database,
+            leased=leased,
+            owner=owner,
+            clock=clock,
+            error=str(missing),
+        )
         return
     if failure is not None:
         logger.warning(
@@ -843,6 +928,7 @@ def visit_workspace(
             jitter=jitter,
         )
 
+    deliveries_acquired = 0
     deliveries_drained = False
     for _ in range(MAX_JOBS_PER_VISIT):
         with UnitOfWork(engine, database) as uow:
@@ -856,6 +942,7 @@ def visit_workspace(
         if leased_delivery is None:
             deliveries_drained = True
             break
+        deliveries_acquired += 1
         _run_leased_delivery(
             engine,
             database,
@@ -880,7 +967,11 @@ def visit_workspace(
     next_due_at = (
         remaining if (drained and deliveries_drained) or remaining is None else clock()
     )
-    return VisitResult(next_due_at=next_due_at, jobs_acquired=acquired)
+    return VisitResult(
+        next_due_at=next_due_at,
+        jobs_acquired=acquired,
+        deliveries_acquired=deliveries_acquired,
+    )
 
 
 def run_one_pass(
@@ -918,6 +1009,7 @@ def run_one_pass(
         due = workspaces_with_due_work(control, now=now, limit=backend.pools.cache_size)
 
     jobs_acquired = 0
+    deliveries_acquired = 0
     for workspace in due:
         # One guard for the whole visit, not for the routing step inside it: every
         # failure a first run actually produces — a missing table, a poisoned engine,
@@ -942,6 +1034,7 @@ def run_one_pass(
             next_due_at: datetime | None = now + timedelta(seconds=LEASE_SECONDS)
         else:
             jobs_acquired += visit.jobs_acquired
+            deliveries_acquired += visit.deliveries_acquired
             next_due_at = visit.next_due_at
 
         with backend.control_engine.begin() as control:
@@ -954,7 +1047,11 @@ def run_one_pass(
             )
 
     backend.pools.close_idle()
-    return PassResult(workspaces_visited=len(due), jobs_acquired=jobs_acquired)
+    return PassResult(
+        workspaces_visited=len(due),
+        jobs_acquired=jobs_acquired,
+        deliveries_acquired=deliveries_acquired,
+    )
 
 
 def _pass_backoff_seconds(consecutive_failures: int) -> float:

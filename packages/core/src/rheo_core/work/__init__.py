@@ -22,10 +22,12 @@ policy governs jobs and deliveries alike; and ``loop`` and ``operations`` call
 ``rheo_core.events``, because the drain and the failure list are readers of that
 contract. Neither package holds a second copy of the other's rules.
 
-**Every function in ``jobs.py`` and every function in ``loop.py``'s delivery drain takes
-the caller's connection or opens its own unit of work explicitly** — ``jobs.enqueue`` is
-the one documented exception that commits on its own behalf, and says so in its own
-docstring.
+**The repository functions in ``jobs.py`` take the caller's connection and commit
+nothing** — ``jobs.enqueue`` is the one documented exception, and says so in its own
+docstring. **``loop.py`` is deliberately the opposite**: it is the worker, so both
+drains open and commit their own transactions there, and its module docstring carries
+the transaction map for each. Keeping the two claims apart is the point — the first is
+what makes a repository composable, the second is what a worker is for.
 
 **Schedules stay a one-function insertion.** The run that builds them adds
 ``run_due_schedules(conn, *, now)`` at the top of ``loop.visit_workspace``, plus one
