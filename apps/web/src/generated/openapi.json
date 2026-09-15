@@ -1,6 +1,56 @@
 {
   "components": {
     "schemas": {
+      "FailedDelivery": {
+        "description": "One failed event delivery as the operation publishes it.\n\n``rheo_core.events.deliveries.FailedDeliveryRow`` field for field, and\ndeliberately **not** :class:`FailedJob`'s field list: ``core.event_delivery``\nhas no ``max_attempts`` column, because a delivery's budget is the\n``work.max_attempts`` setting rather than a per-row value, and publishing a\nfield the row does not hold would mean inventing one here.\n\nThe identity is the composite key the row is actually keyed by, both halves\npublished: one event has one delivery per consumer, so ``event_id`` alone does\nnot name a delivery.",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "consumer_id": {
+            "title": "Consumer Id",
+            "type": "string"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "required": [
+          "event_id",
+          "consumer_id",
+          "attempts",
+          "last_error",
+          "completed_at"
+        ],
+        "title": "FailedDelivery",
+        "type": "object"
+      },
       "FailedJob": {
         "description": "One failed job as the operation publishes it.\n\n``rheo_core.work.jobs.FailedJobRow`` field for field, with that row's ``id``\npublished as ``job_id``: the response is about jobs and nothing else in it\ncarries an id, so the longer name costs nothing and reads unambiguously in a\ngenerated client.",
         "properties": {
@@ -57,8 +107,15 @@
         "type": "object"
       },
       "FailureList": {
-        "description": "The workspace's most recently failed jobs, newest first.\n\n``jobs`` is a **named collection field rather than a bare list**, deliberately:\n0c2 adds sibling collections here \u2014 its own deliveries, its own unfinished\nwork \u2014 beside ``jobs``, additively, and every client generated against\ntoday's document keeps reading ``jobs`` unchanged. A top-level\n``list[FailedJob]`` would make that same addition a breaking change to the\nresponse's own type instead of a new field a reader may ignore.",
+        "description": "The workspace's most recently failed jobs and deliveries, newest first.\n\n``jobs`` is a **named collection field rather than a bare list**, and\n``deliveries`` is what that shape was chosen for: it is added **beside**\n``jobs``, additively, so a client generated against the document before it\nkeeps reading ``jobs`` unchanged. A top-level ``list[FailedJob]`` would have\nmade this addition a breaking change to the response's own type instead of a\nnew field a reader may ignore.\n\nEach collection is ordered and capped on its own, newest first, by the same\n``limit``: they are two independent lists of the most recent failures, not two\nhalves of one merged ordering.",
         "properties": {
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/FailedDelivery"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          },
           "jobs": {
             "items": {
               "$ref": "#/components/schemas/FailedJob"
@@ -68,7 +125,8 @@
           }
         },
         "required": [
-          "jobs"
+          "jobs",
+          "deliveries"
         ],
         "title": "FailureList",
         "type": "object"

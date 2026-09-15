@@ -1,15 +1,31 @@
-"""Durable execution: the outbox, event deliveries, jobs, and schedules.
+"""Durable execution: jobs, event deliveries, and schedules.
 
 The tables landed in ``storage/work_tables.py``, created by the core chain's
-``0002_durable_work`` revision. The **job** half of the behaviour is now real and lives
-here: the repository and its lease in ``jobs.py``, the retry schedule in ``backoff.py``,
-the cancellation checkpoint in ``cancellation.py``, the job-kind registry in
-``kinds.py``, and the worker's own loop — leasing, the retry budget, cancellation — in
-``loop.py``.
+``0002_durable_work`` revision. The **job** half lives here: the repository and its
+lease in ``jobs.py``, the retry schedule in ``backoff.py``, the cancellation checkpoint
+in ``cancellation.py``, the job-kind registry in ``kinds.py``, and the worker's own loop
+— leasing, the retry budget, cancellation — in ``loop.py``.
 
-The other half is still deferred. The outbox and event delivery belong to 0c2 and the
-runs after it; nothing in this package writes, reads or drains either of them yet, and
-their tables are simply waiting for the run that builds the behaviour over them.
+**The outbox half is split across two packages, and the split is the design.**
+``rheo_core.events`` owns the write and every read and write against a delivery row:
+the event a producer hands in, the fan-out at write, the consumer registry, and the
+ordered lease with its three finishes. This package owns the *draining* of those rows,
+because draining is the worker's loop and there is only one of those:
+``loop.visit_workspace`` drains up to ``MAX_JOBS_PER_VISIT`` jobs out of a workspace and
+then up to the same bound of deliveries, running each consumer's handler with the
+``core.consumer_processed`` ledger row and the delivery's ``delivered`` write in the
+handler's own transaction.
+
+Two import edges cross between the packages, and they point in opposite directions on
+purpose: ``events.deliveries`` calls this package's ``backoff_for``, because one retry
+policy governs jobs and deliveries alike; and ``loop`` and ``operations`` call
+``rheo_core.events``, because the drain and the failure list are readers of that
+contract. Neither package holds a second copy of the other's rules.
+
+**Every function in ``jobs.py`` and every function in ``loop.py``'s delivery drain takes
+the caller's connection or opens its own unit of work explicitly** — ``jobs.enqueue`` is
+the one documented exception that commits on its own behalf, and says so in its own
+docstring.
 
 **Schedules stay a one-function insertion.** The run that builds them adds
 ``run_due_schedules(conn, *, now)`` at the top of ``loop.visit_workspace``, plus one

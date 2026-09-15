@@ -42,13 +42,19 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession, MakeWorkspace
+from harness.consumers import EVENT_TYPE, ensure_consumer_tables
+from harness.consumers import registry as consumer_registry
 from harness.records import ensure_note_table, list_notes, write_note
+from harness.registry import enable_harness_module
 from pydantic import BaseModel
 from rheo_app_worker.main import install_stop_signals
+from rheo_core.boundary import context_for_operator
+from rheo_core.events import ConsumerRegistry, NewEvent, publish
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.control_tables import workspace as workspace_table
 from rheo_core.storage.postgres import PostgresBackend
+from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.storage.work_index_tables import workspace_work_due
 from rheo_core.storage.work_tables import job
@@ -255,11 +261,19 @@ def _visit_on(
     backend: PostgresBackend,
     clock: Callable[[], datetime],
     owner: str = OWNER,
+    consumers: ConsumerRegistry | None = None,
 ) -> VisitResult:
-    """One visit of one workspace, on a clock the caller controls."""
+    """One visit of one workspace, on a clock the caller controls.
+
+    ``consumers`` defaults to a **fresh empty** registry rather than a shared one:
+    every job test in this file publishes nothing, so the delivery drain leases
+    nothing, and a module-level instance would be state two cases could pass to
+    each other.
+    """
     return visit_workspace(
         DueWorkspace(workspace_id=workspace_id, observed_due_at=None),
         kinds=kinds,
+        consumers=ConsumerRegistry() if consumers is None else consumers,
         backend=backend,
         owner=owner,
         clock=clock,
@@ -274,10 +288,16 @@ def _visit(
     backend: PostgresBackend,
     at: datetime,
     owner: str = OWNER,
+    consumers: ConsumerRegistry | None = None,
 ) -> VisitResult:
     """One visit of one workspace, on a clock pinned to ``at``."""
     return _visit_on(
-        workspace_id, kinds=kinds, backend=backend, clock=lambda: at, owner=owner
+        workspace_id,
+        kinds=kinds,
+        backend=backend,
+        clock=lambda: at,
+        owner=owner,
+        consumers=consumers,
     )
 
 
@@ -919,6 +939,67 @@ def test_a_visit_that_caps_out_reports_a_post_handler_instant(
     )
 
 
+# --- AC 11: the due instant is the union of both tables -------------------------------
+
+
+def test_a_workspace_due_only_for_a_delivery_is_never_reported_idle(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """AC 11, the boundary case #46 is about: a pending delivery and no job at all.
+
+    ``visit_workspace`` computes ``next_due_at`` from both tables, so a workspace
+    holding only a delivery must be reported due at that delivery's instant. Computing
+    it from ``core.job`` alone reports ``None`` — "nothing is due here" — and the
+    workspace then waits out the 900 s reconcile floor before anything looks at it
+    again, which is a delivery silently delayed rather than a delivery lost, and so
+    exactly the kind of defect a passing suite hides.
+
+    The delivery is published **due in the future** so this visit's own drain leaves it
+    alone: the assertion is about what the visit *reports*, and a delivery it had
+    already drained would report nothing either way. The sibling assertion is the
+    control — a workspace with neither is still ``None``, so this test cannot pass by
+    a union that reports something unconditionally.
+    """
+    due_later = now + timedelta(minutes=5)
+    with engine.begin() as conn:
+        enable_harness_module(conn)
+        ensure_consumer_tables(conn)
+
+    empty = _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
+    assert empty.next_due_at is None, "the control: neither table has anything due"
+
+    ctx = context_for_operator(workspace)
+    with open_unit_of_work(ctx) as uow:
+        publish(
+            ctx,
+            uow,
+            NewEvent(
+                type=EVENT_TYPE,
+                schema_version=1,
+                subject_ref="harness.note:union",
+                subject_revision=1,
+                data={"body": "due later"},
+            ),
+            now=due_later,
+            consumers=consumer_registry(),
+        )
+        uow.commit()
+
+    result = _visit(
+        workspace,
+        kinds=_registry(),
+        backend=cluster.backend,
+        at=now,
+        consumers=consumer_registry(),
+    )
+
+    assert result.jobs_acquired == 0
+    assert result.next_due_at == due_later, (
+        "a workspace whose only due work is a delivery was reported as idle; "
+        "next_due_at is the earlier of the job side and the delivery side"
+    )
+
+
 # --- AC 14: discovery comes from the index and from nowhere else ----------------------
 
 
@@ -942,6 +1023,7 @@ def test_a_pass_opens_only_the_workspaces_the_due_work_index_offers(
 
     result = run_one_pass(
         kinds=_registry(),
+        consumers=ConsumerRegistry(),
         backend=fresh_backend,
         owner=OWNER,
         now=now,
@@ -986,6 +1068,7 @@ def test_each_visit_records_the_workspace_at_its_earliest_remaining_work(
 
     run_one_pass(
         kinds=_registry(raises),
+        consumers=ConsumerRegistry(),
         backend=fresh_backend,
         owner=OWNER,
         now=now,
@@ -1012,6 +1095,7 @@ def test_a_drained_workspace_is_recorded_at_the_reconcile_floor(
 
     run_one_pass(
         kinds=_registry(),
+        consumers=ConsumerRegistry(),
         backend=fresh_backend,
         owner=OWNER,
         now=now,
@@ -1053,6 +1137,7 @@ def test_close_idle_is_called_exactly_once_per_pass(
 
     result = run_one_pass(
         kinds=_registry(),
+        consumers=ConsumerRegistry(),
         backend=fresh_backend,
         owner=OWNER,
         now=now,
@@ -1094,6 +1179,7 @@ def test_a_workspace_that_fails_past_routing_is_skipped_and_backed_off(
 
     result = run_one_pass(
         kinds=ExplodingRegistry(),
+        consumers=ConsumerRegistry(),
         backend=fresh_backend,
         owner=OWNER,
         now=now,
@@ -1125,6 +1211,7 @@ def test_a_failing_pass_is_never_fatal_and_backs_off_to_its_ceiling(
 
     worker_loop(
         kinds=_registry(),
+        consumers=ConsumerRegistry(),
         backend=cluster.backend,
         stop=stop,
         max_passes=8,
@@ -1151,6 +1238,7 @@ def test_the_pass_backoff_resets_on_the_first_pass_that_succeeds(
 
     worker_loop(
         kinds=_registry(),
+        consumers=ConsumerRegistry(),
         backend=cluster.backend,
         stop=stop,
         max_passes=5,
@@ -1180,7 +1268,11 @@ def test_the_loop_exits_on_its_stop_event_with_no_pass_bound(
 
     stop = StopsDuringItsFirstWait()
     worker_loop(
-        kinds=_registry(), backend=cluster.backend, stop=stop, clock=lambda: now
+        kinds=_registry(),
+        consumers=ConsumerRegistry(),
+        backend=cluster.backend,
+        stop=stop,
+        clock=lambda: now,
     )
 
     assert passes == 1
@@ -1190,6 +1282,7 @@ def test_the_loop_exits_on_its_stop_event_with_no_pass_bound(
     already_set.set()
     worker_loop(
         kinds=_registry(),
+        consumers=ConsumerRegistry(),
         backend=cluster.backend,
         stop=already_set,
         max_passes=5,
@@ -1215,6 +1308,7 @@ def test_a_pass_that_found_work_loops_again_without_waiting(
 
     worker_loop(
         kinds=_registry(),
+        consumers=ConsumerRegistry(),
         backend=fresh_backend,
         stop=stop,
         max_passes=1,
