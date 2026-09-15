@@ -314,6 +314,7 @@ def test_the_lease_is_ordered_and_blocks_behind_an_unsettled_earlier_delivery(
                 conn,
                 event_id=head.event_id,
                 consumer_id=head.consumer_id,
+                owner=OWNER_A,
                 now=now,
             )
             is True
@@ -327,6 +328,7 @@ def test_the_lease_is_ordered_and_blocks_behind_an_unsettled_earlier_delivery(
                 conn,
                 event_id=second.event_id,
                 consumer_id=second.consumer_id,
+                owner=OWNER_A,
                 now=now,
                 error="handler raised",
             )
@@ -385,6 +387,135 @@ def test_an_expired_delivery_lease_is_reacquirable_and_counts_the_attempt(
     row = _deliveries(engine)[0]
     assert row.lease_owner == OWNER_B
     assert row.lease_until == lapsed + timedelta(seconds=LEASE)
+
+
+# --- the ownership half of the three writes that end an attempt -----------------------
+
+
+def test_a_worker_whose_lease_was_stolen_cannot_end_the_delivery(
+    engine: Engine, ctx: WorkspaceContext, now: datetime
+) -> None:
+    """All three finish writes refuse a worker that no longer holds the lease.
+
+    The steal is a second ``lease_delivery`` after the clock passes ``lease_until``, so
+    the row is left **``leased`` under owner B**. A steal that ended the row terminally
+    would let the surviving ``state = 'leased'`` predicate reject the loser on its own,
+    and an ownership defect would go unseen.
+
+    ``fail_delivery`` is the one that makes this a correctness bug rather than a
+    transient window: ``failed`` is not in the lease's candidate set and nothing in the
+    module moves a row out of it, so a lapsed owner's failure write would strand this
+    ``(consumer_id, subject_ref)`` queue behind a head that was processed exactly once,
+    with no remedy shipped this run. The other two are asserted beside it because one
+    predicate serves all three and a later edit could drop it from any of them.
+    """
+    registry = _registry(_subscription(CORE_CONSUMER, "core"))
+    event_id = _publish(ctx, registry, now=now)
+
+    with engine.begin() as conn:
+        assert lease_delivery(conn, owner=OWNER_A, now=now, lease_seconds=LEASE)
+    stolen_at = now + timedelta(seconds=LEASE + 1)
+    with engine.begin() as conn:
+        assert lease_delivery(conn, owner=OWNER_B, now=stolen_at, lease_seconds=LEASE)
+
+    zombie_at = stolen_at + timedelta(seconds=1)
+    with engine.begin() as conn:
+        assert (
+            mark_delivered(
+                conn,
+                event_id=event_id,
+                consumer_id=CORE_CONSUMER,
+                owner=OWNER_A,
+                now=zombie_at,
+            )
+            is False
+        )
+        assert (
+            fail_delivery(
+                conn,
+                event_id=event_id,
+                consumer_id=CORE_CONSUMER,
+                owner=OWNER_A,
+                now=zombie_at,
+                error="zombie",
+            )
+            is False
+        )
+        assert (
+            requeue_delivery(
+                conn,
+                event_id=event_id,
+                consumer_id=CORE_CONSUMER,
+                owner=OWNER_A,
+                now=zombie_at,
+                error="zombie",
+                jitter=None,
+            )
+            is False
+        )
+
+    row = _deliveries(engine)[0]
+    assert row.state == "leased"
+    assert row.lease_owner == OWNER_B
+    assert row.lease_until == stolen_at + timedelta(seconds=LEASE)
+    assert row.attempts == 2
+    assert row.last_error is None
+    assert row.completed_at is None
+
+
+def test_skip_delivery_touches_nothing_that_is_not_already_failed(
+    engine: Engine, ctx: WorkspaceContext, now: datetime
+) -> None:
+    """The ``failed`` predicate, isolated — the reason this write is not unconditional.
+
+    An unconditional ``UPDATE ... SET state = 'skipped'`` passes every other test in
+    this file, because nothing else asks it about a row it should leave alone. Both
+    states a worker can be mid-flight on are asserted: ``pending`` (due, about to be
+    leased) and ``leased`` (running now). The positive case closes the test so a
+    mutation that simply made the function always return ``False`` cannot pass either.
+    """
+    registry = _registry(_subscription(CORE_CONSUMER, "core"))
+    event_id = _publish(ctx, registry, now=now)
+
+    with engine.begin() as conn:
+        assert (
+            skip_delivery(conn, event_id=event_id, consumer_id=CORE_CONSUMER, now=now)
+            is False
+        )
+    pending = _deliveries(engine)[0]
+    assert pending.state == "pending"
+    assert pending.next_attempt_at == now
+    assert pending.completed_at is None
+
+    with engine.begin() as conn:
+        assert lease_delivery(conn, owner=OWNER_A, now=now, lease_seconds=LEASE)
+    with engine.begin() as conn:
+        assert (
+            skip_delivery(conn, event_id=event_id, consumer_id=CORE_CONSUMER, now=now)
+            is False
+        )
+    leased = _deliveries(engine)[0]
+    assert leased.state == "leased"
+    assert leased.lease_owner == OWNER_A
+    assert leased.completed_at is None
+
+    with engine.begin() as conn:
+        assert (
+            fail_delivery(
+                conn,
+                event_id=event_id,
+                consumer_id=CORE_CONSUMER,
+                owner=OWNER_A,
+                now=now,
+                error="handler raised",
+            )
+            is True
+        )
+        assert (
+            skip_delivery(conn, event_id=event_id, consumer_id=CORE_CONSUMER, now=now)
+            is True
+        )
+    assert _deliveries(engine)[0].state == "skipped"
 
 
 # --- AC 1: the chosen instant ---------------------------------------------------------
@@ -494,6 +625,7 @@ def test_requeue_delivery_walks_the_backoff_schedule(
                     conn,
                     event_id=leased.event_id,
                     consumer_id=leased.consumer_id,
+                    owner=OWNER_A,
                     now=at,
                     error=f"attempt {leased.attempts}",
                     jitter=None,

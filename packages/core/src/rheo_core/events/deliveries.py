@@ -8,7 +8,7 @@ commits**. ``now`` is always an explicit keyword parameter: nothing here reads t
 process clock, so a test drives lease expiry by choosing an instant rather than by
 sleeping (``jobs.py:6-8``).
 
-**Three deviations from ``docs/architecture/intake-and-events.md`` § Ordering**,
+**Two deviations from ``docs/architecture/intake-and-events.md`` § Ordering**,
 recorded here so a reviewer finds them without re-deriving them:
 
 1. **``:now`` is a bound parameter**, never SQL ``now()``, and ``lease_seconds`` is
@@ -23,17 +23,25 @@ recorded here so a reviewer finds them without re-deriving them:
    advance where the attempt starts; incrementing on a failure path instead would
    leave a delivery that crashed its worker with a count that never moved, and the
    expired-lease arm **is** the crash-recovery path.
-3. **The finish writes take no ``owner``.** ``work/jobs.py`` predicates every terminal
-   write on ``lease_owner = :owner`` because a job's effects are protected by nothing
-   else. A delivery's are: the ledger row and the handler's effects commit in one
-   transaction, and ``consumer_processed``'s primary key refuses the second insert, so
-   a stolen lease cannot produce a second run of the handler. These writes are
-   therefore predicated on the row being ``leased`` and on nothing more, which is what
-   the shipped signatures carry.
+**Why the three writes that end an attempt carry the ownership half *and* the dedup
+ledger.** Each is predicated on ``event_id``, ``consumer_id``, ``lease_owner = :owner``
+and ``state = 'leased'`` (:func:`_held`), exactly as ``work/jobs.py`` does, and returns
+whether it applied. The ledger is not a substitute for that predicate, because the two
+guard different things: ``consumer_processed``'s primary key stops a *handler* running
+twice, while the predicate stops a worker whose lease lapsed mid-handler from writing
+the *outcome* of a row its new owner now holds.
 
-Every write is still predicated and returns whether it applied, exactly as
-``jobs.py:40-46`` requires: an unpredicated ``UPDATE`` here would move a delivery out
-from under the worker that is running it.
+Only the requeue branch of that race would be self-healing without the predicate — a
+row flipped back to ``pending`` is re-leased, the ledger is found, the handler is not
+re-run, and the extra attempt is absorbed. **The fail branch is not.** ``failed`` is not
+in :func:`lease_delivery`'s candidate set and nothing in this module moves a row out of
+it, so a lapsed owner's :func:`fail_delivery` would strand its whole
+``(consumer_id, subject_ref)`` queue behind a head that was in fact processed exactly
+once — a permanent wrong state, not a window something later closes.
+
+Every write is predicated and returns whether it applied, exactly as ``jobs.py:40-46``
+requires: an unpredicated ``UPDATE`` here would move a delivery out from under the
+worker that is running it.
 """
 
 import random
@@ -78,6 +86,12 @@ class LeasedDelivery:
 
     ``attempts`` is the value **after** this lease counted its attempt, so it is the
     attempt number the envelope carries and the index the retry schedule reads.
+
+    **No ``owner`` field**, though every write that ends this attempt needs one:
+    ``lease_delivery``'s caller supplied it and still holds it, so handing it back
+    would be a second copy of the caller's own value — one that a later edit can let
+    drift from the one actually passed to the finish. ``work.jobs.LeasedJob`` omits it
+    for the same reason, and ``jobs.py``'s four finishes take it from their caller.
     """
 
     event_id: UUID
@@ -113,9 +127,18 @@ def _row(event_id: UUID, consumer_id: str) -> ColumnElement[bool]:
     )
 
 
-def _leased(event_id: UUID, consumer_id: str) -> ColumnElement[bool]:
-    """The predicate the three writes that end an attempt share."""
-    return and_(_row(event_id, consumer_id), t.event_delivery.c.state == LEASED)
+def _held(event_id: UUID, consumer_id: str, owner: str) -> ColumnElement[bool]:
+    """The predicate every write that ends an attempt shares, named after
+    ``jobs.py:_held`` because it is the same guard over the same hazard.
+
+    One helper rather than three hand-written copies: three is the shape a later edit
+    updates in two places.
+    """
+    return and_(
+        _row(event_id, consumer_id),
+        t.event_delivery.c.lease_owner == owner,
+        t.event_delivery.c.state == LEASED,
+    )
 
 
 def _apply(conn: Connection, where: ColumnElement[bool], **values: object) -> bool:
@@ -206,16 +229,22 @@ def lease_delivery(
 
 
 def mark_delivered(
-    conn: Connection, *, event_id: UUID, consumer_id: str, now: datetime
+    conn: Connection, *, event_id: UUID, consumer_id: str, owner: str, now: datetime
 ) -> bool:
     """End the delivery ``delivered``. Returns whether the write applied.
 
     ``last_error`` is cleared: a success erases the error an earlier attempt left
     behind, exactly as ``jobs.finish_succeeded`` does.
+
+    **What a ``False`` means, once, for all three of the writes that carry
+    :func:`_held`.** The lease is no longer this owner's ``leased`` row — it lapsed and
+    someone else took it. The caller must roll its own transaction back rather than
+    commit the handler's effects against a row it no longer owns; committing first and
+    checking the return value afterwards ships duplicated effects on every lease theft.
     """
     return _apply(
         conn,
-        _leased(event_id, consumer_id),
+        _held(event_id, consumer_id, owner),
         state=DELIVERED,
         completed_at=now,
         lease_owner=None,
@@ -229,6 +258,7 @@ def requeue_delivery(
     *,
     event_id: UUID,
     consumer_id: str,
+    owner: str,
     now: datetime,
     error: str,
     jitter: random.Random | None,
@@ -239,7 +269,9 @@ def requeue_delivery(
     and deliveries alike** (D6), so this is a caller of that schedule and never a
     second copy of it. ``attempts`` is read from the row rather than taken as a
     parameter, because the lease already counted it and a caller passing its own
-    count is a caller that can disagree with the row.
+    count is a caller that can disagree with the row. The read is unpredicated and the
+    write is not: reading a count this owner may no longer be entitled to act on costs
+    nothing, because the write that uses it still has to match :func:`_held`.
 
     ``jitter`` is a required keyword with no default: a test passes ``None`` and gets
     the bare schedule, and production passes a source. Nothing here decides whether
@@ -252,7 +284,7 @@ def requeue_delivery(
         return False
     return _apply(
         conn,
-        _leased(event_id, consumer_id),
+        _held(event_id, consumer_id, owner),
         state=PENDING,
         next_attempt_at=now + backoff_for(int(attempts), jitter=jitter),
         lease_owner=None,
@@ -262,17 +294,29 @@ def requeue_delivery(
 
 
 def fail_delivery(
-    conn: Connection, *, event_id: UUID, consumer_id: str, now: datetime, error: str
+    conn: Connection,
+    *,
+    event_id: UUID,
+    consumer_id: str,
+    owner: str,
+    now: datetime,
+    error: str,
 ) -> bool:
     """End the delivery ``failed`` with ``error``. Returns whether the write applied.
 
     The row is written, never deleted: a failed delivery is a blocked head its queue
     stays behind until a person acts, and a deleted row would release the queue
     silently.
+
+    **The write :func:`_held` matters most for.** ``failed`` is the one state this
+    module never moves a row out of, and a failed head blocks every later delivery for
+    its consumer and subject. A worker whose lease lapsed mid-handler writing this
+    against the row its successor now holds would strand that queue permanently, on an
+    event that was in fact processed exactly once.
     """
     return _apply(
         conn,
-        _leased(event_id, consumer_id),
+        _held(event_id, consumer_id, owner),
         state=FAILED,
         completed_at=now,
         lease_owner=None,
@@ -292,6 +336,13 @@ def skip_delivery(
     ``leased`` delivery out from under a worker that is, or is about to be, actually
     processing it — discarding work in flight with nothing to show for it. Every
     write in ``work/jobs.py`` carries a predicate for the same reason.
+
+    **It takes no ``owner``, and the asymmetry with the three writes above is
+    deliberate.** Those end an attempt a worker is in the middle of, so they must prove
+    the lease is still that worker's. This one releases a ``failed`` row, whose
+    ``lease_owner`` :func:`fail_delivery` already cleared, on behalf of a person rather
+    than a worker — there is no lease to hold, and the ``failed`` predicate is what
+    stands in its place.
 
     ``event_delivery`` has no ``note`` column, so this takes none: the "with a note"
     language in ``intake-and-events.md`` describes the audit trail of the future
@@ -320,8 +371,10 @@ def record_processed(
     allowed to raise.** ``consumer_processed``'s composite primary key exists so that
     a second insert for an already-processed pair is a *refusal* rather than a repeat,
     and that refusal is the backstop under exactly-once delivery — independent of
-    whatever check a caller makes first, and the only thing left standing when two
-    workers race or a redelivery follows a crash. Swallowing the conflict here would
+    whatever check a caller makes first, and the one guard that still holds when a
+    lapsed lease leaves two workers inside the same handler at once. :func:`_held`
+    guards the *row's outcome* against that same race; this guards the *handler*, and
+    neither substitutes for the other. Swallowing the conflict here would
     turn the backstop into a no-op that no correct-path test can see, so the
     ``IntegrityError`` propagates to the caller, whose transaction it must roll back.
     """
