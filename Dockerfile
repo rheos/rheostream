@@ -2,10 +2,11 @@
 # listeners: the public one (`/healthz`, `/auth/*`, the `api` surface) on 8000
 # and the internal one (container-network only) on 8100, both under one process
 # via `rheo_app_core.serve` (C10) — never `uvicorn ... --workers N`, which would
-# break the single-loop, shared-process design both listeners depend on. A
-# worker-mode command override is 0c's concern, not this run's. The build
-# context is the checkout root (deploy/compose.yaml sets `context: ..`), so the
-# COPYs below are repo-root-relative.
+# break the single-loop, shared-process design both listeners depend on.
+# `deploy/compose.yaml`'s `worker` service overrides this default via its own
+# `command:`; the image itself is unchanged. The build context is the
+# checkout root (deploy/compose.yaml sets `context: ..`), so the COPYs below
+# are repo-root-relative.
 FROM python:3.12-slim
 
 # curl: not in the base image, and needed inside this container specifically —

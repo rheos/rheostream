@@ -32,7 +32,12 @@ import pytest
 from conftest import ClusterSession
 from rheo_app_cli.main import main
 from rheo_app_core.main import app, lifespan
-from rheo_core.operations import REGISTRY, SETTINGS_SET, WORKSPACE_STATUS
+from rheo_core.operations import (
+    REGISTRY,
+    SETTINGS_SET,
+    WORK_FAILURES,
+    WORKSPACE_STATUS,
+)
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
 from rheo_core.refs import uuid7
 from rheo_core.storage import control_tables
@@ -301,13 +306,16 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now five: C8 (0b2) adds core.token.issue/revoke beside
-        # 0b1's three.
+        # Sorted, and now six: C8 (0b2) adds core.token.issue/revoke beside
+        # 0b1's three, and C3 (this run) adds core.work.failures. Sorted by
+        # the name string, so core.work.failures lands immediately before
+        # core.workspace.status ("." sorts before "s").
         assert report.operations == (
             SETTINGS_SET,
             "core.settings.set_member",
             TOKEN_ISSUE,
             TOKEN_REVOKE,
+            WORK_FAILURES,
             WORKSPACE_STATUS,
         )
         by_id = {result.workspace_id: result for result in report.workspaces}

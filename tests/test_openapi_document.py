@@ -37,6 +37,7 @@ from rheo_core.operations.core_ops import (
     SETTINGS_SET_MEMBER,
     TOKEN_ISSUE,
     TOKEN_REVOKE,
+    WORK_FAILURES,
     WORKSPACE_STATUS,
     SettingWrite,
     WorkspaceStatus,
@@ -82,13 +83,13 @@ def test_every_registered_operation_has_a_path(registry: OperationRegistry) -> N
 def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
     registry: OperationRegistry,
 ) -> None:
-    """Five ``core.*`` paths, not three.
+    """Six ``core.*`` paths, not four.
 
     ``core.token.issue`` and ``core.token.revoke`` are declared **inside**
     ``register_core_operations`` rather than in its module-level
     ``CORE_OPERATIONS`` tuple, to avoid a real import cycle. A reader who counts
-    that tuple sees three. AC 15's "a path for every registered operation" is over
-    what the registrar actually registered, so it is five, and it is pinned here so
+    that tuple sees four. AC 15's "a path for every registered operation" is over
+    what the registrar actually registered, so it is six, and it is pinned here so
     a future reader does not "fix" the count down to the tuple's length.
     """
     paths = build_document(registry)["paths"]
@@ -103,6 +104,7 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             SETTINGS_SET_MEMBER,
             TOKEN_ISSUE,
             TOKEN_REVOKE,
+            WORK_FAILURES,
         )
     )
 

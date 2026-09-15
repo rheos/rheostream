@@ -18,7 +18,8 @@ C2 (run 0b1) declared eight production keys; C6 (run 0b2) added the sixteen
 ``routing.*`` keys below them, for twenty-four; C7a (run 0b2) adds the eight
 ``identity.*``/``internal.secret_ref`` keys below those, for thirty-two; C4 (run 0c0)
 adds ``storage.pool_idle_close_seconds``, for thirty-three, and C7 (run 0c0) adds
-``work.due_reconcile_seconds``, for thirty-four.
+``work.due_reconcile_seconds``, for thirty-four. C1 (run 0c1) adds
+``work.max_attempts``, for thirty-five.
 ``api.cors_origins`` and ``modules.installed`` (the runs that read them) are not
 declared here: a key with no reader is machinery with no caller, and the
 registry/TOML identity check holds per merge SHA — every later chunk that adds a key
@@ -683,6 +684,19 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default=900,
+    ),
+    # The job retry budget a caller gets when it does not choose one. ``enqueue``
+    # reads this key and writes the value into the row's ``max_attempts`` column; the
+    # column is the authority from then on, so changing this key never re-budgets a
+    # job already queued. Deployment scope: a workspace able to raise its own budget
+    # could hold a shared worker on one poison job for as long as it liked.
+    KeySpec(
+        key="work.max_attempts",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=8,
     ),
 )
 
