@@ -37,12 +37,20 @@ services:
       context: ..
       dockerfile: Dockerfile
     # Named explicitly (compose's own default tag for this service under
-    # `make up`'s project) so `worker` below can share it: two services with
-    # identical `build:` blocks but no shared `image:` tag are two
-    # byte-identical images, not one, and `docker compose build` would build
-    # and tag both rather than build once and reuse it. Either service can
-    # still be built standalone; only the tag is shared. This does change
-    # `core`'s behavior under `make demo` specifically: that target runs its
+    # `make up`'s project) so `worker` below can share it. This is about
+    # which *tracked* image the two services end up pointing at, not about
+    # avoiding a build: BuildKit's cache is content-addressed, not
+    # tag-addressed, so `docker compose build` runs a full build+export pass
+    # for each service regardless of whether the tag is shared — dropping
+    # the shared tag and giving `worker` its own still hits full cache, same
+    # size, same layers. What the shared tag changes is the *count* of
+    # tracked images left behind: two services with identical `build:`
+    # blocks but no shared `image:` tag resolve to two separately-tagged,
+    # byte-identical images (`docker images` lists both); with the tag
+    # shared, both build passes write the same tag, so `docker images` lists
+    # one. Either service can still be built standalone; only the resulting
+    # tag is shared. This does change `core`'s behavior under `make demo`
+    # specifically: that target runs its
     # own compose project (`-p rheo-stream-demo`), where compose's unpinned
     # default for `core` would have been `rheo-stream-demo-core` — pinning
     # this tag means `make up` and `make demo` now share one image tag for
@@ -98,9 +106,10 @@ services:
       - rheodata:/var/lib/rheo-stream
 
   worker:
-    # Same image as `core`, no separate build — see the `image:` note on
-    # `core` above. The `build:` block is repeated here (not just the tag) so
-    # `worker` can still be built standalone.
+    # Same image as `core` — one tracked tag, not a separate one — see the
+    # `image:` note on `core` above for what the shared tag does and does not
+    # buy. The `build:` block is repeated here (not just the tag) so `worker`
+    # can still be built standalone.
     build:
       context: ..
       dockerfile: Dockerfile
