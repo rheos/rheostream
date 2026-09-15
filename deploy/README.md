@@ -9,10 +9,12 @@ project on your machine. Neither container's own port changes: `core` always
 answers on `8000` and `postgres` on `5432` inside the compose network regardless
 of a host-side remap. `make down` tears the stack down.
 
-The **`worker` service** runs the same image as `core` — no separate build — with
-its command overridden to `python -m rheo_app_worker.main`. It publishes no port,
-shares the same `rheodata` volume `core` mounts, and starts and stops with `make
-up`/`make down` like every other compose service.
+The **`worker` service** runs the same image as `core` — one Dockerfile, one
+tracked tag, no second image to maintain — with its command overridden to
+`python -m rheo_app_worker.main`; that command override is the only difference
+between the two. It publishes no port, shares the same `rheodata` volume `core`
+mounts, and starts and stops with `make up`/`make down` like every other
+compose service.
 
 The **data-root volume**: `core` writes checkout-external runtime state (the file
 secret backend, deployment config, per-workspace upload/export/scratch directories —

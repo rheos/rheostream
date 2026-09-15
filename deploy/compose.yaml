@@ -116,7 +116,8 @@ services:
     image: rheo-stream-core
     # `apps/worker/src/rheo_app_worker/main.py` (02), run as a module so it
     # picks up the same interpreter and dependency set the image already has
-    # — no rebuild, only the command differs from `core`'s image default.
+    # — no second Dockerfile and no image change, only the command differs
+    # from `core`'s image default.
     command: ["uv", "run", "python", "-m", "rheo_app_worker.main"]
     # A worker publishes nothing to the host or the compose network — no
     # `ports:`, and the image's own `EXPOSE` is for `core`'s listeners, not
