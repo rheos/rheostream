@@ -16,6 +16,7 @@ import signal
 import threading
 from types import FrameType
 
+from rheo_core.events import ConsumerRegistry
 from rheo_core.storage.postgres import get_backend, reset_backend
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import worker_loop
@@ -26,6 +27,17 @@ JOB_KINDS = JobKindRegistry()
 This run registers no kinds of its own, so it starts empty and that is correct here: it
 exists so ``main()`` has a registry to hand ``worker_loop``, and so the kinds a later
 run adds have one obvious place to be registered.
+"""
+
+CONSUMERS = ConsumerRegistry()
+"""The process-wide consumer registry, beside ``JOB_KINDS`` and empty for the same
+reason: release one ships no consumer, and this is the one obvious place a later run's
+consumer gets registered.
+
+Built here rather than in ``rheo_core.events`` deliberately — that package holds no
+module-level instance, so a test builds its own registry and there is no global to
+reset between cases. This module is the composition root, which is the only place a
+process-wide one belongs.
 """
 
 
@@ -54,7 +66,7 @@ def main() -> None:
     stop = threading.Event()
     install_stop_signals(stop)
     try:
-        worker_loop(kinds=JOB_KINDS, backend=backend, stop=stop)
+        worker_loop(kinds=JOB_KINDS, consumers=CONSUMERS, backend=backend, stop=stop)
     finally:
         # In a ``finally`` so a loop that exits on its stop signal and one that raises
         # both dispose the backend's engines on the way out.

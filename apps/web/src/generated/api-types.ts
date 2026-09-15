@@ -111,6 +111,35 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * FailedDelivery
+         * @description One failed event delivery as the operation publishes it.
+         *
+         *     ``rheo_core.events.deliveries.FailedDeliveryRow`` field for field, and
+         *     deliberately **not** :class:`FailedJob`'s field list: ``core.event_delivery``
+         *     has no ``max_attempts`` column, because a delivery's budget is the
+         *     ``work.max_attempts`` setting rather than a per-row value, and publishing a
+         *     field the row does not hold would mean inventing one here.
+         *
+         *     The identity is the composite key the row is actually keyed by, both halves
+         *     published: one event has one delivery per consumer, so ``event_id`` alone does
+         *     not name a delivery.
+         */
+        FailedDelivery: {
+            /** Attempts */
+            attempts: number;
+            /** Completed At */
+            completed_at: string | null;
+            /** Consumer Id */
+            consumer_id: string;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Last Error */
+            last_error: string | null;
+        };
+        /**
          * FailedJob
          * @description One failed job as the operation publishes it.
          *
@@ -138,16 +167,22 @@ export interface components {
         };
         /**
          * FailureList
-         * @description The workspace's most recently failed jobs, newest first.
+         * @description The workspace's most recently failed jobs and deliveries, newest first.
          *
-         *     ``jobs`` is a **named collection field rather than a bare list**, deliberately:
-         *     0c2 adds sibling collections here — its own deliveries, its own unfinished
-         *     work — beside ``jobs``, additively, and every client generated against
-         *     today's document keeps reading ``jobs`` unchanged. A top-level
-         *     ``list[FailedJob]`` would make that same addition a breaking change to the
-         *     response's own type instead of a new field a reader may ignore.
+         *     ``jobs`` is a **named collection field rather than a bare list**, and
+         *     ``deliveries`` is what that shape was chosen for: it is added **beside**
+         *     ``jobs``, additively, so a client generated against the document before it
+         *     keeps reading ``jobs`` unchanged. A top-level ``list[FailedJob]`` would have
+         *     made this addition a breaking change to the response's own type instead of a
+         *     new field a reader may ignore.
+         *
+         *     Each collection is ordered and capped on its own, newest first, by the same
+         *     ``limit``: they are two independent lists of the most recent failures, not two
+         *     halves of one merged ordering.
          */
         FailureList: {
+            /** Deliveries */
+            deliveries: components["schemas"]["FailedDelivery"][];
             /** Jobs */
             jobs: components["schemas"]["FailedJob"][];
         };

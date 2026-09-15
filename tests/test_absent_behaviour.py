@@ -1,12 +1,18 @@
 """AC 13 and AC 22: what this run deliberately did **not** build, asserted so that
 each claim fails for its own reason.
 
-This module is the instrument the scored 0c1/0c2 trials are measured with. Three probes
-stand in for benchmark criteria 11, 13 and 14 — the behaviours those cohorts are
-scored on building — and a fourth is this run's own deletion-completeness check over the
-0v spike. Criterion 12 is no longer among them: its absence probe was removed in the
-same commit that landed the worker loop it denied, and criterion 12's **presence** is
-defended by ``tests/postgres/test_worker_loop.py`` instead. Every one of them runs
+This module is the instrument the scored 0c1/0c2 trials are measured with. **Two probes
+stand in for benchmark criteria 13 and 14** — the behaviours those cohorts are scored
+on building — and a third is this run's own deletion-completeness check over the 0v
+spike. **This sentence is expected to go stale twice more before the run ends**, and
+each chunk that makes it stale rewrites it: the chunk that lands the operation record
+removes the criterion-13 probe, and the chunk that lands audit dispatch removes the
+criterion-14 one, leaving only the AC 22 completeness check. Two criteria have already
+left by that route. Criterion 12's probe was removed in the same commit that landed
+the worker loop it denied, and criterion 12's **presence** is defended by
+``tests/postgres/test_worker_loop.py`` instead; criterion 11's was removed in the
+commit that landed the delivery drain, and its presence is defended end to end by
+``tests/postgres/test_event_delivery.py``. Every one of them runs
 through a helper in ``harness.absence`` that cannot be
 called without a **positive control**, so a probe that passes because the module name
 was misspelled, or because the path it searched does not exist, is not expressible
@@ -21,7 +27,7 @@ load-bearing by making each one fail on purpose.
 **The probe names are fixed by AC 13**, which pins both the function names and the
 ``{probe: covers}`` map :func:`test_every_criterion_is_covered` asserts. A
 differently-named probe that is otherwise identical fails that criterion exactly as
-surely as a missing one, so none of these four may be renamed for house-style reasons.
+surely as a missing one, so none of these three may be renamed for house-style reasons.
 """
 
 import subprocess
@@ -102,25 +108,7 @@ def _tracked_under(*roots: str) -> list[str]:
     return sorted(path for path in _tracked_files() if path.startswith(prefixes))
 
 
-# --- the three criterion probes -------------------------------------------------------
-
-
-def test_no_outbox_delivery_exists() -> None:
-    """Criterion 11: ``rheo_core.work`` holds the tables and none of the delivery.
-
-    The package is a docstring and nothing else after this run — no callable, no
-    non-dunder attribute at all — so the control cannot be an attribute lookup: on a
-    module with no real attribute the only thing available is a dunder every module
-    carries regardless of its content, which passes identically whether or not the
-    right module was resolved. The control is instead a module-specific literal the
-    docstring is required to carry, checked by the same text search the absence is.
-    """
-    absent_token(
-        paths=["packages/core/src/rheo_core/work/__init__.py"],
-        missing="flush_outbox",
-        present="storage/work_tables.py",
-        covers=11,
-    )
+# --- the two criterion probes ---------------------------------------------------------
 
 
 def test_no_operation_lifecycle_exists() -> None:
@@ -225,17 +213,16 @@ def test_every_criterion_is_covered() -> None:
 
     Three assertions, not one. Both partitions are asserted exactly — the ints are the
     benchmark criteria this run stands in for, the strs are its own acceptance criteria
-    — and so are the **pairs**. Without the pairs, four probes with permuted labels
-    satisfy a bare set comparison while the E0c record's coverage table states the
-    wrong correspondence, which is the failure this exists to catch.
+    — and so are the **pairs**. Without the pairs, probes with permuted labels satisfy
+    a bare set comparison while the E0c record's coverage table states the wrong
+    correspondence, which is the failure this exists to catch.
 
-    The four probes are invoked here rather than read out of whatever the session
+    The three probes are invoked here rather than read out of whatever the session
     happened to run first. The registry is module state, so reading it alone would
     make this assertion depend on test ordering and on selection: run under ``-k`` it
     would see an empty map. Calling them makes it order-independent and cannot weaken
     it, since a probe that fails still fails.
     """
-    test_no_outbox_delivery_exists()
     test_no_operation_lifecycle_exists()
     test_dispatch_calls_no_audit_sink()
     test_no_spike_remains()
@@ -243,7 +230,6 @@ def test_every_criterion_is_covered() -> None:
     covered = covered_by_probe()
 
     assert {value for value in covered.values() if isinstance(value, int)} == {
-        11,
         13,
         14,
     }, covered
@@ -251,7 +237,6 @@ def test_every_criterion_is_covered() -> None:
         "AC 22"
     }, covered
     assert covered == {
-        "test_no_outbox_delivery_exists": 11,
         "test_no_operation_lifecycle_exists": 13,
         "test_dispatch_calls_no_audit_sink": 14,
         "test_no_spike_remains": "AC 22",
