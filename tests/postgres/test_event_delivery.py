@@ -48,15 +48,17 @@ from harness.consumers import (
     ensure_consumer_tables,
     handler_that_raises,
     invocation_count,
+    record_delivery,
     recorded_events,
 )
 from harness.consumers import registry as consumer_registry
 from harness.registry import enable_harness_module
-from rheo_contracts import WorkspaceContext
+from rheo_contracts import EventEnvelope, WorkspaceContext
 from rheo_core.boundary import context_for_operator
 from rheo_core.events import (
     DELIVERED,
     FAILED,
+    LEASED,
     PENDING,
     ConsumerRegistry,
     NewEvent,
@@ -64,6 +66,7 @@ from rheo_core.events import (
 )
 from rheo_core.operations import WORK_FAILURES, dispatch, register_core_operations
 from rheo_core.settings import resolve
+from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.storage.work_tables import consumer_processed, event_delivery
@@ -266,13 +269,51 @@ def test_a_published_event_is_delivered_to_its_consumer_exactly_once(
     Four reads, because "delivered exactly once" is four separate facts: the consumer
     recorded the identifier once, its body started once, the dedup ledger holds one
     row, and the delivery row itself ended ``delivered`` with its lease released.
+
+    **The fifth read happens while the handler is still running**, and it is what makes
+    this test say something about the *transaction* rather than only about the outcome.
+    The handler opens a second connection — the technique ``test_worker_loop.py``'s
+    ``_live_lease`` already uses on the job side — and reads the delivery's own
+    committed state. It must still be ``leased``: the ``delivered`` write shares the
+    handler's transaction, so none of it is committed until after the handler returns.
+    A delivery marked ``delivered`` in a transaction of its own, before the consumer
+    that is supposed to earn it has even run, is visible here and nowhere else in this
+    file — every outcome assertion below holds for that shape too.
     """
     event_id = _publish(ctx, now=now)
 
     pending = _delivery(engine, event_id)
     assert pending.state == PENDING and pending.attempts == 0
 
-    _visit(workspace, cluster=cluster, consumers=consumer_registry(), at=now)
+    seen: list[str] = []
+
+    def reads_its_own_delivery_row_then_records(
+        uow: HandlerUnitOfWork, envelope: EventEnvelope
+    ) -> None:
+        with uow.connection.engine.connect() as side:
+            seen.append(
+                str(
+                    side.execute(
+                        select(event_delivery.c.state).where(
+                            event_delivery.c.event_id == envelope.id,
+                            event_delivery.c.consumer_id == envelope.consumer_id,
+                        )
+                    ).scalar_one()
+                )
+            )
+        record_delivery(uow, envelope)
+
+    _visit(
+        workspace,
+        cluster=cluster,
+        consumers=consumer_registry(reads_its_own_delivery_row_then_records),
+        at=now,
+    )
+
+    assert seen == [LEASED], (
+        "the delivery was already committed as delivered while its consumer was still "
+        "running; that write belongs in the handler's own transaction"
+    )
 
     recorded, invocations = _observed(engine, event_id)
     assert recorded == (event_id,)
