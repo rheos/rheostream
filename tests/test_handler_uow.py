@@ -125,7 +125,7 @@ def test_the_view_shares_the_connection_and_refuses_to_end_the_transaction(
 def test_the_view_adds_nothing_to_the_pinned_unit_of_work_surface() -> None:
     """D-2's whole reason for a subclass: ``UnitOfWork`` is a pinned 0c-boundary shape
     (``tests/postgres/test_isolation.py``), and this adds nothing to it."""
-    assert HandlerUnitOfWork.__slots__ == ()
+    assert HandlerUnitOfWork.__slots__ == ("_operation_id",)
     assert issubclass(HandlerUnitOfWork, UnitOfWork)
     assert {name for name in dir(UnitOfWork) if not name.startswith("_")} == {
         "commit",

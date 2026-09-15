@@ -9,23 +9,26 @@ input models already ignore any key they do not declare, including the
 reserved fields ``RESERVED_INPUT_FIELDS`` names, so a workspace-naming key
 arriving through either channel is silently dropped exactly as it is at a bare
 ``dispatch()`` call -- the same criterion 6 (B2) proof, over the HTTP surface),
-dispatches, and returns the envelope ``{"state", "operation_id": null, "result"
+dispatches, and returns the envelope ``{"state", "operation_id", "result"
 | "error": {"error_code", "error_text"}}`` with the status mapping ``spec.md``
 gives: 200 succeeded, 401 for every ``context_from_token`` refusal (including
 a missing/malformed ``Authorization`` header, before any token is even looked
 up), 403 ``operation_not_permitted``/``role_not_permitted``, 404 ``not_found``,
 422 ``input_invalid``; anything else maps to 400.
 
-The literal ``operation_id: null`` is a pre-declared, sanctioned occurrence of
-the run's cut-symbol scan (``operations/dispatch.py:54-58`` already documents
-exactly this: "There is no ``operation_id``... which is why the API envelope
-(C8) carries ``operation_id: null`` until 0c"). Do not read it as a boundary
-violation -- the real invariant, which ``tests/postgres/test_api_surface.py``
-asserts, is that no ``operation`` table row is written and no id is minted
-anywhere on this path, not the literal's absence.
+``operation_id`` is a nullable uuid rather than the literal ``null`` it was
+before run 0c2. Dispatching an operation whose declaration carries
+``long_running = True`` writes a ``core.operation`` row and mints an id, and
+that id is what this envelope carries; every other operation -- which is every
+operation registered in release one -- still answers ``null``, and
+``tests/postgres/test_api_surface.py`` asserts exactly that for the shipped
+ones. So "no row is written and no id is minted anywhere on this path" is no
+longer the invariant: the invariant is that the id is non-null for a
+``long_running`` dispatch and null for every other.
 """
 
 from typing import Final
+from uuid import UUID
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -68,21 +71,34 @@ def _bearer(request: Request) -> str | None:
 
 def envelope(
     state: str,
+    operation_id: UUID | None,
     *,
     result: dict[str, object] | None = None,
     error_code: str | None = None,
     error_text: str | None = None,
 ) -> dict[str, object]:
     """The operation envelope both listeners answer with: ``{"state",
-    "operation_id": null, "result" | "error"}``.
+    "operation_id", "result" | "error"}``.
 
     Public, and shared: run 0v's ``POST /internal/v1/operations/{name}``
     (``internal_routes.py``) answers with this same shape over the same
     ``dispatch()``, so the two surfaces cannot drift apart by being written twice.
     The generated OpenAPI document (``rheo_core.operations.openapi``) describes
     exactly this envelope as the 200 response for every operation.
+
+    **``operation_id`` is required and has no default, deliberately.** It is the
+    outcome's own ``operation_id`` at the four call sites that run after
+    ``dispatch()`` has returned, and an explicit ``None`` at the three refusals that
+    fire before it is ever called. A default would let this listener and
+    ``internal_routes.py`` drift apart silently -- one passing the id, the other
+    quietly keeping the default -- which is the exact failure a shared helper exists
+    to prevent, and it is what makes AC 20 true on both surfaces at once instead of
+    needing two independent proofs.
     """
-    body: dict[str, object] = {"state": state, "operation_id": None}
+    body: dict[str, object] = {
+        "state": state,
+        "operation_id": None if operation_id is None else str(operation_id),
+    }
     if result is not None:
         body["result"] = result
     if error_code is not None:
@@ -102,8 +118,11 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
     value = _bearer(request)
     if value is None:
         return JSONResponse(
+            # ``None``, not an outcome attribute: this fires before ``dispatch()`` is
+            # called, so there is no outcome here to read one from.
             envelope(
                 TOKEN_MALFORMED,
+                None,
                 error_code=TOKEN_MALFORMED,
                 error_text="no bearer token was presented",
             ),
@@ -111,8 +130,10 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
         )
     ctx = context_from_token(value, "api")
     if isinstance(ctx, Refusal):
+        # Also before ``dispatch()``: a token that resolved to a refusal never
+        # reaches it.
         return JSONResponse(
-            envelope(ctx.state, error_code=ctx.state, error_text=str(ctx)),
+            envelope(ctx.state, None, error_code=ctx.state, error_text=str(ctx)),
             status_code=_TOKEN_REFUSAL_STATUS,
         )
     payload: dict[str, object] = dict(request.query_params)
@@ -128,11 +149,15 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
         result = (
             None if outcome.result is None else outcome.result.model_dump(mode="json")
         )
-        return JSONResponse(envelope(outcome.state, result=result), status_code=status)
+        return JSONResponse(
+            envelope(outcome.state, outcome.operation_id, result=result),
+            status_code=status,
+        )
     error = outcome.error
     return JSONResponse(
         envelope(
             outcome.state,
+            outcome.operation_id,
             error_code=None if error is None else error.error_code,
             error_text=None if error is None else error.error_text,
         ),

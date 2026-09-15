@@ -80,8 +80,10 @@ class OperationDeclaration(BaseModel):
     """What a module tells the registry about one operation.
 
     The subset of ``module-contract.md`` § Operations that the release-one registry
-    needs. ``guards`` and ``long_running`` belong to the dispatcher work in 0c and are
-    not declared here yet.
+    needs. ``long_running`` **is** declared here, by run 0c2: it is what
+    ``rheo_core.operations.dispatch`` reads to decide whether to mint a
+    ``core.operation`` row before it opens the work transaction. ``guards`` is still
+    not declared here; it belongs to the dispatcher work that follows.
 
     **The handler is not a field, and that is a named deviation.** The ratified contract
     types it ``Callable[[WorkspaceContext, UnitOfWork, input], output]``, but
@@ -107,9 +109,22 @@ class OperationDeclaration(BaseModel):
     """Required non-``None`` above ``READ``.
 
     The refusal that enforces it — "class above ``READ`` with ``audit = None``:
-    refused, naming the operation" (``module-contract.md`` § Registration rules) —
-    arrives with 0c2's registration assertions (criterion 14). The 0b1 registry
-    stores the declaration and does not check this field.
+    refused, naming the operation" (``module-contract.md`` § Registration rules) — is
+    checked at registration for every non-``READ`` declaration, by run 0c2's own
+    registry rule (criterion 14). A ``READ`` declaration may still carry ``None``.
+    """
+
+    long_running: bool = False
+    """Whether dispatching this operation mints a ``core.operation`` record.
+
+    Default ``False``, so every declaration shipped before run 0c2 keeps exactly
+    today's behaviour: no record is minted and the operation envelope's
+    ``operation_id`` stays null for it.
+
+    ``True`` has **one** meaning and one terminalisation rule: the work runs as a job,
+    the dispatcher mints a ``pending`` record and returns the id immediately, and the
+    worker that finishes the job terminalises the record. The dispatcher never writes
+    a terminal state for a ``long_running`` operation.
     """
 
 

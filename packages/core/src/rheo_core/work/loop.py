@@ -17,6 +17,15 @@ together, so a job's effects and its success are never separable. Every non-succ
 outcome rolls that second transaction back and writes the terminal or requeued state in
 a fresh third one. ``CancellationToken`` opens its own short transactions on top.
 
+**A job carrying a ``core.operation`` id adds one write to whichever transaction ends
+it, and never a transaction of its own.** There are six sites that put a job row into a
+terminal state — this function's two pre-handler gates, :func:`_fail_terminally`,
+:func:`_run_handler`'s success path, :func:`_write_failure_outcome`'s exhausted branch
+and :func:`_resolve_zero_rowcount`'s cancellation branch — and each of them writes the
+operation record's terminal state beside the job's, under the same commit, through
+:func:`_with_operation`. The requeue branch is not one of the six and writes nothing:
+see :func:`_write_failure_outcome`.
+
 **Per delivery the map is the same three transactions, and the middle one carries one
 write more.** The lease commits alone; the consumer's own effects, the
 ``core.consumer_processed`` ledger row and the delivery's ``delivered`` write share the
@@ -73,6 +82,7 @@ from rheo_core.events import (
     record_processed,
     requeue_delivery,
 )
+from rheo_core.operations import records as operation_records
 from rheo_core.refs import uuid7
 from rheo_core.settings import resolve
 from rheo_core.storage import work_tables as t
@@ -123,6 +133,15 @@ RETRY_BUDGET_EXHAUSTED: Final = (
 the only thing that distinguishes the crash arm's ``failed`` from every other route to
 ``failed``: a dead worker writes nothing, so this string is the whole of the record
 that a budget was spent by crashing rather than by raising."""
+
+JOB_FAILED: Final = "job_failed"
+"""``operation.error_code`` for a record this module terminalises ``failed``.
+
+One code for all four routes to ``failed`` — the exception arm's spent budget, the
+crash arm's, an unknown job kind and a payload that cannot parse — because the code
+names *what* failed and all four are the same thing: the job carrying the operation.
+Which of the four it was is in ``error_text``, which is the job's own ``last_error``
+verbatim, so nothing is lost by not spelling it twice."""
 
 logger = logging.getLogger("rheo_core.work")
 
@@ -198,8 +217,63 @@ def _finish_alone(
     return applied
 
 
+def _with_operation(
+    *,
+    operation_id: UUID | None,
+    job_write: Callable[[Connection], bool],
+    operation_write: Callable[[Connection, UUID], bool],
+) -> Callable[[UnitOfWork], bool]:
+    """Pair a job's terminal write with its operation record's, in one transaction.
+
+    **The rule this expresses, once, for every site that uses it.** A job whose row
+    carries a non-null ``operation_id`` terminalises that ``core.operation`` record in
+    the *same* transaction as its own terminal write, so the two commit together or
+    neither does. A job carrying none writes nothing here and the second callable is
+    never built into a statement.
+
+    **``applied and`` is the load-bearing half.** Every job terminal write in
+    ``work/jobs.py`` is predicated on this worker still holding the lease and reports
+    whether it matched. A ``False`` means the row now belongs to another worker, which
+    will terminalise it — and its operation record — itself. Writing the operation
+    record anyway would let a worker that lost its lease record the outcome of work it
+    did not finish, on a record whose job is about to end differently.
+
+    **The operation write's own rowcount is checked, not discarded.** It is predicated
+    on the record still being open, so a ``False`` means something had already
+    terminalised it — two jobs enqueued against one record is the only way to reach
+    that, and it is a producer defect rather than a race this worker can resolve. The
+    job's own outcome stands, the record is left as whoever got there first wrote it,
+    and the line is logged, because a silently dropped write is how a record ends up
+    disagreeing with the job that owns it.
+
+    A helper rather than five copies of the same five lines: five is the shape where a
+    later edit updates four of them. It returns the ``Callable[[UnitOfWork], bool]``
+    :func:`_finish_alone` already takes, so no call site changes shape beyond naming
+    its two halves.
+    """
+
+    def write(uow: UnitOfWork) -> bool:
+        applied = job_write(uow.connection)
+        if applied and operation_id is not None:
+            if not operation_write(uow.connection, operation_id):
+                logger.warning(
+                    "operation record %s was already terminal when its job finished; "
+                    "the job's own outcome stands and the record is left as it was",
+                    operation_id,
+                )
+        return applied
+
+    return write
+
+
 def _resolve_zero_rowcount(
-    engine: Engine, database: str, *, job_id: UUID, owner: str, now: datetime
+    engine: Engine,
+    database: str,
+    *,
+    job_id: UUID,
+    operation_id: UUID | None,
+    owner: str,
+    now: datetime,
 ) -> None:
     """The one zero-rowcount branch all four finishes fall into.
 
@@ -209,6 +283,13 @@ def _resolve_zero_rowcount(
     and write nothing further. The re-read happens *after* the rollback so it sees
     committed truth, and if another worker acquired in between, ``finish_cancelled``'s
     own ownership predicate returns zero rows and this branch correctly does nothing.
+
+    **This is the sixth of the six job-terminal-write sites**, and the only one whose
+    job may have entered a handler or may not, depending on which caller reached it.
+    It terminalises the operation record here for the same reason the other five do,
+    and in the same transaction; ``operation_id`` is threaded in from the leased row
+    rather than read out of the ``SELECT`` above, so all six sites take the value from
+    one place.
     """
     cancelled = False
     with UnitOfWork(engine, database) as uow:
@@ -226,6 +307,15 @@ def _resolve_zero_rowcount(
             cancelled = finish_cancelled(
                 uow.connection, job_id=job_id, owner=owner, now=now
             )
+            if cancelled and operation_id is not None:
+                if not operation_records.finish_cancelled(
+                    uow.connection, operation_id=operation_id, now=now
+                ):
+                    logger.warning(
+                        "operation record %s was already terminal when its job was "
+                        "cancelled; the record is left as it was",
+                        operation_id,
+                    )
             uow.commit()
     if not cancelled:
         logger.warning(
@@ -248,13 +338,29 @@ def _run_leased_job(
 
     **The gates are ordered, and the order is the rule.** Cancellation wins over
     exhaustion: a job that is both cancelled and out of budget ends ``cancelled``.
+
+    **Both gates terminalise the job's operation record, and that is not an oversight
+    carried over from chunk 01's pre-handler exclusion.** That chunk's fresh-clock fix
+    was about staleness, which is only a defect after a handler has run, so it drew a
+    line at the handler and left these two gates on the ``now`` side of it. The rule
+    here has no such line: a job that never enters its handler still reaches a terminal
+    state, and a ``long_running`` operation whose job ends here and whose record is not
+    moved sits ``pending`` for ever.
     """
     if leased.cancel_requested:
         applied = _finish_alone(
             engine,
             database,
-            write=lambda uow: finish_cancelled(
-                uow.connection, job_id=leased.id, owner=owner, now=now
+            write=_with_operation(
+                operation_id=leased.operation_id,
+                job_write=lambda conn: finish_cancelled(
+                    conn, job_id=leased.id, owner=owner, now=now
+                ),
+                operation_write=(
+                    lambda conn, record_id: operation_records.finish_cancelled(
+                        conn, operation_id=record_id, now=now
+                    )
+                ),
             ),
         )
         if not applied:
@@ -272,12 +378,24 @@ def _run_leased_job(
         applied = _finish_alone(
             engine,
             database,
-            write=lambda uow: finish_failed(
-                uow.connection,
-                job_id=leased.id,
-                owner=owner,
-                now=now,
-                error=RETRY_BUDGET_EXHAUSTED,
+            write=_with_operation(
+                operation_id=leased.operation_id,
+                job_write=lambda conn: finish_failed(
+                    conn,
+                    job_id=leased.id,
+                    owner=owner,
+                    now=now,
+                    error=RETRY_BUDGET_EXHAUSTED,
+                ),
+                operation_write=(
+                    lambda conn, record_id: operation_records.finish_failed(
+                        conn,
+                        operation_id=record_id,
+                        now=now,
+                        error_code=JOB_FAILED,
+                        error_text=RETRY_BUDGET_EXHAUSTED,
+                    )
+                ),
             ),
         )
         if not applied:
@@ -336,12 +454,29 @@ def _fail_terminally(
     applied = _finish_alone(
         engine,
         database,
-        write=lambda uow: finish_failed(
-            uow.connection, job_id=leased.id, owner=owner, now=now, error=error
+        write=_with_operation(
+            operation_id=leased.operation_id,
+            job_write=lambda conn: finish_failed(
+                conn, job_id=leased.id, owner=owner, now=now, error=error
+            ),
+            operation_write=lambda conn, record_id: operation_records.finish_failed(
+                conn,
+                operation_id=record_id,
+                now=now,
+                error_code=JOB_FAILED,
+                error_text=error,
+            ),
         ),
     )
     if not applied:
-        _resolve_zero_rowcount(engine, database, job_id=leased.id, owner=owner, now=now)
+        _resolve_zero_rowcount(
+            engine,
+            database,
+            job_id=leased.id,
+            operation_id=leased.operation_id,
+            owner=owner,
+            now=now,
+        )
 
 
 def _run_handler(
@@ -355,7 +490,8 @@ def _run_handler(
     clock: Callable[[], datetime],
     jitter: random.Random | None,
 ) -> None:
-    """Transaction 2: the handler's effects and the row's terminal write, together.
+    """Transaction 2: the handler's effects, the row's terminal write, and — when the
+    job carries one — its ``core.operation`` record's, together.
 
     **Commit is the last thing that happens, and only when the finish applied.** The
     tempting wrong shape — run, finish, commit, then look at the finish's return value
@@ -403,6 +539,28 @@ def _run_handler(
             if finish_succeeded(
                 work_uow.connection, job_id=leased.id, owner=owner, now=clock()
             ):
+                if leased.operation_id is not None:
+                    # Inside transaction 2, beside the handler's own effects and the
+                    # row's ``succeeded`` write: the three commit together or none of
+                    # them does. ``handler_returned`` is the terminal check, because
+                    # what was checked here is exactly that — the handler returned
+                    # without raising. Its own ``clock()`` reading at its own write
+                    # point, for the reason this function's docstring gives: a
+                    # handler's duration is unbounded, so the acquire instant is not
+                    # the instant this record finished.
+                    finished_at = clock()
+                    if not operation_records.finish_succeeded(
+                        work_uow.connection,
+                        operation_id=leased.operation_id,
+                        now=finished_at,
+                        terminal_check_kind=operation_records.HANDLER_RETURNED,
+                        terminal_check_at=finished_at,
+                    ):
+                        logger.warning(
+                            "operation record %s was already terminal when its job "
+                            "succeeded; the record is left as it was",
+                            leased.operation_id,
+                        )
                 work_uow.commit()
                 return
             work_uow.rollback()
@@ -435,7 +593,12 @@ def _run_handler(
     # all three and cheaper than branching on which one this is.
     if stopped:
         _resolve_zero_rowcount(
-            engine, database, job_id=leased.id, owner=owner, now=clock()
+            engine,
+            database,
+            job_id=leased.id,
+            operation_id=leased.operation_id,
+            owner=owner,
+            now=clock(),
         )
 
 
@@ -457,14 +620,34 @@ def _write_failure_outcome(
     the first step is five seconds — and the job would be re-leased immediately, back to
     back, until its budget was gone. One reading serves both branches so the instant a
     job failed at and the instant its retry is measured from cannot disagree.
+
+    **Only the exhausted branch terminalises an operation record. The requeue branch
+    deliberately does not, and here that is a decision rather than an omission.**
+    ``requeue_for_retry`` writes ``state = QUEUED``: the job has not finished, it is
+    going to run again, and moving its operation record to ``failed`` here would
+    report an operation failed while its own job sits queued for another attempt —
+    against AC 16's "when it finishes", and unrecoverable, because the record would
+    then be terminal and the next attempt's success would have nowhere to land.
     """
     now = clock()
     if leased.attempts >= leased.max_attempts:
         return _finish_alone(
             engine,
             database,
-            write=lambda uow: finish_failed(
-                uow.connection, job_id=leased.id, owner=owner, now=now, error=error
+            write=_with_operation(
+                operation_id=leased.operation_id,
+                job_write=lambda conn: finish_failed(
+                    conn, job_id=leased.id, owner=owner, now=now, error=error
+                ),
+                operation_write=(
+                    lambda conn, record_id: operation_records.finish_failed(
+                        conn,
+                        operation_id=record_id,
+                        now=now,
+                        error_code=JOB_FAILED,
+                        error_text=error,
+                    )
+                ),
             ),
         )
     return _finish_alone(

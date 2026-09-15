@@ -152,9 +152,14 @@ def _session_refusal(state: str, detail: str) -> JSONResponse:
     ``workspace_unselected``, ``membership_missing``, ``workspace_unavailable``),
     and the caller that needs to tell them apart reads ``state`` — but every one of
     them means the same thing to HTTP, that this request carried no usable session.
+
+    **``operation_id=None``, explicitly, and not an outcome attribute.** This runs for
+    every ``context_from_session`` refusal, which is before ``dispatch()`` is invoked
+    at all — there is no outcome object at this call site to read an id from, and
+    nothing has been minted for a request that never reached the dispatcher.
     """
     return JSONResponse(
-        envelope(state, error_code=state, error_text=detail),
+        envelope(state, None, error_code=state, error_text=detail),
         status_code=SESSION_REFUSAL_STATUS,
     )
 
@@ -226,12 +231,14 @@ async def run_operation(
             None if outcome.result is None else outcome.result.model_dump(mode="json")
         )
         return JSONResponse(
-            envelope(outcome.state, result=result), status_code=status_code
+            envelope(outcome.state, outcome.operation_id, result=result),
+            status_code=status_code,
         )
     error = outcome.error
     return JSONResponse(
         envelope(
             outcome.state,
+            outcome.operation_id,
             error_code=None if error is None else error.error_code,
             error_text=None if error is None else error.error_text,
         ),

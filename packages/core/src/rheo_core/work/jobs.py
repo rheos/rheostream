@@ -80,6 +80,13 @@ class LeasedJob:
     ``pyproject.toml`` sets mypy ``strict``, and because that is the shape the rest of
     the repository already uses for a JSON-like value whose contents are a later
     concern.
+
+    ``operation_id`` is the row's own column, carried on the lease rather than re-read
+    at each terminal write. The worker terminalises a job's ``core.operation`` record
+    in the same transaction as the job's terminal write, and there are six such
+    writes; a value that never changes after :func:`enqueue_job` wrote it is read once,
+    by the acquire that already returns five other columns, rather than six more times
+    under six separate transactions.
     """
 
     id: UUID
@@ -88,6 +95,7 @@ class LeasedJob:
     attempts: int
     max_attempts: int
     cancel_requested: bool
+    operation_id: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,11 +143,20 @@ def enqueue_job(
     now: datetime,
     max_attempts: int,
     next_run_at: datetime | None = None,
+    operation_id: UUID | None = None,
 ) -> UUID:
     """Write one ``queued`` row and return its id. Does not commit.
 
     ``attempts = 0``, ``cancel_requested = false``, and ``next_run_at`` defaults to
     ``now`` — a job with no requested delay is due the moment its transaction commits.
+
+    ``operation_id`` is the first writer ``job.operation_id`` has ever had. Additive
+    with a ``None`` default, so both existing callers — :func:`enqueue` below and
+    ``tests/postgres/test_job_repository.py`` — need no edit. A non-``None`` value
+    ties the job to a ``core.operation`` record the dispatcher has already committed,
+    and is what makes the worker terminalise that record when this job finishes; a
+    ``long_running`` handler reads it from ``HandlerUnitOfWork.operation_id`` and
+    passes it here.
     """
     job_id = uuid7()
     conn.execute(
@@ -148,6 +165,7 @@ def enqueue_job(
             kind=kind,
             state=QUEUED,
             input=payload,
+            operation_id=operation_id,
             attempts=0,
             max_attempts=max_attempts,
             next_run_at=now if next_run_at is None else next_run_at,
@@ -260,6 +278,7 @@ def acquire_lease(
             t.job.c.attempts,
             t.job.c.max_attempts,
             t.job.c.cancel_requested,
+            t.job.c.operation_id,
         )
     ).one_or_none()
     if row is None:
@@ -271,6 +290,7 @@ def acquire_lease(
         attempts=int(row.attempts),
         max_attempts=int(row.max_attempts),
         cancel_requested=bool(row.cancel_requested),
+        operation_id=row.operation_id,
     )
 
 
