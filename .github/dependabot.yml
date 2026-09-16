@@ -30,6 +30,16 @@ updates:
       # support. Minor and patch still flow.
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
+      # TypeScript 7 is the Go port, and it does not expose the JS compiler
+      # API that `openapi-typescript` builds on. openapi-typescript 7.13.0 (the
+      # latest) reads `ts.factory.createKeywordTypeNode` at module load and
+      # dies with "Cannot read properties of undefined" before it parses
+      # anything, which takes out `make codegen` — the first step of Web checks
+      # (PR #58). Its declared peer is still `typescript: "^5.x"`, so there is
+      # no TS 6 support to step through either. Retest when openapi-typescript
+      # ships a release that peers TypeScript 7. Minor and patch still flow.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       # vite and vitest have to move as a unit: vitest majors import Vite
       # subpaths that older Vite does not export, so bumped apart they produce
