@@ -72,6 +72,7 @@ _FAR_FUTURE = datetime(2999, 1, 1, tzinfo=UTC)
 
 READ_ONLY_OPERATIONS = frozenset(
     {
+        "core.audit.list",
         "core.operation.get",
         "core.operation.list",
         "core.work.failures",
@@ -81,10 +82,11 @@ READ_ONLY_OPERATIONS = frozenset(
 )
 """What the ``read_only`` set expands to, spelled out rather than derived.
 
-0c2's C4 adds ``core.operation.get`` and ``core.operation.list``; both are ``READ``,
-so the ``read_only`` expansion picks them up on its own. ``core.operation.resolve`` is
-``MUTATE`` and is correctly absent — do not add it, and if it ever appears here that
-is the defect this assertion exists to catch.
+0c2's C4 adds ``core.operation.get`` and ``core.operation.list`` and 0c2's C5 adds
+``core.audit.list``; all three are ``READ``, so the ``read_only`` expansion picks them
+up on its own. ``core.operation.resolve`` is ``MUTATE`` and is correctly absent — do
+not add it, and if it ever appears here that is the defect this assertion exists to
+catch.
 
 **A literal, never a value derived from the registry.** Derived, this set would equal
 whatever the registry happened to hold and the assertion could not fail: an operation
@@ -307,7 +309,7 @@ def test_agent_default_evaluates_to_registered_tools(
     session_ctx: WorkspaceContext,
 ) -> None:
     """B7's own set claim, commissioned explicitly rather than left untested:
-    ``agent_default`` is exactly the two tools this run registers."""
+    ``agent_default`` is exactly the two tools 0b2 registers."""
     assert agent_default() == frozenset({"core.workspace.status", NOTE_GET})
     # And an issued agent_default token carries exactly that snapshot.
     _, _, operations = _issue(session_ctx, kind="mcp", set_name="agent_default")

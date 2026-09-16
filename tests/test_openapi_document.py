@@ -36,6 +36,7 @@ from rheo_core.operations import (
     register_core_operations,
 )
 from rheo_core.operations.core_ops import (
+    AUDIT_LIST,
     SETTINGS_SET,
     SETTINGS_SET_MEMBER,
     TOKEN_ISSUE,
@@ -112,6 +113,9 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             OPERATION_GET,
             OPERATION_LIST,
             OPERATION_RESOLVE,
+            # 0c2's C5 adds core.audit.list. Listed in registration order, the
+            # order CORE_OPERATIONS itself holds; the assertion sorts both sides.
+            AUDIT_LIST,
         )
     )
 

@@ -309,11 +309,12 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now nine: 0b1's three, 0b2's C8 adds core.token.issue and
-        # core.token.revoke, 0c1's C3 adds core.work.failures, and 0c2's C4 adds
-        # core.operation.get/list/resolve. Sorted by the name string, so the three
-        # core.operation.* names lead and core.work.failures lands immediately
-        # before core.workspace.status ("." sorts before "s").
+        # Sorted, and now ten: 0b1's three, 0b2's C8 adds core.token.issue and
+        # core.token.revoke, 0c1's C3 adds core.work.failures, 0c2's C4 adds
+        # core.operation.get/list/resolve, and 0c2's C5 adds core.audit.list.
+        # Sorted by the name string, so core.audit.list leads, the three
+        # core.operation.* names follow it, and core.work.failures lands
+        # immediately before core.workspace.status ("." sorts before "s").
         #
         # **Written out as literals on purpose.** Deriving this tuple from the
         # registry would make the assertion unfailable: an operation registered by
@@ -321,6 +322,7 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         # exactly. The literal list is the regression guard, and updating it by hand
         # when a run adds an operation is the point rather than the cost.
         assert report.operations == (
+            "core.audit.list",
             OPERATION_GET,
             OPERATION_LIST,
             OPERATION_RESOLVE,
