@@ -104,18 +104,21 @@ repository root:
 
 ```sh
 git apply /tmp/row.diff
-RHEO_TEST_CLUSTER_DSN=postgresql://rheo:rheo_dev_only@localhost:5433/postgres uv run pytest -q "tests/postgres/test_tokens.py::test_expired_presentation_refused_with_unchanged_snapshot"
+uv run pytest -q "tests/postgres/test_tokens.py::test_expired_presentation_refused_with_unchanged_snapshot"
 git apply -R /tmp/row.diff
 ```
 
 The second command is the row's own `Demonstrator`; criterion 9's is shown as the worked
 example. Substitute the node id or ids that row names. A `ci:` row's demonstrator is a
-workflow step, so run that step's own command instead — `python3 scripts/check_repository.py`,
+workflow step, so run that step's own command instead: `python3 scripts/check_repository.py`,
 `docker build -f Dockerfile .`, `RHEO_ROUTING_MODE=subdomain pnpm -C apps/web test`, or
 `python3 scripts/check_routing_literals.py`. The third command reverts; `git checkout --
 <path>` does the same job when the hunk touches one file.
 
-The Postgres DSN is spelled in full because `tests/conftest.py` reads `RHEO_TEST_CLUSTER_DSN`
-and falls back to port 5432. On this project's development machine 5432 is held by an
-unrelated service and the test cluster runs on 5433, so a run without that variable fails
-with a message that reads like a broken environment rather than a wrong port.
+**Export `RHEO_TEST_CLUSTER_DSN` before the second command.** `tests/conftest.py` reads that
+variable and otherwise falls back to `localhost:5432/postgres`. On this project's development
+machine 5432 is held by an unrelated service and the test cluster runs on **5433**, so a run
+without it fails with a message that reads like a broken environment rather than a wrong
+port. The value belongs in the gitignored `.env`, whose shape `.env.example` documents, and
+`set -a; . ./.env; set +a` loads it. Under zsh the `./` is not optional: `.` with an argument
+containing no slash searches `$PATH` and reports `no such file or directory: .env`.
