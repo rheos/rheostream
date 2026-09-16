@@ -72,6 +72,11 @@ PATTERNS: tuple[tuple[str, str], ...] = (
     (r"a later run (?:will|adds|builds|ships)", "defers to a later run"),
 )
 
+#: The whole repository, resolved from the git top level rather than the caller's cwd —
+#: ``"."`` alone means "under wherever you happened to run this", so invoking it from
+#: ``scripts/`` scanned five files and printed a clean result. That was a false nil
+#: created by the fix for the previous false nil.
+#:
 #: The whole repository. An earlier draft listed roots by hand and omitted ``modules/``,
 #: ``connectors/``, ``channels/`` and ``packs/`` — the four directories that exist
 #: precisely to hold work a later run will build, and therefore the likeliest home for
@@ -99,6 +104,25 @@ class ScanUnavailable(RuntimeError):
     """
 
 
+def repo_root() -> Path:
+    """The git top level, so a default scan does not silently mean "this directory"."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except FileNotFoundError as exc:
+        raise ScanUnavailable("git is not on PATH, so nothing was scanned") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"git rev-parse exited {exc.returncode}"
+        raise ScanUnavailable(f"not inside a git worktree: {detail}") from exc
+    if not out:
+        raise ScanUnavailable("git reported no worktree root, so nothing was scanned")
+    return Path(out)
+
+
 def tracked_files(roots: tuple[str, ...]) -> list[Path]:
     """Every tracked text file under ``roots``. Tracked only: untracked scratch and
     ignored build output are not claims the repository makes.
@@ -106,23 +130,34 @@ def tracked_files(roots: tuple[str, ...]) -> list[Path]:
     Raises ``ScanUnavailable`` rather than returning nothing, so a failure to scan can
     never be mistaken for a clean scan.
     """
+    root = repo_root()
     try:
         out = subprocess.run(
             ["git", "ls-files", "--", *roots],
             capture_output=True,
             text=True,
             check=True,
+            cwd=root,
         ).stdout
     except FileNotFoundError as exc:
         raise ScanUnavailable("git is not on PATH, so nothing was scanned") from exc
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip() or f"git ls-files exited {exc.returncode}"
         raise ScanUnavailable(f"git could not list tracked files: {detail}") from exc
-    return [
-        path
+    found = [
+        candidate
         for p in out.split("\n")
-        if p and (path := Path(p)).suffix in TEXT_SUFFIXES and path.resolve() != SELF
+        if p
+        and (candidate := root / p).suffix in TEXT_SUFFIXES
+        and candidate.resolve() != SELF
     ]
+    if not found:
+        raise ScanUnavailable(
+            f"no eligible text files under {', '.join(roots)}: discovery "
+            "succeeded but matched nothing scannable, which is not the "
+            "same as finding no claims"
+        )
+    return found
 
 
 def flatten(text: str) -> tuple[str, list[int]]:
