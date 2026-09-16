@@ -72,7 +72,12 @@ PATTERNS: tuple[tuple[str, str], ...] = (
     (r"a later run (?:will|adds|builds|ships)", "defers to a later run"),
 )
 
-DEFAULT_ROOTS = ("packages", "apps", "runtimes", "scripts", "docs", "README.md")
+#: The whole repository. An earlier draft listed roots by hand and omitted ``modules/``,
+#: ``connectors/``, ``channels/`` and ``packs/`` — the four directories that exist
+#: precisely to hold work a later run will build, and therefore the likeliest home for
+#: the claims this check hunts. A hand-maintained list of what to scan goes stale the
+#: same way the prose it scans does. ``TEXT_SUFFIXES`` does the filtering instead.
+DEFAULT_ROOTS = (".",)
 TEXT_SUFFIXES = {".py", ".md", ".ts", ".tsx", ".toml", ".yaml", ".yml"}
 
 #: This file quotes the phrasings it hunts for, in its own docstring and in PATTERNS, so
@@ -82,9 +87,25 @@ TEXT_SUFFIXES = {".py", ".md", ".ts", ".tsx", ".toml", ".yaml", ".yml"}
 SELF = Path(__file__).resolve()
 
 
+class ScanUnavailable(RuntimeError):
+    """The scan could not run. Distinct from running and finding nothing.
+
+    An earlier draft swallowed a git failure and returned an empty list, so ``main``
+    printed "No future-work claims found... a real nil result" and exited 0. That is a
+    check reporting clean because it never ran, which is the defect this repository has
+    now met in an empty ``allowed_paths``, a missing ``node_modules``, and a time-based
+    check that decayed into passing. It should not also live in the tool written to
+    catch a cousin of it.
+    """
+
+
 def tracked_files(roots: tuple[str, ...]) -> list[Path]:
     """Every tracked text file under ``roots``. Tracked only: untracked scratch and
-    ignored build output are not claims the repository makes."""
+    ignored build output are not claims the repository makes.
+
+    Raises ``ScanUnavailable`` rather than returning nothing, so a failure to scan can
+    never be mistaken for a clean scan.
+    """
     try:
         out = subprocess.run(
             ["git", "ls-files", "--", *roots],
@@ -92,8 +113,11 @@ def tracked_files(roots: tuple[str, ...]) -> list[Path]:
             text=True,
             check=True,
         ).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return []
+    except FileNotFoundError as exc:
+        raise ScanUnavailable("git is not on PATH, so nothing was scanned") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"git ls-files exited {exc.returncode}"
+        raise ScanUnavailable(f"git could not list tracked files: {detail}") from exc
     return [
         path
         for p in out.split("\n")
@@ -150,9 +174,16 @@ def main() -> int:
     args = ap.parse_args()
 
     roots = tuple(args.paths) if args.paths else DEFAULT_ROOTS
+    try:
+        files = tracked_files(roots)
+    except ScanUnavailable as exc:
+        print(f"check_future_work_claims: {exc}", file=sys.stderr)
+        print("Nothing was scanned. This is NOT a nil result.", file=sys.stderr)
+        return 2
+
     seen: set[tuple[object, object]] = set()
     hits = []
-    for f in tracked_files(roots):
+    for f in files:
         for h in scan(f):
             # Two patterns can match one sentence; report the sentence once.
             key = (h["file"], h["line"])
