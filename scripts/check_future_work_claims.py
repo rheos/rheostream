@@ -75,6 +75,12 @@ PATTERNS: tuple[tuple[str, str], ...] = (
 DEFAULT_ROOTS = ("packages", "apps", "runtimes", "scripts", "docs", "README.md")
 TEXT_SUFFIXES = {".py", ".md", ".ts", ".tsx", ".toml", ".yaml", ".yml"}
 
+#: This file quotes the phrasings it hunts for, in its own docstring and in PATTERNS, so
+#: scanning itself produces three guaranteed hits that are noise by construction. A
+#: detector must not be able to match text its own author wrote — the same rule that
+#: sank two watchers in run 0c2, arriving here a third time.
+SELF = Path(__file__).resolve()
+
 
 def tracked_files(roots: tuple[str, ...]) -> list[Path]:
     """Every tracked text file under ``roots``. Tracked only: untracked scratch and
@@ -88,7 +94,11 @@ def tracked_files(roots: tuple[str, ...]) -> list[Path]:
         ).stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
-    return [Path(p) for p in out.split("\n") if p and Path(p).suffix in TEXT_SUFFIXES]
+    return [
+        path
+        for p in out.split("\n")
+        if p and (path := Path(p)).suffix in TEXT_SUFFIXES and path.resolve() != SELF
+    ]
 
 
 def flatten(text: str) -> tuple[str, list[int]]:
