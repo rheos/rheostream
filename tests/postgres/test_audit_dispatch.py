@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from importlib import import_module
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from conftest import ClusterSession
@@ -41,6 +41,8 @@ from harness.registry import (
     NOTE_SCHEDULE,
     NOTE_WRITE,
     NoteWriteInput,
+    NoteWritten,
+    Nothing,
     add_member,
     enable_harness_module,
     probe_declaration,
@@ -48,7 +50,8 @@ from harness.registry import (
     register_harness,
 )
 from harness.settings_keys import HARNESS_MEMBER
-from rheo_contracts import Role, SafetyClass, WorkspaceContext
+from pydantic import BaseModel
+from rheo_contracts import AuditSpec, RecordRef, Role, SafetyClass, WorkspaceContext
 from rheo_core.audit import (
     AUDIT_FAILED,
     AUDIT_LIST,
@@ -66,12 +69,14 @@ from rheo_core.operations import (
     HARNESS_MODULE_ID,
     INPUT_INVALID,
     MODULE_DISABLED,
+    OPERATION_GET,
     OPERATION_NOT_PERMITTED,
     OPERATION_UNKNOWN,
     ROLE_NOT_PERMITTED,
     SETTINGS_SET,
     SETTINGS_SET_MEMBER,
     OperationRegistry,
+    RegistrationRefused,
     dispatch,
     register_core_operations,
 )
@@ -80,7 +85,11 @@ from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
 from rheo_core.operations.operation_ops import OPERATION_RESOLVE
 from rheo_core.operations.records import AUDIENCE_NONE, mark_unresolved, mint
 from rheo_core.settings import TEST_HARNESS_ORIGIN
-from rheo_core.storage.backend import StorageRefusal, UnitOfWork
+from rheo_core.storage.backend import (
+    HANDLER_MAY_NOT_COMMIT,
+    StorageRefusal,
+    UnitOfWork,
+)
 from rheo_core.storage.routing import open_unit_of_work
 from sqlalchemy import Engine
 
@@ -246,6 +255,19 @@ def restore_sinks() -> Iterator[None]:
     yield
     install_sink(CORE_MODULE_ID, CORE_AUDIT_SINK)
     install_sink(HARNESS_MODULE_ID, CORE_AUDIT_SINK)
+
+
+def _commit_from_the_handler(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: BaseModel
+) -> Nothing:
+    """A handler that tries to end the dispatcher's transaction.
+
+    ``HandlerUnitOfWork`` refuses ``commit`` with ``handler_may_not_commit``, so this
+    raises a ``StorageRefusal`` from inside ``with uow:`` and never returns — which is
+    a different ``except`` block from the ``OperationRefused`` one, and the point.
+    """
+    uow.commit()
+    return Nothing()
 
 
 # --- AC 26: every registered mutating operation is covered ----------------------------
@@ -416,13 +438,20 @@ def test_a_long_running_dispatch_writes_one_row_carrying_its_minted_id(
     assert record.outcome == AUDIT_SUCCEEDED
 
 
-def test_an_operation_whose_own_transaction_cannot_commit_leaves_no_row(
+def test_an_operation_whose_own_transaction_cannot_commit_leaves_only_a_failed_row(
     owner: WorkspaceContext,
     engine: Engine,
     database: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """AC 23's sharpest shape: the effect and the audit row are inseparable.
+
+    **What is asserted is one ``failed`` row, not none**, and the name says so. AC 23's
+    literal sentence — "finds neither the effect nor the audit row" — is about the
+    ``succeeded`` row written inside the transaction that did not commit; that row does
+    go down with the rollback. § D5 then requires the ``failed`` row this dispatch owes
+    its caller, written afterwards in a transaction of its own. An earlier name here
+    carried AC 23's wording rather than this body's assertion.
 
     The success row is written **inside** the operation's transaction, so a commit that
     fails takes both. The failure is injected because the tree has no natural
@@ -605,9 +634,17 @@ def test_the_three_structurally_excluded_refusals_write_nothing(
     Three branches cannot write a row and must not be made to: ``context_required``
     (no ``WorkspaceContext``, so no workspace to route to), ``operation_unknown`` (no
     declaration, so no safety class — and that column is NOT NULL), and a
-    ``StorageRefusal`` out of ``open_unit_of_work`` (the workspace database is
-    unobtainable, and a second attempt to open one for the row would meet the identical
-    failure).
+    ``StorageRefusal`` out of ``open_unit_of_work`` — **on a dispatch that minted
+    nothing**, which is the case driven below: ``harness.note.write`` is not
+    ``long_running``, so no operation record exists to be ended, no second connection
+    is attempted, and there is genuinely nothing to write the row with.
+
+    That qualifier is load-bearing rather than pedantic. The exclusion is about having
+    nothing to write with, not about which branch the control flow is in, so a
+    ``long_running`` dispatch that reaches the same refusal *does* get a row once its
+    operation record is successfully ended on a fresh connection — the case
+    :func:`test_an_unobtainable_transaction_still_audits_a_dispatch_that_minted_a_record`
+    drives, and the reason this one uses the non-long-running operation.
 
     Asserted here so that a later narrowing of the *reachable* side cannot hide inside
     the exclusions: with only the positive cases above, a dispatcher that audited
@@ -638,6 +675,214 @@ def test_the_three_structurally_excluded_refusals_write_nothing(
     assert _added(owner, before) == (), [
         (r.operation_name, r.outcome) for r in _added(owner, before)
     ]
+
+
+def test_an_unobtainable_transaction_still_audits_a_dispatch_that_minted_a_record(
+    owner: WorkspaceContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of the third exclusion, where it is not an exclusion at all.
+
+    A ``long_running`` dispatch mints its ``core.operation`` row and **commits it** on
+    its own connection before the work transaction is opened. So when that work
+    transaction is then refused, the dispatcher opens a *fresh* connection to end the
+    orphaned record ``failed`` — and when that connection is obtained, a second one
+    demonstrably does not "meet the identical failure": one was just obtained. Without
+    the row, the tree holds a durable, committed operation record naming an actor, a
+    workspace and a time, with no audit record naming it, on the criterion whose whole
+    content is that every mutating operation writes one.
+
+    Only the **second** ``open_unit_of_work`` call is refused, which is the work
+    transaction: the mint takes the first, and ending the record and writing the row
+    take the two after it. Refusing every call would test the exclusion above instead.
+    """
+    before = _ids(owner)
+
+    real = open_unit_of_work
+    calls = {"n": 0}
+
+    def refuse_the_second(ctx: WorkspaceContext) -> UnitOfWork:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise StorageRefusal("workspace_unavailable", "the pool went away")
+        return real(ctx)
+
+    dispatch_module = import_module("rheo_core.operations.dispatch")
+    monkeypatch.setattr(dispatch_module, "open_unit_of_work", refuse_the_second)
+    refused = dispatch(owner, NOTE_SCHEDULE, {"body": NOTE})
+    monkeypatch.undo()
+
+    assert refused.state == "workspace_unavailable", refused
+    assert refused.operation_id is not None, refused
+    # The committed record the audit row has to name, read the supported way.
+    got = dispatch(owner, OPERATION_GET, {"operation_id": str(refused.operation_id)})
+    assert got.ok, got
+    assert got.result.state == "failed", got.result  # type: ignore[union-attr]
+
+    record = _one(owner, before)
+    assert record.operation_name == NOTE_SCHEDULE
+    assert record.outcome == AUDIT_REFUSED
+    assert record.operation_id == refused.operation_id
+
+
+def test_a_handler_returning_the_wrong_type_leaves_exactly_one_failed_row(
+    owner: WorkspaceContext, private_registry: OperationRegistry
+) -> None:
+    """``output_invalid``: the row is written from inside ``_output_invalid``.
+
+    One of two row-writing exits that no assertion reached — removing the audit write
+    from this branch left every other case in this file green, so the branch shipped
+    unpinned. The declaration promises ``NoteWritten`` and the probe handler returns
+    ``Nothing``, which is the dispatcher's own output-type check and not an exception
+    out of the handler: ``failed`` is the outcome because the caller asked for
+    something the system was willing to do and the operation did not deliver it.
+    """
+    name = "harness.probe.mistyped"
+    private_registry.register(
+        probe_declaration(name, NoteWriteInput).model_copy(
+            update={"output": NoteWritten}
+        ),
+        probe_handler,
+        origin=TEST_HARNESS_ORIGIN,
+    )
+    before = _ids(owner)
+
+    outcome = dispatch(owner, name, {"body": NOTE}, registry=private_registry)
+
+    assert outcome.state == "failed", outcome
+    assert outcome.error is not None and outcome.error.error_code == "output_invalid"
+    record = _one(owner, before)
+    assert record.operation_name == name
+    assert record.outcome == AUDIT_FAILED
+
+
+def test_a_handler_that_commits_its_own_transaction_leaves_exactly_one_refused_row(
+    owner: WorkspaceContext, private_registry: OperationRegistry
+) -> None:
+    """The handler-side ``StorageRefusal``: the second unpinned row-writing exit.
+
+    ``HandlerUnitOfWork`` refuses ``commit`` — ending the one transaction is the
+    dispatcher's job — so a handler that calls it raises a ``StorageRefusal`` out of
+    ``with uow:`` rather than an ``OperationRefused``. That is a different ``except``
+    block from the one the refusal case above drives, and its audit write was likewise
+    removable without turning anything red.
+    """
+    name = "harness.probe.commits"
+    private_registry.register(
+        probe_declaration(name, NoteWriteInput), _commit_from_the_handler,
+        origin=TEST_HARNESS_ORIGIN,
+    )  # fmt: skip
+    before = _ids(owner)
+
+    outcome = dispatch(owner, name, {"body": NOTE}, registry=private_registry)
+
+    assert outcome.state == HANDLER_MAY_NOT_COMMIT, outcome
+    record = _one(owner, before)
+    assert record.operation_name == name
+    assert record.outcome == AUDIT_REFUSED
+
+
+# --- the subject reference, and the digest that reaches every row ---------------------
+
+
+class _SubjectInput(BaseModel):
+    """An input model that carries a subject reference, which no shipped one does."""
+
+    ref: RecordRef
+
+
+def test_a_declaration_naming_a_subject_field_records_the_formatted_reference(
+    owner: WorkspaceContext, private_registry: OperationRegistry
+) -> None:
+    """``_subject_ref``'s positive branch, which the tree cannot otherwise reach.
+
+    Every shipped ``AuditSpec`` is ``AuditSpec(subject_field=None)``, so the branch
+    that reads the field ships as production code with no dispatch exercising it —
+    replacing the whole function with ``return None`` left this file green. A
+    declaration of this test's own names a field, and the row carries the canonical
+    string form the column documents.
+    """
+    name = "harness.probe.subject"
+    ref = RecordRef(module="harness", record_type="note", id=uuid4())
+    private_registry.register(
+        probe_declaration(name, _SubjectInput).model_copy(
+            update={"audit": AuditSpec(subject_field="ref")}
+        ),
+        probe_handler,
+        origin=TEST_HARNESS_ORIGIN,
+    )
+    before = _ids(owner)
+
+    outcome = dispatch(
+        owner, name, {"ref": ref.model_dump(mode="json")}, registry=private_registry
+    )
+
+    assert outcome.ok, outcome
+    record = _one(owner, before)
+    assert record.operation_name == name
+    assert record.subject_ref == ref.format()
+    assert record.subject_ref == f"harness.note:{ref.id}"
+
+
+def test_registration_refuses_a_subject_field_the_input_model_does_not_declare(
+    private_registry: OperationRegistry,
+) -> None:
+    """The registration-time half: an unreadable ``subject_field`` is refused.
+
+    ``_subject_ref`` reads the named field with a ``None`` default, so without this
+    rule a misspelled ``subject_field`` records a null on every row of the operation —
+    indistinguishable from the ordinary null of an operation that acts on no record.
+    That is the ``NULL_SINK`` silent skip one level down, inside the chunk whose
+    subject is removing it, so it is refused where the declaration is made rather than
+    discovered by reading rows that all look ordinary.
+    """
+    with pytest.raises(RegistrationRefused) as excinfo:
+        private_registry.register(
+            probe_declaration("harness.probe.missubject", NoteWriteInput).model_copy(
+                update={"audit": AuditSpec(subject_field="not_a_field")}
+            ),
+            probe_handler,
+            origin=TEST_HARNESS_ORIGIN,
+        )
+
+    message = str(excinfo.value)
+    assert "not_a_field" in message, message
+    assert NoteWriteInput.__name__ in message, message
+
+
+def test_a_payload_python_cannot_canonicalise_is_answered_not_raised(
+    owner: WorkspaceContext,
+) -> None:
+    """``dispatch()`` answers its caller with an outcome and never raises — including
+    on a payload whose digest has no ordinary canonical form.
+
+    ``_request_digest`` runs before ``authorize`` and outside every ``try``, so an
+    exception there is not a refusal anybody can read. A nested mapping with keys of
+    mixed types is exactly that: ``sort_keys=True`` compares the keys to sort them and
+    ``int`` does not order against ``str``, which ``default=str`` does not reach
+    because that hook is for values. Unreachable through a JSON body, whose keys are
+    always strings; reachable from every in-process caller, this suite included.
+
+    The digest is asserted to be **stable** rather than to equal a particular value:
+    what the column needs from the degraded rendering is determinism, and a test
+    pinning the exact fallback bytes would pin the fallback's shape instead.
+    """
+    payload: dict[str, object] = {"body": NOTE, "extra": {1: "x", "b": 2}}
+    before = _ids(owner)
+
+    first = dispatch(owner, NOTE_WRITE, dict(payload))
+    second = dispatch(owner, NOTE_WRITE, dict(payload))
+
+    assert first.ok, first
+    assert second.ok, second
+    rows = _added(owner, before)
+    assert len(rows) == 2, [(r.operation_name, r.outcome) for r in rows]
+    assert {row.operation_name for row in rows} == {NOTE_WRITE}
+    digests = {row.request_digest for row in rows}
+    assert len(digests) == 1, digests
+    # And it is a real digest, not the sentinel path's, which would still be stable:
+    # the key-coerced rendering succeeds, so this differs from a payload that lacks
+    # the offending member entirely.
+    assert digests != {_digest({"body": NOTE})}
 
 
 # --- AC 25 and AC 22: the missing registration, at two of its layers ------------------
