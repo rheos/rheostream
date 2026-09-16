@@ -111,7 +111,8 @@ def test_sink_for_is_none_until_one_is_installed() -> None:
 
     The mutant this kills is a ``_SINKS.get(module_id, SOME_DEFAULT)``: a default
     object would decide, here in the substrate, that a missing registration is a
-    silent skip — which is one of the cases 0c2 is scored on deciding for itself.
+    silent skip — which was one of the cases 0c2 was scored on deciding for itself,
+    and it decided the opposite, at the caller, in three layers.
     """
     assert sink_for(CORE_MODULE_ID) is None
     assert sink_for(OTHER_MODULE_ID) is None
@@ -157,7 +158,9 @@ def test_the_audit_module_does_not_import_the_dispatcher() -> None:
     #45's split the dependency runs one way — a caller reaches for the registry, and
     the registry reaches for nothing — so an import of
     ``rheo_core.operations.dispatch`` there, or a deferred one inside a function,
-    would put a call site back into the substrate 0c2 is scored on building.
+    would put a call site back into the substrate. That direction is what lets
+    ``check_audit_paths`` live under ``rheo_core/operations/`` and the call site in
+    ``dispatch.py``, with this package importing neither.
 
     Both halves are checked: the import statements by name, and every ``Name``/
     ``Attribute`` node, which is what a deferred ``importlib`` route or a plain call

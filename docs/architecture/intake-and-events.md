@@ -483,12 +483,17 @@ idempotency nor status lookup. It is listed by `core.work.failures` and cleared 
 | `request_digest bytea` | SHA-256 of the canonical input, so "what exactly was requested" is answerable without storing the input. |
 | `outcome text` | `succeeded`, `failed`, `refused`. |
 
-The audit row is written by the service registry's dispatcher inside the operation's transaction
-for every operation above the read class. A module never writes it and cannot skip it: an
-operation is only callable through the dispatcher, and registration refuses a non-read operation
-with no `AuditSpec` (criterion 14). `core.audit.list` (owner only) is the supported read. The
-row holds no secret and no reference to one, by the same rule that keeps them out of operation
-records ([secrets](storage-and-workspaces.md#a4-the-secret-store-fr-13-guardrail-14)).
+The audit row is written by the service registry's dispatcher for every operation above the read
+class, and where it is written depends on the outcome. A `succeeded` row is written inside the
+operation's own transaction and commits with its effects, so a mutation and its record are never
+separable. A `failed` or `refused` row is written after the rollback, in a short transaction of
+its own: that dispatch's transaction is rolled back and would take any row written in it, and a
+refusal reached before a transaction was opened at all has none to roll back from. A module never
+writes it and cannot skip it: an operation is only callable through the dispatcher, and
+registration refuses a non-read operation with no `AuditSpec` (criterion 14). `core.audit.list`
+(owner, operator) is the supported read. The row holds no secret and no reference to one, by the
+same rule that keeps them out of operation records
+([secrets](storage-and-workspaces.md#a4-the-secret-store-fr-13-guardrail-14)).
 
 ### Idempotency
 
