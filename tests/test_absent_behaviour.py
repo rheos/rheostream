@@ -1,23 +1,25 @@
 """AC 13 and AC 22: what this run deliberately did **not** build, asserted so that
 each claim fails for its own reason.
 
-This module is the instrument the scored 0c1/0c2 trials are measured with. **One probe
-stands in for benchmark criterion 14** — the behaviour that cohort is scored on
-building — and a second is this run's own deletion-completeness check over the 0v
-spike. **This sentence is expected to go stale once more before the run ends**: the
-chunk that lands audit dispatch removes the criterion-14 probe, leaving only the AC 22
-completeness check. Three criteria have already left by that route, each in the commit
-that landed the behaviour it denied. Criterion 12's probe went with the worker loop,
+This module is the instrument the scored 0c1/0c2 trials are measured with. **No
+criterion probe is left**: the only assertion here now is this run's own
+deletion-completeness check over the 0v spike, plus the two self-checks that keep the
+instrument honest. Four criteria left by the same route, each in the commit that landed
+the behaviour it denied — criterion 14's went with audit dispatch, and its presence is
+defended end to end by ``tests/postgres/test_audit_dispatch.py`` and by the
+registration refusal in ``tests/postgres/test_context_routing.py``.
+Criterion 12's probe went with the worker loop,
 and criterion 12's **presence** is defended by ``tests/postgres/test_worker_loop.py``
 instead; criterion 11's went with the delivery drain, and its presence is defended end
 to end by ``tests/postgres/test_event_delivery.py``; criterion 13's went with the
 operation record, and its presence is defended by
 ``tests/postgres/test_operation_records.py`` and by the two operation cases in
-``tests/postgres/test_worker_loop.py``. Every one of them runs
+``tests/postgres/test_worker_loop.py``. Every one of the four ran
 through a helper in ``harness.absence`` that cannot be
 called without a **positive control**, so a probe that passes because the module name
-was misspelled, or because the path it searched does not exist, is not expressible
-here. Run 0v's F52 was that second shape exactly.
+was misspelled, or because the path it searched does not exist, was not expressible
+here. Run 0v's F52 was that second shape exactly, and the AC 22 check below still runs
+through the same helper.
 
 **Read a probe and its control as one pair.** The control runs the same mechanism over
 the same resolved target, looking for something genuinely there. A misdirected probe
@@ -26,10 +28,10 @@ therefore fails its control rather than passing empty, and
 load-bearing by making each one fail on purpose.
 
 **The probe names are fixed by AC 13**, which pins both the function names and the
-``{probe: covers}`` map :func:`test_every_criterion_is_covered` asserts. A
-differently-named probe that is otherwise identical fails that criterion exactly as
-surely as a missing one, so no probe that remains here may be renamed for house-style
-reasons.
+``{probe: covers}`` map :func:`test_every_criterion_is_covered` asserts — now a map of
+one, the AC 22 census, with the int partition empty. A differently-named probe that is
+otherwise identical fails that criterion exactly as surely as a missing one, so
+:func:`test_no_spike_remains` may not be renamed for house-style reasons either.
 """
 
 import subprocess
@@ -89,42 +91,6 @@ def _tracked_files() -> set[str]:
     return {line for line in result.stdout.splitlines() if line}
 
 
-# --- the one criterion probe ----------------------------------------------------------
-
-
-def test_dispatch_calls_no_audit_sink() -> None:
-    """Criterion 14: the audit protocol and registry stay; nothing calls a sink.
-
-    Issue #45 split run 0v's audit seam. ``sink_for`` is still defined and exported —
-    that half is substrate — so only a **call** counts, which is why this runs through
-    the AST helper rather than a grep: a docstring or an ``__all__`` entry naming
-    ``sink_for`` is not a crossing, and a call to it is.
-
-    This closes a window this run measured. Chunk 03 removed the live
-    ``sink_for(...).record(...)`` call from inside ``dispatch()``'s unit of work, and
-    putting it back left the whole suite green — nothing in the tree defended the
-    property. This probe is what defends it now.
-
-    Both names are asserted absent over the same three roots, with the same positive
-    control: ``open_unit_of_work``, the call ``dispatch()`` itself makes to open its
-    one unit of work. Chunk 03 removed the audit call and the subject-reference
-    resolution, not that one, so the control does not depend on anything the chunk
-    deleted.
-    """
-    absent_call(
-        paths=list(SCAN_ROOTS),
-        missing="sink_for",
-        present="open_unit_of_work",
-        covers=14,
-    )
-    absent_call(
-        paths=list(SCAN_ROOTS),
-        missing="record",
-        present="open_unit_of_work",
-        covers=14,
-    )
-
-
 # --- AC 22: the spike is gone, as a completeness check --------------------------------
 
 
@@ -174,7 +140,7 @@ def test_no_spike_remains() -> None:
 
 
 def test_every_criterion_is_covered() -> None:
-    """The probes above cover exactly the criteria they are supposed to, by name.
+    """The one probe above covers exactly what it is supposed to, by name.
 
     Three assertions, not one. Both partitions are asserted exactly — the ints are the
     benchmark criteria this run stands in for, the strs are its own acceptance criteria
@@ -182,25 +148,29 @@ def test_every_criterion_is_covered() -> None:
     a bare set comparison while the E0c record's coverage table states the wrong
     correspondence, which is the failure this exists to catch.
 
-    Every probe that remains is invoked here rather than read out of whatever the
+    **The int partition is now empty, and that is asserted rather than dropped.** Every
+    criterion probe has left, each in the commit that landed the behaviour it denied,
+    and an empty set is the claim "this run denies no benchmark criterion any more" —
+    a claim a deleted assertion would stop making. A probe reappearing with an int
+    ``covers`` fails here.
+
+    The probe that remains is invoked here rather than read out of whatever the
     session happened to run first. The registry is module state, so reading it alone
     would make this assertion depend on test ordering and on selection: run under
-    ``-k`` it would see an empty map. Calling them makes it order-independent and
+    ``-k`` it would see an empty map. Calling it makes this order-independent and
     cannot weaken it, since a probe that fails still fails.
     """
-    test_dispatch_calls_no_audit_sink()
     test_no_spike_remains()
 
     covered = covered_by_probe()
 
-    assert {value for value in covered.values() if isinstance(value, int)} == {
-        14,
-    }, covered
+    assert {value for value in covered.values() if isinstance(value, int)} == set(), (
+        covered
+    )
     assert {value for value in covered.values() if isinstance(value, str)} == {
         "AC 22"
     }, covered
     assert covered == {
-        "test_dispatch_calls_no_audit_sink": 14,
         "test_no_spike_remains": "AC 22",
     }, covered
 

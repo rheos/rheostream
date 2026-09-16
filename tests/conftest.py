@@ -63,7 +63,9 @@ os.environ["RHEO__storage__control_database"] = _control_db
 os.environ["RHEO_DATA_ROOT"] = str(_session_tmp_data_root)
 
 from harness.settings_keys import register_harness_keys  # noqa: E402
+from rheo_core.audit import CORE_AUDIT_SINK, install_sink  # noqa: E402
 from rheo_core.migrations.orchestrator import migrate_control  # noqa: E402
+from rheo_core.operations import CORE_MODULE_ID, HARNESS_MODULE_ID  # noqa: E402
 from rheo_core.refs import uuid7  # noqa: E402
 from rheo_core.settings import current_profile, resolve  # noqa: E402
 from rheo_core.storage.control_plane import (  # noqa: E402
@@ -177,6 +179,34 @@ def cluster() -> Iterator[ClusterSession]:
             quoted = preparer.quote(_droppable(name))
             connection.execute(text(f"DROP DATABASE IF EXISTS {quoted} WITH (FORCE)"))
     maintenance.dispose()
+
+
+@pytest.fixture(autouse=True)
+def audit_sinks() -> None:
+    """``CORE_AUDIT_SINK`` installed under ``core`` and ``harness`` before every test.
+
+    **Why a fixture and not the two registration helpers alone.** Dispatching an
+    operation above the read class now refuses ``audit_sink_missing`` unless its owning
+    module has an installed sink. ``register_core_operations()`` installs one for
+    ``core`` and ``register_harness()`` one for ``harness``, which covers every test
+    module that calls either — but two dispatch a mutating operation and call neither:
+    ``tests/test_handler_uow.py`` hand-registers ``core.settings.set`` on a private
+    registry, and ``tests/postgres/test_sessions.py`` imports ``SETTINGS_SET``
+    directly. Neither needs an edit; this fixture is what closes them.
+
+    **Function-scoped and here rather than session-scoped or per-module**, because
+    ``tests/test_audit_sink.py``'s own autouse fixture calls ``reset_sinks()`` on a
+    process-wide table around each of *its* tests. A sink installed once per session
+    would be gone for every module that ran after that file, making the blast radius
+    depend on collection order. Conftest-level autouse fixtures run before
+    module-level ones, so that file still empties the table for its own tests, which
+    is what it wants.
+
+    ``install_sink`` is a no-op for the identical object, so running before every test
+    costs a dict lookup and cannot conflict with either helper.
+    """
+    install_sink(CORE_MODULE_ID, CORE_AUDIT_SINK)
+    install_sink(HARNESS_MODULE_ID, CORE_AUDIT_SINK)
 
 
 @pytest.fixture

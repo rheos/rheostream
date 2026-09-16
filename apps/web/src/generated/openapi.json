@@ -1,6 +1,126 @@
 {
   "components": {
     "schemas": {
+      "AuditList": {
+        "description": "The workspace's most recent audit records, newest first.\n\n``records`` is a named collection field rather than a bare list, mirroring\n``FailureList`` and ``OperationList``: a later run adding a second collection\nbeside it is then an additive change a reader may ignore rather than a change to\nthe response's own type.",
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/AuditRecord"
+            },
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "records"
+        ],
+        "title": "AuditList",
+        "type": "object"
+      },
+      "AuditListInput": {
+        "description": "How many of the most recent audit records to return.\n\n``limit`` is bounded rather than a bare ``int``, for the reason\n``work/operations.py``'s ``FailureListInput`` gives: a bare ``int`` lets ``-1``\nreach the ``SELECT``, where Postgres raises *LIMIT must not be negative* and\n``dispatch`` folds a driver class name into ``handler_failed``, when it is an\ninput defect that belongs in the ``input_invalid`` refusal pydantic already\nproduces. Nothing prunes this table in release one, so an unbounded ``limit``\nwould be a read that grows for the life of the deployment.",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "AuditListInput",
+        "type": "object"
+      },
+      "AuditRecord": {
+        "description": "One audit row as this operation publishes it.\n\n:class:`~rheo_core.audit.records.AuditRow` field for field, with that row's ``id``\npublished as ``audit_id`` \u2014 the renaming ``FailedJob`` and ``OperationRecord``\nalready make for the same reason \u2014 and with ``request_digest`` published as its\nlowercase hex. The column is ``bytea``; a generated TypeScript client has no\nnatural type for raw bytes, and hex is what a person comparing two digests by eye\ncan actually compare.",
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_kind": {
+            "title": "Actor Kind",
+            "type": "string"
+          },
+          "audit_id": {
+            "format": "uuid",
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "entry": {
+            "title": "Entry",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "operation_name": {
+            "title": "Operation Name",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "request_digest": {
+            "title": "Request Digest",
+            "type": "string"
+          },
+          "safety_class": {
+            "title": "Safety Class",
+            "type": "string"
+          },
+          "subject_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Ref"
+          }
+        },
+        "required": [
+          "audit_id",
+          "occurred_at",
+          "actor_kind",
+          "actor_id",
+          "entry",
+          "operation_name",
+          "safety_class",
+          "operation_id",
+          "subject_ref",
+          "request_digest",
+          "outcome"
+        ],
+        "title": "AuditRecord",
+        "type": "object"
+      },
       "FailedDelivery": {
         "description": "One failed event delivery as the operation publishes it.\n\n``rheo_core.events.deliveries.FailedDeliveryRow`` field for field, and\ndeliberately **not** :class:`FailedJob`'s field list: ``core.event_delivery``\nhas no ``max_attempts`` column, because a delivery's budget is the\n``work.max_attempts`` setting rather than a per-row value, and publishing a\nfield the row does not hold would mean inventing one here.\n\nThe identity is the composite key the row is actually keyed by, both halves\npublished: one event has one delivery per consumer, so ``event_id`` alone does\nnot name a delivery.",
         "properties": {
@@ -650,6 +770,69 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/operations/core.audit.list": {
+      "post": {
+        "operationId": "core.audit.list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/AuditList"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.audit.list (read)"
+      }
+    },
     "/api/v1/operations/core.operation.get": {
       "post": {
         "operationId": "core.operation.get",

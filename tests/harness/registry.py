@@ -46,6 +46,7 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
+from rheo_core.audit import CORE_AUDIT_SINK, install_sink
 from rheo_core.operations import (
     HARNESS_MODULE_ID,
     REGISTRY,
@@ -346,7 +347,19 @@ def register_harness(
     that exists as a module constant but is never passed to a registry is never
     actually registered, and reads as present to anyone grepping for it while being
     invisible to ``REGISTRY.names()`` and to anything derived from it.
+
+    **It installs the harness module's audit sink too**, the same
+    ``CORE_AUDIT_SINK`` the core installs for itself: ``harness`` has no manifest, so
+    nothing loads one for it, and three of the four operations above are ``MUTATE``,
+    which ``dispatch()`` refuses ``audit_sink_missing`` without one. The sink is a
+    stateless singleton that writes into whatever workspace database the caller's unit
+    of work is routed to, so installing the identical object under two module ids is
+    a no-op for ``install_sink`` rather than a conflict. **This is not the whole fix**
+    — two test modules dispatch a mutating operation without calling this function at
+    all, which is why ``tests/conftest.py`` carries an autouse fixture that installs
+    the same sink before every test.
     """
+    install_sink(HARNESS_MODULE_ID, CORE_AUDIT_SINK)
     resolvers.register(
         HARNESS_MODULE_ID, NOTE_RECORD_TYPE, resolve_note, origin=TEST_HARNESS_ORIGIN
     )

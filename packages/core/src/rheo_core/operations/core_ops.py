@@ -31,14 +31,22 @@ whose own row is the ``:105`` the cited range now reaches.
   any other state. The models and handlers of all three live in
   ``rheo_core.operations.operation_ops``, beside the repository they read; only
   the declarations are here, the same split ``core.work.failures`` uses.
+- ``core.audit.list`` — ``read``; roles ``owner, operator``, ratified at
+  ``module-contract.md:105``. The supported read of the audit record (run 0c2,
+  C5). Its models and handler live in ``rheo_core.audit.operations``, beside the
+  repository they read — the same split again, and here it is also an
+  import-direction constraint, since ``rheo_core.audit`` may not import this
+  package.
 
 Every mutate operation here declares ``AuditSpec(subject_field=None)``: C1 fixes
 ``AuditSpec`` at exactly that one field, and none of the mutate operations in
 this module acts on a *record type* — a ``RecordRef`` in an input model is what
 ``subject_field`` names, and none of them has one. The read-class declarations
-carry no ``AuditSpec`` at all, which stays legal. Declaring it is required so
-0c2's audit dispatcher re-declares nothing; acting on it (writing an audit row)
-is 0c2's and does not happen in this run.
+carry no ``AuditSpec`` at all, which stays legal — and is now enforced from the
+other side too: registration refuses a non-``read`` declaration that carries
+none. Acting on the spec is this run's: ``dispatch()`` writes a
+``core.audit_record`` row for every one of these operations above the read class,
+through the sink :func:`register_core_operations` installs below.
 
 Registration is explicit (:func:`register_core_operations`), not an import side
 effect, mirroring the settings harness.
@@ -57,6 +65,22 @@ from rheo_contracts import (
     WorkspaceContext,
 )
 
+# ``AUDIT_LIST as AUDIT_LIST`` is a deliberate re-export, spelled the way
+# ``refusals.py`` re-exports ``HANDLER_MAY_NOT_COMMIT``: the operation name belongs
+# beside the rest of the core roster for a caller reading ``rheo_core.operations``,
+# and the redundant alias is what tells mypy strict this is not an implicitly public
+# import. The name itself is declared in ``rheo_core.audit.operations``, beside the
+# models and handler it names, which may not import this package.
+from rheo_core.audit import (
+    AUDIT_LIST as AUDIT_LIST,
+)
+from rheo_core.audit import (
+    CORE_AUDIT_SINK,
+    AuditList,
+    AuditListInput,
+    audit_list_handler,
+    install_sink,
+)
 from rheo_core.operations.operation_ops import (
     OPERATION_GET,
     OPERATION_LIST,
@@ -72,6 +96,7 @@ from rheo_core.operations.operation_ops import (
 )
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import (
+    CORE_MODULE_ID,
     REGISTRY,
     Handler,
     OperationRegistry,
@@ -350,6 +375,24 @@ OPERATION_RESOLVE_DECLARATION: Final = OperationDeclaration(
     audit=AuditSpec(subject_field=None),
 )
 
+AUDIT_LIST_DECLARATION: Final = OperationDeclaration(
+    name=AUDIT_LIST,
+    safety_class=SafetyClass.READ,
+    # ``docs/architecture/module-contract.md:105`` ratifies ``owner, operator`` —
+    # the same row ``core.work.failures`` reads. ``intake-and-events.md`` said
+    # "(owner only)" in running prose and loses to the table that owns the core
+    # operation roster; C5 amends that line. The substantive reason is that
+    # ``operator`` already holds ``core.workspace.export`` and ``.digest``
+    # (``module-contract.md:107``), so withholding the *listing* from the role
+    # most likely to be reading it during an incident protects nothing.
+    roles=frozenset({Role.OWNER, Role.OPERATOR}),
+    input_model=AuditListInput,
+    output=AuditList,
+    idempotency=Idempotency.NONE,
+    # ``READ``, so this stays ``None``; audit is required only above the read class.
+    audit=None,
+)
+
 CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (WORKSPACE_STATUS_DECLARATION, _workspace_status),
     (SETTINGS_SET_DECLARATION, _settings_set),
@@ -358,14 +401,17 @@ CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (OPERATION_GET_DECLARATION, get_handler),
     (OPERATION_LIST_DECLARATION, list_handler),
     (OPERATION_RESOLVE_DECLARATION, resolve_handler),
+    (AUDIT_LIST_DECLARATION, audit_list_handler),
 )
 """The three 0b1 operations, 0c1's ``core.work.failures``, and 0c2's three
-``core.operation`` operations. The two token operations are not here: see
+``core.operation`` operations plus ``core.audit.list``. The two token operations
+are not here: see
 :func:`register_core_operations`'s own docstring for why they are built inside the
-function instead of as module-level ``Final`` declarations like these. Neither
-``core.work.failures`` nor the ``core.operation`` three needs that deferral —
-``rheo_core.work`` closes no cycle with ``rheo_core.operations``, and
-``operation_ops`` is inside this package — so all four belong in this tuple."""
+function instead of as module-level ``Final`` declarations like these. None of the
+others needs that deferral — ``rheo_core.work`` and ``rheo_core.audit`` each close
+no cycle with ``rheo_core.operations`` (both are imported *by* it and import none
+of it back), and ``operation_ops`` is inside this package — so every one of them
+belongs in this tuple."""
 
 
 def register_core_operations(
@@ -398,6 +444,16 @@ def register_core_operations(
     instead make every ``rheo token issue``/``revoke`` invocation refuse
     ``role_not_permitted`` before its handler ever ran (mirroring
     ``WORKSPACE_STATUS_DECLARATION``'s own reason for declaring it).
+
+    **It also installs the core's audit sink** (D4). The core is a module with no
+    manifest, so ``modules/loader.py`` never loads a sink for it and the
+    registration that declares the operations is the only place that knows the
+    ``core`` module needs one. Installed *before* the registrations rather than
+    after: ``register`` refuses a declaration above the read class with no
+    ``AuditSpec``, so a partial failure mid-registration would otherwise leave a
+    registry holding mutate operations whose module has no sink — which is exactly
+    the state ``check_audit_paths`` exists to refuse. ``install_sink`` is a no-op
+    for the identical object, which is what lets this run twice in one process.
     """
     from rheo_core.tokens.issue import (
         TokenIssued,
@@ -408,6 +464,7 @@ def register_core_operations(
         revoke_handler,
     )
 
+    install_sink(CORE_MODULE_ID, CORE_AUDIT_SINK)
     token_operations: tuple[tuple[OperationDeclaration, Handler], ...] = (
         (
             OperationDeclaration(

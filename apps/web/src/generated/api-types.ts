@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/v1/operations/core.audit.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.audit.list (read) */
+        post: operations["core.audit.list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.operation.get": {
         parameters: {
             query?: never;
@@ -161,6 +178,79 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AuditList
+         * @description The workspace's most recent audit records, newest first.
+         *
+         *     ``records`` is a named collection field rather than a bare list, mirroring
+         *     ``FailureList`` and ``OperationList``: a later run adding a second collection
+         *     beside it is then an additive change a reader may ignore rather than a change to
+         *     the response's own type.
+         */
+        AuditList: {
+            /** Records */
+            records: components["schemas"]["AuditRecord"][];
+        };
+        /**
+         * AuditListInput
+         * @description How many of the most recent audit records to return.
+         *
+         *     ``limit`` is bounded rather than a bare ``int``, for the reason
+         *     ``work/operations.py``'s ``FailureListInput`` gives: a bare ``int`` lets ``-1``
+         *     reach the ``SELECT``, where Postgres raises *LIMIT must not be negative* and
+         *     ``dispatch`` folds a driver class name into ``handler_failed``, when it is an
+         *     input defect that belongs in the ``input_invalid`` refusal pydantic already
+         *     produces. Nothing prunes this table in release one, so an unbounded ``limit``
+         *     would be a read that grows for the life of the deployment.
+         */
+        AuditListInput: {
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /**
+         * AuditRecord
+         * @description One audit row as this operation publishes it.
+         *
+         *     :class:`~rheo_core.audit.records.AuditRow` field for field, with that row's ``id``
+         *     published as ``audit_id`` — the renaming ``FailedJob`` and ``OperationRecord``
+         *     already make for the same reason — and with ``request_digest`` published as its
+         *     lowercase hex. The column is ``bytea``; a generated TypeScript client has no
+         *     natural type for raw bytes, and hex is what a person comparing two digests by eye
+         *     can actually compare.
+         */
+        AuditRecord: {
+            /** Actor Id */
+            actor_id: string | null;
+            /** Actor Kind */
+            actor_kind: string;
+            /**
+             * Audit Id
+             * Format: uuid
+             */
+            audit_id: string;
+            /** Entry */
+            entry: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Operation Id */
+            operation_id: string | null;
+            /** Operation Name */
+            operation_name: string;
+            /** Outcome */
+            outcome: string;
+            /** Request Digest */
+            request_digest: string;
+            /** Safety Class */
+            safety_class: string;
+            /** Subject Ref */
+            subject_ref: string | null;
+        };
         /**
          * FailedDelivery
          * @description One failed event delivery as the operation publishes it.
@@ -492,6 +582,39 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "core.audit.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuditListInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["AuditList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
     "core.operation.get": {
         parameters: {
             query?: never;

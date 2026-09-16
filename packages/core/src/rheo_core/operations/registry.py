@@ -14,6 +14,11 @@ contracts import scan, B14); here it is importable and mypy strict checks the
   ``model_construct``-ed declaration without one is refused naming the operation —
   the *startup-fails-naming-it* wiring and the production-profile assertion of
   criterion 18 are 0c3's);
+- a declaration whose ``safety_class`` is **not** ``READ`` carries an ``AuditSpec``;
+  one that does not is refused naming the operation (criterion 14's declaration
+  layer). This is the first of three places a missing audit path is fatal — the other
+  two are ``operations/audit_paths.py`` at startup and ``dispatch.py`` at the call —
+  and it is the only one that can refuse before a process is even running;
 - the input model declares **none** of ``RESERVED_INPUT_FIELDS`` (C1's single list in
   ``rheo_contracts.manifest``; not restated here), by field name or by alias, and
   does not set ``extra = "allow"`` (which would carry a reserved key into
@@ -187,6 +192,18 @@ class OperationRegistry:
         check_origin(origin, module_id, name=name)
         if not isinstance(getattr(decl, "safety_class", None), SafetyClass):
             raise RegistrationRefused(name, "declares no safety class")
+        # Criterion 14's declaration layer (AC 21), ratified verbatim at
+        # ``docs/architecture/module-contract.md:115``. ``SafetyClass`` is an
+        # unordered ``StrEnum``, so "above ``READ``" is spelled ``is not
+        # SafetyClass.READ`` — there is no ordering to compare against and no new
+        # contract surface is needed to express one.
+        if decl.safety_class is not SafetyClass.READ and decl.audit is None:
+            raise RegistrationRefused(
+                name,
+                f"declares no audit spec; safety class {decl.safety_class.value!r} is "
+                "above read, and an operation above read cannot be registered without "
+                "one",
+            )
         input_model = decl.input_model
         if not (isinstance(input_model, type) and issubclass(input_model, BaseModel)):
             raise RegistrationRefused(name, "input_model is not a pydantic model")
