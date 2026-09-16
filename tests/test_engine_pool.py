@@ -1,8 +1,11 @@
 """The engine pool's two bounds: idle close, and the count cap behind it.
 
-Seam: ``EnginePool``. No cluster is needed — SQLAlchemy's ``create_engine`` is lazy,
-so these build engines and never connect. The point of each test is the property the
-bound exists for, not the mechanics of ``OrderedDict``.
+Seam: ``EnginePool``. Almost none of this needs a cluster — SQLAlchemy's
+``create_engine`` is lazy, so these build engines and never connect. The one exception
+is ``test_an_engine_with_a_connection_checked_out_survives_the_idle_sweep``, which has
+to hold a **real** connection open to have anything to skip, and says so in its own
+docstring. The point of each test is the property the bound exists for, not the
+mechanics of ``OrderedDict``.
 
 Issue #12: the count cap alone is adversarial to a caller that walks every workspace
 in turn, because under a pure LRU the least-recently-used engine is always the one the
@@ -25,11 +28,14 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import ClusterSession
 from rheo_core.storage import pools as pools_module
 from rheo_core.storage.pools import EnginePool, check_database_name
 from sqlalchemy.engine import make_url
 
 CLUSTER = make_url("postgresql+psycopg://rheo:secret@localhost:5432/postgres")
+MAINTENANCE_DATABASE = "postgres"
+"""A second real database for the in-use test's other sweep entry point."""
 
 
 def pool(
@@ -111,6 +117,59 @@ def test_an_untouched_engine_is_gone_after_the_idle_window() -> None:
     p.engine_for("ws_other")
     assert "ws_cold" not in p.cached()
     assert p.cached() == ("ws_other",)
+
+
+@pytest.mark.postgres
+def test_an_engine_with_a_connection_checked_out_survives_the_idle_sweep(
+    cluster: ClusterSession,
+) -> None:
+    """Issue #62's first gap: eviction does not close an in-flight connection.
+
+    ``_last_used`` is stamped at hand-out and never on return, so a caller holding a
+    connection for longer than ``idle_close_seconds`` has its engine selected by the
+    sweep while it is still working. ``dispose()`` then **detaches** that connection
+    rather than closing it — the socket lives on outside every count this class
+    reports — so the fix is to skip expiry while the engine is in use.
+
+    **This test holds a real connection open, and it has to.** A test that checks one
+    out and returns it immediately leaves ``checkedout()`` at zero, so it passes
+    against the guard and against its absence alike and proves nothing; the whole
+    property is about the window during which the connection has *not* come back. That
+    is also why this is the one case in this file that needs the cluster.
+
+    Both sweep entry points are driven, because they are two call sites of
+    ``_expire_idle`` and a guard added to only one would still leave the other
+    disposing a live engine.
+    """
+    held = cluster.control_database
+    p = EnginePool(
+        cluster.backend.pools.cluster_url,
+        cache_size=4,
+        pool_size=5,
+        idle_close_seconds=0.01,
+        reserved_connections=0,
+    )
+    try:
+        engine = p.engine_for(held)
+        connection = engine.connect()
+        try:
+            assert engine.pool.checkedout() == 1, "the connection is not actually held"
+            time.sleep(0.05)
+            assert p.close_idle() == 0, "close_idle disposed an engine still in use"
+            assert held in p.cached()
+            # The other entry point: ``engine_for`` sweeps on the way in.
+            p.engine_for(MAINTENANCE_DATABASE)
+            assert held in p.cached(), "engine_for's sweep disposed an engine in use"
+        finally:
+            connection.close()
+        # Returned, so the ordinary bound applies again. The sleep is for the second
+        # engine, created a moment ago and not yet idle; the held one has been past
+        # the window throughout and was skipped only because it was in use.
+        time.sleep(0.05)
+        assert p.close_idle() == 2
+        assert p.cached() == ()
+    finally:
+        p.dispose_all()
 
 
 def test_close_idle_is_callable_without_asking_for_an_engine() -> None:

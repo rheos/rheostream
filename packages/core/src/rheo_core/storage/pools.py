@@ -8,10 +8,11 @@ never be served from a stale decision.
 Two bounds, because a pool count is not the scarce resource — connections are:
 
 * **Idle close** (``storage.pool_idle_close_seconds``). An engine untouched for longer
-  than the window is disposed on the next call. This is the bound that normally binds,
-  and it is what keeps a caller that walks many workspaces from evicting the engine it
-  is about to need: an engine goes away because nobody wanted it, not because someone
-  else did.
+  than the window is disposed on the next call, **unless it still has a connection
+  checked out** — see ``_expire_idle``, which is where the idle timer's own limit is
+  written down. This is the bound that normally binds, and it is what keeps a caller
+  that walks many workspaces from evicting the engine it is about to need: an engine
+  goes away because nobody wanted it, not because someone else did.
 * **Count cap** (``storage.pool_cache_size``) as the hard ceiling, least-recently-used
   first. It exists so open connections stay bounded even when every workspace is hot;
   ``pool_cache_size * storage.pool_max_connections`` is what the cached engines can
@@ -29,6 +30,7 @@ from typing import Final
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import URL
+from sqlalchemy.pool import QueuePool
 
 _DATABASE_NAME: Final = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 
@@ -105,7 +107,44 @@ class EnginePool:
         return self._cache_size * self._pool_size + self._reserved_connections
 
     def _expire_idle(self, now: float) -> list[Engine]:
-        """Engines untouched for longer than the idle window. Caller holds the lock."""
+        """Engines untouched for longer than the idle window **and not in use**.
+
+        Caller holds the lock.
+
+        ``_last_used`` is stamped in :meth:`engine_for`, at hand-out, and nothing
+        stamps it again when a connection comes back — so a caller holding a
+        connection for longer than ``idle_close_seconds`` has its engine's idle timer
+        running while it is still working. Without the check below that engine is
+        selected here and ``dispose()``d by the caller, and ``dispose()`` **detaches**
+        a checked-out connection rather than closing it: the socket stays open until
+        its holder returns it, outside every count this class reports. That is not an
+        exotic edge — it is the ordinary consequence of a slow caller.
+
+        The remedy is to skip expiry while the engine is genuinely in use, not to
+        stamp ``_last_used`` on return: a connection that has not been returned fires
+        no return-time stamp, so that fix cannot reach the case it is for. A skipped
+        engine keeps its ``_engines``/``_last_used`` entries untouched and is
+        re-examined by the next sweep, so it becomes eligible again the moment its
+        last connection is returned. Skipping costs nothing the idle window was
+        protecting: an engine with a connection checked out is by definition not idle.
+
+        ``QueuePool.checkedout()`` is SQLAlchemy's own count of connections handed out
+        and not yet returned. It is read under the lock and is a hint the moment it is
+        read — another thread may check one out immediately afterwards — which is why
+        this narrows the window rather than closing it, and why the figure ``rheo
+        doctor`` reports names the detached-connection residual rather than claiming
+        it away.
+
+        **The ``isinstance`` is a type narrowing, not a branch with two live arms.**
+        ``checkedout`` is declared on ``QueuePool`` rather than on ``Pool``, and every
+        engine this class builds is a ``QueuePool``: :meth:`engine_for` passes
+        ``pool_size`` and ``max_overflow``, which are that class's own arguments. The
+        other arm is the behaviour this method had before the check existed, and it is
+        pinned rather than trusted — ``tests/test_engine_pool.py``'s in-use case reads
+        ``engine.pool.checkedout()`` off a real engine as its own positive control, so
+        a pool class that lost the method fails there rather than silently expiring a
+        live engine here.
+        """
         stale = [
             name
             for name, used in self._last_used.items()
@@ -113,7 +152,12 @@ class EnginePool:
         ]
         expired = []
         for name in stale:
-            engine = self._engines.pop(name, None)
+            engine = self._engines.get(name)
+            if engine is not None:
+                pool = engine.pool
+                if isinstance(pool, QueuePool) and pool.checkedout():
+                    continue
+            self._engines.pop(name, None)
             self._last_used.pop(name, None)
             if engine is not None:
                 expired.append(engine)
@@ -161,11 +205,14 @@ class EnginePool:
             return tuple(self._engines)
 
     def close_idle(self) -> int:
-        """Dispose every engine past the idle window; returns how many went.
+        """Dispose every engine past the idle window that is not in use; returns how
+        many went.
 
         ``engine_for`` already does this on the way in. This is the same sweep for a
         caller that wants it without asking for an engine — a worker between passes,
-        or ``rheo doctor``.
+        or ``rheo doctor``. A zero is therefore not evidence that nothing was idle:
+        an engine with a connection still checked out is skipped and counted by
+        neither, per ``_expire_idle``.
         """
         with self._lock:
             discarded = self._expire_idle(time.monotonic())
