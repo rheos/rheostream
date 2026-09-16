@@ -24,6 +24,7 @@ No Postgres. The routing configuration is deployment settings and pure functions
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from rheo_app_core.auth_routes import normalize_host
@@ -294,6 +295,53 @@ def test_the_reference_deployments_base_host_is_port_free() -> None:
     assert is_application_host(config, normalize_host(base_host)), (
         f"a request arriving at {base_host!r} is not recognised as this application's "
         "own host"
+    )
+
+
+def test_the_compose_callback_is_composed_from_that_one_port_free_value() -> None:
+    """The other half of the same invariant, and the cost of it, pinned rather than
+    left to be rediscovered.
+
+    ``base_host`` is doing two jobs with opposite requirements and there is no third
+    key to split them onto. ``is_application_host`` compares it against a host the
+    caller has already stripped the port from, so it must be **port-free** (the test
+    above). ``url_for`` composes ``{scheme}://{base_host}{path}`` in path mode —
+    ``RoutingConfig`` carries ``mode``, ``scheme``, ``base_host`` and ``surfaces`` and
+    nothing else, so ``base_host`` is the *entire* authority of every URL this codebase
+    builds, the OAuth callback at ``auth_routes.py:222`` included.
+
+    **The consequence, stated because a reader will otherwise hit it as a surprise:**
+    on a **direct** deployment serving a non-default port, the callback that
+    ``rheo routing hosts`` prints and that ``/auth/login`` builds is missing that port.
+    The documented topology is a reverse proxy terminating on 443 (ratified D10), which
+    has no port to lose and is unaffected; the reference stack here disables the GitHub
+    provider outright, so it builds no callback at all. This is a pre-existing property
+    of the one-key design, not of the port-free spelling — with a port in ``base_host``
+    the callback carried one but ``/auth/*`` refused every request, so there is no
+    setting of this one key that satisfies both readers.
+
+    Asserting the literal rather than re-deriving it: a re-derivation would restate
+    ``url_for`` and pass against any composition. This line is what the operator is
+    told to register, and it breaks the moment a separate public-authority key is
+    introduced — which is exactly when someone should be made to read this docstring.
+    """
+    environment = compose_core_environment()
+    config = RoutingConfig.model_validate(
+        {
+            **read_fixture("path-mode.json"),
+            "mode": environment["RHEO__routing__mode"],
+            "scheme": environment["RHEO__routing__scheme"],
+            "base_host": environment["RHEO__routing__base_host"],
+        }
+    )
+    callback = url_for(config, IDENTITY, "/callback")
+    assert callback == "http://localhost/auth/callback", (
+        "this is the line `rheo routing hosts` prints for an operator to register on "
+        "the identity provider; it changed without this test being read"
+    )
+    assert ":" not in urlsplit(callback).netloc, (
+        f"the callback authority {urlsplit(callback).netloc!r} carries a port, so "
+        "base_host does too — and then /auth/* refuses every request (issue #37)"
     )
 
 
