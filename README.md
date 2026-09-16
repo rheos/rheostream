@@ -31,14 +31,21 @@ an operator CLI (`rheo account`, `workspace`, `member`, `token`, `routing`,
 work now runs: a worker leases jobs with `SKIP LOCKED`, runs the handler, and
 applies retry with backoff, terminal failure, or cancellation — surviving the
 process dying mid-job, because a lease expires rather than a crash losing the
-work. Enqueueing is not yet atomic end to end: the job row and its due mark
-land in two different databases with no transaction spanning them, so a crash
-between the two leaves a job undue until reconciliation. The reference compose
-topology runs that worker as its own service. **No product module has a line
-of code yet** — Leads, Current, and Recallatron are still empty stubs — and
-the durable layer is not finished: there is no outbox, so a state change and
-its event delivery are not yet one transaction, and there are no scheduled
-jobs. The full module manifest and the license are still open.
+work. A state change and its outgoing event now commit in one transaction, the
+worker redelivers after a crash between the commit and the delivery, and the
+consumer deduplicates, so an event arrives exactly once as the consumer
+observes it. Every long-running operation returns an identifier before it
+finishes and reports one of a fixed set of terminal statuses, including an
+explicit unresolved. Every mutating operation writes an audit record naming
+actor, workspace, operation, and time, and an operation registered with no
+audit path fails registration at startup rather than quietly writing nothing.
+Enqueueing is still not atomic end to end: the job row lands in the workspace
+database and its due mark in the control database, with no transaction
+spanning the two, so a crash between them leaves a job undue until
+reconciliation. The reference compose topology runs that worker as its own
+service. **No product module has a line of code yet** — Leads, Current, and
+Recallatron are still empty stubs — and the durable layer is still not
+finished: there are no scheduled jobs. The full module manifest and the license are still open.
 Directory names under `modules/`, `connectors/`, `channels/`, `runtimes/`,
 and `packs/` still mark intended boundaries, not implemented features; `apps/`
 and `packages/` no longer do.
