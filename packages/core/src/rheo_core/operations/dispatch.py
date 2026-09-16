@@ -660,8 +660,14 @@ def dispatch(
         # ``operation_unknown`` is the second structural exclusion — ``lookup``
         # answers ``None`` for exactly that refusal, so ``_audit_write`` answers
         # ``None`` and no row is written. The other three refusals ``authorize``
-        # returns resolved a declaration first and each gets its own row, written on
-        # a fresh connection because no work transaction was ever opened.
+        # returns resolved a declaration first, so each gets its own row, written on
+        # a fresh connection because no work transaction was ever opened — **whenever
+        # the owning module has a sink.** When it has none ``_audit_write`` answers
+        # ``None`` here too and no row is written, and the caller is told the
+        # authorize refusal rather than ``audit_sink_missing``, because the sink is
+        # resolved only after this block. That is the fourth no-row exit the module
+        # docstring enumerates, and the reason the claim above is scoped rather than
+        # stated over all three.
         _audit_alone(
             ctx,
             _audit_write(registry.lookup(name), request_digest=request_digest),
@@ -718,8 +724,9 @@ def dispatch(
     try:
         uow = open_unit_of_work(ctx)
     except StorageRefusal as refusal:
-        # The third structural exclusion at its own site: the unit of work is
-        # unobtainable, and that is the refusal.
+        # § D5's third structural exclusion at its own site — and the one place the
+        # enumeration is narrower than D5 states it. The unit of work is unobtainable,
+        # and that is the refusal.
         #
         # The mint has already committed and the work cannot start, so the record is
         # orphaned unless it is ended here — and the caller is handed the id either

@@ -631,7 +631,8 @@ def test_the_three_structurally_excluded_refusals_write_nothing(
 ) -> None:
     """The boundary of the reachable set, pinned from the outside.
 
-    Three branches cannot write a row and must not be made to: ``context_required``
+    The three branches § D5 names structurally outside the set, each driven in the
+    shape in which it genuinely has nothing to write a row with: ``context_required``
     (no ``WorkspaceContext``, so no workspace to route to), ``operation_unknown`` (no
     declaration, so no safety class — and that column is NOT NULL), and a
     ``StorageRefusal`` out of ``open_unit_of_work`` — **on a dispatch that minted
