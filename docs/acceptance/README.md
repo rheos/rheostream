@@ -15,11 +15,16 @@ is removed, does the test that claims criterion N go red, and with what message"
 can be covered by a dozen tests and still have nothing pinning the behaviour the criterion
 cares about.
 
-**Not a naming census.** Zero of criteria 1-23 are named by any test function in this
-repository, including the four built with full mutation demonstrations in runs 0c1 and
-0c2. An index keyed on names would report a false gap and its obvious fix would be to
-sprinkle criterion numbers into docstrings, which makes the index green without testing
-anything. That was proposed, measured and rejected on 2026-09-16. Do not rebuild it.
+**Not a naming census.** No test function in this repository carries any of criteria 1-23 in
+its **name**, including the four built with full mutation demonstrations in runs 0c1 and 0c2.
+An index keyed on names would report a false gap and its obvious fix would be to sprinkle
+criterion numbers into docstrings, which makes the index green without testing anything. That
+was proposed, measured and rejected on 2026-09-16. Do not rebuild it.
+
+The qualifier "in its name" is load-bearing and the looser claim is false: criterion numbers
+do appear inside test bodies and docstrings, for instance the `covers=11` and `covers=14`
+arguments at `tests/test_absent_behaviour.py:200,208,216`. That is the point. A census reads
+names, the numbers live elsewhere, and the gap it reports is an artefact of where it looked.
 
 **Not a claim that the guard re-ran anything.** `tests/test_acceptance_matrix.py`, which
 chunk 10 writes, parses this file and checks only what is mechanically true without

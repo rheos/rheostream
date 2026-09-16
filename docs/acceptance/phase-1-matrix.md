@@ -131,14 +131,27 @@ index 718dc6f..f7b1584 100644
 
 **Performed by:** C1 (2026-09-16)
 
-**Note:** the criterion has two halves and only one of them is mutable from inside this run's
-`allowed_paths`. The half this hunk breaks is "the checkout-local fallback directory": move
-the directory the deployment writes into and the ignore rules no longer match anything it
-produces, which is the criterion's failure in its most direct form. The other half, "matched
-by the repository ignore rules", is enforced by `.gitignore` alone, and `.gitignore` is not a
-declared path for run 0c3, so no mutation of it was attempted. That demonstrator is listed
-because it is real and is what the criterion's own "verified by a test that creates one of
-each" sentence points at; its mutation is left for a run whose scope reaches the ignore file.
+**Note:** the criterion has two halves. The half this hunk breaks is "the checkout-local
+fallback directory": move the directory the deployment writes into and the ignore rules no
+longer match anything it produces, which is the criterion's failure in its most direct form.
+
+**Note on why the second demonstrator stayed green, which has two causes and the smaller one
+is the interesting one.** `test_checkout_local_artifacts_are_ignored` did not move under this
+hunk, and the first reason to reach for is that its guarded behaviour lives in `.gitignore`,
+which is not a declared path for run 0c3 so no mutation of it was attempted. That is true, and
+it is not the whole reason. `tests/test_ignored_artifacts.py:26-41` builds its eight fixture
+paths from **string literals** (`f".rheo-local/workspaces/{token}/profile.json"`, and seven
+like it) rather than from `LOCAL_OPT_IN` (`packages/core/src/rheo_core/storage/data_root.py:36`),
+the constant this hunk changes. So the test asserts that a fixed list of paths is ignored,
+not that **what the product produces** is ignored, and the criterion's own words are "every
+configuration file, upload, database, database sidecar, export, and log **it produces**".
+Under this hunk the product writes to `.rheo-data/` and the test goes on asserting that
+`.rheo-local/` is ignored, green and wrong.
+
+The consequence for whoever closes this row later: a run whose scope reaches `.gitignore` can
+mutate the ignore rules and redden this demonstrator, but that still would not close the
+criterion. The test has to derive its directory from `LOCAL_OPT_IN` first, or it can only ever
+pin a list somebody typed.
 
 ---
 
@@ -240,6 +253,7 @@ derivation, so the criterion holds at two levels rather than one.
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_context_routing.py::test_registering_a_reserved_input_field_is_refused_naming_it`
+- `pytest:tests/postgres/test_context_routing.py::test_the_reserved_list_is_the_ratified_one`
 - `pytest:tests/postgres/test_context_routing.py::test_a_dispatch_payload_naming_workspace_b_lands_in_a`
 - `pytest:tests/postgres/test_context_routing.py::test_actor_id_in_a_payload_is_ignored_at_dispatch`
 - `pytest:tests/postgres/test_context_routing.py::test_reserved_names_as_setting_rows_are_refused_setting_undeclared`
@@ -276,6 +290,27 @@ of failing it. What caught the deletion was
 That literal is the only thing standing between a shrunken reserved list and a green suite.
 The mutation recorded above attacks the enforcement rather than the declaration, so all
 twelve parametrised cases bite.
+
+**That backstop is listed as the row's second `Demonstrator` for that reason, not for
+completeness.** It is the only test in the tree that fails when the reserved list itself
+loses a name, and the row's first demonstrator provably does not. Listing it puts it inside
+what chunk 10's guard resolves, so a later rename or deletion of it turns the guard red
+instead of quietly leaving criterion 6's declaration half unguarded. A general rule worth
+carrying: any test parametrised over the constant it is testing needs a literal-list
+companion, and that companion belongs in the field the guard reads.
+
+**Note on the unmutated demonstrators in this row.** The recorded hunk reddens the first
+demonstrator only. `test_the_reserved_list_is_the_ratified_one` is unmoved by it and is
+reddened instead by the deletion described above, which was run and observed (1 failed, 31
+passed) but is not the hunk this row records, since it demonstrates less. The three routing
+demonstrators (`test_a_dispatch_payload_naming_workspace_b_lands_in_a`,
+`test_actor_id_in_a_payload_is_ignored_at_dispatch`,
+`test_reserved_field_in_query_string_and_body_is_ignored`) cover the dispatch and HTTP
+channels of the same criterion. They are reddened by **criterion 7's** hunk, which severs
+context-to-database routing: applying that hunk and running these three gives `3 failed in
+2.70s`, checked here rather than assumed. So they are considered and set aside, not
+unconsidered; one row carries one hunk, and the registration channel is the one this row
+attacks.
 
 ---
 
@@ -430,6 +465,18 @@ states. Removing the expiry branch is the mutation that shows the distinctness i
 rather than incidental: the token that should say `token_expired` falls through and either
 resolves or says `token_revoked` instead, and a suite that only checked "some refusal
 happened" would stay green.
+
+**Note on the unmutated demonstrators in this row.** The recorded hunk attacks one of the
+criterion's three named presentations, the expired one, and reddens two demonstrators. The
+malformed and out-of-scope refusals
+(`test_malformed_presentation_refused_with_unchanged_snapshot`,
+`test_out_of_scope_presentation_refused_with_unchanged_snapshot`) and the two issuance-path
+demonstrators (`test_session_issued_token_row_shapes`,
+`test_operator_issued_token_via_real_dispatch_path`) are unmoved by it. They were considered
+and set aside, not unconsidered: each would need its own branch removed from the same
+refusal chain in `resolve_token`, and the expired branch was chosen because it is the one
+the chain's *order* also depends on, so a single hunk reddens both a refusal test and an
+ordering test. The other four are the same shape of guard on the same chain.
 
 ---
 
