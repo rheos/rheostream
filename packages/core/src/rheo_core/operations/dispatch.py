@@ -85,19 +85,28 @@ queued no job at all. The three refusals **above** the mint — ``context_requir
 ``authorize`` and ``input_invalid`` — return before anything is written, so none of
 them leaves a record behind.
 
-**A ``long_running`` dispatch does not mark its workspace due, and the work therefore
-waits for the reconcile floor.** ``work.jobs.enqueue`` calls ``mark_work_due`` after
-committing, so a job queued that way is visible to the very next pass; a
-``long_running`` handler instead calls ``enqueue_job`` inside *this* function's work
-transaction, where it has no control-plane connection to write that mark with, and
-this function has no post-commit hook to write it for it. So the job is discovered by
-``run_one_pass`` only once ``record_visit``'s floor — ``work.due_reconcile_seconds``,
-900 s by default — brings the workspace back round. **A long-running operation can sit
-up to that long before it starts**, which is stated here rather than left to be
-measured because ``tests/harness/registry.py``'s ``harness.note.schedule`` is the
-pattern a future long-running handler is told to copy, and it inherits this. Closing it
-means a post-commit ``mark_work_due`` here, the shape
-``events/publish.py``'s ``mark_due_after_publish`` already anticipates for the outbox.
+**A ``long_running`` dispatch marks its workspace due once its work transaction has
+committed, so the job is discovered on the very next pass.** ``work.jobs.enqueue``
+calls ``mark_work_due`` after committing, and a job queued that way was always visible
+immediately; a ``long_running`` handler instead calls ``enqueue_job`` inside *this*
+function's work transaction, where it has no control-plane connection to write that
+mark with. Until run 0c3 this function had no post-commit hook to write it for the
+handler, so such a job waited for ``record_visit``'s floor —
+``work.due_reconcile_seconds``, 900 s by default — to bring the workspace back round,
+and a long-running operation could sit that long before it started.
+:func:`_mark_workspace_due` closes that: one hook, on the success path, for every
+``long_running`` dispatch and no other, calling ``events/publish.py``'s
+``mark_due_after_publish`` rather than a second function of the same shape. That
+placement is what makes it one mechanism instead of one per caller —
+``tests/harness/registry.py``'s ``harness.note.schedule`` is the pattern a future
+long-running handler is told to copy, and it inherits the fix the same way it
+inherited the gap.
+
+The mark is written **after** the commit and outside every transaction, so a crash
+between the two loses it. That loss is bounded by the reconcile floor rather than
+fixed, because no transaction spans a workspace database and the control database;
+``mark_due_after_publish``'s own docstring carries the reasoning, and
+``work.jobs.enqueue`` accepts the identical trade for the identical reason.
 
 **No outbox event is enqueued here.** The audit half is no longer absent — see above —
 but nothing in this function publishes an event.
@@ -129,6 +138,7 @@ from rheo_core.audit import (
     sink_for,
 )
 from rheo_core.boundary.context import CONTEXT_REQUIRED, Refusal
+from rheo_core.events.publish import mark_due_after_publish
 from rheo_core.operations.records import AUDIENCE_NONE, PENDING, finish_failed, mint
 from rheo_core.operations.refusals import (
     FAILED,
@@ -488,11 +498,15 @@ def _mint_operation(ctx: WorkspaceContext, declaration: OperationDeclaration) ->
     dispatch is the cost, and is why minting is gated on the declaration rather than
     done for every call.
 
-    **The one clock read in this module.** ``dispatch()`` takes no instant and its
-    callers are HTTP listeners with none to give it, so wall time enters the system
-    here, the way it already does in ``storage/work_index.py``. Everything downstream
-    of this row — the worker's terminal write, the terminal check — takes its instant
-    from a caller, so the discipline the repositories keep is unaffected.
+    **One of the two clock reads in this module**, and the first. ``dispatch()`` takes
+    no instant and its callers are HTTP listeners with none to give it, so wall time
+    enters the system here, the way it already does in ``storage/work_index.py``. The
+    second is :func:`_mark_workspace_due`'s, and it has to be its own read rather than
+    this value passed forward: it stamps the moment the work *became discoverable*,
+    which is after the work transaction committed and an unbounded handler after this
+    row was written. Everything else downstream of this row — the worker's terminal
+    write, the terminal check — takes its instant from a caller, so the discipline the
+    repositories keep is unaffected.
 
     A refusal out of ``open_unit_of_work`` propagates to the caller, which folds it
     into the same refusal outcome an unroutable workspace already produces. Nothing is
@@ -514,6 +528,43 @@ def _mint_operation(ctx: WorkspaceContext, declaration: OperationDeclaration) ->
         )
         uow.commit()
     return operation_id
+
+
+def _mark_workspace_due(ctx: WorkspaceContext) -> None:
+    """Tell the control plane this workspace has work, after the commit that queued it.
+
+    **The post-commit hook a ``long_running`` dispatch needs, and there is one of it.**
+    The handler enqueued its job inside this function's work transaction, against a
+    workspace connection; the due-work index lives in the control database, and no
+    transaction spans the two. So the mark cannot be part of the handler's write and
+    has to happen here, once, after the commit — rather than in each handler, which
+    could not reach the control plane anyway.
+
+    ``events.publish.mark_due_after_publish`` is reused rather than reimplemented. It
+    was written for the outbox and is exactly this shape — one control-plane
+    transaction, opened and committed on its own — and a second function beside it
+    would be two things to keep true about one rule.
+
+    **Guarded, because an already-successful dispatch must not fail on this.** The work
+    is committed and the caller is about to be handed a ``pending`` outcome carrying a
+    real operation id. A control-plane hiccup here would turn that into an unhandled
+    exception for a call that succeeded, which is strictly worse than the loss it would
+    be reporting: a missing mark costs the job up to one reconcile interval
+    (``work.due_reconcile_seconds``, 900 s) and nothing else, which is the same bounded,
+    already-accepted loss ``mark_due_after_publish``'s own docstring describes for a
+    crash in this exact window. Logged for the same reason :func:`_audit_alone` and
+    :func:`_fail_operation` log rather than raise.
+    """
+    try:
+        mark_due_after_publish(ctx.workspace_id, at=datetime.now(UTC))
+    except Exception:
+        logger.error(
+            "work_due_mark_not_written",
+            extra={
+                "workspace_id": str(ctx.workspace_id),
+                "request_id": str(ctx.request_id),
+            },
+        )
 
 
 def _fail_operation(
@@ -875,6 +926,13 @@ def dispatch(
     # job is the only thing that moves the record out of ``pending``. Returning
     # ``succeeded`` here would claim the work was done at the moment it was merely
     # scheduled.
+    #
+    # The due-work mark is written here and nowhere else: past the ``with uow:`` block,
+    # so the commit has happened and the job the handler queued is visible to any other
+    # connection, and only on this branch, because ``operation_id is not None`` is
+    # exactly "this was a ``long_running`` dispatch". Every path that reaches this line
+    # committed; every path that did not raised or returned inside the block above.
     if operation_id is not None:
+        _mark_workspace_due(ctx)
         return OperationOutcome(PENDING, result=output, operation_id=operation_id)
     return OperationOutcome(SUCCEEDED, result=output)

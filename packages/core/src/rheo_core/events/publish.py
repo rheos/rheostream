@@ -173,9 +173,14 @@ def mark_due_after_publish(workspace_id: UUID, at: datetime) -> None:
     bounded by the reconcile floor rather than fixed by a transaction that cannot
     exist.
 
-    **This ships with no caller**, because this run ships no production publisher. The
-    function is where a publisher will reach for it, and is registered as callerless
-    by design rather than left to be rediscovered.
+    **Its caller today is ``operations/dispatch.py``'s ``long_running`` success path**,
+    through ``_mark_workspace_due``, which is the first one it has had. It was written
+    for a publisher and shipped callerless in run 0c2, because that run shipped no
+    production publisher; run 0c3 found the same shape one layer over — a handler that
+    enqueued inside the dispatcher's workspace transaction and had no control-plane
+    connection to mark with — and reached for this rather than writing a second copy of
+    it. A publisher, when one ships, is still what the function was named for and calls
+    it the same way.
     """
     with get_backend().control_engine.begin() as control:
         mark_work_due(control, workspace_id, at=at)
