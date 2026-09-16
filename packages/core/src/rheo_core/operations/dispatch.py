@@ -498,9 +498,9 @@ def _mint_operation(ctx: WorkspaceContext, declaration: OperationDeclaration) ->
     dispatch is the cost, and is why minting is gated on the declaration rather than
     done for every call.
 
-    **The first of the three clock reads in this module** — counted rather than
-    asserted, because this sentence has now been wrong twice. ``dispatch()`` takes no
-    instant and its callers are HTTP listeners with none to give it, so wall time
+    **The first of the three clock-read call sites in this module** — counted rather
+    than asserted, because this sentence has now been wrong twice. ``dispatch()`` takes
+    no instant and its callers are HTTP listeners with none to give it, so wall time
     enters the system here, the way it already does in ``storage/work_index.py``. The
     three, by the line that makes each read unavoidable:
 
@@ -520,8 +520,14 @@ def _mint_operation(ctx: WorkspaceContext, declaration: OperationDeclaration) ->
     (``_fail_operation``) is exactly the counter-example a wider claim would have
     falsified. It was uncounted before run 0c3's hook was added and stayed uncounted
     when this sentence was rewritten to add one: a stale number replaced by a different
-    stale number. Verify by grepping ``datetime.now(`` in this file rather than reading
-    this list.
+    stale number.
+
+    **Verify by grepping ``datetime.now(`` in this file rather than by reading the list
+    above — and expect FOUR hits for three call sites.** The fourth is this sentence,
+    which contains the pattern it is telling you to search for. Said here because a
+    reader who finds four for a claim of three concludes the count is wrong a third
+    time, which is the exact reaction this paragraph exists to prevent; the count that
+    matters is of call sites, and a text search cannot tell one from a mention of one.
 
     A refusal out of ``open_unit_of_work`` propagates to the caller, which folds it
     into the same refusal outcome an unroutable workspace already produces. Nothing is
