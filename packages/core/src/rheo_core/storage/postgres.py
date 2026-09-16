@@ -158,8 +158,11 @@ class PostgresBackend:
             # ``control_engine`` below is created with ``pool_size =
             # self.pool_max_connections``, so that is the reservation. The pool
             # cannot see it, so if ``control_engine``'s own sizing ever changes,
-            # this argument changes with it or ``worst_case_connections`` quietly
-            # understates the process.
+            # this argument changes with it or ``pooled_connections`` quietly
+            # understates the process. ``_maintenance_engine`` below is deliberately
+            # NOT folded in here: it is a ``NullPool``, bounded by concurrent
+            # maintenance calls rather than by a pool size, so it has no pool-sized
+            # term to add. ``pooled_connections`` names it as an omission instead.
             reserved_connections=pool_max_connections,
         )
         self._maintenance_engine = create_engine(
@@ -261,7 +264,7 @@ class PostgresBackend:
     def max_connections(self) -> int:
         """The cluster's ``max_connections``, read on the maintenance connection.
 
-        The denominator ``rheo doctor`` compares ``pools.worst_case_connections``
+        The denominator ``rheo doctor`` compares ``pools.pooled_connections``
         against. Cluster-wide, and shared with every other process on it.
         """
         with self.maintenance_connection() as connection:

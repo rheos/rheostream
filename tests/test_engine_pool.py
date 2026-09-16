@@ -182,7 +182,7 @@ def test_close_idle_is_callable_without_asking_for_an_engine() -> None:
     assert p.close_idle() == 0
 
 
-def test_worst_case_connections_counts_the_reserved_engine_too() -> None:
+def test_pooled_connections_counts_the_reserved_engine_too() -> None:
     """The arithmetic an operator compares with the cluster's own ``max_connections``.
 
     The shipped defaults are ``cache_size`` 16 and ``pool_max_connections`` 5, and the
@@ -194,14 +194,26 @@ def test_worst_case_connections_counts_the_reserved_engine_too() -> None:
     The reservation is a value the pool is handed, never one it derives: nothing here
     can notice if ``PostgresBackend.control_engine`` is resized and this argument is
     not.
+
+    **The rename is the fix for issue #62's third gap, and the arithmetic is
+    unaffected by it.** The property was ``worst_case_connections`` while two things
+    this process can hold sat outside the sum — the backend's ``NullPool`` maintenance
+    engine, and a connection detached by the count cap's eviction — so it claimed a
+    ceiling it was not. What it counts is the pools, which is what it is now called;
+    the two omissions are named at the property and in ``rheo doctor``'s printed
+    detail.
     """
     p = pool(cache_size=16, reserved_connections=5)
     assert p.cache_size == 16
     assert p.pool_size == 5
     assert p.reserved_connections == 5
-    assert p.worst_case_connections == 85
+    assert p.pooled_connections == 85
     # The reservation is additive, not decorative: drop it and the figure moves.
-    assert pool(cache_size=16, reserved_connections=0).worst_case_connections == 80
+    assert pool(cache_size=16, reserved_connections=0).pooled_connections == 80
+    # The old name claimed a ceiling this figure is not, and must not come back as an
+    # alias beside the new one — two names for one number is how the wrong one
+    # survives a rename.
+    assert not hasattr(p, "worst_case_connections")
 
 
 def test_dispose_all_clears_the_idle_bookkeeping_too() -> None:

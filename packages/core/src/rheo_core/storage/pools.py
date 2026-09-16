@@ -20,6 +20,13 @@ Two bounds, because a pool count is not the scarce resource — connections are:
   outside the cache. Both the core and the worker are separate processes each holding
   their own; ``rheo doctor`` reports the total against the cluster's own
   ``max_connections``.
+
+**That total is the pooled figure and not a ceiling**, which is why it is called
+:attr:`EnginePool.pooled_connections` rather than a worst case. Two things this process
+can hold sit outside it, and both are named at the property and in ``rheo doctor``'s
+own detail rather than left in a comment: the backend's unpooled maintenance engine,
+and a connection still checked out from an engine the count cap evicted, which
+``dispose()`` detaches rather than closes.
 """
 
 import re
@@ -96,13 +103,37 @@ class EnginePool:
         return self._reserved_connections
 
     @property
-    def worst_case_connections(self) -> int:
-        """Connections this process opens if every cached engine fills its pool.
+    def pooled_connections(self) -> int:
+        """Connections this process's **pools** open if every cached engine fills.
 
         ``cache_size * pool_size + reserved_connections``. Reported by ``rheo doctor``
         so an operator can compare it with the cluster's own ``max_connections``,
         remembering that core and worker each hold one. The reservation is a value the
         pool is handed rather than one it derives — see ``reserved_connections``.
+
+        **Named for what it counts, because it is not a ceiling.** It was called
+        ``worst_case_connections`` and claimed to be one (issue #62); two connections
+        this process can hold are outside the arithmetic, and neither is derivable
+        here:
+
+        * ``PostgresBackend._maintenance_engine``, built with ``poolclass=NullPool``.
+          It is bounded by how many maintenance calls run at once rather than by a
+          pool size, so no term of this sum can carry it. Real exposure is small —
+          provisioning, migration and ``rheo doctor`` use it serially — so it is a
+          small unpooled addition rather than an unbounded one, and saying which is
+          the difference between a number an operator can act on and a warning.
+        * a connection still checked out from an engine that was **evicted by the
+          count cap**, or by ``dispose_all``: ``dispose()`` closes idle connections
+          and *detaches* checked-out ones, and a detached connection stays open until
+          its holder returns it, counted by nothing here. The idle sweep no longer
+          reaches this state — ``_expire_idle`` skips an engine in use — but the
+          count cap's own eviction in :meth:`engine_for` does not consult that, and
+          bounding it there would mean either exceeding the cap or refusing a caller,
+          which is a larger decision than this figure.
+
+        ``rheo doctor``'s connection-budget check prints both omissions in its detail
+        string, because an operator comparing this number against ``max_connections``
+        is the one person who needs to know what it leaves out.
         """
         return self._cache_size * self._pool_size + self._reserved_connections
 
