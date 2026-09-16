@@ -124,8 +124,14 @@ def mark_work_due(conn: Connection, workspace_id: UUID, *, at: datetime) -> None
     makes a late mark unable to push work later, and is the monotonicity
     ``record_visit``'s compare-and-set rests on.
 
-    This run ships no caller: the enqueue belongs to the runs that build the work
-    behaviour on top of this schema. A ``workspace_id`` with no registry row violates
+    Its two callers are named rather than deferred, because a sentence about work that
+    does not exist yet goes false the moment it does: ``work.jobs.enqueue``, after its
+    commit, and ``events.publish.mark_due_after_publish``.
+    ``work/loop.py`` and ``operations/dispatch.py`` discuss this function but do not
+    call it — and ``dispatch.py`` says why, at its own module docstring: a
+    ``long_running`` dispatch has no post-commit hook to write the mark with, so its
+    work waits for ``record_visit``'s reconcile floor. A ``workspace_id`` with no
+    registry row violates
     the foreign key and raises ``IntegrityError`` — deliberately untranslated, because
     the only caller that can reach it is one enqueueing into a workspace it just wrote.
     """
@@ -175,8 +181,8 @@ def record_visit(
     workspace: two visitors can both observe the same ``due_at``, both do real work,
     and one write applies while the other no-ops.
 
-    This run ships no caller; the drain that would supply ``next_due_at`` belongs to a
-    later run.
+    Its one caller is ``work.loop.run_one_pass``'s visit, which supplies
+    ``next_due_at`` from the drain.
     """
     if reconcile_seconds < 1:
         raise ValueError("reconcile_seconds must be positive")

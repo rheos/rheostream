@@ -96,9 +96,9 @@ runtimes/                  Replaceable agent execution adapters
 packs/                     Reusable domain packs; freelance software work first
 docs/                      Idea, requirements, and architecture records
 examples/                  Synthetic examples only
-tests/                     Future contract, integration, and acceptance tests
+tests/                     Contract, integration, and acceptance tests
 scripts/                   Repository checks and development tooling
-deploy/                    Future generic deployment templates
+deploy/                    Generic deployment templates; compose topology
 ```
 
 The preferred starting implementation is a modular monolith: logical boundaries

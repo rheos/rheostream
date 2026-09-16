@@ -19,9 +19,11 @@ cannot parse must still arrive as a refusable delivery rather than an unconstruc
 envelope. A consumer that wants the parsed form calls ``RecordRef.parse`` itself and
 decides what a failure there means.
 
-Declared only, and deliberately: nothing in this run writes an outbox row, fans one out
-to consumers, or delivers one. Those belong to the runs that build the durable-work
-behaviour on top of this shape.
+**Declared only, deliberately: this module defines the envelope and performs no I/O.**
+The behaviour is named rather than deferred, because a claim about what does not exist
+yet goes false the moment it does. Writing an outbox row and fanning it out to consumers
+is ``rheo_core.events.publish``; delivering one is ``rheo_core.work.loop`` over
+``rheo_core.storage.deliveries``.
 """
 
 from collections.abc import Mapping
