@@ -11,6 +11,13 @@ Two things the fixture alone cannot pin are asserted against literals here as we
 that editing a fixture entry cannot quietly retire them: the documented OAuth callback
 URL in both modes, and the single-slash join for a surface whose path is the root.
 
+One assertion reads a **deployment file** rather than a fixture — the `base_host` in
+`deploy/compose.yaml`, issue #37. It is here because the property it defends is this
+module's
+(`is_application_host`'s exact compare against an already-stripped host), and because
+that file is the only shipped routing configuration in the tree: nothing else would
+catch it drifting back.
+
 No Postgres. The routing configuration is deployment settings and pure functions.
 """
 
@@ -19,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from rheo_app_core.auth_routes import normalize_host
 from rheo_core.routing import (
     API,
     DOCS,
@@ -37,6 +45,7 @@ from rheo_core.settings import resolve
 
 FIXTURES = Path(__file__).parent / "fixtures" / "routing"
 MODES = ("path", "subdomain")
+COMPOSE = Path(__file__).resolve().parents[1] / "deploy" / "compose.yaml"
 
 
 def read_fixture(name: str) -> Any:
@@ -222,6 +231,70 @@ def test_external_and_reserved_surfaces_refuse(surface: str, mode: str) -> None:
 def test_modules_is_empty_in_this_release() -> None:
     for mode in MODES:
         assert dict(CONFIGS[mode].surfaces.modules) == {}
+
+
+# --- the reference deployment's own base_host (issue #37) ----------------------------
+
+
+def compose_core_environment() -> dict[str, str]:
+    """``deploy/compose.yaml``'s ``core`` service ``environment:`` block, from the file.
+
+    An indentation scan rather than a YAML parse: PyYAML is not a declared dependency
+    of this tree and nothing else in it imports one, so a single assertion would be
+    adding a dependency to read six lines. The scan reads the **real** file — a copy of
+    its literal here would assert only that this module can quote itself.
+    """
+    values: dict[str, str] = {}
+    in_core = in_environment = False
+    for line in COMPOSE.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == 2 and stripped.endswith(":"):
+            in_core = stripped == "core:"
+            in_environment = False
+        elif in_core and indent == 4:
+            in_environment = stripped == "environment:"
+        elif in_core and in_environment and indent == 6 and ":" in stripped:
+            key, _, value = stripped.partition(":")
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def test_the_reference_deployments_base_host_is_port_free() -> None:
+    """Issue #37: `deploy/compose.yaml` set a `base_host` that can never match.
+
+    ``is_application_host`` is an exact compare, and every caller hands it a host it
+    has already stripped the port from (``rheo_app_core.auth_routes.normalize_host``,
+    on the ``Host`` header and on an ``Origin``). So a ``base_host`` spelled with a
+    port matches nothing a browser sends, and ``/auth/*`` refuses every request —
+    which ``deploy/README.md`` states as a rule and the reference config on the
+    adjacent page contradicted.
+
+    The round trip below is the real assertion; the ``":" not in`` check above it is
+    the message an operator wants to read when it fails.
+    """
+    environment = compose_core_environment()
+    # Positive control: a scan that matched nothing would satisfy every assertion
+    # below by never reaching one.
+    assert {"RHEO__routing__mode", "RHEO__routing__scheme"} <= set(environment), (
+        "the compose scan found no core routing keys; the assertions below are vacuous",
+        sorted(environment),
+    )
+    base_host = environment["RHEO__routing__base_host"]
+    assert ":" not in base_host, (
+        f"deploy/compose.yaml sets base_host {base_host!r}, which carries a port; "
+        "normalize_host strips the port before the application-host compare, so this "
+        "value can never match and /auth/* refuses every request (issue #37)"
+    )
+    config = RoutingConfig.model_validate(
+        {**read_fixture("path-mode.json"), "base_host": base_host}
+    )
+    assert is_application_host(config, normalize_host(base_host)), (
+        f"a request arriving at {base_host!r} is not recognised as this application's "
+        "own host"
+    )
 
 
 # --- the settings path ---------------------------------------------------------------
