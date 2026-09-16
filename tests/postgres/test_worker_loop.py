@@ -1359,6 +1359,72 @@ def test_a_pass_opens_only_the_workspaces_the_due_work_index_offers(
     )
 
 
+def test_an_idle_workspace_is_not_opened_again_after_its_own_visit_recorded_it(
+    cluster: ClusterSession,
+    make_workspace: MakeWorkspace,
+    fresh_backend: PostgresBackend,
+    only_workspaces: Callable[..., None],
+    now: datetime,
+) -> None:
+    """Issue #46, tested rather than argued: an idle workspace costs no engine.
+
+    #46 says the worker's per-workspace sweep refreshes every engine on every pass,
+    which would make ``storage.pool_idle_close_seconds`` unreachable. Discovery is the
+    control-plane due-work index — ``work/loop.py:1205`` calls
+    ``workspaces_with_due_work(control, now=now, limit=backend.pools.cache_size)`` — so
+    a workspace the index does not report is never routed to and never gets an engine.
+
+    The timeline is what makes this a test of #46's own claim rather than of the
+    neighbouring AC 14 case: an **absent** index row means due now, so the first pass
+    does visit this workspace, finds nothing, and ``record_visit`` writes it out to the
+    reconcile floor. The second pass is the one the issue is about, and it opens
+    nothing — the due-at it is measured against is the worker's own bookkeeping, not a
+    value this test wrote. Asserted against a **fresh** pool, so ``cached()`` names
+    exactly the databases that second pass opened; the first pass runs on the session's
+    own backend, whose cache already holds every provisioned workspace.
+    """
+    idle = make_workspace()
+    only_workspaces(idle)
+    database = cluster.registry_row(idle).database_name
+
+    first = run_one_pass(
+        kinds=_registry(),
+        consumers=ConsumerRegistry(),
+        backend=cluster.backend,
+        owner=OWNER,
+        now=now,
+        clock=lambda: now,
+        jitter=None,
+        reconcile_seconds=RECONCILE_SECONDS,
+    )
+
+    # Positive control: without this the second pass's "opened nothing" would also be
+    # what a workspace the index never offered at all would produce.
+    assert first.workspaces_visited == 1, "the first pass must reach it"
+    assert first.jobs_acquired == 0, "this workspace was provisioned with no work"
+    due_at = _due_at(cluster, idle)
+    assert due_at is not None and due_at > now, (
+        "the visit must have recorded the workspace forward, or it is still due"
+    )
+
+    second = run_one_pass(
+        kinds=_registry(),
+        consumers=ConsumerRegistry(),
+        backend=fresh_backend,
+        owner=OWNER,
+        now=now,
+        clock=lambda: now,
+        jitter=None,
+        reconcile_seconds=RECONCILE_SECONDS,
+    )
+
+    assert second.workspaces_visited == 0, "the index offered a workspace with no work"
+    assert database not in fresh_backend.pools.cached(), (
+        "an idle workspace's engine was opened, so pool_idle_close_seconds can never "
+        "reclaim it — which is what issue #46 asserts still happens"
+    )
+
+
 # --- AC 15: what each visit writes back to the index ----------------------------------
 
 
