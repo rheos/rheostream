@@ -138,11 +138,12 @@ class OperationDeclaration(BaseModel):
 class ToolDeclaration(BaseModel):
     """What a module tells the MCP facade about one callable tool (C8, run 0b2).
 
-    Minimal by design: only the fields ``apps/mcp/src/rheo_app_mcp/tools.py``
-    actually reads. Guards, streamed output shape and long-running semantics are
-    not declared here — they belong to the transport work in 0c3, and a field
-    with no reader this run is a shape guessed a run early, the same reasoning
-    that kept this type out of C1.
+    Four fields: the three the façade's ``list_tools``/``call_tool`` seam has always
+    read, and ``safety_class``, added by run 0c3 together with the streamable-HTTP
+    transport and the tool registration path that can refuse a declaration missing
+    it. Guards and streamed output shape are still not declared here; each is a
+    shape with no reader yet, which is the same reasoning that kept this whole type
+    out of C1.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -150,6 +151,19 @@ class ToolDeclaration(BaseModel):
     name: str
     """The tool's own name, as a caller of ``call_tool`` names it — distinct
     from ``operation``, which is the registry operation it dispatches to."""
+
+    safety_class: SafetyClass
+    """Required, with no default, exactly as :attr:`OperationDeclaration.safety_class`
+    is. ``rheo_core.tokens.sets.ToolRegistry.register`` refuses a declaration that
+    carries none, naming the tool — which is only reachable through
+    ``model_construct``, since pydantic itself refuses an ordinary construction.
+
+    The ratified contract (``module-contract.md`` § Operations, tools, events) also
+    says this class "must equal the operation's, or registration fails". That second
+    rule is **not** checked here or at tool registration: a tool may be registered
+    before its operation is, and ``harness_get_note``'s operation is registered only
+    under ``profile = test``, so the comparison has nothing to read in the general
+    case. Stated rather than silently dropped."""
 
     operation: str
     """The registered operation name this tool calls (``dispatch(ctx, operation,

@@ -4,6 +4,12 @@ bearer surfaces, and succeeds under an A token, on both surfaces.
 
 0b1 ships only the resolver seam and claims nothing of criterion 7; the HTTP
 and MCP halves are this chunk's.
+
+The fixture registers the tools as well as the operations, because the
+``agent_default`` token minted below expands to the operations named by the
+**registered** tools and run 0c3 made that a registry rather than a module-level
+tuple. Without the call the set is empty and ``core.token.issue`` refuses
+``set_empty`` before either surface is reached.
 """
 
 from uuid import UUID
@@ -26,6 +32,7 @@ from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.core_ops import TOKEN_ISSUE
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import WorkspaceRow
+from rheo_core.tokens.sets import register_core_tools
 
 pytestmark = pytest.mark.postgres
 
@@ -33,6 +40,7 @@ pytestmark = pytest.mark.postgres
 @pytest.fixture(autouse=True)
 def registrations() -> None:
     register_core_operations()
+    register_core_tools()
     register_harness()
 
 

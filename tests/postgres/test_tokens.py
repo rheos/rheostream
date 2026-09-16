@@ -10,8 +10,14 @@ present-refuses path), the operator-role authorization on both operations (a
 the real, ``context_for_operator`` -> ``registry.authorize`` -> ``dispatch``
 path for each, not a bypassing handler call), the "member for self, operator
 for another account" ownership rule on revoke, ``sets.py``'s ``agent_default``
-against its own ``REGISTERED_TOOLS``, and the presentation refusal chain's
+against its own live ``TOOL_REGISTRY``, and the presentation refusal chain's
 exact order.
+
+``agent_default`` reads the tool registry rather than a module-level tuple, so
+the fixture below registers the tools as well as the operations. Without that
+call the set is empty and every assertion about it passes vacuously — which is
+why it sits beside ``register_core_operations()`` rather than inside the one
+test that reads it.
 """
 
 import hashlib
@@ -62,7 +68,7 @@ from rheo_core.tokens.issue import (
     SET_SELECTION_INVALID,
 )
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
-from rheo_core.tokens.sets import agent_default, cli_full
+from rheo_core.tokens.sets import agent_default, cli_full, register_core_tools
 from sqlalchemy import func, select, update
 
 pytestmark = pytest.mark.postgres
@@ -99,6 +105,7 @@ it."""
 @pytest.fixture(autouse=True)
 def registrations() -> None:
     register_core_operations()
+    register_core_tools()
     register_harness()
 
 
