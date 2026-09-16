@@ -10,7 +10,12 @@ requires-python = ">=3.12,<3.13"
 # rheo_core.operations and rheo_core.tokens (plus rheo_contracts), still
 # denying rheo_core.storage, rheo_core.migrations and any DB driver, so
 # criterion 20 stays meaningful rather than vacuous.
-dependencies = ["rheo-contracts", "rheo-core"]
+# The ``mcp`` SDK is this distribution's own dependency and no other's: it is the
+# wire protocol the streamable-HTTP transport in ``transport.py`` speaks, and
+# nothing in ``packages/core`` or the other apps imports it. Declared here rather
+# than in the root's dev group so a deployment that installs only this app gets a
+# working façade.
+dependencies = ["rheo-contracts", "rheo-core", "mcp>=1.2"]
 
 [tool.uv.sources]
 rheo-contracts = { workspace = true }
