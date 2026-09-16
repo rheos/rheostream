@@ -248,17 +248,20 @@ def _schedule_note(
     in the job: the job's own transaction is where its note is written, and a DDL
     statement in there would be a second thing to roll back on a retry.
 
-    **The job this queues is not marked due, so a worker will not see it until the
-    reconcile floor comes round** — ``work.due_reconcile_seconds``, 900 s by default.
-    ``work.jobs.enqueue`` marks the workspace due immediately after committing; a
-    handler cannot, because it runs inside the dispatcher's transaction against a
-    workspace connection and ``mark_work_due`` writes the *control* database, and
-    ``dispatch()`` has no post-commit hook to do it afterwards. That is a property of
-    the seam and not of this handler, so **anything copying this pattern inherits a
-    start delay of up to fifteen minutes**; ``operations/dispatch.py``'s module
-    docstring carries the same statement and what closing it would take. The tests
-    here are unaffected because they call ``visit_workspace`` directly rather than
-    going through ``run_one_pass``'s due-work index.
+    **This handler does not mark the job due, and does not have to: the dispatcher
+    does it after the commit.** A handler cannot mark it — this one runs inside the
+    dispatcher's transaction against a *workspace* connection, and ``mark_work_due``
+    writes the *control* database — so ``dispatch()`` calls
+    ``_mark_workspace_due(ctx)`` on the ``long_running`` success path, once the work
+    transaction has committed. Anything copying this pattern inherits that, which is
+    the point of the fix living at the seam rather than here: the queued job is
+    discovered on the very next worker pass. Until run 0c3 there was no such hook and
+    the job waited for ``record_visit``'s floor — ``work.due_reconcile_seconds``,
+    900 s by default — so a handler written from this pattern carried a start delay of
+    up to fifteen minutes. ``operations/dispatch.py``'s module docstring carries the
+    mechanism. The tests here are unaffected either way, because they call
+    ``visit_workspace`` directly rather than going through ``run_one_pass``'s due-work
+    index.
     """
     ensure_note_table(uow.connection)
     operation_id = uow.operation_id if isinstance(uow, HandlerUnitOfWork) else None

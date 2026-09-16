@@ -126,11 +126,13 @@ def mark_work_due(conn: Connection, workspace_id: UUID, *, at: datetime) -> None
 
     Its two callers are named rather than deferred, because a sentence about work that
     does not exist yet goes false the moment it does: ``work.jobs.enqueue``, after its
-    commit, and ``events.publish.mark_due_after_publish``.
-    ``work/loop.py`` and ``operations/dispatch.py`` discuss this function but do not
-    call it — and ``dispatch.py`` says why, at its own module docstring: a
-    ``long_running`` dispatch has no post-commit hook to write the mark with, so its
-    work waits for ``record_visit``'s reconcile floor. A ``workspace_id`` with no
+    commit, and ``events.publish.mark_due_after_publish``. The second of those now has
+    a caller of its own — ``operations/dispatch.py``'s ``_mark_workspace_due``, on the
+    ``long_running`` success path, past the commit — so a long-running dispatch reaches
+    this function one hop out rather than not at all. It did not before run 0c3, and
+    such work waited for ``record_visit``'s reconcile floor; ``dispatch.py``'s module
+    docstring carries that history. ``work/loop.py`` still discusses this function
+    without calling it. A ``workspace_id`` with no
     registry row violates
     the foreign key and raises ``IntegrityError`` — deliberately untranslated, because
     the only caller that can reach it is one enqueueing into a workspace it just wrote.

@@ -778,17 +778,19 @@ one this row attacks.
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/operations/dispatch.py b/packages/core/src/rheo_core/operations/dispatch.py
-index 7856a37..0be4d0e 100644
+index 06b125f..26abc94 100644
 --- a/packages/core/src/rheo_core/operations/dispatch.py
 +++ b/packages/core/src/rheo_core/operations/dispatch.py
-@@ -876,5 +876,5 @@ def dispatch(
-     # ``succeeded`` here would claim the work was done at the moment it was merely
-     # scheduled.
+@@ -934,5 +934,5 @@ def dispatch(
+     # committed; every path that did not raised or returned inside the block above.
      if operation_id is not None:
+         _mark_workspace_due(ctx)
 -        return OperationOutcome(PENDING, result=output, operation_id=operation_id)
 +        return OperationOutcome(PENDING, result=output, operation_id=None)
      return OperationOutcome(SUCCEEDED, result=output)
 ```
+
+The hunk above was recaptured at C3, which is why it is younger than the rest of this row: C3's own `dispatch.py` change added a post-commit due-work call on this exact branch, moving the context lines so the originally captured hunk no longer passed `git apply --check`. The mutation is the same one (0c2's M13c) and `Cost` below was re-verified under the recaptured hunk, not carried over.
 
 **Cost:**
 - `pytest:tests/postgres/test_operation_records.py::test_the_minted_id_is_readable_while_the_work_is_still_pending` — first observed failure line: `E       AssertionError: OperationOutcome(state='pending', result=NoteScheduled(job_id=UUID('01a0ab4b-7801-75ed-834f-15a76c9463a2'), operation_id=UUID('01a0ab4b-77f0-7372-8606-f13ddb70769e')), error=None, operation_id=None)`, then `E       assert None is not None` (the UUIDs are per-run).
