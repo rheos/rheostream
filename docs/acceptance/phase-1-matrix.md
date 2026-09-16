@@ -11,6 +11,15 @@ The eleven rows below (criteria 1-10 and 22) are the re-verification of what run
 0b built and claimed. Every one of their mutations was applied to a real working tree, run,
 observed red, and reverted on 2026-09-16.
 
+The eight rows for criteria 11-17 and 69 come after criterion 22 rather than before it,
+because rows are written in the order the chunks reach them and nothing in this document
+depends on sequence. They are the settled ones: five built by runs 0c1 and 0c2 and by the
+settings work, one half built, and two that cannot be built against this tree at all. Each of
+their five `complete` rows carries a mutation freshly applied to this working tree on
+2026-09-16, watched go red, and reverted; none is transcribed from the archived run's own
+demonstration. Criteria 15, 16 and 17 name run 0c4 in their own row text rather than here,
+because a reader who lands on one row is not reading this paragraph.
+
 ---
 
 ### Criterion 1
@@ -625,16 +634,6 @@ means the both-modes assertions are not sleeping.
 
 ---
 
-The eight rows below (criteria 11-17 and 69) are the settled ones: five already built by runs
-0c1 and 0c2 and by the settings work, one that is half built, and two that cannot be built
-against this tree at all. Each of the five `complete` rows carries a mutation freshly applied
-to this working tree on 2026-09-16, watched go red, and reverted — none of them is a
-transcription of the archived run's own demonstration. Criteria 15, 16 and 17 name run 0c4 in
-their own row text rather than in this paragraph, because a reader who lands on one row is not
-reading this one.
-
----
-
 ### Criterion 11
 
 **Text:** "A state change and its outgoing event commit in one transaction. A test that kills the process between commit and delivery, then restarts, observes the event delivered exactly once to the deduplicating test consumer, which records processed identifiers." (`build-plan.md:127-130`)
@@ -791,7 +790,13 @@ index 7856a37..0be4d0e 100644
      return OperationOutcome(SUCCEEDED, result=output)
 ```
 
-**Cost:** `pytest:tests/postgres/test_operation_records.py::test_the_minted_id_is_readable_while_the_work_is_still_pending` — first observed failure line: `E       AssertionError: OperationOutcome(state='pending', result=NoteScheduled(job_id=UUID('01a0ab4b-7801-75ed-834f-15a76c9463a2'), operation_id=UUID('01a0ab4b-77f0-7372-8606-f13ddb70769e')), error=None, operation_id=None)`, then `E       assert None is not None` (both UUIDs are per-run). 11 failed, 12 passed.
+**Cost:**
+- `pytest:tests/postgres/test_operation_records.py::test_the_minted_id_is_readable_while_the_work_is_still_pending` — first observed failure line: `E       AssertionError: OperationOutcome(state='pending', result=NoteScheduled(job_id=UUID('01a0ab4b-7801-75ed-834f-15a76c9463a2'), operation_id=UUID('01a0ab4b-77f0-7372-8606-f13ddb70769e')), error=None, operation_id=None)`, then `E       assert None is not None` (the UUIDs are per-run).
+- `pytest:tests/postgres/test_operation_records.py::test_a_succeeded_job_terminalises_its_record_with_a_terminal_check` — first observed failure line: the same `E       AssertionError: OperationOutcome(state='pending', … operation_id=None)` then `E       assert None is not None`.
+- `pytest:tests/postgres/test_operation_records.py::test_a_failed_job_terminalises_its_record_failed_and_not_succeeded` — first observed failure line: the same pair.
+- `pytest:tests/postgres/test_operation_records.py::test_resolve_clears_an_unresolved_record_to_a_named_outcome_with_a_note` — first observed failure line: the same pair.
+
+11 failed, 12 passed.
 
 **Performed by:** C2 (2026-09-16)
 
@@ -802,6 +807,14 @@ prints the whole outcome: the record **was** minted and its id is sitting right 
 "the identifier was not returned to the caller", not "no record exists" — which is the clause
 the criterion's first sentence actually makes ("returns an operation identifier **before it
 completes**").
+
+**Note on how much independence those four reds actually represent — less than four.** All four
+fail on the *same* line: `assert outcome.operation_id is not None, outcome`, inside the shared
+`_schedule` helper each of them calls to set up its own case. So the hunk is caught once, at one
+assertion, by four tests that all enter through it, and the four `Cost` entries above are four
+sightings of one guard rather than four independent pins. They are recorded because the README's
+rule makes the absence of a cost line a claim that the hunk left a demonstrator alone, and that
+claim would have been false for three of them; they are not recorded as four separate proofs.
 
 **Note on the three demonstrators that stayed green, checked rather than assumed.** Eleven of
 the file's twenty-three tests failed under this hunk and the other twelve were read, not
@@ -849,7 +862,12 @@ index 9296e2f..97e5124 100644
              subject_ref=None if subject_ref is None else subject_ref.format(),
 ```
 
-**Cost:** `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record` — first observed failure line: `E       AssertionError: ['core', 'harness']`, then `E       assert {'core', 'harness'} == {'core.operat...explode', ...}` with all eight operation names listed as extra items in the right set. 13 failed, 10 passed.
+**Cost:**
+- `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record` — first observed failure line: `E       AssertionError: ['core', 'harness']`, then `E       assert {'core', 'harness'} == {'core.operat...explode', ...}` with all eight operation names listed as extra items in the right set.
+- `pytest:tests/postgres/test_audit_dispatch.py::test_the_success_row_names_the_actor_the_entry_and_the_request` — first observed failure line: `E       AssertionError: assert 'core' == 'core.settings.set'`.
+- `pytest:tests/postgres/test_audit_dispatch.py::test_an_operation_above_mutate_is_audited_too` — first observed failure line: `E       AssertionError: assert 'harness' == 'harness.probe.destroy'`.
+
+13 failed, 10 passed.
 
 **Performed by:** C2 (2026-09-16)
 
@@ -860,6 +878,17 @@ module id where the operation name belongs, so every dispatch still produces a r
 still readable through `core.audit.list`, and the eight distinct names collapse to two. The red
 is therefore "the audit record does not identify what happened", which is the failure that would
 be hardest to notice in production: the rows are all there and the count is right.
+
+**Note on what the three reds do and do not span.** They are three different assertions in three
+different tests — a set comparison against `THE_EIGHT`, a single-row column check, and the
+above-`mutate` case — rather than one shared helper seen three times, so this row's `Cost` is
+three independent sightings. The other four listed demonstrators stayed green and were read
+rather than assumed: `test_the_mutating_set_derived_from_the_registry_is_the_declared_eight`
+reads the registry, not the rows; `test_check_audit_paths_names_every_offender` and
+`test_a_missing_sink_refuses_the_call_and_writes_neither_effect_nor_row` are registration- and
+dispatch-time refusals that never reach a sink write; and
+`test_registering_a_non_read_operation_with_no_audit_spec_is_refused` is in another file
+(`test_context_routing.py`) and was not in the run.
 
 **Note on the eight-operation set and where its literal lives.**
 `test_the_mutating_set_derived_from_the_registry_is_the_declared_eight` derives the set from the
@@ -878,10 +907,21 @@ parametrised over the five non-`READ` safety classes written as a literal list. 
 (`packages/core/src/rheo_core/operations/registry.py:206-212`). **That edit was attempted on this
 tree and refused by this session's own permission layer**, which classified deleting the
 registration guard as audit tampering; it was not performed, and no inference about it is
-recorded here. The clause carries a live demonstrator with no mutation performed by C2. The same
-refusal shape is why this row's hunk attacks what the sink writes rather than any of the three
-refusal points 0c2's M14a, M14b and M14c attack (`OperationRegistry.register`,
-`check_audit_paths`, and the missing-sink refusal in `dispatch`).
+recorded here. The clause carries a live demonstrator with no mutation performed by C2.
+
+**Note accounting for all six mutations 0c2's own checkpoint offered, since this row uses none of
+them.** M14a removes the `audit is None` guard in `register` — attempted, refused, above. **M14b**
+(make `check_audit_paths` log instead of raise), **M14c** (drop the missing-sink refusal so the
+operation succeeds with no audit row), **M14e** (drop the non-success audit row entirely) and
+**M14f** (write the row for `MUTATE` only, skipping every class above it) were **not attempted**.
+Each disables an audit write or an audit guard, which is the shape the permission layer refused
+for M14a — but that is a prediction from one refusal, not four observations, and it is written
+here as a prediction. **M14d** (commit the success-path audit row in a transaction separate from
+the operation's) is **not** that shape and was also not attempted: its observable is an orphaned
+audit row after a failed operation, caught by
+`test_an_operation_whose_own_transaction_cannot_commit_leaves_only_a_failed_row` — a test this
+row does not list, and adding a demonstrator so the row can carry a second hunk is wider than one
+row's job. Recorded as a gap rather than as a reason.
 
 ---
 
@@ -948,21 +988,30 @@ because the work is 0c4's, not because the criterion was skipped.
 
 **Mutation:**
 ```diff
-diff --git a/packages/core/src/rheo_core/identity/provider_config.py b/packages/core/src/rheo_core/identity/provider_config.py
-index 0459367..4f466be 100644
---- a/packages/core/src/rheo_core/identity/provider_config.py
-+++ b/packages/core/src/rheo_core/identity/provider_config.py
-@@ -32,6 +32,6 @@ def sync_providers(backend: PostgresBackend, settings: ResolvedSettings) -> None
-             connection,
-             provider_id=GITHUB_PROVIDER_ID,
-             enabled=enabled,
--            client_id=client_id,
-+            client_id=client_secret_ref,
-             client_secret_ref=client_secret_ref,
-         )
+diff --git a/packages/core/src/rheo_core/secrets/store.py b/packages/core/src/rheo_core/secrets/store.py
+index 775a52f..fba35b8 100644
+--- a/packages/core/src/rheo_core/secrets/store.py
++++ b/packages/core/src/rheo_core/secrets/store.py
+@@ -52,11 +52,6 @@ class SecretStore:
+             raise TypeError(
+                 "resolve() requires a SecretScope from SecretStore.scope_for"
+             )
+-        if not scope.permits(ref):
+-            raise SecretRefusal(
+-                SECRET_SCOPE_DENIED,
+-                f"scope {scope.component!r} may not resolve {ref}",
+-            )
+         if ref.backend is SecretBackend.FILE:
+             raw = self._files.read(ref.id)
+         else:
 ```
 
-**Cost:** `pytest:tests/postgres/test_identity.py::test_github_provider_completes_with_the_documented_shape_and_a_scoped_secret` — first observed failure line: `E                   AssertionError: ('identity_provider', 'client_id', 'secret reference leaked into a control-plane row')`, then `E                   assert 'secret://en...LIENT_SECRET' not in 'secret://en...LIENT_SECRET'`. 1 failed, 21 passed across `test_identity.py` and `test_signin_secret_boundary.py` together.
+**Cost:**
+- `pytest:tests/postgres/test_identity.py::test_github_client_secret_is_reachable_only_through_its_own_scope` — first observed failure line: `E       Failed: DID NOT RAISE SecretRefusal`.
+- `pytest:tests/test_secrets.py::test_resolve_with_a_foreign_scope_is_denied` — first observed failure line: `E           Failed: DID NOT RAISE SecretRefusal`.
+
+2 failed, 86 passed across `test_identity.py`, `test_signin_secret_boundary.py` and
+`test_secrets.py` together.
 
 **Performed by:** C2 (2026-09-16)
 
@@ -988,13 +1037,34 @@ needs the client secret is in `tests/postgres/test_identity.py`. Recorded here s
 does not conclude from the filename that the sign-in half is untested, and so a rename of either
 file is caught by chunk 10's guard against this row.
 
-**Note on the mutation's shape.** The criterion forbids "a secret value **nor a reference that
-resolves to one**" from reaching the places it names, and the hunk plants the reference in one
-extra control-plane column. Twenty-one of twenty-two tests stay green, so the red is precisely
-"a reference reached a row that may not hold it" and not a broken sign-in. A hunk that instead
-widened where the resolved *value* travels was considered and not written: this session's
-permission layer refuses edits that move a credential into a new sink, and an unperformed
-mutation is not recorded as a performed one.
+**Note on the mutation's shape, and on the second one that was performed but is not recorded as
+this row's hunk.** The recorded hunk deletes the scope check in `SecretStore.resolve`
+(`packages/core/src/rheo_core/secrets/store.py:55-59`), which is the enforcement behind the
+criterion's **first sentence** — "resolves only inside the component that presents it". With it
+gone, any component's scope resolves any reference, and the two demonstrators above stop raising.
+Eighty-six of eighty-eight tests stay green, so the red is precisely "a foreign scope resolved a
+secret", not a broken sign-in.
+
+A **second** mutation was applied, run and reverted on this row and is described here rather than
+in the `Mutation` block, because one row carries one hunk and this one demonstrates less: in
+`identity/provider_config.py:35`, `client_id=client_id` becomes `client_id=client_secret_ref`,
+planting the `secret://` reference in a control-plane column that may not hold it. It reddens
+`test_github_provider_completes_with_the_documented_shape_and_a_scoped_secret` at
+`E                   AssertionError: ('identity_provider', 'client_id', 'secret reference leaked
+into a control-plane row')`, 1 failed and 21 passed across `test_identity.py` and
+`test_signin_secret_boundary.py`. It attacks the criterion's last clause — "nor a reference that
+resolves to one" — and was the row's recorded hunk until a cold review pointed out that the
+criterion's first sentence had none.
+
+**What still has no mutation, and why that is not a permission story.** The ~26 lines of boundary
+assertions at `test_identity.py:226-252` — the resolved value reaches the token-exchange POST
+body and no other request, URL, header, response or log line — are reddened by neither hunk. A
+mutation for them would widen where the resolved *value* travels, and this session's permission
+layer refuses edits that move a credential into a new sink; that was the stated reason for the
+control-plane substitution, and it was too broad, because it did not cover the scope guard, which
+this session permitted on the first attempt. The narrower true statement: the value-widening
+route is refused here, the scope route is not, and the boundary assertions remain unproven by
+mutation. Recorded, not inferred.
 
 ---
 
@@ -1033,8 +1103,11 @@ index ef7fc4b..ab9a8e0 100644
 - `pytest:tests/test_settings_floor.py::test_read_path_clamps_a_stored_loosening_row` — first observed failure line: `E       AssertionError: assert 60 == 50` (the stored looser row is handed back instead of the deployment's tightened value), both parametrised cases.
 - `pytest:tests/test_settings_floor.py::test_tightened_deployment_value_neutralises_an_older_row` — first observed failure line: `E       assert 90 == 60`.
 - `pytest:tests/postgres/test_settings_floor_e2e.py::test_tightening_the_deployment_value_clamps_an_existing_row_left_in_place` — first observed failure line: `E       AssertionError: assert 60 == 30`.
+- `pytest:tests/postgres/test_settings_floor_e2e.py::test_one_key_at_each_source_resolves_in_precedence_order` — first observed failure line: `E       AssertionError: assert 60 == 30` (the precedence clause: the workspace override no longer lands at its own value under the floor).
 
 10 failed, 40 passed across `test_settings_floor_e2e.py` and `test_settings_floor.py` together.
+Four of the row's six demonstrators went red; the two that stayed green are named in the notes
+below.
 
 **Performed by:** C2 (2026-09-16)
 
@@ -1053,12 +1126,14 @@ aborts the test first. The clamp assertion in isolation is
 first in `Cost` for that reason: its `60 == 50` is the criterion's third clause failing with
 nothing else in front of it.
 
-**Note on the write-time half staying green.**
+**Note on the two demonstrators that stayed green, both read rather than assumed.**
 `test_a_floored_write_looser_than_the_deployment_value_is_refused_naming_the_key` passes under
 this hunk and is listed anyway. The refusal at write time is `is_looser`, a separate function
 this hunk does not touch, so the criterion's two floor clauses are independently enforced rather
 than sharing one comparator — worth knowing, since a single shared helper would have made one
-mutation look like it proved both.
+mutation look like it proved both. `test_refusal_states_are_exactly_the_four_criterion_69_names`
+also passes: it pins the four refusal-state strings and never resolves a value, so no comparator
+change can reach it.
 
 **Note on the parametrisation.** `test_read_path_clamps_a_stored_loosening_row` is parametrised
 over `CASES` (`tests/test_settings_floor.py:70-103`) and `test_comparators` over a literal list
