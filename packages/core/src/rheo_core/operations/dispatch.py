@@ -498,15 +498,30 @@ def _mint_operation(ctx: WorkspaceContext, declaration: OperationDeclaration) ->
     dispatch is the cost, and is why minting is gated on the declaration rather than
     done for every call.
 
-    **One of the two clock reads in this module**, and the first. ``dispatch()`` takes
-    no instant and its callers are HTTP listeners with none to give it, so wall time
+    **The first of the three clock reads in this module** — counted rather than
+    asserted, because this sentence has now been wrong twice. ``dispatch()`` takes no
+    instant and its callers are HTTP listeners with none to give it, so wall time
     enters the system here, the way it already does in ``storage/work_index.py``. The
-    second is :func:`_mark_workspace_due`'s, and it has to be its own read rather than
-    this value passed forward: it stamps the moment the work *became discoverable*,
-    which is after the work transaction committed and an unbounded handler after this
-    row was written. Everything else downstream of this row — the worker's terminal
-    write, the terminal check — takes its instant from a caller, so the discipline the
-    repositories keep is unaffected.
+    three, by the line that makes each read unavoidable:
+
+    - **here**, for the ``pending`` row's ``created_at``;
+    - :func:`_fail_operation`'s, for a minted record's terminal instant. It is a
+      *separate* read and not this value passed forward, for the same reason as the
+      third: it runs after the handler, whose duration is unbounded;
+    - :func:`_mark_workspace_due`'s, stamping the moment the work became
+      *discoverable* — after the work transaction committed, and again an unbounded
+      handler after this row was written.
+
+    **Two of the three postdate an unbounded handler, which is why none of them can be
+    derived from another.** What takes its instant from a caller is everything in
+    *other* modules that touches these rows — the worker's terminal write and the
+    terminal check — so the discipline the repositories keep is unaffected; the claim
+    is about them and is scoped to them, because this module's own terminal write
+    (``_fail_operation``) is exactly the counter-example a wider claim would have
+    falsified. It was uncounted before run 0c3's hook was added and stayed uncounted
+    when this sentence was rewritten to add one: a stale number replaced by a different
+    stale number. Verify by grepping ``datetime.now(`` in this file rather than reading
+    this list.
 
     A refusal out of ``open_unit_of_work`` propagates to the caller, which folds it
     into the same refusal outcome an unroutable workspace already produces. Nothing is
@@ -554,6 +569,25 @@ def _mark_workspace_due(ctx: WorkspaceContext) -> None:
     already-accepted loss ``mark_due_after_publish``'s own docstring describes for a
     crash in this exact window. Logged for the same reason :func:`_audit_alone` and
     :func:`_fail_operation` log rather than raise.
+
+    **It can block, and the ceiling is 30 seconds — named here because this is the
+    line a reader reaches it from.** ``mark_due_after_publish`` opens a transaction on
+    ``PostgresBackend.control_engine``, which is built ``pool_size =
+    storage.pool_max_connections`` (5 on the defaults) with ``max_overflow = 0``
+    (``storage/postgres.py``). No ``pool_timeout`` is passed, so SQLAlchemy's
+    ``QueuePool`` default of 30.0 s applies: with all five control connections checked
+    out, this call waits up to that long before raising ``TimeoutError``, which the
+    ``except`` below then swallows into a log line. The dispatch has already committed
+    at that point, so the risk is **latency on an answered call**, never a lost effect
+    — but half a minute is worth knowing about on a hot path.
+
+    **Not fixed with a shorter timeout here, deliberately.** ``pool_timeout`` is set
+    when the engine is created, not at checkout, so lowering it would change the
+    waiting behaviour of *every* control-plane caller — ``work.jobs.enqueue``'s own
+    mark, ``record_visit``, the worker's index read — to suit this one call site. That
+    is a control-plane tuning decision with its own settings key, not a line this
+    function gets to make on everyone's behalf. Contention is on the enqueue side under
+    load, which ``storage/work_index.py``'s module docstring already states.
     """
     try:
         mark_due_after_publish(ctx.workspace_id, at=datetime.now(UTC))

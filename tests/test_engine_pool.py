@@ -31,6 +31,7 @@ import pytest
 from conftest import ClusterSession
 from rheo_core.storage import pools as pools_module
 from rheo_core.storage.pools import EnginePool, check_database_name
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 CLUSTER = make_url("postgresql+psycopg://rheo:secret@localhost:5432/postgres")
@@ -168,6 +169,64 @@ def test_an_engine_with_a_connection_checked_out_survives_the_idle_sweep(
         time.sleep(0.05)
         assert p.close_idle() == 2
         assert p.cached() == ()
+    finally:
+        p.dispose_all()
+
+
+@pytest.mark.postgres
+def test_the_count_cap_evicts_an_in_use_engine_and_detaches_its_connection(
+    cluster: ClusterSession,
+) -> None:
+    """The boundary of the guard above, pinned rather than left as a caveat.
+
+    ``_expire_idle`` skips an engine with a connection checked out. The **count cap**
+    in ``engine_for`` does not consult that: past the cap it pops the
+    least-recently-used engine and disposes it whether or not someone is holding a
+    connection, and ``dispose()`` detaches rather than closes that connection — so the
+    server-side connection outlives every count this class reports. That is exactly
+    what ``pooled_connections``' docstring names as its second omission and what
+    ``rheo doctor`` prints.
+
+    **Declared-and-untested is how a known hole becomes an unknown one**, so this
+    asserts the behaviour as it is rather than as anyone would like it. Bounding the
+    cap would mean either exceeding it or refusing a caller, which is a larger
+    decision than this figure; whoever takes it has to change this test, which is the
+    point of it existing.
+
+    ``idle_close_seconds`` is far away, so nothing here can be expired by idleness and
+    the eviction can only be the cap — the isolation
+    ``test_an_untouched_engine_is_gone_after_the_idle_window`` uses in reverse.
+    """
+    held = cluster.control_database
+    p = EnginePool(
+        cluster.backend.pools.cluster_url,
+        cache_size=1,
+        pool_size=5,
+        idle_close_seconds=300.0,
+        reserved_connections=0,
+    )
+    try:
+        engine = p.engine_for(held)
+        connection = engine.connect()
+        try:
+            assert engine.pool.checkedout() == 1, "the connection is not actually held"
+            # The idle sweep protects it — the guard the case above pins.
+            assert p.close_idle() == 0
+            assert p.cached() == (held,)
+
+            # The cap does not. One more database is one past ``cache_size=1``.
+            p.engine_for(MAINTENANCE_DATABASE)
+
+            assert held not in p.cached(), (
+                "the count cap no longer evicts an in-use engine; if that is "
+                "deliberate, pooled_connections' second omission and rheo doctor's "
+                "printed detail both have to change with it"
+            )
+            # Detached rather than closed: still live, still holding a server
+            # connection that nothing in this class counts any more.
+            assert connection.execute(text("SELECT 1")).scalar_one() == 1
+        finally:
+            connection.close()
     finally:
         p.dispose_all()
 

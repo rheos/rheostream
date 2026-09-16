@@ -298,6 +298,15 @@ def test_migrate_and_doctor_return_zero(
         "storage.pool_max_connections",
     ):
         assert lever in budget, (lever, budget)
+    # ...and what the arithmetic does NOT count, which is the whole of issue #62. The
+    # figure was called ``worst_case_connections`` while two connections a process can
+    # hold sat outside it: the unpooled maintenance engine, and a connection detached
+    # by the count cap's eviction. Renaming it ``pooled_connections`` makes the name
+    # honest; only this assertion stops the omissions being dropped from the line an
+    # operator actually reads, which would leave the honest name attached to a number
+    # still presented as complete. Both were deletable with the suite green until now.
+    for omission in ("maintenance engine", "count cap evicted", "detaches"):
+        assert omission in budget, (omission, budget)
 
     # The reconcile interval, AC 18's resolved-settings half. Asserted on the line's
     # content, not merely that a line printed: a check naming neither key would leave
