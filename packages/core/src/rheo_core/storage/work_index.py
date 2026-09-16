@@ -124,8 +124,10 @@ def mark_work_due(conn: Connection, workspace_id: UUID, *, at: datetime) -> None
     makes a late mark unable to push work later, and is the monotonicity
     ``record_visit``'s compare-and-set rests on.
 
-    This run ships no caller: the enqueue belongs to the runs that build the work
-    behaviour on top of this schema. A ``workspace_id`` with no registry row violates
+    Callers are named rather than deferred, because a sentence about work that does
+    not exist yet goes false the moment it does: ``work/jobs.py``'s enqueue,
+    ``work/loop.py``, ``events/publish.py`` and ``operations/dispatch.py`` all reach
+    this. A ``workspace_id`` with no registry row violates
     the foreign key and raises ``IntegrityError`` — deliberately untranslated, because
     the only caller that can reach it is one enqueueing into a workspace it just wrote.
     """
@@ -175,8 +177,8 @@ def record_visit(
     workspace: two visitors can both observe the same ``due_at``, both do real work,
     and one write applies while the other no-ops.
 
-    This run ships no caller; the drain that would supply ``next_due_at`` belongs to a
-    later run.
+    Its callers are ``work/loop.py``, which supplies ``next_due_at`` from the drain,
+    and ``operations/dispatch.py``.
     """
     if reconcile_seconds < 1:
         raise ValueError("reconcile_seconds must be positive")

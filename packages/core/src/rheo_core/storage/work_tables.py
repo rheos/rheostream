@@ -11,11 +11,18 @@ revision and ``core_tables.py`` state it is never edited again. Attaching these 
 and edit a frozen revision by side effect. One ``MetaData`` per revision keeps every
 ``create_all`` exact: ``0002_durable_work`` creates exactly the seven below.
 
-**Schema only, deliberately.** Nothing here runs. The outbox writer and its fan-out,
-delivery, the job lease, the retry budget, cancellation, the operation record's
-lifecycle beyond this DDL, and the audit write belong to the runs that build the
-durable-work behaviour on top of this shape. ``lease_owner``, ``lease_until``,
-``cancel_requested`` and ``attempts`` are columns here and nothing more.
+**Schema only, deliberately.** This module defines DDL and executes none of it:
+``lease_owner``, ``lease_until``, ``cancel_requested`` and ``attempts`` are columns
+here and nothing more.
+
+The behaviour over this shape lives elsewhere, and is named rather than deferred
+because a sentence about what does not exist yet goes false the moment it does. The
+job lease is ``work/jobs.py``'s ``acquire_lease``; the retry budget is
+``work/backoff.py`` with ``work/loop.py``; cancellation is ``cancel_requested``'s
+checkpoint in ``work/loop.py``; the outbox writer and its fan-out are
+``events/publish.py``; delivery is ``work/loop.py`` with ``storage/deliveries.py``;
+the operation record's lifecycle beyond this DDL is ``operations/dispatch.py``; and
+the audit write is ``audit/`` reached from that same dispatcher.
 """
 
 from typing import Final
