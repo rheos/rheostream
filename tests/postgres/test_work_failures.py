@@ -1,4 +1,5 @@
-"""AC 9: ``core.work.failures`` through ``dispatch``, against a real Postgres.
+"""AC 9 and AC 10: ``core.work.failures`` through ``dispatch``, against a real
+Postgres — the failed jobs, and the failed deliveries beside them.
 
 Seam: the registered operation itself — ``context_for_operator`` /
 ``context_for_harness`` -> ``registry.authorize`` -> ``dispatch`` -> the handler ->
@@ -7,11 +8,13 @@ and never a ``SELECT`` written here: AC 9's own words are "through ``dispatch``,
 by querying the table", so a test that read ``core.job`` itself would prove the
 repository (C1 already does that) and nothing about the operation.
 
-**No worker loop runs.** This chunk depends on ``01`` alone. A job is put into
-``failed`` the way the repository does it — ``enqueue``, ``acquire_lease``,
-``finish_failed`` — because ``finish_failed`` is predicated on a live lease held by
-the calling owner, so the lease is a step of the setup rather than a worker being
-started.
+**No worker loop runs.** A job is put into ``failed`` the way the repository does it
+— ``enqueue``, ``acquire_lease``, ``finish_failed`` — because ``finish_failed`` is
+predicated on a live lease held by the calling owner, so the lease is a step of the
+setup rather than a worker being started. A delivery is put into ``failed`` the same
+way, through ``publish``, ``lease_delivery`` and ``fail_delivery``: this file is
+about the **read**, and the drain that exhausts a real budget is
+``tests/postgres/test_event_delivery.py``'s.
 
 **Time is chosen, never slept**, matching ``test_job_repository.py``: every ``now``
 is a parameter, anchored to the wall clock only because ``enqueue``'s control-plane
@@ -30,8 +33,16 @@ from uuid import UUID
 import pytest
 from conftest import ClusterSession
 from harness.registry import add_member
-from rheo_contracts import Role, WorkspaceContext
+from rheo_contracts import EventEnvelope, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
+from rheo_core.events import (
+    ConsumerRegistry,
+    ConsumerSubscription,
+    NewEvent,
+    fail_delivery,
+    lease_delivery,
+    publish,
+)
 from rheo_core.operations import (
     INPUT_INVALID,
     ROLE_NOT_PERMITTED,
@@ -39,6 +50,8 @@ from rheo_core.operations import (
     dispatch,
     register_core_operations,
 )
+from rheo_core.storage.backend import HandlerUnitOfWork
+from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.jobs import acquire_lease, enqueue, finish_failed
 from rheo_core.work.operations import FailureList
 from sqlalchemy import Engine
@@ -48,6 +61,30 @@ pytestmark = pytest.mark.postgres
 KIND = "harness.job"
 OWNER = "worker-a"
 LEASE = 60
+EVENT_TYPE = "harness.note.written"
+CONSUMER = "core.recorder"
+
+
+def _never_called(uow: HandlerUnitOfWork, envelope: EventEnvelope) -> None:
+    """No delivery is drained in this file; the handler is never entered."""
+
+
+def _consumers() -> ConsumerRegistry:
+    """One consumer, owned by the reserved core segment so the fan-out reaches it
+    without a module having to be enabled — this file proves the *read*, and the
+    enabled-module half of the fan-out is ``tests/postgres/test_outbox.py``'s.
+    """
+    registry = ConsumerRegistry()
+    registry.register(
+        ConsumerSubscription(
+            consumer_id=CONSUMER,
+            event_type=EVENT_TYPE,
+            module_id="core",
+            replay_safe=True,
+            handler=_never_called,
+        )
+    )
+    return registry
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +123,46 @@ def _fail(
     with engine.begin() as conn:
         assert finish_failed(conn, job_id=job_id, owner=OWNER, now=at, error=error)
     return job_id
+
+
+def _fail_delivery_of(
+    ctx: WorkspaceContext, engine: Engine, *, at: datetime, error: str, subject: str
+) -> UUID:
+    """One published event whose single delivery is driven to ``failed`` through the
+    repository's own functions.
+
+    Published and failed one at a time, so the unqualified ``lease_delivery`` below
+    has exactly one candidate to take and the test never depends on which row it
+    would otherwise have picked.
+    """
+    with open_unit_of_work(ctx) as uow:
+        event_id = publish(
+            ctx,
+            uow,
+            NewEvent(
+                type=EVENT_TYPE,
+                schema_version=1,
+                subject_ref=subject,
+                subject_revision=1,
+                data={"note": error},
+            ),
+            now=at,
+            consumers=_consumers(),
+        )
+        uow.commit()
+    with engine.begin() as conn:
+        leased = lease_delivery(conn, owner=OWNER, now=at, lease_seconds=LEASE)
+    assert leased is not None and leased.event_id == event_id
+    with engine.begin() as conn:
+        assert fail_delivery(
+            conn,
+            event_id=event_id,
+            consumer_id=CONSUMER,
+            owner=OWNER,
+            now=at,
+            error=error,
+        )
+    return event_id
 
 
 def _listing(ctx: WorkspaceContext, **payload: object) -> FailureList:
@@ -219,3 +296,86 @@ def test_an_extra_payload_key_is_ignored_and_the_context_decides(
     listing = _listing(ctx, workspace_id="not-consulted")
 
     assert [job.job_id for job in listing.jobs] == [job_id]
+
+
+# --- AC 10: the deliveries collection, beside the jobs one ----------------------------
+
+
+def test_the_failed_deliveries_come_back_beside_the_failed_jobs(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """AC 10: ``deliveries`` is a second collection on the same response, and adding it
+    left ``jobs`` exactly as it was.
+
+    Both collections are asserted in one call because "beside" is the claim: a
+    delivery that displaced the job list, or a job list that swallowed the deliveries,
+    would satisfy either assertion alone. The pending delivery is the control — a
+    delivery that has not failed must not appear, or "the failed deliveries" is really
+    "the deliveries".
+    """
+    job_id = _fail(workspace, engine, at=now, error="the job failed")
+    ctx = context_for_operator(workspace)
+    assert isinstance(ctx, WorkspaceContext)
+    event_id = _fail_delivery_of(
+        ctx, engine, at=now, error="the delivery failed", subject="harness.note:one"
+    )
+    with open_unit_of_work(ctx) as uow:
+        publish(
+            ctx,
+            uow,
+            NewEvent(
+                type=EVENT_TYPE,
+                schema_version=1,
+                subject_ref="harness.note:two",
+                subject_revision=1,
+                data={"note": "still pending"},
+            ),
+            now=now,
+            consumers=_consumers(),
+        )
+        uow.commit()
+
+    listing = _listing(ctx)
+
+    assert [job.job_id for job in listing.jobs] == [job_id]
+    assert [job.last_error for job in listing.jobs] == ["the job failed"]
+
+    assert [delivery.event_id for delivery in listing.deliveries] == [event_id]
+    delivery = listing.deliveries[0]
+    assert delivery.consumer_id == CONSUMER
+    assert delivery.attempts == 1
+    assert delivery.last_error == "the delivery failed"
+    assert delivery.completed_at == now
+
+
+def test_the_limit_caps_the_deliveries_newest_first(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """The ``deliveries`` collection is ordered and capped on its own terms, by the
+    same ``limit`` the jobs collection uses.
+
+    ``limit`` bounds each collection rather than their sum: a burst of failed jobs must
+    not be able to push every failed delivery out of the answer.
+    """
+    ctx = context_for_operator(workspace)
+    assert isinstance(ctx, WorkspaceContext)
+    older = _fail_delivery_of(
+        ctx,
+        engine,
+        at=now - timedelta(hours=1),
+        error="first",
+        subject="harness.note:one",
+    )
+    newest = _fail_delivery_of(
+        ctx, engine, at=now, error="second", subject="harness.note:two"
+    )
+    _fail(workspace, engine, at=now, error="a job, to spend the jobs budget")
+
+    assert [delivery.event_id for delivery in _listing(ctx, limit=1).deliveries] == [
+        newest
+    ]
+    assert [delivery.event_id for delivery in _listing(ctx, limit=50).deliveries] == [
+        newest,
+        older,
+    ]
+    assert len(_listing(ctx, limit=1).jobs) == 1, "the limit bounds each collection"

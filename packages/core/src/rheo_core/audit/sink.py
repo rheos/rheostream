@@ -1,18 +1,21 @@
 """The audit seam's contract: an ``AuditSink`` protocol, and a table of installed
 sinks **keyed by owning module id**.
 
-**Nothing calls a sink.** Issue #45 split run 0v's audit seam and this file is the
-half that stays: the protocol and the registry are substrate, and the caller — where
-the call sits in a transaction, what a missing registration means, whether a
-registration is mandatory at all — is 0c2's to build against this contract. A module
-supplies its writer through ``ModuleManifest.audit_sink`` at load time, and until 0c2
-that writer is never reached. Nothing here writes a core table either; the audit
-table itself is 0c's.
+**The dispatcher is the one caller.** Issue #45 split run 0v's audit seam and this
+file is the half that stayed while the call site — where the call sits in a
+transaction, what a missing registration means, whether a registration is mandatory at
+all — was 0c2's to build against this contract. Run 0c2 has built it:
+``rheo_core.operations.dispatch`` resolves a sink by the operation's owning module and
+calls :meth:`AuditSink.record` on every non-``READ`` outcome it can write a row for,
+and a module supplying its writer through ``ModuleManifest.audit_sink`` at load time
+is now reached. Nothing in *this module* writes a table; ``core.audit_record`` is
+written by ``rheo_core.audit.core_sink`` through the repository beside it.
 
-**Why a table and not one global slot.** Every core mutate operation already declares
-``AuditSpec(subject_field=None)`` (``operations/core_ops.py``: ``core.settings.set``,
-``core.settings.set_member``, ``core.token.issue``, ``core.token.revoke``). A single
-installed sink fired on ``declaration.audit is not None`` alone would be module-blind:
+**Why a table and not one global slot.** Every core mutate operation declares an
+``AuditSpec`` (``operations/core_ops.py``; enumerating them here was a list that went
+stale the first time a run added one, so the claim is left scoped to the module that
+owns them). A single installed sink fired on ``declaration.audit is not None`` alone
+would be module-blind:
 a module's sink would fire on ``core.token.issue`` in a workspace that module was
 never installed into, and its INSERT would raise against a schema that is not there.
 Ownership is recoverable because the *registry* records it
@@ -21,19 +24,29 @@ it is running and then asks for that module's sink. A module supplies a **writer
 never supplies the condition. Run 0v's findings note carries the underlying gap — that
 an ``AuditSpec`` names what to record but not who records it — as F19.
 
-**``record``'s parameters are the minimum, not a finished shape.** ``record(ctx, uow,
-*, operation, subject_ref)`` carries who and where, what ran, and what it was about.
-An outcome state, an idempotency key, a timestamp — anything the real audit record
-turns out to need — is 0c2's to add against a real requirement rather than guessed at
-here. The ``uow`` is the parameter that matters most: a sink writes in the caller's
+**``record``'s parameters were the minimum, and 0c2 added the four the real row
+needs.** The shipped five were ``record(ctx, uow, *, operation, subject_ref)``, and
+this file's own instruction was that "an outcome state, an idempotency key, a
+timestamp — anything the real audit record turns out to need — is 0c2's to add against
+a real requirement rather than guessed at here". Three of the four additions are
+forced by a NOT NULL column of ``core.audit_record`` (``outcome``, ``safety_class``,
+``request_digest`` — ``storage/work_tables.py``) and the fourth, ``operation_id``, is
+nullable but exists as a foreign key to ``core.operation.id`` precisely to be used.
+None was guessed at, and no idempotency key was added because nothing asked for one.
+
+The ``uow`` is still the parameter that matters most: a sink writes in the caller's
 transaction, so the caller hands it the **real** ``UnitOfWork`` and not a handler's
-sealed view.
+sealed view. On the success path that transaction is the operation's own, which is
+what makes a mutation and its audit row inseparable; on a non-success path the caller
+opens a short transaction of its own and hands that in.
 """
 
 from typing import Final, Protocol
+from uuid import UUID
 
-from rheo_contracts import RecordRef, WorkspaceContext
+from rheo_contracts import RecordRef, SafetyClass, WorkspaceContext
 
+from rheo_core.audit.records import AuditOutcome
 from rheo_core.storage.backend import UnitOfWork
 
 
@@ -56,7 +69,13 @@ class AuditSinkRefused(Exception):
 
 
 class AuditSink(Protocol):
-    """What a module supplies so its audit row can be written."""
+    """What a module supplies so its audit row can be written.
+
+    ``safety_class`` is the enum rather than its string so a caller cannot hand over
+    a spelling the ``audit_record`` DDL does not hold, and ``outcome`` is the
+    three-member :data:`~rheo_core.audit.records.AuditOutcome` for the same reason;
+    both are widened to a column value by the sink, not by the caller.
+    """
 
     def record(
         self,
@@ -64,7 +83,11 @@ class AuditSink(Protocol):
         uow: UnitOfWork,
         *,
         operation: str,
+        safety_class: SafetyClass,
         subject_ref: RecordRef | None,
+        request_digest: bytes,
+        outcome: AuditOutcome,
+        operation_id: UUID | None,
     ) -> None: ...
 
 
@@ -98,9 +121,12 @@ def sink_for(module_id: str) -> AuditSink | None:
     """The sink installed for ``module_id``, or ``None`` if it has none.
 
     ``None`` rather than a no-op object, deliberately: a lookup that answers ``None``
-    pre-decides nothing about what a *missing registration* means. Whether that is a
-    silent skip, a refusal, or a startup-time requirement is one of the cases 0c2 is
-    scored on, and returning a fabricated no-op here would answer it for them.
+    pre-decides nothing about what a *missing registration* means. Run 0c2 answered
+    it, and answered it at the **caller** rather than here — a missing registration is
+    fatal at three layers (registration refuses a non-``READ`` declaration with no
+    ``AuditSpec``; ``check_audit_paths`` refuses startup; the dispatcher refuses the
+    call ``audit_sink_missing``) — so this function still returns ``None`` and a
+    fabricated no-op here would still be the one answer that is wrong.
     """
     return _SINKS.get(module_id)
 

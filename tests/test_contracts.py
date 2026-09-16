@@ -265,6 +265,27 @@ def test_operation_declaration_defaults_match_the_module_contract() -> None:
     )
     assert decl.roles == frozenset({Role.OWNER, Role.MEMBER})
     assert decl.audit is None
+    # Default ``False``, which is what makes the field additive: every declaration
+    # shipped before run 0c2 mints no operation record and needed no edit.
+    assert decl.long_running is False
     assert "handler" not in OperationDeclaration.model_fields
     with pytest.raises(ValidationError):
         decl.name = "core.workspace.other"
+
+
+def test_long_running_is_declarable_and_frozen() -> None:
+    """The field the dispatcher's minting is gated on, asserted where the rest of
+    the declaration's shape is."""
+    decl = OperationDeclaration(
+        name="harness.note.schedule",
+        safety_class=SafetyClass.MUTATE,
+        input_model=_Input,
+        output=_Output,
+        idempotency=Idempotency.NONE,
+        audit=AuditSpec(subject_field=None),
+        long_running=True,
+    )
+    assert decl.long_running is True
+    assert "long_running" in OperationDeclaration.model_fields
+    with pytest.raises(ValidationError):
+        decl.long_running = False

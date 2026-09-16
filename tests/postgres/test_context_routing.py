@@ -4,7 +4,9 @@ authenticated context and from nothing a caller supplies.
 - ``route()`` and ``open_unit_of_work()`` accept exactly one parameter (introspection).
 - Registering an operation whose input model declares any name in
   ``RESERVED_INPUT_FIELDS`` — by field name or by alias, ``actor_id`` included — is
-  refused naming the field; so is ``extra = "allow"``.
+  refused naming the field; so is ``extra = "allow"``; and so is a declaration above
+  the read class carrying no ``AuditSpec`` (AC 21, criterion 14's declaration layer,
+  which lives in this file because ``register`` is what enforces it).
 - A ``dispatch`` whose payload carries ``workspace_id``, ``database``, ``dsn``,
   ``connection_string`` and ``schema`` values naming workspace B lands its write in
   workspace A (the context's) and leaves B unchanged; the resolver seam then finds
@@ -42,7 +44,13 @@ from harness.registry import (
 )
 from harness.settings_keys import HARNESS_MEMBER
 from pydantic import BaseModel, ConfigDict
-from rheo_contracts import RESERVED_INPUT_FIELDS, RecordRef, Role, WorkspaceContext
+from rheo_contracts import (
+    RESERVED_INPUT_FIELDS,
+    RecordRef,
+    Role,
+    SafetyClass,
+    WorkspaceContext,
+)
 from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.operations import (
     FAILED,
@@ -162,6 +170,66 @@ def test_registering_a_reserved_input_field_is_refused_naming_it(
         assert excinfo.value.operation_name == name
         assert field_name in excinfo.value.detail, (model, excinfo.value.detail)
         assert name not in registry
+
+
+@pytest.mark.parametrize(
+    "safety_class",
+    [
+        SafetyClass.DRAFT,
+        SafetyClass.MUTATE,
+        SafetyClass.DESTRUCTIVE,
+        SafetyClass.EXTERNAL,
+        SafetyClass.FINANCIAL,
+    ],
+)
+def test_registering_a_non_read_operation_with_no_audit_spec_is_refused(
+    safety_class: SafetyClass,
+) -> None:
+    """AC 21 (criterion 14's declaration layer): an operation above the read class
+    cannot be registered without an ``AuditSpec``, and the refusal names it.
+
+    **Every non-``READ`` member, not only ``MUTATE``.** ``SafetyClass`` is an unordered
+    ``StrEnum``, so "above read" is ``is not SafetyClass.READ`` — there is no ordering
+    to compare against — and a rule written as ``is SafetyClass.MUTATE`` would let a
+    ``destructive`` or ``financial`` declaration through unaudited while every shipped
+    operation, all of which are ``mutate``, kept passing. No operation in the tree
+    carries one of the three classes above ``mutate`` yet, which is exactly why the
+    parametrisation is here rather than left to the first run that declares one.
+
+    A ``READ`` declaration with ``audit = None`` still registers — the case below — so
+    the rule is pinned in both directions: a refusal widened to every class would break
+    ``core.workspace.status`` and the rest of the read roster.
+    """
+    registry = OperationRegistry()
+    name = "harness.probe.unaudited"
+    declaration = probe_declaration(name, NoteWriteInput).model_copy(
+        update={"safety_class": safety_class, "audit": None}
+    )
+
+    with pytest.raises(RegistrationRefused) as excinfo:
+        registry.register(declaration, probe_handler, origin=TEST_HARNESS_ORIGIN)
+
+    assert excinfo.value.operation_name == name
+    assert "audit" in excinfo.value.detail, excinfo.value.detail
+    assert safety_class.value in excinfo.value.detail, excinfo.value.detail
+    assert name not in registry
+
+
+def test_registering_a_read_operation_with_no_audit_spec_still_works() -> None:
+    """AC 21's other direction: ``audit = None`` stays legal at the read class.
+
+    Driven through the same private registry and the same probe declaration, so the
+    only difference from the cases above is the safety class itself.
+    """
+    registry = OperationRegistry()
+    name = "harness.probe.readonly"
+    declaration = probe_declaration(name, NoteWriteInput).model_copy(
+        update={"safety_class": SafetyClass.READ, "audit": None}
+    )
+
+    registry.register(declaration, probe_handler, origin=TEST_HARNESS_ORIGIN)
+
+    assert name in registry
 
 
 def test_registering_an_input_model_that_allows_extra_keys_is_refused() -> None:

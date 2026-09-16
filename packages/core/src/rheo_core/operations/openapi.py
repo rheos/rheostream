@@ -25,10 +25,12 @@ without depending on ``apps/core``; the schemas are pure pydantic
 (``model_json_schema(ref_template="#/components/schemas/{model}")``) and the
 document is a plain ``dict`` the caller serialises.
 
-The literal ``operation_id`` below is the envelope's own always-null field, the
-same pre-declared occurrence ``api_routes.py``'s docstring already sanctions:
-nothing here mints an id, and no ``operation`` record exists to mint one from
-until run 0c.
+The envelope's ``operation_id`` below is a **nullable uuid**, not the always-null
+field it was before run 0c2. ``dispatch()`` mints a ``core.operation`` row for a
+declaration carrying ``long_running = True`` and puts its id in the envelope; every
+other operation — which is every operation registered in release one — still answers
+``null``, so the document has to describe both. Nothing in *this* module mints
+anything; what changed is the contract it describes.
 """
 
 from typing import Any, Final
@@ -97,15 +99,17 @@ def _envelope_schema(result_ref: str) -> Schema:
     output model at ``result``.
 
     The same three keys ``api_routes.envelope`` builds and the internal operations
-    route answers with. ``operation_id`` is typed ``null``: nothing mints one in
-    release one.
+    route answers with. ``operation_id`` is a **nullable uuid**: run 0c2's dispatcher
+    mints one for a declaration carrying ``long_running = True`` and none for any
+    other, so a generated client must be able to read both a uuid and ``null`` there.
+    Every operation registered in release one still answers ``null``.
     """
     return {
         "type": "object",
         "title": "OperationEnvelope",
         "properties": {
             "state": {"type": "string"},
-            "operation_id": {"type": "null"},
+            "operation_id": {"type": ["string", "null"], "format": "uuid"},
             "result": {"$ref": result_ref},
             "error": {
                 "type": "object",

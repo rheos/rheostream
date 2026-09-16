@@ -3,23 +3,41 @@
 - ``registry.py`` — ``OperationRegistry.register(decl, handler, *, origin)`` and
   ``authorize(ctx, name) -> Authorized | Refusal``; the process-wide ``REGISTRY``.
 - ``dispatch.py`` — ``dispatch(ctx, name, payload) -> OperationOutcome``: the
-  ``context_required`` check, ``authorize``, input validation, one unit of work
-  through ``route(ctx)``, the handler under a sealed ``HandlerUnitOfWork``, the
-  owning module's audit sink, commit. No audit table, no operation record, no
-  outbox (run 0c's).
+  ``context_required`` check, ``authorize``, the owning module's audit sink, input
+  validation, the ``core.operation`` mint for a ``long_running`` declaration, one unit
+  of work through ``route(ctx)``, the handler under a sealed ``HandlerUnitOfWork``, the
+  ``core.audit_record`` row, commit. No outbox write here.
+- ``audit_paths.py`` — ``check_audit_paths(registry)``: the startup refusal for a
+  registered operation above the read class whose module has no installed sink. It
+  lives here rather than under ``rheo_core.audit`` because it reads a registry and that
+  package may not import this one. **It is the one module below that this file does not
+  re-export**, and deliberately: ``audit_paths`` sorts before ``core_ops``, so importing
+  it here would make it this file's first statement, and ``core_ops``, ``operation_ops``
+  and ``work/operations`` each document their import-direction constraint by naming
+  ``core_ops`` as that first statement. Its one caller is ``apps/core``'s startup, which
+  imports it by module path.
+- ``records.py`` — the ``core.operation`` repository: the mint, the terminal writes
+  the worker makes, the unresolved marker and its clearing, and the two reads.
+- ``operation_ops.py`` — ``core.operation.get`` / ``.list`` / ``.resolve``: their
+  models and handlers, beside that repository. Their declarations are in
+  ``core_ops.py``.
 - ``refusals.py`` — the state names, ``RegistrationRefused``, ``OperationRefused``,
   and the re-exported ``handler_may_not_commit`` (declared in ``storage.backend``,
   beside the ``HandlerUnitOfWork`` that raises it).
-- ``core_ops.py`` — ``core.workspace.status``, ``core.settings.set``,
-  ``core.settings.set_member``, ``core.work.failures`` (whose models and
-  handler live in ``rheo_core.work.operations``, beside the repository they
-  read), and ``register_core_operations()``.
+- ``core_ops.py`` — every core declaration and ``register_core_operations()``:
+  ``core.workspace.status``, ``core.settings.set``, ``core.settings.set_member``,
+  ``core.work.failures`` (whose models and handler live in
+  ``rheo_core.work.operations``, beside the repository they read), the three
+  ``core.operation`` operations, ``core.audit.list`` (whose models and handler live in
+  ``rheo_core.audit.operations``, for the same reason), and the two token operations
+  built inside the function. It also installs the core's own ``AuditSink``.
 - ``openapi.py`` — ``build_document(registry)``: the OpenAPI 3.1 document the web
   tier's generated client is built from, one path per registered operation. Pure
   pydantic, no FastAPI, so ``apps/cli`` can emit it without ``apps/core``.
 """
 
 from rheo_core.operations.core_ops import (
+    AUDIT_LIST,
     SETTINGS_SET,
     SETTINGS_SET_MEMBER,
     WORK_FAILURES,
@@ -31,6 +49,7 @@ from rheo_core.operations.core_ops import (
     register_core_operations,
 )
 from rheo_core.operations.dispatch import (
+    AUDIT_SINK_MISSING,
     OperationError,
     OperationOutcome,
     dispatch,
@@ -40,6 +59,20 @@ from rheo_core.operations.openapi import (
     OPERATION_PATH_PREFIX,
     build_document,
     operation_path,
+)
+from rheo_core.operations.operation_ops import (
+    OPERATION_GET,
+    OPERATION_LIST,
+    OPERATION_RESOLVE,
+    OPERATION_STATE,
+    OperationList,
+    OperationListInput,
+    OperationRecord,
+    OperationRef,
+    OperationResolveInput,
+)
+from rheo_core.operations.records import (
+    PENDING,
 )
 from rheo_core.operations.refusals import (
     AUTHORIZATION_STATES,
@@ -72,6 +105,8 @@ from rheo_core.operations.registry import (
 )
 
 __all__ = [
+    "AUDIT_LIST",
+    "AUDIT_SINK_MISSING",
     "AUTHORIZATION_STATES",
     "CORE_MODULE_ID",
     "FAILED",
@@ -81,10 +116,15 @@ __all__ = [
     "HARNESS_MODULE_ID",
     "INPUT_INVALID",
     "MODULE_DISABLED",
+    "OPERATION_GET",
+    "OPERATION_LIST",
     "OPERATION_NOT_PERMITTED",
     "OPERATION_PATH_PREFIX",
+    "OPERATION_RESOLVE",
+    "OPERATION_STATE",
     "OPERATION_UNKNOWN",
     "OUTPUT_INVALID",
+    "PENDING",
     "REGISTRY",
     "ROLE_NOT_PERMITTED",
     "SETTINGS_SET",
@@ -95,9 +135,14 @@ __all__ = [
     "Authorized",
     "Handler",
     "OperationError",
+    "OperationList",
+    "OperationListInput",
     "OperationOutcome",
+    "OperationRecord",
+    "OperationRef",
     "OperationRefused",
     "OperationRegistry",
+    "OperationResolveInput",
     "RegisteredOperation",
     "RegistrationRefused",
     "SettingWrite",

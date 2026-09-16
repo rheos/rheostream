@@ -1,15 +1,40 @@
-"""The audit seam's contract: the ``AuditSink`` protocol, and the table of installed
-sinks keyed by owning module id.
+"""The audit seam: the ``AuditSink`` protocol, the table of installed sinks keyed by
+owning module id, the core's own sink, the ``core.audit_record`` repository, and
+``core.audit.list``'s models and handler.
 
-Nothing here writes anything, and nothing here is called: no audit *table* lives in
-this package (``core.audit_record`` is run 0c's) and no caller reaches a sink, which
-is issue #45's split — the protocol and the registry are substrate, the call site is
-0c2's. A module id with no registration is reported as ``sink_for`` returning
-``None``, not as a default object standing in for one. See ``sink.py`` for why the
-installed sinks are keyed by module id rather than held in one process-global slot,
-and for what that ``None`` deliberately leaves undecided.
+**The dispatcher reaches a sink, and a module id with no registration still answers
+``None``.** Issue #45's split left the protocol and the registry here as substrate and
+the call site to run 0c2; 0c2 built it in ``rheo_core.operations.dispatch``, which
+resolves ``sink_for(module_id)`` for every non-``READ`` operation and refuses
+``audit_sink_missing`` when the answer is ``None`` — a refusal rather than a default
+object standing in for a registration, which is the one answer #45 removed. See
+``sink.py`` for why the installed sinks are keyed by module id rather than held in one
+process-global slot.
+
+**Nothing in this package imports ``rheo_core.operations``**, and that is structural
+rather than tidy: ``operations/__init__.py`` imports ``core_ops`` as its first
+statement and ``dispatch.py`` imports this package, so an import back would close a
+real cycle. It is why ``check_audit_paths`` — which has to read a registry — lives
+under ``rheo_core/operations/`` and not here.
 """
 
+from rheo_core.audit.core_sink import CORE_AUDIT_SINK, CoreAuditSink
+from rheo_core.audit.operations import (
+    AUDIT_LIST,
+    AuditList,
+    AuditListInput,
+    AuditRecord,
+    audit_list_handler,
+)
+from rheo_core.audit.records import (
+    AUDIT_FAILED,
+    AUDIT_REFUSED,
+    AUDIT_SUCCEEDED,
+    AuditOutcome,
+    AuditRow,
+    insert_audit_record,
+    list_audit_records,
+)
 from rheo_core.audit.sink import (
     AuditSink,
     AuditSinkRefused,
@@ -19,9 +44,23 @@ from rheo_core.audit.sink import (
 )
 
 __all__ = [
+    "AUDIT_FAILED",
+    "AUDIT_LIST",
+    "AUDIT_REFUSED",
+    "AUDIT_SUCCEEDED",
+    "CORE_AUDIT_SINK",
+    "AuditList",
+    "AuditListInput",
+    "AuditOutcome",
+    "AuditRecord",
+    "AuditRow",
     "AuditSink",
     "AuditSinkRefused",
+    "CoreAuditSink",
+    "audit_list_handler",
+    "insert_audit_record",
     "install_sink",
+    "list_audit_records",
     "reset_sinks",
     "sink_for",
 ]

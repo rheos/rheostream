@@ -170,8 +170,19 @@ class HandlerUnitOfWork(UnitOfWork):
     nothing to ``dir(UnitOfWork)``, leaves every existing ``uow: UnitOfWork``
     annotation compiling (``core_ops.py``, ``tokens/issue.py``, ``resolve_in`` and
     the test harness need no edit), and reaches the four private slots only because
-    it lives in the module that declares them. ``__slots__ = ()``: it adds none of
-    its own.
+    it lives in the module that declares them. ``__slots__ = ("_operation_id",)``:
+    it adds exactly one of its own, read through the :attr:`operation_id` property,
+    and that slot is **not** a change to ``UnitOfWork``'s pinned surface — the guard
+    reads ``dir(UnitOfWork)`` and ``UnitOfWork.__slots__``, neither of which a
+    subclass's own slot appears in.
+
+    **What the one slot is for.** ``dispatch()`` mints a ``core.operation`` record
+    before it opens the work transaction for a ``long_running`` declaration, and the
+    handler has to learn that id to stamp it on the job it enqueues. Carrying it on
+    the view the handler already receives is what keeps the ``(ctx, uow, input)``
+    handler signature unchanged — and therefore every registered handler, and every
+    test that builds one, unedited. It is ``None`` for every other dispatch and for
+    every view the worker loop constructs.
 
     **The seal is over those three names and claims no more.** ``connection`` is
     inherited and still returns a live SQLAlchemy ``Connection``, so
@@ -184,14 +195,20 @@ class HandlerUnitOfWork(UnitOfWork):
     the connection.
     """
 
-    __slots__ = ()
+    __slots__ = ("_operation_id",)
 
-    def __init__(self, uow: UnitOfWork) -> None:
+    def __init__(self, uow: UnitOfWork, *, operation_id: UUID | None = None) -> None:
         """Share an already-entered unit of work's connection and transaction.
 
         Not ``(engine, expected_database)``: the view never opens anything, it
-        borrows what the dispatcher already opened. The four assignments are the
-        parent's own slots, reachable here because this class sits in that module.
+        borrows what the dispatcher already opened. The first four assignments are
+        the parent's own slots, reachable here because this class sits in that
+        module; the fifth is this subclass's own, and is the minted
+        ``core.operation`` id or ``None``.
+
+        ``operation_id`` is keyword-only with a ``None`` default, so every
+        construction site that does not have one — ``loop.py``'s two, and every test
+        that builds a view directly — needs no edit.
         """
         if not isinstance(uow, UnitOfWork):
             raise TypeError("HandlerUnitOfWork wraps a UnitOfWork")
@@ -199,6 +216,18 @@ class HandlerUnitOfWork(UnitOfWork):
         self._expected_database = uow._expected_database
         self._connection = uow._connection
         self._transaction = uow._transaction
+        self._operation_id = operation_id
+
+    @property
+    def operation_id(self) -> UUID | None:
+        """The ``core.operation`` record this handler's work belongs to, or ``None``.
+
+        Read-only: a handler learns the id, it does not choose one. Non-``None``
+        only for a declaration marked ``long_running``, whose handler is expected to
+        pass it to ``work.jobs.enqueue_job`` so the worker can terminalise the
+        record when the job finishes.
+        """
+        return self._operation_id
 
     def __enter__(self) -> Self:
         raise StorageRefusal(

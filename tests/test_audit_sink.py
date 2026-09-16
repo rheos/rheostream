@@ -1,26 +1,37 @@
-"""AC 11: the module-keyed sink registry is substrate, and nothing calls a sink.
+"""AC 11: the module-keyed sink registry is substrate, and the dispatcher is its one
+caller.
 
 Seams under test: ``install_sink``/``sink_for``/``reset_sinks``'s module keying — a
 sink installed under one module id is never returned for another; installing the same
 sink twice is a no-op while a *different* sink under a taken key is refused; a nameless
 key and a writerless sink are both refused; and a module id with no registration
-resolves to ``None`` rather than to a default object.
+resolves to ``None`` rather than to a default object. Plus the **shape of the seam**:
+the audit module names the dispatcher nowhere, and exactly one module in the shipped
+tree calls a sink.
 
-Issue #45 split run 0v's audit seam. This registry and the ``AuditSink`` protocol are
-the half that stays; the dispatcher's call site, its subject-reference resolution and
-its missing-registration fallback are the half 0c2 is scored on building, and they are
-gone. So no test here drives ``dispatch()``, and
-``test_the_audit_module_does_not_import_the_dispatcher`` pins the other direction: the
-audit module names the dispatcher nowhere.
+Issue #45 split run 0v's audit seam. This registry and the ``AuditSink`` protocol were
+the half that stayed; the call site, its subject-reference resolution and what a
+missing registration means were the half 0c2 is scored on building, and 0c2's C5 built
+them. So the structural half of the coverage #45 removed is restored here, as
+:func:`test_exactly_one_module_in_the_tree_calls_a_sink` — the direct inverse of the
+zero-callers probe that stood in for criterion 14 until the behaviour landed, and the
+assertion this file's own predecessor made before the split.
 
-**What this file deliberately does NOT cover.** That *nothing in the tree* calls a sink
-is C8's ``test_dispatch_calls_no_audit_sink``, which walks ``packages/``, ``apps/`` and
-``modules/`` and asserts zero ``.record(`` callers where this file's predecessor
-asserted exactly one. ``tests/`` is not one of those three roots and must not become
-one: an AST scan matching ``Call(func=Attribute(attr="record"))`` matches by attribute
-name and cannot see the receiver's type, and ``ClusterSession.record(...)`` — the test
-cluster's own database bookkeeping — has six call sites under ``tests/``
-(``tests/conftest.py``, ``tests/postgres/test_provisioning.py`` three times,
+**What this file covers structurally and what it does not cover at all.** The
+*behaviour* of that call site — the row inside the operation's transaction on success,
+exactly one row per dispatch, a refusal row after the rollback, the missing-sink
+refusal — is driven against a real workspace database in
+``tests/postgres/test_audit_dispatch.py``. It cannot live here: every test in this file
+runs without the ``postgres`` marker, and its own autouse fixture empties the
+process-wide sink table around each test, which is the opposite of what a dispatch
+needs. The two files are one pair — this one pins where the call site is, that one
+pins what it does.
+
+``tests/`` is not a fourth scan root and must not become one: an AST scan matching
+``Call(func=Attribute(attr="record"))`` matches by attribute name and cannot see the
+receiver's type, and ``ClusterSession.record(...)`` — the test cluster's own database
+bookkeeping — has six call sites under ``tests/`` (``tests/conftest.py``,
+``tests/postgres/test_provisioning.py`` three times,
 ``tests/postgres/test_migrations.py``, ``tests/postgres/test_cli.py``), five of them in
 files this run may not edit. Three roots is the shipped scope, not a narrowing.
 """
@@ -28,10 +39,12 @@ files this run may not edit. Three roots is the shipped scope, not a narrowing.
 import ast
 from collections.abc import Iterator
 from pathlib import Path
+from uuid import UUID
 
 import pytest
-from rheo_contracts import RecordRef, WorkspaceContext
+from rheo_contracts import RecordRef, SafetyClass, WorkspaceContext
 from rheo_core.audit import (
+    AuditOutcome,
     AuditSinkRefused,
     install_sink,
     reset_sinks,
@@ -42,13 +55,27 @@ from rheo_core.storage.backend import UnitOfWork
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
+SCAN_ROOTS = ("packages", "apps", "modules")
+"""The three roots a boundary scan covers; see the module docstring for why ``tests``
+is not a fourth."""
+
+THE_ONE_CALLER = "packages/core/src/rheo_core/operations/dispatch.py"
+"""The single module allowed to call a sink, as a repository-relative path."""
+
 OTHER_MODULE_ID = "other"
 """A plain string. All this file needs is *a module id that is not* ``core``; no
 module of this name is installed, and the registry never asks whether one exists."""
 
 
 class RecordingSink:
-    """Remembers what it was handed, and nothing else."""
+    """Remembers what it was handed, and nothing else.
+
+    The signature is the widened protocol's (§ D7): ``record`` gained ``safety_class``,
+    ``request_digest``, ``outcome`` and ``operation_id`` in 0c2, three of them forced by
+    a NOT NULL column of ``core.audit_record``. The three tests below that construct
+    this class never call ``record``, so their assertions are unchanged — only this
+    class's method signature moved.
+    """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, RecordRef | None]] = []
@@ -59,7 +86,11 @@ class RecordingSink:
         uow: UnitOfWork,
         *,
         operation: str,
+        safety_class: SafetyClass,
         subject_ref: RecordRef | None,
+        request_digest: bytes,
+        outcome: AuditOutcome,
+        operation_id: UUID | None,
     ) -> None:
         self.calls.append((operation, subject_ref))
 
@@ -80,7 +111,8 @@ def test_sink_for_is_none_until_one_is_installed() -> None:
 
     The mutant this kills is a ``_SINKS.get(module_id, SOME_DEFAULT)``: a default
     object would decide, here in the substrate, that a missing registration is a
-    silent skip — which is one of the cases 0c2 is scored on deciding for itself.
+    silent skip — which was one of the cases 0c2 was scored on deciding for itself,
+    and it decided the opposite, at the caller, in three layers.
     """
     assert sink_for(CORE_MODULE_ID) is None
     assert sink_for(OTHER_MODULE_ID) is None
@@ -126,7 +158,9 @@ def test_the_audit_module_does_not_import_the_dispatcher() -> None:
     #45's split the dependency runs one way — a caller reaches for the registry, and
     the registry reaches for nothing — so an import of
     ``rheo_core.operations.dispatch`` there, or a deferred one inside a function,
-    would put a call site back into the substrate 0c2 is scored on building.
+    would put a call site back into the substrate. That direction is what lets
+    ``check_audit_paths`` live under ``rheo_core/operations/`` and the call site in
+    ``dispatch.py``, with this package importing neither.
 
     Both halves are checked: the import statements by name, and every ``Name``/
     ``Attribute`` node, which is what a deferred ``importlib`` route or a plain call
@@ -156,3 +190,45 @@ def test_the_audit_module_does_not_import_the_dispatcher() -> None:
 
     assert [name for name in imported if "dispatch" in name] == [], imported
     assert "dispatch" not in referenced, sorted(referenced)
+
+
+def test_exactly_one_module_in_the_tree_calls_a_sink() -> None:
+    """One caller, and it is the dispatcher — the structural half of issue #45's split.
+
+    This file's predecessor asserted exactly one ``.record(`` caller; the split removed
+    the call site and the assertion became "zero", standing in for criterion 14 as
+    ``test_dispatch_calls_no_audit_sink`` until C5 landed the behaviour. This is that
+    assertion put back the right way up, and it is not decoration: the whole design
+    rests on a module being unable to write its own audit row, which is only true while
+    the call lives at exactly one place a reader can find.
+
+    **Asserted as a set of files, not as a count of calls.** ``dispatch.py`` makes three
+    (the in-transaction success write and the short-transaction write, both through one
+    helper, plus the helper's own call), and pinning that number would fail the next
+    time an exit is added or two are folded together — which says nothing about the
+    property. What matters is that no *second* module joins.
+
+    ``Call(func=Attribute(attr="record"))`` matches by attribute name and cannot see the
+    receiver's type, so a same-named method on some other object would show up here as a
+    false positive. That is the right way round for this assertion: it fails loudly and
+    is read, where a scan narrowed to the real type would need to resolve types and
+    would quietly stop matching the day the call moved behind an alias.
+    """
+    callers: set[str] = set()
+    parsed = 0
+    for root in SCAN_ROOTS:
+        for path in sorted((_REPO_ROOT / root).rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            parsed += 1
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "record"
+                ):
+                    callers.add(path.relative_to(_REPO_ROOT).as_posix())
+
+    # Positive control: the walk really parsed a tree of modules. A scan over a
+    # mistyped root would otherwise report "no second caller" having read nothing.
+    assert parsed > 50, parsed
+    assert callers == {THE_ONE_CALLER}, sorted(callers)

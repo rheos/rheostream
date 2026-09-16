@@ -1,16 +1,25 @@
 """AC 13 and AC 22: what this run deliberately did **not** build, asserted so that
 each claim fails for its own reason.
 
-This module is the instrument the scored 0c1/0c2 trials are measured with. Three probes
-stand in for benchmark criteria 11, 13 and 14 — the behaviours those cohorts are
-scored on building — and a fourth is this run's own deletion-completeness check over the
-0v spike. Criterion 12 is no longer among them: its absence probe was removed in the
-same commit that landed the worker loop it denied, and criterion 12's **presence** is
-defended by ``tests/postgres/test_worker_loop.py`` instead. Every one of them runs
+This module is the instrument the scored 0c1/0c2 trials are measured with. **No
+criterion probe is left**: the only assertion here now is this run's own
+deletion-completeness check over the 0v spike, plus the two self-checks that keep the
+instrument honest. Four criteria left by the same route, each in the commit that landed
+the behaviour it denied — criterion 14's went with audit dispatch, and its presence is
+defended end to end by ``tests/postgres/test_audit_dispatch.py`` and by the
+registration refusal in ``tests/postgres/test_context_routing.py``.
+Criterion 12's probe went with the worker loop,
+and criterion 12's **presence** is defended by ``tests/postgres/test_worker_loop.py``
+instead; criterion 11's went with the delivery drain, and its presence is defended end
+to end by ``tests/postgres/test_event_delivery.py``; criterion 13's went with the
+operation record, and its presence is defended by
+``tests/postgres/test_operation_records.py`` and by the two operation cases in
+``tests/postgres/test_worker_loop.py``. Every one of the four ran
 through a helper in ``harness.absence`` that cannot be
 called without a **positive control**, so a probe that passes because the module name
-was misspelled, or because the path it searched does not exist, is not expressible
-here. Run 0v's F52 was that second shape exactly.
+was misspelled, or because the path it searched does not exist, was not expressible
+here. Run 0v's F52 was that second shape exactly, and the AC 22 check below still runs
+through the same helper.
 
 **Read a probe and its control as one pair.** The control runs the same mechanism over
 the same resolved target, looking for something genuinely there. A misdirected probe
@@ -19,9 +28,10 @@ therefore fails its control rather than passing empty, and
 load-bearing by making each one fail on purpose.
 
 **The probe names are fixed by AC 13**, which pins both the function names and the
-``{probe: covers}`` map :func:`test_every_criterion_is_covered` asserts. A
-differently-named probe that is otherwise identical fails that criterion exactly as
-surely as a missing one, so none of these four may be renamed for house-style reasons.
+``{probe: covers}`` map :func:`test_every_criterion_is_covered` asserts — now a map of
+one, the AC 22 census, with the int partition empty. A differently-named probe that is
+otherwise identical fails that criterion exactly as surely as a missing one, so
+:func:`test_no_spike_remains` may not be renamed for house-style reasons either.
 """
 
 import subprocess
@@ -40,14 +50,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 #: replaces already used (``tests/test_audit_sink.py``'s predecessor, deleted by this
 #: run's chunk 03), not a narrowing.
 SCAN_ROOTS = ("packages", "apps", "modules")
-
-#: Criterion 13's subject, assembled rather than written out. The operation name is one
-#: of this run's twelve cut-symbol guard tokens, and the guard substring-matches those
-#: tokens over raw ``git diff`` text; ``docs/notes/0c0-substrate-boundary.md`` is the
-#: one file declared to carry them. Writing the literal here would put a token in a
-#: second file and fire the guard on this run's own diff. The probe still searches for
-#: the whole name — only the source text is split.
-OPERATION_LIFECYCLE_OPERATION = "core.operation." + "resolve"
 
 #: AC 22's survivor set: every tracked file that still matches a bare case-insensitive
 #: ``spike`` once the 0v spike is deleted, each with the reason its hit is legitimate.
@@ -87,89 +89,6 @@ def _tracked_files() -> set[str]:
         check=True,
     )
     return {line for line in result.stdout.splitlines() if line}
-
-
-def _tracked_under(*roots: str) -> list[str]:
-    """Tracked files under ``roots``, which is what "a code path" means here.
-
-    A bare directory walk would also read whatever build output happens to be on the
-    machine — ``apps/web/.next``, a ``tsbuildinfo`` — so the set of files searched
-    would differ between a developer's tree and CI's fresh checkout. An instrument
-    whose scope varies by machine is the failure this module exists to prevent, so the
-    subject is the tracked tree, which is identical everywhere.
-    """
-    prefixes = tuple(f"{root}/" for root in roots)
-    return sorted(path for path in _tracked_files() if path.startswith(prefixes))
-
-
-# --- the three criterion probes -------------------------------------------------------
-
-
-def test_no_outbox_delivery_exists() -> None:
-    """Criterion 11: ``rheo_core.work`` holds the tables and none of the delivery.
-
-    The package is a docstring and nothing else after this run — no callable, no
-    non-dunder attribute at all — so the control cannot be an attribute lookup: on a
-    module with no real attribute the only thing available is a dunder every module
-    carries regardless of its content, which passes identically whether or not the
-    right module was resolved. The control is instead a module-specific literal the
-    docstring is required to carry, checked by the same text search the absence is.
-    """
-    absent_token(
-        paths=["packages/core/src/rheo_core/work/__init__.py"],
-        missing="flush_outbox",
-        present="storage/work_tables.py",
-        covers=11,
-    )
-
-
-def test_no_operation_lifecycle_exists() -> None:
-    """Criterion 13: the operation record has its DDL and none of its lifecycle.
-
-    The subject is an operation *name*, which lives in the registry as a string
-    literal rather than as an identifier, so this is a text search and not an AST one.
-    The control is a real registered core operation name — the same shape of needle,
-    found by the same mechanism over the same files.
-    """
-    absent_token(
-        paths=_tracked_under(*SCAN_ROOTS),
-        missing=OPERATION_LIFECYCLE_OPERATION,
-        present="core.workspace.status",
-        covers=13,
-    )
-
-
-def test_dispatch_calls_no_audit_sink() -> None:
-    """Criterion 14: the audit protocol and registry stay; nothing calls a sink.
-
-    Issue #45 split run 0v's audit seam. ``sink_for`` is still defined and exported —
-    that half is substrate — so only a **call** counts, which is why this runs through
-    the AST helper rather than a grep: a docstring or an ``__all__`` entry naming
-    ``sink_for`` is not a crossing, and a call to it is.
-
-    This closes a window this run measured. Chunk 03 removed the live
-    ``sink_for(...).record(...)`` call from inside ``dispatch()``'s unit of work, and
-    putting it back left the whole suite green — nothing in the tree defended the
-    property. This probe is what defends it now.
-
-    Both names are asserted absent over the same three roots, with the same positive
-    control: ``open_unit_of_work``, the call ``dispatch()`` itself makes to open its
-    one unit of work. Chunk 03 removed the audit call and the subject-reference
-    resolution, not that one, so the control does not depend on anything the chunk
-    deleted.
-    """
-    absent_call(
-        paths=list(SCAN_ROOTS),
-        missing="sink_for",
-        present="open_unit_of_work",
-        covers=14,
-    )
-    absent_call(
-        paths=list(SCAN_ROOTS),
-        missing="record",
-        present="open_unit_of_work",
-        covers=14,
-    )
 
 
 # --- AC 22: the spike is gone, as a completeness check --------------------------------
@@ -221,39 +140,37 @@ def test_no_spike_remains() -> None:
 
 
 def test_every_criterion_is_covered() -> None:
-    """The probes above cover exactly the criteria they are supposed to, by name.
+    """The one probe above covers exactly what it is supposed to, by name.
 
     Three assertions, not one. Both partitions are asserted exactly — the ints are the
     benchmark criteria this run stands in for, the strs are its own acceptance criteria
-    — and so are the **pairs**. Without the pairs, four probes with permuted labels
-    satisfy a bare set comparison while the E0c record's coverage table states the
-    wrong correspondence, which is the failure this exists to catch.
+    — and so are the **pairs**. Without the pairs, probes with permuted labels satisfy
+    a bare set comparison while the E0c record's coverage table states the wrong
+    correspondence, which is the failure this exists to catch.
 
-    The four probes are invoked here rather than read out of whatever the session
-    happened to run first. The registry is module state, so reading it alone would
-    make this assertion depend on test ordering and on selection: run under ``-k`` it
-    would see an empty map. Calling them makes it order-independent and cannot weaken
-    it, since a probe that fails still fails.
+    **The int partition is now empty, and that is asserted rather than dropped.** Every
+    criterion probe has left, each in the commit that landed the behaviour it denied,
+    and an empty set is the claim "this run denies no benchmark criterion any more" —
+    a claim a deleted assertion would stop making. A probe reappearing with an int
+    ``covers`` fails here.
+
+    The probe that remains is invoked here rather than read out of whatever the
+    session happened to run first. The registry is module state, so reading it alone
+    would make this assertion depend on test ordering and on selection: run under
+    ``-k`` it would see an empty map. Calling it makes this order-independent and
+    cannot weaken it, since a probe that fails still fails.
     """
-    test_no_outbox_delivery_exists()
-    test_no_operation_lifecycle_exists()
-    test_dispatch_calls_no_audit_sink()
     test_no_spike_remains()
 
     covered = covered_by_probe()
 
-    assert {value for value in covered.values() if isinstance(value, int)} == {
-        11,
-        13,
-        14,
-    }, covered
+    assert {value for value in covered.values() if isinstance(value, int)} == set(), (
+        covered
+    )
     assert {value for value in covered.values() if isinstance(value, str)} == {
         "AC 22"
     }, covered
     assert covered == {
-        "test_no_outbox_delivery_exists": 11,
-        "test_no_operation_lifecycle_exists": 13,
-        "test_dispatch_calls_no_audit_sink": 14,
         "test_no_spike_remains": "AC 22",
     }, covered
 
@@ -265,9 +182,10 @@ def test_the_positive_controls_are_live() -> None:
     probe-and-control pair *look* sound while proving nothing — run 0v's own "a test
     proved the property it was easiest to test", named here so it is not repeated.
 
-    All three helpers are exercised, including the attribute one, which neither
-    criterion probe uses: it is a real helper and its control mechanism is proved
-    directly rather than assumed.
+    All three helpers are exercised, including the two the one remaining criterion
+    probe does not use — the attribute one, which no test in this module calls, and
+    the token one, which only the AC 22 census calls. Each is a real helper and its
+    control mechanism is proved directly rather than assumed.
 
     The failing calls also record nothing. Each helper records its ``covers`` value
     only after both assertions pass, so a control that quietly stopped raising would

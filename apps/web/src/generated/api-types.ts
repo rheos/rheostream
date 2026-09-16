@@ -4,6 +4,74 @@
  */
 
 export interface paths {
+    "/api/v1/operations/core.audit.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.audit.list (read) */
+        post: operations["core.audit.list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.operation.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.operation.get (read) */
+        post: operations["core.operation.get"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.operation.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.operation.list (read) */
+        post: operations["core.operation.list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.operation.resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.operation.resolve (mutate) */
+        post: operations["core.operation.resolve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.settings.set": {
         parameters: {
             query?: never;
@@ -111,6 +179,108 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AuditList
+         * @description The workspace's most recent audit records, newest first.
+         *
+         *     ``records`` is a named collection field rather than a bare list, mirroring
+         *     ``FailureList`` and ``OperationList``: a later run adding a second collection
+         *     beside it is then an additive change a reader may ignore rather than a change to
+         *     the response's own type.
+         */
+        AuditList: {
+            /** Records */
+            records: components["schemas"]["AuditRecord"][];
+        };
+        /**
+         * AuditListInput
+         * @description How many of the most recent audit records to return.
+         *
+         *     ``limit`` is bounded rather than a bare ``int``, for the reason
+         *     ``work/operations.py``'s ``FailureListInput`` gives: a bare ``int`` lets ``-1``
+         *     reach the ``SELECT``, where Postgres raises *LIMIT must not be negative* and
+         *     ``dispatch`` folds a driver class name into ``handler_failed``, when it is an
+         *     input defect that belongs in the ``input_invalid`` refusal pydantic already
+         *     produces. Nothing prunes this table in release one, so an unbounded ``limit``
+         *     would be a read that grows for the life of the deployment.
+         */
+        AuditListInput: {
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /**
+         * AuditRecord
+         * @description One audit row as this operation publishes it.
+         *
+         *     :class:`~rheo_core.audit.records.AuditRow` field for field, with that row's ``id``
+         *     published as ``audit_id`` — the renaming ``FailedJob`` and ``OperationRecord``
+         *     already make for the same reason — and with ``request_digest`` published as its
+         *     lowercase hex. The column is ``bytea``; a generated TypeScript client has no
+         *     natural type for raw bytes, and hex is what a person comparing two digests by eye
+         *     can actually compare.
+         */
+        AuditRecord: {
+            /** Actor Id */
+            actor_id: string | null;
+            /** Actor Kind */
+            actor_kind: string;
+            /**
+             * Audit Id
+             * Format: uuid
+             */
+            audit_id: string;
+            /** Entry */
+            entry: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Operation Id */
+            operation_id: string | null;
+            /** Operation Name */
+            operation_name: string;
+            /** Outcome */
+            outcome: string;
+            /** Request Digest */
+            request_digest: string;
+            /** Safety Class */
+            safety_class: string;
+            /** Subject Ref */
+            subject_ref: string | null;
+        };
+        /**
+         * FailedDelivery
+         * @description One failed event delivery as the operation publishes it.
+         *
+         *     ``rheo_core.events.deliveries.FailedDeliveryRow`` field for field, and
+         *     deliberately **not** :class:`FailedJob`'s field list: ``core.event_delivery``
+         *     has no ``max_attempts`` column, because a delivery's budget is the
+         *     ``work.max_attempts`` setting rather than a per-row value, and publishing a
+         *     field the row does not hold would mean inventing one here.
+         *
+         *     The identity is the composite key the row is actually keyed by, both halves
+         *     published: one event has one delivery per consumer, so ``event_id`` alone does
+         *     not name a delivery.
+         */
+        FailedDelivery: {
+            /** Attempts */
+            attempts: number;
+            /** Completed At */
+            completed_at: string | null;
+            /** Consumer Id */
+            consumer_id: string;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Last Error */
+            last_error: string | null;
+        };
+        /**
          * FailedJob
          * @description One failed job as the operation publishes it.
          *
@@ -138,16 +308,22 @@ export interface components {
         };
         /**
          * FailureList
-         * @description The workspace's most recently failed jobs, newest first.
+         * @description The workspace's most recently failed jobs and deliveries, newest first.
          *
-         *     ``jobs`` is a **named collection field rather than a bare list**, deliberately:
-         *     0c2 adds sibling collections here — its own deliveries, its own unfinished
-         *     work — beside ``jobs``, additively, and every client generated against
-         *     today's document keeps reading ``jobs`` unchanged. A top-level
-         *     ``list[FailedJob]`` would make that same addition a breaking change to the
-         *     response's own type instead of a new field a reader may ignore.
+         *     ``jobs`` is a **named collection field rather than a bare list**, and
+         *     ``deliveries`` is what that shape was chosen for: it is added **beside**
+         *     ``jobs``, additively, so a client generated against the document before it
+         *     keeps reading ``jobs`` unchanged. A top-level ``list[FailedJob]`` would have
+         *     made this addition a breaking change to the response's own type instead of a
+         *     new field a reader may ignore.
+         *
+         *     Each collection is ordered and capped on its own, newest first, by the same
+         *     ``limit``: they are two independent lists of the most recent failures, not two
+         *     halves of one merged ordering.
          */
         FailureList: {
+            /** Deliveries */
+            deliveries: components["schemas"]["FailedDelivery"][];
             /** Jobs */
             jobs: components["schemas"]["FailedJob"][];
         };
@@ -186,6 +362,110 @@ export interface components {
             schema_version: string | null;
             /** State */
             state: string;
+        };
+        /**
+         * OperationList
+         * @description The workspace's most recently created operation records, newest first.
+         *
+         *     ``operations`` is a named collection field rather than a bare list, mirroring
+         *     ``FailureList``: a later run adding a second collection beside it is then an
+         *     additive change a reader may ignore, not a change to the response's own type.
+         */
+        OperationList: {
+            /** Operations */
+            operations: components["schemas"]["OperationRecord"][];
+        };
+        /**
+         * OperationListInput
+         * @description How many of the most recently created records to return.
+         */
+        OperationListInput: {
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /**
+         * OperationRecord
+         * @description One operation record as these operations publish it.
+         *
+         *     :class:`~rheo_core.operations.records.OperationRow` field for field, with that
+         *     row's ``id`` published as ``operation_id`` — the same renaming
+         *     ``work/operations.py``'s ``FailedJob`` makes for the same reason: the response is
+         *     about one operation and the longer name reads unambiguously in a generated client.
+         */
+        OperationRecord: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Text */
+            error_text: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /** Result Ref */
+            result_ref: string | null;
+            /** Safety Class */
+            safety_class: string;
+            /** Started At */
+            started_at: string | null;
+            /** State */
+            state: string;
+            /** Terminal At */
+            terminal_at: string | null;
+            /** Terminal Check At */
+            terminal_check_at: string | null;
+            /** Terminal Check Kind */
+            terminal_check_kind: string | null;
+        };
+        /**
+         * OperationRef
+         * @description Which record to read. ``operation_id`` is not a reserved input field, so a
+         *     declaration may name it.
+         */
+        OperationRef: {
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+        };
+        /**
+         * OperationResolveInput
+         * @description An ``unresolved`` record, the outcome a person has decided it had, and why.
+         *
+         *     ``note`` is required and non-empty: AC 18's whole content is that clearing an
+         *     ``unresolved`` record is an *explicit act*, and a resolution with no stated reason
+         *     is indistinguishable from an accidental one. It is bounded so a note cannot become
+         *     an unbounded write into a column nothing prunes.
+         */
+        OperationResolveInput: {
+            /** Note */
+            note: string;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "succeeded" | "failed" | "cancelled";
+            /**
+             * Terminal Check Kind
+             * @default null
+             */
+            terminal_check_kind: ("record_exists" | "provider_status" | "sink_recorded" | "handler_returned") | null;
         };
         /**
          * SettingWrite
@@ -302,6 +582,138 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "core.audit.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuditListInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["AuditList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.operation.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["OperationRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.operation.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationListInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["OperationList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.operation.resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationResolveInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["OperationRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
     "core.settings.set": {
         parameters: {
             query?: never;
@@ -326,7 +738,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["SettingWritten"];
                         state: string;
                     };
@@ -358,7 +771,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["SettingWritten"];
                         state: string;
                     };
@@ -390,7 +804,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["TokenIssued"];
                         state: string;
                     };
@@ -422,7 +837,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["TokenRevoked"];
                         state: string;
                     };
@@ -454,7 +870,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["FailureList"];
                         state: string;
                     };
@@ -486,7 +903,8 @@ export interface operations {
                             error_code: string;
                             error_text: string;
                         };
-                        operation_id: null;
+                        /** Format: uuid */
+                        operation_id: string | null;
                         result?: components["schemas"]["WorkspaceStatus"];
                         state: string;
                     };

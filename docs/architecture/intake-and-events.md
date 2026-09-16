@@ -300,9 +300,10 @@ within a version; a removal or a meaning change is a new version and a consumer 
 versions it accepts. `correlation_id` is the originating operation's id; `causation_id` is the
 event that led to this one when there is one.
 
-**Fan-out at write.** `UnitOfWork.publish(event)` inserts the outbox row and one
-`event_delivery` row per consumer that is subscribed to `type` and belongs to a module enabled in
-the workspace at that moment. A consumer that is not enabled gets no row and never sees the event.
+**Fan-out at write.** `rheo_core.events.publish(ctx, uow, event, *, now, consumers)` inserts the outbox row and one `event_delivery` row
+per consumer that is subscribed to `type` and belongs to a module enabled in the workspace at that moment. A consumer that is not
+enabled gets no row and never sees the event. It is a free function rather than a method, because `UnitOfWork`'s public surface is a
+pinned boundary guard, and it takes an explicit `now`, because the two NOT NULL timestamp columns it writes must not come from the process clock.
 
 **Ordering.** Deliveries for the same `(consumer_id, subject_ref)` are delivered in `position`
 order, one in flight at a time, and a later delivery is never attempted while an earlier one for
@@ -482,12 +483,17 @@ idempotency nor status lookup. It is listed by `core.work.failures` and cleared 
 | `request_digest bytea` | SHA-256 of the canonical input, so "what exactly was requested" is answerable without storing the input. |
 | `outcome text` | `succeeded`, `failed`, `refused`. |
 
-The audit row is written by the service registry's dispatcher inside the operation's transaction
-for every operation above the read class. A module never writes it and cannot skip it: an
-operation is only callable through the dispatcher, and registration refuses a non-read operation
-with no `AuditSpec` (criterion 14). `core.audit.list` (owner only) is the supported read. The
-row holds no secret and no reference to one, by the same rule that keeps them out of operation
-records ([secrets](storage-and-workspaces.md#a4-the-secret-store-fr-13-guardrail-14)).
+The audit row is written by the service registry's dispatcher for every operation above the read
+class, and where it is written depends on the outcome. A `succeeded` row is written inside the
+operation's own transaction and commits with its effects, so a mutation and its record are never
+separable. A `failed` or `refused` row is written after the rollback, in a short transaction of
+its own: that dispatch's transaction is rolled back and would take any row written in it, and a
+refusal reached before a transaction was opened at all has none to roll back from. A module never
+writes it and cannot skip it: an operation is only callable through the dispatcher, and
+registration refuses a non-read operation with no `AuditSpec` (criterion 14). `core.audit.list`
+(owner, operator) is the supported read. The row holds no secret and no reference to one, by the
+same rule that keeps them out of operation records
+([secrets](storage-and-workspaces.md#a4-the-secret-store-fr-13-guardrail-14)).
 
 ### Idempotency
 

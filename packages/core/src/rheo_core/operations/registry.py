@@ -14,6 +14,17 @@ contracts import scan, B14); here it is importable and mypy strict checks the
   ``model_construct``-ed declaration without one is refused naming the operation —
   the *startup-fails-naming-it* wiring and the production-profile assertion of
   criterion 18 are 0c3's);
+- a declaration whose ``safety_class`` is **not** ``READ`` carries an ``AuditSpec``;
+  one that does not is refused naming the operation (criterion 14's declaration
+  layer). This is the first of three places a missing audit path is fatal — the other
+  two are ``operations/audit_paths.py`` at startup and ``dispatch.py`` at the call —
+  and it is the only one that can refuse before a process is even running;
+- an ``AuditSpec`` that names a ``subject_field`` names one the input model actually
+  declares; one that does not is refused naming both the field and the model. The
+  dispatcher reads that field with a ``None`` default, so an unreadable name would
+  record a null subject on every row of the operation rather than failing anywhere —
+  a silent skip with the shape of an ordinary null, which is what the layer above
+  exists to forbid;
 - the input model declares **none** of ``RESERVED_INPUT_FIELDS`` (C1's single list in
   ``rheo_contracts.manifest``; not restated here), by field name or by alias, and
   does not set ``extra = "allow"`` (which would carry a reserved key into
@@ -187,9 +198,41 @@ class OperationRegistry:
         check_origin(origin, module_id, name=name)
         if not isinstance(getattr(decl, "safety_class", None), SafetyClass):
             raise RegistrationRefused(name, "declares no safety class")
+        # Criterion 14's declaration layer (AC 21), ratified verbatim at
+        # ``docs/architecture/module-contract.md:115``. ``SafetyClass`` is an
+        # unordered ``StrEnum``, so "above ``READ``" is spelled ``is not
+        # SafetyClass.READ`` — there is no ordering to compare against and no new
+        # contract surface is needed to express one.
+        if decl.safety_class is not SafetyClass.READ and decl.audit is None:
+            raise RegistrationRefused(
+                name,
+                f"declares no audit spec; safety class {decl.safety_class.value!r} is "
+                "above read, and an operation above read cannot be registered without "
+                "one",
+            )
         input_model = decl.input_model
         if not (isinstance(input_model, type) and issubclass(input_model, BaseModel)):
             raise RegistrationRefused(name, "input_model is not a pydantic model")
+        # The same layer one level finer, and checked here rather than at dispatch
+        # because a declaration is registered once and dispatched for ever.
+        # ``dispatch``'s ``_subject_ref`` reads the named field off the validated input
+        # with a ``None`` default, so an ``AuditSpec`` naming a field the model does not
+        # declare would record a null ``subject_ref`` on every row of that operation —
+        # indistinguishable from the ordinary null of an operation that acts on no
+        # record, which is the ``NULL_SINK`` shape this run removed wearing a smaller
+        # disguise. ``subject_field`` is the *attribute* name the dispatcher reads, so
+        # it is checked against ``model_fields`` rather than against the aliases a
+        # payload may use to reach them.
+        audit_spec = decl.audit
+        if audit_spec is not None and audit_spec.subject_field is not None:
+            if audit_spec.subject_field not in input_model.model_fields:
+                raise RegistrationRefused(
+                    name,
+                    f"its audit spec names subject field "
+                    f"{audit_spec.subject_field!r}, which {input_model.__name__} does "
+                    "not declare; a subject the dispatcher cannot read would be "
+                    "recorded as a null on every row of this operation",
+                )
         reserved = reserved_input_fields(input_model)
         if reserved:
             raise RegistrationRefused(

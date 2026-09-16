@@ -1,4 +1,7 @@
-"""``core.work.failures``'s models and handler, beside the repository they read.
+"""``core.work.failures``'s models and handler, beside the repositories they read.
+
+Two repositories now: ``work.jobs.list_failed_jobs`` and
+``events.deliveries.list_failed_deliveries``, one per collection of the response.
 
 The declaration and the registration live in ``operations/core_ops.py``; the
 models and the handler live **here**, and the split is an import-direction
@@ -11,8 +14,9 @@ needs one: ``dispatch()`` is what authorizes the call, validates the input, seal
 the unit of work and turns a refusal into an outcome, and a read handler raises
 nothing on its happy path.
 
-``rheo_core.work.jobs`` and pydantic are therefore the whole dependency surface,
-plus ``WorkspaceContext`` and ``UnitOfWork`` for the handler's own signature.
+``rheo_core.work.jobs``, ``rheo_core.events`` and pydantic are therefore the whole
+dependency surface, plus ``WorkspaceContext`` and ``UnitOfWork`` for the handler's
+own signature.
 """
 
 from datetime import datetime
@@ -21,6 +25,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 from rheo_contracts import WorkspaceContext
 
+from rheo_core.events import list_failed_deliveries
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.work.jobs import list_failed_jobs
 
@@ -44,20 +49,48 @@ class FailedJob(BaseModel):
     finished_at: datetime | None
 
 
-class FailureList(BaseModel):
-    """The workspace's most recently failed jobs, newest first.
+class FailedDelivery(BaseModel):
+    """One failed event delivery as the operation publishes it.
 
-    ``jobs`` is a **named collection field rather than a bare list**, deliberately:
-    0c2 adds sibling collections here — its own deliveries, its own unfinished
-    work — beside ``jobs``, additively, and every client generated against
-    today's document keeps reading ``jobs`` unchanged. A top-level
-    ``list[FailedJob]`` would make that same addition a breaking change to the
-    response's own type instead of a new field a reader may ignore.
+    ``rheo_core.events.deliveries.FailedDeliveryRow`` field for field, and
+    deliberately **not** :class:`FailedJob`'s field list: ``core.event_delivery``
+    has no ``max_attempts`` column, because a delivery's budget is the
+    ``work.max_attempts`` setting rather than a per-row value, and publishing a
+    field the row does not hold would mean inventing one here.
+
+    The identity is the composite key the row is actually keyed by, both halves
+    published: one event has one delivery per consumer, so ``event_id`` alone does
+    not name a delivery.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    event_id: UUID
+    consumer_id: str
+    attempts: int
+    last_error: str | None
+    completed_at: datetime | None
+
+
+class FailureList(BaseModel):
+    """The workspace's most recently failed jobs and deliveries, newest first.
+
+    ``jobs`` is a **named collection field rather than a bare list**, and
+    ``deliveries`` is what that shape was chosen for: it is added **beside**
+    ``jobs``, additively, so a client generated against the document before it
+    keeps reading ``jobs`` unchanged. A top-level ``list[FailedJob]`` would have
+    made this addition a breaking change to the response's own type instead of a
+    new field a reader may ignore.
+
+    Each collection is ordered and capped on its own, newest first, by the same
+    ``limit``: they are two independent lists of the most recent failures, not two
+    halves of one merged ordering.
     """
 
     model_config = ConfigDict(frozen=True)
 
     jobs: list[FailedJob]
+    deliveries: list[FailedDelivery]
 
 
 class FailureListInput(BaseModel):
@@ -86,7 +119,7 @@ class FailureListInput(BaseModel):
 def failures_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, input_model: FailureListInput
 ) -> FailureList:
-    """The most recently failed jobs of the context's own workspace.
+    """The most recently failed jobs and deliveries of the context's own workspace.
 
     The signature mirrors ``core_ops.py``'s ``_workspace_status`` exactly, a plain
     :class:`~rheo_core.storage.backend.UnitOfWork` included: this is a *registered
@@ -97,8 +130,13 @@ def failures_handler(
 
     The workspace is the context's. ``uow.connection`` is already routed to it, so
     no input field names one and none can.
+
+    ``limit`` bounds each collection rather than their sum: the two lists answer
+    two different questions, and a shared budget would let a burst of failed jobs
+    hide every failed delivery.
     """
-    rows = list_failed_jobs(uow.connection, limit=input_model.limit)
+    jobs = list_failed_jobs(uow.connection, limit=input_model.limit)
+    deliveries = list_failed_deliveries(uow.connection, limit=input_model.limit)
     return FailureList(
         jobs=[
             FailedJob(
@@ -109,6 +147,16 @@ def failures_handler(
                 last_error=row.last_error,
                 finished_at=row.finished_at,
             )
-            for row in rows
-        ]
+            for row in jobs
+        ],
+        deliveries=[
+            FailedDelivery(
+                event_id=delivery.event_id,
+                consumer_id=delivery.consumer_id,
+                attempts=delivery.attempts,
+                last_error=delivery.last_error,
+                completed_at=delivery.completed_at,
+            )
+            for delivery in deliveries
+        ],
     )

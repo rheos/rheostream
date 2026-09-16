@@ -1,6 +1,176 @@
 {
   "components": {
     "schemas": {
+      "AuditList": {
+        "description": "The workspace's most recent audit records, newest first.\n\n``records`` is a named collection field rather than a bare list, mirroring\n``FailureList`` and ``OperationList``: a later run adding a second collection\nbeside it is then an additive change a reader may ignore rather than a change to\nthe response's own type.",
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/AuditRecord"
+            },
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "records"
+        ],
+        "title": "AuditList",
+        "type": "object"
+      },
+      "AuditListInput": {
+        "description": "How many of the most recent audit records to return.\n\n``limit`` is bounded rather than a bare ``int``, for the reason\n``work/operations.py``'s ``FailureListInput`` gives: a bare ``int`` lets ``-1``\nreach the ``SELECT``, where Postgres raises *LIMIT must not be negative* and\n``dispatch`` folds a driver class name into ``handler_failed``, when it is an\ninput defect that belongs in the ``input_invalid`` refusal pydantic already\nproduces. Nothing prunes this table in release one, so an unbounded ``limit``\nwould be a read that grows for the life of the deployment.",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "AuditListInput",
+        "type": "object"
+      },
+      "AuditRecord": {
+        "description": "One audit row as this operation publishes it.\n\n:class:`~rheo_core.audit.records.AuditRow` field for field, with that row's ``id``\npublished as ``audit_id`` \u2014 the renaming ``FailedJob`` and ``OperationRecord``\nalready make for the same reason \u2014 and with ``request_digest`` published as its\nlowercase hex. The column is ``bytea``; a generated TypeScript client has no\nnatural type for raw bytes, and hex is what a person comparing two digests by eye\ncan actually compare.",
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_kind": {
+            "title": "Actor Kind",
+            "type": "string"
+          },
+          "audit_id": {
+            "format": "uuid",
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "entry": {
+            "title": "Entry",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "operation_name": {
+            "title": "Operation Name",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "request_digest": {
+            "title": "Request Digest",
+            "type": "string"
+          },
+          "safety_class": {
+            "title": "Safety Class",
+            "type": "string"
+          },
+          "subject_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Ref"
+          }
+        },
+        "required": [
+          "audit_id",
+          "occurred_at",
+          "actor_kind",
+          "actor_id",
+          "entry",
+          "operation_name",
+          "safety_class",
+          "operation_id",
+          "subject_ref",
+          "request_digest",
+          "outcome"
+        ],
+        "title": "AuditRecord",
+        "type": "object"
+      },
+      "FailedDelivery": {
+        "description": "One failed event delivery as the operation publishes it.\n\n``rheo_core.events.deliveries.FailedDeliveryRow`` field for field, and\ndeliberately **not** :class:`FailedJob`'s field list: ``core.event_delivery``\nhas no ``max_attempts`` column, because a delivery's budget is the\n``work.max_attempts`` setting rather than a per-row value, and publishing a\nfield the row does not hold would mean inventing one here.\n\nThe identity is the composite key the row is actually keyed by, both halves\npublished: one event has one delivery per consumer, so ``event_id`` alone does\nnot name a delivery.",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "consumer_id": {
+            "title": "Consumer Id",
+            "type": "string"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "required": [
+          "event_id",
+          "consumer_id",
+          "attempts",
+          "last_error",
+          "completed_at"
+        ],
+        "title": "FailedDelivery",
+        "type": "object"
+      },
       "FailedJob": {
         "description": "One failed job as the operation publishes it.\n\n``rheo_core.work.jobs.FailedJobRow`` field for field, with that row's ``id``\npublished as ``job_id``: the response is about jobs and nothing else in it\ncarries an id, so the longer name costs nothing and reads unambiguously in a\ngenerated client.",
         "properties": {
@@ -57,8 +227,15 @@
         "type": "object"
       },
       "FailureList": {
-        "description": "The workspace's most recently failed jobs, newest first.\n\n``jobs`` is a **named collection field rather than a bare list**, deliberately:\n0c2 adds sibling collections here \u2014 its own deliveries, its own unfinished\nwork \u2014 beside ``jobs``, additively, and every client generated against\ntoday's document keeps reading ``jobs`` unchanged. A top-level\n``list[FailedJob]`` would make that same addition a breaking change to the\nresponse's own type instead of a new field a reader may ignore.",
+        "description": "The workspace's most recently failed jobs and deliveries, newest first.\n\n``jobs`` is a **named collection field rather than a bare list**, and\n``deliveries`` is what that shape was chosen for: it is added **beside**\n``jobs``, additively, so a client generated against the document before it\nkeeps reading ``jobs`` unchanged. A top-level ``list[FailedJob]`` would have\nmade this addition a breaking change to the response's own type instead of a\nnew field a reader may ignore.\n\nEach collection is ordered and capped on its own, newest first, by the same\n``limit``: they are two independent lists of the most recent failures, not two\nhalves of one merged ordering.",
         "properties": {
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/FailedDelivery"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          },
           "jobs": {
             "items": {
               "$ref": "#/components/schemas/FailedJob"
@@ -68,7 +245,8 @@
           }
         },
         "required": [
-          "jobs"
+          "jobs",
+          "deliveries"
         ],
         "title": "FailureList",
         "type": "object"
@@ -120,6 +298,225 @@
           "schema_version"
         ],
         "title": "ModuleStatus",
+        "type": "object"
+      },
+      "OperationList": {
+        "description": "The workspace's most recently created operation records, newest first.\n\n``operations`` is a named collection field rather than a bare list, mirroring\n``FailureList``: a later run adding a second collection beside it is then an\nadditive change a reader may ignore, not a change to the response's own type.",
+        "properties": {
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationRecord"
+            },
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "title": "OperationList",
+        "type": "object"
+      },
+      "OperationListInput": {
+        "description": "How many of the most recently created records to return.",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "OperationListInput",
+        "type": "object"
+      },
+      "OperationRecord": {
+        "description": "One operation record as these operations publish it.\n\n:class:`~rheo_core.operations.records.OperationRow` field for field, with that\nrow's ``id`` published as ``operation_id`` \u2014 the same renaming\n``work/operations.py``'s ``FailedJob`` makes for the same reason: the response is\nabout one operation and the longer name reads unambiguously in a generated client.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Text"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "safety_class": {
+            "title": "Safety Class",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "terminal_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal At"
+          },
+          "terminal_check_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Check At"
+          },
+          "terminal_check_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Check Kind"
+          }
+        },
+        "required": [
+          "operation_id",
+          "name",
+          "safety_class",
+          "state",
+          "result_ref",
+          "error_code",
+          "error_text",
+          "terminal_check_kind",
+          "terminal_check_at",
+          "created_at",
+          "started_at",
+          "terminal_at"
+        ],
+        "title": "OperationRecord",
+        "type": "object"
+      },
+      "OperationRef": {
+        "description": "Which record to read. ``operation_id`` is not a reserved input field, so a\ndeclaration may name it.",
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "title": "OperationRef",
+        "type": "object"
+      },
+      "OperationResolveInput": {
+        "description": "An ``unresolved`` record, the outcome a person has decided it had, and why.\n\n``note`` is required and non-empty: AC 18's whole content is that clearing an\n``unresolved`` record is an *explicit act*, and a resolution with no stated reason\nis indistinguishable from an accidental one. It is bounded so a note cannot become\nan unbounded write into a column nothing prunes.",
+        "properties": {
+          "note": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "terminal_check_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "record_exists",
+                  "provider_status",
+                  "sink_recorded",
+                  "handler_returned"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Terminal Check Kind"
+          }
+        },
+        "required": [
+          "operation_id",
+          "outcome",
+          "note"
+        ],
+        "title": "OperationResolveInput",
         "type": "object"
       },
       "SettingWrite": {
@@ -373,6 +770,258 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/operations/core.audit.list": {
+      "post": {
+        "operationId": "core.audit.list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/AuditList"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.audit.list (read)"
+      }
+    },
+    "/api/v1/operations/core.operation.get": {
+      "post": {
+        "operationId": "core.operation.get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/OperationRecord"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.operation.get (read)"
+      }
+    },
+    "/api/v1/operations/core.operation.list": {
+      "post": {
+        "operationId": "core.operation.list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/OperationList"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.operation.list (read)"
+      }
+    },
+    "/api/v1/operations/core.operation.resolve": {
+      "post": {
+        "operationId": "core.operation.resolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationResolveInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/OperationRecord"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.operation.resolve (mutate)"
+      }
+    },
     "/api/v1/operations/core.settings.set": {
       "post": {
         "operationId": "core.settings.set",
@@ -408,7 +1057,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/SettingWritten"
@@ -467,7 +1120,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/SettingWritten"
@@ -526,7 +1183,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/TokenIssued"
@@ -585,7 +1246,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/TokenRevoked"
@@ -644,7 +1309,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/FailureList"
@@ -703,7 +1372,11 @@
                       "type": "object"
                     },
                     "operation_id": {
-                      "type": "null"
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "result": {
                       "$ref": "#/components/schemas/WorkspaceStatus"

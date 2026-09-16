@@ -21,6 +21,9 @@ startup sequence through the FastAPI lifespan.
   overridden at deployment scope.
 - The lifespan runs startup (control chain, active workspaces, the registry) and
   ``/healthz`` answers inside it with no database call of its own.
+- ``run_startup()`` **refuses to complete** when a registered operation above the read
+  class has no installed audit sink, naming it (AC 22's own subject, which is startup
+  and not the checking function).
 """
 
 import json
@@ -30,9 +33,21 @@ from uuid import UUID
 import httpx
 import pytest
 from conftest import ClusterSession
+from harness.registry import NOTE_WRITE, register_harness
 from rheo_app_cli.main import main
 from rheo_app_core.main import app, lifespan
+from rheo_app_core.startup import run_startup
+from rheo_core.audit import (
+    CORE_AUDIT_SINK,
+    install_sink,
+    reset_sinks,
+)
 from rheo_core.operations import (
+    CORE_MODULE_ID,
+    HARNESS_MODULE_ID,
+    OPERATION_GET,
+    OPERATION_LIST,
+    OPERATION_RESOLVE,
     REGISTRY,
     SETTINGS_SET,
     WORK_FAILURES,
@@ -306,11 +321,23 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now six: C8 (0b2) adds core.token.issue/revoke beside
-        # 0b1's three, and C3 (this run) adds core.work.failures. Sorted by
-        # the name string, so core.work.failures lands immediately before
-        # core.workspace.status ("." sorts before "s").
+        # Sorted, and now ten: 0b1's three, 0b2's C8 adds core.token.issue and
+        # core.token.revoke, 0c1's C3 adds core.work.failures, 0c2's C4 adds
+        # core.operation.get/list/resolve, and 0c2's C5 adds core.audit.list.
+        # Sorted by the name string, so core.audit.list leads, the three
+        # core.operation.* names follow it, and core.work.failures lands
+        # immediately before core.workspace.status ("." sorts before "s").
+        #
+        # **Written out as literals on purpose.** Deriving this tuple from the
+        # registry would make the assertion unfailable: an operation registered by
+        # accident, or one silently dropped, would match a derived expectation
+        # exactly. The literal list is the regression guard, and updating it by hand
+        # when a run adds an operation is the point rather than the cost.
         assert report.operations == (
+            "core.audit.list",
+            OPERATION_GET,
+            OPERATION_LIST,
+            OPERATION_RESOLVE,
             SETTINGS_SET,
             "core.settings.set_member",
             TOKEN_ISSUE,
@@ -357,4 +384,41 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
     # backend is still the process-wide one, and its engines recreate on use.
     assert get_backend() is cluster.backend
     assert get_backend().control_database == cluster.control_database
+    assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE
+
+
+def test_startup_refuses_to_complete_when_an_operation_has_no_audit_sink(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    """AC 22, whose subject is **startup** and not the function startup calls.
+
+    ``check_audit_paths`` has its own unit test in
+    ``tests/postgres/test_audit_dispatch.py``, driving it on a private registry. That
+    pins the function and says nothing about whether anything calls it: deleting
+    ``check_audit_paths(REGISTRY)`` from ``startup.py`` left the whole suite green, so
+    the wiring layer's only production call site shipped unasserted. This drives
+    ``run_startup()`` itself.
+
+    ``harness`` is the module left unwired: ``run_startup`` calls
+    ``register_core_operations()``, which installs the core's own sink one step before
+    the check, so emptying the table cannot make *core* the offender no matter what
+    else is registered. ``register_harness()`` puts three mutating operations on the
+    process-wide registry whose module has nothing to write with, which is exactly the
+    misassembled deployment the layer exists to refuse.
+    """
+    register_harness()
+    reset_sinks()
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            run_startup()
+    finally:
+        install_sink(CORE_MODULE_ID, CORE_AUDIT_SINK)
+        install_sink(HARNESS_MODULE_ID, CORE_AUDIT_SINK)
+
+    message = str(excinfo.value)
+    assert NOTE_WRITE in message, message
+    assert HARNESS_MODULE_ID in message, message
+    # And startup completes once the sinks are back, so the refusal is about the
+    # wiring and not about anything else this sequence does.
+    assert run_startup().profile == "test"
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE
