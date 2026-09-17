@@ -15,7 +15,14 @@ requires-python = ">=3.12,<3.13"
 # nothing in ``packages/core`` or the other apps imports it. Declared here rather
 # than in the root's dev group so a deployment that installs only this app gets a
 # working façade.
-dependencies = ["rheo-contracts", "rheo-core", "mcp>=1.2"]
+#
+# Floored at 2.2 rather than at the oldest release that has a streamable-HTTP
+# server, because transport.py uses the 2.x surface and would not import on 1.x:
+# the lowlevel Server takes on_list_tools/on_call_tool handlers, and the result
+# models are snake_case (structured_content, input_schema, is_error). A looser
+# floor would be a claim this package cannot honour, and it would only be found
+# by whoever first resolved an older pin.
+dependencies = ["rheo-contracts", "rheo-core", "mcp>=2.2,<3"]
 
 [tool.uv.sources]
 rheo-contracts = { workspace = true }
