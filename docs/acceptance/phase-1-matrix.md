@@ -1285,3 +1285,138 @@ convention (`<module>_<verb>[_<noun>]`) and nothing mechanically enforces it. "R
 only by calling an application service" is enforced structurally rather than by assertion — a
 `ToolDeclaration` has no handler field at all, so a tool has nothing to reach storage *with*
 except the operation it names. Both are true; neither is a pytest node.
+
+---
+
+### Criterion 18
+
+**Text:** "Every registered MCP tool and every registered service operation declares exactly one safety class, and either one registered without a class fails registration at startup, naming what was registered. A test registers one tool and one service operation with no declared class and asserts startup fails naming each. A second check starts the application under the production profile and asserts that its registration set contains no tool, operation, consumer, or identity provider registered by the test harness and no operation in the external-side-effect or financial class; the check runs in continuous integration from this phase onward." (`build-plan.md:164-171`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/test_production_registration.py::test_a_production_start_registers_nothing_from_the_test_harness`
+- `pytest:tests/test_production_registration.py::test_registering_an_operation_with_no_safety_class_is_refused_naming_it`
+- `pytest:tests/test_contracts.py::test_tool_registration_refuses_a_declaration_with_no_safety_class`
+- `pytest:tests/test_contracts.py::test_tool_declaration_requires_a_safety_class`
+- `pytest:tests/test_contracts.py::test_operation_declaration_requires_a_safety_class`
+- `ci:python / Pytest`
+
+**Mutation:**
+```diff
+diff --git a/apps/core/src/rheo_app_core/startup.py b/apps/core/src/rheo_app_core/startup.py
+index 7cd8eb7..3ab710b 100644
+--- a/apps/core/src/rheo_app_core/startup.py
++++ b/apps/core/src/rheo_app_core/startup.py
+@@ -108,6 +108,26 @@ def run_startup() -> StartupReport:
+     # call ran anywhere, ``TOOL_REGISTRY`` was empty in a deployed process and
+     # ``agent_default`` named nothing, so the MCP facade had no tools to list.
+     register_core_tools()
++    from pydantic import BaseModel
++    from rheo_contracts import Idempotency, OperationDeclaration, Role, SafetyClass
++
++    from rheo_core.settings import TEST_HARNESS_ORIGIN
++
++    class _ProbeInput(BaseModel):
++        pass
++
++    REGISTRY.register(
++        OperationDeclaration(
++            name="harness.probe.get",
++            safety_class=SafetyClass.READ,
++            roles=frozenset({Role.OWNER}),
++            input_model=_ProbeInput,
++            output=_ProbeInput,
++            idempotency=Idempotency.NONE,
++        ),
++        lambda ctx, uow, model_input: _ProbeInput(),
++        origin=TEST_HARNESS_ORIGIN,
++    )
+     modules = load_modules()
+     # Criterion 14's wiring layer, and the reason it is here and not one line up: a
+     # module supplies its sink through its manifest, so this is the first point at
+diff --git a/packages/core/src/rheo_core/operations/registry.py b/packages/core/src/rheo_core/operations/registry.py
+index 7d7dc1c..ec4fa0f 100644
+--- a/packages/core/src/rheo_core/operations/registry.py
++++ b/packages/core/src/rheo_core/operations/registry.py
+@@ -91,14 +91,7 @@ def module_id_for_origin(origin: str) -> str:
+ 
+ def check_origin_profile(origin: str) -> None:
+     """Refuse the test-harness origin outside ``profile = test``."""
+-    if origin == TEST_HARNESS_ORIGIN:
+-        profile = current_profile()
+-        if profile != "test":
+-            raise RegistrationRefused(
+-                origin,
+-                f"origin {origin!r} is accepted only under profile = test (resolved "
+-                f"profile is {profile!r})",
+-            )
++    return
+ 
+ 
+ def check_origin(origin: str, module_id: str, *, name: str) -> None:
+```
+
+**Cost:**
+- `pytest:tests/test_production_registration.py::test_a_production_start_registers_nothing_from_the_test_harness` — first observed failure line: `E       AssertionError: stdout:`, immediately followed by the child's own captured stderr, which is where the naming happens: `AssertionError: a production start registered what it must not:`, then `operation 'harness.probe.get' was registered by origin 'test_harness'` and `operation 'harness.probe.get' belongs to module 'harness'`, then `E       assert 1 == 0`.
+
+1 failed.
+
+**Performed by:** C4 (2026-09-16), C5 (2026-09-16)
+
+**Note on why the hunk is two-part.** Neither half alone bites. Dropping
+`check_origin_profile`'s gate changes nothing on its own, because no production composition
+root calls `register_harness()` — the gate is what would refuse it *if* something did.
+Registering a harness-origin operation from `run_startup()` on its own is refused by the live
+gate, so the process never reaches the enumeration. Together they are the actual scenario the
+criterion's third sentence is about: a harness registration surviving into a started
+production process. That is the shape of row 20's hunk too, and for the same reason.
+
+**Note on the three other mutations run against this row, each applied, watched, and reverted
+on 2026-09-16.** They are not this row's fenced hunk — one hunk per row — but they were run
+rather than reasoned about, and each reddens a different clause:
+
+- **A class-less tool added to `CORE_TOOLS`** (`ToolDeclaration.model_construct(name=
+  "no_class_tool", ...)`, `packages/core/src/rheo_core/tokens/sets.py`). Red at
+  `register_core_tools()` inside `run_startup()`:
+  `rheo_core.operations.refusals.RegistrationRefused: no_class_tool: declares no safety class`.
+  This is the criterion's first sentence demonstrated through a *real startup* rather than
+  through a private registry, and it is also what proves the wiring: with
+  `register_core_tools()` absent from `run_startup()` this hunk would have reddened nothing.
+- **`register_core_tools()` removed from `run_startup()`**, the anti-vacuous control. Red with
+  `the tool registry is empty; register_core_tools() did not run during startup, so the tool
+  half of this enumeration would pass over nothing` — so the tool half of the enumeration
+  cannot pass by walking an empty set.
+- **`OperationRegistry.register`'s `declares no safety class` refusal removed**
+  (`packages/core/src/rheo_core/operations/registry.py`). Red at
+  `test_registering_an_operation_with_no_safety_class_is_refused_naming_it` with
+  `E                   AttributeError: 'OperationDeclaration' object has no attribute
+  'safety_class'` — no `RegistrationRefused` raised at all, which is the absence the removal
+  was meant to prove rather than a second refusal standing in for the first.
+
+**Note on the two chunks and which clause each closed.** C4 shipped
+`ToolDeclaration.safety_class` and turned tool registration into a path that can refuse; its
+two `test_contracts.py` nodes are the tool half of the criterion's first two sentences. C5
+wrote the production-profile check, wired `register_core_tools()` into startup, and added the
+operation half of that same test — which had no demonstrator anywhere at this run's base:
+`registry.py`'s refusal has shipped since run 0b1 and nothing registered a class-less
+operation against it.
+
+**Note on the CI clause, which is satisfied by an existing step rather than a new one.**
+"The check runs in continuous integration from this phase onward" is met by
+`.github/workflows/repository-checks.yml`'s `python` job: its `Pytest` step runs `uv run
+pytest`, whose `testpaths = ["tests"]` collects `tests/test_production_registration.py`, and a
+red result fails that step and the workflow. The outer node shells out to a nested `uv run`,
+which is already proven to work inside that step by
+`tests/postgres/test_migrations.py::test_suite_fails_fast_when_the_cluster_is_unreachable`. A
+dedicated step was considered and not added: it would start a second production process, run
+the same control-chain migration again, and carry no signal the existing step does not.
+
+**Note on the one clause with no origin to filter on.** Identity providers are "registered" by
+`sync_providers()` upserting `control.identity_provider` rows from the resolved deployment
+settings, and that table has no origin or profile column — unlike operations, resolvers and
+tools, which all pass `check_origin_profile`. The check therefore asserts an allowlist: every
+`provider_id` present after startup must be one the shipped package declares
+(`GITHUB_PROVIDER_ID` is the only one in release one). A harness that wrote a provider row
+under the id `github` would not be caught. Building an origin gate for identity providers is
+out of this chunk's scope and is recorded here rather than left for a reader to notice.
