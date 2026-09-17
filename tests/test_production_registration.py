@@ -74,6 +74,13 @@ _CHILD_PROGRAM = (
 """What the child runs. ``tests/`` reaches ``sys.path`` through ``argv``, not
 through pytest's collection, because pytest is exactly what must not run here."""
 
+_CLASSLESS_CHILD_PROGRAM = (
+    "import sys; sys.path.insert(0, sys.argv[1]); "
+    "import test_production_registration as check; "
+    "check.run_startup_with_a_classless_registration(sys.argv[2])"
+)
+"""The same shape for the class-less-registration half, with the kind in ``argv``."""
+
 
 def run_production_startup_and_report() -> None:
     """Start the application the way a deployed process does, then enumerate what
@@ -86,9 +93,10 @@ def run_production_startup_and_report() -> None:
     """
     from rheo_app_core.startup import run_startup
     from rheo_contracts import SafetyClass
+    from rheo_core.events.consumers import ConsumerRegistry, ConsumerSubscription
     from rheo_core.identity.providers import GITHUB_PROVIDER_ID
-    from rheo_core.operations import HARNESS_MODULE_ID, REGISTRY
-    from rheo_core.settings import TEST_HARNESS_ORIGIN
+    from rheo_core.operations import CORE_MODULE_ID, HARNESS_MODULE_ID, REGISTRY
+    from rheo_core.settings import TEST_HARNESS_ORIGIN, resolve
     from rheo_core.storage import control_tables
     from rheo_core.storage.postgres import get_backend
     from rheo_core.tokens.sets import TOOL_REGISTRY, agent_default
@@ -156,20 +164,69 @@ def run_production_startup_and_report() -> None:
     # registered" accessor, and criterion 18 needs the whole set rather than one
     # event type's. Reading the one private dict is deliberate and scoped to this
     # check; adding a public accessor is an edit to ``events/consumers.py``, which
-    # is outside this chunk's declared paths.
-    subscriptions = tuple(worker_main.CONSUMERS._consumers.values())
-    for subscription in subscriptions:
-        if subscription.module_id == HARNESS_MODULE_ID:
-            problems.append(
-                f"consumer {subscription.consumer_id!r} belongs to module "
-                f"{HARNESS_MODULE_ID!r}"
-            )
+    # is outside this chunk's declared paths. A rename of that attribute raises
+    # here rather than quietly enumerating nothing, so the read cannot decay into a
+    # silent pass.
+    def harness_consumer_ids(registry: ConsumerRegistry) -> list[str]:
+        """Consumer ids in ``registry`` whose module is the test harness."""
+        return sorted(
+            subscription.consumer_id
+            for subscription in registry._consumers.values()
+            if subscription.module_id == HARNESS_MODULE_ID
+        )
 
-    # Identity providers are registered by ``sync_providers()`` writing rows from
-    # the resolved deployment settings, so the started application's provider set
-    # IS ``control.identity_provider``. There is no origin column to filter on —
-    # see this run's handoff note — so the assertion is an allowlist of the
-    # provider ids the shipped package declares.
+    subscriptions = tuple(worker_main.CONSUMERS._consumers.values())
+    for consumer_id in harness_consumer_ids(worker_main.CONSUMERS):
+        problems.append(
+            f"consumer {consumer_id!r} belongs to module {HARNESS_MODULE_ID!r}"
+        )
+
+    # Release one registers no production consumer, so the real registry is
+    # legitimately empty and the loop above passes over nothing. Requiring it to be
+    # non-empty would be a guard that is red against correct code today; proving the
+    # predicate is not a no-op is the check that is actually available. The same
+    # function is applied to a throwaway registry holding one harness subscription
+    # and one core subscription — it must find the first and not the second.
+    control = ConsumerRegistry()
+    for consumer_id, module_id in (
+        ("harness.probe.consumer", HARNESS_MODULE_ID),
+        ("core.probe.consumer", CORE_MODULE_ID),
+    ):
+        control.register(
+            ConsumerSubscription(
+                consumer_id=consumer_id,
+                event_type="probe.happened",
+                module_id=module_id,
+                replay_safe=True,
+                handler=lambda uow, envelope: None,
+            )
+        )
+    if harness_consumer_ids(control) != ["harness.probe.consumer"]:
+        problems.append(
+            "the consumer check's own positive control did not fire, so the "
+            "predicate applied to the worker's registry would not catch a harness "
+            "consumer there either"
+        )
+
+    # Identity providers are "registered" by ``sync_providers()`` upserting
+    # ``control.identity_provider`` rows from the resolved deployment settings, so
+    # the started application's provider set IS that table. The table carries no
+    # origin column, so provenance cannot be read off a row; what CAN be checked is
+    # that the rows present are exactly the ones this process's own settings would
+    # have produced. A row this startup did not write — whatever id it carries,
+    # ``github`` included — makes the two sets differ.
+    #
+    # The enabled/client-id rule below is a deliberate second statement of
+    # ``identity/provider_config.py``'s, not a shared import of it: two independent
+    # statements can disagree, which is what makes this a check rather than a
+    # restatement of the code under test. Both settings keys are declared, so a
+    # typo here raises ``setting_undeclared`` rather than silently reading False.
+    settings = resolve()
+    github_configured = bool(
+        settings.get_bool("identity.providers.github.enabled")
+        and settings.get_str("identity.providers.github.client_id")
+    )
+    expected_provider_ids = sorted({GITHUB_PROVIDER_ID} if github_configured else set())
     shipped_provider_ids = frozenset({GITHUB_PROVIDER_ID})
     with get_backend().control_engine.connect() as connection:
         provider_ids = sorted(
@@ -178,6 +235,15 @@ def run_production_startup_and_report() -> None:
                 select(control_tables.identity_provider.c.provider_id)
             )
         )
+    if provider_ids != expected_provider_ids:
+        problems.append(
+            f"identity provider rows {provider_ids} are not the set this process's "
+            f"own settings produce ({expected_provider_ids}); a provider row this "
+            "startup did not write is in the control plane"
+        )
+    # Independent of the equality above, and not implied by it: an id outside the
+    # shipped set is named on its own, so the failure says "unknown provider"
+    # rather than only "the sets differ".
     for provider_id in provider_ids:
         if provider_id not in shipped_provider_ids:
             problems.append(
@@ -201,31 +267,115 @@ def run_production_startup_and_report() -> None:
     print(f"PROFILE={report.profile}")
 
 
-@pytest.mark.postgres
-def test_a_production_start_registers_nothing_from_the_test_harness(
-    cluster: "ClusterSession", tmp_path: Path
-) -> None:
-    """AC 1 and AC 2: a real startup under ``profile = production`` registers no
-    tool, operation, consumer or identity provider from the test harness, and no
-    operation in the external or financial class.
+def run_startup_with_a_classless_registration(kind: str) -> None:
+    """Criterion 18's own sentence, driven through ``run_startup()``: a class-less
+    registration must make **startup** fail, naming what was registered.
 
-    The child's environment is built rather than inherited. Every ``RHEO_*``
-    variable is stripped first — this developer machine's ``.env`` sets
-    ``RHEO_PROFILE``, ``RHEO_MODULES``, ``RHEO_DATA_ROOT`` and more, and CI's
+    Runs in the same bare child as :func:`run_production_startup_and_report`.
+    ``kind`` selects the half: ``"operation"`` appends a class-less
+    ``OperationDeclaration`` to ``core_ops.CORE_OPERATIONS``, ``"tool"`` appends a
+    class-less ``ToolDeclaration`` to ``sets.CORE_TOOLS``. Both are the tuples the
+    core's own registration functions read at call time, so the injection reaches
+    the registration the shipped startup performs rather than one the test performs
+    for itself — which is the difference between demonstrating "the registry
+    refuses" and demonstrating "startup fails".
+
+    Rebinding a module-level ``Final`` tuple is not something production code may
+    do; it is safe here because the process is created for this one check and
+    thrown away, and because the alternative — a class-less declaration committed
+    into shipped code behind a flag — would be a permanent hazard in exchange for
+    the same signal. ``model_construct`` is what makes a class-less declaration
+    constructible at all: pydantic refuses an ordinary construction without one.
+
+    Exits zero on the expected refusal and raises when startup **completes**, so
+    the polarity is right: a startup that filtered or skipped the declaration fails
+    this check rather than passing it.
+    """
+    from pydantic import BaseModel
+    from rheo_app_core.startup import run_startup
+    from rheo_contracts import (
+        Idempotency,
+        OperationDeclaration,
+        Role,
+        ToolDeclaration,
+    )
+    from rheo_core.operations import RegistrationRefused, core_ops
+    from rheo_core.tokens import sets
+
+    class _NoFields(BaseModel):
+        pass
+
+    def _handler(ctx: object, uow: object, model_input: object) -> BaseModel:
+        raise AssertionError("the class-less probe must never be dispatched")
+
+    if kind == "operation":
+        expected_name = "core.probe.act"
+        core_ops.CORE_OPERATIONS = (  # type: ignore[misc]
+            *core_ops.CORE_OPERATIONS,
+            (
+                OperationDeclaration.model_construct(
+                    name=expected_name,
+                    roles=frozenset({Role.OWNER}),
+                    input_model=_NoFields,
+                    output=_NoFields,
+                    idempotency=Idempotency.NONE,
+                    audit=None,
+                    long_running=False,
+                ),
+                _handler,
+            ),
+        )
+    elif kind == "tool":
+        expected_name = "no_class_tool"
+        sets.CORE_TOOLS = (  # type: ignore[misc]
+            *sets.CORE_TOOLS,
+            ToolDeclaration.model_construct(
+                name=expected_name,
+                operation="core.workspace.status",
+                input_model=_NoFields,
+            ),
+        )
+    else:
+        raise ValueError(f"unknown kind {kind!r}; expected 'operation' or 'tool'")
+
+    try:
+        run_startup()
+    except RegistrationRefused as refused:
+        if refused.operation_name != expected_name:
+            raise AssertionError(
+                f"startup refused {refused.operation_name!r}, not the class-less "
+                f"{expected_name!r} this child registered"
+            ) from refused
+        if "safety class" not in refused.detail:
+            raise AssertionError(
+                f"startup refused {expected_name!r} for {refused.detail!r}, which "
+                "is not the missing safety class this child injected"
+            ) from refused
+        print(f"REFUSED={refused.operation_name}")
+        return
+    raise AssertionError(
+        f"startup completed with a class-less {kind} registered; it did not refuse "
+        f"{expected_name!r}"
+    )
+
+
+def _production_child_env(cluster: "ClusterSession", data_root: Path) -> dict[str, str]:
+    """The environment a production child runs with, built rather than inherited.
+
+    Every ``RHEO_*`` variable is stripped first — this developer machine's ``.env``
+    sets ``RHEO_PROFILE``, ``RHEO_MODULES``, ``RHEO_DATA_ROOT`` and more, and CI's
     ``python`` job sets ``RHEO_PROFILE=test`` at job level, so an inherited
-    environment would decide the outcome. Four variables go back in: the
-    production profile; ``RHEO_CLUSTER_DSN`` bridged from
-    ``RHEO_TEST_CLUSTER_DSN`` exactly as ``tests/conftest.py`` bridges it, so the
-    child reaches the cluster through the settings-to-secret path production uses;
-    a freshly named control database, recorded with this session so teardown drops
-    it and so the child's ``control`` chain cannot touch the outer session's; and
-    a private data root, so nothing is written to the developer's real
-    application-data directory.
+    environment would decide the outcome. Four go back in: the production profile;
+    ``RHEO_CLUSTER_DSN`` bridged from ``RHEO_TEST_CLUSTER_DSN`` exactly as
+    ``tests/conftest.py`` bridges it, so the child reaches the cluster through the
+    settings-to-secret path production uses; a freshly named control database,
+    recorded with this session so teardown drops it and so the child's ``control``
+    chain cannot touch the outer session's; and a private data root.
 
     ``routing.scheme`` is deliberately not set: the package default is ``https``,
     which is what lets ``_check_production_scheme`` pass, and stripping the
     ``RHEO_*`` variables is what stops a local ``http`` override from reaching the
-    child and turning that guard into the thing this test measures.
+    child and turning that guard into the thing these tests measure.
     """
     from conftest import CONTROL_TEST_PREFIX, DEFAULT_TEST_CLUSTER_DSN
 
@@ -235,8 +385,6 @@ def test_a_production_start_registers_nothing_from_the_test_harness(
     # Recorded before the child can create it, so a child that fails halfway
     # through its migration still has its database dropped at teardown.
     control_database = cluster.record(f"{CONTROL_TEST_PREFIX}{secrets.token_hex(6)}")
-    data_root = tmp_path / "production-data-root"
-
     env = {
         name: value
         for name, value in os.environ.items()
@@ -250,6 +398,18 @@ def test_a_production_start_registers_nothing_from_the_test_harness(
             "RHEO_DATA_ROOT": str(data_root),
         }
     )
+    return env
+
+
+@pytest.mark.postgres
+def test_a_production_start_registers_nothing_from_the_test_harness(
+    cluster: "ClusterSession", tmp_path: Path
+) -> None:
+    """AC 1 and AC 2: a real startup under ``profile = production`` registers no
+    tool, operation, consumer or identity provider from the test harness, and no
+    operation in the external or financial class.
+    """
+    env = _production_child_env(cluster, tmp_path / "production-data-root")
 
     completed = subprocess.run(
         ["uv", "run", "--frozen", "python", "-c", _CHILD_PROGRAM, str(_TESTS_DIR)],
@@ -272,6 +432,58 @@ def test_a_production_start_registers_nothing_from_the_test_harness(
     # Neither registry was empty, so the enumeration above passed over something.
     assert int(counts["operations"]) > 0, output
     assert int(counts["tools"]) > 0, output
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    ("kind", "expected_name"),
+    [("operation", "core.probe.act"), ("tool", "no_class_tool")],
+)
+def test_startup_refuses_a_classless_registration_naming_it(
+    cluster: "ClusterSession", tmp_path: Path, kind: str, expected_name: str
+) -> None:
+    """AC 3 through the sentence the criterion actually writes: "asserts **startup**
+    fails naming each".
+
+    The two unit-level companions below and in ``tests/test_contracts.py`` prove
+    that each *registry* refuses a class-less declaration. Neither proves that a
+    started application does, because both build a private registry the shipped
+    startup never touches — so a startup that filtered the declaration out, or
+    registered through some other path, would leave both green. This drives the
+    real ``run_startup()`` with the declaration injected into the tuple the core's
+    own registration function reads, once per half, each in its own process with
+    its own control database.
+    """
+    env = _production_child_env(cluster, tmp_path / f"classless-{kind}-data-root")
+
+    completed = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "python",
+            "-c",
+            _CLASSLESS_CHILD_PROGRAM,
+            str(_TESTS_DIR),
+            kind,
+        ],
+        cwd=_REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=PRODUCTION_START_TIMEOUT_SECONDS,
+    )
+    output = f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+
+    # Zero means the child caught the refusal it was looking for; a startup that
+    # completed raises in the child and lands here as a non-zero exit.
+    assert completed.returncode == 0, output
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    assert lines, output
+    # The refusal named what was registered, which is the half of the criterion a
+    # bare "startup failed" would not carry.
+    assert lines[-1] == f"REFUSED={expected_name}", output
 
 
 def test_registering_an_operation_with_no_safety_class_is_refused_naming_it() -> None:
