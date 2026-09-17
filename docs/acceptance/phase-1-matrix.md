@@ -1296,6 +1296,7 @@ except the operation it names. Both are true; neither is a pytest node.
 
 **Demonstrator:**
 - `pytest:tests/test_production_registration.py::test_a_production_start_registers_nothing_from_the_test_harness`
+- `pytest:tests/test_production_registration.py::test_the_identity_provider_clause_tracks_what_is_configured`
 - `pytest:tests/test_production_registration.py::test_startup_refuses_a_classless_registration_naming_it`
 - `pytest:tests/test_production_registration.py::test_registering_an_operation_with_no_safety_class_is_refused_naming_it`
 - `pytest:tests/test_contracts.py::test_tool_registration_refuses_a_declaration_with_no_safety_class`
@@ -1454,11 +1455,62 @@ through: red with `identity provider rows ['github'] are not the set this proces
 settings produce ([]); a provider row this startup did not write is in the control plane`.
 Reverted. The allowlist clause is kept beside it so an *unknown* id is still named as unknown.
 
+**That equality was, at first, only ever evaluated in the branch where it could not fail, and
+the fix is `test_the_identity_provider_clause_tracks_what_is_configured`.** A cold review probe
+set `sync_providers` to a no-op and the clause stayed **green** — `identity_providers=0`, exit
+0, `PROFILE=production` — because the child strips every `RHEO_*` variable and gets an empty
+data root, so `identity.providers.github.enabled` always resolved false, the expectation was
+always `[]`, and the equality compared two empty lists. The other three clauses each have a
+guard that fires when the thing they enumerate is missing entirely; this one had none, and the
+comment claiming its rule was "a deliberate second statement" that "can disagree" was true only
+in a branch that never ran. That is a claim and its check sharing a failure mode, landing on
+the comment itself.
+
+The clause is now run twice in one node against the same code, differing only in deployment
+settings: unconfigured it must see nothing, configured (`RHEO__identity__providers__github__
+enabled=true` plus a placeholder client id — nothing reaches GitHub, startup only upserts the
+row) it must see exactly `{github}`, and the child reports the expected count beside the actual
+one so the populated branch is proved live rather than inferred from a row existing. **Verified
+by the probe that found the gap:** with `sync_providers` returning immediately, the new node is
+red with `identity provider rows [] are not the set this process's own settings produce
+(['github']); a provider row this startup did not write is in the control plane`. Reverted.
+The original enumeration node stays green under that same mutation, correctly — with nothing
+configured and nothing synced, both sets really are empty — which is exactly why the paired
+node had to exist.
+
 **The residual gap, which this does not close:** in a deployment where GitHub is genuinely
 configured, a planted `github` row is indistinguishable from the real one, because both satisfy
 the equality. Closing that needs a provenance column on `control.identity_provider` — a schema
 change, a migration, and an edit to `sync_providers` — all outside this chunk's declared paths,
 and escalated to the Conductor rather than widened into here.
+
+**Note on the external/financial clause, which ranges over ten real operations and can never
+match one.** Nothing above `MUTATE` exists in shipped code — the production registry holds ten
+operations, every one `read` or `mutate`, and C6/C7's upper-class fixtures are harness-registered
+and profile-gated. So the predicate is evaluated ten times and has never been seen to fire,
+which is the position the consumer clause was in, and it gets the same instrument rather than a
+sentence excusing it. The operation scan is a named function applied both to the production
+registry and to one built to hold a single `EXTERNAL` operation beside a `READ` one, where it
+must flag the first and only the first. Demonstrated on 2026-09-16 by narrowing the predicate to
+`DESTRUCTIVE` so it could no longer match `EXTERNAL`: red with `the external/financial clause's
+own positive control did not fire: an EXTERNAL operation beside a READ one produced [], not
+exactly one problem naming the EXTERNAL one, so the same predicate applied to the production
+registry would not catch one there either`. Reverted.
+
+**Note on a fact this row's headline does not say, which is safe and worth stating anyway.**
+This chunk's `register_core_tools()` call puts a tool named `harness_get_note` into a production
+process's tool registry for the first time — the child reports `tools=2`, `workspace_status` and
+`harness_get_note` — and the assertion's tool loop can never flag it, because
+`register_core_tools()` registers both under `CORE_ORIGIN` by design. The row's headline says a
+production start registers "no tool … from the test harness", so a reader could reasonably
+expect that registry to hold no `harness_*` entry at all. **It is not a defect and needs no
+fix**, for two independently verified reasons: `agent_default()` in the production child returns
+`['core.workspace.status']` only, because `harness.note.get` never reaches `REGISTRY` outside
+`profile = test`; and `tools.py`'s `list_tools` filters on `_visible(ctx, tool.operation)`, which
+needs `harness` in `ctx.enabled_modules`, which no production deployment produces. The
+assertion checks the `agent_default` intersection for exactly this reason. But the reasoning
+that makes it safe is one comment deep, so it is written here rather than left to be
+rediscovered by whoever next reads that registry directly.
 
 **Note on the consumer clause, which is checked by a positive control rather than by a count.**
 Release one registers no production consumer, so the worker's `CONSUMERS` is legitimately
