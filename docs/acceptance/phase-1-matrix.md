@@ -1145,3 +1145,118 @@ shape criterion 6's note warns about: shrinking a constant cannot silently remov
 because the cases are not built from the constant under test.
 `test_refusal_states_are_exactly_the_four_criterion_69_names` is the literal-list companion for
 the refusal-state names and is listed for the same reason criterion 6's second demonstrator is.
+
+---
+
+### Criterion 20
+
+**Text:** "Every tool the MCP façade exposes is namespaced and goal-level and reaches storage only by calling an application service. A test enumerates the registered tools and asserts that none accepts SQL, a table name, or a query fragment as an argument, and a check asserts that no file in the MCP façade imports a database driver or a repository directly." (`build-plan.md:183-187`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/test_mcp_boundary.py::test_registered_tools_accept_no_sql_table_name_or_query_fragment`
+- `pytest:tests/test_mcp_boundary.py::test_mcp_imports_no_core_storage_or_db_driver`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/operations/registry.py b/packages/core/src/rheo_core/operations/registry.py
+index 03d5ae6..f32d575 100644
+--- a/packages/core/src/rheo_core/operations/registry.py
++++ b/packages/core/src/rheo_core/operations/registry.py
+@@ -148,7 +148,7 @@ def _alias_names(model: type[BaseModel]) -> set[str]:
+ 
+ def reserved_input_fields(model: type[BaseModel]) -> frozenset[str]:
+     """The reserved names ``model`` would accept, by field name or alias."""
+-    return frozenset(_alias_names(model) & RESERVED_INPUT_FIELDS)
++    return frozenset()
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+diff --git a/tests/test_mcp_boundary.py b/tests/test_mcp_boundary.py
+index 1efc9c1..138f53a 100644
+--- a/tests/test_mcp_boundary.py
++++ b/tests/test_mcp_boundary.py
+@@ -34,9 +34,22 @@ from pathlib import Path
+ from typing import Final
+ 
+ from pydantic import BaseModel
+-from rheo_contracts import RESERVED_INPUT_FIELDS
++from rheo_contracts import RESERVED_INPUT_FIELDS, SafetyClass, ToolDeclaration
++from rheo_core.settings import CORE_ORIGIN
+ from rheo_core.tokens.sets import TOOL_REGISTRY, register_core_tools
+ 
++
++class _ScratchSqlInput(BaseModel):
++    sql: str
++
++
++_SCRATCH_TOOL = ToolDeclaration(
++    name="scratch_sql_tool",
++    safety_class=SafetyClass.READ,
++    operation="core.workspace.status",
++    input_model=_ScratchSqlInput,
++)
++
+ _REPO_ROOT = Path(__file__).resolve().parents[1]
+ _MCP_ROOT = _REPO_ROOT / "apps" / "mcp"
+ _FORBIDDEN_DRIVER_ROOTS = frozenset({"psycopg", "sqlalchemy", "asyncpg"})
+@@ -119,6 +132,7 @@ def test_registered_tools_accept_no_sql_table_name_or_query_fragment() -> None:
+     no tools — the vacuous pass this assertion is most likely to decay into.
+     """
+     register_core_tools()
++    TOOL_REGISTRY.register(_SCRATCH_TOOL, origin=CORE_ORIGIN)
+     declarations = TOOL_REGISTRY.declarations()
+     assert declarations, "the tool registry is empty; the enumeration proves nothing"
+     offenders: dict[str, list[str]] = {}
+```
+
+**Cost:** `pytest:tests/test_mcp_boundary.py::test_registered_tools_accept_no_sql_table_name_or_query_fragment` — first observed failure line: `E       AssertionError: registered tool(s) accept a reserved argument: {'scratch_sql_tool': ['sql']}; workspace, actor and storage identity come from the context only`
+
+**Performed by:** C4 (2026-09-16)
+
+**Note: the hunk is two-part because no one-part version of it bites, and all three
+one-part versions were run rather than reasoned about.** Disabling the shared
+`reserved_input_fields` check is one half and registering a reserved-field-bearing tool is
+the other; each alone leaves the enumeration green.
+
+- **A tool declaring `query: str`, refusal live.** It registers cleanly — `query` is not one
+  of the ratified twelve — and the enumeration correctly finds nothing. Observed: the live set
+  became `['workspace_status', 'harness_get_note', 'scratch_sql_tool']` and the node passed.
+- **A tool declaring `sql: str`, refusal live.** Observed: `RegistrationRefused:
+  scratch_sql_tool: input model declares reserved field(s) ['sql']; workspace, actor and
+  storage identity come from the context only`, live set unchanged at `['workspace_status',
+  'harness_get_note']`, node passed. The refusal is doing its job; the enumeration never sees
+  the tool and so proves nothing about it.
+- **Disabling the shared check alone, nothing registered.** Observed: node passed. This is the
+  one that looks sufficient and is not — disabling a refusal changes nothing already
+  registered, and neither shipped tool declares a reserved field
+  (`packages/core/src/rheo_core/tokens/sets.py`: `_WorkspaceStatusToolInput` declares no
+  fields, `_HarnessNoteRefToolInput` declares only `ref`).
+
+**Note: the enumeration does not call `reserved_input_fields`, and that is what makes the
+hunk able to bite at all.** That function is what registration refuses with. Had the
+enumeration reused it, the first half of this hunk would have blinded the assertion at the
+same moment it removed the refusal, and the row would have recorded a green run as proof.
+Instead the enumeration reads the ratified `RESERVED_INPUT_FIELDS` and intersects it with the
+argument names each tool's published JSON schema exposes — a different instrument for the same
+claim, and closer to the criterion's own words, since "accepts ... as an argument" is about
+what a client may send.
+
+**Note: the second demonstrator's own mutation, performed separately and not recorded as this
+row's hunk** (the grammar carries one). `import sqlalchemy` added to
+`apps/mcp/src/rheo_app_mcp/transport.py` turned
+`test_mcp_imports_no_core_storage_or_db_driver` red with `E       AssertionError: apps/mcp
+imports a forbidden module: {'apps/mcp/src/rheo_app_mcp/transport.py': ['sqlalchemy']}` —
+which names both the file and the import it caught, so a future failure tells its reader what
+to go and look at rather than only that something is wrong. Reverted. The scan stays green
+against the enlarged package: `transport.py` reaches storage only through the same `dispatch`
+call `tools.py` already made.
+
+**Note: the first clause has no demonstrator in this grammar, and is recorded as such rather
+than covered over.** "Namespaced and goal-level" is a property of the two tool names
+(`workspace_status`, `harness_get_note`) that no test asserts; `runtime-and-mcp.md` fixes the
+convention (`<module>_<verb>[_<noun>]`) and nothing mechanically enforces it. "Reaches storage
+only by calling an application service" is enforced structurally rather than by assertion — a
+`ToolDeclaration` has no handler field at all, so a tool has nothing to reach storage *with*
+except the operation it names. Both are true; neither is a pytest node.
