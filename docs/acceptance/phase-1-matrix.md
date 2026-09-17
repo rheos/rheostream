@@ -851,7 +851,7 @@ negative case and is unreachable by a hunk on the `long_running` branch.
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record`
-- `pytest:tests/postgres/test_audit_dispatch.py::test_the_mutating_set_derived_from_the_registry_is_the_declared_eight`
+- `pytest:tests/postgres/test_audit_dispatch.py::test_the_mutating_set_derived_from_the_registry_is_the_declared_twelve`
 - `pytest:tests/postgres/test_audit_dispatch.py::test_the_success_row_names_the_actor_the_entry_and_the_request`
 - `pytest:tests/postgres/test_audit_dispatch.py::test_an_operation_above_mutate_is_audited_too`
 - `pytest:tests/postgres/test_context_routing.py::test_registering_a_non_read_operation_with_no_audit_spec_is_refused`
@@ -876,44 +876,64 @@ index 9296e2f..97e5124 100644
 ```
 
 **Cost:**
-- `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record` — first observed failure line: `E       AssertionError: ['core', 'harness']`, then `E       assert {'core', 'harness'} == {'core.operat...explode', ...}` with all eight operation names listed as extra items in the right set.
+- `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record` — first observed failure line: `E       AssertionError: ['core', 'harness']`, then `E       assert {'core', 'harness'} == {'core.approv...n.issue', ...}` with `'core'` and `'harness'` as the extra items in the left set and the twelve operation names in the right.
 - `pytest:tests/postgres/test_audit_dispatch.py::test_the_success_row_names_the_actor_the_entry_and_the_request` — first observed failure line: `E       AssertionError: assert 'core' == 'core.settings.set'`.
 - `pytest:tests/postgres/test_audit_dispatch.py::test_an_operation_above_mutate_is_audited_too` — first observed failure line: `E       AssertionError: assert 'harness' == 'harness.probe.destroy'`.
 
 13 failed, 10 passed.
 
-**Performed by:** C2 (2026-09-16)
+**Performed by:** C2 (2026-09-16), C6 (2026-09-16)
 
 **Note on which clause this attacks.** The criterion's first sentence requires the record to
 **name the operation**, and the third requires one record per registered mutating kind, read
 through a supported operation (`core.audit.list`) rather than off the table. The hunk writes the
 module id where the operation name belongs, so every dispatch still produces a row, the row is
-still readable through `core.audit.list`, and the eight distinct names collapse to two. The red
+still readable through `core.audit.list`, and the twelve distinct names collapse to two. The red
 is therefore "the audit record does not identify what happened", which is the failure that would
 be hardest to notice in production: the rows are all there and the count is right.
 
 **Note on what the three reds do and do not span.** They are three different assertions in three
-different tests — a set comparison against `THE_EIGHT`, a single-row column check, and the
+different tests — a set comparison against `THE_TWELVE`, a single-row column check, and the
 above-`mutate` case — rather than one shared helper seen three times, so this row's `Cost` is
-three independent sightings. **Three** of the other listed demonstrators stayed green, and were
-read rather than assumed: `test_the_mutating_set_derived_from_the_registry_is_the_declared_eight`
+three independent sightings, and each was re-run **individually** at re-capture rather than read
+off the aggregate. **Three** of the other listed demonstrators stayed green, and were
+read rather than assumed: `test_the_mutating_set_derived_from_the_registry_is_the_declared_twelve`
 reads the registry, not the rows; `test_check_audit_paths_names_every_offender` and
 `test_a_missing_sink_refuses_the_call_and_writes_neither_effect_nor_row` are registration- and
 dispatch-time refusals that never reach a sink write.
 
-**A fourth listed demonstrator was never executed and has no observed result either way.**
+**The fourth listed demonstrator now has an observed result, and it is green.**
 `test_registering_a_non_read_operation_with_no_audit_spec_is_refused` is in another file
-(`test_context_routing.py`) and was not in the run, so it is not among the greens above and no
-claim is made about how it behaves under this hunk. It is listed as a demonstrator for the
-clause it covers, not as an observation from this mutation.
+(`test_context_routing.py`) and was not in C2's run, so C2 recorded no claim about it. C6's
+re-capture ran it under this hunk: 5 passed, all five parametrised safety classes. That is the
+expected answer rather than a surprise — it is a *registration*-time refusal and this hunk edits
+a sink write — and it is recorded because "not executed" was a gap that a single command closed.
 
-**Note on the eight-operation set and where its literal lives.**
-`test_the_mutating_set_derived_from_the_registry_is_the_declared_eight` derives the set from the
-registry by safety class and compares it against `THE_EIGHT`
-(`tests/postgres/test_audit_dispatch.py:103-114`), a literal frozenset of the eight names. It is
+**Note on the twelve-operation set and where its literal lives.**
+`test_the_mutating_set_derived_from_the_registry_is_the_declared_twelve` derives the set from the
+registry by safety class and compares it against `THE_TWELVE`
+(`tests/postgres/test_audit_dispatch.py:107-122`), a literal frozenset of the twelve names. It is
 listed as a demonstrator for the same reason criterion 6's second demonstrator is: it is the
 literal-list companion that catches a shrinking set, which a coverage assertion derived from the
 registry alone could not. Neither test is parametrised over the constant it tests.
+
+**Why this row was re-captured by C6, and why `State` is still `complete`.** Run 0c3's C6
+registered four more operations above the read class — `core.approval.approve` and
+`core.approval.refuse`, plus the two upper-class harness fixtures `harness.fixture.act` and
+`harness.sink.send` — so the set this row's coverage clause is *over* grew from eight to twelve,
+and the test that names it was renamed with its constant. The criterion itself is unchanged and
+still holds: every one of the twelve leaves a matching audit record, read through
+`core.audit.list`. **What changed is this row's evidence, not its verdict** — a renamed
+demonstrator id resolves to nothing, and two of the three `Cost` lines described an eight-name
+set. C6 re-ran the same hunk and re-captured all three lines and the aggregate.
+
+**One `Cost` line changed for a second reason, and it is recorded rather than smoothed over.**
+`test_an_operation_above_mutate_is_audited_too` used to dispatch a `DESTRUCTIVE` probe and assert
+a `succeeded` row; from C6 that dispatch is *held* for an approval, so the test asserts a
+`refused` row instead. Its first observed failure line under this hunk is unchanged
+(`assert 'harness' == 'harness.probe.destroy'`) because the operation-name assertion still fails
+first — but that identity was **captured, not assumed**: the line above is what the node printed
+when run on its own at re-capture.
 
 **Note on one clause with a live demonstrator and no performed mutation.** "A mutating operation
 registered without an audit path fails registration at startup with a named operation" is
