@@ -8,9 +8,10 @@ import json
 import tarfile
 import tempfile
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Final
+from typing import Any, BinaryIO, Final
 from uuid import UUID
 
 import zstandard as zstd
@@ -57,10 +58,44 @@ NON_TERMINAL_OPERATIONS: Final = (
     "unresolved",
 )
 RESTORED_OPERATION_STATE: Final = "approval_required"
+MAX_COMPRESSED_BYTES: Final = 256 * 1024 * 1024
+MAX_DECOMPRESSED_BYTES: Final = 1024 * 1024 * 1024
+MAX_MEMBER_BYTES: Final = 256 * 1024 * 1024
+MAX_ARCHIVE_BYTES: Final = 1024 * 1024 * 1024
 
 
 class ArtifactRefused(Exception):
     """A malformed or unsupported artifact, safe to show to an operator."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactIdentity:
+    workspace_id: UUID
+    owner_account_id: UUID
+    source_digest: bytes
+
+
+class _BoundedReader(io.RawIOBase):
+    """Count decompressed bytes while tarfile consumes the zstd stream."""
+
+    def __init__(self, source: BinaryIO, limit: int) -> None:
+        self._source = source
+        self._limit = limit
+        self._read = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        remaining = self._limit - self._read
+        requested = remaining + 1 if size < 0 else min(size, remaining + 1)
+        body = self._source.read(requested)
+        self._read += len(body)
+        if self._read > self._limit:
+            raise ArtifactRefused(
+                f"artifact expands beyond {self._limit} decompressed bytes"
+            )
+        return body
 
 
 def _json_value(value: object) -> object:
@@ -114,8 +149,6 @@ def _composition_bytes(connection: Connection) -> bytes:
             "kind": "module_schema_version",
             "module_id": row.module_id,
             "schema_version": row.schema_version,
-            "applied_at": row.applied_at,
-            "core_version_at_apply": row.core_version_at_apply,
         }
         for row in repositories.list_module_schema_versions(connection)
     )
@@ -248,33 +281,54 @@ def write_archive(entries: Mapping[str, bytes], destination: Path) -> None:
 def read_archive(path: Path) -> dict[str, bytes]:
     """Read regular files only; paths and links cannot escape extraction."""
     try:
-        compressed = path.read_bytes()
-        with zstd.ZstdDecompressor().stream_reader(io.BytesIO(compressed)) as reader:
-            tar_bytes = reader.read()
-    except (OSError, zstd.ZstdError) as exc:
+        compressed_size = path.stat().st_size
+        if compressed_size > MAX_COMPRESSED_BYTES:
+            raise ArtifactRefused(
+                f"artifact exceeds {MAX_COMPRESSED_BYTES} compressed bytes"
+            )
+        entries: dict[str, bytes] = {}
+        total_size = 0
+        with path.open("rb") as compressed:
+            with zstd.ZstdDecompressor().stream_reader(compressed) as decompressed:
+                bounded = _BoundedReader(decompressed, MAX_DECOMPRESSED_BYTES)
+                with tarfile.open(fileobj=bounded, mode="r|") as archive:
+                    for member in archive:
+                        pure = PurePosixPath(member.name)
+                        if (
+                            not member.isfile()
+                            or pure.is_absolute()
+                            or ".." in pure.parts
+                            or member.name in entries
+                        ):
+                            raise ArtifactRefused(
+                                f"artifact member {member.name!r} is not a unique "
+                                "regular file"
+                            )
+                        if member.size > MAX_MEMBER_BYTES:
+                            raise ArtifactRefused(
+                                f"artifact member {member.name!r} exceeds "
+                                f"{MAX_MEMBER_BYTES} bytes"
+                            )
+                        total_size += member.size
+                        if total_size > MAX_ARCHIVE_BYTES:
+                            raise ArtifactRefused(
+                                f"artifact members exceed {MAX_ARCHIVE_BYTES} bytes"
+                            )
+                        extracted = archive.extractfile(member)
+                        if extracted is None:
+                            raise ArtifactRefused(
+                                f"artifact member {member.name!r} has no body"
+                            )
+                        body = extracted.read(member.size + 1)
+                        if len(body) != member.size:
+                            raise ArtifactRefused(
+                                f"artifact member {member.name!r} size is invalid"
+                            )
+                        entries[member.name] = body
+    except ArtifactRefused:
+        raise
+    except (OSError, tarfile.TarError, zstd.ZstdError) as exc:
         raise ArtifactRefused(f"cannot read artifact {path}: {exc}") from None
-    entries: dict[str, bytes] = {}
-    try:
-        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as archive:
-            for member in archive.getmembers():
-                pure = PurePosixPath(member.name)
-                if (
-                    not member.isfile()
-                    or pure.is_absolute()
-                    or ".." in pure.parts
-                    or member.name in entries
-                ):
-                    raise ArtifactRefused(
-                        f"artifact member {member.name!r} is not a unique regular file"
-                    )
-                extracted = archive.extractfile(member)
-                if extracted is None:
-                    raise ArtifactRefused(
-                        f"artifact member {member.name!r} has no body"
-                    )
-                entries[member.name] = extracted.read()
-    except tarfile.TarError as exc:
-        raise ArtifactRefused(f"artifact is not a readable tar: {exc}") from None
     return entries
 
 
@@ -347,6 +401,31 @@ def _manifest(entries: Mapping[str, bytes]) -> dict[str, object]:
     modules = value.get("modules")
     if not isinstance(modules, list):
         raise ArtifactRefused("manifest modules must be a list")
+    for index, module in enumerate(modules):
+        if not isinstance(module, dict):
+            raise ArtifactRefused(f"manifest module {index} must be an object")
+        module_id = module.get("module_id")
+        package_version = module.get("package_version")
+        schema_version = module.get("schema_version")
+        export_format_version = module.get("export_format_version")
+        if not isinstance(module_id, str) or not module_id:
+            raise ArtifactRefused(f"manifest module {index} has no module_id")
+        if not isinstance(package_version, str) or not package_version:
+            raise ArtifactRefused(
+                f"manifest module {module_id!r} has no package_version"
+            )
+        if schema_version is not None and not isinstance(schema_version, str):
+            raise ArtifactRefused(
+                f"manifest module {module_id!r} has invalid schema_version"
+            )
+        if (
+            not isinstance(export_format_version, int)
+            or isinstance(export_format_version, bool)
+            or export_format_version < 1
+        ):
+            raise ArtifactRefused(
+                f"manifest module {module_id!r} has invalid export_format_version"
+            )
     unsupported = [
         module
         for module in modules
@@ -364,6 +443,34 @@ def _manifest(entries: Mapping[str, bytes]) -> dict[str, object]:
         ]
         raise ArtifactRefused(f"host cannot load artifact modules: {', '.join(names)}")
     return value
+
+
+def _identity(manifest: Mapping[str, object], source_digest: bytes) -> ArtifactIdentity:
+    try:
+        return ArtifactIdentity(
+            workspace_id=UUID(str(manifest["workspace_id"])),
+            owner_account_id=UUID(str(manifest["owner_account_id"])),
+            source_digest=source_digest,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ArtifactRefused(f"manifest identity is invalid: {exc}") from None
+
+
+def _file_digest(path: Path) -> bytes:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise ArtifactRefused(f"cannot read artifact {path}: {exc}") from None
+    return digest.digest()
+
+
+def artifact_identity(path: Path) -> ArtifactIdentity:
+    """Validated manifest identity plus a digest binding a later queued restore."""
+    entries = read_archive(path)
+    return _identity(_manifest(entries), _file_digest(path))
 
 
 def _jsonl(body: bytes, name: str) -> list[dict[str, object]]:
@@ -443,6 +550,7 @@ def _import_settings(connection: Connection, body: bytes) -> None:
 def _install_modules(connection: Connection, manifest: Mapping[str, object]) -> None:
     modules = manifest["modules"]
     assert isinstance(modules, list)
+    manifest_core_version = str(manifest["core_version"])
     for module in modules:
         assert isinstance(module, dict)
         now = datetime.now(UTC)
@@ -457,6 +565,16 @@ def _install_modules(connection: Connection, manifest: Mapping[str, object]) -> 
                 state_detail=None,
             )
         )
+        schema_version = module["schema_version"]
+        if schema_version is not None:
+            connection.execute(
+                insert(core_tables.module_schema_version).values(
+                    module_id=str(module["module_id"]),
+                    schema_version=str(schema_version),
+                    applied_at=now,
+                    core_version_at_apply=manifest_core_version,
+                )
+            )
 
 
 def _import_operations(connection: Connection, body: bytes) -> set[UUID]:
@@ -515,18 +633,28 @@ def _import_audit(connection: Connection, body: bytes) -> None:
         )
 
 
-def restore_artifact(path: Path, *, restore_id: UUID | None = None) -> UUID:
+def restore_artifact(
+    path: Path,
+    *,
+    restore_id: UUID | None = None,
+    expected_identity: ArtifactIdentity | None = None,
+) -> UUID:
     """Provision the manifest workspace, import it, and activate the restore record."""
     entries = read_archive(path)
     manifest = _manifest(entries)
+    identity = _identity(manifest, _file_digest(path))
+    if expected_identity is not None and identity != expected_identity:
+        raise ArtifactRefused(
+            "artifact identity or digest changed after restore was authorized"
+        )
+    workspace_id = identity.workspace_id
+    owner_account_id = identity.owner_account_id
     try:
-        workspace_id = UUID(str(manifest["workspace_id"]))
-        owner_account_id = UUID(str(manifest["owner_account_id"]))
         slug = str(manifest["workspace_slug"])
-    except (KeyError, TypeError, ValueError) as exc:
+    except KeyError as exc:
         raise ArtifactRefused(f"manifest identity is invalid: {exc}") from None
     backend = get_backend()
-    source_digest = hashlib.sha256(path.read_bytes()).digest()
+    source_digest = identity.source_digest
     with backend.control_engine.connect() as control:
         row = get_workspace(control, workspace_id)
     record_id = uuid7() if restore_id is None else restore_id

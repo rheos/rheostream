@@ -123,7 +123,7 @@ def export_workspace(args: argparse.Namespace) -> int:
         print(ctx, file=sys.stderr)
         return 1
     outcome = dispatch(ctx, WORKSPACE_EXPORT, {})
-    if outcome.operation_id is None:
+    if outcome.state != "pending" or outcome.operation_id is None:
         error = outcome.error
         print(
             outcome.state

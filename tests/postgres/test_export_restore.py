@@ -27,6 +27,7 @@ from rheo_core.exports import (
     WORKSPACE_DIGEST,
     WORKSPACE_EXPORT,
     WORKSPACE_RESTORE,
+    ArtifactRefused,
     ExportJobPayload,
     RestoreJobPayload,
     read_archive,
@@ -34,10 +35,13 @@ from rheo_core.exports import (
     run_restore_job,
     write_archive,
 )
+from rheo_core.exports import artifact as artifact_module
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.storage import control_tables, core_tables, work_tables
 from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.control_plane import insert_account
 from rheo_core.storage.data_root import Purpose, workspace_dir_for
+from rheo_core.storage.provisioning import core_version
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
@@ -146,7 +150,10 @@ def _restore_from_host(
 
 
 def test_export_artifact_is_complete_and_secret_value_free(
-    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    tmp_path: Path,
 ) -> None:
     ctx = _context(cluster, workspace, owner_account_id)
     row = cluster.registry_row(workspace)
@@ -180,6 +187,21 @@ def test_export_artifact_is_complete_and_secret_value_free(
     assert SECRET_REFERENCE.encode() in unpacked
     assert SECRET_VALUE.encode() not in unpacked
 
+    invalid_entries = dict(entries)
+    manifest = json.loads(invalid_entries["manifest.json"])
+    manifest["modules"] = [
+        {
+            "module_id": "harness",
+            "schema_version": None,
+            "export_format_version": 1,
+        }
+    ]
+    invalid_entries["manifest.json"] = json.dumps(manifest).encode()
+    invalid = tmp_path / "invalid-module.tar.zst"
+    write_archive(invalid_entries, invalid)
+    with pytest.raises(ArtifactRefused, match="package_version"):
+        artifact_module.artifact_identity(invalid)
+
 
 def test_restore_matches_source_by_workspace_digest(
     cluster: ClusterSession,
@@ -188,8 +210,22 @@ def test_restore_matches_source_by_workspace_digest(
 ) -> None:
     source_id = make_workspace(slug="digest-source")
     host_id = make_workspace(slug="restore-host")
-    source = _context(cluster, source_id, owner_account_id)
+    source = _context(cluster, source_id, owner_account_id, harness=True)
     host = _context(cluster, host_id, owner_account_id)
+    source_row = cluster.registry_row(source_id)
+    with UnitOfWork(
+        cluster.backend.pools.engine_for(source_row.database_name),
+        source_row.database_name,
+    ) as uow:
+        uow.connection.execute(
+            insert(core_tables.module_schema_version).values(
+                module_id="harness",
+                schema_version="0001_harness",
+                applied_at=datetime.now(UTC),
+                core_version_at_apply=core_version(),
+            )
+        )
+        uow.commit()
     artifact = _export(cluster, source)
     source_digest = _digest(source)
     assert set(source_digest) == {
@@ -206,6 +242,42 @@ def test_restore_matches_source_by_workspace_digest(
     restored = _context(cluster, source_id, owner_account_id)
 
     assert _digest(restored) == source_digest
+
+
+def test_archive_reader_enforces_compressed_and_member_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "bounded.tar.zst"
+    write_archive({"one": b"payload"}, artifact)
+    monkeypatch.setattr(
+        artifact_module, "MAX_COMPRESSED_BYTES", artifact.stat().st_size - 1
+    )
+    with pytest.raises(ArtifactRefused, match="compressed bytes"):
+        read_archive(artifact)
+    monkeypatch.setattr(
+        artifact_module, "MAX_COMPRESSED_BYTES", artifact.stat().st_size
+    )
+    monkeypatch.setattr(artifact_module, "MAX_MEMBER_BYTES", 1)
+    with pytest.raises(ArtifactRefused, match="member 'one' exceeds"):
+        read_archive(artifact)
+
+
+def test_account_cannot_queue_restore_for_another_artifact_owner(
+    cluster: ClusterSession,
+    make_workspace: MakeWorkspace,
+    owner_account_id: UUID,
+) -> None:
+    source_id = make_workspace(slug="owned-export")
+    source = _context(cluster, source_id, owner_account_id)
+    artifact = _export(cluster, source)
+    with cluster.backend.control_engine.begin() as control:
+        other_account = insert_account(control, display_name="other restore owner").id
+    host_id = make_workspace(slug="other-owner-host", owner=other_account)
+    other = _context(cluster, host_id, other_account)
+
+    outcome = dispatch(other, WORKSPACE_RESTORE, {"artifact_path": str(artifact)})
+
+    assert outcome.state == "restore_not_permitted"
 
 
 def test_approved_action_restore_requires_fresh_approval_and_executes_nothing(

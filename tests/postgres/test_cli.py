@@ -247,6 +247,10 @@ def test_a_fresh_control_plane_needs_account_create_before_workspace_create(
     assert REGISTRY.lookup(WORKSPACE_STATUS) is not None
     assert REGISTRY.lookup(SETTINGS_SET) is not None
 
+    code, out, err = _run(capsys, "workspace", "export", str(workspace_id))
+    assert code == 0 and out.endswith("\n") and "queued" in err
+    UUID(out.strip())
+
     code, out, err = _run(capsys, "workspace", "repair", str(workspace_id))
     assert code == 0 and out == ""
     assert cluster.registry_row(workspace_id).state is WorkspaceState.ACTIVE

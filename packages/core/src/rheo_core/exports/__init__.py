@@ -2,6 +2,7 @@
 
 from rheo_core.exports.artifact import (
     ArtifactRefused,
+    artifact_identity,
     digest_categories,
     read_archive,
     restore_artifact,
@@ -26,6 +27,7 @@ __all__ = [
     "WORKSPACE_EXPORT",
     "WORKSPACE_RESTORE",
     "ArtifactRefused",
+    "artifact_identity",
     "ExportJobPayload",
     "RestoreJobPayload",
     "digest_categories",

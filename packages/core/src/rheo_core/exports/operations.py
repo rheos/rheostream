@@ -1,17 +1,19 @@
 """Registered export, digest and restore operation models and handlers."""
 
-import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
-from rheo_contracts import WorkspaceContext
+from rheo_contracts import ActorKind, WorkspaceContext
 from sqlalchemy import insert, select, update
 
 from rheo_core.exports import tables
 from rheo_core.exports.artifact import (
+    ArtifactIdentity,
+    ArtifactRefused,
+    artifact_identity,
     create_artifact,
     digest_categories,
     restore_artifact,
@@ -81,6 +83,9 @@ class ExportJobPayload(BaseModel):
 class RestoreJobPayload(BaseModel):
     artifact_path: str
     restore_id: UUID
+    expected_workspace_id: UUID
+    expected_owner_account_id: UUID
+    source_digest: str
 
 
 def _operation_id(uow: UnitOfWork) -> UUID | None:
@@ -186,13 +191,31 @@ def restore_handler(
     path = Path(model_input.artifact_path).expanduser().resolve()
     if not path.is_file():
         raise OperationRefused("artifact_missing", f"artifact {path} does not exist")
+    try:
+        identity = artifact_identity(path)
+    except ArtifactRefused as exc:
+        raise OperationRefused("artifact_invalid", str(exc)) from None
+    if (
+        ctx.actor.kind is ActorKind.ACCOUNT
+        and ctx.actor.id != identity.owner_account_id
+    ):
+        raise OperationRefused(
+            "restore_not_permitted",
+            "the artifact owner does not match the authenticated account",
+        )
     _insert_record(
         uow, record_id=restore_id, kind="restore", created_by_id=ctx.actor.id
     )
     enqueue_job(
         uow.connection,
         kind=RESTORE_JOB_KIND,
-        payload={"artifact_path": str(path), "restore_id": str(restore_id)},
+        payload={
+            "artifact_path": str(path),
+            "restore_id": str(restore_id),
+            "expected_workspace_id": str(identity.workspace_id),
+            "expected_owner_account_id": str(identity.owner_account_id),
+            "source_digest": identity.source_digest.hex(),
+        },
         now=datetime.now(UTC),
         max_attempts=resolve().get_int("work.max_attempts"),
         operation_id=operation_id,
@@ -223,11 +246,19 @@ def run_restore_job(
 ) -> None:
     assert isinstance(payload, RestoreJobPayload)
     token.checkpoint()
-    restore_artifact(Path(payload.artifact_path), restore_id=payload.restore_id)
-    source_digest = hashlib.sha256(Path(payload.artifact_path).read_bytes()).digest()
+    expected_identity = ArtifactIdentity(
+        workspace_id=payload.expected_workspace_id,
+        owner_account_id=payload.expected_owner_account_id,
+        source_digest=bytes.fromhex(payload.source_digest),
+    )
+    restore_artifact(
+        Path(payload.artifact_path),
+        restore_id=payload.restore_id,
+        expected_identity=expected_identity,
+    )
     uow.connection.execute(
         update(tables.export_record)
         .where(tables.export_record.c.id == payload.restore_id)
-        .values(state="complete", source_digest=source_digest)
+        .values(state="complete", source_digest=expected_identity.source_digest)
     )
     token.checkpoint()
