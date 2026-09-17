@@ -1241,9 +1241,11 @@ safe to publish.
 
 ### License choice
 
-Settled 2026-09-17: **AGPL-3.0**. Operators who distribute or host modified
-versions must provide corresponding source. The `LICENSE` file is the GNU Affero
-GPL v3 text. SPDX: `AGPL-3.0`.
+Settled 2026-09-17: **AGPL-3.0**. The `LICENSE` file is the GNU Affero GPL v3
+text. SPDX: `AGPL-3.0-only` (this version only, not or-later). Operators who
+convey a modified version must meet the applicable Corresponding Source
+requirements. If that version supports remote network interaction, they must
+offer Corresponding Source to those remote users at no charge.
 
 Considered and not chosen:
 

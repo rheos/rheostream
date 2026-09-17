@@ -45,7 +45,8 @@ spanning the two, so a crash between them leaves a job undue until
 reconciliation. The reference compose topology runs that worker as its own
 service. **No product module has a line of code yet** — Leads, Current, and
 Recallatron are still empty stubs — and the durable layer is still not
-finished: there are no scheduled jobs. The full module manifest is still open. The license is AGPL-3.0.
+finished: there are no scheduled jobs. The module-manifest design is settled;
+disable, remove, purge, and restore are not built. The license is AGPL-3.0.
 Directory names under `modules/`, `connectors/`, `channels/`, `runtimes/`,
 and `packs/` still mark intended boundaries, not implemented features; `apps/`
 and `packages/` no longer do.
@@ -147,7 +148,9 @@ internal build guidance stays in private agent context, as described in the
 [workspace guide](docs/workspace-layout.md#private-instructions-and-new-sessions).
 
 rheoStream is licensed under the [GNU Affero General Public License v3.0](LICENSE)
-(`AGPL-3.0`). Operators who distribute or host a modified version must provide
-corresponding source. The commercial model is still open.
+(SPDX `AGPL-3.0-only`). Operators who convey a modified version must meet the
+applicable Corresponding Source requirements. If that version supports remote
+network interaction, they must offer Corresponding Source to those remote users
+at no charge. The commercial model is still open.
 
 Project home: [rheo.stream](https://rheo.stream).
