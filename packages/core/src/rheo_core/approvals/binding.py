@@ -97,7 +97,7 @@ def binding_detail(
     than the count.** The document's refusal is "a differing byte, a differing
     destination, or a time outside the window". The subject and the destination are
     not compared here because in release one **neither can differ without the digest
-    differing**:
+    differing** — *provided every consumer reads them from the validated input*:
 
     - the subject is read from an *input-model field* — that is what
       ``AuditSpec.subject_field`` names (``rheo_contracts.manifest``), and
@@ -109,10 +109,29 @@ def binding_detail(
 
     A vacuous comparison would be worse than an absent one: re-reading the stored
     subject and comparing it with itself is a clause that can never fail, which reads
-    as coverage and is not. **The condition under which this stops being true is
-    exactly one thing** — a declaration gaining a way to name a subject or a
-    destination from somewhere other than its validated input. The chunk that adds
-    that surface adds the clause here, and this paragraph is what tells it to.
+    as coverage and is not.
+
+    **That proviso is the whole of it, and this package once broke it.**
+    ``core.approval.subject_ref`` is a *second stored copy* of the subject, written
+    beside the payload when the call is held; the digest covers the payload and not
+    that column. The first version of ``gate.py`` built the executed operation's
+    audit row from the column, so tampering with it alone — payload and digest
+    untouched — passed this check and produced a ``succeeded`` audit row naming a
+    record the operation never acted on. **The fix was not to add the clause back**:
+    it was to make the audit row derive its subject from the verified input, which is
+    what ``operations/dispatch.py``'s ``record_operation_audit`` now does for both
+    paths, and ``tests/postgres/test_approvals.py::test_a_tampered_subject_column
+    _never_reaches_the_audit_row`` is what keeps it that way. So the rule stated here
+    is a rule about **consumers**, not only about declarations: anything that acts on
+    a subject or a destination — an effect, an audit row, a guard — reads it from the
+    validated input or from something the digest covers. The stored columns are a
+    *record* of what was approved, for a person reading it back; they are not an
+    input to execution.
+
+    **Two things reopen the clause.** A declaration gaining a way to name a subject
+    or a destination from somewhere other than its validated input — and a consumer
+    choosing to read one of the stored columns instead. The second is the one that
+    actually happened, so it is named first for the next reader.
 
     ``now`` is a parameter and not a clock read, for the reason every repository in
     this tree gives: a caller that chooses the instant can test the window's edges

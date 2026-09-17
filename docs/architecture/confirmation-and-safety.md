@@ -74,6 +74,26 @@ criterion 59's instructing text has no operation to reach.
 4. On success, `executed`; on a guard failure, `refused` with the guard named; on window
    expiry, `expired`.
 
+**Whose identity the executed operation runs under is not settled here, and release one runs it
+under the approver's.** Step 3 says the dispatcher "runs the original operation now" without
+naming a context, and the implementation runs the handler — and writes its audit row — with the
+**approving** actor's context. So `core.audit.list` reports the approver as the actor of the
+destructive effect, with `entry` set to however the approver arrived. The gated actor is not
+lost: the `approval_required` audit row written when the call was held carries it, and
+`core.approval` keeps `actor_kind`/`actor_id` beside `approved_by_kind`/`approved_by_id`, so the
+two are cross-referenceable from either row.
+
+**Two ratified facts point the other way and are recorded here rather than resolved.** The
+[`ActorPermissionGuard` row](#execution-guards) distinguishes the *gated* actor from the
+*approving* actor and says "the two differ for a headless token call approved by a person" —
+which is this design's central case; and the approval record restricts `approved_entry` to `web`
+in release one, so attributing the effect to the approver makes every gated call's success row
+read `entry = web` however the original call arrived. Choosing the gated actor instead would
+mean the execution path rebuilding a context for the actor whose call was held, and would change
+which identity a module's own `created_by_id` columns record once domain records exist. That is
+a decision with a cost on both sides, so it is written down as open rather than taken by
+default: **a later run picks one and amends this paragraph.**
+
 ## Standing grants
 
 | Table | Columns | Notes |

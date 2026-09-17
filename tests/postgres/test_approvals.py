@@ -24,10 +24,20 @@ that function happened to use, including a wrong one.
 ``test_a_mutate_operation_is_not_held``: the same dispatcher, the same workspace, a
 ``MUTATE`` operation that runs immediately. Without it, every "nothing happened"
 assertion below would also pass on a dispatcher that refused everything.
+
+**Three things here are pinned by concurrency, by injection, or not at all**, and each
+says so at its own test: exactly-once is a property of three compare-and-set
+predicates that a *sequential* test cannot see (a read-then-check refuses the second
+approve on its own), so it is driven from two threads; the guard seam's *call* cannot
+be reached from outside `execute_approved`, so it is pinned by putting a real guard in
+`CORE_GUARDS`; and the window clause is exercised both directly on `binding_detail`
+and end to end against a row whose window has passed.
 """
 
 import hashlib
 import json
+import threading
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -45,14 +55,20 @@ from harness.registry import (
     register_harness,
     sent_messages,
 )
+from pydantic import BaseModel
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE, APPROVAL_STATE
-from rheo_core.approvals.binding import INVALID_APPROVAL
+from rheo_core.approvals import guards as guards_module
+from rheo_core.approvals.binding import INVALID_APPROVAL, binding_detail
+from rheo_core.approvals.gate import GUARD_REFUSED, PAYLOAD_TOO_LARGE
+from rheo_core.approvals.records import ApprovalRow
+from rheo_core.approvals.tables import approval as approval_table
 from rheo_core.approvals.tables import approval_payload
 from rheo_core.audit import AUDIT_LIST
 from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.operations import (
     OPERATION_GET,
+    SETTINGS_SET,
     OperationOutcome,
     dispatch,
     register_core_operations,
@@ -62,6 +78,12 @@ from rheo_core.storage.postgres import PostgresBackend
 from sqlalchemy import Engine, update
 
 pytestmark = pytest.mark.postgres
+
+WINDOW_KEY = "approvals.max_window_seconds"
+"""The one approvals key a workspace may override, written as the literal the
+operation takes rather than imported from the schema: a test that asked the registry
+for the key name would still pass if the key were renamed out from under its
+readers."""
 
 
 # --- fixtures and helpers -------------------------------------------------------------
@@ -360,6 +382,49 @@ def test_a_differing_payload_at_execution_refuses_invalid_approval(
     assert still_pending.state == "refused"
 
 
+def test_a_tampered_subject_column_never_reaches_the_audit_row(
+    owner: WorkspaceContext, engine: Engine, database: str, note: str
+) -> None:
+    """The audit row's subject comes from the **verified input**, never from
+    ``core.approval.subject_ref``.
+
+    That column is a second stored copy of the subject and the payload digest does not
+    cover it, so it is reachable by exactly the tamper the digest check exists to
+    catch, one column to the left. When the executed row was built from the column,
+    this tamper produced a ``succeeded`` audit record naming a record the destructive
+    operation had never touched — the criterion 14 failure the acceptance matrix calls
+    "the failure that would be hardest to notice in production", reached through a
+    criterion 19 path.
+
+    **The last assertion is the control**: the published approval record still shows
+    the tampered value, which proves the tamper landed. Without it, a green here would
+    also be what an `UPDATE` that quietly matched no rows produces.
+    """
+    approval_id, _ = _held(owner, FIXTURE_ACT, act_payload(note))
+    planted = note_ref(UUID("018f0000-0000-7000-8000-0000000000aa"))
+    with UnitOfWork(engine, database) as uow:
+        uow.connection.execute(
+            update(approval_table)
+            .where(approval_table.c.id == approval_id)
+            .values(subject_ref=planted)
+        )
+        uow.commit()
+
+    record = _record(_approve(owner, approval_id))
+
+    # The effect ran against the payload's subject, which is what the digest binds.
+    assert _acts(engine, database) == (note,)
+    listing: Any = _record(dispatch(owner, AUDIT_LIST, {"limit": 50}))
+    executed = [
+        row
+        for row in listing.records
+        if row.operation_name == FIXTURE_ACT and row.outcome == "succeeded"
+    ]
+    assert [row.subject_ref for row in executed] == [note]
+    assert planted not in {row.subject_ref for row in listing.records}
+    assert record.subject_ref == planted
+
+
 # --- the audit trail of a gated call --------------------------------------------------
 
 
@@ -430,3 +495,311 @@ def test_a_member_may_approve_and_an_operator_may_not(
     assert record.state == "executed"
     assert record.approved_by_id == member_id
     assert _acts(engine, database) == (note,)
+
+
+# --- exactly once, under two threads -------------------------------------------------
+
+CONCURRENT_ROUNDS = 25
+"""How many approvals the concurrency test races two approvers over.
+
+**Not one round.** Two threads racing one approval interleave differently every time;
+a single round catches a dropped predicate only some of the time, and a test that
+fails intermittently is a test that gets deleted. Twenty-five rounds cost about two
+seconds against a local cluster, and with all three predicates removed the Challenger's
+own probe recorded 49 executions for 25 approvals — every extra round is another
+chance to catch a relaxation that one round would let through."""
+
+
+def _race_two_approvals(ctx: WorkspaceContext, approval_id: UUID) -> list[str]:
+    """Approve ``approval_id`` from two threads released together; return both states.
+
+    A barrier rather than a sleep: both approvers are inside
+    ``core.approval.approve`` at the same instant by construction, which is the
+    interleaving the compare-and-set predicates exist for. A helper rather than an
+    inline closure so nothing captures a loop variable.
+    """
+    start = threading.Barrier(2)
+    results: list[str] = []
+    lock = threading.Lock()
+
+    def approve() -> None:
+        start.wait()
+        outcome = _approve(ctx, approval_id)
+        with lock:
+            results.append(outcome.state)
+
+    threads = [threading.Thread(target=approve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return results
+
+
+def test_two_concurrent_approvals_execute_the_destructive_fixture_once(
+    owner: WorkspaceContext, engine: Engine, database: str, note: str
+) -> None:
+    """Criterion 19 sentence 3, the half a sequential test cannot reach: approval makes
+    the fixture execute **once**, under two approvers racing the same approval.
+
+    **Why this exists as a separate test, in one sentence: without it the suite cannot
+    tell this code from code that double-executes a destructive operation.**
+    ``test_a_second_approval_does_not_execute_the_fixture_again`` above is satisfied by
+    ``_must_be_pending``'s read-then-check, which is exactly the layer concurrency
+    defeats — a second approver that read the row *before* the first one wrote it walks
+    straight past it. Three compare-and-set predicates are what actually hold the line
+    (``mark_approved`` on ``pending``, ``mark_executed`` on ``approved``,
+    ``finish_held_succeeded`` on ``approval_required``), any two of them suffice, and
+    **all three can be deleted with every other test in this file still green.**
+
+    So the assertion is a count of the fixture's recorded acts across many races, not a
+    return value and not a state: a double execution writes a second harness row and
+    changes nothing else a caller can see. `succeeded` approvals are counted too, so a
+    run in which *no* approval executed cannot pass by writing no rows either.
+    """
+    states: list[str] = []
+    for _ in range(CONCURRENT_ROUNDS):
+        approval_id, _ = _held(owner, FIXTURE_ACT, act_payload(note))
+        states.extend(_race_two_approvals(owner, approval_id))
+
+    acts = _acts(engine, database)
+    assert len(acts) == CONCURRENT_ROUNDS, (
+        f"the destructive fixture ran {len(acts)} times for {CONCURRENT_ROUNDS} "
+        "approvals; one approval must execute it exactly once"
+    )
+    # The other half of the same property, and the control that stops a green from
+    # meaning "nothing ran at all": one approver of each pair succeeded, and the
+    # loser's refusal is a state, not an exception.
+    assert states.count("succeeded") == CONCURRENT_ROUNDS
+    assert set(states) <= {"succeeded", APPROVAL_STATE, INVALID_APPROVAL}, sorted(
+        set(states)
+    )
+    assert set(acts) == {note}
+
+
+# --- the guard seam: proving the call happens, and where ----------------------------
+
+
+class _RecordingGuard:
+    """A guard that records every call and answers what it was told to answer.
+
+    Stands in for C7's real guards. It exists to prove two things a `None`-returning
+    stub could not: that the seam is **called**, and that its answer **decides**
+    whether the effect lands.
+    """
+
+    def __init__(self, detail: str | None) -> None:
+        self._detail = detail
+        self.calls: list[tuple[UUID, str]] = []
+        self.instants: list[datetime] = []
+
+    @property
+    def name(self) -> str:
+        return "RecordingGuard"
+
+    def check(
+        self,
+        ctx: WorkspaceContext,
+        uow: UnitOfWork,
+        *,
+        approval: ApprovalRow,
+        model_input: BaseModel,
+        now: datetime,
+    ) -> str | None:
+        self.calls.append((approval.id, approval.state))
+        self.instants.append(now)
+        return self._detail
+
+
+def test_a_refusing_guard_stops_the_effect_and_a_permitting_one_does_not(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    note: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard seam is **called**, at the ratified position, and its answer decides.
+
+    **This is the chunk's own named deliverable and nothing else pins it.** The
+    prompt's "Done when" asks that the guard-check seam exist as an explicit, callable
+    step, and ``guards.py``'s docstring says the call *site* — after the binding
+    check, before the effect — is the part that is easy to put in the wrong place.
+    With no test, replacing the whole ``run_guards`` call with ``pass`` leaves every
+    gate green, and C7 would attach its guards to a step that could have been deleted.
+
+    Both halves are one test because neither half means anything alone: a refusing
+    guard that stops the effect proves the call happens; a permitting guard that lets
+    the *same* call through proves the first result came from the guard rather than
+    from an unrelated refusal. The recorded call is the third leg — it shows the seam
+    saw the approval in state ``approved``, which is what "after the binding check,
+    before the effect" means in terms a test can assert.
+    """
+    refusing = _RecordingGuard("the recording guard refused this execution")
+    monkeypatch.setattr(guards_module, "CORE_GUARDS", (refusing,))
+    approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
+
+    outcome = _approve(owner, approval_id)
+
+    assert outcome.state == GUARD_REFUSED, outcome
+    assert outcome.error is not None
+    assert "RecordingGuard" in outcome.error.error_text
+    assert _acts(engine, database) == ()
+    assert _operation_state(owner, operation_id) == "approval_required"
+    # The seam ran, once, and saw the approval already moved to ``approved`` — the
+    # position the ratified flow fixes. The whole transaction then rolled back, which
+    # is why the row it saw is not the row that survives.
+    assert refusing.calls == [(approval_id, "approved")]
+    assert refusing.instants[0].tzinfo is not None
+
+    # The control. Same seam, same approval, a guard that permits: now the effect
+    # lands. Without this, a green above would also be produced by a dispatcher that
+    # refused every approval for any reason at all.
+    permitting = _RecordingGuard(None)
+    monkeypatch.setattr(guards_module, "CORE_GUARDS", (permitting,))
+
+    record = _record(_approve(owner, approval_id))
+
+    assert record.state == "executed"
+    assert _acts(engine, database) == (note,)
+    assert permitting.calls == [(approval_id, "approved")]
+
+
+# --- the window clause of the binding tuple -----------------------------------------
+
+
+def test_binding_detail_refuses_an_instant_outside_the_window() -> None:
+    """The window comparison itself, at both edges and inside.
+
+    Called directly rather than through a dispatch, which is what ``binding_detail``'s
+    ``now`` parameter exists for — "a caller that chooses the instant can test the
+    window's edges without sleeping" — and until now no caller did. Inclusive at both
+    ends is the assertion that would otherwise drift silently: an approval must be
+    executable at the instant its window opens and at the instant it closes.
+    """
+    digest = b"\x01" * 32
+    start = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
+    end = start + timedelta(minutes=15)
+
+    def at(now: datetime) -> str | None:
+        return binding_detail(
+            approved_digest=digest,
+            digest=digest,
+            window_start=start,
+            window_end=end,
+            now=now,
+        )
+
+    assert at(start) is None
+    assert at(start + timedelta(minutes=7)) is None
+    assert at(end) is None
+    assert at(start - timedelta(seconds=1)) == (
+        "the approval's execution window has passed"
+    )
+    assert at(end + timedelta(seconds=1)) == (
+        "the approval's execution window has passed"
+    )
+    # The digest clause still answers first when both are wrong, which is what makes
+    # the two Cost lines of this tuple distinguishable.
+    assert (
+        binding_detail(
+            approved_digest=digest,
+            digest=b"\x02" * 32,
+            window_start=start,
+            window_end=end,
+            now=end + timedelta(days=1),
+        )
+        == "the payload differs from the one that was approved"
+    )
+
+
+def test_an_approval_whose_window_has_passed_refuses_and_runs_nothing(
+    owner: WorkspaceContext, engine: Engine, database: str, note: str
+) -> None:
+    """The same clause end to end: an expired approval executes nothing.
+
+    ``window_end`` is moved into the past by a direct write, for the same reason the
+    payload tamper below uses one — the window is minted from the settings at hold
+    time, so the only way to reach an expired approval inside a test is to age the row
+    or to wait fifteen minutes. The refusal state is the same ``invalid_approval``
+    criterion 60 names for every binding failure; the detail is what distinguishes
+    them, and a caller learns only the state.
+    """
+    approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
+    with UnitOfWork(engine, database) as uow:
+        uow.connection.execute(
+            approval_table.update()
+            .where(approval_table.c.id == approval_id)
+            .values(
+                window_start=datetime.now(UTC) - timedelta(days=2),
+                window_end=datetime.now(UTC) - timedelta(days=1),
+            )
+        )
+        uow.commit()
+
+    outcome = _approve(owner, approval_id)
+
+    assert outcome.state == INVALID_APPROVAL, outcome
+    assert _acts(engine, database) == ()
+    assert _operation_state(owner, operation_id) == "approval_required"
+
+
+def test_a_workspace_may_shorten_its_own_execution_window(
+    owner: WorkspaceContext, note: str
+) -> None:
+    """``approvals.max_window_seconds`` is workspace-scope with a ``min`` floor, and
+    the hold reads it **with the workspace's own rows**.
+
+    Two assertions, and the second is the floor: a workspace override below the
+    deployment maximum shortens the window an approval is minted with, and an override
+    *above* it is refused outright. Without the first, the key would be a floored
+    setting no reader resolves per workspace — a floor declared and never applied,
+    which is the armed-but-unused shape this run rejects elsewhere.
+
+    **The floor bites at the write, not at the read**, which is stronger than the
+    clamp this test first assumed: ``validate_override`` refuses
+    ``setting_floor_violation`` rather than storing a looser value for the resolver to
+    narrow later, so a workspace cannot even record a longer window. The assertion was
+    corrected to what the code does after it was observed doing it.
+
+    The window is read back through ``core.approval.refuse``'s published record rather
+    than off the table, like every other read in this file.
+    """
+    assert dispatch(owner, SETTINGS_SET, {"key": WINDOW_KEY, "value": 60}).ok
+    approval_id, _ = _held(owner, FIXTURE_ACT, act_payload(note))
+    record = _record(_refuse(owner, approval_id))
+    assert record.window_end - record.window_start == timedelta(seconds=60)
+
+    looser = dispatch(owner, SETTINGS_SET, {"key": WINDOW_KEY, "value": 999999})
+    assert looser.state == "setting_floor_violation", looser
+    approval_id, _ = _held(owner, FIXTURE_ACT, act_payload(note))
+    record = _record(_refuse(owner, approval_id))
+    assert record.window_end - record.window_start == timedelta(seconds=60)
+
+
+# --- the payload bound --------------------------------------------------------------
+
+
+def test_an_oversized_payload_is_refused_before_anything_is_written(
+    owner: WorkspaceContext, engine: Engine, database: str
+) -> None:
+    """``approvals.max_payload_bytes``: an input whose snapshot would exceed the bound
+    is refused, and the refusal happens before the hold opens a transaction.
+
+    A real oversized input rather than a lowered bound, so what is exercised is the
+    shipped 65536 and not a number a test chose. The refusal carries no approval id
+    and no operation id — there is nothing to approve, because nothing was minted —
+    which is the assertion that distinguishes "refused" from "held and then failed".
+    """
+    payload: dict[str, object] = {
+        "destination": "party:one",
+        "message": "x" * (64 * 1024 + 1),
+    }
+
+    outcome = dispatch(owner, SINK_SEND, payload)
+
+    assert outcome.state == PAYLOAD_TOO_LARGE, outcome
+    assert outcome.approval_id is None
+    assert outcome.operation_id is None
+    assert outcome.error is not None
+    assert "approvals.max_payload_bytes" in outcome.error.error_text
+    assert _sends(engine, database) == ()

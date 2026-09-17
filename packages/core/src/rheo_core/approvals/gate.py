@@ -69,6 +69,7 @@ from rheo_core.operations.refusals import (
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.refs.resolver import Unavailable, resolve_in
 from rheo_core.settings import resolve as resolve_settings
+from rheo_core.settings.storage_source import PostgresOverrideSource
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 
@@ -107,8 +108,8 @@ class HeldCall:
     operation_id: UUID
 
 
-def window_seconds() -> int:
-    """The execution window's length, in seconds.
+def window_seconds(ctx: WorkspaceContext) -> int:
+    """The execution window's length for this workspace, in seconds.
 
     ``approvals.default_window_seconds`` (900), clamped to
     ``approvals.max_window_seconds`` (86400): the maximum is a bound on the setting
@@ -116,8 +117,18 @@ def window_seconds() -> int:
     maximum gets the maximum rather than its own mistake. No caller chooses a length
     in release one — no operation takes one as an input — so the default is the
     length every approval gets.
+
+    **Resolved with the workspace's own override rows, not from the deployment layer
+    alone**, and that is what makes ``approvals.max_window_seconds``'s ``min`` floor
+    real: the key is workspace-scope, so a workspace may shorten the longest window
+    its own approvals can carry and can never lengthen it. ``resolve(workspace_id=…,
+    source=PostgresOverrideSource())`` is exactly the call ``tokens/issue.py`` makes
+    for ``identity.token_max_days.*``, the other floored key in the tree — a floored
+    key read from the deployment layer would be a floor nothing applies.
     """
-    settings = resolve_settings()
+    settings = resolve_settings(
+        workspace_id=ctx.workspace_id, source=PostgresOverrideSource()
+    )
     return min(
         settings.get_int("approvals.default_window_seconds"),
         settings.get_int("approvals.max_window_seconds"),
@@ -178,7 +189,7 @@ def hold_for_approval(
             f"over the approvals.max_payload_bytes bound of {limit}; an approval "
             "stores the payload it confirms",
         )
-    window_end = now + timedelta(seconds=window_seconds())
+    window_end = now + timedelta(seconds=window_seconds(ctx))
     with open_unit_of_work(ctx) as uow:
         operation_id = mint(
             uow.connection,
@@ -227,21 +238,6 @@ def hold_for_approval(
         record_audit(uow, operation_id)
         uow.commit()
     return HeldCall(approval_id=approval_id, operation_id=operation_id)
-
-
-def _parsed_ref(reference: str | None) -> RecordRef | None:
-    """The stored subject reference as a :class:`RecordRef`, or ``None``.
-
-    The stored string was written by ``RecordRef.format()``, so it round-trips; the
-    guard is for a row edited outside this code, which records a null subject on the
-    audit row rather than failing an execution that is otherwise valid.
-    """
-    if reference is None:
-        return None
-    try:
-        return RecordRef.parse(reference)
-    except ValueError:
-        return None
 
 
 def execute_approved(
@@ -321,8 +317,10 @@ def execute_approved(
     if detail is not None:
         raise OperationRefused(INVALID_APPROVAL, detail)
     # After the binding check, before the effect: the position the ratified document
-    # fixes for the guards (R3 item 4). Nothing is registered, so this passes.
-    refusal = run_guards(ctx, uow, approval=approval, model_input=model_input)
+    # fixes for the guards (R3 item 4). Nothing is registered, so this passes — and
+    # ``now`` is the same instant the binding was just judged against, so a guard and
+    # the window cannot disagree about when this execution happened.
+    refusal = run_guards(ctx, uow, approval=approval, model_input=model_input, now=now)
     if refusal is not None:
         raise OperationRefused(GUARD_REFUSED, f"{refusal.guard}: {refusal.detail}")
     output = operation.handler(
@@ -369,7 +367,12 @@ def execute_approved(
         # proved is the digest the approval carries. One value rather than a second
         # rendering, so the audit row and the approval name the same request.
         request_digest=approval.payload_digest,
-        subject_ref=_parsed_ref(approval.subject_ref),
+        # The **verified** input, never ``approval.subject_ref``. That column is a
+        # second stored copy of the subject and the digest does not cover it, so a
+        # row tampered there alone would have produced a ``succeeded`` audit row
+        # naming a record this handler never touched. ``record_operation_audit``
+        # derives the subject from what actually ran.
+        model_input=model_input,
         outcome=AUDIT_SUCCEEDED,
         operation_id=approval.operation_id,
     )

@@ -24,6 +24,7 @@ this run rejects elsewhere; a constant empty tuple cannot be armed by accident.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Final, Protocol
 
 from pydantic import BaseModel
@@ -53,6 +54,15 @@ class Guard(Protocol):
     ``None`` when the guard permits the execution and a detail string when it does
     not; the runner turns the second into a :class:`GuardRefusal` carrying
     :attr:`name`, so no guard has to remember to name itself in its own answer.
+
+    **``now`` is a parameter of the protocol, never a clock read inside a guard.**
+    ``WindowGuard`` is one of the five ratified guards and its whole job is a time
+    comparison; every repository and every seam in this tree takes its instant from
+    its caller, so that a test can choose one instead of sleeping. The parameter is
+    declared now, while no guard exists, because it costs nothing here and would cost
+    the chunk that writes them a protocol change — and because it is the **same**
+    instant the binding check was judged against one call earlier, so a guard cannot
+    disagree with the binding about when "now" is.
     """
 
     @property
@@ -65,6 +75,7 @@ class Guard(Protocol):
         *,
         approval: ApprovalRow,
         model_input: BaseModel,
+        now: datetime,
     ) -> str | None: ...
 
 
@@ -84,16 +95,29 @@ def run_guards(
     *,
     approval: ApprovalRow,
     model_input: BaseModel,
-    guards: tuple[Guard, ...] = CORE_GUARDS,
+    now: datetime,
+    guards: tuple[Guard, ...] | None = None,
 ) -> GuardRefusal | None:
     """Run every guard in order; answer the first refusal, or ``None``.
 
     First refusal rather than all of them: the effect does not land either way, and a
     guard runs a query of its own, so continuing past a refusal spends connections to
     collect reasons nobody reads.
+
+    **``guards`` defaults to ``None`` and resolves to :data:`CORE_GUARDS` at call
+    time, not at definition time.** A default of ``CORE_GUARDS`` binds the empty tuple
+    into the function object when this module is imported, which would make the set
+    unchangeable for the life of the process — including for the one test that proves
+    this call happens at all. Late binding is what lets
+    ``tests/postgres/test_approvals.py`` put a real guard in front of the effect and
+    watch it stop, which is the only way the *call site* is pinned rather than the
+    runner; nothing else about the set changes, and there is still no ``install()``
+    for a module to reach.
     """
-    for guard in guards:
-        detail = guard.check(ctx, uow, approval=approval, model_input=model_input)
+    for guard in CORE_GUARDS if guards is None else guards:
+        detail = guard.check(
+            ctx, uow, approval=approval, model_input=model_input, now=now
+        )
         if detail is not None:
             return GuardRefusal(guard.name, detail)
     return None

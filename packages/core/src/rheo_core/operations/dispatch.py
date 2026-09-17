@@ -483,12 +483,24 @@ def record_operation_audit(
     operation: RegisteredOperation,
     *,
     request_digest: bytes,
-    subject_ref: RecordRef | None,
+    model_input: BaseModel,
     outcome: AuditOutcome,
     operation_id: UUID | None,
 ) -> bool:
     """Write one audit row for ``operation`` in ``uow``'s transaction; answer whether
     a row was written.
+
+    **It takes the validated input and derives the subject itself, rather than taking
+    a subject its caller derived.** The subject is read with :func:`_subject_ref` —
+    the same function :func:`dispatch` uses below — so the row an ordinary call writes
+    and the row an approved execution writes cannot name a subject by two different
+    rules. This parameter was a ready-made ``subject_ref`` in the first version of
+    this function, and the approvals caller filled it from the
+    ``core.approval.subject_ref`` **column**: a second stored copy of the subject that
+    the payload digest does not cover, so tampering with that one column alone
+    produced a ``succeeded`` audit row naming a record the operation never touched.
+    Deriving from the verified input removes the second source rather than comparing
+    against it, which is why there is no comparison anywhere for this.
 
     **The one audit call site outside this module's own dispatch path, and it is still
     inside this module.** ``rheo_core.approvals.gate.execute_approved`` runs an
@@ -509,7 +521,9 @@ def record_operation_audit(
     operations.)
     """
     audit = _audit_write(
-        operation, request_digest=request_digest, subject_ref=subject_ref
+        operation,
+        request_digest=request_digest,
+        subject_ref=_subject_ref(operation.declaration, model_input),
     )
     if audit is None:
         return False

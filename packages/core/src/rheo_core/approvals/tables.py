@@ -102,6 +102,15 @@ approval = Table(
     Column("actor_id", UUID(as_uuid=True), nullable=True),
     Column("operation_name", Text, nullable=False),
     Column("operation_id", UUID(as_uuid=True), nullable=False),
+    # ``destination_ref`` and ``subject_ref`` are a **record of what was approved** —
+    # published on the approval record and read back by a person. They are not an
+    # input to execution and nothing may act on one: the payload digest does not
+    # cover these columns, so an effect or an audit row built from one could name
+    # something the operation never touched. That is not hypothetical; it is the
+    # defect ``binding.py``'s own docstring now records. Every consumer derives the
+    # subject from the validated input instead. ``subject_revision`` is the
+    # deliberate exception: ``RecordStateGuard`` compares it, which is the whole
+    # reason it is captured at approval time.
     Column("destination_ref", Text, nullable=True),
     Column("subject_ref", Text, nullable=True),
     Column("subject_revision", Integer, nullable=True),
