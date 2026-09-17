@@ -19,11 +19,14 @@ below about a tool list would pass while listing nothing. Both are idempotent,
 so calling them here as well as in ``test_tokens.py`` and at startup is expected.
 
 **The refusal tests count seam entries rather than trusting a status code.** A
-401 proves the client was told no; it does not prove no tool ran. ``_counting``
-replaces the two functions ``transport.py`` calls — the seam itself, not a
-private helper — and the assertion is that the counter is still zero. The
-row-count snapshot beside it covers the other half: not merely that no tool ran,
-but that the attempt left the databases as it found them.
+401 proves the client was told no; it does not prove no tool ran. The ``seam``
+fixture wraps the two functions ``transport.py`` calls — the seam itself, not a
+private helper — and the assertion is that the counter is still zero. It wraps
+rather than replaces, so the success tests assert on real results while the same
+counter proves it increments, which is what stops "still zero" being the answer a
+dead counter would give either way. The row-count snapshot beside it covers the
+other half: not merely that no tool ran, but that the attempt left the databases
+as it found them.
 """
 
 import hashlib
@@ -95,8 +98,13 @@ def _issue(
     kind: str,
     account_id: UUID,
     set_name: str = "agent_default",
-) -> tuple[str, UUID]:
-    """Dispatch ``core.token.issue`` the real way; returns ``(value, token_id)``."""
+) -> tuple[str, UUID, frozenset[str]]:
+    """Dispatch ``core.token.issue`` the real way.
+
+    Returns the token's expanded operation set alongside its value and id, because
+    a listing assertion has to be able to say *why* a tool is absent: excluded by
+    the context filter, or never in the token's scope to begin with.
+    """
     outcome = dispatch(
         ctx,
         TOKEN_ISSUE,
@@ -105,7 +113,7 @@ def _issue(
     assert outcome.ok, outcome
     result = outcome.result
     assert result is not None
-    return result.value, result.token_id  # type: ignore[attr-defined]
+    return result.value, result.token_id, frozenset(result.operations)  # type: ignore[attr-defined]
 
 
 def _snapshot(cluster: ClusterSession, workspace_row: WorkspaceRow) -> dict[str, int]:
@@ -165,13 +173,15 @@ def seam(monkeypatch: pytest.MonkeyPatch) -> _SeamCounter:
 
 @pytest.fixture
 def app() -> Iterator[Any]:
-    """One built application, with its lifespan running.
+    """One built application per test.
 
-    ``streamable_http_app``'s lifespan is what starts the SDK's session manager;
-    an ASGI transport never sends a lifespan event, so the test drives it itself.
+    Built here and entered in ``_client``/``_post_raw``: an ASGI transport never
+    sends a lifespan event, and ``streamable_http_app``'s lifespan is what starts
+    the SDK's session manager, so each helper opens
+    ``router.lifespan_context(app)`` around its own traffic rather than leaving a
+    session manager running across tests.
     """
-    built = build_mcp_app()
-    yield built
+    yield build_mcp_app()
 
 
 async def _client(app: Any, bearer: str | None) -> AsyncIterator[Client]:
@@ -224,15 +234,19 @@ async def test_tool_list_round_trip_returns_the_visible_tools(
     ``workspace_status`` only, and that is the filtering claim, not an accident of
     registration: this token's ``agent_default`` set carries ``harness.note.get``
     as well, and ``harness_get_note`` is absent because the ``harness`` module is
-    not enabled in a freshly provisioned workspace. Both halves are asserted, so a
-    listing that stopped filtering would fail here rather than quietly widen.
+    not enabled in a freshly provisioned workspace. **Both halves are asserted, and
+    the second is the load-bearing one** — without it, a listing that had stopped
+    filtering entirely and a token that never carried the operation would look
+    identical from here.
     """
-    value, _ = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
+    value, _, operations = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
+    assert NOTE_GET in operations, (
+        "the token must carry it for its absence to mean anything"
+    )
     async for client in _client(app, value):
         listed = await client.list_tools()
     names = [tool.name for tool in listed.tools]
     assert names == ["workspace_status"]
-    assert NOTE_GET not in [tool.name for tool in listed.tools]
     assert seam.list_tools >= 1
     schema = listed.tools[0].input_schema
     assert schema["type"] == "object"
@@ -248,7 +262,7 @@ async def test_tool_call_round_trip_dispatches_the_operation(
     the claim is that the transport returns what the operation returned, and a
     literal would only prove the transport returns a literal.
     """
-    value, _ = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
+    value, _, _ = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
     async for client in _client(app, value):
         result = await client.call_tool("workspace_status", {})
     assert result.is_error is False
@@ -271,7 +285,7 @@ async def test_unknown_tool_name_is_not_found_over_the_wire(
 ) -> None:
     """A name outside this context's listing comes back as an error result, not a
     protocol error: the call was well formed and the façade answered it."""
-    value, _ = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
+    value, _, _ = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
     async for client in _client(app, value):
         result = await client.call_tool("harness_get_note", {"ref": "x"})
     assert result.is_error is True
@@ -317,7 +331,7 @@ async def test_cli_token_is_refused_wrong_kind_before_any_tool_runs(
 ) -> None:
     """A perfectly valid ``cli`` token is still the wrong kind for this surface,
     and the snapshot shows the attempt changed nothing."""
-    value, _ = _issue(
+    value, _, _ = _issue(
         operator_ctx, kind="cli", account_id=owner_account_id, set_name="read_only"
     )
     row = cluster.registry_row(workspace)
@@ -337,7 +351,7 @@ async def test_expired_token_is_refused_before_any_tool_runs(
     owner_account_id: UUID,
     seam: _SeamCounter,
 ) -> None:
-    value, token_id = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
+    value, token_id, _ = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
     with cluster.backend.control_engine.begin() as connection:
         connection.execute(
             update(t.access_token)
