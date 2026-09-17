@@ -39,6 +39,12 @@ hunk applies, the demonstrator resolves, and the test still does not exercise th
 criterion. No mechanical check closes that gap. The honest claim for this document is "no
 row is stale", not "every criterion is demonstrated".
 
+The guard itself (`tests/test_acceptance_matrix.py`) proves only that the matrix's
+*structure* is live and un-stale. It cannot and does not prove that any row's mutation
+was genuinely performed, or that the named demonstrator truly exercises the criterion's
+behaviour — those remain human-signed, per row, by the chunk in `Performed by`
+(AC 24a).
+
 ## The per-row grammar
 
 Copied verbatim from the run's own prompt index, so the two cannot drift:
