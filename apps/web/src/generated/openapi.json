@@ -1,6 +1,210 @@
 {
   "components": {
     "schemas": {
+      "ApprovalRecord": {
+        "description": "One approval as these operations publish it.\n\n:class:`~rheo_core.approvals.records.ApprovalRow` field for field, with that row's\n``id`` published as ``approval_id`` \u2014 the renaming ``OperationRecord`` and\n``AuditRecord`` already make for the same reason \u2014 and ``payload_digest``\npublished as its lowercase hex, exactly as ``AuditRecord.request_digest`` is: the\ncolumn is ``bytea``, a generated TypeScript client has no natural type for raw\nbytes, and hex is what a person comparing two digests can actually compare.\n\n**This is the supported read of the approval record** (AC 8). A caller reads the\ndurable row \u2014 its state, who approved it, and the digest that binds it \u2014 off the\noperation that changed it, and never by querying ``core.approval``. The record is\nread back from the row *after* the transition, so what it publishes is what the\ndatabase holds rather than what the handler intended to write.",
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_kind": {
+            "title": "Actor Kind",
+            "type": "string"
+          },
+          "approval_id": {
+            "format": "uuid",
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By Id"
+          },
+          "approved_by_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By Kind"
+          },
+          "approved_entry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Entry"
+          },
+          "destination_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Ref"
+          },
+          "executed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executed At"
+          },
+          "invalidated_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated Reason"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "operation_name": {
+            "title": "Operation Name",
+            "type": "string"
+          },
+          "payload_digest": {
+            "title": "Payload Digest",
+            "type": "string"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purpose"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "subject_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Ref"
+          },
+          "subject_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Revision"
+          },
+          "window_end": {
+            "format": "date-time",
+            "title": "Window End",
+            "type": "string"
+          },
+          "window_start": {
+            "format": "date-time",
+            "title": "Window Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_id",
+          "actor_kind",
+          "actor_id",
+          "operation_name",
+          "operation_id",
+          "destination_ref",
+          "subject_ref",
+          "subject_revision",
+          "payload_digest",
+          "purpose",
+          "window_start",
+          "window_end",
+          "state",
+          "approved_by_kind",
+          "approved_by_id",
+          "approved_at",
+          "approved_entry",
+          "executed_at",
+          "invalidated_reason"
+        ],
+        "title": "ApprovalRecord",
+        "type": "object"
+      },
+      "ApprovalRef": {
+        "description": "Which approval to act on. ``approval_id`` is not a reserved input field, so a\ndeclaration may name it.",
+        "properties": {
+          "approval_id": {
+            "format": "uuid",
+            "title": "Approval Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_id"
+        ],
+        "title": "ApprovalRef",
+        "type": "object"
+      },
       "AuditList": {
         "description": "The workspace's most recent audit records, newest first.\n\n``records`` is a named collection field rather than a bare list, mirroring\n``FailureList`` and ``OperationList``: a later run adding a second collection\nbeside it is then an additive change a reader may ignore rather than a change to\nthe response's own type.",
         "properties": {
@@ -770,6 +974,132 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/operations/core.approval.approve": {
+      "post": {
+        "operationId": "core.approval.approve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ApprovalRecord"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.approval.approve (mutate)"
+      }
+    },
+    "/api/v1/operations/core.approval.refuse": {
+      "post": {
+        "operationId": "core.approval.refuse",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ApprovalRecord"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.approval.refuse (mutate)"
+      }
+    },
     "/api/v1/operations/core.audit.list": {
       "post": {
         "operationId": "core.audit.list",

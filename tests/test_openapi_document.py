@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
+from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE
 from rheo_core.operations import (
     GENERATED_BANNER,
     OPERATION_GET,
@@ -87,15 +88,18 @@ def test_every_registered_operation_has_a_path(registry: OperationRegistry) -> N
 def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
     registry: OperationRegistry,
 ) -> None:
-    """Every ``core.*`` path, including the two the module-level tuple does not hold.
+    """Every ``core.*`` path, including the four the module-level tuple does not hold.
 
     ``core.token.issue`` and ``core.token.revoke`` are declared **inside**
     ``register_core_operations`` rather than in its module-level
     ``CORE_OPERATIONS`` tuple, to avoid a real import cycle, so a reader who counts
-    that tuple comes up two short. AC 15's "a path for every registered operation" is
-    over what the registrar actually registered, and the enumeration below is that
-    set — pinned by **name** rather than by number, so a run that adds a declaration
-    updates a list it can read rather than a count it has to recompute.
+    that tuple comes up short; run 0c3's ``core.approval.approve`` and
+    ``.refuse`` are imported there for the same reason, and declared in
+    ``rheo_core.approvals.operations`` beside their handlers. AC 15's "a path for
+    every registered operation" is over what the registrar actually registered, and
+    the enumeration below is that set — pinned by **name** rather than by number, so
+    a run that adds a declaration updates a list it can read rather than a count it
+    has to recompute.
     """
     paths = build_document(registry)["paths"]
     core_paths = sorted(
@@ -116,6 +120,9 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             # 0c2's C5 adds core.audit.list. Listed in registration order, the
             # order CORE_OPERATIONS itself holds; the assertion sorts both sides.
             AUDIT_LIST,
+            # 0c3's C6, registered last and from another package.
+            APPROVAL_APPROVE,
+            APPROVAL_REFUSE,
         )
     )
 

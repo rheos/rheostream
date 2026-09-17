@@ -91,6 +91,9 @@ PRODUCTION_KEYS = {
     "internal.secret_ref": "",
     "work.due_reconcile_seconds": 900,
     "work.max_attempts": 8,
+    "approvals.max_payload_bytes": 65536,
+    "approvals.default_window_seconds": 900,
+    "approvals.max_window_seconds": 86400,
 }
 
 

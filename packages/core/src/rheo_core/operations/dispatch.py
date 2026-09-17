@@ -58,7 +58,21 @@ left to be rediscovered from the code.
 A ``READ`` operation writes no row either, by design rather than by structure: audit is
 required only above the read class.
 
-**One operation record is minted here, and only for a ``long_running`` declaration.**
+**The safety class branches the *running* of an operation, from run 0c3, and for
+exactly three of the six classes.** ``read``, ``draft`` and ``mutate`` still simply
+run — the class branch over them is the audit row, which every class but ``read``
+gets. ``destructive``, ``external`` and ``financial`` do not run at all on an
+ordinary call: :func:`_hold_for_approval` writes a ``core.approval`` row ``pending``,
+holds the operation record at ``approval_required``, writes the call's audit row, and
+answers with both ids, and the handler is never entered
+(``docs/architecture/confirmation-and-safety.md`` § The six classes). The handler runs
+later, from ``core.approval.approve``'s own transaction, through
+``rheo_core.approvals.gate.execute_approved`` — **not** through a second pass of this
+function. Run 0v's finding F14 recorded that ``overview.md`` read as though the class
+were enforced; for the three upper classes it now is.
+
+**One operation record is minted here, and only for a ``long_running`` declaration or
+a held upper-class call.**
 Run 0c2 gives ``OperationDeclaration.long_running`` its first reader: when it is set,
 this function writes a ``pending`` ``core.operation`` row in its **own committed
 transaction** before the work transaction is opened, so the id is readable through the
@@ -139,7 +153,13 @@ from rheo_core.audit import (
 )
 from rheo_core.boundary.context import CONTEXT_REQUIRED, Refusal
 from rheo_core.events.publish import mark_due_after_publish
-from rheo_core.operations.records import AUDIENCE_NONE, PENDING, finish_failed, mint
+from rheo_core.operations.records import (
+    APPROVAL_REQUIRED,
+    AUDIENCE_NONE,
+    PENDING,
+    finish_failed,
+    mint,
+)
 from rheo_core.operations.refusals import (
     FAILED,
     HANDLER_FAILED,
@@ -165,11 +185,30 @@ AUDIT_SINK_MISSING: Final = "audit_sink_missing"
 """The refusal state for a non-``READ`` operation whose owning module has no installed
 audit sink (AC 25).
 
-Declared here rather than in ``refusals.py`` because it is the *dispatcher's* refusal
-and nothing else can raise it: the registry refuses a missing ``AuditSpec`` and startup
-refuses a missing sink, so by the time a call reaches this state both earlier layers
-have been bypassed — a registry built by hand, or a process that never ran
-``check_audit_paths``."""
+Declared here rather than in ``refusals.py`` because it is the *dispatcher's* refusal:
+the registry refuses a missing ``AuditSpec`` and startup refuses a missing sink, so by
+the time a call reaches this state both earlier layers have been bypassed — a registry
+built by hand, or a process that never ran ``check_audit_paths``.
+
+**One other site raises it**, added by run 0c3 and named here rather than left for a
+reader to find: ``rheo_core.approvals.gate.execute_approved`` imports this constant
+when an approved operation's module turns out to have no sink at execution time. That
+is the same refusal about the same operation at a later instant — the hold refused it
+this way before minting anything — so it is this constant rather than a second
+spelling of the same state."""
+
+_APPROVAL_CLASSES: Final = frozenset(
+    {SafetyClass.DESTRUCTIVE, SafetyClass.EXTERNAL, SafetyClass.FINANCIAL}
+)
+"""The three classes that do not run on an ordinary call.
+
+``confirmation-and-safety.md`` § The six classes gives each of them the same
+dispatcher behaviour — "requires an ``approval`` in state ``approved`` bound to this
+exact call; otherwise returns ``approval_required``" — and the document is explicit
+that the class-to-behaviour table "is code, not configuration": no setting moves an
+operation into or out of this set. Spelled here, in the dispatcher, because applying
+the class is the dispatcher's job; ``rheo_core.approvals`` carries what happens next
+and does not re-decide which calls reach it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,16 +226,25 @@ class OperationOutcome:
     with ``error``.
 
     ``operation_id`` is the ``core.operation`` row :func:`dispatch` minted for this
-    call, and is ``None`` for every declaration that is not ``long_running`` — which
-    is every operation registered in release one, so the API envelope still carries
-    ``operation_id: null`` for all of them. It is the last field rather than the
-    second so that nothing constructing this positionally had its arguments shift.
+    call: for a ``long_running`` declaration, and from run 0c3 also for an
+    upper-class call held at ``approval_required``. It is ``None`` for every other
+    declaration — which is every *other* operation registered in release one, so the
+    API envelope still carries ``operation_id: null`` for all of them. It is the last
+    field rather than the second so that nothing constructing this positionally had
+    its arguments shift.
+
+    ``approval_id`` is the ``core.approval`` row a held call is waiting on, and is
+    ``None`` on every other outcome. Appended after ``operation_id`` for the same
+    reason ``operation_id`` was appended after ``error``, and answering criterion
+    19's "an approval-required state carrying an approval identifier": the identifier
+    is a field of the outcome rather than something to parse out of the error text.
     """
 
     state: str
     result: BaseModel | None = None
     error: OperationError | None = None
     operation_id: UUID | None = None
+    approval_id: UUID | None = None
 
     @property
     def ok(self) -> bool:
@@ -427,6 +475,46 @@ def _audit_write(
         )
         return None
     return _AuditWrite(operation, sink, request_digest, subject_ref)
+
+
+def record_operation_audit(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    operation: RegisteredOperation,
+    *,
+    request_digest: bytes,
+    subject_ref: RecordRef | None,
+    outcome: AuditOutcome,
+    operation_id: UUID | None,
+) -> bool:
+    """Write one audit row for ``operation`` in ``uow``'s transaction; answer whether
+    a row was written.
+
+    **The one audit call site outside this module's own dispatch path, and it is still
+    inside this module.** ``rheo_core.approvals.gate.execute_approved`` runs an
+    approved operation's handler from ``core.approval.approve``'s transaction rather
+    than from :func:`dispatch`, so the row for *that* execution cannot be written by
+    the block below — and writing it there would spell the sink protocol's six
+    keywords a second time, which :class:`_AuditWrite` exists to prevent, and would put
+    a second ``.record(`` caller in the tree, which
+    ``tests/test_audit_sink.py::test_exactly_one_module_in_the_tree_calls_a_sink``
+    exists to prevent. This function is how that path writes its row without doing
+    either: it builds the same :class:`_AuditWrite` and calls the same method.
+
+    ``False`` means no row was written, which for an operation above the read class
+    means its module has no installed sink — :func:`_audit_write` has already logged
+    ``audit_row_unwritable`` — and the caller decides what that means. (It also
+    answers ``False`` for a ``READ`` declaration, which writes no row by design; no
+    caller can reach that branch, since the only caller runs approved upper-class
+    operations.)
+    """
+    audit = _audit_write(
+        operation, request_digest=request_digest, subject_ref=subject_ref
+    )
+    if audit is None:
+        return False
+    audit.record(ctx, uow, outcome=outcome, operation_id=operation_id)
+    return True
 
 
 def _audit_alone(
@@ -684,6 +772,69 @@ def _fail_operation(
     return True
 
 
+def _hold_for_approval(
+    ctx: WorkspaceContext,
+    declaration: OperationDeclaration,
+    model_input: BaseModel,
+    audit: _AuditWrite,
+) -> OperationOutcome:
+    """Hold an upper-class call and answer ``approval_required`` with both ids.
+
+    **The handler is not entered on this path, and that is the whole of the
+    behaviour.** Nothing is recorded at any destination, no audit row claims success,
+    and the operation record is written in the one state that says why nothing
+    happened.
+
+    The audit row's outcome is ``AUDIT_REFUSED``, not a fourth member. The
+    ``audit_record_outcome`` check constraint holds exactly ``succeeded``, ``failed``
+    and ``refused`` (``storage/work_tables.py``), and a fourth would need a migration
+    that widens a frozen constraint, a widened ``AuditOutcome`` literal and a changed
+    generated OpenAPI enum — for a row whose meaning ``refused`` already carries: the
+    dispatcher declined to run the handler. The row's ``operation_id`` is what leads
+    a reader to the record that says *why* it declined.
+
+    ``hold_for_approval`` is imported here rather than at module level because
+    ``rheo_core.approvals`` imports this package's submodules at *its* module level
+    (``approvals/gate.py``'s docstring carries the direction and the reason), so a
+    module-level import here would close the cycle. The same deferral, for the same
+    reason, as ``core_ops.py``'s import of ``rheo_core.tokens.issue``.
+    """
+    from rheo_core.approvals.gate import hold_for_approval  # deferred: see docstring
+
+    def record_audit(uow: UnitOfWork, operation_id: UUID) -> None:
+        audit.record(ctx, uow, outcome=AUDIT_REFUSED, operation_id=operation_id)
+
+    try:
+        held = hold_for_approval(
+            ctx,
+            declaration=declaration,
+            model_input=model_input,
+            subject_ref=audit.subject_ref,
+            now=datetime.now(UTC),
+            record_audit=record_audit,
+        )
+    except StorageRefusal as refusal:
+        # The hold opens the only unit of work on this path, so an unroutable
+        # workspace refuses here exactly as it does for the mint one screen down,
+        # and nothing was written to audit it with.
+        return _refused(refusal.state, refusal.detail)
+    if isinstance(held, Refusal):
+        # The payload bound, refused before the hold opened anything — so the row is
+        # written on a fresh connection, like every other pre-transaction refusal.
+        _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+        return _refused(held.state, held.detail)
+    return OperationOutcome(
+        APPROVAL_REQUIRED,
+        error=OperationError(
+            APPROVAL_REQUIRED,
+            f"{declaration.name} is {declaration.safety_class.value} class and "
+            f"requires an approval; approval {held.approval_id} is pending",
+        ),
+        operation_id=held.operation_id,
+        approval_id=held.approval_id,
+    )
+
+
 def _output_invalid(
     ctx: WorkspaceContext,
     uow: UnitOfWork,
@@ -792,6 +943,17 @@ def dispatch(
     # ``subject_ref``, which is what the column is nullable for.
     if audit is not None:
         audit = replace(audit, subject_ref=_subject_ref(declaration, model_input))
+    if declaration.safety_class in _APPROVAL_CLASSES:
+        # The one class branch over *running* an operation, and it is placed here for
+        # two reasons: the input has been validated, so the payload digest is taken
+        # over the input as it will execute; and nothing has been minted yet, so the
+        # hold owns the whole of what this call writes and writes it in one
+        # transaction. ``audit`` cannot be ``None`` here — an upper-class declaration
+        # is not ``READ``, so the refusal above has already answered
+        # ``audit_sink_missing`` — and the assertion is the narrowing mypy needs, not
+        # a case the branch handles.
+        assert audit is not None
+        return _hold_for_approval(ctx, declaration, model_input, audit)
     # Minted here and nowhere else: after authorization and validation have both
     # passed, and before the work transaction is opened, so the id is readable while
     # the work is still pending. ``None`` for every declaration that is not
@@ -849,11 +1011,11 @@ def dispatch(
     # row, commit. The audit row is the **last** thing written before the commit and
     # the only thing between the handler and it; no outbox event is enqueued here.
     #
-    # There is no safety-class branch on the *running* of an operation and this
-    # function adds none: ``read``, ``draft`` and ``mutate`` all simply run. The one
-    # class branch is over the audit row, which every class but ``read`` gets. Run 0v's
-    # finding F14 records that ``overview.md`` reads as though the class were enforced
-    # today.
+    # Every call that reaches this line is ``read``, ``draft`` or ``mutate``, and for
+    # those three there is still no class branch on the running: they all simply run,
+    # and the only class branch over them is the audit row, which every class but
+    # ``read`` gets. The three upper classes returned above, at
+    # ``_APPROVAL_CLASSES``, without entering a handler at all.
     with uow:
         try:
             # The handler gets the sealed view, carrying the minted id so a

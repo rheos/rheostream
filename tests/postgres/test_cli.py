@@ -37,6 +37,7 @@ from harness.registry import NOTE_WRITE, register_harness
 from rheo_app_cli.main import main
 from rheo_app_core.main import app, lifespan
 from rheo_app_core.startup import run_startup
+from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE
 from rheo_core.audit import (
     CORE_AUDIT_SINK,
     install_sink,
@@ -330,19 +331,29 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now ten: 0b1's three, 0b2's C8 adds core.token.issue and
+        # Sorted, and now twelve: 0b1's three, 0b2's C8 adds core.token.issue and
         # core.token.revoke, 0c1's C3 adds core.work.failures, 0c2's C4 adds
-        # core.operation.get/list/resolve, and 0c2's C5 adds core.audit.list.
-        # Sorted by the name string, so core.audit.list leads, the three
-        # core.operation.* names follow it, and core.work.failures lands
-        # immediately before core.workspace.status ("." sorts before "s").
+        # core.operation.get/list/resolve, 0c2's C5 adds core.audit.list, and 0c3's
+        # C6 adds core.approval.approve and core.approval.refuse. Sorted by the name
+        # string, so the two core.approval.* names lead ("approval" before "audit"),
+        # the three core.operation.* names follow core.audit.list, and
+        # core.work.failures lands immediately before core.workspace.status ("."
+        # sorts before "s").
         #
         # **Written out as literals on purpose.** Deriving this tuple from the
         # registry would make the assertion unfailable: an operation registered by
         # accident, or one silently dropped, would match a derived expectation
         # exactly. The literal list is the regression guard, and updating it by hand
         # when a run adds an operation is the point rather than the cost.
+        #
+        # The two approval operations appearing here is also criterion 18's other
+        # half at work: they are ``core`` registrations and belong in a production
+        # start, while the two upper-class *harness* fixtures 0c3 registers are
+        # test-profile only and must never appear — which
+        # ``tests/test_production_registration.py`` asserts from the other side.
         assert report.operations == (
+            APPROVAL_APPROVE,
+            APPROVAL_REFUSE,
             "core.audit.list",
             OPERATION_GET,
             OPERATION_LIST,

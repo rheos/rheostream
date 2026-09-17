@@ -31,6 +31,14 @@ whose own row is the ``:105`` the cited range now reaches.
   any other state. The models and handlers of all three live in
   ``rheo_core.operations.operation_ops``, beside the repository they read; only
   the declarations are here, the same split ``core.work.failures`` uses.
+- ``core.approval.approve`` / ``core.approval.refuse`` — ``mutate``; roles
+  ``owner, member`` (``module-contract.md``'s own row for the pair). Both are
+  members of ``rheo_core.tokens.policy.NON_TOKEN_ISSUABLE``, so no token of any
+  kind can carry either and a model cannot approve what it proposed. Their
+  declarations, models and handlers all live in ``rheo_core.approvals.operations``
+  — the one pair whose *declaration* is not in this module, because the import
+  direction forbids it (see :func:`register_core_operations`); this module only
+  registers them.
 - ``core.audit.list`` — ``read``; roles ``owner, operator``, ratified at
   ``module-contract.md:105``. The supported read of the audit record (run 0c2,
   C5). Its models and handler live in ``rheo_core.audit.operations``, beside the
@@ -445,6 +453,15 @@ def register_core_operations(
     ``role_not_permitted`` before its handler ever ran (mirroring
     ``WORKSPACE_STATUS_DECLARATION``'s own reason for declaring it).
 
+    **The two approval operations are imported here too, and for a second reason.**
+    ``rheo_core.approvals`` imports this package's submodules at module level —
+    ``approvals/gate.py`` needs the operation-record repository, the registry and the
+    refusal vocabulary — so the import must not run the other way while this module
+    is still loading. Deferring it to call time avoids that regardless of import
+    order, exactly as the token import above does. Their declarations live beside
+    their handlers in ``rheo_core.approvals.operations`` rather than in this file for
+    the same reason: a declaration here would have to be built inside this function.
+
     **It also installs the core's audit sink** (D4). The core is a module with no
     manifest, so ``modules/loader.py`` never loads a sink for it and the
     registration that declares the operations is the only place that knows the
@@ -455,6 +472,7 @@ def register_core_operations(
     the state ``check_audit_paths`` exists to refuse. ``install_sink`` is a no-op
     for the identical object, which is what lets this run twice in one process.
     """
+    from rheo_core.approvals.operations import APPROVAL_OPERATIONS
     from rheo_core.tokens.issue import (
         TokenIssued,
         TokenIssueInput,
@@ -493,5 +511,7 @@ def register_core_operations(
     )
     return tuple(
         registry.register(declaration, handler, origin=CORE_ORIGIN)
-        for declaration, handler in CORE_OPERATIONS + token_operations
+        for declaration, handler in CORE_OPERATIONS
+        + token_operations
+        + APPROVAL_OPERATIONS
     )

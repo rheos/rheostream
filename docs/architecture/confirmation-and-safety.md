@@ -110,12 +110,20 @@ because the approval only gates whether execution may *start*; the guards decide
 ## The recording sink and the destructive fixture
 
 Test-harness registrations, never in the production set (criterion 18). The sink is an
-external-class operation `test.sink.send` whose handler appends what it would have sent to a
-harness table and sends nothing. The fixture is a destructive-class operation `test.fixture.act`
+external-class operation whose handler appends what it would have sent to a
+harness table and sends nothing. The fixture is a destructive-class operation
 whose handler records the request and deletes nothing. Both exist so the approval binding, the
 guards, the headless state, the export of a pending approval, and the deletion cascade's
 cancellation of a dependent action have a real gated operation to run against (criteria 19, 21,
 60, 61, 65, 67).
+
+**They ship as `harness.sink.send` and `harness.fixture.act`, not under the `test.` prefix this
+section first gave them.** An operation name's first segment is its module id, and a registration
+under the `test_harness` origin may claim only the module id `harness` ([module
+contract](module-contract.md#operations-tools-events)). A `test.` prefix would have to register under
+an origin named `test`, which is not the test-harness origin and so is not gated to
+`profile = test` — the gate criterion 18's production-registration assertion rests on. The prefix
+moved because the profile gate is the part that carries a criterion.
 
 ## Pipeline presets and their limits
 

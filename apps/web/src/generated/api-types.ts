@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/api/v1/operations/core.approval.approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.approval.approve (mutate) */
+        post: operations["core.approval.approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.approval.refuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.approval.refuse (mutate) */
+        post: operations["core.approval.refuse"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.audit.list": {
         parameters: {
             query?: never;
@@ -178,6 +212,87 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ApprovalRecord
+         * @description One approval as these operations publish it.
+         *
+         *     :class:`~rheo_core.approvals.records.ApprovalRow` field for field, with that row's
+         *     ``id`` published as ``approval_id`` — the renaming ``OperationRecord`` and
+         *     ``AuditRecord`` already make for the same reason — and ``payload_digest``
+         *     published as its lowercase hex, exactly as ``AuditRecord.request_digest`` is: the
+         *     column is ``bytea``, a generated TypeScript client has no natural type for raw
+         *     bytes, and hex is what a person comparing two digests can actually compare.
+         *
+         *     **This is the supported read of the approval record** (AC 8). A caller reads the
+         *     durable row — its state, who approved it, and the digest that binds it — off the
+         *     operation that changed it, and never by querying ``core.approval``. The record is
+         *     read back from the row *after* the transition, so what it publishes is what the
+         *     database holds rather than what the handler intended to write.
+         */
+        ApprovalRecord: {
+            /** Actor Id */
+            actor_id: string | null;
+            /** Actor Kind */
+            actor_kind: string;
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /** Approved At */
+            approved_at: string | null;
+            /** Approved By Id */
+            approved_by_id: string | null;
+            /** Approved By Kind */
+            approved_by_kind: string | null;
+            /** Approved Entry */
+            approved_entry: string | null;
+            /** Destination Ref */
+            destination_ref: string | null;
+            /** Executed At */
+            executed_at: string | null;
+            /** Invalidated Reason */
+            invalidated_reason: string | null;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /** Operation Name */
+            operation_name: string;
+            /** Payload Digest */
+            payload_digest: string;
+            /** Purpose */
+            purpose: string | null;
+            /** State */
+            state: string;
+            /** Subject Ref */
+            subject_ref: string | null;
+            /** Subject Revision */
+            subject_revision: number | null;
+            /**
+             * Window End
+             * Format: date-time
+             */
+            window_end: string;
+            /**
+             * Window Start
+             * Format: date-time
+             */
+            window_start: string;
+        };
+        /**
+         * ApprovalRef
+         * @description Which approval to act on. ``approval_id`` is not a reserved input field, so a
+         *     declaration may name it.
+         */
+        ApprovalRef: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+        };
         /**
          * AuditList
          * @description The workspace's most recent audit records, newest first.
@@ -582,6 +697,72 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "core.approval.approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ApprovalRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.approval.refuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ApprovalRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
     "core.audit.list": {
         parameters: {
             query?: never;

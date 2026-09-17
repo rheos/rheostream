@@ -5,7 +5,22 @@ creates through the storage backend, never a shipped migration), the operations
 ``harness.note.explode(body, message)`` (a handler that raises after writing, for the
 dispatcher's rollback and failure envelope) and ``harness.note.schedule(body)`` (the
 tree's one ``long_running`` declaration, which enqueues a job carrying the minted
-operation id), and the scaffolding B2 needs to drive the reserved-field refusal.
+operation id), the two upper-class fixtures ``harness.fixture.act(ref)`` (destructive)
+and ``harness.sink.send(destination, message)`` (external), and the scaffolding B2
+needs to drive the reserved-field refusal.
+
+**The two upper-class fixtures are named ``harness.*`` and the ratified document
+names them ``test.*``, and that is a forced deviation rather than a choice.**
+``docs/architecture/confirmation-and-safety.md`` § The recording sink and the
+destructive fixture calls them ``test.sink.send`` and ``test.fixture.act``. An
+operation name's first segment **is** its module id
+(``operations/registry.py``'s ``check_origin``), and a registration under
+``origin = test_harness`` may only claim the module id ``harness``; a ``test.``
+prefix would have to be registered under an origin named ``test``, which is not the
+test-harness origin and therefore **not gated to ``profile = test``** — the gate
+criterion 18's production-registration assertion leans on. Keeping the profile gate
+and moving the prefix was the only combination that kept both rules; the document is
+amended at that section to record the shipped names.
 
 Also two pieces of control-plane scaffolding the C4 tests share: ``add_member``
 (an account plus its ``control.membership`` row through C3's repositories, because
@@ -72,13 +87,37 @@ from rheo_core.work.jobs import enqueue_job
 from sqlalchemy import Connection, inspect
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from harness.records import HARNESS_SCHEMA, ensure_note_table, get_note, write_note
+from harness.records import (
+    HARNESS_SCHEMA,
+    ensure_note_table,
+    get_note,
+    list_notes,
+    write_note,
+)
 
 NOTE_RECORD_TYPE: Final = "note"
 NOTE_GET: Final = "harness.note.get"
 NOTE_WRITE: Final = "harness.note.write"
 NOTE_EXPLODE: Final = "harness.note.explode"
 NOTE_SCHEDULE: Final = "harness.note.schedule"
+FIXTURE_ACT: Final = "harness.fixture.act"
+SINK_SEND: Final = "harness.sink.send"
+"""The two upper-class fixtures: the destructive one and the recording sink.
+
+The only operations of any class above ``MUTATE`` anywhere in the tree, which is why
+they are here rather than in the chunk that first needs a guard to attach to one: the
+dispatcher's upper-class branch has nothing to be tested against without them.
+Consumers import these constants rather than the literals — see the module docstring
+for why the names are ``harness.*`` and not the document's ``test.*``."""
+
+ACT_PREFIX: Final = "fixture.act:"
+SINK_PREFIX: Final = "sink.send:"
+"""How each fixture's recorded row is told apart in ``harness.note``.
+
+A prefix on a body in the table the harness already owns, rather than two tables of
+their own: what a test needs of these fixtures is "did it run, how many times, and
+with what", and ``harness.note`` answers all three. A second and third harness table
+would be DDL nothing else reads."""
 NOTE_SCHEDULE_KIND: Final = "harness.note.schedule.job"
 """The one ``long_running`` harness operation and the job kind it enqueues.
 
@@ -293,6 +332,164 @@ def run_scheduled_note(
     write_note(uow.connection, body=payload.body)
 
 
+# --- the two upper-class fixtures -----------------------------------------------------
+
+
+class FixtureActInput(BaseModel):
+    """``ref`` is the record the destructive operation would act on.
+
+    A ``RecordRef`` rather than its string form, because the declaration names it as
+    its ``AuditSpec`` subject field and ``dispatch``'s ``_subject_ref`` reads a field
+    that *is* a ``RecordRef`` — a string there records a null subject on every row.
+    That is also what puts a subject on the approval this operation is held behind,
+    so ``RecordStateGuard`` has a ``subject_revision`` to compare against later.
+    """
+
+    model_config = _IGNORE_EXTRA
+
+    ref: RecordRef
+
+
+class FixtureActed(BaseModel):
+    """What the destructive fixture answers with: the row it recorded, and the
+    reference it was asked to act on."""
+
+    model_config = ConfigDict(frozen=True)
+
+    recorded_ref: str
+    acted_on: str
+
+
+class SinkSendInput(BaseModel):
+    """``destination`` is who it would have sent to, ``message`` is what.
+
+    ``destination`` is a payload field rather than something the declaration names,
+    because no declaration surface carries a destination at all
+    (``rheo_contracts.manifest``) — which is the same reason
+    ``core.approval.destination_ref`` is written null in release one, and why a
+    differing destination is caught as a differing payload digest.
+    """
+
+    model_config = _IGNORE_EXTRA
+
+    destination: str
+    message: str
+
+
+class SinkSent(BaseModel):
+    """What the sink answers with: the row it appended, and where it would have
+    gone."""
+
+    model_config = ConfigDict(frozen=True)
+
+    recorded_ref: str
+    destination: str
+
+
+def _fixture_act(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: FixtureActInput
+) -> FixtureActed:
+    """Record the request and delete nothing (``confirmation-and-safety.md`` § The
+    recording sink and the destructive fixture).
+
+    Destructive class, and it destroys nothing on purpose: what a test needs is an
+    operation the dispatcher *treats* as destructive, and a fixture that really
+    deleted something would make every assertion about "nothing happened" depend on
+    also restoring it.
+    """
+    ensure_note_table(uow.connection)
+    reference = model_input.ref.format()
+    row = write_note(uow.connection, body=f"{ACT_PREFIX}{reference}")
+    return FixtureActed(recorded_ref=note_ref(row.id), acted_on=reference)
+
+
+def _sink_send(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: SinkSendInput
+) -> SinkSent:
+    """Append what it would have sent, and send nothing.
+
+    External class. Release one has no ``external_action`` machinery and no job queue
+    for one — no criterion in this run's scope forces either — so the effect of an
+    external-class operation here is this handler's own write, run from the approving
+    transaction like the destructive fixture's. What that makes testable is the
+    approval binding and the gate; what it does not yet test is the enqueue-and-outcome
+    path, which arrives with the phase-five execution operation.
+    """
+    ensure_note_table(uow.connection)
+    row = write_note(
+        uow.connection,
+        body=f"{SINK_PREFIX}{model_input.destination}|{model_input.message}",
+    )
+    return SinkSent(recorded_ref=note_ref(row.id), destination=model_input.destination)
+
+
+def _recorded(conn: Connection, prefix: str) -> tuple[str, ...]:
+    """Every row one fixture recorded, oldest first, with its prefix stripped.
+
+    Reads the table directly rather than through an operation: this is the harness
+    looking at its own scaffolding, which is what a test counts calls with. A
+    workspace whose ``harness.note`` table was never created answers ``()`` — the
+    same "nothing recorded" a created-but-empty table gives, because the fixture
+    creates the table itself and a workspace where it never ran has neither.
+    """
+    if not inspect(conn).has_table(NOTE_RECORD_TYPE, schema=HARNESS_SCHEMA):
+        return ()
+    return tuple(
+        row.body[len(prefix) :]
+        for row in list_notes(conn)
+        if row.body.startswith(prefix)
+    )
+
+
+def act_payload(reference: str) -> dict[str, object]:
+    """``harness.fixture.act``'s payload for ``reference``, as a caller sends it.
+
+    Built from the string form's own parts rather than from a ``RecordRef`` object,
+    so a caller that holds only the formatted reference — which is what every
+    operation publishes — can dispatch this fixture without importing the contract
+    type. The nested shape is what pydantic validates a ``RecordRef`` field from.
+    """
+    module, _, rest = reference.partition(".")
+    record_type, _, record_id = rest.partition(":")
+    return {"ref": {"module": module, "record_type": record_type, "id": record_id}}
+
+
+def recorded_acts(conn: Connection) -> tuple[str, ...]:
+    """The references ``harness.fixture.act`` has recorded, oldest first."""
+    return _recorded(conn, ACT_PREFIX)
+
+
+def sent_messages(conn: Connection) -> tuple[str, ...]:
+    """The ``<destination>|<message>`` rows ``harness.sink.send`` has appended."""
+    return _recorded(conn, SINK_PREFIX)
+
+
+FIXTURE_ACT_DECLARATION: Final = OperationDeclaration(
+    name=FIXTURE_ACT,
+    safety_class=SafetyClass.DESTRUCTIVE,
+    roles=_ALL_THREE_ROLES,
+    input_model=FixtureActInput,
+    output=FixtureActed,
+    idempotency=Idempotency.NONE,
+    # Above ``READ``, so required. It names a subject field, unlike every other
+    # declaration in this tree: the approval this operation is held behind binds the
+    # record it acts on, and the audit row names it too.
+    audit=AuditSpec(subject_field="ref"),
+)
+
+SINK_SEND_DECLARATION: Final = OperationDeclaration(
+    name=SINK_SEND,
+    safety_class=SafetyClass.EXTERNAL,
+    roles=_ALL_THREE_ROLES,
+    input_model=SinkSendInput,
+    output=SinkSent,
+    idempotency=Idempotency.NONE,
+    # ``subject_field=None``: a send acts on no record of a registered type. Its
+    # destination is a payload field, which is not what a subject field names.
+    audit=AuditSpec(subject_field=None),
+)
+
+
 NOTE_SCHEDULE_DECLARATION: Final = OperationDeclaration(
     name=NOTE_SCHEDULE,
     safety_class=SafetyClass.MUTATE,
@@ -353,8 +550,10 @@ def register_harness(
 
     **It installs the harness module's audit sink too**, the same
     ``CORE_AUDIT_SINK`` the core installs for itself: ``harness`` has no manifest, so
-    nothing loads one for it, and three of the four operations above are ``MUTATE``,
-    which ``dispatch()`` refuses ``audit_sink_missing`` without one. The sink is a
+    nothing loads one for it, and every declaration above the read class — which is
+    all of them but ``harness.note.get``, scoped rather than counted because the
+    count went stale the moment this run added two — is refused
+    ``audit_sink_missing`` by ``dispatch()`` without one. The sink is a
     stateless singleton that writes into whatever workspace database the caller's unit
     of work is routed to, so installing the identical object under two module ids is
     a no-op for ``install_sink`` rather than a conflict. **This is not the whole fix**
@@ -372,6 +571,8 @@ def register_harness(
     registry.register(
         NOTE_SCHEDULE_DECLARATION, _schedule_note, origin=TEST_HARNESS_ORIGIN
     )
+    registry.register(FIXTURE_ACT_DECLARATION, _fixture_act, origin=TEST_HARNESS_ORIGIN)
+    registry.register(SINK_SEND_DECLARATION, _sink_send, origin=TEST_HARNESS_ORIGIN)
 
 
 # --- B2 scaffolding: input models a registration must refuse --------------------------
