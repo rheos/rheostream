@@ -91,12 +91,24 @@ def run_production_startup_and_report() -> None:
     outer test's signal — and on success prints a small parseable report whose
     last line is the profile the child actually resolved.
     """
+    from pydantic import BaseModel
     from rheo_app_core.startup import run_startup
-    from rheo_contracts import SafetyClass
+    from rheo_contracts import (
+        AuditSpec,
+        Idempotency,
+        OperationDeclaration,
+        Role,
+        SafetyClass,
+    )
     from rheo_core.events.consumers import ConsumerRegistry, ConsumerSubscription
     from rheo_core.identity.providers import GITHUB_PROVIDER_ID
-    from rheo_core.operations import CORE_MODULE_ID, HARNESS_MODULE_ID, REGISTRY
-    from rheo_core.settings import TEST_HARNESS_ORIGIN, resolve
+    from rheo_core.operations import (
+        CORE_MODULE_ID,
+        HARNESS_MODULE_ID,
+        REGISTRY,
+        OperationRegistry,
+    )
+    from rheo_core.settings import CORE_ORIGIN, TEST_HARNESS_ORIGIN, resolve
     from rheo_core.storage import control_tables
     from rheo_core.storage.postgres import get_backend
     from rheo_core.tokens.sets import TOOL_REGISTRY, agent_default
@@ -113,28 +125,79 @@ def run_production_startup_and_report() -> None:
 
     problems: list[str] = []
 
+    def operation_problems(registry: OperationRegistry) -> list[str]:
+        """Every reason an operation in ``registry`` may not be in a production set.
+
+        A named function rather than an inline loop so the same code can be pointed
+        at a registry built to contain a violation — see the control below.
+        """
+        found: list[str] = []
+        for name in sorted(registry.names()):
+            registered = registry.lookup(name)
+            assert registered is not None  # names() and lookup() share one table
+            if registered.origin == TEST_HARNESS_ORIGIN:
+                found.append(
+                    f"operation {name!r} was registered by origin {registered.origin!r}"
+                )
+            if registered.module_id == HARNESS_MODULE_ID:
+                found.append(
+                    f"operation {name!r} belongs to module {HARNESS_MODULE_ID!r}"
+                )
+            safety_class = registered.declaration.safety_class
+            if safety_class in (SafetyClass.EXTERNAL, SafetyClass.FINANCIAL):
+                found.append(
+                    f"operation {name!r} declares safety class {safety_class.value!r}"
+                )
+        return found
+
     operation_names = sorted(REGISTRY.names())
     if not operation_names:
         problems.append(
             "the operation registry is empty, so this enumeration would pass "
             "over nothing; startup did not build the registry"
         )
-    for name in operation_names:
-        registered = REGISTRY.lookup(name)
-        assert registered is not None  # names() and lookup() share one table
-        if registered.origin == TEST_HARNESS_ORIGIN:
-            problems.append(
-                f"operation {name!r} was registered by origin {registered.origin!r}"
-            )
-        if registered.module_id == HARNESS_MODULE_ID:
-            problems.append(
-                f"operation {name!r} belongs to module {HARNESS_MODULE_ID!r}"
-            )
-        safety_class = registered.declaration.safety_class
-        if safety_class in (SafetyClass.EXTERNAL, SafetyClass.FINANCIAL):
-            problems.append(
-                f"operation {name!r} declares safety class {safety_class.value!r}"
-            )
+    problems.extend(operation_problems(REGISTRY))
+
+    # The external/financial half of that predicate ranges over ten real operations
+    # and can never match one: nothing above ``MUTATE`` exists in shipped code, and
+    # the upper-class fixtures are harness-registered and profile-gated. So it is
+    # not vacuous in the "passes over an empty set" sense, but it has never been
+    # seen to fire, which is the same position the consumer clause was in — and it
+    # gets the same instrument. The predicate above is applied to a registry built
+    # to hold exactly one EXTERNAL operation and one READ operation; it must flag
+    # the first and only the first.
+    class _NoFields(BaseModel):
+        pass
+
+    def _probe(ctx: object, uow: object, model_input: object) -> BaseModel:
+        raise AssertionError("a control-registry probe must never be dispatched")
+
+    control_registry = OperationRegistry()
+    for probe_name, probe_class, probe_audit in (
+        ("core.probe.send", SafetyClass.EXTERNAL, AuditSpec(subject_field=None)),
+        ("core.probe.read", SafetyClass.READ, None),
+    ):
+        control_registry.register(
+            OperationDeclaration(
+                name=probe_name,
+                safety_class=probe_class,
+                roles=frozenset({Role.OWNER}),
+                input_model=_NoFields,
+                output=_NoFields,
+                idempotency=Idempotency.NONE,
+                audit=probe_audit,
+            ),
+            _probe,
+            origin=CORE_ORIGIN,
+        )
+    control_flags = operation_problems(control_registry)
+    if len(control_flags) != 1 or "core.probe.send" not in control_flags[0]:
+        problems.append(
+            "the external/financial clause's own positive control did not fire: an "
+            f"EXTERNAL operation beside a READ one produced {control_flags}, not "
+            "exactly one problem naming the EXTERNAL one, so the same predicate "
+            "applied to the production registry would not catch one there either"
+        )
 
     tool_names = sorted(TOOL_REGISTRY.names())
     if not tool_names:
@@ -262,6 +325,11 @@ def run_production_startup_and_report() -> None:
     print(f"tools={len(tool_names)}")
     print(f"consumers={len(subscriptions)}")
     print(f"identity_providers={len(provider_ids)}")
+    # Reported beside the actual count, not folded into it: a caller that wants to
+    # know the equality above compared two non-empty sets cannot tell that from the
+    # actual count alone, and "one provider row exists" is true for more reasons
+    # than "this process's settings called for one".
+    print(f"identity_providers_expected={len(expected_provider_ids)}")
     # Last line, and the outer test reads it: an exit code alone cannot say which
     # profile the child resolved.
     print(f"PROFILE={report.profile}")
@@ -359,7 +427,9 @@ def run_startup_with_a_classless_registration(kind: str) -> None:
     )
 
 
-def _production_child_env(cluster: "ClusterSession", data_root: Path) -> dict[str, str]:
+def _production_child_env(
+    cluster: "ClusterSession", data_root: Path, extra: dict[str, str] | None = None
+) -> dict[str, str]:
     """The environment a production child runs with, built rather than inherited.
 
     Every ``RHEO_*`` variable is stripped first — this developer machine's ``.env``
@@ -398,7 +468,87 @@ def _production_child_env(cluster: "ClusterSession", data_root: Path) -> dict[st
             "RHEO_DATA_ROOT": str(data_root),
         }
     )
+    # Applied last so a caller can add settings overrides on top. The ``RHEO__``
+    # prefix with ``.`` spelled ``__`` is the only form the deployment layer reads;
+    # a single-underscore ``RHEO_identity__...`` is neither consumed nor reported as
+    # a stray, so it would be silently ignored and leave the setting at its default.
+    env.update(extra or {})
     return env
+
+
+def _run_production_child(
+    cluster: "ClusterSession", data_root: Path, extra: dict[str, str] | None = None
+) -> tuple[dict[str, str], str]:
+    """Run the enumerating child once; return its parsed counts and its raw output.
+
+    Asserts the two things every run of it must show whatever else is being
+    measured: a zero exit, and ``PROFILE=production`` as the last line of stdout.
+    """
+    completed = subprocess.run(
+        ["uv", "run", "--frozen", "python", "-c", _CHILD_PROGRAM, str(_TESTS_DIR)],
+        cwd=_REPO_ROOT,
+        env=_production_child_env(cluster, data_root, extra),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=PRODUCTION_START_TIMEOUT_SECONDS,
+    )
+    output = f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+
+    assert completed.returncode == 0, output
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    assert lines, output
+    # The child really ran under the production profile. Without this an exit code
+    # of zero is also what a child re-stamped to ``profile = test`` produces.
+    assert lines[-1] == "PROFILE=production", output
+    return dict(line.split("=", 1) for line in lines[:-1] if "=" in line), output
+
+
+@pytest.mark.postgres
+def test_the_identity_provider_clause_tracks_what_is_configured(
+    cluster: "ClusterSession", tmp_path: Path
+) -> None:
+    """The identity clause's anti-vacuity control: its answer must change when the
+    deployment's own provider configuration changes.
+
+    The other three clauses each have a guard that fires when the thing they
+    enumerate is missing entirely — the two empty-registry sentences, and the
+    consumer positive control. The identity clause had none, and in the shipped
+    child configuration its non-trivial branch was dead: with every ``RHEO_*``
+    stripped and an empty data root, ``identity.providers.github.enabled`` always
+    resolved false, so ``expected_provider_ids`` was always ``[]`` and the equality
+    compared two empty lists. A startup that stopped syncing providers altogether
+    would have left it green.
+
+    So the check is run twice in one node, against the same code, with the only
+    difference being the deployment settings. Unconfigured it must see nothing;
+    configured it must see exactly the provider it was configured with. Removing
+    the producer now fails the second half, because the expectation there is
+    non-empty and the table would not be.
+
+    The client id is a fabricated placeholder and nothing reaches GitHub: startup
+    only upserts the row. ``client_secret_ref`` stays empty, so
+    ``check_env_references`` has no ``secret://env/...`` reference to demand.
+    """
+    unconfigured, unconfigured_output = _run_production_child(
+        cluster, tmp_path / "identity-unconfigured-root"
+    )
+    assert unconfigured["identity_providers"] == "0", unconfigured_output
+    assert unconfigured["identity_providers_expected"] == "0", unconfigured_output
+
+    configured, configured_output = _run_production_child(
+        cluster,
+        tmp_path / "identity-configured-root",
+        {
+            "RHEO__identity__providers__github__enabled": "true",
+            "RHEO__identity__providers__github__client_id": "placeholder-client-id",
+        },
+    )
+    # Both halves asserted: the expectation was non-empty, so the equality inside
+    # the child compared two populated sets rather than two empty ones, and the row
+    # the startup actually wrote matched it.
+    assert configured["identity_providers_expected"] == "1", configured_output
+    assert configured["identity_providers"] == "1", configured_output
 
 
 @pytest.mark.postgres

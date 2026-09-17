@@ -12,8 +12,8 @@ contracts import scan, B14); here it is importable and mypy strict checks the
   ``profile`` is ``test`` (:func:`check_origin`, shared with the resolver registry);
 - ``safety_class`` is present (the declaration model makes it required; a
   ``model_construct``-ed declaration without one is refused naming the operation —
-  criterion 18's *startup-fails-naming-it* wiring and its production-profile
-  assertion both ship, in ``tests/test_production_registration.py``);
+  this refusal *is* criterion 18's startup-fails-naming-it wiring, driven through a
+  real start by ``tests/test_production_registration.py``);
 - a declaration whose ``safety_class`` is **not** ``READ`` carries an ``AuditSpec``;
   one that does not is refused naming the operation (criterion 14's declaration
   layer). This is the first of three places a missing audit path is fatal — the other
