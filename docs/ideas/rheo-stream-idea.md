@@ -1241,18 +1241,19 @@ safe to publish.
 
 ### License choice
 
-The rheoStream license is still open. The principal choices include:
+Settled 2026-09-17: **AGPL-3.0**. Operators who distribute or host modified
+versions must provide corresponding source. The `LICENSE` file is the GNU Affero
+GPL v3 text. SPDX: `AGPL-3.0`.
 
-- **AGPL-3.0** to require operators distributing or hosting modified versions to
-  provide corresponding source;
-- **Apache-2.0** to maximize permissive adoption, including proprietary hosted
-  use;
-- a **dual-license model** if the project eventually needs both a reciprocal
-  community edition and commercial licensing.
+Considered and not chosen:
 
-This decision should be made before accepting substantial outside contributions.
-Tuttle's GPL-3.0 license reinforces the value of process/API integration rather
-than copying its implementation into a differently licensed core.
+- **Apache-2.0**, which would maximize permissive adoption including proprietary
+  hosted use of a modified kernel;
+- a **dual-license model** pairing a reciprocal community edition with
+  commercial licensing — premature; the commercial model remains open.
+
+Tuttle's GPL-3.0 license still reinforces the value of process/API integration
+rather than copying its implementation into this core.
 
 ## Architectural guardrails
 
@@ -1565,6 +1566,8 @@ history.
   fixed set or a mandatory sequence for every user.
 - The repository is public code and reusable definitions; every user's personal
   data, credentials, private configuration, and operational records stay private.
+- The public repository is licensed **AGPL-3.0**. The commercial model is still
+  open.
 - Local use is a primary deployment mode. Hosted users keep private data in their
   authorized databases and workspace storage, with secrets managed separately.
 - AI runtime selection is configurable. Claude CLI (`claude -p`) and OpenRouter
@@ -1737,8 +1740,7 @@ Three reversals are recorded here.
 
 - Storage topology for the hosted edition. The first release is settled above.
 - Encryption implementation and key management.
-- Open-source license and commercial model, deliberately deferred to the
-  framework-proof phase.
+- Commercial model (the license itself is AGPL-3.0 as of 2026-09-17).
 - Detailed domain schemas, events, API, and MCP contracts beyond the first release.
   The first release's are settled by the architecture specification above.
 - Domain-pack composition and module lifecycle acceptance criteria beyond install
