@@ -1,8 +1,10 @@
 """Test-profile harness registrations and the environment-isolation helper.
 
 Everything registered from here carries ``origin = "test_harness"`` and is accepted
-only when the resolved ``profile`` is ``test``, so 0c3's production-profile assertion
-will find none of it.
+only when the resolved ``profile`` is ``test``. The production-profile assertion
+exists — ``tests/test_production_registration.py`` starts the application under
+``profile = production`` in a subprocess and enumerates what it registered — and it
+finds none of this.
 
 ``tests/`` has no ``__init__.py``, so pytest puts ``tests/`` itself on ``sys.path`` and
 test modules import this package as ``harness`` (``from harness import ...``).
