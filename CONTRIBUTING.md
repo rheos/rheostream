@@ -49,6 +49,7 @@ general contributor guidance belongs here. See
 [private instructions and new sessions](docs/workspace-layout.md#private-instructions-and-new-sessions).
 Ignore rules do not remove already tracked files or erase earlier history.
 
-License and contribution terms remain undecided. Discuss architectural proposals
-through issues; defer substantial outside code contributions until those terms
-are established. Reused material needs source provenance and license review.
+The project is licensed under AGPL-3.0; see [LICENSE](LICENSE). Contributor
+terms beyond that file are not a separate agreement. Discuss architectural
+proposals through issues. Reused material needs source provenance and license
+review.
