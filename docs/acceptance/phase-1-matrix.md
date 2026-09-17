@@ -140,14 +140,14 @@ index 718dc6f..f7b1584 100644
 - `pytest:tests/test_data_root.py::test_rheo_local_is_accepted_only_when_named_explicitly` — first observed failure line: `E               rheo_core.storage.data_root.DataRootRefusal: data_root_in_checkout: data root <pytest tmp>/checkout/.rheo-local is inside the source checkout <pytest tmp>/checkout; only <pytest tmp>/checkout/.rheo-data is allowed, and only when RHEO_DATA_ROOT names it explicitly` (the tmp prefix is pytest's per-run directory).
 - `pytest:tests/test_ignored_artifacts.py::test_checkout_local_artifacts_are_ignored` — first observed failure line: `E       AssertionError: checkout-local artifacts not git-ignored: ['.rheo-data/workspaces/<token>/profile.json', '.rheo-data/uploads/<token>/evidence.pdf', '.rheo-data/transcripts/<token>/session.jsonl', '.rheo-data/exports/<token>/workspace.csv', '.rheo-data/backups/<token>.sql', '.rheo-data/memory/<token>/index.bin', '.rheo-data/config/<token>/deployment.toml', '.rheo-data/secrets/<token>/cluster/primary-dsn']` (`<token>` is the fixture's per-run uuid). Both demonstrators observed red together under one application of the hunk: `2 failed`.
 
-**Performed by:** C1 (2026-09-16), C5 (2026-09-17)
+**Performed by:** C1 (2026-09-16), C5 (2026-09-16)
 
 **Note:** the criterion has two halves. The half this hunk breaks is "the checkout-local
 fallback directory": move the directory the deployment writes into and the ignore rules no
 longer match anything it produces, which is the criterion's failure in its most direct form.
 
 **Note on the second demonstrator, which could not fail for the reason it claimed until
-2026-09-17.** As C1 captured this row, `test_checkout_local_artifacts_are_ignored` stayed green
+C5's pass.** As C1 captured this row, `test_checkout_local_artifacts_are_ignored` stayed green
 under this hunk. The first reason to reach for was that its guarded behaviour lives in
 `.gitignore`, which is not a declared path for run 0c3 so no mutation of it was attempted. That
 was true, and it was not the whole reason. The test built its eight fixture paths from **string
@@ -159,7 +159,7 @@ configuration file, upload, database, database sidecar, export, and log **it pro
 this hunk the product wrote to `.rheo-data/` while the test went on asserting that
 `.rheo-local/` is ignored: green and wrong.
 
-**Fixed 2026-09-17, in C5, from the CodeRabbit thread on this row (PR #79).**
+**Fixed 2026-09-16, in C5, from the CodeRabbit thread on this row (PR #79).**
 `tests/test_ignored_artifacts.py` now derives every fixture path from `LOCAL_OPT_IN`, so the
 directory under test is the one the product actually writes into. Re-applying the hunk above
 now reddens this demonstrator directly: the product writes to `.rheo-data/`, `git check-ignore`
