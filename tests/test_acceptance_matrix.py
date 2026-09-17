@@ -25,6 +25,8 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "repository-checks.yml"
@@ -136,8 +138,16 @@ def _row_from_fields(number: int, fields: dict[str, str]) -> Row:
 def _demonstrators(body: str) -> tuple[str, ...]:
     if body == "none":
         return ()
-    found = [_DEMO_BULLET.match(line.strip()) for line in body.splitlines()]
-    return tuple(match.group(1) for match in found if match)
+    found: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = _DEMO_BULLET.match(stripped)
+        if match is None:
+            raise ValueError(f"malformed demonstrator line: {stripped!r}")
+        found.append(match.group(1))
+    return tuple(found)
 
 
 def _mutation(body: str) -> str:
@@ -293,6 +303,11 @@ def test_the_live_matrix_is_clean() -> None:
         validate(rows, known_pytest_ids=known_pytest_ids, known_ci_steps=known_ci_steps)
         == []
     )
+
+
+def test_a_malformed_demonstrator_line_is_rejected() -> None:
+    with pytest.raises(ValueError, match="malformed demonstrator line"):
+        _demonstrators("- `pytest:tests/foo.py::test_ok`\nnot-a-bullet")
 
 
 def test_the_positive_control_is_live() -> None:
