@@ -74,6 +74,10 @@ class JobKindRegistry:
             raise ValueError("a job kind is a non-empty string")
         self._kinds[kind] = (input_model, handler)
 
+    def names(self) -> frozenset[str]:
+        """The registered kind strings. Empty until something calls :meth:`register`."""
+        return frozenset(self._kinds)
+
     def lookup(self, kind: str) -> tuple[type[BaseModel], JobHandler]:
         """The model and handler for ``kind``, or :class:`JobKindUnknown`."""
         found = self._kinds.get(kind)
