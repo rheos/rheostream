@@ -17,6 +17,14 @@ import threading
 from types import FrameType
 
 from rheo_core.events import ConsumerRegistry
+from rheo_core.exports import (
+    EXPORT_JOB_KIND,
+    RESTORE_JOB_KIND,
+    ExportJobPayload,
+    RestoreJobPayload,
+    run_export_job,
+    run_restore_job,
+)
 from rheo_core.storage.postgres import get_backend, reset_backend
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import worker_loop
@@ -24,10 +32,12 @@ from rheo_core.work.loop import worker_loop
 JOB_KINDS = JobKindRegistry()
 """The process-wide job-kind registry.
 
-This run registers no kinds of its own, so it starts empty and that is correct here: it
-exists so ``main()`` has a registry to hand ``worker_loop``, and so the kinds a later
-run adds have one obvious place to be registered.
+Export and restore are the kinds release one actually enqueues. They are registered
+here, at the composition root, not in ``rheo_core.work.kinds`` — that module holds
+no process-wide instance so a test can build its own.
 """
+JOB_KINDS.register(EXPORT_JOB_KIND, ExportJobPayload, run_export_job)
+JOB_KINDS.register(RESTORE_JOB_KIND, RestoreJobPayload, run_restore_job)
 
 CONSUMERS = ConsumerRegistry()
 """The process-wide consumer registry, beside ``JOB_KINDS`` and empty for the same
