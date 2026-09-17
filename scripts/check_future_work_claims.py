@@ -70,6 +70,8 @@ PATTERNS: tuple[tuple[str, str], ...] = (
     ),
     (r"the run that builds", "defers to a later run"),
     (r"a later run (?:will|adds|builds|ships)", "defers to a later run"),
+    (r"(?:that |this )?(?:is|was) 0c3'?s\b", "names 0c3 as the owning run"),
+    (r"belongs? to 0c3\b", "defers to 0c3"),
 )
 
 #: The whole repository, resolved from the git top level rather than the caller's cwd —

@@ -906,7 +906,7 @@ negative case and is unreachable by a hunk on the `long_running` branch.
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record`
-- `pytest:tests/postgres/test_audit_dispatch.py::test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen`
+- `pytest:tests/postgres/test_audit_dispatch.py::test_the_mutating_set_derived_from_the_registry_is_the_declared_sixteen`
 - `pytest:tests/postgres/test_audit_dispatch.py::test_the_success_row_names_the_actor_the_entry_and_the_request`
 - `pytest:tests/postgres/test_audit_dispatch.py::test_an_operation_above_mutate_is_audited_too`
 - `pytest:tests/postgres/test_context_routing.py::test_registering_a_non_read_operation_with_no_audit_spec_is_refused`
@@ -1750,9 +1750,28 @@ recorded nothing in between. *(Scenario: Export and restore; FR 52.)*"
 - `pytest:tests/postgres/test_export_restore.py::test_approved_action_restore_requires_fresh_approval_and_executes_nothing`
 
 **Mutation:**
-- Remove restore's forced `requires_reapproval` assignment and trust the tampered artifact's
-  `approved` value.
-- Drop the `audit` category from `core.workspace.digest`.
+```diff
+diff --git a/packages/core/src/rheo_core/exports/artifact.py b/packages/core/src/rheo_core/exports/artifact.py
+index 413dd70..19d38a0 100644
+--- a/packages/core/src/rheo_core/exports/artifact.py
++++ b/packages/core/src/rheo_core/exports/artifact.py
+@@ -236,6 +236,7 @@ def digest_categories(
+         for name, body in serialised_categories(
+             connection, skip_operation_id=skip_operation_id
+         ).items()
++        if name != "audit"
+     }
+ 
+ 
+@@ -600,7 +601,6 @@ def _import_approvals(connection: Connection, body: bytes) -> set[UUID]:
+     for row in _jsonl(body, APPROVALS_NAME):
+         values = _decoded(row, approval_tables.approval.c.keys())
+         values.update(
+-            state=approval_tables.REQUIRES_REAPPROVAL,
+             approved_by_kind=None,
+             approved_by_id=None,
+             approved_at=None,
+```
 
 **Cost:** The first mutation makes the full-sequence test report `approved` where
 `requires_reapproval` is required. The second makes the digest-comparison test report unequal
