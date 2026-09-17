@@ -1296,6 +1296,7 @@ except the operation it names. Both are true; neither is a pytest node.
 
 **Demonstrator:**
 - `pytest:tests/test_production_registration.py::test_a_production_start_registers_nothing_from_the_test_harness`
+- `pytest:tests/test_production_registration.py::test_startup_refuses_a_classless_registration_naming_it`
 - `pytest:tests/test_production_registration.py::test_registering_an_operation_with_no_safety_class_is_refused_naming_it`
 - `pytest:tests/test_contracts.py::test_tool_registration_refuses_a_declaration_with_no_safety_class`
 - `pytest:tests/test_contracts.py::test_tool_declaration_requires_a_safety_class`
@@ -1392,7 +1393,10 @@ rather than reasoned about, and each reddens a different clause:
   `test_registering_an_operation_with_no_safety_class_is_refused_naming_it` with
   `E                   AttributeError: 'OperationDeclaration' object has no attribute
   'safety_class'` — no `RegistrationRefused` raised at all, which is the absence the removal
-  was meant to prove rather than a second refusal standing in for the first.
+  was meant to prove rather than a second refusal standing in for the first. This one was
+  applied and observed before the identical-looking edit to `register_core_tools()` was refused
+  by the permission classifier, so the refusal below is about that specific call and not about
+  the class of edit.
 
 **Note on the two chunks and which clause each closed.** C4 shipped
 `ToolDeclaration.safety_class` and turned tool registration into a path that can refuse; its
@@ -1401,6 +1405,31 @@ wrote the production-profile check, wired `register_core_tools()` into startup, 
 operation half of that same test — which had no demonstrator anywhere at this run's base:
 `registry.py`'s refusal has shipped since run 0b1 and nothing registered a class-less
 operation against it.
+
+**Note on "asserts *startup* fails", which the unit-level nodes do not demonstrate.** Both
+`test_contracts.py` nodes and this row's own
+`test_registering_an_operation_with_no_safety_class_is_refused_naming_it` build a **private**
+registry the shipped startup never touches, so each proves that a registry refuses — not that a
+started application does. A startup that filtered a class-less declaration out, or registered
+through some other path, would leave all three green.
+`test_startup_refuses_a_classless_registration_naming_it` closes that: it injects a class-less
+declaration into the tuple the core's own registration function reads — `CORE_OPERATIONS` for
+the operation half, `CORE_TOOLS` for the tool half — then drives the real `run_startup()` in a
+subprocess and requires it to refuse, naming what was registered. Demonstrated on 2026-09-16 by
+giving the injected operation a real safety class, so startup had nothing to refuse: red with
+`startup completed with a class-less operation registered; it did not refuse 'core.probe.act'`,
+while the tool case stayed green because only the operation half was mutated. Reverted. This
+row's three unit-level nodes are kept as the fast companions, not as the answer to that
+sentence.
+
+**Note on one mutation this row does not carry because a permission layer refused it.** The
+first attempt at the above was to make `register_core_tools()` *skip* a class-less declaration
+rather than register it, which is the more direct rendering of "the test would fail if startup
+filters the declaration". The edit was refused by this session's own permission classifier,
+which reads removing a registration guard as tampering — the same shape that refused 0c2's
+M14a on criterion 14's row. It was not performed, and no inference about it is recorded. The
+probe-side mutation above was run instead and produces the same signal from the other
+direction: startup is given nothing to refuse rather than being taught not to refuse.
 
 **Note on the CI clause, which is satisfied by an existing step rather than a new one.**
 "The check runs in continuous integration from this phase onward" is met by
@@ -1412,11 +1441,31 @@ which is already proven to work inside that step by
 dedicated step was considered and not added: it would start a second production process, run
 the same control-chain migration again, and carry no signal the existing step does not.
 
-**Note on the one clause with no origin to filter on.** Identity providers are "registered" by
-`sync_providers()` upserting `control.identity_provider` rows from the resolved deployment
-settings, and that table has no origin or profile column — unlike operations, resolvers and
-tools, which all pass `check_origin_profile`. The check therefore asserts an allowlist: every
-`provider_id` present after startup must be one the shipped package declares
-(`GITHUB_PROVIDER_ID` is the only one in release one). A harness that wrote a provider row
-under the id `github` would not be caught. Building an origin gate for identity providers is
-out of this chunk's scope and is recorded here rather than left for a reader to notice.
+**Note on the one clause with no origin to filter on, and how far it is checkable anyway.**
+Identity providers are "registered" by `sync_providers()` upserting `control.identity_provider`
+rows from the resolved deployment settings, and that table has no origin or profile column —
+unlike operations, resolvers and tools, which all pass `check_origin_profile`. Provenance
+therefore cannot be read off a row. What can be checked, and is, is that the rows present after
+startup are **exactly** the set this process's own resolved settings would have produced; a row
+this startup did not write fails that equality whatever id it carries. Demonstrated on
+2026-09-16 by planting a `provider_id = 'github'` row into the child's control database before
+the enumeration, which is precisely the case an allowlist of shipped ids would have waved
+through: red with `identity provider rows ['github'] are not the set this process's own
+settings produce ([]); a provider row this startup did not write is in the control plane`.
+Reverted. The allowlist clause is kept beside it so an *unknown* id is still named as unknown.
+
+**The residual gap, which this does not close:** in a deployment where GitHub is genuinely
+configured, a planted `github` row is indistinguishable from the real one, because both satisfy
+the equality. Closing that needs a provenance column on `control.identity_provider` — a schema
+change, a migration, and an edit to `sync_providers` — all outside this chunk's declared paths,
+and escalated to the Conductor rather than widened into here.
+
+**Note on the consumer clause, which is checked by a positive control rather than by a count.**
+Release one registers no production consumer, so the worker's `CONSUMERS` is legitimately
+empty and the loop over it passes over nothing. Requiring it to be non-empty would be a guard
+that is red against correct code today. The predicate is instead a named function applied
+twice: to the worker's registry, and to a throwaway registry holding one harness subscription
+and one core subscription, where it must find the first and not the second. Demonstrated on
+2026-09-16 by pointing the predicate at a module id that matches nothing: red with `the
+consumer check's own positive control did not fire, so the predicate applied to the worker's
+registry would not catch a harness consumer there either`. Reverted.
