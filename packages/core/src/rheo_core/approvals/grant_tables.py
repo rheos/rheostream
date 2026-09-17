@@ -2,8 +2,7 @@
 ``Table`` objects in schema ``core``.
 
 Columns are verbatim from ``docs/architecture/confirmation-and-safety.md`` § Standing
-grants, with one deviation recorded at its own column below (``expires_at`` is
-nullable).
+grants.
 
 **A fourth ``MetaData``, for the reason ``approvals/tables.py`` gives for the third.**
 ``0001_core_schema``, ``0002_durable_work`` and ``0003_approvals`` each call their own
@@ -39,17 +38,6 @@ def _timestamptz() -> DateTime:
     return DateTime(timezone=True)
 
 
-# ``expires_at`` is **nullable**, and that is a recorded deviation from the ratified
-# column list rather than an oversight — the same kind ``approvals/tables.py`` records
-# for ``purpose``. The ratified table marks only ``revoked_at`` null, but nothing in
-# release one can supply a value for this one: ``core.standing_grant.create`` takes an
-# actor and an operation list (``module-contract.md``'s row for the pair), no setting
-# declares a grant lifetime, and inventing a literal here would be a policy chosen by
-# whoever typed it. Null means "until revoked", ``revoke`` is the live control, and no
-# path in this phase consults grants at all, so a grant with no expiry presently grants
-# nothing. **The first consumer of standing grants has to settle the lifetime** — a
-# settings key and a value on this column — before a grant means anything, and that is
-# the point at which this column should become non-null.
 standing_grant = Table(
     "standing_grant",
     grant_metadata,
@@ -58,7 +46,7 @@ standing_grant = Table(
     Column("actor_id", UUID(as_uuid=True), nullable=False),
     Column("granted_by_id", UUID(as_uuid=True), nullable=True),
     Column("created_at", _timestamptz(), nullable=False),
-    Column("expires_at", _timestamptz(), nullable=True),
+    Column("expires_at", _timestamptz(), nullable=False),
     Column("revoked_at", _timestamptz(), nullable=True),
 )
 

@@ -453,11 +453,14 @@ def test_cli_token_wrong_kind_on_mcp_and_mcp_token_ok_on_api(
     """B7, rows 22-23: a ``cli`` token on the MCP seam is ``token_wrong_kind``;
     a ``mcp`` token on the ``api`` surface succeeds."""
     cli_value, _, _ = _issue(session_ctx, kind="cli", set_name="read_only")
-    mcp_value, _, _ = _issue(session_ctx, kind="mcp", set_name="read_only")
+    mcp_value, token_id, _ = _issue(session_ctx, kind="mcp", set_name="read_only")
     wrong = context_from_token(cli_value, "mcp")
     assert wrong == Refusal(TOKEN_WRONG_KIND)
     ok = context_from_token(mcp_value, "api")
     assert isinstance(ok, WorkspaceContext)
+    assert ok.actor.id == token_id
+    assert ok.actor.id != session_ctx.actor.id
+    assert ok.audience is not None and ok.audience.id == token_id
 
 
 # --- B6: malformed / expired / out-of-scope, with row-count snapshots ------

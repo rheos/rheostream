@@ -263,8 +263,8 @@ def context_from_token(value: str, surface: str) -> WorkspaceContext | Refusal:
     allows this package to build, running the shared factory tail
     (``_active_workspace_modules``) exactly as every other factory does.
 
-    Success: actor ``Actor(token, account_id)``, audience ``Audience(token,
-    account_id)``, role from the membership row ``resolve_token`` already read,
+    Success: actor ``Actor(token, token_id)``, audience ``Audience(token,
+    token_id)``, role from the token account's membership row ``resolve_token`` read,
     operation set the snapshot as a ``frozenset[str]``, entry the presenting
     surface (``api`` or ``mcp``).
     """
@@ -276,10 +276,10 @@ def context_from_token(value: str, surface: str) -> WorkspaceContext | Refusal:
         return enabled
     return WorkspaceContext(
         workspace_id=resolved.workspace_id,
-        actor=Actor(kind=ActorKind.TOKEN, id=resolved.account_id),
+        actor=Actor(kind=ActorKind.TOKEN, id=resolved.token_id),
         role=resolved.role,
         entry=Entry(surface),
-        audience=Audience(kind=AudienceKind.TOKEN, id=resolved.account_id),
+        audience=Audience(kind=AudienceKind.TOKEN, id=resolved.token_id),
         operation_set=resolved.operation_set,
         enabled_modules=enabled,
         request_id=uuid7(),

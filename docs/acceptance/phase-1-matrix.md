@@ -1565,6 +1565,7 @@ registry would not catch a harness consumer there either`. Reverted.
 **Demonstrator:**
 - `pytest:tests/postgres/test_approvals.py::test_criterion_19_end_to_end_through_an_mcp_token_session`
 - `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_actors_role_refuses_execution_and_records_it`
+- `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_token_refuses_approved_execution`
 - `pytest:tests/postgres/test_approvals.py::test_revoking_the_approving_actors_role_refuses_execution_too`
 - `pytest:tests/postgres/test_approvals.py::test_a_refusing_guard_stops_the_effect_and_a_permitting_one_does_not`
 - `pytest:tests/postgres/test_approvals.py::test_the_core_attaches_two_guards_always_and_the_third_only_with_a_subject`

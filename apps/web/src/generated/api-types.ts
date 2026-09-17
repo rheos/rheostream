@@ -658,6 +658,11 @@ export interface components {
              * Format: uuid
              */
             account_id: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
             /** Operation Names */
             operation_names: string[];
         };
@@ -691,8 +696,11 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
-            /** Expires At */
-            expires_at: string | null;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
             /**
              * Grant Id
              * Format: uuid

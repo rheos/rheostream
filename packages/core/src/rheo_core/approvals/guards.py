@@ -59,7 +59,11 @@ from rheo_core.refs.resolver import (
     resolve_in,
 )
 from rheo_core.storage.backend import UnitOfWork
-from rheo_core.storage.control_plane import get_membership
+from rheo_core.storage.control_plane import (
+    get_access_token,
+    get_membership,
+    list_access_token_operations,
+)
 from rheo_core.storage.postgres import get_backend
 
 
@@ -119,19 +123,8 @@ Three enum members are cheaper than that, and they cannot drift silently — a c
 moving into or out of the gated set is a change to the ratified class table, which is
 code and not configuration."""
 
-_ACCOUNT_BEARING: Final = frozenset({ActorKind.ACCOUNT, ActorKind.TOKEN})
-"""The actor kinds whose ``actor_id`` is an account id, and so the kinds whose
-permission is a ``control.membership`` row.
 
-``operator`` and ``system`` carry no id at all and ``connection`` names a connection
-rather than an account (``rheo_contracts.context``), so for those three there is no
-membership row that could have been revoked and
-:class:`ActorPermissionGuard` has nothing to check. That is a real limit of what this
-guard can see and it is stated rather than hidden: an operator's authority is the
-deployment's, not a workspace row's, and revoking it is not a workspace act."""
-
-
-def _membership_detail(
+def _permission_detail(
     workspace_id: UUID,
     *,
     actor_kind: str | None,
@@ -139,26 +132,45 @@ def _membership_detail(
     roles: frozenset[Role],
     operation_name: str,
     whose: str,
+    now: datetime,
 ) -> str | None:
-    """``None`` when this actor still holds a role that permits ``operation_name``;
-    a showable detail when it does not.
-
-    Read from ``control.membership`` **now**, on its own control-plane connection,
-    because that is the only place the answer lives: the context was built when the
-    call arrived, so ``ctx.role`` is precisely the stale value this guard exists to
-    disbelieve.
-    """
+    """Return why the actor no longer permits the operation, if anything."""
     if actor_kind is None:
         return f"{whose} is not recorded on the approval"
     try:
         kind = ActorKind(actor_kind)
     except ValueError:
         return f"{whose} has the unknown actor kind {actor_kind!r}"
-    if kind not in _ACCOUNT_BEARING or actor_id is None:
+    if kind not in {ActorKind.ACCOUNT, ActorKind.TOKEN}:
         return None
+    if actor_id is None:
+        return f"{whose} ({kind.value}) has no recorded id"
     with get_backend().control_engine.connect() as connection:
+        account_id = actor_id
+        if kind is ActorKind.TOKEN:
+            token = get_access_token(connection, actor_id)
+            if token is None:
+                return f"{whose} token {actor_id} no longer exists"
+            if token.workspace_id != workspace_id:
+                return (
+                    f"{whose} token {actor_id} belongs to workspace "
+                    f"{token.workspace_id}, not {workspace_id}"
+                )
+            if token.revoked_at is not None:
+                return (
+                    f"{whose} token {actor_id} was revoked at "
+                    f"{token.revoked_at.isoformat()}"
+                )
+            if token.expires_at <= now:
+                return (
+                    f"{whose} token {actor_id} expired at "
+                    f"{token.expires_at.isoformat()}"
+                )
+            if operation_name not in list_access_token_operations(connection, actor_id):
+                return f"{whose} token {actor_id} no longer permits {operation_name}"
+            account_id = token.account_id
         membership = get_membership(
-            connection, account_id=actor_id, workspace_id=workspace_id
+            connection, account_id=account_id, workspace_id=workspace_id
         )
     if membership is None:
         return (
@@ -217,23 +229,25 @@ class ActorPermissionGuard:
                 f"{approval.operation_name} is not registered in this process, so the "
                 "roles it permits cannot be read"
             )
-        gated = _membership_detail(
+        gated = _permission_detail(
             ctx.workspace_id,
             actor_kind=approval.actor_kind,
             actor_id=approval.actor_id,
             roles=operation.declaration.roles,
             operation_name=approval.operation_name,
             whose="the gated actor",
+            now=now,
         )
         if gated is not None:
             return gated
-        return _membership_detail(
+        return _permission_detail(
             ctx.workspace_id,
             actor_kind=approval.approved_by_kind,
             actor_id=approval.approved_by_id,
             roles=APPROVE_DECLARATION.roles,
             operation_name=APPROVE_DECLARATION.name,
             whose="the approving actor",
+            now=now,
         )
 
 

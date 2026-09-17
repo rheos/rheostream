@@ -95,7 +95,7 @@ from rheo_core.operations import (
     dispatch,
     register_core_operations,
 )
-from rheo_core.operations.core_ops import TOKEN_ISSUE
+from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
 from rheo_core.refs.resolver import (
     DELETED,
     LIVE,
@@ -1250,7 +1250,9 @@ def test_the_record_state_guard_refuses_a_gone_or_moved_subject(
 # --- criterion 19, end to end through an MCP-kind context ---------------------------
 
 
-def _mcp_context(owner: WorkspaceContext, operation: str) -> WorkspaceContext:
+def _mcp_context(
+    owner: WorkspaceContext, operation: str
+) -> tuple[WorkspaceContext, UUID]:
     """A context resolved from a real ``mcp`` token whose set names ``operation``.
 
     Built through ``context_from_token``, which is the same function
@@ -1263,12 +1265,41 @@ def _mcp_context(owner: WorkspaceContext, operation: str) -> WorkspaceContext:
     issued = dispatch(owner, TOKEN_ISSUE, {"kind": "mcp", "operations": [operation]})
     assert issued.ok, issued
     value = str(issued.result.value)  # type: ignore[union-attr]
+    token_id = issued.result.token_id  # type: ignore[union-attr]
     ctx = context_from_token(value, "mcp")
     assert isinstance(ctx, WorkspaceContext), ctx
     assert ctx.actor.kind is ActorKind.TOKEN
+    assert ctx.actor.id == token_id
+    assert ctx.audience is not None and ctx.audience.id == token_id
     assert ctx.entry is Entry.MCP
     assert ctx.operation_set == frozenset({operation})
-    return ctx
+    return ctx, token_id
+
+
+def test_revoking_the_gated_token_refuses_approved_execution(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    note: str,
+) -> None:
+    mcp, token_id = _mcp_context(owner, FIXTURE_ACT)
+    approval_id, operation_id = _held(mcp, FIXTURE_ACT, act_payload(note))
+
+    revoked = dispatch(owner, TOKEN_REVOKE, {"token_id": str(token_id)})
+    assert revoked.ok, revoked
+    record = _record(_approve(owner, approval_id))
+
+    assert record.actor_kind == ActorKind.TOKEN.value
+    assert record.actor_id == token_id
+    assert record.state == "refused"
+    assert record.executed_at is None
+    assert _acts(engine, database) == ()
+    failed = _operation_record(owner, operation_id)
+    assert failed.state == "failed"
+    assert failed.error_code == GUARD_REFUSED
+    assert "ActorPermissionGuard" in failed.error_text
+    assert "the gated actor" in failed.error_text
+    assert "revoked" in failed.error_text
 
 
 def test_criterion_19_end_to_end_through_an_mcp_token_session(
@@ -1303,7 +1334,7 @@ def test_criterion_19_end_to_end_through_an_mcp_token_session(
     written as a number, so a deployment that changes the setting changes this
     assertion with it.
     """
-    mcp = _mcp_context(owner, FIXTURE_ACT)
+    mcp, _ = _mcp_context(owner, FIXTURE_ACT)
     payload = act_payload(note)
     deadline = window_seconds(mcp)
 
@@ -1350,7 +1381,11 @@ def test_criterion_19_end_to_end_through_an_mcp_token_session(
     refused = dispatch(
         owner,
         STANDING_GRANT_CREATE,
-        {"account_id": str(owner.actor.id), "operation_names": [FIXTURE_ACT]},
+        {
+            "account_id": str(owner.actor.id),
+            "operation_names": [FIXTURE_ACT],
+            "expires_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+        },
     )
     assert refused.state == STANDING_GRANT_CLASS_REFUSED, refused
     assert refused.error is not None

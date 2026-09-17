@@ -805,6 +805,11 @@
             "title": "Account Id",
             "type": "string"
           },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
           "operation_names": {
             "items": {
               "type": "string"
@@ -816,7 +821,8 @@
         },
         "required": [
           "account_id",
-          "operation_names"
+          "operation_names",
+          "expires_at"
         ],
         "title": "StandingGrantCreate",
         "type": "object"
@@ -846,16 +852,9 @@
             "type": "string"
           },
           "expires_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expires At"
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
           },
           "grant_id": {
             "format": "uuid",

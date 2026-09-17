@@ -6,8 +6,10 @@ Revises: 0003_approvals
 Creates exactly ``standing_grant`` and ``standing_grant_operation`` from the ``Table``
 objects in ``rheo_core.approvals.grant_tables``, which carry their own ``MetaData`` so
 that revisions 0001, 0002 and 0003 still create exactly their own six, seven and two.
-Schema only: the behaviour over these tables is ``rheo_core.approvals.grants`` and
-``rheo_core.approvals.grant_operations``. Downgrade is not supported in release one.
+``standing_grant.expires_at`` is required because every grant records a bounded
+period. Schema only: the behaviour over these tables is ``rheo_core.approvals.grants``
+and ``rheo_core.approvals.grant_operations``. Downgrade is not supported in release
+one.
 """
 
 from collections.abc import Sequence

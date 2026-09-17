@@ -371,7 +371,11 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
     granted = dispatch(
         owner,
         STANDING_GRANT_CREATE,
-        {"account_id": str(owner_account_id), "operation_names": [WORKSPACE_STATUS]},
+        {
+            "account_id": str(owner_account_id),
+            "operation_names": [WORKSPACE_STATUS],
+            "expires_at": datetime(2999, 1, 1, tzinfo=UTC).isoformat(),
+        },
     )
     assert granted.ok, granted
     grant_id = granted.result.grant_id  # type: ignore[union-attr]

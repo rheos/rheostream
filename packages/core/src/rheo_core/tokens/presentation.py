@@ -68,6 +68,7 @@ class ResolvedToken:
     (from the membership row just read, at presentation time), and the snapshot
     as the eventual context's operation set."""
 
+    token_id: UUID
     account_id: UUID
     workspace_id: UUID
     role: Role
@@ -109,6 +110,7 @@ def resolve_token(value: str, surface: str) -> ResolvedToken | Refusal:
             )
         touch_access_token_last_used(connection, row.id)
     return ResolvedToken(
+        token_id=row.id,
         account_id=row.account_id,
         workspace_id=row.workspace_id,
         role=membership.role,

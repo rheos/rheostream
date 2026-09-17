@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from typing import Final
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from rheo_contracts import (
     ActorKind,
     AuditSpec,
@@ -69,6 +69,9 @@ a revoke of a grant that is already revoked. Named after
 ``approvals/operations.py``'s ``approval_state``, which is the same idea over the
 record next door."""
 
+STANDING_GRANT_EXPIRY_REFUSED: Final = "standing_grant_expiry_refused"
+"""The refusal for a requested lifetime that has already ended."""
+
 # See ``rheo_core.operations.core_ops`` for why ``ignore`` (the default) is stated.
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
 
@@ -99,6 +102,7 @@ class StandingGrantCreate(BaseModel):
 
     account_id: UUID
     operation_names: list[str] = Field(min_length=1)
+    expires_at: AwareDatetime
 
 
 class StandingGrantRef(BaseModel):
@@ -131,7 +135,7 @@ class StandingGrantRecord(BaseModel):
     actor_id: UUID
     granted_by_id: UUID | None
     created_at: datetime
-    expires_at: datetime | None
+    expires_at: datetime
     revoked_at: datetime | None
     operation_names: list[str]
     covers: list[str]
@@ -203,15 +207,17 @@ def create_handler(
 ) -> StandingGrantRecord:
     """Write a standing grant, or refuse it naming the operation that cannot be in it.
 
-    The class check runs **before** anything is written, so a refused grant leaves no
+    Validation runs **before** anything is written, so a refused grant leaves no
     row behind at all — including no row naming the operations that were acceptable.
     A partially written grant would be a permission nobody asked for.
-
-    ``expires_at`` is written null; see ``approvals/grant_tables.py``'s comment on that
-    column for why release one has no value to put there.
     """
-    _refuse_upper_class(model_input.operation_names)
     now = datetime.now(UTC)
+    if model_input.expires_at <= now:
+        raise OperationRefused(
+            STANDING_GRANT_EXPIRY_REFUSED,
+            "standing grant expires_at must be later than the creation time",
+        )
+    _refuse_upper_class(model_input.operation_names)
     grant_id = grants.create(
         uow.connection,
         actor_kind=ActorKind.ACCOUNT.value,
@@ -219,7 +225,7 @@ def create_handler(
         granted_by_id=ctx.actor.id,
         names=model_input.operation_names,
         created_at=now,
-        expires_at=None,
+        expires_at=model_input.expires_at,
     )
     return _published(_must_read(uow, grant_id, now), now)
 

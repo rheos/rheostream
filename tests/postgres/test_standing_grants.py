@@ -22,6 +22,7 @@ in is asserted directly. That is weaker than a dispatch and it is what is availa
 stated rather than papered over.
 """
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -40,8 +41,10 @@ from rheo_core.approvals import (
     GUARDED_CLASSES,
     STANDING_GRANT_CLASS_REFUSED,
     STANDING_GRANT_CREATE,
+    STANDING_GRANT_EXPIRY_REFUSED,
     STANDING_GRANT_REVOKE,
     STANDING_GRANT_STATE,
+    GrantRow,
 )
 from rheo_core.approvals.grant_tables import standing_grant, standing_grant_operation
 from rheo_core.boundary import context_for_harness, context_for_operator
@@ -56,6 +59,8 @@ from rheo_core.storage.backend import UnitOfWork
 from sqlalchemy import Engine, func, select
 
 pytestmark = pytest.mark.postgres
+
+_FUTURE_EXPIRY = datetime(2999, 1, 1, tzinfo=UTC)
 
 
 # --- fixtures and helpers -------------------------------------------------------------
@@ -99,11 +104,20 @@ def owner(
     return ctx
 
 
-def _create(ctx: WorkspaceContext, account_id: UUID, *names: str) -> OperationOutcome:
+def _create(
+    ctx: WorkspaceContext,
+    account_id: UUID,
+    *names: str,
+    expires_at: datetime = _FUTURE_EXPIRY,
+) -> OperationOutcome:
     return dispatch(
         ctx,
         STANDING_GRANT_CREATE,
-        {"account_id": str(account_id), "operation_names": list(names)},
+        {
+            "account_id": str(account_id),
+            "operation_names": list(names),
+            "expires_at": expires_at.isoformat(),
+        },
     )
 
 
@@ -246,9 +260,57 @@ def test_a_grant_naming_only_lower_class_operations_is_accepted(
     assert record.actor_kind == "account"
     assert record.actor_id == owner_account_id
     assert record.granted_by_id == owner.actor.id
+    assert record.expires_at == _FUTURE_EXPIRY
     assert record.revoked_at is None
     assert record.operation_names == sorted([WORKSPACE_STATUS, NOTE_WRITE])
     assert record.covers == sorted([WORKSPACE_STATUS, NOTE_WRITE])
+
+
+def test_a_grant_stops_covering_operations_at_expires_at(
+    owner: WorkspaceContext, owner_account_id: UUID
+) -> None:
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    record = _record(
+        _create(
+            owner,
+            owner_account_id,
+            WORKSPACE_STATUS,
+            expires_at=expires_at,
+        )
+    )
+    row = GrantRow(
+        id=record.grant_id,
+        actor_kind=record.actor_kind,
+        actor_id=record.actor_id,
+        granted_by_id=record.granted_by_id,
+        created_at=record.created_at,
+        expires_at=record.expires_at,
+        revoked_at=record.revoked_at,
+        operation_names=tuple(record.operation_names),
+    )
+
+    assert row.covers(expires_at - timedelta(microseconds=1)) == (WORKSPACE_STATUS,)
+    assert row.covers(expires_at) == ()
+    assert row.covers(expires_at + timedelta(seconds=1)) == ()
+
+
+def test_a_past_expiry_is_refused_without_writing(
+    owner: WorkspaceContext,
+    owner_account_id: UUID,
+    engine: Engine,
+    database: str,
+) -> None:
+    before = _row_counts(engine, database)
+
+    outcome = _create(
+        owner,
+        owner_account_id,
+        WORKSPACE_STATUS,
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    assert outcome.state == STANDING_GRANT_EXPIRY_REFUSED, outcome
+    assert _row_counts(engine, database) == before
 
 
 def test_a_grant_may_name_another_account(

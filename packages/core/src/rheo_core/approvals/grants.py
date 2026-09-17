@@ -42,7 +42,7 @@ class GrantRow:
     actor_id: UUID
     granted_by_id: UUID | None
     created_at: datetime
-    expires_at: datetime | None
+    expires_at: datetime
     revoked_at: datetime | None
     operation_names: tuple[str, ...]
 
@@ -62,7 +62,7 @@ class GrantRow:
         """
         if self.revoked_at is not None:
             return ()
-        if self.expires_at is not None and self.expires_at <= now:
+        if self.expires_at <= now:
             return ()
         return self.operation_names
 
@@ -117,7 +117,7 @@ def create(
     granted_by_id: UUID | None,
     names: Iterable[str],
     created_at: datetime,
-    expires_at: datetime | None,
+    expires_at: datetime,
 ) -> UUID:
     """Write one grant and its operation rows; return its id. Does not commit.
 
