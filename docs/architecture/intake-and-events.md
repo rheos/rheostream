@@ -469,13 +469,14 @@ the consumer's effects, the `consumer_processed` ledger row and the delivery's `
 write commit together, which is what makes a delivery exactly-once rather than
 at-least-once. Nothing on that side has a cancellation checkpoint, so there is no fourth.
 
-The core declares one scheduled job of its own, created for every workspace at provisioning:
-`core.retention_sweep` (daily), which removes runtime transcripts and `ClaudeCliRuntime` session
-files past `runtime.transcript_retention_days` and outbox rows past
-`work.outbox_retention_days`. **It is declared here and not yet built**: as of run 0c3 nothing in
-`packages/` registers that job kind or creates its schedule row, and that is deliberate rather
-than missed — it sweeps `core.runtime_transcript`, a table the runtime run creates, so scheduling
-it today would schedule a sweep over nothing
+The core declares one scheduled job of its own: `core.retention_sweep` (daily), which removes
+runtime transcripts and `ClaudeCliRuntime` session files past
+`runtime.transcript_retention_days` and outbox rows past `work.outbox_retention_days`. **It is
+declared here and remains unprovisioned** — no workspace gets a schedule row for it at
+provisioning or at any other point: as of run 0c3 nothing in `packages/` registers that job kind
+or creates its schedule row, and that is deliberate rather than missed — it sweeps
+`core.runtime_transcript`, a table the runtime run creates, so scheduling it today would schedule
+a sweep over nothing
 ([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep` is a job kind and never a schedule: the
 deletion coordinator enqueues it when an artifact could not be removed
 ([deletion](deletion-export-migration.md#the-cascade)), and the job table's attempts and backoff

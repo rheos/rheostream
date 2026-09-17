@@ -136,31 +136,42 @@ index 718dc6f..f7b1584 100644
  DATA_ROOT_IN_CHECKOUT: Final = "data_root_in_checkout"
 ```
 
-**Cost:** `pytest:tests/test_data_root.py::test_rheo_local_is_accepted_only_when_named_explicitly` — first observed failure line: `E               rheo_core.storage.data_root.DataRootRefusal: data_root_in_checkout: data root <pytest tmp>/checkout/.rheo-local is inside the source checkout <pytest tmp>/checkout; only <pytest tmp>/checkout/.rheo-data is allowed, and only when RHEO_DATA_ROOT names it explicitly` (the tmp prefix is pytest's per-run directory). `tests/test_ignored_artifacts.py::test_checkout_local_artifacts_are_ignored` stays green under this hunk; see the note.
+**Cost:**
+- `pytest:tests/test_data_root.py::test_rheo_local_is_accepted_only_when_named_explicitly` — first observed failure line: `E               rheo_core.storage.data_root.DataRootRefusal: data_root_in_checkout: data root <pytest tmp>/checkout/.rheo-local is inside the source checkout <pytest tmp>/checkout; only <pytest tmp>/checkout/.rheo-data is allowed, and only when RHEO_DATA_ROOT names it explicitly` (the tmp prefix is pytest's per-run directory).
+- `pytest:tests/test_ignored_artifacts.py::test_checkout_local_artifacts_are_ignored` — first observed failure line: `E       AssertionError: checkout-local artifacts not git-ignored: ['.rheo-data/workspaces/<token>/profile.json', '.rheo-data/uploads/<token>/evidence.pdf', '.rheo-data/transcripts/<token>/session.jsonl', '.rheo-data/exports/<token>/workspace.csv', '.rheo-data/backups/<token>.sql', '.rheo-data/memory/<token>/index.bin', '.rheo-data/config/<token>/deployment.toml', '.rheo-data/secrets/<token>/cluster/primary-dsn']` (`<token>` is the fixture's per-run uuid). Both demonstrators observed red together under one application of the hunk: `2 failed`.
 
-**Performed by:** C1 (2026-09-16)
+**Performed by:** C1 (2026-09-16), C5 (2026-09-17)
 
 **Note:** the criterion has two halves. The half this hunk breaks is "the checkout-local
 fallback directory": move the directory the deployment writes into and the ignore rules no
 longer match anything it produces, which is the criterion's failure in its most direct form.
 
-**Note on why the second demonstrator stayed green, which has two causes and the smaller one
-is the interesting one.** `test_checkout_local_artifacts_are_ignored` did not move under this
-hunk, and the first reason to reach for is that its guarded behaviour lives in `.gitignore`,
-which is not a declared path for run 0c3 so no mutation of it was attempted. That is true, and
-it is not the whole reason. `tests/test_ignored_artifacts.py:26-41` builds its eight fixture
-paths from **string literals** (`f".rheo-local/workspaces/{token}/profile.json"`, and seven
-like it) rather than from `LOCAL_OPT_IN` (`packages/core/src/rheo_core/storage/data_root.py:36`),
-the constant this hunk changes. So the test asserts that a fixed list of paths is ignored,
-not that **what the product produces** is ignored, and the criterion's own words are "every
-configuration file, upload, database, database sidecar, export, and log **it produces**".
-Under this hunk the product writes to `.rheo-data/` and the test goes on asserting that
-`.rheo-local/` is ignored, green and wrong.
+**Note on the second demonstrator, which could not fail for the reason it claimed until
+2026-09-17.** As C1 captured this row, `test_checkout_local_artifacts_are_ignored` stayed green
+under this hunk. The first reason to reach for was that its guarded behaviour lives in
+`.gitignore`, which is not a declared path for run 0c3 so no mutation of it was attempted. That
+was true, and it was not the whole reason. The test built its eight fixture paths from **string
+literals** (`f".rheo-local/workspaces/{token}/profile.json"`, and seven like it) rather than
+from `LOCAL_OPT_IN` (`packages/core/src/rheo_core/storage/data_root.py:36`), the constant this
+hunk changes. So it asserted that a fixed list of paths somebody typed is ignored, not that
+**what the product produces** is ignored — and the criterion's own words are "every
+configuration file, upload, database, database sidecar, export, and log **it produces**". Under
+this hunk the product wrote to `.rheo-data/` while the test went on asserting that
+`.rheo-local/` is ignored: green and wrong.
 
-The consequence for whoever closes this row later: a run whose scope reaches `.gitignore` can
-mutate the ignore rules and redden this demonstrator, but that still would not close the
-criterion. The test has to derive its directory from `LOCAL_OPT_IN` first, or it can only ever
-pin a list somebody typed.
+**Fixed 2026-09-17, in C5, from the CodeRabbit thread on this row (PR #79).**
+`tests/test_ignored_artifacts.py` now derives every fixture path from `LOCAL_OPT_IN`, so the
+directory under test is the one the product actually writes into. Re-applying the hunk above
+now reddens this demonstrator directly: the product writes to `.rheo-data/`, `git check-ignore`
+reports all eight paths unignored, and the assertion names every one of them — the `Cost` entry
+above is that observed line, not a predicted one.
+
+The two demonstrators stay independent instruments rather than one guard seen twice: the first
+reads the product's own refusal path, the second reads `.gitignore` through `git check-ignore`.
+And deriving here leaves the name pinned, not unpinned — the literal `.rheo-local` is still
+asserted exactly once, in `test_rheo_local_is_accepted_only_when_named_explicitly`
+(`tests/test_data_root.py:114-131`), which is the literal-list companion that catches the
+constant being renamed at all.
 
 ---
 
@@ -884,13 +895,17 @@ be hardest to notice in production: the rows are all there and the count is righ
 **Note on what the three reds do and do not span.** They are three different assertions in three
 different tests — a set comparison against `THE_EIGHT`, a single-row column check, and the
 above-`mutate` case — rather than one shared helper seen three times, so this row's `Cost` is
-three independent sightings. The other four listed demonstrators stayed green and were read
-rather than assumed: `test_the_mutating_set_derived_from_the_registry_is_the_declared_eight`
+three independent sightings. **Three** of the other listed demonstrators stayed green, and were
+read rather than assumed: `test_the_mutating_set_derived_from_the_registry_is_the_declared_eight`
 reads the registry, not the rows; `test_check_audit_paths_names_every_offender` and
 `test_a_missing_sink_refuses_the_call_and_writes_neither_effect_nor_row` are registration- and
-dispatch-time refusals that never reach a sink write; and
+dispatch-time refusals that never reach a sink write.
+
+**A fourth listed demonstrator was never executed and has no observed result either way.**
 `test_registering_a_non_read_operation_with_no_audit_spec_is_refused` is in another file
-(`test_context_routing.py`) and was not in the run.
+(`test_context_routing.py`) and was not in the run, so it is not among the greens above and no
+claim is made about how it behaves under this hunk. It is listed as a demonstrator for the
+clause it covers, not as an observation from this mutation.
 
 **Note on the eight-operation set and where its literal lives.**
 `test_the_mutating_set_derived_from_the_registry_is_the_declared_eight` derives the set from the
