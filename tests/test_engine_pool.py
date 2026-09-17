@@ -1,8 +1,11 @@
 """The engine pool's two bounds: idle close, and the count cap behind it.
 
-Seam: ``EnginePool``. No cluster is needed — SQLAlchemy's ``create_engine`` is lazy,
-so these build engines and never connect. The point of each test is the property the
-bound exists for, not the mechanics of ``OrderedDict``.
+Seam: ``EnginePool``. Almost none of this needs a cluster — SQLAlchemy's
+``create_engine`` is lazy, so these build engines and never connect. The one exception
+is ``test_an_engine_with_a_connection_checked_out_survives_the_idle_sweep``, which has
+to hold a **real** connection open to have anything to skip, and says so in its own
+docstring. The point of each test is the property the bound exists for, not the
+mechanics of ``OrderedDict``.
 
 Issue #12: the count cap alone is adversarial to a caller that walks every workspace
 in turn, because under a pure LRU the least-recently-used engine is always the one the
@@ -25,11 +28,15 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import ClusterSession
 from rheo_core.storage import pools as pools_module
 from rheo_core.storage.pools import EnginePool, check_database_name
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 CLUSTER = make_url("postgresql+psycopg://rheo:secret@localhost:5432/postgres")
+MAINTENANCE_DATABASE = "postgres"
+"""A second real database for the in-use test's other sweep entry point."""
 
 
 def pool(
@@ -113,6 +120,117 @@ def test_an_untouched_engine_is_gone_after_the_idle_window() -> None:
     assert p.cached() == ("ws_other",)
 
 
+@pytest.mark.postgres
+def test_an_engine_with_a_connection_checked_out_survives_the_idle_sweep(
+    cluster: ClusterSession,
+) -> None:
+    """Issue #62's first gap: eviction does not close an in-flight connection.
+
+    ``_last_used`` is stamped at hand-out and never on return, so a caller holding a
+    connection for longer than ``idle_close_seconds`` has its engine selected by the
+    sweep while it is still working. ``dispose()`` then **detaches** that connection
+    rather than closing it — the socket lives on outside every count this class
+    reports — so the fix is to skip expiry while the engine is in use.
+
+    **This test holds a real connection open, and it has to.** A test that checks one
+    out and returns it immediately leaves ``checkedout()`` at zero, so it passes
+    against the guard and against its absence alike and proves nothing; the whole
+    property is about the window during which the connection has *not* come back. That
+    is also why this is the one case in this file that needs the cluster.
+
+    Both sweep entry points are driven, because they are two call sites of
+    ``_expire_idle`` and a guard added to only one would still leave the other
+    disposing a live engine.
+    """
+    held = cluster.control_database
+    p = EnginePool(
+        cluster.backend.pools.cluster_url,
+        cache_size=4,
+        pool_size=5,
+        idle_close_seconds=0.01,
+        reserved_connections=0,
+    )
+    try:
+        engine = p.engine_for(held)
+        connection = engine.connect()
+        try:
+            assert engine.pool.checkedout() == 1, "the connection is not actually held"
+            time.sleep(0.05)
+            assert p.close_idle() == 0, "close_idle disposed an engine still in use"
+            assert held in p.cached()
+            # The other entry point: ``engine_for`` sweeps on the way in.
+            p.engine_for(MAINTENANCE_DATABASE)
+            assert held in p.cached(), "engine_for's sweep disposed an engine in use"
+        finally:
+            connection.close()
+        # Returned, so the ordinary bound applies again. The sleep is for the second
+        # engine, created a moment ago and not yet idle; the held one has been past
+        # the window throughout and was skipped only because it was in use.
+        time.sleep(0.05)
+        assert p.close_idle() == 2
+        assert p.cached() == ()
+    finally:
+        p.dispose_all()
+
+
+@pytest.mark.postgres
+def test_the_count_cap_evicts_an_in_use_engine_and_detaches_its_connection(
+    cluster: ClusterSession,
+) -> None:
+    """The boundary of the guard above, pinned rather than left as a caveat.
+
+    ``_expire_idle`` skips an engine with a connection checked out. The **count cap**
+    in ``engine_for`` does not consult that: past the cap it pops the
+    least-recently-used engine and disposes it whether or not someone is holding a
+    connection, and ``dispose()`` detaches rather than closes that connection — so the
+    server-side connection outlives every count this class reports. That is exactly
+    what ``pooled_connections``' docstring names as its second omission and what
+    ``rheo doctor`` prints.
+
+    **Declared-and-untested is how a known hole becomes an unknown one**, so this
+    asserts the behaviour as it is rather than as anyone would like it. Bounding the
+    cap would mean either exceeding it or refusing a caller, which is a larger
+    decision than this figure; whoever takes it has to change this test, which is the
+    point of it existing.
+
+    ``idle_close_seconds`` is far away, so nothing here can be expired by idleness and
+    the eviction can only be the cap — the isolation
+    ``test_an_untouched_engine_is_gone_after_the_idle_window`` uses in reverse.
+    """
+    held = cluster.control_database
+    p = EnginePool(
+        cluster.backend.pools.cluster_url,
+        cache_size=1,
+        pool_size=5,
+        idle_close_seconds=300.0,
+        reserved_connections=0,
+    )
+    try:
+        engine = p.engine_for(held)
+        connection = engine.connect()
+        try:
+            assert engine.pool.checkedout() == 1, "the connection is not actually held"
+            # The idle sweep protects it — the guard the case above pins.
+            assert p.close_idle() == 0
+            assert p.cached() == (held,)
+
+            # The cap does not. One more database is one past ``cache_size=1``.
+            p.engine_for(MAINTENANCE_DATABASE)
+
+            assert held not in p.cached(), (
+                "the count cap no longer evicts an in-use engine; if that is "
+                "deliberate, pooled_connections' second omission and rheo doctor's "
+                "printed detail both have to change with it"
+            )
+            # Detached rather than closed: still live, still holding a server
+            # connection that nothing in this class counts any more.
+            assert connection.execute(text("SELECT 1")).scalar_one() == 1
+        finally:
+            connection.close()
+    finally:
+        p.dispose_all()
+
+
 def test_close_idle_is_callable_without_asking_for_an_engine() -> None:
     p = pool(idle_close_seconds=0.01)
     p.engine_for("ws_a")
@@ -123,7 +241,7 @@ def test_close_idle_is_callable_without_asking_for_an_engine() -> None:
     assert p.close_idle() == 0
 
 
-def test_worst_case_connections_counts_the_reserved_engine_too() -> None:
+def test_pooled_connections_counts_the_reserved_engine_too() -> None:
     """The arithmetic an operator compares with the cluster's own ``max_connections``.
 
     The shipped defaults are ``cache_size`` 16 and ``pool_max_connections`` 5, and the
@@ -135,14 +253,26 @@ def test_worst_case_connections_counts_the_reserved_engine_too() -> None:
     The reservation is a value the pool is handed, never one it derives: nothing here
     can notice if ``PostgresBackend.control_engine`` is resized and this argument is
     not.
+
+    **The rename is the fix for issue #62's third gap, and the arithmetic is
+    unaffected by it.** The property was ``worst_case_connections`` while two things
+    this process can hold sat outside the sum — the backend's ``NullPool`` maintenance
+    engine, and a connection detached by the count cap's eviction — so it claimed a
+    ceiling it was not. What it counts is the pools, which is what it is now called;
+    the two omissions are named at the property and in ``rheo doctor``'s printed
+    detail.
     """
     p = pool(cache_size=16, reserved_connections=5)
     assert p.cache_size == 16
     assert p.pool_size == 5
     assert p.reserved_connections == 5
-    assert p.worst_case_connections == 85
+    assert p.pooled_connections == 85
     # The reservation is additive, not decorative: drop it and the figure moves.
-    assert pool(cache_size=16, reserved_connections=0).worst_case_connections == 80
+    assert pool(cache_size=16, reserved_connections=0).pooled_connections == 80
+    # The old name claimed a ceiling this figure is not, and must not come back as an
+    # alias beside the new one — two names for one number is how the wrong one
+    # survives a rename.
+    assert not hasattr(p, "worst_case_connections")
 
 
 def test_dispose_all_clears_the_idle_bookkeeping_too() -> None:

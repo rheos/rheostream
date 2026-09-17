@@ -444,10 +444,40 @@ workspace in the registry in turn, with a one-second idle interval:
 The same loop serves event deliveries, using the delivery table instead of the job table.
 Restart recovery is the expired-lease path and nothing else.
 
-The core declares one scheduled job of its own, created for every workspace at provisioning:
-`core.retention_sweep` (daily), which removes runtime transcripts and `ClaudeCliRuntime` session
-files past `runtime.transcript_retention_days` and outbox rows past
-`work.outbox_retention_days`. `core.exports.sweep` is a job kind and never a schedule: the
+**The transaction boundary, which the five steps above leave out.** A visit runs each job
+across three transactions and not one. The lease (step 1) is a transaction of its own and
+commits before the handler is entered — a lease held open for the length of the handler is
+invisible to a competing worker, which is the one state the lease exists to prevent, so it
+cannot share a transaction with the work it protects. The handler's effects and the job's
+terminal `succeeded` write then share a **second** transaction and commit together, so a
+job's effects and its success are never separable; when the job carries a `core.operation`
+id, that record's terminal write joins the same commit rather than taking a transaction of
+its own. Every non-success outcome rolls that second transaction back and writes the
+terminal or requeued state in a fresh **third** one, because a row recording a failure
+cannot live in the transaction being rolled back. The commit is the last thing that
+happens and only when the terminal write applied: running, finishing, committing and
+*then* reading the finish's result would duplicate every effect on a lease steal, with
+success recorded once.
+
+The heartbeat (step 2) runs on short transactions of its own on top of those, for the
+reason the lease commits alone: an extension of `lease_until` sitting uncommitted inside
+the handler's transaction is not visible to the worker deciding whether this lease has
+expired. The cancellation checkpoints of step 3 read on the same footing.
+
+A delivery takes the same three transactions, and its middle one carries one write more:
+the consumer's effects, the `consumer_processed` ledger row and the delivery's `delivered`
+write commit together, which is what makes a delivery exactly-once rather than
+at-least-once. Nothing on that side has a cancellation checkpoint, so there is no fourth.
+
+The core declares one scheduled job of its own: `core.retention_sweep` (daily), which removes
+runtime transcripts and `ClaudeCliRuntime` session files past
+`runtime.transcript_retention_days` and outbox rows past `work.outbox_retention_days`. **It is
+declared here and remains unprovisioned** — no workspace gets a schedule row for it at
+provisioning or at any other point: as of run 0c3 nothing in `packages/` registers that job kind
+or creates its schedule row, and that is deliberate rather than missed — it sweeps
+`core.runtime_transcript`, a table the runtime run creates, so scheduling it today would schedule
+a sweep over nothing
+([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep` is a job kind and never a schedule: the
 deletion coordinator enqueues it when an artifact could not be removed
 ([deletion](deletion-export-migration.md#the-cascade)), and the job table's attempts and backoff
 are its retry. Module sweeps (the memory retention sweep) are the module's own schedules.

@@ -11,10 +11,16 @@ storage services directly because they run outside any workspace transaction.
 
 import argparse
 import sys
+from pathlib import Path
 from uuid import UUID
 
 from rheo_core.boundary import Refusal, context_for_operator
-from rheo_core.operations import WORKSPACE_STATUS, dispatch
+from rheo_core.exports import ArtifactRefused, restore_artifact
+from rheo_core.operations import (
+    WORKSPACE_EXPORT,
+    WORKSPACE_STATUS,
+    dispatch,
+)
 from rheo_core.refs import uuid7
 from rheo_core.storage.control_plane import list_workspaces
 from rheo_core.storage.provisioning import provision, repair
@@ -50,6 +56,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[
     )
     status.add_argument("workspace_id", type=UUID)
     status.set_defaults(handler=workspace_status)
+
+    export = commands.add_parser(
+        "export", help="queue a workspace export; prints the operation id"
+    )
+    export.add_argument("workspace_id", type=UUID)
+    export.set_defaults(handler=export_workspace)
+
+    restore_parser = commands.add_parser(
+        "restore", help="restore an artifact into its recorded workspace id"
+    )
+    restore_parser.add_argument("artifact", type=Path)
+    restore_parser.set_defaults(handler=restore_workspace)
 
 
 def create_workspace(args: argparse.Namespace) -> int:
@@ -95,4 +113,37 @@ def workspace_status(args: argparse.Namespace) -> int:
         )
         return 1
     print(outcome.result.model_dump_json(indent=2))
+    return 0
+
+
+def export_workspace(args: argparse.Namespace) -> int:
+    bootstrap()
+    ctx = context_for_operator(args.workspace_id)
+    if isinstance(ctx, Refusal):
+        print(ctx, file=sys.stderr)
+        return 1
+    outcome = dispatch(ctx, WORKSPACE_EXPORT, {})
+    if outcome.state != "pending" or outcome.operation_id is None:
+        error = outcome.error
+        print(
+            outcome.state
+            if error is None
+            else f"{error.error_code}: {error.error_text}",
+            file=sys.stderr,
+        )
+        return 1
+    print("workspace export queued", file=sys.stderr)
+    print(outcome.operation_id)
+    return 0
+
+
+def restore_workspace(args: argparse.Namespace) -> int:
+    bootstrap()
+    try:
+        workspace_id = restore_artifact(args.artifact.expanduser().resolve())
+    except ArtifactRefused as refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+    print(f"workspace {workspace_id} restored", file=sys.stderr)
+    print(workspace_id)
     return 0

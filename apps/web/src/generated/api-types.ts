@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/api/v1/operations/core.approval.approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.approval.approve (mutate) */
+        post: operations["core.approval.approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.approval.refuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.approval.refuse (mutate) */
+        post: operations["core.approval.refuse"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.audit.list": {
         parameters: {
             query?: never;
@@ -106,6 +140,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.standing_grant.create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.standing_grant.create (mutate) */
+        post: operations["core.standing_grant.create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.standing_grant.revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.standing_grant.revoke (mutate) */
+        post: operations["core.standing_grant.revoke"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.token.issue": {
         parameters: {
             query?: never;
@@ -157,6 +225,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.workspace.digest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.workspace.digest (read) */
+        post: operations["core.workspace.digest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.workspace.export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.workspace.export (mutate) */
+        post: operations["core.workspace.export"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.workspace.restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.workspace.restore (mutate) */
+        post: operations["core.workspace.restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.workspace.status": {
         parameters: {
             query?: never;
@@ -178,6 +297,87 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ApprovalRecord
+         * @description One approval as these operations publish it.
+         *
+         *     :class:`~rheo_core.approvals.records.ApprovalRow` field for field, with that row's
+         *     ``id`` published as ``approval_id`` — the renaming ``OperationRecord`` and
+         *     ``AuditRecord`` already make for the same reason — and ``payload_digest``
+         *     published as its lowercase hex, exactly as ``AuditRecord.request_digest`` is: the
+         *     column is ``bytea``, a generated TypeScript client has no natural type for raw
+         *     bytes, and hex is what a person comparing two digests can actually compare.
+         *
+         *     **This is the supported read of the approval record** (AC 8). A caller reads the
+         *     durable row — its state, who approved it, and the digest that binds it — off the
+         *     operation that changed it, and never by querying ``core.approval``. The record is
+         *     read back from the row *after* the transition, so what it publishes is what the
+         *     database holds rather than what the handler intended to write.
+         */
+        ApprovalRecord: {
+            /** Actor Id */
+            actor_id: string | null;
+            /** Actor Kind */
+            actor_kind: string;
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /** Approved At */
+            approved_at: string | null;
+            /** Approved By Id */
+            approved_by_id: string | null;
+            /** Approved By Kind */
+            approved_by_kind: string | null;
+            /** Approved Entry */
+            approved_entry: string | null;
+            /** Destination Ref */
+            destination_ref: string | null;
+            /** Executed At */
+            executed_at: string | null;
+            /** Invalidated Reason */
+            invalidated_reason: string | null;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /** Operation Name */
+            operation_name: string;
+            /** Payload Digest */
+            payload_digest: string;
+            /** Purpose */
+            purpose: string | null;
+            /** State */
+            state: string;
+            /** Subject Ref */
+            subject_ref: string | null;
+            /** Subject Revision */
+            subject_revision: number | null;
+            /**
+             * Window End
+             * Format: date-time
+             */
+            window_end: string;
+            /**
+             * Window Start
+             * Format: date-time
+             */
+            window_start: string;
+        };
+        /**
+         * ApprovalRef
+         * @description Which approval to act on. ``approval_id`` is not a reserved input field, so a
+         *     declaration may name it.
+         */
+        ApprovalRef: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+        };
         /**
          * AuditList
          * @description The workspace's most recent audit records, newest first.
@@ -250,6 +450,13 @@ export interface components {
             safety_class: string;
             /** Subject Ref */
             subject_ref: string | null;
+        };
+        /** DigestEntry */
+        DigestEntry: {
+            /** Count */
+            count: number;
+            /** Digest */
+            digest: string;
         };
         /**
          * FailedDelivery
@@ -467,6 +674,16 @@ export interface components {
              */
             terminal_check_kind: ("record_exists" | "provider_status" | "sink_recorded" | "handler_returned") | null;
         };
+        /** ScheduledArtifact */
+        ScheduledArtifact: {
+            /**
+             * Export Id
+             * Format: uuid
+             */
+            export_id: string;
+            /** Operation Id */
+            operation_id: string | null;
+        };
         /**
          * SettingWrite
          * @description One key and its natively typed value (a list for ``list[str]`` keys).
@@ -485,6 +702,95 @@ export interface components {
             scope: string;
             /** Value */
             value: boolean | number | string | string[];
+        };
+        /**
+         * StandingGrantCreate
+         * @description Who the grant is for, and what it covers.
+         *
+         *     **The field is ``account_id``, not ``actor_id``, and it has to be.** ``actor_id``
+         *     is one of ``RESERVED_INPUT_FIELDS`` (``rheo_contracts.manifest``) and a declaration
+         *     naming it is refused at registration — criterion 6's rule that workspace, actor and
+         *     storage identity come from the context only. ``core.standing_grant.create`` is the
+         *     rare operation that legitimately names an account *other* than the caller's, and
+         *     ``core.token.issue`` already ships the spelling for that case: ``account_id``. So
+         *     the stored ``core.standing_grant.actor_id`` column is filled from an input field
+         *     called ``account_id``, and the stored ``actor_kind`` is ``account``, which is the
+         *     only actor kind a caller can name by id here.
+         *
+         *     ``operation_names`` carries at least one name — a grant covering nothing is a row
+         *     that says nothing, and pydantic refusing it costs no new refusal vocabulary.
+         */
+        StandingGrantCreate: {
+            /**
+             * Account Id
+             * Format: uuid
+             */
+            account_id: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Operation Names */
+            operation_names: string[];
+        };
+        /**
+         * StandingGrantRecord
+         * @description One standing grant as these operations publish it.
+         *
+         *     :class:`~rheo_core.approvals.grants.GrantRow` field for field, with that row's
+         *     ``id`` published as ``grant_id`` — the renaming ``ApprovalRecord`` and
+         *     ``OperationRecord`` already make for the same reason — plus ``covers``.
+         *
+         *     **``covers`` is the published answer to "what does this grant cover now".** It is
+         *     the grant's operation list while the grant is live and empty once it is revoked or
+         *     expired, so a caller reads coverage from a supported operation instead of reading
+         *     ``revoked_at`` and inferring what a timestamp implies. Both fields are published:
+         *     ``operation_names`` is the record of what was granted, which a revocation does not
+         *     erase, and ``covers`` is what it is worth today.
+         */
+        StandingGrantRecord: {
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Actor Kind */
+            actor_kind: string;
+            /** Covers */
+            covers: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Grant Id
+             * Format: uuid
+             */
+            grant_id: string;
+            /** Granted By Id */
+            granted_by_id: string | null;
+            /** Operation Names */
+            operation_names: string[];
+            /** Revoked At */
+            revoked_at: string | null;
+        };
+        /**
+         * StandingGrantRef
+         * @description Which grant to act on.
+         */
+        StandingGrantRef: {
+            /**
+             * Grant Id
+             * Format: uuid
+             */
+            grant_id: string;
         };
         /**
          * TokenIssueInput
@@ -556,6 +862,22 @@ export interface components {
              */
             token_id: string;
         };
+        /** WorkspaceDigest */
+        WorkspaceDigest: {
+            /** Categories */
+            categories: {
+                [key: string]: components["schemas"]["DigestEntry"];
+            };
+        };
+        /** WorkspaceDigestInput */
+        WorkspaceDigestInput: Record<string, never>;
+        /** WorkspaceExportInput */
+        WorkspaceExportInput: Record<string, never>;
+        /** WorkspaceRestoreInput */
+        WorkspaceRestoreInput: {
+            /** Artifact Path */
+            artifact_path: string;
+        };
         /**
          * WorkspaceStatus
          * @description FR-9's readable product data for one workspace.
@@ -582,6 +904,72 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "core.approval.approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ApprovalRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.approval.refuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ApprovalRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
     "core.audit.list": {
         parameters: {
             query?: never;
@@ -780,6 +1168,72 @@ export interface operations {
             };
         };
     };
+    "core.standing_grant.create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StandingGrantCreate"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["StandingGrantRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.standing_grant.revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StandingGrantRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["StandingGrantRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
     "core.token.issue": {
         parameters: {
             query?: never;
@@ -873,6 +1327,105 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["FailureList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.workspace.digest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceDigestInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["WorkspaceDigest"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.workspace.export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceExportInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ScheduledArtifact"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.workspace.restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRestoreInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ScheduledArtifact"];
                         state: string;
                     };
                 };

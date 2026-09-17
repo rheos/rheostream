@@ -14,10 +14,11 @@ builds it.
 import pickle
 import time
 from typing import get_args
+from unittest import mock
 from uuid import UUID
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import (
     ALL_OPERATIONS,
     RESERVED_INPUT_FIELDS,
@@ -35,10 +36,15 @@ from rheo_contracts import (
     RecordRefMalformed,
     Role,
     SafetyClass,
+    ToolDeclaration,
     WorkspaceContext,
     is_reserved_module,
 )
+from rheo_core.operations.refusals import RegistrationRefused
 from rheo_core.refs import uuid7
+from rheo_core.settings import CORE_ORIGIN, TEST_HARNESS_ORIGIN, current_profile
+from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
+from rheo_core.tokens.sets import TOOL_REGISTRY, ToolRegistry, register_core_tools
 
 _VALID_REF = "leads.opportunity:018f6b2e-8c1a-7d3e-9a4b-1c2d3e4f5a6b"
 
@@ -245,6 +251,18 @@ class _Output(BaseModel):
     ok: bool
 
 
+class _ReservedInput(BaseModel):
+    """One of the ratified twelve, for the tool-registration refusal below."""
+
+    sql: str
+
+
+class _WideInput(BaseModel):
+    """No reserved field declared, and every one of them accepted anyway."""
+
+    model_config = ConfigDict(extra="allow")
+
+
 def test_operation_declaration_requires_a_safety_class() -> None:
     with pytest.raises(ValidationError):
         OperationDeclaration(  # type: ignore[call-arg]
@@ -271,6 +289,180 @@ def test_operation_declaration_defaults_match_the_module_contract() -> None:
     assert "handler" not in OperationDeclaration.model_fields
     with pytest.raises(ValidationError):
         decl.name = "core.workspace.other"
+
+
+def test_tool_declaration_requires_a_safety_class() -> None:
+    """The contract half of AC 3, beside the operation-side case above.
+
+    An ordinary construction cannot omit the class at all; the field is required
+    with no default, exactly as ``OperationDeclaration``'s is.
+    """
+    with pytest.raises(ValidationError):
+        ToolDeclaration(  # type: ignore[call-arg]
+            name="workspace_status",
+            operation="core.workspace.status",
+            input_model=_Input,
+        )
+
+
+def test_tool_registration_refuses_a_declaration_with_no_safety_class() -> None:
+    """The refusable registration path AC 3's production assertion is written
+    against: a ``model_construct``-ed declaration carrying no class is refused,
+    and the refusal names the tool.
+
+    ``model_construct`` is the whole point — it skips validation, so it is the one
+    way a class-less declaration can exist at all, and therefore the only shape the
+    registry's own check can be the last line of defence against. A private
+    registry rather than ``TOOL_REGISTRY``, so the assertion leaves no trace in the
+    process-wide table other tests read.
+    """
+    registry = ToolRegistry()
+    classless = ToolDeclaration.model_construct(
+        name="no_class_tool",
+        operation="core.workspace.status",
+        input_model=_Input,
+    )
+    with pytest.raises(RegistrationRefused) as raised:
+        registry.register(classless, origin=CORE_ORIGIN)
+    assert "no_class_tool" in str(raised.value)
+    assert raised.value.operation_name == "no_class_tool"
+    assert "safety class" in raised.value.detail
+    assert registry.declarations() == ()
+
+
+def test_tool_registration_refuses_a_reserved_input_field_naming_the_tool() -> None:
+    """The reserved-field half, sharing one check with the operation registry.
+
+    ``_ReservedInput`` declares ``sql``; the refusal names both the tool and the
+    offending field, because a refusal that says only "refused" leaves the author
+    of the next module guessing which of twelve names they tripped over.
+    """
+    registry = ToolRegistry()
+    declaration = ToolDeclaration(
+        name="reserved_field_tool",
+        safety_class=SafetyClass.READ,
+        operation="core.workspace.status",
+        input_model=_ReservedInput,
+    )
+    with pytest.raises(RegistrationRefused) as raised:
+        registry.register(declaration, origin=CORE_ORIGIN)
+    assert raised.value.operation_name == "reserved_field_tool"
+    assert "sql" in raised.value.detail
+    assert registry.declarations() == ()
+
+
+def test_tool_registration_refuses_extra_allow_naming_the_tool() -> None:
+    """The companion to the field-name check, and not redundant with it.
+
+    ``_WideInput`` declares no reserved field and would accept every one of them,
+    because ``extra = "allow"`` carries an unknown payload key into
+    ``model_extra`` for a handler to read. Without this, the reserved-field check
+    is a check on what a model spells rather than on what it accepts — the same
+    hole the operation registry closes with the same pair of checks.
+    """
+    registry = ToolRegistry()
+    declaration = ToolDeclaration(
+        name="wide_tool",
+        safety_class=SafetyClass.READ,
+        operation="core.workspace.status",
+        input_model=_WideInput,
+    )
+    with pytest.raises(RegistrationRefused) as raised:
+        registry.register(declaration, origin=CORE_ORIGIN)
+    assert raised.value.operation_name == "wide_tool"
+    assert "extra = 'allow'" in raised.value.detail
+    assert registry.declarations() == ()
+
+
+@pytest.mark.parametrize("operation", sorted(NON_TOKEN_ISSUABLE))
+def test_tool_registration_refuses_a_non_token_issuable_operation(
+    operation: str,
+) -> None:
+    """All six, parametrised, because the rule is about the set and not about the
+    one member that happened to get written down.
+
+    A tool naming one of these would carry it into ``agent_default``, the set
+    ``core.token.issue`` expands into real token rows. ``issue.py`` strips the six
+    again at mint time, so nothing could be minted either way — but this is the
+    layer that keeps ``issue.py``'s own claim true where it says a named package
+    set "never contained them in the first place, by ``sets.py``'s own
+    construction". Before this refusal a registered tool could falsify that
+    sentence.
+    """
+    registry = ToolRegistry()
+    declaration = ToolDeclaration(
+        name="rogue_tool",
+        safety_class=SafetyClass.READ,
+        operation=operation,
+        input_model=_Input,
+    )
+    with pytest.raises(RegistrationRefused) as raised:
+        registry.register(declaration, origin=CORE_ORIGIN)
+    assert raised.value.operation_name == "rogue_tool"
+    assert operation in raised.value.detail
+    assert registry.declarations() == ()
+
+
+def test_agent_default_cannot_contain_a_non_token_issuable_operation() -> None:
+    """The refusal above, asserted over the set it protects rather than over one
+    raised exception.
+
+    **This one does not bite on a one-part mutation, and that is expected**:
+    removing the refusal alone leaves the live set exactly as it was, because
+    neither shipped tool names one of the six. It reddens under the two-part
+    version (remove the refusal, then register a rogue tool), which is the same
+    shape criterion 20's own row records. Kept because it pins the property a
+    reader cares about — what ``agent_default`` can contain — where the
+    parametrised test above pins only that one call refuses.
+    """
+    register_core_tools()
+    declared = {tool.operation for tool in TOOL_REGISTRY.declarations()}
+    assert declared, "the tool registry is empty; disjointness would be vacuous"
+    assert declared.isdisjoint(NON_TOKEN_ISSUABLE)
+
+
+def test_tool_registration_refuses_the_harness_origin_outside_profile_test() -> None:
+    """The profile gate, reached through the operation registry's own function.
+
+    Driven from a non-test profile rather than asserted by reading that the call
+    is present: a call that had been written and then bypassed would still be
+    visible in the source. The accepted case above it is the control — without it
+    this would pass just as well if ``register`` refused every harness-origin tool
+    unconditionally.
+    """
+    registry = ToolRegistry()
+    declaration = ToolDeclaration(
+        name="harness_tool",
+        safety_class=SafetyClass.READ,
+        operation="harness.note.get",
+        input_model=_Input,
+    )
+    assert current_profile() == "test"
+    accepted = registry.register(declaration, origin=TEST_HARNESS_ORIGIN)
+    assert accepted.origin == TEST_HARNESS_ORIGIN
+
+    fresh = ToolRegistry()
+    with mock.patch(
+        "rheo_core.operations.registry.current_profile", return_value="production"
+    ):
+        with pytest.raises(RegistrationRefused) as raised:
+            fresh.register(declaration, origin=TEST_HARNESS_ORIGIN)
+    assert "profile = test" in raised.value.detail
+    assert fresh.declarations() == ()
+
+
+def test_tool_registration_is_idempotent_for_the_identical_declaration() -> None:
+    """Startup, the CLI and two test fixtures all call ``register_core_tools``."""
+    registry = ToolRegistry()
+    declaration = ToolDeclaration(
+        name="repeat_tool",
+        safety_class=SafetyClass.READ,
+        operation="core.workspace.status",
+        input_model=_Input,
+    )
+    first = registry.register(declaration, origin=CORE_ORIGIN)
+    assert registry.register(declaration, origin=CORE_ORIGIN) is first
+    assert registry.declarations() == (declaration,)
 
 
 def test_long_running_is_declarable_and_frozen() -> None:

@@ -3,8 +3,9 @@
 In order: settings → the production/https invariant → data root → the
 ``secret://env/*`` reference check → ensure the control database and run the
 ``control`` chain → the identity-provider sync → migrate active workspaces serially
-→ build the operation registry → load the modules ``RHEO_MODULES`` names → check that
-every registered operation above the read class has an installed audit sink.
+→ build the operation registry → build the tool registry → load the modules
+``RHEO_MODULES`` names → check that every registered operation above the read class
+has an installed audit sink.
 "Ensure the control database" treats psycopg's ``DuplicateDatabase`` as success
 (``PostgresBackend.ensure_database``), mirroring provisioning's "already exists is a
 retry": the advisory lock covers the migration chain, not the ``CREATE DATABASE``
@@ -46,6 +47,7 @@ from rheo_core.storage.data_root import (
     validate_data_root,
 )
 from rheo_core.storage.postgres import get_backend
+from rheo_core.tokens.sets import register_core_tools
 
 logger = logging.getLogger("rheo_app_core.startup")
 
@@ -98,6 +100,14 @@ def run_startup() -> StartupReport:
     sync_providers(backend, settings)
     workspaces = migrate_active_workspaces(backend)
     operations = tuple(sorted(op.name for op in register_core_operations()))
+    # Beside the operation registration, not folded into it: a tool is a name over
+    # an operation and carries no audit obligation, so ordering against
+    # ``check_audit_paths`` below does not matter for tools the way it does for
+    # operations. Idempotent, so a process that has already registered them — a
+    # test fixture, a second lifespan — registers them again for free. Until this
+    # call ran anywhere, ``TOOL_REGISTRY`` was empty in a deployed process and
+    # ``agent_default`` named nothing, so the MCP facade had no tools to list.
+    register_core_tools()
     modules = load_modules()
     # Criterion 14's wiring layer, and the reason it is here and not one line up: a
     # module supplies its sink through its manifest, so this is the first point at

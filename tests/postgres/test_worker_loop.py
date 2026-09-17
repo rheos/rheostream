@@ -45,11 +45,13 @@ from conftest import ClusterSession, MakeWorkspace
 from harness.consumers import EVENT_TYPE, ensure_consumer_tables
 from harness.consumers import registry as consumer_registry
 from harness.records import ensure_note_table, list_notes, write_note
-from harness.registry import enable_harness_module
+from harness.registry import NOTE_SCHEDULE, enable_harness_module, register_harness
 from pydantic import BaseModel
 from rheo_app_worker.main import install_stop_signals
-from rheo_core.boundary import context_for_operator
+from rheo_contracts import Role, WorkspaceContext
+from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.events import ConsumerRegistry, NewEvent, publish
+from rheo_core.operations import dispatch
 from rheo_core.operations.records import AUDIENCE_NONE, OperationRow, mint
 from rheo_core.operations.records import get as read_operation
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
@@ -57,7 +59,7 @@ from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.control_tables import workspace as workspace_table
 from rheo_core.storage.postgres import PostgresBackend
 from rheo_core.storage.routing import open_unit_of_work
-from rheo_core.storage.work_index import DueWorkspace
+from rheo_core.storage.work_index import DueWorkspace, workspaces_with_due_work
 from rheo_core.storage.work_index_tables import workspace_work_due
 from rheo_core.storage.work_tables import job
 from rheo_core.work import loop as loop_module
@@ -1356,6 +1358,137 @@ def test_a_pass_opens_only_the_workspaces_the_due_work_index_offers(
     assert cluster.registry_row(due).database_name in cached
     assert cluster.registry_row(later).database_name not in cached, (
         "a workspace due later must not be opened, let alone drained"
+    )
+
+
+def test_an_idle_workspace_is_not_opened_again_after_its_own_visit_recorded_it(
+    cluster: ClusterSession,
+    make_workspace: MakeWorkspace,
+    fresh_backend: PostgresBackend,
+    only_workspaces: Callable[..., None],
+    now: datetime,
+) -> None:
+    """Issue #46, tested rather than argued: an idle workspace costs no engine.
+
+    #46 says the worker's per-workspace sweep refreshes every engine on every pass,
+    which would make ``storage.pool_idle_close_seconds`` unreachable. Discovery is the
+    control-plane due-work index — ``work/loop.py:1205`` calls
+    ``workspaces_with_due_work(control, now=now, limit=backend.pools.cache_size)`` — so
+    a workspace the index does not report is never routed to and never gets an engine.
+
+    The timeline is what makes this a test of #46's own claim rather than of the
+    neighbouring AC 14 case: an **absent** index row means due now, so the first pass
+    does visit this workspace, finds nothing, and ``record_visit`` writes it out to the
+    reconcile floor. The second pass is the one the issue is about, and it opens
+    nothing — the due-at it is measured against is the worker's own bookkeeping, not a
+    value this test wrote. Asserted against a **fresh** pool, so ``cached()`` names
+    exactly the databases that second pass opened; the first pass runs on the session's
+    own backend, whose cache already holds every provisioned workspace.
+    """
+    idle = make_workspace()
+    only_workspaces(idle)
+    database = cluster.registry_row(idle).database_name
+
+    first = run_one_pass(
+        kinds=_registry(),
+        consumers=ConsumerRegistry(),
+        backend=cluster.backend,
+        owner=OWNER,
+        now=now,
+        clock=lambda: now,
+        jitter=None,
+        reconcile_seconds=RECONCILE_SECONDS,
+    )
+
+    # Positive control: without this the second pass's "opened nothing" would also be
+    # what a workspace the index never offered at all would produce.
+    assert first.workspaces_visited == 1, "the first pass must reach it"
+    assert first.jobs_acquired == 0, "this workspace was provisioned with no work"
+    due_at = _due_at(cluster, idle)
+    assert due_at is not None and due_at > now, (
+        "the visit must have recorded the workspace forward, or it is still due"
+    )
+
+    second = run_one_pass(
+        kinds=_registry(),
+        consumers=ConsumerRegistry(),
+        backend=fresh_backend,
+        owner=OWNER,
+        now=now,
+        clock=lambda: now,
+        jitter=None,
+        reconcile_seconds=RECONCILE_SECONDS,
+    )
+
+    assert second.workspaces_visited == 0, "the index offered a workspace with no work"
+    assert database not in fresh_backend.pools.cached(), (
+        "an idle workspace's engine was opened, so pool_idle_close_seconds can never "
+        "reclaim it — which is what issue #46 asserts still happens"
+    )
+
+
+# --- the long-running start gap: the dispatcher's post-commit due-work mark -----------
+
+
+def test_a_long_running_dispatch_marks_its_workspace_due_at_once(
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    engine: Engine,
+    only_workspaces: Callable[..., None],
+    now: datetime,
+) -> None:
+    """A long-running operation's job is discoverable on the next pass, not in 900 s.
+
+    ``work.jobs.enqueue`` marks the workspace due after committing, so an ordinary
+    enqueue was always visible immediately. A ``long_running`` handler cannot: it runs
+    inside ``dispatch()``'s work transaction against a **workspace** connection, and
+    the due-work index is in the **control** database. Until the post-commit hook in
+    ``operations/dispatch.py`` existed, such a job waited for ``record_visit``'s floor
+    (``work.due_reconcile_seconds``, 900 s) to bring the workspace round again.
+
+    **The workspace is pushed out first, and that is the whole test.** An absent index
+    row means due now and a never-visited workspace is returned by every read, so a
+    version of this test that skipped that step would pass against the fix and against
+    its absence alike. Ten minutes out is what a prior visit would have written.
+
+    The instant is bracketed rather than compared against the ``now`` fixture: the hook
+    takes its own ``datetime.now(UTC)`` after the commit, deliberately, so the assertion
+    is that the mark landed **inside this dispatch** and not merely somewhere near.
+    """
+    only_workspaces(workspace)
+    register_harness()
+    with UnitOfWork(engine, cluster.registry_row(workspace).database_name) as uow:
+        enable_harness_module(uow.connection)
+        uow.commit()
+    ctx = context_for_harness(workspace, owner_account_id, Role.OWNER)
+    assert isinstance(ctx, WorkspaceContext), ctx
+
+    parked = now + timedelta(minutes=10)
+    with cluster.backend.control_engine.begin() as control:
+        _set_due_at(control, workspace, parked)
+    assert _due_at(cluster, workspace) == parked
+
+    before = datetime.now(UTC)
+    outcome = dispatch(ctx, NOTE_SCHEDULE, {"body": "work that starts now"})
+    after = datetime.now(UTC)
+
+    assert outcome.state == "pending", outcome
+    assert outcome.operation_id is not None, outcome
+
+    due_at = _due_at(cluster, workspace)
+    assert due_at is not None
+    assert before <= due_at <= after, (
+        f"the workspace is still parked at {due_at}, not marked due by the dispatch "
+        f"that queued its job between {before} and {after}"
+    )
+    with cluster.backend.control_engine.connect() as control:
+        due = workspaces_with_due_work(
+            control, now=after, limit=cluster.backend.pools.cache_size
+        )
+    assert [entry.workspace_id for entry in due] == [workspace], (
+        "the due-work index does not report the workspace the dispatch just queued "
+        "work into, so the next pass will not visit it"
     )
 
 

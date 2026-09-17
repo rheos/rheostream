@@ -10,8 +10,14 @@ present-refuses path), the operator-role authorization on both operations (a
 the real, ``context_for_operator`` -> ``registry.authorize`` -> ``dispatch``
 path for each, not a bypassing handler call), the "member for self, operator
 for another account" ownership rule on revoke, ``sets.py``'s ``agent_default``
-against its own ``REGISTERED_TOOLS``, and the presentation refusal chain's
+against its own live ``TOOL_REGISTRY``, and the presentation refusal chain's
 exact order.
+
+``agent_default`` reads the tool registry rather than a module-level tuple, so
+the fixture below registers the tools as well as the operations. Without that
+call the set is empty and every assertion about it passes vacuously — which is
+why it sits beside ``register_core_operations()`` rather than inside the one
+test that reads it.
 """
 
 import hashlib
@@ -22,6 +28,7 @@ import pytest
 from conftest import ClusterSession
 from harness.registry import NOTE_GET, add_member, register_harness
 from rheo_contracts import Role, WorkspaceContext
+from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE
 from rheo_core.boundary import context_for_operator
 from rheo_core.boundary.context import (
     MEMBERSHIP_MISSING,
@@ -62,7 +69,7 @@ from rheo_core.tokens.issue import (
     SET_SELECTION_INVALID,
 )
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
-from rheo_core.tokens.sets import agent_default, cli_full
+from rheo_core.tokens.sets import agent_default, cli_full, register_core_tools
 from sqlalchemy import func, select, update
 
 pytestmark = pytest.mark.postgres
@@ -76,6 +83,7 @@ READ_ONLY_OPERATIONS = frozenset(
         "core.operation.get",
         "core.operation.list",
         "core.work.failures",
+        "core.workspace.digest",
         "core.workspace.status",
         NOTE_GET,
     }
@@ -99,6 +107,7 @@ it."""
 @pytest.fixture(autouse=True)
 def registrations() -> None:
     register_core_operations()
+    register_core_tools()
     register_harness()
 
 
@@ -357,6 +366,32 @@ def test_explicit_list_naming_token_issue_refused(
     assert outcome.error is not None and "core.token.issue" in outcome.error.error_text
 
 
+@pytest.mark.parametrize("name", [APPROVAL_APPROVE, APPROVAL_REFUSE])
+def test_explicit_list_naming_an_approval_operation_refused(
+    session_ctx: WorkspaceContext, name: str
+) -> None:
+    """AC 10, the issuance half, for the two approval operations.
+
+    The rule itself has held since run 0b2 — ``NON_TOKEN_ISSUABLE`` has carried both
+    literals all along — but until run 0c3 there was **no registered operation of
+    either name**, so the only thing this could have proved was that a policy
+    constant refuses a string. Now the names are real: an explicit list naming one is
+    refused ``set_not_issuable`` naming it, which is the same refusal
+    ``core.token.issue`` gets and a different one from a named package set (which
+    never contains either by construction — the assertion two tests up).
+
+    Both names, not one. They are separate members of a frozenset and a policy that
+    dropped ``refuse`` while keeping ``approve`` would still pass a single-name test.
+    """
+    outcome = dispatch(
+        session_ctx,
+        TOKEN_ISSUE,
+        {"kind": "mcp", "operations": ["core.workspace.status", name]},
+    )
+    assert outcome.state == SET_NOT_ISSUABLE
+    assert outcome.error is not None and name in outcome.error.error_text
+
+
 def test_valid_cli_full_token_cannot_dispatch_token_issue(
     session_ctx: WorkspaceContext,
 ) -> None:
@@ -375,14 +410,20 @@ def test_valid_cli_full_token_cannot_dispatch_token_issue(
     assert outcome.state == OPERATION_NOT_PERMITTED
 
 
+@pytest.mark.parametrize("name", [APPROVAL_APPROVE, APPROVAL_REFUSE])
 def test_directly_inserted_row_with_approval_operation_refused_scope_invalid(
-    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID, name: str
 ) -> None:
-    """B7, row 21: a snapshot row inserted directly with
-    ``core.approval.approve`` (a row that cannot arise from ``issue()``, since
-    ``sets.py`` never yields that name and an explicit list naming it is
+    """B7, row 21 / AC 10, the presentation half: a snapshot row inserted directly
+    with an approval operation (a row that cannot arise from ``issue()``, since
+    ``sets.py`` never yields either name and an explicit list naming one is
     refused before any row is written) makes presentation refuse
-    ``token_scope_invalid``."""
+    ``token_scope_invalid``.
+
+    Parametrised over both names by run 0c3's C6, for the reason the issuance half
+    above gives: the two are separate members of the policy set, and the second layer
+    has to hold for each.
+    """
     value, raw = mint("cli")
     token_hash = hashlib.sha256(raw).digest()
     with cluster.backend.control_engine.begin() as connection:
@@ -398,7 +439,7 @@ def test_directly_inserted_row_with_approval_operation_refused_scope_invalid(
             expires_at=_FAR_FUTURE,
         )
         insert_access_token_operations(
-            connection, token_id=row.id, operation_names=["core.approval.approve"]
+            connection, token_id=row.id, operation_names=[name]
         )
     ctx = context_from_token(value, "api")
     assert ctx == Refusal(TOKEN_SCOPE_INVALID)
@@ -413,11 +454,14 @@ def test_cli_token_wrong_kind_on_mcp_and_mcp_token_ok_on_api(
     """B7, rows 22-23: a ``cli`` token on the MCP seam is ``token_wrong_kind``;
     a ``mcp`` token on the ``api`` surface succeeds."""
     cli_value, _, _ = _issue(session_ctx, kind="cli", set_name="read_only")
-    mcp_value, _, _ = _issue(session_ctx, kind="mcp", set_name="read_only")
+    mcp_value, token_id, _ = _issue(session_ctx, kind="mcp", set_name="read_only")
     wrong = context_from_token(cli_value, "mcp")
     assert wrong == Refusal(TOKEN_WRONG_KIND)
     ok = context_from_token(mcp_value, "api")
     assert isinstance(ok, WorkspaceContext)
+    assert ok.actor.id == token_id
+    assert ok.actor.id != session_ctx.actor.id
+    assert ok.audience is not None and ok.audience.id == token_id
 
 
 # --- B6: malformed / expired / out-of-scope, with row-count snapshots ------

@@ -12,8 +12,8 @@ contracts import scan, B14); here it is importable and mypy strict checks the
   ``profile`` is ``test`` (:func:`check_origin`, shared with the resolver registry);
 - ``safety_class`` is present (the declaration model makes it required; a
   ``model_construct``-ed declaration without one is refused naming the operation —
-  the *startup-fails-naming-it* wiring and the production-profile assertion of
-  criterion 18 are 0c3's);
+  this refusal *is* criterion 18's startup-fails-naming-it wiring, driven through a
+  real start by ``tests/test_production_registration.py``);
 - a declaration whose ``safety_class`` is **not** ``READ`` carries an ``AuditSpec``;
   one that does not is refused naming the operation (criterion 14's declaration
   layer). This is the first of three places a missing audit path is fatal — the other
@@ -108,8 +108,8 @@ def check_origin(origin: str, module_id: str, *, name: str) -> None:
     ``test_harness`` origin and ``core`` for the core origin, whatever module id an
     origin string claims for itself (so ``origin = "harness"`` cannot slip past the
     profile gate by naming the module directly); and the ``test_harness`` origin is
-    accepted only under ``profile = test``. Criterion 18's production-profile
-    assertion (0c3) leans on this gate.
+    accepted only under ``profile = test`` — the gate criterion 18's assertion in
+    ``tests/test_production_registration.py`` leans on to find no harness entry.
     """
     expected = module_id_for_origin(origin)
     if module_id != expected:

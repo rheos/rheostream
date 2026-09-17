@@ -120,7 +120,8 @@ A directory under `<data_root>/workspaces/<id>/exports/<export_id>/`, packed to 
 when complete:
 
 ```text
-manifest.json          core version, contract version, workspace id and slug, created_at,
+manifest.json          core version, contract version, workspace id and slug, owner account id,
+                       created_at,
                        modules: [{ module_id, package_version, schema_version, export_format_version }],
                        settings_digest, record_counts per type, approval_count
 settings.jsonl         workspace and member settings, one row each; secret references, never values
@@ -144,7 +145,7 @@ construction: no exporter can resolve one.
 | Table | Columns |
 | --- | --- |
 | `core.export_record` | `id uuid`, `kind` (`export`, `restore`), `artifact_path null`, `source_digest bytea null`, `created_at`, `created_by_id`, `state` (`in_progress`, `complete`, `failed`, `removed_by_deletion`), `removed_at null`, `deletion_record_id null`, `byte_length null`. A `restore` row records the digest of the artifact restored from and holds no path; the reference index below is written only for `export` rows. |
-| `core.export_record_ref` | `export_id`, `record_ref` for every record of a deletable type in the artifact |
+| `core.export_record_ref` | `export_id`, `record_ref` for every record of a deletable type in the artifact. It ships empty in release one because no domain record type exists yet. |
 
 The reference index exists for one reason: criterion 65's "the export artifact is gone from the
 data root and its export record says why" needs the coordinator to find which artifacts carry a

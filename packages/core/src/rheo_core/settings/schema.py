@@ -19,7 +19,8 @@ C2 (run 0b1) declared eight production keys; C6 (run 0b2) added the sixteen
 ``identity.*``/``internal.secret_ref`` keys below those, for thirty-two; C4 (run 0c0)
 adds ``storage.pool_idle_close_seconds``, for thirty-three, and C7 (run 0c0) adds
 ``work.due_reconcile_seconds``, for thirty-four. C1 (run 0c1) adds
-``work.max_attempts``, for thirty-five.
+``work.max_attempts``, for thirty-five; C6 (run 0c3) adds the three ``approvals.*``
+keys, for thirty-eight.
 ``api.cors_origins`` and ``modules.installed`` (the runs that read them) are not
 declared here: a key with no reader is machinery with no caller, and the
 registry/TOML identity check holds per merge SHA — every later chunk that adds a key
@@ -697,6 +698,55 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default=8,
+    ),
+    # The bound on one approval's stored payload snapshot
+    # (``confirmation-and-safety.md`` § The approval record). The snapshot is what a
+    # person reads at the point of confirmation, so the bound is on what may be
+    # stored and an input over it is refused rather than truncated: an approval whose
+    # stored payload is not the payload would be a confirmation of something else.
+    # Deployment scope, like every other storage bound here — a workspace able to
+    # raise its own would be raising a limit on a shared database.
+    KeySpec(
+        key="approvals.max_payload_bytes",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=65536,
+    ),
+    # The execution window an approval is created with, and the ceiling on it. No
+    # caller chooses a length in release one (no operation takes one as an input), so
+    # the default is the length every approval gets; the maximum is applied as a
+    # clamp on the resolved default rather than only on a caller, which is what makes
+    # it a bound rather than a comment. ``rheo_core.approvals.gate.window_seconds``
+    # is the one reader of both.
+    KeySpec(
+        key="approvals.default_window_seconds",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=900,
+    ),
+    # **Workspace scope with a ``min`` floor — the third floored key in the tree.**
+    # ``confirmation-and-safety.md``'s own row reads "maximum
+    # ``approvals.max_window_seconds`` 86400, floor ``min``", and in this codebase a
+    # floor only does anything on a key a workspace may override: the two
+    # ``identity.token_max_days.*`` keys above are the pattern, and
+    # ``rheo_core.approvals.gate.window_seconds`` resolves this one *with the
+    # workspace's rows* so the floor is applied rather than declared.
+    # What separates it from ``approvals.max_payload_bytes`` beside it is what kind of
+    # bound it is: the payload bound protects a shared database, so a workspace must
+    # not touch it, while this one is a workspace's own safety margin — shortening how
+    # long its approvals stay executable costs no one else anything, and ``min`` is
+    # what stops the same override *lengthening* it.
+    KeySpec(
+        key="approvals.max_window_seconds",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=86400,
     ),
 )
 

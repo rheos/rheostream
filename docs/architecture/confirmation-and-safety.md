@@ -74,6 +74,35 @@ criterion 59's instructing text has no operation to reach.
 4. On success, `executed`; on a guard failure, `refused` with the guard named; on window
    expiry, `expired`.
 
+**The executed operation runs under the approver's identity. Decided, not defaulted.** Step 3
+says the dispatcher "runs the original operation now" without naming a context; the context it
+uses is the **approving** actor's, for both the handler and the audit row it writes. So
+`core.audit.list` reports the approver as the actor of the destructive effect, with `entry` set
+to however the approver arrived.
+
+The reasoning is that nothing is lost by it. The gated actor survives in two places — the
+`approval_required` audit row written when the call was held, and `core.approval`'s
+`actor_kind`/`actor_id` sitting beside `approved_by_kind`/`approved_by_id` — so either row leads
+to the other, and a reader asking "who asked for this, and who let it happen" can answer both
+from the record. The alternative was weighed rather than skipped: attributing the effect to the
+gated actor would require the execution path to rebuild a context for an actor who is not the one
+calling, and that cost was judged not worth paying for release one.
+
+**Two ratified facts pull the other way. They were weighed and do not overturn it.** The
+[`ActorPermissionGuard` row](#execution-guards) distinguishes the *gated* actor from the
+*approving* actor and says "the two differ for a headless token call approved by a person" —
+this design's central case; and the approval record restricts `approved_entry` to `web` in
+release one, so attributing the effect to the approver makes every gated call's success row read
+`entry = web` however the original call arrived. Both are real costs and both are consequences a
+reader should expect, which is why they stay written down here. Neither loses information the
+approval record does not already hold, and the second is bounded by a release-one restriction
+rather than by this choice.
+
+What would reopen it is a change in what the attribution *costs*: once a module's own records
+carry `created_by_id` columns stamped from the executing context, the approver's identity starts
+propagating into domain data rather than staying in the audit trail, and that is a different
+question from the one settled here.
+
 ## Standing grants
 
 | Table | Columns | Notes |
@@ -110,12 +139,20 @@ because the approval only gates whether execution may *start*; the guards decide
 ## The recording sink and the destructive fixture
 
 Test-harness registrations, never in the production set (criterion 18). The sink is an
-external-class operation `test.sink.send` whose handler appends what it would have sent to a
-harness table and sends nothing. The fixture is a destructive-class operation `test.fixture.act`
+external-class operation whose handler appends what it would have sent to a
+harness table and sends nothing. The fixture is a destructive-class operation
 whose handler records the request and deletes nothing. Both exist so the approval binding, the
 guards, the headless state, the export of a pending approval, and the deletion cascade's
 cancellation of a dependent action have a real gated operation to run against (criteria 19, 21,
 60, 61, 65, 67).
+
+**They ship as `harness.sink.send` and `harness.fixture.act`, not under the `test.` prefix this
+section first gave them.** An operation name's first segment is its module id, and a registration
+under the `test_harness` origin may claim only the module id `harness` ([module
+contract](module-contract.md#operations-tools-events)). A `test.` prefix would have to register under
+an origin named `test`, which is not the test-harness origin and so is not gated to
+`profile = test` — the gate criterion 18's production-registration assertion rests on. The prefix
+moved because the profile gate is the part that carries a criterion.
 
 ## Pipeline presets and their limits
 

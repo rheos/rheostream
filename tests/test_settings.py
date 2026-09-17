@@ -91,7 +91,25 @@ PRODUCTION_KEYS = {
     "internal.secret_ref": "",
     "work.due_reconcile_seconds": 900,
     "work.max_attempts": 8,
+    "approvals.max_payload_bytes": 65536,
+    "approvals.default_window_seconds": 900,
+    "approvals.max_window_seconds": 86400,
 }
+
+FLOORED_KEYS = frozenset(
+    {
+        "identity.token_max_days.cli",
+        "identity.token_max_days.mcp",
+        "approvals.max_window_seconds",
+    }
+)
+"""The only production keys a workspace may override, each with a ``min`` floor.
+
+Named as a literal rather than matched by prefix. The loop below asserts that every
+*other* declared key is deployment-scope and unfloored, so this set is the exhaustive
+answer to "who can a workspace tighten"; a prefix test (`identity.`) answered that
+question by accident and stopped being true the moment run 0c3 floored a key in
+another namespace."""
 
 
 class Rows:
@@ -149,8 +167,14 @@ def test_the_registry_declares_every_production_key_and_its_shape() -> None:
         ValueType.INT,
     )
     assert spec_for("identity.token_max_days.mcp").floor is Floor.MIN
+    window = spec_for("approvals.max_window_seconds")
+    assert (window.scope, window.floor, window.type) == (
+        Scope.WORKSPACE,
+        Floor.MIN,
+        ValueType.INT,
+    )
     for key in PRODUCTION_KEYS:
-        if not key.startswith("identity."):
+        if key not in FLOORED_KEYS:
             assert spec_for(key).scope is Scope.DEPLOYMENT
             assert spec_for(key).floor is None
     assert spec_for("profile").choices == ("production", "development", "test")

@@ -1,14 +1,19 @@
-"""``list_tools``/``call_tool``: the facade's tool surface over 0b2's two
-registered tools.
+"""``list_tools``/``call_tool``: the facade's tool surface over the live tool
+registry.
 
-Tools come from ``rheo_core.tokens.sets.REGISTERED_TOOLS`` -- the one
-declaration site, read from both directions (that module's own
-``agent_default`` policy, and this module's tool listing) -- so this file
-does not redeclare ``workspace_status``/``harness_get_note`` a second time.
+Tools come from ``rheo_core.tokens.sets.TOOL_REGISTRY`` -- the one declaration
+site, read from both directions (that module's own ``agent_default`` policy,
+and this module's tool listing) -- so this file does not redeclare
+``workspace_status``/``harness_get_note`` a second time. The registry is read at
+call time and holds only what survived ``register``, so a tool this process
+never registered is absent from every listing rather than listed and then
+refused.
 
-No transport: this is the seam criterion 7 needs (``dispatch`` reached from a
-tool call, refusing a cross-workspace reference exactly as the ``api`` surface
-does), not a streamable-HTTP server -- that is 0c3's.
+This is the seam criterion 7 needs: ``dispatch`` reached from a tool call,
+refusing a cross-workspace reference exactly as the ``api`` surface does.
+``transport.py`` wraps this pair in the streamable-HTTP wire protocol; nothing
+of the protocol leaks into this file, and this pair stays directly callable
+from a test with no server at all.
 """
 
 from collections.abc import Mapping
@@ -21,7 +26,7 @@ from rheo_core.operations import (
     OperationOutcome,
     dispatch,
 )
-from rheo_core.tokens.sets import REGISTERED_TOOLS
+from rheo_core.tokens.sets import TOOL_REGISTRY
 
 NOT_FOUND: Final = "not_found"
 """Deliberately a local literal, not an import of
@@ -46,7 +51,9 @@ def _visible(ctx: WorkspaceContext, operation: str) -> bool:
 
 def list_tools(ctx: WorkspaceContext) -> tuple[ToolDeclaration, ...]:
     """The registered tools this context may call right now."""
-    return tuple(tool for tool in REGISTERED_TOOLS if _visible(ctx, tool.operation))
+    return tuple(
+        tool for tool in TOOL_REGISTRY.declarations() if _visible(ctx, tool.operation)
+    )
 
 
 def call_tool(

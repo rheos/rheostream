@@ -21,9 +21,15 @@ place to keep in step, and would hide the constraint from the test that proves i
 **Every write in this module that ends a record is predicated on the record still
 being open** (``pending`` or ``running``) — :func:`finish_succeeded`,
 :func:`finish_failed`, :func:`finish_cancelled` and :func:`mark_unresolved`, plus
-:func:`mark_running`, which is not terminal but must not drag a finished record back.
-:func:`resolve` is predicated differently, on ``unresolved`` alone, and says why in its
-own docstring. Each returns whether it applied. A
+:func:`mark_running` and :func:`mark_approval_required`, neither of which is terminal
+but both of which must refuse to drag a finished record back. Four writes are
+predicated differently and each says so in its own docstring: :func:`resolve` on
+``unresolved`` alone, and :func:`finish_held_succeeded`,
+:func:`finish_held_cancelled` and :func:`finish_held_failed` on ``approval_required``
+alone — a held record is exactly what ``_open`` excludes, because a call waiting for a
+person is not work in flight, and those three are the three ways such a call can end:
+its approval executed, a person refused it, or an execution guard stopped it. Each
+returns whether it applied. A
 terminal record is terminal: a second write must not reopen it, move it between
 terminal states, or overwrite the outcome the first one recorded. The predicate is the
 same shape as ``work/jobs.py``'s ``_held``, and for the same reason — a conditional
@@ -173,6 +179,20 @@ def _open(operation_id: UUID) -> ColumnElement[bool]:
     )
 
 
+def _held(operation_id: UUID) -> ColumnElement[bool]:
+    """This record, still waiting for a decision on its approval.
+
+    Deliberately **not** part of :func:`_open`. A record in ``approval_required`` is
+    not work in flight: no handler has run, no job carries it, and the only things
+    that may move it are the approval's own approve and refuse. Widening ``_open`` to
+    include it would let every terminal write in this module — and the dispatcher's
+    own failure path — reach a record that is waiting for a person.
+    """
+    return (t.operation.c.id == operation_id) & (
+        t.operation.c.state == APPROVAL_REQUIRED
+    )
+
+
 def _apply(conn: Connection, where: ColumnElement[bool], **values: object) -> bool:
     """Run one predicated ``UPDATE`` on ``core.operation`` and report whether it
     matched."""
@@ -261,6 +281,110 @@ def mark_running(conn: Connection, *, operation_id: UUID, now: datetime) -> bool
     finished is never dragged back to ``running`` by a late caller.
     """
     return _apply(conn, _open(operation_id), state=RUNNING, started_at=now)
+
+
+def mark_approval_required(
+    conn: Connection, *, operation_id: UUID, approval_id: UUID
+) -> bool:
+    """Hold an open record for an approval, stamping the approval it waits on.
+
+    Predicated the same way :func:`mark_running` is, and for the same reason: a
+    record that has already finished must never be dragged back into a waiting state
+    by a late caller. ``approval_id`` is the column ``core.operation`` has carried
+    since run 0c2 with nothing to write it — this is its first writer.
+
+    No instant, unlike :func:`mark_running`: ``approval_required`` is the record
+    *not* starting, so ``started_at`` stays null and the row has no other timestamp
+    this transition could honestly fill. The moment the call was held is the
+    approval's own ``window_start``, and the audit row's ``occurred_at``.
+    """
+    return _apply(
+        conn,
+        _open(operation_id),
+        state=APPROVAL_REQUIRED,
+        approval_id=approval_id,
+    )
+
+
+def finish_held_succeeded(
+    conn: Connection,
+    *,
+    operation_id: UUID,
+    now: datetime,
+    terminal_check_kind: str,
+    terminal_check_at: datetime,
+) -> bool:
+    """End a held record ``succeeded`` once its approval has executed. Reports
+    whether it applied.
+
+    **The one place this module writes ``succeeded`` outside the worker's path, and
+    it is not an exception to the one-terminaliser rule.** That rule is about work
+    that runs as a job: the dispatcher must not report success for work it merely
+    scheduled, because only the worker knows it was done. An approved destructive
+    operation is the opposite case — the handler runs inside the approving
+    transaction, so the thing that knows the work was done is the thing writing this
+    row, and no job or worker will ever see the record.
+
+    Both check fields are required keywords with no default, exactly as
+    :func:`finish_succeeded`'s are, and for the same reason: the database's
+    ``operation_terminal_check_required`` constraint refuses a ``succeeded`` row
+    without them, and a signature that cannot be called without them is better than a
+    driver error at the commit.
+    """
+    return _apply(
+        conn,
+        _held(operation_id),
+        state=SUCCEEDED,
+        terminal_check_kind=terminal_check_kind,
+        terminal_check_at=terminal_check_at,
+        terminal_at=now,
+    )
+
+
+def finish_held_cancelled(
+    conn: Connection, *, operation_id: UUID, now: datetime
+) -> bool:
+    """End a held record ``cancelled`` because its approval was refused. Reports
+    whether it applied.
+
+    ``cancelled`` rather than ``failed``: nothing went wrong and nothing was
+    attempted — a person decided the call should not happen, which is what that state
+    means everywhere else in this module.
+    """
+    return _apply(conn, _held(operation_id), state=CANCELLED, terminal_at=now)
+
+
+def finish_held_failed(
+    conn: Connection,
+    *,
+    operation_id: UUID,
+    now: datetime,
+    error_code: str,
+    error_text: str,
+) -> bool:
+    """End a held record ``failed`` because an execution guard refused it. Reports
+    whether it applied.
+
+    ``failed`` rather than ``cancelled``: nobody decided the call should not happen —
+    it was released and then stopped, which is the difference
+    :func:`finish_held_cancelled`'s own docstring draws. ``confirmation-and-safety.md``
+    § Execution guards fixes both halves of this write: "A refused guard leaves the
+    external action ``refused``, the operation ``failed`` **with the guard's code**",
+    so the code and the text are where the guard is named.
+
+    Predicated on :func:`_held` rather than on :func:`_open`, which is why
+    :func:`finish_failed` could not serve: that predicate deliberately excludes a
+    record waiting for an approval, so that the dispatcher's own failure path cannot
+    reach one.
+    """
+    return _apply(
+        conn,
+        _held(operation_id),
+        state=FAILED,
+        error_code=error_code,
+        error_text=error_text,
+        terminal_at=now,
+    )
 
 
 def finish_succeeded(

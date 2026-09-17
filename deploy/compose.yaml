@@ -95,11 +95,18 @@ services:
       RHEO_GITHUB_CLIENT_SECRET: ""
       RHEO__identity__providers__github__client_secret_ref: secret://env/RHEO_GITHUB_CLIENT_SECRET
       # The routing topology for the local demo: single-host path mode, over
-      # plain http, matching `make demo`'s own web port (`RHEO_WEB_PORT`
-      # default 3000) — see Makefile's `demo` recipe and `deploy/README.md`.
+      # plain http — see Makefile's `demo` recipe and `deploy/README.md`.
+      #
+      # `base_host` is spelled PORT-FREE and must stay that way (issue #37).
+      # `normalize_host` strips the port off the incoming Host header before
+      # `is_application_host` compares it, and that compare is exact — so a
+      # `base_host` carrying a port matches nothing a browser ever sends and
+      # `/auth/*` refuses every request. It reads as though it should name
+      # `make demo`'s web port (`RHEO_WEB_PORT`, default 3000); it must not.
+      # `tests/test_routing.py` asserts this file's value has no colon.
       RHEO__routing__mode: path
       RHEO__routing__scheme: http
-      RHEO__routing__base_host: "localhost:3000"
+      RHEO__routing__base_host: "localhost"
     volumes:
       # Named volume, never a bind mount into the repo, so `make up`/`make demo`
       # write nothing into the tracked tree (criterion 2) — same rule as pgdata.
