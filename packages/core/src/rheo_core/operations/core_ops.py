@@ -95,6 +95,25 @@ from rheo_core.audit import (
     audit_list_handler,
     install_sink,
 )
+from rheo_core.exports.operations import (
+    WORKSPACE_DIGEST as WORKSPACE_DIGEST,
+)
+from rheo_core.exports.operations import (
+    WORKSPACE_EXPORT as WORKSPACE_EXPORT,
+)
+from rheo_core.exports.operations import (
+    WORKSPACE_RESTORE as WORKSPACE_RESTORE,
+)
+from rheo_core.exports.operations import (
+    ScheduledArtifact,
+    WorkspaceDigest,
+    WorkspaceDigestInput,
+    WorkspaceExportInput,
+    WorkspaceRestoreInput,
+    digest_handler,
+    export_handler,
+    restore_handler,
+)
 from rheo_core.operations.operation_ops import (
     OPERATION_GET,
     OPERATION_LIST,
@@ -407,6 +426,38 @@ AUDIT_LIST_DECLARATION: Final = OperationDeclaration(
     audit=None,
 )
 
+WORKSPACE_EXPORT_DECLARATION: Final = OperationDeclaration(
+    name=WORKSPACE_EXPORT,
+    safety_class=SafetyClass.MUTATE,
+    roles=frozenset({Role.OWNER, Role.OPERATOR}),
+    input_model=WorkspaceExportInput,
+    output=ScheduledArtifact,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field=None),
+    long_running=True,
+)
+
+WORKSPACE_DIGEST_DECLARATION: Final = OperationDeclaration(
+    name=WORKSPACE_DIGEST,
+    safety_class=SafetyClass.READ,
+    roles=frozenset({Role.OWNER, Role.OPERATOR}),
+    input_model=WorkspaceDigestInput,
+    output=WorkspaceDigest,
+    idempotency=Idempotency.NONE,
+    audit=None,
+)
+
+WORKSPACE_RESTORE_DECLARATION: Final = OperationDeclaration(
+    name=WORKSPACE_RESTORE,
+    safety_class=SafetyClass.MUTATE,
+    roles=frozenset({Role.OWNER, Role.OPERATOR}),
+    input_model=WorkspaceRestoreInput,
+    output=ScheduledArtifact,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field=None),
+    long_running=True,
+)
+
 CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (WORKSPACE_STATUS_DECLARATION, _workspace_status),
     (SETTINGS_SET_DECLARATION, _settings_set),
@@ -416,6 +467,9 @@ CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (OPERATION_LIST_DECLARATION, list_handler),
     (OPERATION_RESOLVE_DECLARATION, resolve_handler),
     (AUDIT_LIST_DECLARATION, audit_list_handler),
+    (WORKSPACE_EXPORT_DECLARATION, export_handler),
+    (WORKSPACE_DIGEST_DECLARATION, digest_handler),
+    (WORKSPACE_RESTORE_DECLARATION, restore_handler),
 )
 """The three 0b1 operations, 0c1's ``core.work.failures``, and 0c2's three
 ``core.operation`` operations plus ``core.audit.list``. The two token operations

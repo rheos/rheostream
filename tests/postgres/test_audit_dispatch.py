@@ -84,6 +84,8 @@ from rheo_core.operations import (
     ROLE_NOT_PERMITTED,
     SETTINGS_SET,
     SETTINGS_SET_MEMBER,
+    WORKSPACE_EXPORT,
+    WORKSPACE_RESTORE,
     OperationRegistry,
     RegistrationRefused,
     dispatch,
@@ -113,7 +115,7 @@ TOKEN_DAYS_CLI = "identity.token_max_days.cli"
 
 NOTE = "the body an audited dispatch writes"
 
-THE_FOURTEEN = frozenset(
+THE_SIXTEEN = frozenset(
     {
         SETTINGS_SET,
         SETTINGS_SET_MEMBER,
@@ -124,6 +126,8 @@ THE_FOURTEEN = frozenset(
         APPROVAL_REFUSE,
         STANDING_GRANT_CREATE,
         STANDING_GRANT_REVOKE,
+        WORKSPACE_EXPORT,
+        WORKSPACE_RESTORE,
         NOTE_WRITE,
         NOTE_EXPLODE,
         NOTE_SCHEDULE,
@@ -300,15 +304,15 @@ def _commit_from_the_handler(
 # --- AC 26: every registered mutating operation is covered ----------------------------
 
 
-def test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen(
+def test_the_mutating_set_derived_from_the_registry_is_the_declared_sixteen(
     private_registry: OperationRegistry,
 ) -> None:
     """AC 26's first half: the set under test comes from the registry, and is fourteen.
 
     Derived by safety class rather than by name, so an operation added later is in the
     set whether or not anybody remembered this file — and then fails the comparison
-    against :data:`THE_FOURTEEN`, which is the loud failure AC 26 asks for rather than a
-    silent gap in the coverage below.
+    against :data:`THE_SIXTEEN`, which is the loud failure AC 26 asks for rather
+    than a silent gap in the coverage below.
 
     ``is not SafetyClass.READ`` is what makes this cover the two upper-class fixtures
     as well as the mutate operations: "above read" was a distinction with no example
@@ -320,8 +324,8 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen(
         if (operation := private_registry.lookup(name)) is not None
         and operation.declaration.safety_class is not SafetyClass.READ
     }
-    assert mutating == set(THE_FOURTEEN), sorted(mutating)
-    assert len(mutating) == 14, sorted(mutating)
+    assert mutating == set(THE_SIXTEEN), sorted(mutating)
+    assert len(mutating) == 16, sorted(mutating)
 
 
 def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
@@ -412,11 +416,17 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
         NOTE_WRITE: dispatch(owner, NOTE_WRITE, {"body": NOTE}),
         NOTE_EXPLODE: dispatch(owner, NOTE_EXPLODE, {"body": NOTE, "message": "boom"}),
         NOTE_SCHEDULE: dispatch(owner, NOTE_SCHEDULE, {"body": NOTE}),
+        WORKSPACE_EXPORT: dispatch(owner, WORKSPACE_EXPORT, {}),
+        WORKSPACE_RESTORE: dispatch(
+            owner,
+            WORKSPACE_RESTORE,
+            {"artifact_path": "/artifact-does-not-exist.tar.zst"},
+        ),
     }
     assert member is not None
 
     audited = {record.operation_name for record in _added(owner, before)}
-    assert audited == set(THE_FOURTEEN), sorted(audited)
+    assert audited == set(THE_SIXTEEN), sorted(audited)
     # Every dispatch that was supposed to run did: a coverage assertion that passed
     # because most operations refused for an unrelated reason would prove nothing.
     for name, outcome in dispatched.items():
@@ -1015,7 +1025,7 @@ def test_check_audit_paths_names_every_offender(
         check_audit_paths(private_registry)
 
     message = str(excinfo.value)
-    for name in THE_FOURTEEN:
+    for name in THE_SIXTEEN:
         assert name in message, message
     assert AUDIT_LIST not in message, message
     assert CORE_MODULE_ID in message and HARNESS_MODULE_ID in message, message

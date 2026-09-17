@@ -325,6 +325,24 @@
         "title": "AuditRecord",
         "type": "object"
       },
+      "DigestEntry": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "digest"
+        ],
+        "title": "DigestEntry",
+        "type": "object"
+      },
       "FailedDelivery": {
         "description": "One failed event delivery as the operation publishes it.\n\n``rheo_core.events.deliveries.FailedDeliveryRow`` field for field, and\ndeliberately **not** :class:`FailedJob`'s field list: ``core.event_delivery``\nhas no ``max_attempts`` column, because a delivery's budget is the\n``work.max_attempts`` setting rather than a per-row value, and publishing a\nfield the row does not hold would mean inventing one here.\n\nThe identity is the composite key the row is actually keyed by, both halves\npublished: one event has one delivery per consumer, so ``event_id`` alone does\nnot name a delivery.",
         "properties": {
@@ -723,6 +741,33 @@
         "title": "OperationResolveInput",
         "type": "object"
       },
+      "ScheduledArtifact": {
+        "properties": {
+          "export_id": {
+            "format": "uuid",
+            "title": "Export Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          }
+        },
+        "required": [
+          "export_id",
+          "operation_id"
+        ],
+        "title": "ScheduledArtifact",
+        "type": "object"
+      },
       "SettingWrite": {
         "description": "One key and its natively typed value (a list for ``list[str]`` keys).",
         "properties": {
@@ -1056,6 +1101,45 @@
           "token_id"
         ],
         "title": "TokenRevoked",
+        "type": "object"
+      },
+      "WorkspaceDigest": {
+        "properties": {
+          "categories": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DigestEntry"
+            },
+            "title": "Categories",
+            "type": "object"
+          }
+        },
+        "required": [
+          "categories"
+        ],
+        "title": "WorkspaceDigest",
+        "type": "object"
+      },
+      "WorkspaceDigestInput": {
+        "properties": {},
+        "title": "WorkspaceDigestInput",
+        "type": "object"
+      },
+      "WorkspaceExportInput": {
+        "properties": {},
+        "title": "WorkspaceExportInput",
+        "type": "object"
+      },
+      "WorkspaceRestoreInput": {
+        "properties": {
+          "artifact_path": {
+            "title": "Artifact Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_path"
+        ],
+        "title": "WorkspaceRestoreInput",
         "type": "object"
       },
       "WorkspaceStatus": {
@@ -1916,6 +2000,195 @@
           }
         },
         "summary": "core.work.failures (read)"
+      }
+    },
+    "/api/v1/operations/core.workspace.digest": {
+      "post": {
+        "operationId": "core.workspace.digest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceDigestInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/WorkspaceDigest"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.workspace.digest (read)"
+      }
+    },
+    "/api/v1/operations/core.workspace.export": {
+      "post": {
+        "operationId": "core.workspace.export",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceExportInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ScheduledArtifact"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.workspace.export (mutate)"
+      }
+    },
+    "/api/v1/operations/core.workspace.restore": {
+      "post": {
+        "operationId": "core.workspace.restore",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceRestoreInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ScheduledArtifact"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.workspace.restore (mutate)"
       }
     },
     "/api/v1/operations/core.workspace.status": {

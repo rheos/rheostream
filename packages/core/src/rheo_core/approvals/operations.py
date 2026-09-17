@@ -169,11 +169,11 @@ def _must_be_pending(row: ApprovalRow, approval_id: UUID) -> None:
     person acts on them differently. The predicate on the write is what makes the
     refusal true anyway if the row moved between the two statements.
     """
-    if row.state != t.PENDING:
+    if row.state not in (t.PENDING, t.REQUIRES_REAPPROVAL):
         raise OperationRefused(
             APPROVAL_STATE,
-            f"approval {approval_id} is {row.state!r}; only a 'pending' approval can "
-            "be approved or refused",
+            f"approval {approval_id} is {row.state!r}; only a pending or "
+            "requires_reapproval approval can be approved or refused",
         )
 
 
@@ -221,8 +221,8 @@ def approve_handler(
     ):
         raise OperationRefused(
             APPROVAL_STATE,
-            f"approval {approval_id} left 'pending' while it was being approved; "
-            "nothing was written",
+            f"approval {approval_id} left its decidable state while approval was "
+            "being recorded; nothing was written",
         )
     # The return value is deliberately discarded, and it has two shapes. The handler's
     # own output belongs to the gated operation and never to this one, which publishes
@@ -250,8 +250,8 @@ def refuse_handler(
     if not mark_refused(uow.connection, approval_id=approval_id):
         raise OperationRefused(
             APPROVAL_STATE,
-            f"approval {approval_id} left 'pending' while it was being refused; "
-            "nothing was written",
+            f"approval {approval_id} left its decidable state while refusal was "
+            "being recorded; nothing was written",
         )
     if not finish_held_cancelled(
         uow.connection, operation_id=row.operation_id, now=datetime.now(UTC)

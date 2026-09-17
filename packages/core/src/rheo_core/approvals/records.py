@@ -216,11 +216,11 @@ def mark_approved(
     approved_entry: str,
     now: datetime,
 ) -> bool:
-    """Move a ``pending`` approval to ``approved``, recording who and through which
-    entry. Reports whether it applied."""
+    """Approve a new or restored approval, recording who and through which entry."""
     return _apply(
         conn,
-        _in_state(approval_id, t.PENDING),
+        (t.approval.c.id == approval_id)
+        & t.approval.c.state.in_((t.PENDING, t.REQUIRES_REAPPROVAL)),
         state=t.APPROVED,
         approved_by_kind=approved_by_kind,
         approved_by_id=approved_by_id,
@@ -235,7 +235,12 @@ def mark_refused(conn: Connection, *, approval_id: UUID) -> bool:
     No instant and no actor: see the module docstring — the row has no columns for
     either on this path, and the audit row for ``core.approval.refuse`` carries both.
     """
-    return _apply(conn, _in_state(approval_id, t.PENDING), state=t.REFUSED)
+    return _apply(
+        conn,
+        (t.approval.c.id == approval_id)
+        & t.approval.c.state.in_((t.PENDING, t.REQUIRES_REAPPROVAL)),
+        state=t.REFUSED,
+    )
 
 
 def mark_guard_refused(conn: Connection, *, approval_id: UUID) -> bool:

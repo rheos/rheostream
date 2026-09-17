@@ -91,6 +91,9 @@ CORE_TABLES = {
     # 0004_standing_grants
     "standing_grant",
     "standing_grant_operation",
+    # 0005_export_records
+    "export_record",
+    "export_record_ref",
 }
 # The rest of the approval family, owned by later chain steps; their presence here
 # would contaminate the trial. Tables leave this set exactly when the revision that
@@ -178,6 +181,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
         "0002_durable_work",
         "0003_approvals",
         "0004_standing_grants",
+        "0005_export_records",
     }
 
 
@@ -195,7 +199,7 @@ def test_control_chain_creates_exactly_the_eleven_tables(
         assert recorded_revisions(connection, CONTROL_CHAIN) == {"0002_work_index"}
 
 
-def test_core_chain_creates_exactly_the_seventeen_tables(
+def test_core_chain_creates_exactly_the_nineteen_tables(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
     _, engine = workspace_engine(cluster, workspace)
@@ -205,7 +209,7 @@ def test_core_chain_creates_exactly_the_seventeen_tables(
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CORE_CHAIN) == {"0004_standing_grants"}
+        assert recorded_revisions(connection, CORE_CHAIN) == {"0005_export_records"}
 
 
 def test_migrate_control_is_idempotent_and_survives_an_existing_database(
@@ -313,7 +317,7 @@ def test_failing_core_revision_marks_unavailable_and_startup_completes(
     with broken_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO core.alembic_version_core (version_num) VALUES (:v)"),
-            {"v": "0004_standing_grants"},
+            {"v": "0005_export_records"},
         )
     repair(broken)
     assert cluster.registry_row(broken).state is WorkspaceState.ACTIVE
@@ -351,7 +355,7 @@ def test_schema_ahead_marks_unavailable_and_refuses_repair(
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE core.alembic_version_core SET version_num = :v"),
-            {"v": "0004_standing_grants"},
+            {"v": "0005_export_records"},
         )
     repair(workspace)
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE

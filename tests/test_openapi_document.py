@@ -48,6 +48,9 @@ from rheo_core.operations.core_ops import (
     TOKEN_ISSUE,
     TOKEN_REVOKE,
     WORK_FAILURES,
+    WORKSPACE_DIGEST,
+    WORKSPACE_EXPORT,
+    WORKSPACE_RESTORE,
     WORKSPACE_STATUS,
     SettingWrite,
     WorkspaceStatus,
@@ -130,6 +133,9 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             APPROVAL_REFUSE,
             STANDING_GRANT_CREATE,
             STANDING_GRANT_REVOKE,
+            WORKSPACE_EXPORT,
+            WORKSPACE_DIGEST,
+            WORKSPACE_RESTORE,
         )
     )
 

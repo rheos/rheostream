@@ -1674,3 +1674,33 @@ changes the assertion with it — which is what AC 5 asks for ("asserted against
 setting rather than a wall-clock constant chosen by the test"). A hold that outlived the window it
 was minting would hand back an approval that had already expired, so the bound is meaningful as
 well as setting-derived.
+
+---
+
+### Criterion 21
+
+**Text:** "A workspace export produces an artifact that a restore reads back into an empty
+deployment, after which the restored workspace's composition, configuration versions, module
+schema versions, and records match the original, verified by comparison rather than by inspection.
+A pending approved action is restored in a state that requires a fresh approval before it can
+execute: the test approves the destructive-class fixture operation, exports before it runs,
+restores, and asserts the restored action is refused until approved again and that the fixture
+recorded nothing in between. *(Scenario: Export and restore; FR 52.)*"
+(`build-plan.md:188-194`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_export_restore.py::test_restore_matches_source_by_workspace_digest`
+- `pytest:tests/postgres/test_export_restore.py::test_approved_action_restore_requires_fresh_approval_and_executes_nothing`
+
+**Mutation:**
+- Remove restore's forced `requires_reapproval` assignment and trust the tampered artifact's
+  `approved` value.
+- Drop the `audit` category from `core.workspace.digest`.
+
+**Cost:** The first mutation makes the full-sequence test report `approved` where
+`requires_reapproval` is required. The second makes the digest-comparison test report unequal
+category maps.
+
+**Performed by:** C8 (2026-09-17)

@@ -83,6 +83,7 @@ READ_ONLY_OPERATIONS = frozenset(
         "core.operation.get",
         "core.operation.list",
         "core.work.failures",
+        "core.workspace.digest",
         "core.workspace.status",
         NOTE_GET,
     }

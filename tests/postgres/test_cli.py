@@ -57,6 +57,9 @@ from rheo_core.operations import (
     REGISTRY,
     SETTINGS_SET,
     WORK_FAILURES,
+    WORKSPACE_DIGEST,
+    WORKSPACE_EXPORT,
+    WORKSPACE_RESTORE,
     WORKSPACE_STATUS,
 )
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
@@ -372,6 +375,9 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             TOKEN_ISSUE,
             TOKEN_REVOKE,
             WORK_FAILURES,
+            WORKSPACE_DIGEST,
+            WORKSPACE_EXPORT,
+            WORKSPACE_RESTORE,
             WORKSPACE_STATUS,
         )
         by_id = {result.workspace_id: result for result in report.workspaces}

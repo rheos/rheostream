@@ -225,6 +225,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.workspace.digest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.workspace.digest (read) */
+        post: operations["core.workspace.digest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.workspace.export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.workspace.export (mutate) */
+        post: operations["core.workspace.export"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.workspace.restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.workspace.restore (mutate) */
+        post: operations["core.workspace.restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.workspace.status": {
         parameters: {
             query?: never;
@@ -399,6 +450,13 @@ export interface components {
             safety_class: string;
             /** Subject Ref */
             subject_ref: string | null;
+        };
+        /** DigestEntry */
+        DigestEntry: {
+            /** Count */
+            count: number;
+            /** Digest */
+            digest: string;
         };
         /**
          * FailedDelivery
@@ -616,6 +674,16 @@ export interface components {
              */
             terminal_check_kind: ("record_exists" | "provider_status" | "sink_recorded" | "handler_returned") | null;
         };
+        /** ScheduledArtifact */
+        ScheduledArtifact: {
+            /**
+             * Export Id
+             * Format: uuid
+             */
+            export_id: string;
+            /** Operation Id */
+            operation_id: string | null;
+        };
         /**
          * SettingWrite
          * @description One key and its natively typed value (a list for ``list[str]`` keys).
@@ -793,6 +861,22 @@ export interface components {
              * Format: uuid
              */
             token_id: string;
+        };
+        /** WorkspaceDigest */
+        WorkspaceDigest: {
+            /** Categories */
+            categories: {
+                [key: string]: components["schemas"]["DigestEntry"];
+            };
+        };
+        /** WorkspaceDigestInput */
+        WorkspaceDigestInput: Record<string, never>;
+        /** WorkspaceExportInput */
+        WorkspaceExportInput: Record<string, never>;
+        /** WorkspaceRestoreInput */
+        WorkspaceRestoreInput: {
+            /** Artifact Path */
+            artifact_path: string;
         };
         /**
          * WorkspaceStatus
@@ -1243,6 +1327,105 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["FailureList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.workspace.digest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceDigestInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["WorkspaceDigest"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.workspace.export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceExportInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ScheduledArtifact"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.workspace.restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRestoreInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ScheduledArtifact"];
                         state: string;
                     };
                 };
