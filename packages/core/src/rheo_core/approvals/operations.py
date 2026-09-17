@@ -185,11 +185,20 @@ def approve_handler(
     Everything happens in the caller's single transaction, in this order: the
     approval becomes ``approved``, recording who approved and through which entry;
     then :func:`~rheo_core.approvals.gate.execute_approved` rechecks the binding, runs
-    the original handler, marks the approval ``executed``, terminalises the held
-    operation record and writes that operation's audit row. A refusal anywhere in
-    that sequence rolls all of it back, which is what leaves a failed approval
-    re-approvable rather than half-spent — and is why the sequence is described rather
-    than counted, since the count is the one thing about it that changes.
+    the guards, runs the original handler, marks the approval ``executed``,
+    terminalises the held operation record and writes that operation's audit row. A
+    refusal anywhere in that sequence rolls all of it back, which is what leaves a
+    failed approval re-approvable rather than half-spent — and is why the sequence is
+    described rather than counted, since the count is the one thing about it that
+    changes.
+
+    **An execution guard's refusal is the deliberate exception and does not roll
+    back.** It ends the approval ``refused`` and the held record ``failed``, and this
+    operation returns those states rather than a refusal, because a rolled-back guard
+    refusal would leave the approval ``pending`` and immediately re-approvable — which
+    is precisely what R3 item 4 wants a revocation to stop. The caller reads
+    ``state`` on the record below. ``rheo_core.approvals.gate.GUARD_REFUSED`` carries
+    the whole reasoning.
 
     ``datetime.now(UTC)`` is read **once** here and passed down, for the reason
     ``operation_ops.py``'s ``resolve_handler`` reads it: this is a handler reached
@@ -215,6 +224,12 @@ def approve_handler(
             f"approval {approval_id} left 'pending' while it was being approved; "
             "nothing was written",
         )
+    # The return value is deliberately discarded, and it has two shapes. The handler's
+    # own output belongs to the gated operation and never to this one, which publishes
+    # the approval; and a ``GuardRefusal`` has already written the approval ``refused``
+    # and the held record ``failed`` in this transaction, so the record read back below
+    # reports it. Reading the state off the row rather than off this value is what
+    # makes the published answer the database's and not the handler's.
     execute_approved(ctx, uow, approval=_must_read(uow, approval_id), now=now)
     return _published(_must_read(uow, approval_id))
 

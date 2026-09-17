@@ -55,7 +55,15 @@ APPROVAL_STATES: Final = (
     REQUIRES_REAPPROVAL,
 )
 """The seven ratified states, declared as the check constraint's whole set even
-though this chunk only ever writes the first four and ``refused``.
+though only four of them are written anywhere yet: ``pending``, ``approved``,
+``executed`` and ``refused``. (C6 wrote "the first four and ``refused``", which
+counted ``expired`` in and then said two lines later that nothing writes it. Four is
+the number; ``expired`` is not one of them.)
+
+``refused`` arrives from two states and both writers are in ``records.py``:
+:func:`~rheo_core.approvals.records.mark_refused` from ``pending``, when a person
+declines, and :func:`~rheo_core.approvals.records.mark_guard_refused` from
+``approved``, when an execution guard stops a release already given.
 
 ``expired`` is written by the window sweep a later run adds, ``invalidated`` by the
 deletion cascade, and ``requires_reapproval`` by R4's restore. Declaring all seven

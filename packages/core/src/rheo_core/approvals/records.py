@@ -238,6 +238,27 @@ def mark_refused(conn: Connection, *, approval_id: UUID) -> bool:
     return _apply(conn, _in_state(approval_id, t.PENDING), state=t.REFUSED)
 
 
+def mark_guard_refused(conn: Connection, *, approval_id: UUID) -> bool:
+    """Move an ``approved`` approval to ``refused`` because a guard refused its
+    execution. Reports whether it applied.
+
+    A second transition into ``refused``, predicated on ``approved`` rather than on
+    ``pending``, because the two arrive from different states and mean different
+    things: :func:`mark_refused` is a person declining a request that was never
+    released, and this one is the system withdrawing a release a person had already
+    given. Sharing one function would mean one predicate covering both, and a
+    predicate of "pending or approved" would let a refusal land on a request nobody had
+    decided yet.
+
+    No instant and no actor, for :func:`mark_refused`'s reason: the ratified column
+    list gives the row no refusal counterpart to ``approved_at``/``approved_by_*``, and
+    the guard that did this is named on the held operation record this refusal
+    terminalises (``confirmation-and-safety.md`` § Execution guards: "the operation
+    ``failed`` with the guard's code").
+    """
+    return _apply(conn, _in_state(approval_id, t.APPROVED), state=t.REFUSED)
+
+
 def mark_executed(conn: Connection, *, approval_id: UUID, now: datetime) -> bool:
     """Move an ``approved`` approval to ``executed``, stamping ``executed_at``.
     Reports whether it applied.

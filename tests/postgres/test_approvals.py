@@ -29,14 +29,23 @@ assertion below would also pass on a dispatcher that refused everything.
 says so at its own test: exactly-once is a property of three compare-and-set
 predicates that a *sequential* test cannot see (a read-then-check refuses the second
 approve on its own), so it is driven from two threads; the guard seam's *call* cannot
-be reached from outside `execute_approved`, so it is pinned by putting a real guard in
-`CORE_GUARDS`; and the window clause is exercised both directly on `binding_detail`
+be reached from outside `execute_approved`, so it is pinned by putting a chosen guard
+in `CORE_GUARDS`; and the window clause is exercised both directly on `binding_detail`
 and end to end against a row whose window has passed.
+
+**Run 0c3's C7 adds the rest of criterion 19 below**: the attachment rule for the
+three guards the core attaches, `ActorPermissionGuard`'s two revocation scenarios
+through a real dispatch, `WindowGuard`'s and `RecordStateGuard`'s own logic at values
+a dispatch cannot reach, and the whole criterion end to end through an MCP-kind
+context. Why the last two are unit-level rather than end-to-end is written at each of
+them; it is a property of this tree (one immutable record type, a binding check that
+refuses an expired window before the guards see it), not a shortcut.
 """
 
 import hashlib
 import json
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -45,8 +54,11 @@ import pytest
 from conftest import ClusterSession
 from harness.registry import (
     FIXTURE_ACT,
+    FIXTURE_ACT_DECLARATION,
     NOTE_WRITE,
+    NOTE_WRITE_DECLARATION,
     SINK_SEND,
+    SINK_SEND_DECLARATION,
     act_payload,
     add_member,
     enable_harness_module,
@@ -56,16 +68,26 @@ from harness.registry import (
     sent_messages,
 )
 from pydantic import BaseModel
-from rheo_contracts import Role, WorkspaceContext
-from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE, APPROVAL_STATE
+from rheo_contracts import ActorKind, Entry, RecordRef, Role, WorkspaceContext
+from rheo_core.approvals import (
+    APPROVAL_APPROVE,
+    APPROVAL_REFUSE,
+    APPROVAL_STATE,
+    STANDING_GRANT_CLASS_REFUSED,
+    STANDING_GRANT_CREATE,
+    RecordStateGuard,
+    WindowGuard,
+    core_guards_for,
+)
 from rheo_core.approvals import guards as guards_module
 from rheo_core.approvals.binding import INVALID_APPROVAL, binding_detail
-from rheo_core.approvals.gate import GUARD_REFUSED, PAYLOAD_TOO_LARGE
+from rheo_core.approvals.gate import GUARD_REFUSED, PAYLOAD_TOO_LARGE, window_seconds
 from rheo_core.approvals.records import ApprovalRow
 from rheo_core.approvals.tables import approval as approval_table
 from rheo_core.approvals.tables import approval_payload
 from rheo_core.audit import AUDIT_LIST
 from rheo_core.boundary import context_for_harness, context_for_operator
+from rheo_core.boundary.factories import context_from_token
 from rheo_core.operations import (
     OPERATION_GET,
     SETTINGS_SET,
@@ -73,9 +95,19 @@ from rheo_core.operations import (
     dispatch,
     register_core_operations,
 )
+from rheo_core.operations.core_ops import TOKEN_ISSUE
+from rheo_core.refs.resolver import (
+    DELETED,
+    LIVE,
+    RecordHead,
+    ResolverRegistry,
+    Unavailable,
+)
+from rheo_core.settings import TEST_HARNESS_ORIGIN
+from rheo_core.storage import control_tables
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.postgres import PostgresBackend
-from sqlalchemy import Engine, update
+from sqlalchemy import Engine, delete, update
 
 pytestmark = pytest.mark.postgres
 
@@ -183,12 +215,16 @@ def _refuse(ctx: WorkspaceContext, approval_id: UUID) -> OperationOutcome:
     return dispatch(ctx, APPROVAL_REFUSE, {"approval_id": str(approval_id)})
 
 
-def _operation_state(ctx: WorkspaceContext, operation_id: UUID) -> str:
-    """The held record's state, through the supported read (AC 19)."""
+def _operation_record(ctx: WorkspaceContext, operation_id: UUID) -> Any:
+    """The operation record, through the supported read (AC 19) and never the table."""
     outcome = dispatch(ctx, OPERATION_GET, {"operation_id": str(operation_id)})
     assert outcome.ok, outcome
-    record: Any = outcome.result
-    return str(record.state)
+    return outcome.result
+
+
+def _operation_state(ctx: WorkspaceContext, operation_id: UUID) -> str:
+    """The held record's state, through the supported read (AC 19)."""
+    return str(_operation_record(ctx, operation_id).state)
 
 
 def _record(outcome: OperationOutcome) -> Any:
@@ -620,48 +656,58 @@ def test_a_refusing_guard_stops_the_effect_and_a_permitting_one_does_not(
 ) -> None:
     """The guard seam is **called**, at the ratified position, and its answer decides.
 
-    **This is the chunk's own named deliverable and nothing else pins it.** The
-    prompt's "Done when" asks that the guard-check seam exist as an explicit, callable
-    step, and ``guards.py``'s docstring says the call *site* — after the binding
-    check, before the effect — is the part that is easy to put in the wrong place.
-    With no test, replacing the whole ``run_guards`` call with ``pass`` leaves every
-    gate green, and C7 would attach its guards to a step that could have been deleted.
+    **This is C6's own named deliverable and nothing else pins the call site.**
+    ``guards.py``'s docstring says the *site* — after the binding check, before the
+    effect — is the part that is easy to put in the wrong place. With no test,
+    replacing the whole ``run_guards`` call with ``pass`` leaves every gate green, and
+    C7's three real guards would hang off a step that could have been deleted.
 
     Both halves are one test because neither half means anything alone: a refusing
     guard that stops the effect proves the call happens; a permitting guard that lets
-    the *same* call through proves the first result came from the guard rather than
+    an identical call through proves the first result came from the guard rather than
     from an unrelated refusal. The recorded call is the third leg — it shows the seam
     saw the approval in state ``approved``, which is what "after the binding check,
     before the effect" means in terms a test can assert.
+
+    **Two things changed in C7 and are asserted in their changed form.** The injected
+    guard is substituted for ``CORE_GUARDS``, which is no longer empty, so the tuple
+    under test is the injected guard plus the ``RecordStateGuard`` ``core_guards_for``
+    appends for this declaration; and a guard refusal is now **durable**, so the
+    control half needs a second approval rather than re-approving the first. The old
+    shape — refuse, roll back, re-approve the same still-``pending`` approval — is
+    exactly what AC 11 forbids.
     """
     refusing = _RecordingGuard("the recording guard refused this execution")
     monkeypatch.setattr(guards_module, "CORE_GUARDS", (refusing,))
     approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
 
-    outcome = _approve(owner, approval_id)
+    record = _record(_approve(owner, approval_id))
 
-    assert outcome.state == GUARD_REFUSED, outcome
-    assert outcome.error is not None
-    assert "RecordingGuard" in outcome.error.error_text
+    assert record.state == "refused"
+    assert record.executed_at is None
     assert _acts(engine, database) == ()
-    assert _operation_state(owner, operation_id) == "approval_required"
+    assert _operation_state(owner, operation_id) == "failed"
+    failed = _operation_record(owner, operation_id)
+    assert failed.error_code == GUARD_REFUSED
+    assert "RecordingGuard" in failed.error_text
     # The seam ran, once, and saw the approval already moved to ``approved`` — the
-    # position the ratified flow fixes. The whole transaction then rolled back, which
-    # is why the row it saw is not the row that survives.
+    # position the ratified flow fixes.
     assert refusing.calls == [(approval_id, "approved")]
     assert refusing.instants[0].tzinfo is not None
 
-    # The control. Same seam, same approval, a guard that permits: now the effect
-    # lands. Without this, a green above would also be produced by a dispatcher that
-    # refused every approval for any reason at all.
+    # The control. Same seam, a fresh approval of the same operation, a guard that
+    # permits: now the effect lands. Without it, a green above would also be produced
+    # by a dispatcher that refused every approval for any reason at all.
     permitting = _RecordingGuard(None)
     monkeypatch.setattr(guards_module, "CORE_GUARDS", (permitting,))
+    second_id, second_operation = _held(owner, FIXTURE_ACT, act_payload(note))
 
-    record = _record(_approve(owner, approval_id))
+    record = _record(_approve(owner, second_id))
 
     assert record.state == "executed"
     assert _acts(engine, database) == (note,)
-    assert permitting.calls == [(approval_id, "approved")]
+    assert _operation_state(owner, second_operation) == "succeeded"
+    assert permitting.calls == [(second_id, "approved")]
 
 
 # --- the window clause of the binding tuple -----------------------------------------
@@ -803,3 +849,509 @@ def test_an_oversized_payload_is_refused_before_anything_is_written(
     assert outcome.error is not None
     assert "approvals.max_payload_bytes" in outcome.error.error_text
     assert _sends(engine, database) == ()
+
+
+# --- the three core guards: attachment, then each guard's own logic ------------------
+
+
+def test_the_core_attaches_two_guards_always_and_the_third_only_with_a_subject() -> (
+    None
+):
+    """``module-contract.md``'s guard-attachment rule, as a property of a declaration.
+
+    Four cases, and the pair that matters is the last two: ``harness.fixture.act``
+    names ``AuditSpec(subject_field="ref")`` and ``harness.sink.send`` names
+    ``subject_field=None``, so they are the same class, registered the same way,
+    differing in exactly the thing the rule keys on. Asserting only the first would
+    pass for a rule that attached ``RecordStateGuard`` to everything.
+
+    The lower-class case is here because "attached to every destructive, external and
+    financial operation" has an unstated other half — that nothing else gets them —
+    and a set that ignored the class would still satisfy both upper-class cases.
+
+    The two upper-class declarations come from the harness rather than from literals
+    built here: a declaration assembled by the test could name a ``subject_field``
+    the registry would have refused, and then this would assert the rule against a
+    declaration that can never exist.
+    """
+    assert core_guards_for(NOTE_WRITE_DECLARATION) == ()
+
+    sink = core_guards_for(SINK_SEND_DECLARATION)
+    assert [guard.name for guard in sink] == ["ActorPermissionGuard", "WindowGuard"]
+
+    fixture = core_guards_for(FIXTURE_ACT_DECLARATION)
+    assert [guard.name for guard in fixture] == [
+        "ActorPermissionGuard",
+        "WindowGuard",
+        "RecordStateGuard",
+    ]
+    # The attached guard reads the declaration's own subject field, not a name this
+    # module chose: a guard built with the wrong field would look at nothing.
+    attached = fixture[2]
+    assert isinstance(attached, RecordStateGuard)
+    assert attached.subject_field == FIXTURE_ACT_DECLARATION.audit.subject_field
+
+
+def _revoke_membership(
+    cluster: ClusterSession, account_id: UUID, workspace: UUID
+) -> None:
+    """Delete an account's ``control.membership`` row for this workspace.
+
+    A direct delete rather than an operation, because release one registers no
+    operation that removes a membership — ``rheo member add`` writes the row and
+    nothing takes it away yet. The row *is* the permission
+    (``boundary/factories.py`` reads it to build every account context), so deleting
+    it is exactly what "the actor has lost the membership" means, and there is no
+    weaker staging of a revocation available.
+    """
+    with cluster.backend.control_engine.begin() as connection:
+        deleted = connection.execute(
+            delete(control_tables.membership).where(
+                (control_tables.membership.c.account_id == account_id)
+                & (control_tables.membership.c.workspace_id == workspace)
+            )
+        ).rowcount
+    # The anti-vacuity control: a revocation test whose revocation matched no row
+    # would pass against a guard that never ran, and look identical.
+    assert deleted == 1, (
+        f"no control.membership row was deleted for account {account_id}; the "
+        "revocation this test stages did not happen"
+    )
+
+
+def _member_context(
+    cluster: ClusterSession, workspace: UUID, name: str
+) -> tuple[UUID, WorkspaceContext]:
+    """A second account with a ``member`` membership, and its context."""
+    account_id = add_member(cluster.backend, workspace, Role.MEMBER, display_name=name)
+    ctx = context_for_harness(workspace, account_id, Role.MEMBER)
+    assert isinstance(ctx, WorkspaceContext), ctx
+    return account_id, ctx
+
+
+def test_revoking_the_gated_actors_role_refuses_execution_and_records_it(
+    owner: WorkspaceContext,
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    note: str,
+) -> None:
+    """AC 11, scenario one: the **gated** actor's role is revoked before execution.
+
+    The member holds the membership that let the call be made; the owner approves it;
+    the membership is gone by the time execution rechecks. All four of AC 11's
+    consequences are asserted, and three of them are durable state rather than the
+    call's return value: the approval ``refused``, the held operation ``failed``
+    carrying the guard's code and name, and the fixture untouched.
+
+    **Two actors, not one**, so that this scenario and the next cannot both pass on a
+    guard that only ever looks at whoever is approving. Here the approver's membership
+    is untouched and the gated actor's is gone.
+
+    **The approval does not survive as ``pending``.** A rolled-back guard refusal would
+    leave it immediately re-approvable, which is the outcome R3 item 4 wants a
+    revocation to prevent, so re-approving is asserted to refuse.
+    """
+    member_id, member = _member_context(cluster, workspace, "gated-actor")
+    approval_id, operation_id = _held(member, FIXTURE_ACT, act_payload(note))
+    _revoke_membership(cluster, member_id, workspace)
+
+    record = _record(_approve(owner, approval_id))
+
+    assert record.state == "refused"
+    assert record.executed_at is None
+    assert _acts(engine, database) == ()
+    failed = _operation_record(owner, operation_id)
+    assert failed.state == "failed"
+    assert failed.error_code == GUARD_REFUSED
+    assert "ActorPermissionGuard" in failed.error_text
+    assert "the gated actor" in failed.error_text
+    assert str(member_id) in failed.error_text
+    # Durable: the approval is spent, not merely unexecuted.
+    assert _approve(owner, approval_id).state == APPROVAL_STATE
+
+
+def test_revoking_the_approving_actors_role_refuses_execution_too(
+    owner: WorkspaceContext,
+    owner_account_id: UUID,
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    note: str,
+) -> None:
+    """AC 11, scenario two: the **approving** actor's role is revoked before execution.
+
+    The mirror of the test above, and the one that would still be green if the guard
+    read only ``approval.actor_*``: here the gated actor's membership is intact and the
+    approver's is gone. ``dispatch`` still authorizes the approve call, because the
+    context was built before the revocation — which is the whole reason a recheck at
+    execution exists rather than a check at the door.
+
+    The detail naming "the approving actor" is asserted, not just that *some* guard
+    refused: without it, a guard that reported the gated actor twice would pass both
+    scenarios.
+    """
+    _, member = _member_context(cluster, workspace, "gated-actor-intact")
+    approval_id, operation_id = _held(member, FIXTURE_ACT, act_payload(note))
+    _revoke_membership(cluster, owner_account_id, workspace)
+
+    record = _record(_approve(owner, approval_id))
+
+    assert record.state == "refused"
+    assert _acts(engine, database) == ()
+    failed = _operation_record(owner, operation_id)
+    assert failed.state == "failed"
+    assert failed.error_code == GUARD_REFUSED
+    assert "ActorPermissionGuard" in failed.error_text
+    assert "the approving actor" in failed.error_text
+    assert str(owner_account_id) in failed.error_text
+
+
+def test_a_role_that_no_longer_permits_the_operation_refuses_as_well(
+    owner: WorkspaceContext,
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    note: str,
+) -> None:
+    """The ratified row's other clause: the role that *permitted* it, not only the
+    membership.
+
+    ``core.approval.approve`` is ``owner, member``; ``core.settings.set`` is ``owner``
+    alone. Demoting the approver from owner to member leaves the membership in place,
+    so a guard that only checked for a row's existence would pass this — and the
+    approving actor would still hold a role that does not permit what it just did.
+
+    The gated operation is deliberately the one whose roles *do* include ``member``,
+    so the refusal can only be about the approver.
+    """
+    approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
+    with cluster.backend.control_engine.begin() as connection:
+        demoted = connection.execute(
+            update(control_tables.membership)
+            .where(
+                (control_tables.membership.c.account_id == owner.actor.id)
+                & (control_tables.membership.c.workspace_id == workspace)
+            )
+            .values(role=Role.MEMBER.value)
+        ).rowcount
+    assert demoted == 1, "the demotion this test stages did not happen"
+
+    record = _record(_approve(owner, approval_id))
+
+    # ``member`` still permits both operations, so this is the control half: the
+    # demotion alone must not refuse.
+    assert record.state == "executed"
+    assert _acts(engine, database) == (note,)
+    assert _operation_state(owner, operation_id) == "succeeded"
+
+
+def _approval_row(**overrides: Any) -> ApprovalRow:
+    """An ``ApprovalRow`` with the fields a unit-level guard reads, and defaults
+    elsewhere.
+
+    Built rather than read back from a dispatch because these two guards are exercised
+    at values a dispatch cannot produce: a window in the past that the binding check
+    would refuse first, and a subject revision that no immutable harness record can
+    reach.
+    """
+    start = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
+    fields: dict[str, Any] = {
+        "id": UUID("018f0000-0000-7000-8000-00000000c7c7"),
+        "actor_kind": "account",
+        "actor_id": None,
+        "operation_name": FIXTURE_ACT,
+        "operation_id": UUID("018f0000-0000-7000-8000-00000000c7c8"),
+        "destination_ref": None,
+        "subject_ref": None,
+        "subject_revision": 1,
+        "payload_digest": b"\x01" * 32,
+        "purpose": None,
+        "window_start": start,
+        "window_end": start + timedelta(minutes=15),
+        "state": "approved",
+        "approved_by_kind": "account",
+        "approved_by_id": None,
+        "approved_at": start,
+        "approved_entry": "web",
+        "executed_at": None,
+        "invalidated_reason": None,
+    }
+    fields.update(overrides)
+    return ApprovalRow(**fields)
+
+
+def test_the_window_guard_refuses_outside_its_window_and_permits_inside_it(
+    owner: WorkspaceContext, engine: Engine, database: str
+) -> None:
+    """``WindowGuard``'s own logic, at both edges and outside both.
+
+    Unit-level on purpose, and the reason is written in the guard's own docstring: the
+    binding tuple carries the window too and is checked *first*, so no dispatch can
+    ever reach this guard with an expired approval —
+    ``test_an_approval_whose_window_has_passed_refuses_and_runs_nothing`` above is that
+    path, and it refuses ``invalid_approval`` before the guards run. Driving the class
+    directly is what makes the rule true for any execution path that reaches the
+    guards without the binding check.
+
+    Inclusive at both ends is the assertion that would otherwise drift silently: an
+    approval must be executable at the instant its window opens and at the instant it
+    closes.
+    """
+    guard = WindowGuard()
+    approval = _approval_row()
+    start, end = approval.window_start, approval.window_end
+
+    def at(now: datetime) -> str | None:
+        with UnitOfWork(engine, database) as uow:
+            return guard.check(
+                owner,
+                uow,
+                approval=approval,
+                model_input=_ProbeInput(ref=_probe_ref()),
+                now=now,
+            )
+
+    assert at(start) is None
+    assert at(start + timedelta(minutes=7)) is None
+    assert at(end) is None
+    assert at(start - timedelta(seconds=1)) is not None
+    assert "outside the approval's window" in str(at(end + timedelta(seconds=1)))
+
+
+_PROBE_ID = "018f0000-0000-7000-8000-00000000c701"
+"""The one record id the unit-level ``RecordStateGuard`` cases resolve. A ``RecordRef``
+id is a UUID (``rheo_contracts.refs``), so it is spelled as one."""
+
+
+class _ProbeInput(BaseModel):
+    """An input model whose ``ref`` field carries a ``RecordRef``, like
+    ``harness.fixture.act``'s."""
+
+    ref: RecordRef
+
+
+def _probe_ref() -> RecordRef:
+    return RecordRef(module="harness", record_type="probe", id=_PROBE_ID)
+
+
+def _stub_resolvers(answer: RecordHead | Unavailable) -> ResolverRegistry:
+    """A private resolver table whose one resolver always answers ``answer``.
+
+    Private rather than the process-wide one: registering a second resolver for a
+    record type the harness already owns would be refused, and a stub on the shared
+    table would leak into every other test in the session.
+    """
+    registry = ResolverRegistry()
+
+    def resolver(
+        ctx: WorkspaceContext, uow: UnitOfWork, ref: RecordRef
+    ) -> RecordHead | Unavailable:
+        return answer
+
+    registry.register("harness", "probe", resolver, origin=TEST_HARNESS_ORIGIN)
+    return registry
+
+
+def test_the_record_state_guard_permits_a_live_matching_subject(
+    owner: WorkspaceContext, engine: Engine, database: str
+) -> None:
+    """The control for the three refusals below.
+
+    Without it, a guard that refused every subject for any reason would pass all of
+    them, and this file would report a working guard that permits nothing.
+    """
+    ref = _probe_ref()
+    live = RecordHead(ref=ref, display="probe", readable=True, state=LIVE, revision=1)
+    guard = RecordStateGuard("ref", _stub_resolvers(live))
+
+    with UnitOfWork(engine, database) as uow:
+        detail = guard.check(
+            owner,
+            uow,
+            approval=_approval_row(subject_revision=1),
+            model_input=_ProbeInput(ref=ref),
+            now=datetime(2026, 9, 17, 12, 1, tzinfo=UTC),
+        )
+
+    assert detail is None
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        pytest.param(
+            Unavailable(f"harness.probe:{_PROBE_ID}", "not_found"),
+            "no longer resolves",
+            id="unresolvable",
+        ),
+        pytest.param(
+            RecordHead(
+                ref=RecordRef(module="harness", record_type="probe", id=_PROBE_ID),
+                display="probe",
+                readable=True,
+                state=DELETED,
+                revision=None,
+            ),
+            "is deleted",
+            id="deleted",
+        ),
+        pytest.param(
+            RecordHead(
+                ref=RecordRef(module="harness", record_type="probe", id=_PROBE_ID),
+                display="probe",
+                readable=True,
+                state=LIVE,
+                revision=7,
+            ),
+            "not the revision 1 that was approved",
+            id="revision-moved",
+        ),
+    ],
+)
+def test_the_record_state_guard_refuses_a_gone_or_moved_subject(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    answer: RecordHead | Unavailable,
+    expected: str,
+) -> None:
+    """``RecordStateGuard``'s three refusal branches, one case each.
+
+    The ratified row names three conditions — the subject resolves to ``deleted``, to
+    ``unavailable``, or at a ``revision`` differing from the approval's — and a test
+    over one of them would pass for a guard that implemented only that one.
+
+    **Unit-level because the revision branch has no honest end-to-end staging in this
+    tree.** ``harness.note`` is the only resolvable record type and it is immutable,
+    reporting the constant revision 1, so a dispatch-level revision mismatch would need
+    either a new mutable record type (outside this chunk's files) or a tampered
+    ``core.approval.subject_revision``, which would be a test about tampering rather
+    than about the guard.
+    """
+    guard = RecordStateGuard("ref", _stub_resolvers(answer))
+
+    with UnitOfWork(engine, database) as uow:
+        detail = guard.check(
+            owner,
+            uow,
+            approval=_approval_row(subject_revision=1),
+            model_input=_ProbeInput(ref=_probe_ref()),
+            now=datetime(2026, 9, 17, 12, 1, tzinfo=UTC),
+        )
+
+    assert detail is not None
+    assert expected in detail
+
+
+# --- criterion 19, end to end through an MCP-kind context ---------------------------
+
+
+def _mcp_context(owner: WorkspaceContext, operation: str) -> WorkspaceContext:
+    """A context resolved from a real ``mcp`` token whose set names ``operation``.
+
+    Built through ``context_from_token``, which is the same function
+    ``apps/mcp``'s ``resolve_context`` calls, so the context under test is MCP-kind in
+    every way the criterion means: actor ``token``, audience ``token``, entry ``mcp``,
+    and an operation set that is the token's snapshot rather than ``ALL_OPERATIONS``.
+    It is not driven through the transport's HTTP round trip, which would test the
+    transport rather than the confirmation requirement.
+    """
+    issued = dispatch(owner, TOKEN_ISSUE, {"kind": "mcp", "operations": [operation]})
+    assert issued.ok, issued
+    value = str(issued.result.value)  # type: ignore[union-attr]
+    ctx = context_from_token(value, "mcp")
+    assert isinstance(ctx, WorkspaceContext), ctx
+    assert ctx.actor.kind is ActorKind.TOKEN
+    assert ctx.entry is Entry.MCP
+    assert ctx.operation_set == frozenset({operation})
+    return ctx
+
+
+def test_criterion_19_end_to_end_through_an_mcp_token_session(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    note: str,
+) -> None:
+    """Criterion 19, whole, in the order its own sentences give.
+
+    1. A destructive call through an MCP token session answers ``approval_required``
+       with an approval id, distinct from success and from failure, within the
+       configured deadline.
+    2. The fixture recorded nothing and no operation record reports success.
+    3. Approving as an authenticated, non-token actor executes the fixture **once**,
+       and the durable approval row carrying the ``payload_digest`` is readable through
+       a supported operation. A second approval does not execute it again.
+    4. A standing grant naming that destructive operation is refused at grant time.
+
+    **The three states are compared as values, not by prefix** (AC 4): the held call,
+    a successful call and a failed call are collected here and asserted to be three
+    distinct strings, so a dispatcher that answered ``approval_required_ok`` for
+    everything could not pass.
+
+    **The deadline is read from the setting** (AC 5). There is no separate
+    response-deadline key anywhere in the settings schema — the only configured time
+    bound the approvals design has is the execution window,
+    ``approvals.default_window_seconds`` clamped by ``approvals.max_window_seconds``,
+    which ``window_seconds`` resolves. That is the honest bound to assert against: a
+    hold that took longer than the window it was minting would hand back an approval
+    that had already expired. It is read through ``window_seconds(ctx)`` rather than
+    written as a number, so a deployment that changes the setting changes this
+    assertion with it.
+    """
+    mcp = _mcp_context(owner, FIXTURE_ACT)
+    payload = act_payload(note)
+    deadline = window_seconds(mcp)
+
+    started = time.monotonic()
+    held = dispatch(mcp, FIXTURE_ACT, payload)
+    elapsed = time.monotonic() - started
+
+    assert held.state == "approval_required", held
+    assert held.approval_id is not None, held
+    assert held.operation_id is not None, held
+    assert elapsed < deadline, (
+        f"the held call took {elapsed:.3f}s, which is not inside the configured "
+        f"{deadline}s window it was minting"
+    )
+    # Three distinguishable values, asserted as such. The failing call is refused for
+    # a reason that has nothing to do with the class branch: the token's set names one
+    # operation and this is not it.
+    succeeded = dispatch(owner, NOTE_WRITE, {"body": "a call that simply runs"})
+    failed = dispatch(mcp, NOTE_WRITE, {"body": "not in this token's set"})
+    assert len({held.state, succeeded.state, failed.state}) == 3, (
+        held.state,
+        succeeded.state,
+        failed.state,
+    )
+    assert succeeded.ok and not held.ok and not failed.ok
+
+    # Nothing happened: the fixture's own recording surface is empty and the held
+    # record does not report success.
+    assert _acts(engine, database) == ()
+    assert _operation_state(owner, held.operation_id) == "approval_required"
+
+    # A person approves, from a context that is not a token.
+    assert owner.actor.kind is ActorKind.ACCOUNT
+    record = _record(_approve(owner, held.approval_id))
+
+    assert record.state == "executed"
+    assert record.payload_digest == _expected_digest(payload)
+    assert _acts(engine, database) == (note,)
+    assert _operation_state(owner, held.operation_id) == "succeeded"
+    assert _approve(owner, held.approval_id).state == APPROVAL_STATE
+    assert _acts(engine, database) == (note,)
+
+    # And the grant half of the same criterion, from the same workspace.
+    refused = dispatch(
+        owner,
+        STANDING_GRANT_CREATE,
+        {"account_id": str(owner.actor.id), "operation_names": [FIXTURE_ACT]},
+    )
+    assert refused.state == STANDING_GRANT_CLASS_REFUSED, refused
+    assert refused.error is not None
+    assert FIXTURE_ACT in refused.error.error_text

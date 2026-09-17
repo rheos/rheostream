@@ -55,7 +55,12 @@ from harness.registry import (
 from harness.settings_keys import HARNESS_MEMBER
 from pydantic import BaseModel
 from rheo_contracts import AuditSpec, RecordRef, Role, SafetyClass, WorkspaceContext
-from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE
+from rheo_core.approvals import (
+    APPROVAL_APPROVE,
+    APPROVAL_REFUSE,
+    STANDING_GRANT_CREATE,
+    STANDING_GRANT_REVOKE,
+)
 from rheo_core.audit import (
     AUDIT_FAILED,
     AUDIT_LIST,
@@ -85,7 +90,11 @@ from rheo_core.operations import (
     register_core_operations,
 )
 from rheo_core.operations.audit_paths import check_audit_paths
-from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
+from rheo_core.operations.core_ops import (
+    TOKEN_ISSUE,
+    TOKEN_REVOKE,
+    WORKSPACE_STATUS,
+)
 from rheo_core.operations.operation_ops import OPERATION_RESOLVE
 from rheo_core.operations.records import AUDIENCE_NONE, mark_unresolved, mint
 from rheo_core.settings import TEST_HARNESS_ORIGIN
@@ -104,7 +113,7 @@ TOKEN_DAYS_CLI = "identity.token_max_days.cli"
 
 NOTE = "the body an audited dispatch writes"
 
-THE_TWELVE = frozenset(
+THE_FOURTEEN = frozenset(
     {
         SETTINGS_SET,
         SETTINGS_SET_MEMBER,
@@ -113,6 +122,8 @@ THE_TWELVE = frozenset(
         OPERATION_RESOLVE,
         APPROVAL_APPROVE,
         APPROVAL_REFUSE,
+        STANDING_GRANT_CREATE,
+        STANDING_GRANT_REVOKE,
         NOTE_WRITE,
         NOTE_EXPLODE,
         NOTE_SCHEDULE,
@@ -120,18 +131,20 @@ THE_TWELVE = frozenset(
         SINK_SEND,
     }
 )
-"""Every registered operation above the read class at the end of run 0c3's C6: seven
+"""Every registered operation above the read class at the end of run 0c3's C7: nine
 core and five harness (test profile only).
 
-It was eight at the end of run 0c2. C6 adds ``core.approval.approve`` and
-``core.approval.refuse`` (both ``MUTATE``) and the two upper-class harness fixtures —
-``harness.fixture.act`` (``DESTRUCTIVE``) and ``harness.sink.send`` (``EXTERNAL``),
-the first operations of any class above ``MUTATE`` in the tree.
+It was eight at the end of run 0c2 and twelve at the end of C6. C7 adds
+``core.standing_grant.create`` and ``core.standing_grant.revoke``, both ``MUTATE``.
+C6 had added ``core.approval.approve`` and ``core.approval.refuse`` (both ``MUTATE``)
+and the two upper-class harness fixtures — ``harness.fixture.act`` (``DESTRUCTIVE``)
+and ``harness.sink.send`` (``EXTERNAL``), the first operations of any class above
+``MUTATE`` in the tree.
 
 **A literal, and the registry-derived set is compared against it**, not the other way
 round. Derived alone, the assertion would equal whatever the registry happened to hold
 and could not fail — an operation that lost its ``MUTATE`` class would match its own
-mistake. The count is asserted as well as the membership, so a thirteenth operation
+mistake. The count is asserted as well as the membership, so a fifteenth operation
 added later fails here loudly rather than being silently left out of the coverage
 below."""
 
@@ -287,14 +300,14 @@ def _commit_from_the_handler(
 # --- AC 26: every registered mutating operation is covered ----------------------------
 
 
-def test_the_mutating_set_derived_from_the_registry_is_the_declared_twelve(
+def test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen(
     private_registry: OperationRegistry,
 ) -> None:
-    """AC 26's first half: the set under test comes from the registry, and is twelve.
+    """AC 26's first half: the set under test comes from the registry, and is fourteen.
 
     Derived by safety class rather than by name, so an operation added later is in the
     set whether or not anybody remembered this file — and then fails the comparison
-    against :data:`THE_TWELVE`, which is the loud failure AC 26 asks for rather than a
+    against :data:`THE_FOURTEEN`, which is the loud failure AC 26 asks for rather than a
     silent gap in the coverage below.
 
     ``is not SafetyClass.READ`` is what makes this cover the two upper-class fixtures
@@ -307,8 +320,8 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_twelve(
         if (operation := private_registry.lookup(name)) is not None
         and operation.declaration.safety_class is not SafetyClass.READ
     }
-    assert mutating == set(THE_TWELVE), sorted(mutating)
-    assert len(mutating) == 12, sorted(mutating)
+    assert mutating == set(THE_FOURTEEN), sorted(mutating)
+    assert len(mutating) == 14, sorted(mutating)
 
 
 def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
@@ -333,6 +346,11 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
     The two approval operations are dispatched against the approvals the two fixtures'
     own holds produced, which is the only way to reach them: an approval id has to come
     from a gated call.
+
+    The two standing-grant operations chain the same way — ``revoke`` needs an id that
+    only ``create`` can mint — and ``create`` names a **read** operation, because a
+    grant naming any of the three upper classes is refused at grant time and would
+    write no row and no audit record at all.
     """
     before = _ids(owner)
     unresolved = _unresolved_operation(engine, database)
@@ -350,8 +368,19 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
         owner, SINK_SEND, {"destination": "party:one", "message": NOTE}
     )
     assert held_send.approval_id is not None, held_send
+    granted = dispatch(
+        owner,
+        STANDING_GRANT_CREATE,
+        {"account_id": str(owner_account_id), "operation_names": [WORKSPACE_STATUS]},
+    )
+    assert granted.ok, granted
+    grant_id = granted.result.grant_id  # type: ignore[union-attr]
 
     dispatched: dict[str, object] = {
+        STANDING_GRANT_CREATE: granted,
+        STANDING_GRANT_REVOKE: dispatch(
+            owner, STANDING_GRANT_REVOKE, {"grant_id": str(grant_id)}
+        ),
         FIXTURE_ACT: held_act,
         SINK_SEND: held_send,
         APPROVAL_APPROVE: dispatch(
@@ -383,7 +412,7 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
     assert member is not None
 
     audited = {record.operation_name for record in _added(owner, before)}
-    assert audited == set(THE_TWELVE), sorted(audited)
+    assert audited == set(THE_FOURTEEN), sorted(audited)
     # Every dispatch that was supposed to run did: a coverage assertion that passed
     # because most operations refused for an unrelated reason would prove nothing.
     for name, outcome in dispatched.items():
@@ -982,7 +1011,7 @@ def test_check_audit_paths_names_every_offender(
         check_audit_paths(private_registry)
 
     message = str(excinfo.value)
-    for name in THE_TWELVE:
+    for name in THE_FOURTEEN:
         assert name in message, message
     assert AUDIT_LIST not in message, message
     assert CORE_MODULE_ID in message and HARNESS_MODULE_ID in message, message

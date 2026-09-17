@@ -797,6 +797,132 @@
         "title": "SettingWritten",
         "type": "object"
       },
+      "StandingGrantCreate": {
+        "description": "Who the grant is for, and what it covers.\n\n**The field is ``account_id``, not ``actor_id``, and it has to be.** ``actor_id``\nis one of ``RESERVED_INPUT_FIELDS`` (``rheo_contracts.manifest``) and a declaration\nnaming it is refused at registration \u2014 criterion 6's rule that workspace, actor and\nstorage identity come from the context only. ``core.standing_grant.create`` is the\nrare operation that legitimately names an account *other* than the caller's, and\n``core.token.issue`` already ships the spelling for that case: ``account_id``. So\nthe stored ``core.standing_grant.actor_id`` column is filled from an input field\ncalled ``account_id``, and the stored ``actor_kind`` is ``account``, which is the\nonly actor kind a caller can name by id here.\n\n``operation_names`` carries at least one name \u2014 a grant covering nothing is a row\nthat says nothing, and pydantic refusing it costs no new refusal vocabulary.",
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "title": "Account Id",
+            "type": "string"
+          },
+          "operation_names": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Operation Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "account_id",
+          "operation_names"
+        ],
+        "title": "StandingGrantCreate",
+        "type": "object"
+      },
+      "StandingGrantRecord": {
+        "description": "One standing grant as these operations publish it.\n\n:class:`~rheo_core.approvals.grants.GrantRow` field for field, with that row's\n``id`` published as ``grant_id`` \u2014 the renaming ``ApprovalRecord`` and\n``OperationRecord`` already make for the same reason \u2014 plus ``covers``.\n\n**``covers`` is the published answer to \"what does this grant cover now\".** It is\nthe grant's operation list while the grant is live and empty once it is revoked or\nexpired, so a caller reads coverage from a supported operation instead of reading\n``revoked_at`` and inferring what a timestamp implies. Both fields are published:\n``operation_names`` is the record of what was granted, which a revocation does not\nerase, and ``covers`` is what it is worth today.",
+        "properties": {
+          "actor_id": {
+            "format": "uuid",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actor_kind": {
+            "title": "Actor Kind",
+            "type": "string"
+          },
+          "covers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Covers",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "grant_id": {
+            "format": "uuid",
+            "title": "Grant Id",
+            "type": "string"
+          },
+          "granted_by_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Granted By Id"
+          },
+          "operation_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Operation Names",
+            "type": "array"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          }
+        },
+        "required": [
+          "grant_id",
+          "actor_kind",
+          "actor_id",
+          "granted_by_id",
+          "created_at",
+          "expires_at",
+          "revoked_at",
+          "operation_names",
+          "covers"
+        ],
+        "title": "StandingGrantRecord",
+        "type": "object"
+      },
+      "StandingGrantRef": {
+        "description": "Which grant to act on.",
+        "properties": {
+          "grant_id": {
+            "format": "uuid",
+            "title": "Grant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grant_id"
+        ],
+        "title": "StandingGrantRef",
+        "type": "object"
+      },
       "TokenIssueInput": {
         "description": "Exactly one of ``set_name``/``operations``. ``account_id`` is required for\nan operator issuer (who has no account of their own) and ignored for a\nsession issuer (whose own account is always the target -- never a payload\nfield, the same reasoning ``core.settings.set_member`` applies to its own\nactor).",
         "properties": {
@@ -1476,6 +1602,132 @@
           }
         },
         "summary": "core.settings.set_member (mutate)"
+      }
+    },
+    "/api/v1/operations/core.standing_grant.create": {
+      "post": {
+        "operationId": "core.standing_grant.create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandingGrantCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/StandingGrantRecord"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.standing_grant.create (mutate)"
+      }
+    },
+    "/api/v1/operations/core.standing_grant.revoke": {
+      "post": {
+        "operationId": "core.standing_grant.revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandingGrantRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/StandingGrantRecord"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.standing_grant.revoke (mutate)"
       }
     },
     "/api/v1/operations/core.token.issue": {

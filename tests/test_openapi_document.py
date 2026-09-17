@@ -24,7 +24,12 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
-from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE
+from rheo_core.approvals import (
+    APPROVAL_APPROVE,
+    APPROVAL_REFUSE,
+    STANDING_GRANT_CREATE,
+    STANDING_GRANT_REVOKE,
+)
 from rheo_core.operations import (
     GENERATED_BANNER,
     OPERATION_GET,
@@ -120,9 +125,11 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             # 0c2's C5 adds core.audit.list. Listed in registration order, the
             # order CORE_OPERATIONS itself holds; the assertion sorts both sides.
             AUDIT_LIST,
-            # 0c3's C6, registered last and from another package.
+            # 0c3's C6 and C7, registered last and from another package.
             APPROVAL_APPROVE,
             APPROVAL_REFUSE,
+            STANDING_GRANT_CREATE,
+            STANDING_GRANT_REVOKE,
         )
     )
 

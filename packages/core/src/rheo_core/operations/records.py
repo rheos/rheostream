@@ -22,12 +22,14 @@ place to keep in step, and would hide the constraint from the test that proves i
 being open** (``pending`` or ``running``) — :func:`finish_succeeded`,
 :func:`finish_failed`, :func:`finish_cancelled` and :func:`mark_unresolved`, plus
 :func:`mark_running` and :func:`mark_approval_required`, neither of which is terminal
-but both of which must refuse to drag a finished record back. Three writes are
+but both of which must refuse to drag a finished record back. Four writes are
 predicated differently and each says so in its own docstring: :func:`resolve` on
-``unresolved`` alone, and :func:`finish_held_succeeded` and
-:func:`finish_held_cancelled` on ``approval_required`` alone — a held record is
-exactly what ``_open`` excludes, because a call waiting for a person is not work in
-flight. Each returns whether it applied. A
+``unresolved`` alone, and :func:`finish_held_succeeded`,
+:func:`finish_held_cancelled` and :func:`finish_held_failed` on ``approval_required``
+alone — a held record is exactly what ``_open`` excludes, because a call waiting for a
+person is not work in flight, and those three are the three ways such a call can end:
+its approval executed, a person refused it, or an execution guard stopped it. Each
+returns whether it applied. A
 terminal record is terminal: a second write must not reopen it, move it between
 terminal states, or overwrite the outcome the first one recorded. The predicate is the
 same shape as ``work/jobs.py``'s ``_held``, and for the same reason — a conditional
@@ -350,6 +352,39 @@ def finish_held_cancelled(
     means everywhere else in this module.
     """
     return _apply(conn, _held(operation_id), state=CANCELLED, terminal_at=now)
+
+
+def finish_held_failed(
+    conn: Connection,
+    *,
+    operation_id: UUID,
+    now: datetime,
+    error_code: str,
+    error_text: str,
+) -> bool:
+    """End a held record ``failed`` because an execution guard refused it. Reports
+    whether it applied.
+
+    ``failed`` rather than ``cancelled``: nobody decided the call should not happen —
+    it was released and then stopped, which is the difference
+    :func:`finish_held_cancelled`'s own docstring draws. ``confirmation-and-safety.md``
+    § Execution guards fixes both halves of this write: "A refused guard leaves the
+    external action ``refused``, the operation ``failed`` **with the guard's code**",
+    so the code and the text are where the guard is named.
+
+    Predicated on :func:`_held` rather than on :func:`_open`, which is why
+    :func:`finish_failed` could not serve: that predicate deliberately excludes a
+    record waiting for an approval, so that the dispatcher's own failure path cannot
+    reach one.
+    """
+    return _apply(
+        conn,
+        _held(operation_id),
+        state=FAILED,
+        error_code=error_code,
+        error_text=error_text,
+        terminal_at=now,
+    )
 
 
 def finish_succeeded(

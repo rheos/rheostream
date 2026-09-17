@@ -10,10 +10,12 @@ first revision creates exactly these six and is never edited afterwards.
 (``outbox_event``, ``event_delivery``, ``consumer_processed``, ``job``, ``schedule``,
 ``operation``, ``audit_record``) are declared in ``work_tables.py`` on their own
 ``MetaData`` and created by revision ``0002_durable_work``, never here. The approval
-family (``approval``, ``approval_payload``, ``standing_grant``,
-``standing_grant_operation``, ``external_action``) belongs to a later chain step that
-owns it, as do the runtime, deletion and export tables. A seventh table in this module
-is a boundary violation, not a head start.
+family is the same shape one step further on: ``approval`` and ``approval_payload``
+are ``approvals/tables.py``'s and are created by ``0003_approvals``, and
+``standing_grant`` and ``standing_grant_operation`` are ``approvals/grant_tables.py``'s
+and are created by ``0004_standing_grants``. ``external_action`` still has no chain
+step, as do the runtime, deletion and export tables. A seventh table in this module is
+a boundary violation, not a head start.
 """
 
 from typing import Final

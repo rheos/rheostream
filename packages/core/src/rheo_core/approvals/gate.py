@@ -11,10 +11,13 @@ Two functions, and between them they are the whole of what
 2. :func:`execute_approved` — ``core.approval.approve`` has moved the row to
    ``approved`` in its own transaction and calls this **inside that same
    transaction**: the binding tuple is rechecked against the payload about to run, the
-   guard seam runs, the original handler runs exactly once, the approval becomes
+   guards run, the original handler runs exactly once, the approval becomes
    ``executed``, the held operation record is terminalised and the gated operation's
    own audit row is written. The approval's transition and the effect commit together
-   or neither does.
+   or neither does. A guard that refuses replaces all of that with two writes — the
+   approval ``refused``, the held record ``failed`` with the guard's code — which
+   commit for the same reason: they are what the refusal *left behind*, and a rollback
+   would leave nothing behind at all.
 
 **Everything from ``rheo_core.operations`` is imported at module level here, by
 submodule and never through the package.** ``rheo_core.refs.resolver`` — which this
@@ -51,12 +54,13 @@ from rheo_core.approvals.binding import (
     payload_bytes,
     payload_digest,
 )
-from rheo_core.approvals.guards import run_guards
+from rheo_core.approvals.guards import GuardRefusal, core_guards_for, run_guards
 from rheo_core.audit import AUDIT_SUCCEEDED
 from rheo_core.boundary.context import Refusal
 from rheo_core.operations.records import (
     AUDIENCE_NONE,
     HANDLER_RETURNED,
+    finish_held_failed,
     finish_held_succeeded,
     mark_approval_required,
     mint,
@@ -82,13 +86,21 @@ at the point of confirmation, and an approval whose stored payload is not the pa
 would be a confirmation of something else."""
 
 GUARD_REFUSED: Final = "guard_refused"
-"""The refusal an execution guard produces, naming the guard in its detail.
+"""The code an execution guard's refusal is recorded under, naming the guard in its
+text.
 
-Unreachable in this chunk — :data:`~rheo_core.approvals.guards.CORE_GUARDS` is empty —
-and declared here anyway because it is the seam's own contract: the chunk that writes
-the guards writes no new refusal vocabulary, and it is also what writes the approval
-``refused`` with the guard named, which this chunk deliberately does not do for a
-refusal that cannot happen."""
+**It is an ``error_code`` on the held operation record, not a state a caller is
+handed.** ``confirmation-and-safety.md`` § Execution guards fixes what a refused guard
+leaves behind — the approval ``refused``, "the operation ``failed`` with the guard's
+code", the effect untouched — and all three of those are *durable*. They can only be
+durable if the transaction that discovers the refusal commits, so
+:func:`execute_approved` records them and returns rather than raising: a raise would
+reach ``dispatch``'s rollback and leave the approval ``pending`` and the record still
+waiting, which is the state R3 item 4 exists to end. What the caller of
+``core.approval.approve`` gets instead is its published
+:class:`~rheo_core.approvals.operations.ApprovalRecord`, reading ``state = 'refused'``
+— the approve operation genuinely succeeded at deciding and recording, and the
+decision it recorded is that the effect may not run."""
 
 AuditWriter = Callable[[UnitOfWork, UUID], None]
 """What :func:`hold_for_approval` is handed to write the held call's audit row.
@@ -240,6 +252,45 @@ def hold_for_approval(
     return HeldCall(approval_id=approval_id, operation_id=operation_id)
 
 
+def _record_guard_refusal(
+    uow: UnitOfWork,
+    *,
+    approval: records.ApprovalRow,
+    refusal: GuardRefusal,
+    now: datetime,
+) -> GuardRefusal:
+    """Record a guard's refusal durably, in the transaction that found it.
+
+    Two writes and no effect: the approval leaves ``approved`` for ``refused``, and the
+    held operation record leaves ``approval_required`` for ``failed`` carrying
+    :data:`GUARD_REFUSED` and the guard's own name. The handler has not run — the
+    guards are checked before it — so "the fixture untouched" needs nothing undone.
+
+    **Both writes land in the caller's transaction and are meant to commit**, which is
+    why this returns the refusal instead of raising it. See :data:`GUARD_REFUSED`. A
+    second connection could not do this job: the approve transaction holds the
+    approval's row lock from its own ``approved`` write, so an independent writer would
+    block on it while it waited for that same transaction to end.
+
+    Neither rowcount is checked, and that is deliberate rather than an omission. The
+    ``approved`` transition was made in this transaction moments ago and no other
+    connection can see the row to move it, so a zero here is unreachable; raising on
+    one would trade a recorded refusal for a rollback, which is the exact outcome this
+    function exists to prevent. The states are read back by the operation's published
+    record either way, so a write that somehow did not apply is visible to the caller
+    rather than asserted here.
+    """
+    records.mark_guard_refused(uow.connection, approval_id=approval.id)
+    finish_held_failed(
+        uow.connection,
+        operation_id=approval.operation_id,
+        now=now,
+        error_code=GUARD_REFUSED,
+        error_text=f"{refusal.guard}: {refusal.detail}",
+    )
+    return refusal
+
+
 def execute_approved(
     ctx: WorkspaceContext,
     uow: UnitOfWork,
@@ -247,7 +298,7 @@ def execute_approved(
     approval: records.ApprovalRow,
     now: datetime,
     registry: OperationRegistry = REGISTRY,
-) -> BaseModel:
+) -> BaseModel | GuardRefusal:
     """Run the operation this approval was minted for, exactly once, and record it.
 
     Called by ``core.approval.approve``'s handler inside that operation's own
@@ -278,13 +329,22 @@ def execute_approved(
       process. A deployment that dropped a module between the hold and the approval.
     - ``invalid_approval`` — the snapshot is gone, no longer validates, or the
       binding tuple does not match what is about to run (criterion 60).
-    - ``guard_refused`` — an execution guard refused. Unreachable in this chunk.
     - ``output_invalid`` — the handler returned something that is not its declared
       output type; the same check ``dispatch()`` makes on an ordinary call, made here
       because this call does not go back through ``dispatch()``.
     - ``audit_sink_missing`` — the gated operation's module has no installed sink, so
       its row could not be written. The hold refused the same way before minting
       anything, so reaching it here means the process's wiring changed in between.
+
+    **A guard refusal is the one outcome that does not raise.** It answers with the
+    :class:`~rheo_core.approvals.guards.GuardRefusal` after recording the approval
+    ``refused`` and the held record ``failed``, because those two states are required
+    to be durable and a raise would roll them back with everything else. See
+    :data:`GUARD_REFUSED` and :func:`_record_guard_refusal`. No audit row is written
+    for the refused execution: the gated operation never ran, and the audit row for
+    the held call — outcome ``refused``, written when the call was held — is already
+    the row that says this operation did not happen. The operation record carries the
+    guard's name for the reader who wants to know *why*.
     """
     operation = registry.lookup(approval.operation_name)
     if operation is None:
@@ -317,12 +377,21 @@ def execute_approved(
     if detail is not None:
         raise OperationRefused(INVALID_APPROVAL, detail)
     # After the binding check, before the effect: the position the ratified document
-    # fixes for the guards (R3 item 4). Nothing is registered, so this passes — and
-    # ``now`` is the same instant the binding was just judged against, so a guard and
-    # the window cannot disagree about when this execution happened.
-    refusal = run_guards(ctx, uow, approval=approval, model_input=model_input, now=now)
+    # fixes for the guards (R3 item 4). ``now`` is the same instant the binding was
+    # just judged against, so a guard and the window cannot disagree about when this
+    # execution happened. The set is derived from this declaration rather than taken
+    # whole, because ``RecordStateGuard`` attaches only to an operation whose input
+    # names a subject.
+    refusal = run_guards(
+        ctx,
+        uow,
+        approval=approval,
+        model_input=model_input,
+        now=now,
+        guards=core_guards_for(declaration),
+    )
     if refusal is not None:
-        raise OperationRefused(GUARD_REFUSED, f"{refusal.guard}: {refusal.detail}")
+        return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)
     output = operation.handler(
         ctx,
         HandlerUnitOfWork(uow, operation_id=approval.operation_id),

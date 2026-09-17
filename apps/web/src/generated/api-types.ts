@@ -140,6 +140,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.standing_grant.create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.standing_grant.create (mutate) */
+        post: operations["core.standing_grant.create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.standing_grant.revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.standing_grant.revoke (mutate) */
+        post: operations["core.standing_grant.revoke"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.token.issue": {
         parameters: {
             query?: never;
@@ -602,6 +636,87 @@ export interface components {
             value: boolean | number | string | string[];
         };
         /**
+         * StandingGrantCreate
+         * @description Who the grant is for, and what it covers.
+         *
+         *     **The field is ``account_id``, not ``actor_id``, and it has to be.** ``actor_id``
+         *     is one of ``RESERVED_INPUT_FIELDS`` (``rheo_contracts.manifest``) and a declaration
+         *     naming it is refused at registration — criterion 6's rule that workspace, actor and
+         *     storage identity come from the context only. ``core.standing_grant.create`` is the
+         *     rare operation that legitimately names an account *other* than the caller's, and
+         *     ``core.token.issue`` already ships the spelling for that case: ``account_id``. So
+         *     the stored ``core.standing_grant.actor_id`` column is filled from an input field
+         *     called ``account_id``, and the stored ``actor_kind`` is ``account``, which is the
+         *     only actor kind a caller can name by id here.
+         *
+         *     ``operation_names`` carries at least one name — a grant covering nothing is a row
+         *     that says nothing, and pydantic refusing it costs no new refusal vocabulary.
+         */
+        StandingGrantCreate: {
+            /**
+             * Account Id
+             * Format: uuid
+             */
+            account_id: string;
+            /** Operation Names */
+            operation_names: string[];
+        };
+        /**
+         * StandingGrantRecord
+         * @description One standing grant as these operations publish it.
+         *
+         *     :class:`~rheo_core.approvals.grants.GrantRow` field for field, with that row's
+         *     ``id`` published as ``grant_id`` — the renaming ``ApprovalRecord`` and
+         *     ``OperationRecord`` already make for the same reason — plus ``covers``.
+         *
+         *     **``covers`` is the published answer to "what does this grant cover now".** It is
+         *     the grant's operation list while the grant is live and empty once it is revoked or
+         *     expired, so a caller reads coverage from a supported operation instead of reading
+         *     ``revoked_at`` and inferring what a timestamp implies. Both fields are published:
+         *     ``operation_names`` is the record of what was granted, which a revocation does not
+         *     erase, and ``covers`` is what it is worth today.
+         */
+        StandingGrantRecord: {
+            /**
+             * Actor Id
+             * Format: uuid
+             */
+            actor_id: string;
+            /** Actor Kind */
+            actor_kind: string;
+            /** Covers */
+            covers: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Expires At */
+            expires_at: string | null;
+            /**
+             * Grant Id
+             * Format: uuid
+             */
+            grant_id: string;
+            /** Granted By Id */
+            granted_by_id: string | null;
+            /** Operation Names */
+            operation_names: string[];
+            /** Revoked At */
+            revoked_at: string | null;
+        };
+        /**
+         * StandingGrantRef
+         * @description Which grant to act on.
+         */
+        StandingGrantRef: {
+            /**
+             * Grant Id
+             * Format: uuid
+             */
+            grant_id: string;
+        };
+        /**
          * TokenIssueInput
          * @description Exactly one of ``set_name``/``operations``. ``account_id`` is required for
          *     an operator issuer (who has no account of their own) and ignored for a
@@ -955,6 +1070,72 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["SettingWritten"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.standing_grant.create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StandingGrantCreate"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["StandingGrantRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.standing_grant.revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StandingGrantRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["StandingGrantRecord"];
                         state: string;
                     };
                 };

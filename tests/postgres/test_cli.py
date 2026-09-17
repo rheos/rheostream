@@ -37,7 +37,12 @@ from harness.registry import NOTE_WRITE, register_harness
 from rheo_app_cli.main import main
 from rheo_app_core.main import app, lifespan
 from rheo_app_core.startup import run_startup
-from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE
+from rheo_core.approvals import (
+    APPROVAL_APPROVE,
+    APPROVAL_REFUSE,
+    STANDING_GRANT_CREATE,
+    STANDING_GRANT_REVOKE,
+)
 from rheo_core.audit import (
     CORE_AUDIT_SINK,
     install_sink,
@@ -331,14 +336,16 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now twelve: 0b1's three, 0b2's C8 adds core.token.issue and
+        # Sorted, and now fourteen: 0b1's three, 0b2's C8 adds core.token.issue and
         # core.token.revoke, 0c1's C3 adds core.work.failures, 0c2's C4 adds
-        # core.operation.get/list/resolve, 0c2's C5 adds core.audit.list, and 0c3's
-        # C6 adds core.approval.approve and core.approval.refuse. Sorted by the name
-        # string, so the two core.approval.* names lead ("approval" before "audit"),
-        # the three core.operation.* names follow core.audit.list, and
-        # core.work.failures lands immediately before core.workspace.status ("."
-        # sorts before "s").
+        # core.operation.get/list/resolve, 0c2's C5 adds core.audit.list, 0c3's
+        # C6 adds core.approval.approve and core.approval.refuse, and 0c3's C7 adds
+        # core.standing_grant.create and core.standing_grant.revoke. Sorted by the
+        # name string, so the two core.approval.* names lead ("approval" before
+        # "audit"), the three core.operation.* names follow core.audit.list, the two
+        # core.standing_grant.* names land between core.settings.set_member and
+        # core.token.issue, and core.work.failures lands immediately before
+        # core.workspace.status ("." sorts before "s").
         #
         # **Written out as literals on purpose.** Deriving this tuple from the
         # registry would make the assertion unfailable: an operation registered by
@@ -360,6 +367,8 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             OPERATION_RESOLVE,
             SETTINGS_SET,
             "core.settings.set_member",
+            STANDING_GRANT_CREATE,
+            STANDING_GRANT_REVOKE,
             TOKEN_ISSUE,
             TOKEN_REVOKE,
             WORK_FAILURES,

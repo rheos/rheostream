@@ -39,6 +39,12 @@ whose own row is the ``:105`` the cited range now reaches.
   — the one pair whose *declaration* is not in this module, because the import
   direction forbids it (see :func:`register_core_operations`); this module only
   registers them.
+- ``core.standing_grant.create`` / ``core.standing_grant.revoke`` — ``mutate``;
+  role ``owner`` (``module-contract.md``'s own row for the pair). Both are members
+  of ``rheo_core.tokens.policy.NON_TOKEN_ISSUABLE`` too, so a grant is always a web
+  session's act. Their declarations, models and handlers live in
+  ``rheo_core.approvals.grant_operations``, for the same import-direction reason the
+  approval pair's do; this module only registers them.
 - ``core.audit.list`` — ``read``; roles ``owner, operator``, ratified at
   ``module-contract.md:105``. The supported read of the audit record (run 0c2,
   C5). Its models and handler live in ``rheo_core.audit.operations``, beside the
@@ -453,7 +459,8 @@ def register_core_operations(
     ``role_not_permitted`` before its handler ever ran (mirroring
     ``WORKSPACE_STATUS_DECLARATION``'s own reason for declaring it).
 
-    **The two approval operations are imported here too, and for a second reason.**
+    **The two approval operations and the two standing-grant operations are imported
+    here too, and for a second reason.**
     ``rheo_core.approvals`` imports this package's submodules at module level —
     ``approvals/gate.py`` needs the operation-record repository, the registry and the
     refusal vocabulary — so the import must not run the other way while this module
@@ -472,6 +479,7 @@ def register_core_operations(
     the state ``check_audit_paths`` exists to refuse. ``install_sink`` is a no-op
     for the identical object, which is what lets this run twice in one process.
     """
+    from rheo_core.approvals.grant_operations import GRANT_OPERATIONS
     from rheo_core.approvals.operations import APPROVAL_OPERATIONS
     from rheo_core.tokens.issue import (
         TokenIssued,
@@ -514,4 +522,5 @@ def register_core_operations(
         for declaration, handler in CORE_OPERATIONS
         + token_operations
         + APPROVAL_OPERATIONS
+        + GRANT_OPERATIONS
     )
