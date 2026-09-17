@@ -851,7 +851,7 @@ negative case and is unreachable by a hunk on the `long_running` branch.
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record`
-- `pytest:tests/postgres/test_audit_dispatch.py::test_the_mutating_set_derived_from_the_registry_is_the_declared_twelve`
+- `pytest:tests/postgres/test_audit_dispatch.py::test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen`
 - `pytest:tests/postgres/test_audit_dispatch.py::test_the_success_row_names_the_actor_the_entry_and_the_request`
 - `pytest:tests/postgres/test_audit_dispatch.py::test_an_operation_above_mutate_is_audited_too`
 - `pytest:tests/postgres/test_context_routing.py::test_registering_a_non_read_operation_with_no_audit_spec_is_refused`
@@ -876,7 +876,7 @@ index 9296e2f..97e5124 100644
 ```
 
 **Cost:**
-- `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record` — first observed failure line: `E       AssertionError: ['core', 'harness']`, then `E       assert {'core', 'harness'} == {'core.approv...n.issue', ...}` with `'core'` and `'harness'` as the extra items in the left set and the twelve operation names in the right.
+- `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record` — first observed failure line: `E       AssertionError: ['core', 'harness']`, then `E       assert {'core', 'harness'} == {'core.approv....create', ...}` with `'core'` and `'harness'` as the extra items in the left set and the fourteen operation names in the right.
 - `pytest:tests/postgres/test_audit_dispatch.py::test_the_success_row_names_the_actor_the_entry_and_the_request` — first observed failure line: `E       AssertionError: assert 'core' == 'core.settings.set'`.
 - `pytest:tests/postgres/test_audit_dispatch.py::test_an_operation_above_mutate_is_audited_too` — first observed failure line: `E       AssertionError: assert 'harness' == 'harness.probe.destroy'`.
 
@@ -888,16 +888,17 @@ index 9296e2f..97e5124 100644
 **name the operation**, and the third requires one record per registered mutating kind, read
 through a supported operation (`core.audit.list`) rather than off the table. The hunk writes the
 module id where the operation name belongs, so every dispatch still produces a row, the row is
-still readable through `core.audit.list`, and the twelve distinct names collapse to two. The red
+still readable through `core.audit.list`, and the fourteen distinct names collapse to two. The red
 is therefore "the audit record does not identify what happened", which is the failure that would
 be hardest to notice in production: the rows are all there and the count is right.
 
 **Note on what the three reds do and do not span.** They are three different assertions in three
-different tests — a set comparison against `THE_TWELVE`, a single-row column check, and the
+different tests — a set comparison against `THE_FOURTEEN`, a single-row column check, and the
 above-`mutate` case — rather than one shared helper seen three times, so this row's `Cost` is
 three independent sightings, and each was re-run **individually** at re-capture rather than read
 off the aggregate. **Three** of the other listed demonstrators stayed green, and were
-read rather than assumed: `test_the_mutating_set_derived_from_the_registry_is_the_declared_twelve`
+read rather than assumed:
+`test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen`
 reads the registry, not the rows; `test_check_audit_paths_names_every_offender` and
 `test_a_missing_sink_refuses_the_call_and_writes_neither_effect_nor_row` are registration- and
 dispatch-time refusals that never reach a sink write.
@@ -909,23 +910,34 @@ re-capture ran it under this hunk: 5 passed, all five parametrised safety classe
 expected answer rather than a surprise — it is a *registration*-time refusal and this hunk edits
 a sink write — and it is recorded because "not executed" was a gap that a single command closed.
 
-**Note on the twelve-operation set and where its literal lives.**
-`test_the_mutating_set_derived_from_the_registry_is_the_declared_twelve` derives the set from the
-registry by safety class and compares it against `THE_TWELVE`
-(`tests/postgres/test_audit_dispatch.py:107-122`), a literal frozenset of the twelve names. It is
+**Note on the fourteen-operation set and where its literal lives.**
+`test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen` derives the set from the
+registry by safety class and compares it against `THE_FOURTEEN`, a literal frozenset of the
+fourteen names (resolve it by that constant name, not by a line number). It is
 listed as a demonstrator for the same reason criterion 6's second demonstrator is: it is the
 literal-list companion that catches a shrinking set, which a coverage assertion derived from the
 registry alone could not. Neither test is parametrised over the constant it tests.
 
-**Why this row was re-captured by C6, and why `State` is still `complete`.** Run 0c3's C6
-registered four more operations above the read class — `core.approval.approve` and
-`core.approval.refuse`, plus the two upper-class harness fixtures `harness.fixture.act` and
-`harness.sink.send` — so the set this row's coverage clause is *over* grew from eight to twelve,
-and the test that names it was renamed with its constant. The criterion itself is unchanged and
-still holds: every one of the twelve leaves a matching audit record, read through
-`core.audit.list`. **What changed is this row's evidence, not its verdict** — a renamed
-demonstrator id resolves to nothing, and two of the three `Cost` lines described an eight-name
-set. C6 re-ran the same hunk and re-captured all three lines and the aggregate.
+**Why this row was re-captured twice, by C6 and again by C7, and why `State` is still
+`complete`.** Run 0c3's C6 registered four more operations above the read class —
+`core.approval.approve` and `core.approval.refuse`, plus the two upper-class harness fixtures
+`harness.fixture.act` and `harness.sink.send` — growing the set this row's coverage clause is
+*over* from eight to twelve. C7 then registered `core.standing_grant.create` and
+`core.standing_grant.revoke`, growing it to fourteen. Each time the test that names the set was
+renamed with its constant, and a renamed demonstrator id resolves to nothing.
+
+The criterion itself is unchanged and still holds: every one of the fourteen leaves a matching
+audit record, read through `core.audit.list`. **What changed is this row's evidence, not its
+verdict.** C7 re-applied the same hunk on `ad4783d`, re-ran the file (13 failed, 10 passed — the
+same aggregate C6 recorded) and re-ran each reddened node **individually**. Two of the three
+`Cost` lines came back byte-identical; the first one's second fragment did not, because the
+right-hand set now sorts `'core.approv....create'` where it sorted `'core.approv...n.issue'`, and
+that fragment is what is corrected above.
+
+**The renamed demonstrator is green under this hunk, and that was run rather than assumed.**
+`test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen` reads the registry,
+not the audit rows, so a hunk that edits a sink write cannot reach it: 1 passed on its own at
+C7's re-capture. That is the same answer C6 recorded for the same reason.
 
 **One `Cost` line changed for a second reason, and it is recorded rather than smoothed over.**
 `test_an_operation_above_mutate_is_audited_too` used to dispatch a `DESTRUCTIVE` probe and assert
@@ -1541,3 +1553,123 @@ and one core subscription, where it must find the first and not the second. Demo
 2026-09-16 by pointing the predicate at a module id that matches nothing: red with `the
 consumer check's own positive control did not fire, so the predicate applied to the worker's
 registry would not catch a harness consumer there either`. Reverted.
+
+---
+
+### Criterion 19
+
+**Text:** "A headless or channel-mediated request that reaches a confirmation requirement receives an explicit approval-required state and nothing else happens. A test invokes the destructive-class fixture operation through an MCP token session and asserts that the response is an approval-required state carrying an approval identifier, distinct from success and from failure, returned within the configured deadline; that the fixture recorded no request; and that no operation record reports success. The test then approves through the approval operation as an authenticated actor and asserts the fixture executes once and a durable approval record exists carrying the payload digest, readable through a supported operation; and it requests a standing grant naming the destructive class and asserts the grant is refused at grant time." (`build-plan.md:172-182`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_approvals.py::test_criterion_19_end_to_end_through_an_mcp_token_session`
+- `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_actors_role_refuses_execution_and_records_it`
+- `pytest:tests/postgres/test_approvals.py::test_revoking_the_approving_actors_role_refuses_execution_too`
+- `pytest:tests/postgres/test_approvals.py::test_a_refusing_guard_stops_the_effect_and_a_permitting_one_does_not`
+- `pytest:tests/postgres/test_approvals.py::test_the_core_attaches_two_guards_always_and_the_third_only_with_a_subject`
+- `pytest:tests/postgres/test_approvals.py::test_a_destructive_dispatch_is_held_and_the_fixture_records_nothing`
+- `pytest:tests/postgres/test_approvals.py::test_an_external_dispatch_is_held_and_the_sink_sends_nothing`
+- `pytest:tests/postgres/test_approvals.py::test_approving_runs_the_fixture_once_and_the_record_carries_the_digest`
+- `pytest:tests/postgres/test_approvals.py::test_two_concurrent_approvals_execute_the_destructive_fixture_once`
+- `pytest:tests/postgres/test_standing_grants.py::test_a_grant_naming_an_upper_class_operation_is_refused_naming_it`
+- `pytest:tests/postgres/test_standing_grants.py::test_a_refused_grant_writes_no_row_at_all`
+- `pytest:tests/postgres/test_standing_grants.py::test_a_grant_naming_only_lower_class_operations_is_accepted`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/approvals/gate.py b/packages/core/src/rheo_core/approvals/gate.py
+index 4e29510..3ac6e8c 100644
+--- a/packages/core/src/rheo_core/approvals/gate.py
++++ b/packages/core/src/rheo_core/approvals/gate.py
+@@ -382,16 +382,6 @@ def execute_approved(
+     # execution happened. The set is derived from this declaration rather than taken
+     # whole, because ``RecordStateGuard`` attaches only to an operation whose input
+     # names a subject.
+-    refusal = run_guards(
+-        ctx,
+-        uow,
+-        approval=approval,
+-        model_input=model_input,
+-        now=now,
+-        guards=core_guards_for(declaration),
+-    )
+-    if refusal is not None:
+-        return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)
+     output = operation.handler(
+         ctx,
+         HandlerUnitOfWork(uow, operation_id=approval.operation_id),
+```
+
+**Cost:**
+- `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_actors_role_refuses_execution_and_records_it` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
+- `pytest:tests/postgres/test_approvals.py::test_revoking_the_approving_actors_role_refuses_execution_too` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
+- `pytest:tests/postgres/test_approvals.py::test_a_refusing_guard_stops_the_effect_and_a_permitting_one_does_not` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
+
+3 failed, 37 passed across `tests/postgres/test_approvals.py` and `tests/postgres/test_standing_grants.py`.
+
+**Performed by:** C6 (2026-09-16), C7 (2026-09-17)
+
+**What the hunk attacks, and why this one.** It deletes the guard-check step from
+`execute_approved` — the `run_guards` call and the branch that records its refusal — leaving the
+binding check, the handler, the approval's `executed` transition and the audit write exactly where
+they were. So the criterion's first three sentences stay green under it: the call is still held,
+the fixture still records nothing, the approval still carries the digest, the grant is still
+refused at grant time. What goes red is the fourth thing, which is the half C7 exists to add: an
+approval released by a person whose role has since been revoked **executes anyway**. The red is
+therefore "a revocation between approval and execution does not bite", which is R3 item 4's whole
+content and the failure a caller would never see — the effect lands, the record says `succeeded`,
+and nothing anywhere reports that the permission was gone.
+
+**Note on which demonstrators the hunk does and does not redden, checked node by node rather than
+inferred.** Three of the twelve go red and each was re-run **individually** at capture, not read
+off the aggregate. The other nine stayed green and were read rather than assumed: the four C6
+demonstrators (`..._is_held_and_the_fixture_records_nothing`, `..._sink_sends_nothing`,
+`..._runs_the_fixture_once_and_the_record_carries_the_digest`,
+`..._execute_the_destructive_fixture_once`) exercise the gate and the binding, which this hunk
+does not touch; the three `test_standing_grants.py` demonstrators are about grant time, which has
+no guard in it at all; `test_the_core_attaches_two_guards_always_and_the_third_only_with_a_subject`
+asserts `core_guards_for`, which the hunk leaves whole and merely stops calling; and
+`test_criterion_19_end_to_end_through_an_mcp_token_session` never revokes anything, so its
+execution is one the guards permit.
+
+**That last one is the honest limit of this row's single hunk, and it is stated rather than
+smoothed over.** The criterion's own named test is green under the mutation that removes the
+guards, because the criterion's text does not mention guards — they are AC 11's clause, reached
+through the same flow. A second hunk covering the criterion's own sentences would be the
+dispatcher's class branch, which criterion 14's and C6's own demonstrators already pin from the
+other side. One hunk, the three reddened nodes named above, and this note saying what it does not
+reach.
+
+**Note on the two guards that are not demonstrated end to end, and why that is not a gap to
+close later.** `WindowGuard` and `RecordStateGuard` are unit-tested against the classes directly
+(`test_the_window_guard_refuses_outside_its_window_and_permits_inside_it`,
+`test_the_record_state_guard_refuses_a_gone_or_moved_subject`,
+`test_the_record_state_guard_permits_a_live_matching_subject`) and are deliberately **not** listed
+as demonstrators of this criterion, because neither is reachable end to end on this tree.
+`WindowGuard` cannot fire through a dispatch at all: the binding tuple carries the window too and
+is checked first, so an expired approval refuses `invalid_approval` before the guards run.
+`RecordStateGuard`'s revision branch has no honest staging either — `harness.note` is the only
+resolvable record type and it is immutable, reporting the constant revision 1, so a dispatch-level
+revision mismatch would need a new mutable record type or a tampered
+`core.approval.subject_revision`, which would be a test about tampering. Both guards were
+mutation-verified in their own right (inverting `WindowGuard`'s comparison reddens its three
+window cases; returning `None` before `RecordStateGuard`'s resolve reddens all three of its
+refusal branches and leaves its live-subject control green).
+
+**Note on the two guards this run does not build.** `docs/architecture/confirmation-and-safety.md`
+§ Execution guards lists five. `ContactPermissionGuard` is added by Leads and `DestinationGuard`
+by the connector owning a destination — both are *domain* guards a module supplies through its own
+declaration, and `modules/**` and `connectors/**` are denied paths for run 0c3 because neither a
+module nor a connector exists in phase one. There is no module to add either, so neither has a
+class, a seam or an attachment test, and this row claims nothing about them.
+
+**Note on what "within the configured deadline" is asserted against.** There is no response-deadline
+key anywhere in the settings schema; the only configured time bound the approvals design has is the
+execution window, `approvals.default_window_seconds` clamped by `approvals.max_window_seconds`,
+which `rheo_core.approvals.gate.window_seconds` resolves per workspace. The test reads that
+function and asserts the held call returned inside it, so a deployment that changes the setting
+changes the assertion with it — which is what AC 5 asks for ("asserted against the deadline
+setting rather than a wall-clock constant chosen by the test"). A hold that outlived the window it
+was minting would hand back an approval that had already expired, so the bound is meaningful as
+well as setting-derived.
