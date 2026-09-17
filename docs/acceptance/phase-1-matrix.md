@@ -623,7 +623,28 @@ index 0e678ef..7fe146f 100644
 - `ci:web / Vitest (path mode)` — first observed failure line: `AssertionError: expected 'example.test' to be 'auth.example.test' // Object.is equality`. 5 tests failed.
 - `pytest:tests/test_routing.py::test_the_identity_callback_is_the_documented_url` — first observed failure line: `E       AssertionError: assert 'https://example.test/login' == 'https://circ...le.test/login'`. 9 failed, 34 passed.
 
-**Performed by:** C1 (2026-09-16)
+**Performed by:** C1 (2026-09-16), C9 (2026-09-17)
+
+**Note on C9's ops-side half (2026-09-17).** C1 proved the routing contract through product
+code and vitest; C9 proves the static gate itself bites. Mutation applied to
+`apps/web/src/components/workspace-switcher.tsx`, confirmed, reverted:
+
+```diff
+diff --git a/apps/web/src/components/workspace-switcher.tsx b/apps/web/src/components/workspace-switcher.tsx
+--- a/apps/web/src/components/workspace-switcher.tsx
++++ b/apps/web/src/components/workspace-switcher.tsx
+@@ -34,7 +34,7 @@ export function WorkspaceSwitcher({
+     setPending(true);
+     setRefusal(null);
+     try {
+-      const response = await fetch(action, {
++      const response = await fetch("/api/v1/planted", {
+         method: "POST",
+         credentials: "same-origin",
+         headers: { "Content-Type": "application/json" },
+```
+
+- `ci:web / Routing-literal gate (criterion 22)` — first observed failure line: `Hard-coded route literal: apps/web/src/components/workspace-switcher.tsx`, exit status 1.
 
 **Note on why this row has five demonstrators and one three-file hunk.** The criterion is
 three claims and each has its own gate. `check_routing_literals.py` is the "no route string
@@ -642,6 +663,40 @@ well, and that is the design working. `links.test.ts`'s "links across both modes
 files regardless of which mode the run selects, precisely so that neither run can be
 vacuously green. The subdomain run is the one the criterion names; the path run failing too
 means the both-modes assertions are not sleeping.
+
+---
+
+### Criterion 23
+
+**Text:** "The web interface builds and runs in the single-server container deployment with no hosting-platform-specific feature in its dependency set, enforced by a build that fails on a platform-only import or configuration key. That build is a continuous-integration gate from this phase onward, over whatever interface surface exists when it runs. *(Scenario: Fresh public clone; FR 48, guardrail 15.)*" (`build-plan.md:206-210`)
+
+**State:** complete
+
+**Demonstrator:**
+- `ci:docker / Build the core/worker image`
+- `ci:web / Web platform-only gate (criterion 23)`
+
+**Mutation:**
+```diff
+diff --git a/apps/web/src/app/layout.tsx b/apps/web/src/app/layout.tsx
+--- a/apps/web/src/app/layout.tsx
++++ b/apps/web/src/app/layout.tsx
+@@ -1,5 +1,6 @@
+ import type { Metadata } from "next";
+ import type { ReactNode } from "react";
++import { x } from "@vercel/edge";
+ 
+ export const metadata: Metadata = {
+   title: "rheoStream",
+```
+
+A second mutation (`export const runtime = "edge"` in `apps/web/src/app/page.tsx`) was applied, confirmed, and reverted separately; first observed failure line: `Edge runtime export declared: apps/web/src/app/page.tsx`, exit status 1.
+
+**Cost:**
+- `ci:web / Web platform-only gate (criterion 23)` — first observed failure line: `Platform-only @vercel/* import: apps/web/src/app/layout.tsx`, exit status 1.
+- `ci:docker / Build the core/worker image` — see C9 handoff for the GitHub Actions workflow run URL and conclusion on branch `bureau/20260916-0c3-remaining-skeleton`.
+
+**Performed by:** C9 (2026-09-17)
 
 ---
 
