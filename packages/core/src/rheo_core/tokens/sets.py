@@ -147,10 +147,48 @@ class RegisteredTool:
 class ToolRegistry:
     """The process-wide tool table. One instance is exported as :data:`TOOL_REGISTRY`.
 
-    Deliberately shaped like ``OperationRegistry``: ``register(decl, *, origin=...)``
-    validates and records, ``declarations()``/``names()`` read the live set back, and
-    a repeat of the identical declaration under the identical origin is a no-op so
-    startup and a test fixture can both call :func:`register_core_tools`.
+    Shaped like ``OperationRegistry`` in its *interface*: ``register(decl, *,
+    origin=...)`` validates and records, ``declarations()``/``names()`` read the live
+    set back, and a repeat of the identical declaration under the identical origin is
+    a no-op so startup and a test fixture can both call :func:`register_core_tools`.
+
+    **The validation is not the same set of rules, and saying which is the point.**
+    ``OperationRegistry.register`` applies five checks a tool registration does not
+    reach the same way. What is carried across, what is not, and why:
+
+    - **Carried: the safety-class presence check, the reserved-input-field check, the
+      ``extra = "allow"`` check, and the test-harness profile gate**
+      (:func:`~rheo_core.operations.registry.check_origin_profile`, so the
+      ``test_harness`` origin is refused outside ``profile = test`` here exactly as it
+      is there).
+    - **Carried, and specific to tools: a tool may not name a non-token-issuable
+      operation.** An operation registration has no equivalent, because an operation
+      may legitimately be one of the six; a *tool* naming one would put it in
+      ``agent_default`` and hand the façade a lever R3 item 6 exists to remove ("a
+      model cannot approve what it proposed"). ``tokens/issue.py`` strips the six
+      again at mint time, so this is the outer of two layers rather than the only
+      one — but it is the layer that keeps ``issue.py``'s own docstring true where it
+      says a named package set "never contained them in the first place, by
+      ``sets.py``'s own construction".
+    - **Not carried: the name-grammar and module-id-prefix rules**
+      (``check_origin``'s first two clauses). They cannot be applied verbatim and
+      applying them approximately would be worse than not applying them.
+      ``OperationRegistry`` derives a module id from a dotted operation name
+      (``<module_id>.<noun>.<verb>``); a **tool** name is
+      ``<module_id>_<verb>[_<noun>]`` (``module-contract.md``), not dotted, and the
+      core's own tools do not carry a ``core_`` prefix at all -- ``workspace_status``
+      is one. Deriving the module id from the tool's *operation* instead is the
+      obvious alternative and is wrong for a different reason:
+      ``module-contract.md:133`` expressly permits a module's tool to name a core
+      operation ("the deletion tools do"), so that check would refuse something the
+      ratified contract allows.
+
+    **So the residual gap, stated rather than left for a reader to find: nothing here
+    binds a tool's name to the origin that registered it.** A module may register a
+    tool under any name not already taken. Closing that needs a ratified rule about
+    tool-name prefixes that ``module-contract.md`` does not currently give -- the
+    grammar is stated but no registration rule enforces it, and the core's own tools
+    are the counterexample to the obvious reading.
     """
 
     def __init__(self) -> None:
@@ -159,26 +197,39 @@ class ToolRegistry:
     def register(self, decl: ToolDeclaration, *, origin: str) -> RegisteredTool:
         """Validate and record ``decl``, or raise ``RegistrationRefused`` naming it.
 
-        Two refusals, both borrowed whole from the operation registry rather than
-        restated here:
+        Five refusals. Four are the operation registry's own checks, reached through
+        the operation registry's own functions rather than copies of them; the fifth
+        is the one rule that is specific to tools. See the class docstring for the
+        two ``OperationRegistry`` rules that deliberately do **not** apply.
 
-        - **no declared safety class** -- the same ``isinstance`` test
-          ``OperationRegistry.register`` applies, for the same reason: pydantic
-          refuses an ordinary construction without one, so only a
-          ``model_construct``-ed declaration can arrive here missing it, and that
-          is precisely the shape a module could smuggle in.
-        - **a reserved input field** -- :func:`~rheo_core.operations.registry.
+        - **No declared safety class** -- the same ``isinstance`` test, for the same
+          reason: pydantic refuses an ordinary construction without one, so only a
+          ``model_construct``-ed declaration can arrive here missing it, and that is
+          precisely the shape a module could smuggle in.
+        - **The ``test_harness`` origin outside ``profile = test``** --
+          :func:`~rheo_core.operations.registry.check_origin_profile`, the same
+          function, so the gate criterion 18 leans on cannot be stepped around by
+          registering a tool instead of an operation.
+        - **A reserved input field** -- :func:`~rheo_core.operations.registry.
           reserved_input_fields`, the *same function* the operation registry calls,
           over the same single ``RESERVED_INPUT_FIELDS`` list in
           ``rheo_contracts.manifest``. Calling it rather than copying it is what
           makes criterion 20 one check with two call sites instead of two checks
           that can drift; it is also what lets a single edit disable both, which is
           how the criterion's mutation is demonstrated.
+        - **``extra = "allow"``** -- the companion the operation registry pairs with
+          the field-name check, and needed for the same reason: a model that declares
+          no reserved field and accepts every extra key carries a reserved name into
+          ``model_extra`` regardless, so the field-name check alone is a check on
+          spelling rather than on what the model accepts.
+        - **A non-token-issuable operation** -- tool-specific; see the class
+          docstring.
         """
         from rheo_core.operations.refusals import (  # deferred, see module docstring
             RegistrationRefused,
         )
         from rheo_core.operations.registry import (  # deferred, see module docstring
+            check_origin_profile,
             reserved_input_fields,
         )
 
@@ -189,8 +240,16 @@ class ToolRegistry:
             raise RegistrationRefused(str(name), "a tool needs a non-empty name")
         if not isinstance(origin, str) or not origin:
             raise RegistrationRefused(name, "a registration needs a non-empty origin")
+        check_origin_profile(origin)
         if not isinstance(getattr(decl, "safety_class", None), SafetyClass):
             raise RegistrationRefused(name, "declares no safety class")
+        if decl.operation in NON_TOKEN_ISSUABLE:
+            raise RegistrationRefused(
+                name,
+                f"names non-token-issuable operation {decl.operation!r}; a tool "
+                "naming one would carry it into the agent_default set, and no "
+                "token of any kind may hold it",
+            )
         input_model = decl.input_model
         if not (isinstance(input_model, type) and issubclass(input_model, BaseModel)):
             raise RegistrationRefused(name, "input_model is not a pydantic model")
@@ -200,6 +259,12 @@ class ToolRegistry:
                 name,
                 f"input model declares reserved field(s) {sorted(reserved)}; "
                 "workspace, actor and storage identity come from the context only",
+            )
+        if input_model.model_config.get("extra") == "allow":
+            raise RegistrationRefused(
+                name,
+                "input model sets extra = 'allow', which would carry a reserved "
+                "payload key into model_extra",
             )
         existing = self._tools.get(name)
         if existing is not None:

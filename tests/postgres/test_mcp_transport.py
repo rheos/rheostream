@@ -33,26 +33,34 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import httpx2
+import mcp.types as types
 import pytest
 import rheo_app_mcp.transport as transport
 from conftest import ClusterSession
 from harness.registry import NOTE_GET, register_harness
 from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
-from rheo_app_mcp.transport import BEARER_MISSING, MCP_PATH, build_mcp_app
+from rheo_app_mcp.transport import (
+    CONTEXT_MISSING,
+    MCP_PATH,
+    NO_BEARER_DETAIL,
+    build_mcp_app,
+)
 from rheo_contracts import WorkspaceContext
 from rheo_core.boundary import context_for_operator
 from rheo_core.boundary.context import (
     TOKEN_EXPIRED,
     TOKEN_MALFORMED,
+    TOKEN_REVOKED,
     TOKEN_WRONG_KIND,
 )
 from rheo_core.operations import dispatch, register_core_operations
-from rheo_core.operations.core_ops import TOKEN_ISSUE, WORKSPACE_STATUS
+from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE, WORKSPACE_STATUS
 from rheo_core.storage import control_tables as t
 from rheo_core.storage import core_tables
 from rheo_core.storage.backend import UnitOfWork
@@ -300,9 +308,15 @@ async def test_unknown_tool_name_is_not_found_over_the_wire(
 async def test_missing_bearer_is_refused_before_any_tool_runs(
     app: Any, seam: _SeamCounter
 ) -> None:
+    """No ``Authorization`` header at all, answered exactly as the HTTP API
+    answers the same condition (``api_routes.py``: ``TOKEN_MALFORMED``, that
+    detail text, 401). Both are asserted, so this surface cannot drift into a
+    private refusal vocabulary without a test noticing."""
     response = await _post_raw(app, None)
     assert response.status_code == 401
-    assert response.json()["state"] == BEARER_MISSING
+    body = response.json()
+    assert body["state"] == TOKEN_MALFORMED
+    assert body["detail"] == NO_BEARER_DETAIL
     assert seam.total == 0
 
 
@@ -367,6 +381,31 @@ async def test_expired_token_is_refused_before_any_tool_runs(
     assert _snapshot(cluster, row) == before
 
 
+async def test_revoked_token_is_refused_before_any_tool_runs(
+    app: Any,
+    cluster: ClusterSession,
+    workspace: UUID,
+    operator_ctx: WorkspaceContext,
+    owner_account_id: UUID,
+    seam: _SeamCounter,
+) -> None:
+    """Revoked is the fifth state ``runtime-and-mcp.md`` names for this surface,
+    and the one a session most plausibly meets mid-life: the token was good when
+    the client connected. Revoked through the real ``core.token.revoke`` dispatch
+    rather than by writing ``revoked_at``, so the refusal is reached the way a
+    revocation actually arrives."""
+    value, token_id, _ = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
+    revoked = dispatch(operator_ctx, TOKEN_REVOKE, {"token_id": str(token_id)})
+    assert revoked.ok, revoked
+    row = cluster.registry_row(workspace)
+    before = _snapshot(cluster, row)
+    response = await _post_raw(app, value)
+    assert response.status_code == 401
+    assert response.json()["state"] == TOKEN_REVOKED
+    assert seam.total == 0
+    assert _snapshot(cluster, row) == before
+
+
 async def test_scope_invalid_token_is_refused_before_any_tool_runs(
     app: Any,
     cluster: ClusterSession,
@@ -399,3 +438,40 @@ async def test_scope_invalid_token_is_refused_before_any_tool_runs(
     assert response.status_code == 401
     assert response.json()["state"] == "token_scope_invalid"
     assert seam.total == 0
+
+
+# --- the second guard, which the counter assertions above silently rely on ----
+
+
+async def test_handlers_refuse_a_request_that_bypassed_the_gate() -> None:
+    """``_context_of`` raises when nothing put a context in the request.
+
+    **Why this test exists and why it is not redundant with the five above.** Each
+    of those asserts ``seam.total == 0`` after a refused bearer. That assertion is
+    true for two different reasons at once — the gate answered before the SDK was
+    reached, *and* the handlers would have refused anyway — and from outside it
+    cannot tell which. So the counter alone cannot distinguish "the gate is in
+    front" from "the gate is gone and the second guard caught it", which is
+    exactly the regression the counter was meant to catch.
+
+    This drives the two handlers with a request carrying no gate-written state,
+    which is the shape a future mounting that bypassed the gate would produce, and
+    pins that they raise rather than serve. Nothing about it is ungated in
+    production: the gate is still the only entry point, which is why this is
+    reached by calling the handlers rather than over the wire.
+    """
+    ungated = SimpleNamespace(request=SimpleNamespace(state=SimpleNamespace()))
+    for handler, params in (
+        (transport._on_list_tools, None),
+        (transport._on_call_tool, types.CallToolRequestParams(name="workspace_status")),
+    ):
+        with pytest.raises(RuntimeError) as raised:
+            await handler(ungated, params)  # type: ignore[arg-type]
+        assert CONTEXT_MISSING in str(raised.value)
+
+    # And the same for a request object the transport never attached one to at all
+    # (``ctx.request`` is ``None`` for a non-HTTP transport), so neither path
+    # defaults its way to a context.
+    with pytest.raises(RuntimeError) as raised_none:
+        await transport._on_list_tools(SimpleNamespace(request=None), None)  # type: ignore[arg-type]
+    assert CONTEXT_MISSING in str(raised_none.value)

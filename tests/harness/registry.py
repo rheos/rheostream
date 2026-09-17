@@ -19,7 +19,7 @@ side effect. Nothing under ``rheo_core`` knows any of this exists.
 
 **``harness.note.get`` also serves as the MCP facade's ``harness_get_note`` tool**
 (C8, run 0b2), declared as a ``ToolDeclaration`` in
-``rheo_core.tokens.sets.REGISTERED_TOOLS`` rather than here — that module
+``rheo_core.tokens.sets.CORE_TOOLS`` rather than here — that module
 cannot import test code (a shipped package must not depend on
 ``tests/harness``, which is never installed), so it duplicates this
 operation's name (``NOTE_GET``, ``"harness.note.get"``) and ``NoteRefInput``'s

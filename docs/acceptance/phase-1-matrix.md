@@ -1223,11 +1223,21 @@ the other; each alone leaves the enumeration green.
 - **A tool declaring `query: str`, refusal live.** It registers cleanly — `query` is not one
   of the ratified twelve — and the enumeration correctly finds nothing. Observed: the live set
   became `['workspace_status', 'harness_get_note', 'scratch_sql_tool']` and the node passed.
-- **A tool declaring `sql: str`, refusal live.** Observed: `RegistrationRefused:
+- **A tool declaring `sql: str`, refusal live — two runs, because only one of them is what
+  this row's own hunk produces.** Apply **only** the `tests/` half of the fenced hunk above,
+  leaving `reserved_input_fields` intact, and the node **fails**, at the registration call and
+  not at the enumeration: `E rheo_core.operations.refusals.RegistrationRefused:
   scratch_sql_tool: input model declares reserved field(s) ['sql']; workspace, actor and
-  storage identity come from the context only`, live set unchanged at `['workspace_status',
-  'harness_get_note']`, node passed. The refusal is doing its job; the enumeration never sees
-  the tool and so proves nothing about it.
+  storage identity come from the context only`. That is the refusal working — the enumeration
+  assertion never executes, so it catches nothing and proves nothing about the tool. To watch
+  the enumeration *itself* under this variant, the registration has to be wrapped so execution
+  reaches it; done, and then the refusal is raised and swallowed, the live set is unchanged at
+  `['workspace_status', 'harness_get_note']`, and the node **passes**.
+
+  **An earlier revision of this row reported only the second run's `passed`, under a heading
+  describing the first run's hunk.** A reviewer applied the hunk and got `failed`. Both runs
+  are now written out with which hunk produces which, because a row whose recorded observation
+  does not reproduce is the exact failure this matrix exists to prevent.
 - **Disabling the shared check alone, nothing registered.** Observed: node passed. This is the
   one that looks sufficient and is not — disabling a refusal changes nothing already
   registered, and neither shipped tool declares a reserved field

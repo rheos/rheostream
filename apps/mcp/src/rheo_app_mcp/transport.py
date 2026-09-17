@@ -51,7 +51,7 @@ import mcp.types as types
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
 from rheo_contracts import ToolDeclaration, WorkspaceContext
-from rheo_core.boundary.context import Refusal
+from rheo_core.boundary.context import TOKEN_MALFORMED, Refusal
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -71,17 +71,21 @@ that reaches a handler always carries it, because the gate is the only way in.""
 AUTHORIZATION_HEADER: Final = b"authorization"
 _BEARER_PREFIX: Final = "bearer "
 
-BEARER_MISSING: Final = "bearer_missing"
-"""No ``Authorization: Bearer`` header at all. Distinct from ``token_malformed``,
-which is the boundary's answer to a value that was presented and did not parse:
-this one never reaches ``resolve_context``, so reporting the boundary's state for
-it would be inventing a refusal the boundary never made."""
+REFUSAL_STATUS: Final = 401
+"""The same status ``api_routes.py`` answers a token refusal with
+(``_TOKEN_REFUSAL_STATUS``). Every bearer surface refuses alike."""
+
+NO_BEARER_DETAIL: Final = "no bearer token was presented"
+"""Verbatim from ``api_routes.py``'s own missing-bearer branch, so the two bearer
+surfaces say the same thing about the same condition."""
 
 CONTEXT_MISSING: Final = "context_missing"
-"""A handler ran without a gate-resolved context in its request. Unreachable
-while the gate is the only entry point; raised rather than defaulted so that a
-future mounting which bypasses the gate fails loudly instead of serving tools to
-an unauthenticated caller."""
+"""**Not a refusal state, and never sent on the wire**: the message of a
+``RuntimeError`` raised when a handler runs with no gate-resolved context in its
+request. Unreachable while the gate is the only entry point, and raised rather
+than defaulted so a future mounting that bypasses the gate fails loudly instead
+of serving tools to an unauthenticated caller. A named constant only so the test
+that drives the handlers ungated can assert on it rather than on prose."""
 
 
 def _bearer_from(scope: Scope) -> str | None:
@@ -102,11 +106,28 @@ def _bearer_from(scope: Scope) -> str | None:
 
 
 async def _refuse(send: Send, state: str, detail: str | None) -> None:
-    """Answer 401 with the refusal's own state, and stop.
+    """Answer :data:`REFUSAL_STATUS` with the refusal's own state, and stop.
 
-    The body carries ``state`` because that is what makes one refusal
-    distinguishable from another to a client; ``detail`` is the boundary's own,
-    already documented as safe to show and never carrying a secret.
+    **The state vocabulary is the shipped one; the body shape is not, and the
+    reason is a boundary rather than a preference.** Every ``state`` this sends is
+    a ``rheo_core.boundary.context`` constant -- the refusal's own, or
+    :data:`~rheo_core.boundary.context.TOKEN_MALFORMED` for a missing bearer,
+    which is exactly what ``apps/core``'s ``api_routes.py`` answers the identical
+    condition with, down to the detail text. Nothing here invents a state.
+
+    The *envelope* is a local ``{state, detail}`` object rather than
+    ``api_routes.envelope()`` because that function lives in ``apps/core``, which
+    this package does not and must not depend on: ``rheo-app-mcp`` does not
+    declare ``rheo-app-core``, and a façade importing the core process's HTTP
+    layer would invert the dependency criterion 20's scan exists to keep straight.
+    The two surfaces also answer different protocols -- REST there, JSON-RPC here
+    -- so a shared body shape would have to be carved down to the fields both can
+    carry, which is the pair of fields below. Sharing the vocabulary without
+    sharing the container is the part that is actually load-bearing: a closed set
+    of state names stays closed.
+
+    ``detail`` is the boundary's own, already documented as safe to show and never
+    carrying a secret.
     """
     payload: dict[str, str] = {"state": state}
     if detail is not None:
@@ -115,7 +136,7 @@ async def _refuse(send: Send, state: str, detail: str | None) -> None:
     await send(
         {
             "type": "http.response.start",
-            "status": 401,
+            "status": REFUSAL_STATUS,
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
@@ -139,7 +160,7 @@ class _BearerGate:
             return
         bearer = _bearer_from(scope)
         if bearer is None or not bearer:
-            await _refuse(send, BEARER_MISSING, "no bearer token was presented")
+            await _refuse(send, TOKEN_MALFORMED, NO_BEARER_DETAIL)
             return
         resolved = resolve_context(bearer)
         if isinstance(resolved, Refusal):
@@ -256,10 +277,11 @@ def build_mcp_app(
 
 
 __all__ = [
-    "BEARER_MISSING",
     "CONTEXT_MISSING",
+    "NO_BEARER_DETAIL",
     "CONTEXT_STATE_KEY",
     "MCP_PATH",
+    "REFUSAL_STATUS",
     "SERVER_NAME",
     "build_mcp_app",
     "build_server",
