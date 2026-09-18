@@ -135,6 +135,14 @@ from rheo_core.operations.registry import (
     OperationRegistry,
     RegisteredOperation,
 )
+from rheo_core.runtime.operations import (
+    RUNTIME_RUN as RUNTIME_RUN,
+)
+from rheo_core.runtime.operations import (
+    RuntimeRunInput,
+    RuntimeRunScheduled,
+    runtime_run_handler,
+)
 from rheo_core.settings import (
     CORE_ORIGIN,
     Scope,
@@ -458,6 +466,17 @@ WORKSPACE_RESTORE_DECLARATION: Final = OperationDeclaration(
     long_running=True,
 )
 
+RUNTIME_RUN_DECLARATION: Final = OperationDeclaration(
+    name=RUNTIME_RUN,
+    safety_class=SafetyClass.MUTATE,
+    roles=frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR}),
+    input_model=RuntimeRunInput,
+    output=RuntimeRunScheduled,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field=None),
+    long_running=True,
+)
+
 CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (WORKSPACE_STATUS_DECLARATION, _workspace_status),
     (SETTINGS_SET_DECLARATION, _settings_set),
@@ -470,6 +489,7 @@ CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (WORKSPACE_EXPORT_DECLARATION, export_handler),
     (WORKSPACE_DIGEST_DECLARATION, digest_handler),
     (WORKSPACE_RESTORE_DECLARATION, restore_handler),
+    (RUNTIME_RUN_DECLARATION, runtime_run_handler),
 )
 """The three 0b1 operations, 0c1's ``core.work.failures``, and 0c2's three
 ``core.operation`` operations plus ``core.audit.list``. The two token operations

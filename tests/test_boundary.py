@@ -69,6 +69,7 @@ from rheo_core.boundary import (
     context_for_harness,
     context_for_operator,
 )
+from rheo_core.boundary.factories import context_from_operation
 from rheo_core.migrations.orchestrator import migrate_workspace
 from rheo_core.operations import OPERATION_UNKNOWN, dispatch
 from rheo_core.refs import uuid7
@@ -461,3 +462,39 @@ def test_factories_refuse_a_workspace_still_provisioning(
     with pytest.raises(Halt):
         make_workspace(workspace_id=workspace_id, after_step=stop_after_first_step)
     _assert_both_factories_refuse(workspace_id, owner_account_id, "provisioning")
+
+
+def test_context_from_operation_rebuilds_an_account_context(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    ctx = context_from_operation(
+        workspace,
+        actor_kind=ActorKind.ACCOUNT.value,
+        actor_id=owner_account_id,
+        audience_kind=AudienceKind.SESSION.value,
+        audience_id=owner_account_id,
+        entry=Entry.CLI.value,
+    )
+    assert isinstance(ctx, WorkspaceContext)
+    assert ctx.actor.kind is ActorKind.ACCOUNT
+    assert ctx.actor.id == owner_account_id
+    assert ctx.audience is not None
+    assert ctx.audience.kind is AudienceKind.SESSION
+    assert ctx.audience.id == owner_account_id
+    assert ctx.entry is Entry.CLI
+    assert ctx.operation_set is ALL_OPERATIONS
+
+
+def test_context_from_operation_refuses_operator_runtime_actor_required(
+    workspace: UUID,
+) -> None:
+    refusal = context_from_operation(
+        workspace,
+        actor_kind=ActorKind.OPERATOR.value,
+        actor_id=None,
+        audience_kind=AudienceKind.JOB.value,
+        audience_id=None,
+        entry=Entry.JOB.value,
+    )
+    assert isinstance(refusal, Refusal)
+    assert refusal.state == "runtime_actor_required"

@@ -14,6 +14,7 @@ for the same reason.
 
 import signal
 import threading
+from datetime import UTC, datetime
 from types import FrameType
 
 from rheo_core.events import ConsumerRegistry
@@ -25,6 +26,12 @@ from rheo_core.exports import (
     run_export_job,
     run_restore_job,
 )
+from rheo_core.runtime import (
+    RUNTIME_RUN,
+    AdapterRegistry,
+    RuntimeJobPayload,
+    make_run_runtime_job,
+)
 from rheo_core.storage.postgres import get_backend, reset_backend
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import worker_loop
@@ -32,12 +39,21 @@ from rheo_core.work.loop import worker_loop
 JOB_KINDS = JobKindRegistry()
 """The process-wide job-kind registry.
 
-Export and restore are the kinds release one actually enqueues. They are registered
-here, at the composition root, not in ``rheo_core.work.kinds`` — that module holds
-no process-wide instance so a test can build its own.
+Export, restore, and ``core.runtime.run`` are registered here, at the composition
+root, not in ``rheo_core.work.kinds`` — that module holds no process-wide instance
+so a test can build its own. The production adapter registry is empty until the
+Claude CLI adapter is registered on this same root.
 """
 JOB_KINDS.register(EXPORT_JOB_KIND, ExportJobPayload, run_export_job)
 JOB_KINDS.register(RESTORE_JOB_KIND, RestoreJobPayload, run_restore_job)
+
+ADAPTERS = AdapterRegistry()
+"""Process-wide adapter registry. Empty until production registers ``claude_cli``."""
+JOB_KINDS.register(
+    RUNTIME_RUN,
+    RuntimeJobPayload,
+    make_run_runtime_job(ADAPTERS, lambda: datetime.now(UTC)),
+)
 
 CONSUMERS = ConsumerRegistry()
 """The process-wide consumer registry, beside ``JOB_KINDS`` and empty for the same

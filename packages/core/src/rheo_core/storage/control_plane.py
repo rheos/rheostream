@@ -22,7 +22,7 @@ from uuid import UUID
 
 import psycopg.errors
 from rheo_contracts import Role
-from sqlalchemy import Connection, insert, select, update
+from sqlalchemy import Connection, delete, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
@@ -867,6 +867,17 @@ def revoke_access_token(conn: Connection, token_id: UUID) -> None:
         update(t.access_token)
         .where(t.access_token.c.id == token_id)
         .values(revoked_at=_now())
+    )
+    if result.rowcount != 1:
+        raise StorageRefusal(
+            ACCESS_TOKEN_MISSING, f"access token {token_id} has no row"
+        )
+
+
+def delete_access_token(conn: Connection, token_id: UUID) -> None:
+    """Delete the row (snapshot rows cascade). Not a revoke."""
+    result = conn.execute(
+        delete(t.access_token).where(t.access_token.c.id == token_id)
     )
     if result.rowcount != 1:
         raise StorageRefusal(

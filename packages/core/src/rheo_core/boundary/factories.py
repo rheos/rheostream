@@ -41,9 +41,11 @@ from rheo_core.refs import uuid7
 from rheo_core.settings import current_profile
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import (
+    get_access_token,
     get_membership,
     get_session_by_secret_hash,
     get_workspace,
+    list_access_token_operations,
 )
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.postgres import PostgresBackend, get_backend
@@ -281,6 +283,109 @@ def context_from_token(value: str, surface: str) -> WorkspaceContext | Refusal:
         entry=Entry(surface),
         audience=Audience(kind=AudienceKind.TOKEN, id=resolved.token_id),
         operation_set=resolved.operation_set,
+        enabled_modules=enabled,
+        request_id=uuid7(),
+    )
+
+
+def context_from_operation(
+    workspace_id: UUID,
+    *,
+    actor_kind: str,
+    actor_id: UUID | None,
+    audience_kind: str,
+    audience_id: UUID | None,
+    entry: str,
+) -> WorkspaceContext | Refusal:
+    """Rebuild a worker's ``WorkspaceContext`` from a job payload's copied fields.
+
+    ACCOUNT uses membership of ``(actor_id, workspace_id)`` and ``ALL_OPERATIONS``.
+    TOKEN uses the access-token row for ``actor_id``, membership of that token's
+    account, and the snapshot as the operation set. OPERATOR / SYSTEM / CONNECTION
+    refuse so the job can handshake ``runtime_actor_required``. Audience comes from
+    the arguments, not an invented session.
+    """
+    if not isinstance(workspace_id, UUID):
+        raise TypeError("workspace_id must be a UUID")
+    try:
+        kind = ActorKind(actor_kind)
+        audience = Audience(kind=AudienceKind(audience_kind), id=audience_id)
+        entry_value = Entry(entry)
+    except ValueError:
+        return Refusal(
+            "runtime_actor_required",
+            f"core.runtime.run cannot rebuild actor {actor_kind!r}",
+        )
+    if kind in {ActorKind.OPERATOR, ActorKind.SYSTEM, ActorKind.CONNECTION}:
+        return Refusal(
+            "runtime_actor_required",
+            f"core.runtime.run cannot run as actor kind {kind.value!r}",
+        )
+    backend = get_backend()
+    if kind is ActorKind.ACCOUNT:
+        if actor_id is None:
+            return Refusal("runtime_actor_required", "an account actor needs an id")
+        with backend.control_engine.connect() as connection:
+            membership = get_membership(
+                connection, account_id=actor_id, workspace_id=workspace_id
+            )
+        if membership is None:
+            return Refusal(
+                MEMBERSHIP_MISSING,
+                f"no control.membership row for account {actor_id} in workspace "
+                f"{workspace_id}",
+            )
+        role = membership.role
+        actor = Actor(kind=ActorKind.ACCOUNT, id=actor_id)
+        operation_set = ALL_OPERATIONS
+    elif kind is ActorKind.TOKEN:
+        if actor_id is None:
+            return Refusal("runtime_actor_required", "a token actor needs an id")
+        with backend.control_engine.connect() as connection:
+            token_row = get_access_token(connection, actor_id)
+            operations = (
+                list_access_token_operations(connection, actor_id)
+                if token_row is not None
+                else frozenset()
+            )
+            membership = (
+                None
+                if token_row is None
+                else get_membership(
+                    connection,
+                    account_id=token_row.account_id,
+                    workspace_id=workspace_id,
+                )
+            )
+        if token_row is None or token_row.workspace_id != workspace_id:
+            return Refusal(
+                "runtime_actor_required",
+                "the token has no backing account in this workspace",
+            )
+        if membership is None:
+            return Refusal(
+                MEMBERSHIP_MISSING,
+                f"no control.membership row for account {token_row.account_id} in "
+                f"workspace {workspace_id}",
+            )
+        role = membership.role
+        actor = Actor(kind=ActorKind.TOKEN, id=actor_id)
+        operation_set = operations
+    else:
+        return Refusal(
+            "runtime_actor_required",
+            f"core.runtime.run cannot run as actor kind {kind.value!r}",
+        )
+    enabled = _active_workspace_modules(backend, workspace_id)
+    if isinstance(enabled, Refusal):
+        return enabled
+    return WorkspaceContext(
+        workspace_id=workspace_id,
+        actor=actor,
+        role=role,
+        entry=entry_value,
+        audience=audience,
+        operation_set=operation_set,
         enabled_modules=enabled,
         request_id=uuid7(),
     )
