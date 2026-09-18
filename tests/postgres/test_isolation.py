@@ -197,7 +197,13 @@ def test_unit_of_work_has_no_outbox_or_audit_attachment_point() -> None:
     assert public == {"commit", "connection", "rollback", "verify_database"}
     assert isinstance(UnitOfWork.verify_database, bool)
     slots = set(UnitOfWork.__slots__)
-    assert slots == {"_connection", "_engine", "_expected_database", "_transaction"}
+    assert slots == {
+        "_connection",
+        "_engine",
+        "_expected_database",
+        "_pool",
+        "_transaction",
+    }
     assert not any("outbox" in slot or "audit" in slot for slot in slots)
 
 

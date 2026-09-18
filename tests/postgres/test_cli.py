@@ -13,7 +13,7 @@ startup sequence through the FastAPI lifespan.
   registry under an operator context), ``repair``, ``migrate`` and ``doctor``
   return ``0``; a refusal prints its state name on stderr and returns ``1``.
 - ``doctor``'s connection-budget line reads ``warn`` on a stock cluster and says why:
-  85 connections per process against a ``max_connections`` of 100 carries one process
+  86 connections per process against a ``max_connections`` of 100 carries one process
   and not the two release one ends up with. That is the truthful reading of the
   shipped defaults, not a fixture to size around.
 - ``doctor``'s reconcile-interval line names both keys and both resolved values, which
@@ -294,7 +294,7 @@ def test_migrate_and_doctor_return_zero(
     # The connection budget, asserted on both halves. The level is the half a
     # hard-coded ``"ok"`` would pass silently through, and it is a checkable fact on
     # these exact numbers rather than a value chosen to make the test pass: the
-    # shipped defaults put one process at 16 * 5 + 5 = 85, a stock cluster allows
+    # shipped defaults put one process at 16 * 5 + 6 = 86, a stock cluster allows
     # 100, so one process fits and two (core and worker, from 0c1) do not.
     (budget,) = [line for line in report if "connection budget:" in line]
     assert "cluster max_connections = 100" in budget, (
@@ -302,8 +302,10 @@ def test_migrate_and_doctor_return_zero(
         budget,
     )
     assert budget.startswith("warn "), budget
-    assert "16 * 5 + 5 = 85 per process" in budget, budget
-    assert "2 processes = 170" in budget, budget
+    assert "16 * 5 + 6 = 86 per process" in budget, budget
+    assert "2 processes configured = 172" in budget, budget
+    assert "serialized maintenance" in budget, budget
+    assert "held now =" in budget, budget
     # The detail names every lever an operator could move, not merely a number.
     for lever in (
         "max_connections",
@@ -311,15 +313,6 @@ def test_migrate_and_doctor_return_zero(
         "storage.pool_max_connections",
     ):
         assert lever in budget, (lever, budget)
-    # ...and what the arithmetic does NOT count, which is the whole of issue #62. The
-    # figure was called ``worst_case_connections`` while two connections a process can
-    # hold sat outside it: the unpooled maintenance engine, and a connection detached
-    # by the count cap's eviction. Renaming it ``pooled_connections`` makes the name
-    # honest; only this assertion stops the omissions being dropped from the line an
-    # operator actually reads, which would leave the honest name attached to a number
-    # still presented as complete. Both were deletable with the suite green until now.
-    for omission in ("maintenance engine", "count cap evicted", "detaches"):
-        assert omission in budget, (omission, budget)
 
     # The reconcile interval, AC 18's resolved-settings half. Asserted on the line's
     # content, not merely that a line printed: a check naming neither key would leave

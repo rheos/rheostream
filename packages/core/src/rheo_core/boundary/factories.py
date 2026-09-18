@@ -78,8 +78,8 @@ def _active_workspace_modules(
         return Refusal(WORKSPACE_UNAVAILABLE, WORKSPACE_MISSING_DETAIL)
     if row.state is not WorkspaceState.ACTIVE:
         return Refusal(WORKSPACE_UNAVAILABLE, row.state.value)
-    engine = backend.pools.engine_for(row.database_name)
-    with UnitOfWork(engine, row.database_name) as uow:
+    engine = backend.pools.engine_for(row.database_name, pin=True)
+    with UnitOfWork(engine, row.database_name, pool=backend.pools) as uow:
         states = list_module_states(uow.connection)
     return frozenset(
         state.module_id for state in states if state.state == _MODULE_ENABLED

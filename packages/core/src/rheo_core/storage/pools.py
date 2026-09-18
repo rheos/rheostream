@@ -8,31 +8,26 @@ never be served from a stale decision.
 Two bounds, because a pool count is not the scarce resource — connections are:
 
 * **Idle close** (``storage.pool_idle_close_seconds``). An engine untouched for longer
-  than the window is disposed on the next call, **unless it still has a connection
-  checked out** — see ``_expire_idle``, which is where the idle timer's own limit is
-  written down. This is the bound that normally binds, and it is what keeps a caller
-  that walks many workspaces from evicting the engine it is about to need: an engine
-  goes away because nobody wanted it, not because someone else did.
-* **Count cap** (``storage.pool_cache_size``) as the hard ceiling, least-recently-used
-  first. It exists so open connections stay bounded even when every workspace is hot;
-  ``pool_cache_size * storage.pool_max_connections`` is what the cached engines can
-  open, and ``reserved_connections`` is added on top for the engines this process holds
-  outside the cache. Both the core and the worker are separate processes each holding
-  their own; ``rheo doctor`` reports the total against the cluster's own
-  ``max_connections``.
+  than the window is disposed on the next call, **unless it is busy** — a connection
+  still checked out, or a :meth:`pin` / :meth:`acquire` lease that has not returned.
+  See ``_expire_idle``.
+* **Count cap** (``storage.pool_cache_size``) as the hard ceiling on *idle* engines,
+  least-recently-used first. A busy engine is not evicted: the cache may briefly
+  exceed the cap until those connections return, then the next call evicts the unused
+  extras. Evicting a busy engine would ``dispose()``-detach its connections and take
+  them outside every count this class reports (issue #62).
 
-**That total is the pooled figure and not a ceiling**, which is why it is called
-:attr:`EnginePool.pooled_connections` rather than a worst case. Two things this process
-can hold sit outside it, and both are named at the property and in ``rheo doctor``'s
-own detail rather than left in a comment: the backend's unpooled maintenance engine,
-and a connection still checked out from an engine the count cap evicted, which
-``dispose()`` detaches rather than closes.
+``reserved_connections`` is added on top for the engines this process holds outside
+the cache. Both the core and the worker are separate processes each holding their
+own; ``rheo doctor`` reports the total against the cluster's own ``max_connections``.
 """
 
 import re
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Final
 
 from sqlalchemy import Engine, create_engine
@@ -78,6 +73,7 @@ class EnginePool:
         self._reserved_connections = reserved_connections
         self._engines: OrderedDict[str, Engine] = OrderedDict()
         self._last_used: dict[str, float] = {}
+        self._pins: dict[int, int] = {}
         self._lock = threading.Lock()
 
     @property
@@ -96,85 +92,60 @@ class EnginePool:
 
         The pool cannot see them and cannot verify them: the caller that constructs the
         pool owns keeping this accurate to whatever actually reserves those connections
-        (in ``PostgresBackend`` that is ``control_engine``, whose own ``pool_size`` is
-        ``storage.pool_max_connections``). Change what reserves them and this value has
-        to change with it — nothing here will notice on its own.
+        (in ``PostgresBackend`` that is ``control_engine`` plus one serialized
+        maintenance connection). Change what reserves them and this value has to
+        change with it — nothing here will notice on its own.
         """
         return self._reserved_connections
 
     @property
     def pooled_connections(self) -> int:
-        """Connections this process's **pools** open if every cached engine fills.
+        """Configured cache budget: ``cache_size * pool_size + reserved``.
 
-        ``cache_size * pool_size + reserved_connections``. Reported by ``rheo doctor``
-        so an operator can compare it with the cluster's own ``max_connections``,
-        remembering that core and worker each hold one. The reservation is a value the
-        pool is handed rather than one it derives — see ``reserved_connections``.
+        Reported by ``rheo doctor`` so an operator can compare it with the cluster's
+        own ``max_connections``, remembering that core and worker each hold one.
 
-        **Named for what it counts, because it is not a ceiling.** It was called
-        ``worst_case_connections`` and claimed to be one (issue #62); two connections
-        this process can hold are outside the arithmetic, and neither is derivable
-        here:
-
-        * ``PostgresBackend._maintenance_engine``, built with ``poolclass=NullPool``.
-          It is bounded by how many maintenance calls run at once rather than by a
-          pool size, so no term of this sum can carry it. Real exposure is small —
-          provisioning, migration and ``rheo doctor`` use it serially — so it is a
-          small unpooled addition rather than an unbounded one, and saying which is
-          the difference between a number an operator can act on and a warning.
-        * a connection still checked out from an engine that was **evicted by the
-          count cap**, or by ``dispose_all``: ``dispose()`` closes idle connections
-          and *detaches* checked-out ones, and a detached connection stays open until
-          its holder returns it, counted by nothing here. The idle sweep no longer
-          reaches this state — ``_expire_idle`` skips an engine in use — but the
-          count cap's own eviction in :meth:`engine_for` does not consult that, and
-          bounding it there would mean either exceeding the cap or refusing a caller,
-          which is a larger decision than this figure.
-
-        ``rheo doctor``'s connection-budget check prints both omissions in its detail
-        string, because an operator comparing this number against ``max_connections``
-        is the one person who needs to know what it leaves out.
+        This is the number the cache is *sized* for. :attr:`held_connections` is what
+        the process is holding right now; it matches this figure except while a busy
+        engine has blocked count-cap eviction and the cache is briefly over the cap.
         """
         return self._cache_size * self._pool_size + self._reserved_connections
 
+    @property
+    def held_connections(self) -> int:
+        """Connections the cached engines plus the reservation can open right now.
+
+        ``len(_engines) * pool_size + reserved_connections``. Equals
+        :attr:`pooled_connections` unless a busy engine forced the cache past
+        ``cache_size``.
+        """
+        with self._lock:
+            return len(self._engines) * self._pool_size + self._reserved_connections
+
+    def _busy(self, engine: Engine) -> bool:
+        """A pin is held, or SQLAlchemy still has a connection checked out.
+
+        Caller holds the lock. ``QueuePool.checkedout()`` is a hint the moment it is
+        read — another thread may check one out immediately afterwards — which is why
+        :meth:`pin` / :meth:`acquire` exist: they close the handout window the hint
+        cannot see (issue #62).
+        """
+        if self._pins.get(id(engine), 0) > 0:
+            return True
+        pool = engine.pool
+        return isinstance(pool, QueuePool) and bool(pool.checkedout())
+
     def _expire_idle(self, now: float) -> list[Engine]:
-        """Engines untouched for longer than the idle window **and not in use**.
+        """Engines untouched for longer than the idle window **and not busy**.
 
         Caller holds the lock.
 
         ``_last_used`` is stamped in :meth:`engine_for`, at hand-out, and nothing
         stamps it again when a connection comes back — so a caller holding a
         connection for longer than ``idle_close_seconds`` has its engine's idle timer
-        running while it is still working. Without the check below that engine is
-        selected here and ``dispose()``d by the caller, and ``dispose()`` **detaches**
-        a checked-out connection rather than closing it: the socket stays open until
-        its holder returns it, outside every count this class reports. That is not an
-        exotic edge — it is the ordinary consequence of a slow caller.
-
-        The remedy is to skip expiry while the engine is genuinely in use, not to
-        stamp ``_last_used`` on return: a connection that has not been returned fires
-        no return-time stamp, so that fix cannot reach the case it is for. A skipped
-        engine keeps its ``_engines``/``_last_used`` entries untouched and is
-        re-examined by the next sweep, so it becomes eligible again the moment its
-        last connection is returned. Skipping costs nothing the idle window was
-        protecting: an engine with a connection checked out is by definition not idle.
-
-        ``QueuePool.checkedout()`` is SQLAlchemy's own count of connections handed out
-        and not yet returned. It is read under the lock and is a hint the moment it is
-        read — another thread may check one out immediately afterwards — which is why
-        this narrows the window rather than closing it, and why the figure ``rheo
-        doctor`` reports names the detached-connection residual rather than claiming
-        it away.
-
-        **The ``isinstance`` is a type narrowing, not a branch with two live arms.**
-        ``checkedout`` is declared on ``QueuePool`` rather than on ``Pool``, and every
-        engine this class builds is a ``QueuePool``: :meth:`engine_for` passes
-        ``pool_size`` and ``max_overflow``, which are that class's own arguments. The
-        other arm is the behaviour this method had before the check existed, and it is
-        pinned rather than trusted — ``tests/test_engine_pool.py``'s in-use case reads
-        ``engine.pool.checkedout()`` off a real engine as its own positive control, so
-        a pool class that lost the method fails there rather than silently expiring a
-        live engine here.
+        running while it is still working. Skipping a busy engine keeps its
+        ``_engines``/``_last_used`` entries untouched; it becomes eligible again the
+        moment the last pin drops and the last connection is returned.
         """
         stale = [
             name
@@ -184,23 +155,88 @@ class EnginePool:
         expired = []
         for name in stale:
             engine = self._engines.get(name)
-            if engine is not None:
-                pool = engine.pool
-                if isinstance(pool, QueuePool) and pool.checkedout():
-                    continue
+            if engine is not None and self._busy(engine):
+                continue
             self._engines.pop(name, None)
             self._last_used.pop(name, None)
             if engine is not None:
                 expired.append(engine)
         return expired
 
+    def _evict_unused_over_cap(self, *, protect: str) -> list[Engine]:
+        """Pop unused LRU engines until the cache is at the cap, or every leftover
+        engine is busy.
+
+        Caller holds the lock. ``protect`` is the name just handed out — it is never
+        evicted on this call, even with zero checkouts, because that is the engine
+        the caller is about to use. Busy engines stay; the cache may exceed
+        ``cache_size`` until they are free. That is the issue #62 choice: defer
+        retirement rather than ``dispose()``-detach a live connection or refuse the
+        caller.
+        """
+        discarded: list[Engine] = []
+        while len(self._engines) > self._cache_size:
+            victim_name = next(
+                (
+                    name
+                    for name, engine in self._engines.items()
+                    if name != protect and not self._busy(engine)
+                ),
+                None,
+            )
+            if victim_name is None:
+                break
+            engine = self._engines.pop(victim_name)
+            self._last_used.pop(victim_name, None)
+            discarded.append(engine)
+        return discarded
+
     @property
     def cluster_url(self) -> URL:
         """The cluster URL every engine is derived from (password hidden in ``str``)."""
         return self._cluster_url
 
-    def engine_for(self, database_name: str) -> Engine:
-        """The engine for ``database_name``, created on first use and kept while hot."""
+    def pin(self, engine: Engine) -> None:
+        """Increment the busy count for a **currently cached** engine.
+
+        Does not close the handout window by itself. Call :meth:`engine_for` with
+        ``pin=True`` or :meth:`acquire` so the pin is taken under the same lock as
+        the hand-out. This method refuses an engine the pool no longer tracks.
+        """
+        with self._lock:
+            if engine not in self._engines.values():
+                raise ValueError(
+                    "pin() only accepts an engine this pool currently holds"
+                )
+            key = id(engine)
+            self._pins[key] = self._pins.get(key, 0) + 1
+
+    def unpin(self, engine: Engine) -> None:
+        """Drop one :meth:`pin`. Extra unpins are ignored."""
+        with self._lock:
+            key = id(engine)
+            count = self._pins.get(key, 0) - 1
+            if count <= 0:
+                self._pins.pop(key, None)
+            else:
+                self._pins[key] = count
+
+    @contextmanager
+    def acquire(self, database_name: str) -> Iterator[Engine]:
+        """The engine for ``database_name``, pinned for the duration of the block."""
+        engine = self.engine_for(database_name, pin=True)
+        try:
+            yield engine
+        finally:
+            self.unpin(engine)
+
+    def engine_for(self, database_name: str, *, pin: bool = False) -> Engine:
+        """The engine for ``database_name``, created on first use and kept while hot.
+
+        ``pin=True`` is atomic with the hand-out: the engine is busy before the lock
+        is released, so a concurrent sweep cannot treat a just-returned engine as idle.
+        The matching :meth:`unpin` is the caller's (or :meth:`acquire`'s).
+        """
         name = check_database_name(database_name)
         now = time.monotonic()
         with self._lock:
@@ -216,13 +252,13 @@ class EnginePool:
                     pool_pre_ping=True,
                 )
                 self._engines[name] = engine
-                while len(self._engines) > self._cache_size:
-                    evicted_name, stale = self._engines.popitem(last=False)
-                    self._last_used.pop(evicted_name, None)
-                    discarded.append(stale)
             else:
                 self._engines.move_to_end(name)
             self._last_used[name] = now
+            discarded.extend(self._evict_unused_over_cap(protect=name))
+            if pin:
+                key = id(engine)
+                self._pins[key] = self._pins.get(key, 0) + 1
         # Both branches fall through to here: ``dispose`` closes sockets and can block,
         # so it never runs under ``self._lock``, where it would serialise every other
         # workspace's call behind one slow teardown.
@@ -236,14 +272,13 @@ class EnginePool:
             return tuple(self._engines)
 
     def close_idle(self) -> int:
-        """Dispose every engine past the idle window that is not in use; returns how
+        """Dispose every engine past the idle window that is not busy; returns how
         many went.
 
         ``engine_for`` already does this on the way in. This is the same sweep for a
         caller that wants it without asking for an engine — a worker between passes,
         or ``rheo doctor``. A zero is therefore not evidence that nothing was idle:
-        an engine with a connection still checked out is skipped and counted by
-        neither, per ``_expire_idle``.
+        a busy engine is skipped and counted by neither, per ``_expire_idle``.
         """
         with self._lock:
             discarded = self._expire_idle(time.monotonic())
@@ -256,5 +291,6 @@ class EnginePool:
             engines = list(self._engines.values())
             self._engines.clear()
             self._last_used.clear()
+            self._pins.clear()
         for engine in engines:
             engine.dispose()

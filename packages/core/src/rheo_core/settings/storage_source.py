@@ -32,8 +32,9 @@ class PostgresOverrideSource:
 
     def _open(self, workspace_id: UUID) -> UnitOfWork:
         row = active_workspace(workspace_id)
-        engine = get_backend().pools.engine_for(row.database_name)
-        return UnitOfWork(engine, row.database_name)
+        pools = get_backend().pools
+        engine = pools.engine_for(row.database_name, pin=True)
+        return UnitOfWork(engine, row.database_name, pool=pools)
 
     def workspace_overrides(self, workspace_id: UUID) -> Mapping[str, str]:
         with self._open(workspace_id) as uow:

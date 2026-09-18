@@ -24,12 +24,14 @@ because the obvious version of the test passes either way:
 """
 
 import ast
+import threading
 import time
 from pathlib import Path
 
 import pytest
 from conftest import ClusterSession
 from rheo_core.storage import pools as pools_module
+from rheo_core.storage.backend import StorageRefusal, UnitOfWork
 from rheo_core.storage.pools import EnginePool, check_database_name
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -174,28 +176,13 @@ def test_an_engine_with_a_connection_checked_out_survives_the_idle_sweep(
 
 
 @pytest.mark.postgres
-def test_the_count_cap_evicts_an_in_use_engine_and_detaches_its_connection(
+def test_the_count_cap_defers_eviction_of_an_in_use_engine(
     cluster: ClusterSession,
 ) -> None:
-    """The boundary of the guard above, pinned rather than left as a caveat.
-
-    ``_expire_idle`` skips an engine with a connection checked out. The **count cap**
-    in ``engine_for`` does not consult that: past the cap it pops the
-    least-recently-used engine and disposes it whether or not someone is holding a
-    connection, and ``dispose()`` detaches rather than closes that connection — so the
-    server-side connection outlives every count this class reports. That is exactly
-    what ``pooled_connections``' docstring names as its second omission and what
-    ``rheo doctor`` prints.
-
-    **Declared-and-untested is how a known hole becomes an unknown one**, so this
-    asserts the behaviour as it is rather than as anyone would like it. Bounding the
-    cap would mean either exceeding it or refusing a caller, which is a larger
-    decision than this figure; whoever takes it has to change this test, which is the
-    point of it existing.
+    """Issue #62: the count cap must not ``dispose()``-detach a live connection.
 
     ``idle_close_seconds`` is far away, so nothing here can be expired by idleness and
-    the eviction can only be the cap — the isolation
-    ``test_an_untouched_engine_is_gone_after_the_idle_window`` uses in reverse.
+    the eviction can only be the cap.
     """
     held = cluster.control_database
     p = EnginePool(
@@ -214,20 +201,78 @@ def test_the_count_cap_evicts_an_in_use_engine_and_detaches_its_connection(
             assert p.close_idle() == 0
             assert p.cached() == (held,)
 
-            # The cap does not. One more database is one past ``cache_size=1``.
-            p.engine_for(MAINTENANCE_DATABASE)
-
-            assert held not in p.cached(), (
-                "the count cap no longer evicts an in-use engine; if that is "
-                "deliberate, pooled_connections' second omission and rheo doctor's "
-                "printed detail both have to change with it"
-            )
-            # Detached rather than closed: still live, still holding a server
-            # connection that nothing in this class counts any more.
+            other = p.engine_for(MAINTENANCE_DATABASE)
+            assert other is not engine
+            assert held in p.cached()
+            assert MAINTENANCE_DATABASE in p.cached()
+            assert p.held_connections == 10
+            assert p.pooled_connections == 5
             assert connection.execute(text("SELECT 1")).scalar_one() == 1
         finally:
             connection.close()
+        p.engine_for(MAINTENANCE_DATABASE)
+        assert p.cached() == (MAINTENANCE_DATABASE,)
+        assert p.held_connections == 5
     finally:
+        p.dispose_all()
+
+
+@pytest.mark.postgres
+def test_a_pin_keeps_an_engine_through_idle_and_the_count_cap(
+    cluster: ClusterSession,
+) -> None:
+    """The handout window: zero checkouts, but a caller still holds the engine."""
+    held = cluster.control_database
+    p = EnginePool(
+        cluster.backend.pools.cluster_url,
+        cache_size=1,
+        pool_size=5,
+        idle_close_seconds=0.01,
+        reserved_connections=0,
+    )
+    try:
+        with p.acquire(held) as engine:
+            time.sleep(0.05)
+            assert p.close_idle() == 0
+            assert held in p.cached()
+            other = p.engine_for(MAINTENANCE_DATABASE)
+            assert other is not engine
+            assert held in p.cached()
+            assert MAINTENANCE_DATABASE in p.cached()
+        time.sleep(0.05)
+        assert p.close_idle() == 2
+        assert p.cached() == ()
+    finally:
+        p.dispose_all()
+
+
+@pytest.mark.postgres
+def test_a_failed_unit_of_work_enter_releases_the_pin(
+    cluster: ClusterSession,
+) -> None:
+    """``__enter__`` raising must not leave the engine permanently busy."""
+    held = cluster.control_database
+    p = EnginePool(
+        cluster.backend.pools.cluster_url,
+        cache_size=1,
+        pool_size=5,
+        idle_close_seconds=0.01,
+        reserved_connections=0,
+    )
+    previous = UnitOfWork.verify_database
+    UnitOfWork.verify_database = True
+    try:
+        engine = p.engine_for(held, pin=True)
+        with pytest.raises(StorageRefusal, match="mismatch"):
+            with UnitOfWork(engine, "not_this_database", pool=p):
+                raise AssertionError("enter should have refused")
+        time.sleep(0.05)
+        assert p.close_idle() == 1
+        assert p.cached() == ()
+        with pytest.raises(ValueError, match="currently holds"):
+            p.pin(engine)
+    finally:
+        UnitOfWork.verify_database = previous
         p.dispose_all()
 
 
@@ -244,32 +289,20 @@ def test_close_idle_is_callable_without_asking_for_an_engine() -> None:
 def test_pooled_connections_counts_the_reserved_engine_too() -> None:
     """The arithmetic an operator compares with the cluster's own ``max_connections``.
 
-    The shipped defaults are ``cache_size`` 16 and ``pool_max_connections`` 5, and the
-    backend hands the pool a reservation of 5 for its own control engine: 16 * 5 + 5 =
-    85 per process. Core and worker are separate processes each holding their own, so
-    a stock ``max_connections`` of 100 carries one and not two — which is what
-    ``rheo doctor``'s connection-budget check reports.
-
-    The reservation is a value the pool is handed, never one it derives: nothing here
-    can notice if ``PostgresBackend.control_engine`` is resized and this argument is
-    not.
-
-    **The rename is the fix for issue #62's third gap, and the arithmetic is
-    unaffected by it.** The property was ``worst_case_connections`` while two things
-    this process can hold sat outside the sum — the backend's ``NullPool`` maintenance
-    engine, and a connection detached by the count cap's eviction — so it claimed a
-    ceiling it was not. What it counts is the pools, which is what it is now called;
-    the two omissions are named at the property and in ``rheo doctor``'s printed
-    detail.
+    The shipped defaults are ``cache_size`` 16 and ``pool_max_connections`` 5. The
+    backend reserves 5 for its control engine plus 1 for serialized maintenance:
+    16 * 5 + 6 = 86 per process. Core and worker are separate processes each holding
+    their own, so a stock ``max_connections`` of 100 carries one and not two.
     """
-    p = pool(cache_size=16, reserved_connections=5)
+    p = pool(cache_size=16, reserved_connections=6)
     assert p.cache_size == 16
     assert p.pool_size == 5
-    assert p.reserved_connections == 5
-    assert p.pooled_connections == 85
+    assert p.reserved_connections == 6
+    assert p.pooled_connections == 86
+    assert p.held_connections == 6
     # The reservation is additive, not decorative: drop it and the figure moves.
     assert pool(cache_size=16, reserved_connections=0).pooled_connections == 80
-    # The old name claimed a ceiling this figure is not, and must not come back as an
+    # The old name claimed a ceiling the figure was not, and must not come back as an
     # alias beside the new one — two names for one number is how the wrong one
     # survives a rename.
     assert not hasattr(p, "worst_case_connections")
@@ -379,3 +412,35 @@ def test_dispose_is_never_called_under_the_lock() -> None:
         "dispose() is called while self._lock is held, at line(s) "
         f"{sorted(node.lineno for node in under_lock)}"
     )
+
+
+@pytest.mark.postgres
+def test_maintenance_access_is_one_at_a_time(cluster: ClusterSession) -> None:
+    """Issue #62: overlapping maintenance calls used to each open a connection."""
+    from rheo_core.storage.postgres import MAINTENANCE_RESERVED
+
+    assert cluster.backend.pools.reserved_connections == (
+        cluster.backend.pool_max_connections + MAINTENANCE_RESERVED
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    overlapping = []
+
+    def hold() -> None:
+        with cluster.backend.maintenance_connection():
+            entered.set()
+            release.wait(timeout=2)
+
+    first = threading.Thread(target=hold)
+    first.start()
+    assert entered.wait(timeout=2)
+    second = threading.Thread(
+        target=lambda: overlapping.append(
+            cluster.backend._maintenance_lock.acquire(blocking=False)
+        )
+    )
+    second.start()
+    second.join(timeout=2)
+    assert overlapping == [False]
+    release.set()
+    first.join(timeout=2)

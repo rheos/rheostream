@@ -45,6 +45,8 @@ TEMPLATE_DATABASE_KEY: Final = "storage.template_database"
 POOL_CACHE_SIZE_KEY: Final = "storage.pool_cache_size"
 POOL_MAX_CONNECTIONS_KEY: Final = "storage.pool_max_connections"
 POOL_IDLE_CLOSE_KEY: Final = "storage.pool_idle_close_seconds"
+MAINTENANCE_RESERVED: Final = 1
+"""One connection: ``maintenance_connection`` is serialized, so this is a bound."""
 
 STORAGE_SCOPE_COMPONENT: Final = "storage"
 STORAGE_SCOPE_PREFIXES: Final = (
@@ -156,20 +158,17 @@ class PostgresBackend:
             idle_close_seconds=pool_idle_close_seconds,
             # The connections this backend holds outside the workspace cache:
             # ``control_engine`` below is created with ``pool_size =
-            # self.pool_max_connections``, so that is the reservation. The pool
-            # cannot see it, so if ``control_engine``'s own sizing ever changes,
-            # this argument changes with it or ``pooled_connections`` quietly
-            # understates the process. ``_maintenance_engine`` below is deliberately
-            # NOT folded in here: it is a ``NullPool``, bounded by concurrent
-            # maintenance calls rather than by a pool size, so it has no pool-sized
-            # term to add. ``pooled_connections`` names it as an omission instead.
-            reserved_connections=pool_max_connections,
+            # self.pool_max_connections``, and ``maintenance_connection`` is
+            # serialized to one at a time (issue #62). The pool cannot see either,
+            # so if those bounds change, this argument changes with them.
+            reserved_connections=pool_max_connections + MAINTENANCE_RESERVED,
         )
         self._maintenance_engine = create_engine(
             self._cluster_url, isolation_level="AUTOCOMMIT", poolclass=NullPool
         )
         self._control_engine: Engine | None = None
         self._lock = threading.Lock()
+        self._maintenance_lock = threading.Lock()
 
     @classmethod
     def from_settings(cls) -> "PostgresBackend":
@@ -207,9 +206,10 @@ class PostgresBackend:
     @contextmanager
     def maintenance_connection(self) -> Iterator[Connection]:
         """An autocommit connection to the maintenance database, for ``CREATE
-        DATABASE`` and friends. Never pooled."""
-        with self._maintenance_engine.connect() as connection:
-            yield connection
+        DATABASE`` and friends. Never pooled, and one at a time (issue #62)."""
+        with self._maintenance_lock:
+            with self._maintenance_engine.connect() as connection:
+                yield connection
 
     def dispose(self) -> None:
         """Dispose every engine this backend created."""

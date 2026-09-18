@@ -5,7 +5,7 @@ pools, server-derived routing, the unit of work, and provisioning.
   one transaction, one workspace database; no outbox or audit attachment point), and
   the storage refusals.
 - ``postgres.py`` — ``PostgresBackend`` and the process-wide ``get_backend()``.
-- ``pools.py`` — one engine per ``database_name`` in an LRU; eviction disposes.
+- ``pools.py`` — one engine per ``database_name`` in an LRU; busy engines stay.
 - ``routing.py`` — ``route(ctx)`` and ``open_unit_of_work(ctx)``.
 - ``control_tables.py`` / ``core_tables.py`` — the SQLAlchemy Core tables the
   migration chains import.

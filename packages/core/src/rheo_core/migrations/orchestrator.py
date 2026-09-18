@@ -222,34 +222,36 @@ def migrate_workspace(
         row = get_workspace(connection, workspace_id)
     if row is None:
         raise StorageRefusal(WORKSPACE_MISSING, f"workspace {workspace_id} has no row")
-    engine = backend.pools.engine_for(row.database_name)
-    detail: str
-    try:
-        with engine.begin() as connection:
-            for chain in chains:
-                run_chain(connection, chain, expected_database=row.database_name)
-    except StorageRefusal as refusal:
-        detail = SCHEMA_AHEAD if refusal.state == SCHEMA_AHEAD else _error_text(refusal)
-    except Exception as exc:
-        detail = _error_text(exc)
-    else:
-        return MigrationResult(row.id, row.database_name, CORE_CHAIN, True, None)
-    with backend.control_engine.begin() as connection:
-        set_workspace_state(
-            connection,
-            workspace_id,
-            state=WorkspaceState.UNAVAILABLE,
-            state_detail=detail,
+    with backend.pools.acquire(row.database_name) as engine:
+        detail: str
+        try:
+            with engine.begin() as connection:
+                for chain in chains:
+                    run_chain(connection, chain, expected_database=row.database_name)
+        except StorageRefusal as refusal:
+            detail = (
+                SCHEMA_AHEAD if refusal.state == SCHEMA_AHEAD else _error_text(refusal)
+            )
+        except Exception as exc:
+            detail = _error_text(exc)
+        else:
+            return MigrationResult(row.id, row.database_name, CORE_CHAIN, True, None)
+        with backend.control_engine.begin() as connection:
+            set_workspace_state(
+                connection,
+                workspace_id,
+                state=WorkspaceState.UNAVAILABLE,
+                state_detail=detail,
+            )
+        logger.error(
+            "workspace_migration_failed",
+            extra={
+                "workspace_id": str(workspace_id),
+                "database_name": row.database_name,
+                "state_detail": detail,
+            },
         )
-    logger.error(
-        "workspace_migration_failed",
-        extra={
-            "workspace_id": str(workspace_id),
-            "database_name": row.database_name,
-            "state_detail": detail,
-        },
-    )
-    return MigrationResult(row.id, row.database_name, CORE_CHAIN, False, detail)
+        return MigrationResult(row.id, row.database_name, CORE_CHAIN, False, detail)
 
 
 def migrate_active_workspaces(
