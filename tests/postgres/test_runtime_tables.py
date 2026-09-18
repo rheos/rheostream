@@ -123,14 +123,18 @@ def test_runtime_tables_accept_architecture_rows_without_secrets(
     }
 
     with engine.begin() as connection:
-        connection.execute(insert(runtime_tables.runtime_request).values(**request_values))
+        connection.execute(
+            insert(runtime_tables.runtime_request).values(**request_values)
+        )
         connection.execute(
             insert(runtime_tables.runtime_request_context).values(**context_values)
         )
         connection.execute(
             insert(runtime_tables.runtime_transcript).values(**transcript_values)
         )
-        connection.execute(insert(runtime_tables.runtime_session).values(**session_values))
+        connection.execute(
+            insert(runtime_tables.runtime_session).values(**session_values)
+        )
 
         request_row = connection.execute(
             select(runtime_tables.runtime_request).where(

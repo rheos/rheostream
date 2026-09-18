@@ -106,6 +106,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.runtime.run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.runtime.run (mutate) */
+        post: operations["core.runtime.run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.settings.set": {
         parameters: {
             query?: never;
@@ -451,6 +468,12 @@ export interface components {
             /** Subject Ref */
             subject_ref: string | null;
         };
+        /**
+         * ContextPurpose
+         * @description Why context is assembled for a run (intake vocabulary, not a directory kind).
+         * @enum {string}
+         */
+        ContextPurpose: "respond" | "follow_up" | "share_with_referral" | "internal_analysis";
         /** DigestEntry */
         DigestEntry: {
             /** Count */
@@ -559,6 +582,7 @@ export interface components {
              */
             limit: number;
         };
+        JsonValue: unknown;
         /** ModuleStatus */
         ModuleStatus: {
             /** Module Id */
@@ -673,6 +697,62 @@ export interface components {
              * @default null
              */
             terminal_check_kind: ("record_exists" | "provider_status" | "sink_recorded" | "handler_returned") | null;
+        };
+        /** RuntimeRunInput */
+        RuntimeRunInput: {
+            /**
+             * Continuation
+             * @default null
+             */
+            continuation: string | null;
+            /**
+             * Deadline Seconds
+             * @default null
+             */
+            deadline_seconds: number | null;
+            /**
+             * Max Iterations
+             * @default 40
+             */
+            max_iterations: number;
+            /**
+             * Model Id
+             * @default null
+             */
+            model_id: string | null;
+            /** Output */
+            output: components["schemas"]["TextOutput"] | components["schemas"]["StructuredOutput"] | components["schemas"]["StreamOutput"];
+            /**
+             * Permitted Tools
+             * @default []
+             */
+            permitted_tools: string[];
+            purpose: components["schemas"]["ContextPurpose"];
+            /**
+             * Refs
+             * @default []
+             */
+            refs: string[];
+            /**
+             * Requirements
+             * @default []
+             */
+            requirements: string[];
+            /**
+             * Runtime Id
+             * @default null
+             */
+            runtime_id: string | null;
+            /** Task */
+            task: string;
+        };
+        /** RuntimeRunScheduled */
+        RuntimeRunScheduled: {
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
         };
         /** ScheduledArtifact */
         ScheduledArtifact: {
@@ -791,6 +871,43 @@ export interface components {
              * Format: uuid
              */
             grant_id: string;
+        };
+        /**
+         * StreamOutput
+         * @description The run should stream tokens; still ends on one terminal event.
+         */
+        StreamOutput: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "stream";
+        };
+        /**
+         * StructuredOutput
+         * @description The run should return JSON matching ``json_schema`` (Draft 2020-12).
+         */
+        StructuredOutput: {
+            /** Json Schema */
+            json_schema: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "structured";
+        };
+        /**
+         * TextOutput
+         * @description The run should return plain text.
+         */
+        TextOutput: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "text";
         };
         /**
          * TokenIssueInput
@@ -1096,6 +1213,39 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["OperationRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.runtime.run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeRunInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["RuntimeRunScheduled"];
                         state: string;
                     };
                 };

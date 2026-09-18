@@ -64,6 +64,7 @@ from rheo_core.operations import (
 )
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
 from rheo_core.refs import uuid7
+from rheo_core.runtime import RUNTIME_RUN
 from rheo_core.storage import control_tables
 from rheo_core.storage.control_plane import (
     get_account,
@@ -336,13 +337,16 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now fourteen: 0b1's three, 0b2's C8 adds core.token.issue and
+        # Sorted, and now eighteen: 0b1's three, 0b2's C8 adds core.token.issue and
         # core.token.revoke, 0c1's C3 adds core.work.failures, 0c2's C4 adds
         # core.operation.get/list/resolve, 0c2's C5 adds core.audit.list, 0c3's
-        # C6 adds core.approval.approve and core.approval.refuse, and 0c3's C7 adds
-        # core.standing_grant.create and core.standing_grant.revoke. Sorted by the
+        # C6 adds core.approval.approve and core.approval.refuse, 0c3's C7 adds
+        # core.standing_grant.create and core.standing_grant.revoke, and 0c4 adds
+        # core.runtime.run. Sorted by the
         # name string, so the two core.approval.* names lead ("approval" before
-        # "audit"), the three core.operation.* names follow core.audit.list, the two
+        # "audit"), the three core.operation.* names follow core.audit.list,
+        # core.runtime.run sits between core.operation.resolve and
+        # core.settings.set, the two
         # core.standing_grant.* names land between core.settings.set_member and
         # core.token.issue, and core.work.failures lands immediately before
         # core.workspace.status ("." sorts before "s").
@@ -365,6 +369,7 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             OPERATION_GET,
             OPERATION_LIST,
             OPERATION_RESOLVE,
+            RUNTIME_RUN,
             SETTINGS_SET,
             "core.settings.set_member",
             STANDING_GRANT_CREATE,

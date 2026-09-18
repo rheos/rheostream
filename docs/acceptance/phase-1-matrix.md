@@ -906,7 +906,7 @@ negative case and is unreachable by a hunk on the `long_running` branch.
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record`
-- `pytest:tests/postgres/test_audit_dispatch.py::test_the_mutating_set_derived_from_the_registry_is_the_declared_sixteen`
+- `pytest:tests/postgres/test_audit_dispatch.py::test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen`
 - `pytest:tests/postgres/test_audit_dispatch.py::test_the_success_row_names_the_actor_the_entry_and_the_request`
 - `pytest:tests/postgres/test_audit_dispatch.py::test_an_operation_above_mutate_is_audited_too`
 - `pytest:tests/postgres/test_context_routing.py::test_registering_a_non_read_operation_with_no_audit_spec_is_refused`

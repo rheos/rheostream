@@ -325,6 +325,17 @@
         "title": "AuditRecord",
         "type": "object"
       },
+      "ContextPurpose": {
+        "description": "Why context is assembled for a run (intake vocabulary, not a directory kind).",
+        "enum": [
+          "respond",
+          "follow_up",
+          "share_with_referral",
+          "internal_analysis"
+        ],
+        "title": "ContextPurpose",
+        "type": "string"
+      },
       "DigestEntry": {
         "properties": {
           "count": {
@@ -487,6 +498,7 @@
         "title": "FailureListInput",
         "type": "object"
       },
+      "JsonValue": {},
       "ModuleStatus": {
         "properties": {
           "module_id": {
@@ -741,6 +753,138 @@
         "title": "OperationResolveInput",
         "type": "object"
       },
+      "RuntimeRunInput": {
+        "properties": {
+          "continuation": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation"
+          },
+          "deadline_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Deadline Seconds"
+          },
+          "max_iterations": {
+            "default": 40,
+            "title": "Max Iterations",
+            "type": "integer"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Id"
+          },
+          "output": {
+            "discriminator": {
+              "mapping": {
+                "stream": "#/components/schemas/StreamOutput",
+                "structured": "#/components/schemas/StructuredOutput",
+                "text": "#/components/schemas/TextOutput"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TextOutput"
+              },
+              {
+                "$ref": "#/components/schemas/StructuredOutput"
+              },
+              {
+                "$ref": "#/components/schemas/StreamOutput"
+              }
+            ],
+            "title": "Output"
+          },
+          "permitted_tools": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Permitted Tools",
+            "type": "array"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/ContextPurpose"
+          },
+          "refs": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Refs",
+            "type": "array"
+          },
+          "requirements": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Requirements",
+            "type": "array"
+          },
+          "runtime_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Runtime Id"
+          },
+          "task": {
+            "title": "Task",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "purpose",
+          "output"
+        ],
+        "title": "RuntimeRunInput",
+        "type": "object"
+      },
+      "RuntimeRunScheduled": {
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "title": "RuntimeRunScheduled",
+        "type": "object"
+      },
       "ScheduledArtifact": {
         "properties": {
           "export_id": {
@@ -965,6 +1109,55 @@
           "grant_id"
         ],
         "title": "StandingGrantRef",
+        "type": "object"
+      },
+      "StreamOutput": {
+        "description": "The run should stream tokens; still ends on one terminal event.",
+        "properties": {
+          "kind": {
+            "const": "stream",
+            "default": "stream",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "title": "StreamOutput",
+        "type": "object"
+      },
+      "StructuredOutput": {
+        "description": "The run should return JSON matching ``json_schema`` (Draft 2020-12).",
+        "properties": {
+          "json_schema": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Json Schema",
+            "type": "object"
+          },
+          "kind": {
+            "const": "structured",
+            "default": "structured",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "json_schema"
+        ],
+        "title": "StructuredOutput",
+        "type": "object"
+      },
+      "TextOutput": {
+        "description": "The run should return plain text.",
+        "properties": {
+          "kind": {
+            "const": "text",
+            "default": "text",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "title": "TextOutput",
         "type": "object"
       },
       "TokenIssueInput": {
@@ -1559,6 +1752,69 @@
           }
         },
         "summary": "core.operation.resolve (mutate)"
+      }
+    },
+    "/api/v1/operations/core.runtime.run": {
+      "post": {
+        "operationId": "core.runtime.run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeRunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/RuntimeRunScheduled"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.runtime.run (mutate)"
       }
     },
     "/api/v1/operations/core.settings.set": {

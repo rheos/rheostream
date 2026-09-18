@@ -106,9 +106,7 @@ class RecordingAdapter:
         native_handle: str | None = "cli-session-1",
     ) -> None:
         self.start_calls: list[tuple[RuntimeRequest, AdapterSpawn]] = []
-        self._events = events if events is not None else [
-            FinalOutputEvent(text="ok")
-        ]
+        self._events = events if events is not None else [FinalOutputEvent(text="ok")]
         self._capabilities = capabilities or _capabilities()
         self._native_handle = native_handle
 
@@ -209,11 +207,15 @@ def _payload() -> dict[str, Any]:
 
 def _job_row(engine: Engine, operation_id: UUID) -> Any:
     with engine.connect() as connection:
-        return connection.execute(
-            select(work_tables.job).where(
-                work_tables.job.c.operation_id == operation_id
+        return (
+            connection.execute(
+                select(work_tables.job).where(
+                    work_tables.job.c.operation_id == operation_id
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
 
 
 def _operation(engine: Engine, operation_id: UUID):
@@ -288,9 +290,7 @@ def test_runtime_login_binding_handshake_does_not_start_or_write_seed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RHEO__runtime__claude_cli__credential_kind", "login")
-    monkeypatch.setenv(
-        "RHEO__runtime__claude_cli__credential_account_id", str(uuid7())
-    )
+    monkeypatch.setenv("RHEO__runtime__claude_cli__credential_account_id", str(uuid7()))
     config_dir = workspace_dir_for(workspace, Purpose.SCRATCH) / "claude-cli"
     config_dir.mkdir(parents=True, exist_ok=True)
     seed = config_dir / "seed-marker"
@@ -324,9 +324,7 @@ def test_runtime_gate_before_adapter_start_uses_unmet_capability_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _api_key(monkeypatch)
-    adapter = RecordingAdapter(
-        capabilities=_capabilities(structured_output=False)
-    )
+    adapter = RecordingAdapter(capabilities=_capabilities(structured_output=False))
     clock = datetime.now(UTC)
     ctx = _owner_context(cluster, workspace, owner_account_id)
     payload = _payload()
@@ -412,12 +410,12 @@ def test_runtime_job_operation_id_equals_minted_id_and_spawn_dirs(
     assert operation.state == "succeeded"
     assert operation.terminal_check_kind == operation_records.HANDLER_RETURNED
     with engine.connect() as connection:
-        sessions = connection.execute(
-            select(runtime_tables.runtime_session)
-        ).mappings().all()
-        requests = connection.execute(
-            select(runtime_tables.runtime_request)
-        ).mappings().all()
+        sessions = (
+            connection.execute(select(runtime_tables.runtime_session)).mappings().all()
+        )
+        requests = (
+            connection.execute(select(runtime_tables.runtime_request)).mappings().all()
+        )
     assert len(sessions) == 1
     assert sessions[0]["native_handle"] == "cli-session-1"
     assert len(requests) == 1

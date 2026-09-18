@@ -876,9 +876,7 @@ def revoke_access_token(conn: Connection, token_id: UUID) -> None:
 
 def delete_access_token(conn: Connection, token_id: UUID) -> None:
     """Delete the row (snapshot rows cascade). Not a revoke."""
-    result = conn.execute(
-        delete(t.access_token).where(t.access_token.c.id == token_id)
-    )
+    result = conn.execute(delete(t.access_token).where(t.access_token.c.id == token_id))
     if result.rowcount != 1:
         raise StorageRefusal(
             ACCESS_TOKEN_MISSING, f"access token {token_id} has no row"

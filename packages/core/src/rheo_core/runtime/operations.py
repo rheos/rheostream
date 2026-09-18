@@ -179,9 +179,7 @@ def build_context(
 ) -> list[ContextItem]:
     """Resolve live, readable refs on the sealed handler UoW. Truncate at the cap."""
     del purpose
-    settings = resolve(
-        workspace_id=ctx.workspace_id, source=PostgresOverrideSource()
-    )
+    settings = resolve(workspace_id=ctx.workspace_id, source=PostgresOverrideSource())
     cap = settings.get_int("runtime.max_context_bytes")
     items: list[ContextItem] = []
     used = 0
@@ -257,9 +255,7 @@ def runtime_run_handler(
             "output_invalid",
             "core.runtime.run is long-running and needs a minted operation",
         )
-    settings = resolve(
-        workspace_id=ctx.workspace_id, source=PostgresOverrideSource()
-    )
+    settings = resolve(workspace_id=ctx.workspace_id, source=PostgresOverrideSource())
     runtime_id = _sole_or_refuse(
         model_input.runtime_id,
         settings.get_list("runtime.allowed_runtimes"),
@@ -403,17 +399,21 @@ def _lookup_continuation(
         return None, None
     if payload.actor_id is None or payload.audience_id is None:
         return None, None
-    row = uow.connection.execute(
-        select(runtime_tables.runtime_session).where(
-            runtime_tables.runtime_session.c.id == payload.continuation,
-            runtime_tables.runtime_session.c.runtime_id == payload.runtime_id,
-            runtime_tables.runtime_session.c.credential_scope == credential_scope,
-            runtime_tables.runtime_session.c.actor_kind == payload.actor_kind,
-            runtime_tables.runtime_session.c.actor_id == payload.actor_id,
-            runtime_tables.runtime_session.c.audience_kind == payload.audience_kind,
-            runtime_tables.runtime_session.c.audience_id == payload.audience_id,
+    row = (
+        uow.connection.execute(
+            select(runtime_tables.runtime_session).where(
+                runtime_tables.runtime_session.c.id == payload.continuation,
+                runtime_tables.runtime_session.c.runtime_id == payload.runtime_id,
+                runtime_tables.runtime_session.c.credential_scope == credential_scope,
+                runtime_tables.runtime_session.c.actor_kind == payload.actor_kind,
+                runtime_tables.runtime_session.c.actor_id == payload.actor_id,
+                runtime_tables.runtime_session.c.audience_kind == payload.audience_kind,
+                runtime_tables.runtime_session.c.audience_id == payload.audience_id,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         return None, None
     expires_at = row["expires_at"]
@@ -636,9 +636,7 @@ def _poll_loop(
             )
             return
         if kind == "cancelled":
-            finish_cancelled(
-                uow.connection, operation_id=payload.operation_id, now=now
-            )
+            finish_cancelled(uow.connection, operation_id=payload.operation_id, now=now)
             uow.connection.execute(
                 update(runtime_tables.runtime_request)
                 .where(runtime_tables.runtime_request.c.id == request_id)
@@ -784,10 +782,7 @@ def make_run_runtime_job(
             if payload.refs:
                 uow.connection.execute(
                     insert(runtime_tables.runtime_request_context),
-                    [
-                        {"request_id": request_id, "ref": ref}
-                        for ref in payload.refs
-                    ],
+                    [{"request_id": request_id, "ref": ref} for ref in payload.refs],
                 )
             credential_scope = _credential_scope(settings)
             matched_id, native_handle = _lookup_continuation(
