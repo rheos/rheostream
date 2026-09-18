@@ -113,10 +113,16 @@ def test_the_fixture_round_trips_through_the_model(mode: str) -> None:
     """The serialised form 08 serves and 10 reads carries every fixture field."""
     raw = read_fixture(f"{mode}-mode.json")
     dumped = CONFIGS[mode].model_dump(mode="json")
-    assert (dumped["mode"], dumped["scheme"], dumped["base_host"]) == (
+    assert (
+        dumped["mode"],
+        dumped["scheme"],
+        dumped["base_host"],
+        dumped["public_host"],
+    ) == (
         raw["mode"],
         raw["scheme"],
         raw["base_host"],
+        raw["public_host"],
     )
     for name, surface in raw["surfaces"].items():
         if name == "modules":
@@ -298,32 +304,10 @@ def test_the_reference_deployments_base_host_is_port_free() -> None:
     )
 
 
-def test_the_compose_callback_is_composed_from_that_one_port_free_value() -> None:
-    """The other half of the same invariant, and the cost of it, pinned rather than
-    left to be rediscovered.
-
-    ``base_host`` is doing two jobs with opposite requirements and there is no third
-    key to split them onto. ``is_application_host`` compares it against a host the
-    caller has already stripped the port from, so it must be **port-free** (the test
-    above). ``url_for`` composes ``{scheme}://{base_host}{path}`` in path mode —
-    ``RoutingConfig`` carries ``mode``, ``scheme``, ``base_host`` and ``surfaces`` and
-    nothing else, so ``base_host`` is the *entire* authority of every URL this codebase
-    builds, the OAuth callback at ``auth_routes.py:222`` included.
-
-    **The consequence, stated because a reader will otherwise hit it as a surprise:**
-    on a **direct** deployment serving a non-default port, the callback that
-    ``rheo routing hosts`` prints and that ``/auth/login`` builds is missing that port.
-    The documented topology is a reverse proxy terminating on 443 (ratified D10), which
-    has no port to lose and is unaffected; the reference stack here disables the GitHub
-    provider outright, so it builds no callback at all. This is a pre-existing property
-    of the one-key design, not of the port-free spelling — with a port in ``base_host``
-    the callback carried one but ``/auth/*`` refused every request, so there is no
-    setting of this one key that satisfies both readers.
-
-    Asserting the literal rather than re-deriving it: a re-derivation would restate
-    ``url_for`` and pass against any composition. This line is what the operator is
-    told to register, and it breaks the moment a separate public-authority key is
-    introduced — which is exactly when someone should be made to read this docstring.
+def test_the_compose_callback_inherits_the_port_free_base_host() -> None:
+    """Reference compose does not set ``public_host``, so the callback inherits
+    the port-free ``base_host``. That is the documented reverse-proxy topology
+    (D10). A direct non-default-port deploy sets ``routing.public_host``.
     """
     environment = compose_core_environment()
     config = RoutingConfig.model_validate(
@@ -332,6 +316,7 @@ def test_the_compose_callback_is_composed_from_that_one_port_free_value() -> Non
             "mode": environment["RHEO__routing__mode"],
             "scheme": environment["RHEO__routing__scheme"],
             "base_host": environment["RHEO__routing__base_host"],
+            "public_host": environment.get("RHEO__routing__public_host", ""),
         }
     )
     callback = url_for(config, IDENTITY, "/callback")
@@ -339,10 +324,30 @@ def test_the_compose_callback_is_composed_from_that_one_port_free_value() -> Non
         "this is the line `rheo routing hosts` prints for an operator to register on "
         "the identity provider; it changed without this test being read"
     )
-    assert ":" not in urlsplit(callback).netloc, (
-        f"the callback authority {urlsplit(callback).netloc!r} carries a port, so "
-        "base_host does too — and then /auth/* refuses every request (issue #37)"
+    assert config.public_host == config.base_host
+
+
+def test_public_host_may_carry_a_port_that_base_host_must_not() -> None:
+    """Issue #80: one key cannot serve Host matching and the public callback."""
+    with pytest.raises(ValueError, match="port-free"):
+        RoutingConfig.model_validate(
+            {**read_fixture("path-mode.json"), "base_host": "localhost:3000"}
+        )
+
+    config = RoutingConfig.model_validate(
+        {
+            **read_fixture("path-mode.json"),
+            "mode": "path",
+            "scheme": "http",
+            "base_host": "localhost",
+            "public_host": "localhost:3000",
+        }
     )
+    assert is_application_host(config, normalize_host("localhost:3000"))
+    assert (
+        url_for(config, IDENTITY, "/callback") == "http://localhost:3000/auth/callback"
+    )
+    assert urlsplit(url_for(config, IDENTITY, "/callback")).netloc == "localhost:3000"
 
 
 # --- the settings path ---------------------------------------------------------------
@@ -351,7 +356,11 @@ def test_the_compose_callback_is_composed_from_that_one_port_free_value() -> Non
 def test_from_settings_builds_the_package_default_topology() -> None:
     config = RoutingConfig.from_settings(resolve())
     assert config.mode is RoutingMode.PATH
-    assert (config.scheme, config.base_host) == ("https", "localhost")
+    assert (config.scheme, config.base_host, config.public_host) == (
+        "https",
+        "localhost",
+        "localhost",
+    )
     surfaces = config.surfaces
     assert (surfaces.shell.host, surfaces.shell.path) == ("circuit", "/")
     assert (surfaces.identity.host, surfaces.identity.path) == ("auth", "/auth")

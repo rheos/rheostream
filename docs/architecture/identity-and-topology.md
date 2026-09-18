@@ -232,7 +232,8 @@ render):
 RoutingConfig
   mode: "path" | "subdomain"
   scheme: "https"
-  base_host: "example.test"                 # the apex in subdomain mode; the single host in path mode
+  base_host: "example.test"                 # Host-header match; port-free
+  public_host: "example.test"               # URL authority; may carry a port; empty inherits base_host
   surfaces:
     shell:    { host: "circuit", path: "/" }
     identity: { host: "auth",    path: "/auth" }
@@ -245,7 +246,9 @@ RoutingConfig
 
 Both the Python core and the web tier expose one function, `url_for(surface, path)`, and every
 link, redirect, callback URL, and MCP configuration file goes through it. In `subdomain` mode it
-yields `https://<host>.<base_host><path>`; in `path` mode `https://<base_host><surface path><path>`.
+yields `https://<host>.<public_host><path>`; in `path` mode `https://<public_host><surface path><path>`.
+`public_host` is the URL authority and may carry a port. `base_host` is the port-free
+name used for Host-header matching; when `public_host` is empty it inherits `base_host`.
 The OAuth callback URL registered with the provider is `url_for("identity", "/callback")`, which
 is `https://auth.example.test/auth/callback` in one mode and `https://example.test/auth/callback`
 in the other (criterion 22). A route string that names a host or a topology-specific prefix

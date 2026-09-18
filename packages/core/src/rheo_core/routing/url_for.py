@@ -1,10 +1,11 @@
 """``url_for`` and friends: the only way this codebase names a URL.
 
-The identity document's formula is ``https://<host>.<base_host><path>`` in subdomain
-mode and ``https://<base_host><surface path><path>`` in path mode, and its own worked
+The identity document's formula is ``https://<host>.<public_host><path>`` in subdomain
+mode and ``https://<public_host><surface path><path>`` in path mode, and its own worked
 example names the OAuth callback ``https://auth.example.test/auth/callback``. The two
 are reconciled by ``fixed_path`` on the identity surface (see ``config.py``): every
-other surface drops its prefix once it has its own host.
+other surface drops its prefix once it has its own host. ``base_host`` stays the
+port-free Host-header match; empty ``public_host`` inherits it.
 
 The join is normalised rather than concatenated. A surface whose path is the root
 (``routing.shell.path`` defaults to ``"/"``) would otherwise contribute a second slash:
@@ -59,9 +60,9 @@ def url_for(config: RoutingConfig, surface: str, path: str) -> str:
             f"routing surface {surface!r} is not served by this application"
         )
     if config.mode is RoutingMode.PATH:
-        return f"{config.scheme}://{config.base_host}{_join_prefix(spec.path, path)}"
+        return f"{config.scheme}://{config.public_host}{_join_prefix(spec.path, path)}"
     prefix = spec.path if spec.fixed_path else ""
-    host = f"{spec.host}.{config.base_host}"
+    host = f"{spec.host}.{config.public_host}"
     return f"{config.scheme}://{host}{_join_prefix(prefix, path)}"
 
 

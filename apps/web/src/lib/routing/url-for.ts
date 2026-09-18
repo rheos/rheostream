@@ -89,13 +89,13 @@ export function urlFor(
   }
   const surfacePath = spec.path ?? "";
   if (config.mode === "path") {
-    return `${config.scheme}://${config.base_host}${joinPrefix(surfacePath, path)}`;
+    return `${config.scheme}://${config.public_host}${joinPrefix(surfacePath, path)}`;
   }
   // Subdomain mode: every surface drops its prefix once it has its own host —
   // except `identity`, whose `fixed_path` holds `/auth/*` on every application
   // host in both modes.
   const prefix = spec.fixed_path === true ? surfacePath : "";
-  const host = `${spec.host}.${config.base_host}`;
+  const host = `${spec.host}.${config.public_host}`;
   return `${config.scheme}://${host}${joinPrefix(prefix, path)}`;
 }
 

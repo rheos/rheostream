@@ -107,10 +107,13 @@ an oversight left to fix later.
 
 `RHEO__routing__base_host` must be spelled **port-free**: `normalize_host` strips
 the port before the application-host match, so a `base_host` carrying one can
-never match and `/auth/*` refuses every request. This directory's own
-`compose.yaml` sets `localhost`, port-free, and `tests/test_routing.py` reads that
-file and asserts the value carries no colon — the rule is defended rather than
-restated. `RHEO__routing__scheme` is the routing key most worth setting
+never match and `/auth/*` refuses every request. `from_settings` refuses a colon
+in that key. A direct deploy on a non-default port sets
+`RHEO__routing__public_host` (for example `localhost:3000`); that value is the
+authority `url_for` / `rheo routing hosts` print. Empty `public_host` inherits
+`base_host`. This directory's own `compose.yaml` sets `localhost` and leaves
+`public_host` unset — the documented reverse-proxy topology — and
+`tests/test_routing.py` reads that file. `RHEO__routing__scheme` is the routing key most worth setting
 explicitly in a non-TLS local topology: it is the one that is not already the
 packaged default (`config/defaults.toml` ships `https`), so leaving it unset
 silently changes the routing config the web tier reads. `.env.example` documents

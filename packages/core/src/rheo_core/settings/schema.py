@@ -15,12 +15,13 @@ registration carries its default, and for the production keys the registry defau
 the TOML value are the same value in two places, which the identity check also asserts.
 
 C2 (run 0b1) declared eight production keys; C6 (run 0b2) added the sixteen
-``routing.*`` keys below them, for twenty-four; C7a (run 0b2) adds the eight
+``routing.*`` keys below them, for twenty-four. C7a (run 0b2) adds the eight
 ``identity.*``/``internal.secret_ref`` keys below those, for thirty-two; C4 (run 0c0)
 adds ``storage.pool_idle_close_seconds``, for thirty-three, and C7 (run 0c0) adds
 ``work.due_reconcile_seconds``, for thirty-four. C1 (run 0c1) adds
 ``work.max_attempts``, for thirty-five; C6 (run 0c3) adds the three ``approvals.*``
-keys, for thirty-eight.
+keys, for thirty-eight; the public-authority split adds
+``routing.public_host`` (seventeen routing keys), for thirty-nine.
 ``api.cors_origins`` and ``modules.installed`` (the runs that read them) are not
 declared here: a key with no reader is machinery with no caller, and the
 registry/TOML identity check holds per merge SHA — every later chunk that adds a key
@@ -454,7 +455,7 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         default=30,
     ),
     # --- routing (C6, run 0b2) -------------------------------------------------------
-    # Sixteen flat keys for what the ratified `RoutingConfig` draws as a nested object.
+    # Seventeen flat keys for the nested object the ratified `RoutingConfig` draws.
     # That is a volume consequence of this registry having four scalar value types and
     # no nested or dict type, not a design choice: every scalar the object needs gets
     # its own key. Two of the object's fields are deliberately absent — the identity
@@ -487,6 +488,14 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default="localhost",
+    ),
+    KeySpec(
+        key="routing.public_host",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
     ),
     KeySpec(
         key="routing.shell.host",
