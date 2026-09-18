@@ -26,12 +26,14 @@ from rheo_core.storage.data_root import (
     Purpose,
     platform_data_dir,
     resolve_data_root,
+    run_dir_for,
     validate_data_root,
     workspace_dir,
     workspace_dir_for,
 )
 
 WORKSPACE = UUID("018f0000-0000-7000-8000-000000000001")
+OPERATION = UUID("018f0000-0000-7000-8000-000000000003")
 
 
 # --- resolution ----------------------------------------------------------------------
@@ -273,3 +275,18 @@ def test_workspace_id_must_be_a_uuid(
 
 def test_workspace_dir_wrapper_takes_a_context_and_a_purpose_only() -> None:
     assert list(inspect.signature(workspace_dir).parameters) == ["ctx", "purpose"]
+
+
+def test_run_dir_for_is_core_owned_and_outside_purpose(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("RHEO_DATA_ROOT", str(tmp_path / "data"))
+    expected = (
+        tmp_path / "data" / "workspaces" / str(WORKSPACE) / "runs" / str(OPERATION)
+    )
+    assert run_dir_for(WORKSPACE, OPERATION) == expected
+    assert not expected.exists()  # pure: nothing is created
+    with pytest.raises(TypeError):
+        run_dir_for(str(WORKSPACE), OPERATION)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        run_dir_for(WORKSPACE, str(OPERATION))  # type: ignore[arg-type]

@@ -1,8 +1,9 @@
 """Six harness settings keys, registered under ``profile = test`` with origin
 ``test_harness``.
 
-Four floored keys, one per comparator, because ``union``, ``subset`` and ``and`` have
-no production key in this run and the floor engine must not be "tested later"; one
+Four floored keys, one per comparator, because ``union`` and ``and`` have
+no production key in this run (``subset`` now has ``runtime.allowed_runtimes`` and
+``runtime.allowed_models``) and the floor engine must not be "tested later"; one
 ``explicit_per_workspace`` key, which C3's provisioning step 4 writes as a row from its
 package default and is tested against; and one ``member``-scope key, because every
 other key in this run is workspace- or deployment-scope and the member-row path of the
