@@ -19,6 +19,7 @@ from rheo_contracts import (
     ALL_OPERATIONS,
     Actor,
     ActorKind,
+    AllOperations,
     Audience,
     AudienceKind,
     Entry,
@@ -322,6 +323,7 @@ def context_from_operation(
             f"core.runtime.run cannot run as actor kind {kind.value!r}",
         )
     backend = get_backend()
+    operation_set: frozenset[str] | AllOperations
     if kind is ActorKind.ACCOUNT:
         if actor_id is None:
             return Refusal("runtime_actor_required", "an account actor needs an id")
