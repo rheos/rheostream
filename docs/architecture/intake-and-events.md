@@ -383,9 +383,11 @@ consumer from the outbox. It is permitted only for consumers whose subscription 
 effects or create domain records declare `replay_safe = false` and the operation refuses to target
 them. Replay therefore rebuilds derived state and never resends anything (idea document).
 
-**Retention.** Outbox rows and their deliveries are kept for `work.outbox_retention_days`
-(package default 30, floor `min`); the retention sweep removes older rows whose deliveries are all
-terminal. Replay reaches back only as far as retained rows, and `replay` refuses a
+**Retention.** Outbox rows and their deliveries are specified to be kept for
+`work.outbox_retention_days` (package default 30, floor `min`), after which older rows
+whose deliveries are all terminal would be removed. **That outbox sweep is unimplemented
+in release one** — no job, including `core.retention_sweep`, deletes those rows.
+Replay reaches back only as far as retained rows, and `replay` refuses a
 `from_position` older than the oldest retained row rather than replaying a gap. The outbox is
 outside the R5 cascade because of the rule below, not despite it.
 
@@ -472,7 +474,8 @@ at-least-once. Nothing on that side has a cancellation checkpoint, so there is n
 The core declares one scheduled job of its own: `core.retention_sweep` (daily), which removes
 runtime transcripts past `runtime.transcript_retention_days` and regular `ClaudeCliRuntime`
 session files under that workspace configuration directory's `projects/` subtree. Outbox
-retention named here is not part of that handler. Each workspace is provisioned a
+retention named under [Events and the outbox](#events-and-the-outbox-fr-15) is unimplemented
+and is not part of that handler. Each workspace is provisioned a
 `core.schedule` row at migrate time; the worker's schedule ticker enqueues
 `RetentionSweepPayload(workspace_id)` when the row is due
 ([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep` is a job kind and never a schedule: the
