@@ -227,8 +227,9 @@ def enqueue(
         resolve().get_int("work.max_attempts") if max_attempts is None else max_attempts
     )
     row = active_workspace(workspace_id)
-    engine = get_backend().pools.engine_for(row.database_name)
-    with UnitOfWork(engine, row.database_name) as uow:
+    pools = get_backend().pools
+    engine = pools.engine_for(row.database_name, pin=True)
+    with UnitOfWork(engine, row.database_name, pool=pools) as uow:
         job_id = enqueue_job(
             uow.connection,
             kind=kind,

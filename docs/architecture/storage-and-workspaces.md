@@ -39,28 +39,20 @@ What it costs, and how the cost is bounded:
   **Two bounds, because the scarce resource is connections and not pools.** A process's
   **pooled** figure is `pool_cache_size * pool_max_connections` for the cached engines, plus the
   connections it reserves outside the cache — its control-plane engine, itself sized at
-  `pool_max_connections` — so **16 * 5 + 5 = 85** on the defaults. The core and the worker are
-  separate processes each holding their own, so a deployment's pooled figure is **170**, against
-  a stock Postgres `max_connections` of 100: a stock cluster carries one process and not two. An
-  earlier default pair of 32 and 5 put a single process at 165, over-subscribing that cluster
-  before the cache ever filled, which is why the figure is stated here as arithmetic an
-  operator can check rather than as a number in isolation. `rheo doctor` reports it and names
-  the three levers — `max_connections`, `storage.pool_cache_size`,
-  `storage.pool_max_connections`.
+  `pool_max_connections`, and one serialized maintenance connection — so **16 * 5 + 6 = 86** on
+  the defaults. The core and the worker are separate processes each holding their own, so a
+  deployment's pooled figure is **172**, against a stock Postgres `max_connections` of 100: a
+  stock cluster carries one process and not two. An earlier default pair of 32 and 5 put a
+  single process at 165, over-subscribing that cluster before the cache ever filled, which is
+  why the figure is stated here as arithmetic an operator can check rather than as a number in
+  isolation. `rheo doctor` reports it and names the three levers — `max_connections`,
+  `storage.pool_cache_size`, `storage.pool_max_connections`.
 
-  **That figure is the pools' own sum and not a ceiling, and the arithmetic above does not
-  become one by being written down** (issue #62). Two connections a process can hold are outside
-  it. The first is the backend's maintenance engine, a `NullPool` used for `CREATE DATABASE` and
-  the catalog reads — bounded by how many maintenance calls run at once rather than by a pool
-  size, and serial in practice (provisioning, migration, `rheo doctor`), so it is a small
-  unpooled addition rather than an unbounded one. The second is a connection still checked out
-  from an engine the **count cap** evicted: `dispose()` closes idle connections and *detaches*
-  checked-out ones, and a detached connection stays open until its holder returns it. Idle close
-  no longer reaches that state — the sweep skips an engine with a connection out — but the count
-  cap's eviction does not consult it, because bounding it there would mean either exceeding the
-  cap or refusing a caller. Both omissions are named by the property in code
-  (`EnginePool.pooled_connections`) and in `rheo doctor`'s printed detail, so an operator
-  comparing 170 against 100 is told what the 170 leaves out.
+  **Busy engines are not evicted** (issue #62). Idle close and the count cap both skip an engine
+  that still has a connection checked out or a pool pin (`UnitOfWork` / `EnginePool.acquire`).
+  The cache may briefly exceed `pool_cache_size` until those connections return; those extra
+  engines stay in `held_connections` rather than being `dispose()`-detached outside the count.
+  Maintenance access is one-at-a-time and reserved in the same figure.
 
   **Idle close is the bound that normally binds, and that is the point.** A count cap on its own
   is adversarial to any caller that walks workspaces in turn: under a pure LRU the

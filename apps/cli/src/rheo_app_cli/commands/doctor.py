@@ -116,13 +116,9 @@ def _check_connection_budget(backend: PostgresBackend) -> Check:
     The detail always states the arithmetic and names all three levers, because the
     level on its own tells an operator nothing about which number to move.
 
-    **It also names what the figure does not count**, in the printed detail rather
-    than in a comment here (issue #62). ``pooled_connections`` is the pools' own sum
-    and was called a worst case while two things sat outside it: the backend's
-    unpooled maintenance engine, and a connection still checked out from an engine the
-    count cap evicted, which ``dispose()`` detaches rather than closes. The one person
-    who compares this number against ``max_connections`` is the operator reading this
-    line, so the omissions belong on it.
+    The reservation includes the control engine and one serialized maintenance
+    connection (issue #62). Busy engines are not evicted, so ``held now`` can
+    briefly exceed the configured budget until those connections return.
     """
     name = "connection budget"
     pools = backend.pools
@@ -131,19 +127,21 @@ def _check_connection_budget(backend: PostgresBackend) -> Check:
     except SQLAlchemyError as exc:
         return Check(name, "FAIL", f"cannot read max_connections: {type(exc).__name__}")
     pooled = pools.pooled_connections
+    held = pools.held_connections
+    process = max(pooled, held)
     detail = (
         f"{pools.cache_size} * {pools.pool_size} + {pools.reserved_connections} = "
-        f"{pooled} per process from the engine pools; 2 processes = {pooled * 2}; "
-        f"cluster max_connections = {ceiling}. Not counted, and both real: the "
-        f"unpooled maintenance engine (NullPool — one connection per concurrent "
-        f"provisioning, migration or doctor call, all serial today), and any "
-        f"connection still checked out from an engine the count cap evicted, which "
-        f"dispose() detaches rather than closes. Levers: raise max_connections, or "
-        f"lower storage.pool_cache_size, or lower storage.pool_max_connections"
+        f"{pooled} per process from the engine pools (control plus one serialized "
+        f"maintenance connection); 2 processes = {pooled * 2}; "
+        f"cluster max_connections = {ceiling}; held now = {held}. "
+        f"Busy engines are not evicted, so the cache may briefly exceed "
+        f"cache_size until those connections return. Levers: raise "
+        f"max_connections, or lower storage.pool_cache_size, or lower "
+        f"storage.pool_max_connections"
     )
-    if pooled > ceiling:
+    if process > ceiling:
         return Check(name, "FAIL", detail)
-    if pooled * 2 > ceiling:
+    if process * 2 > ceiling:
         return Check(name, "warn", detail)
     return Check(name, "ok", detail)
 

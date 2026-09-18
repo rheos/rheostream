@@ -209,8 +209,8 @@ def _step_create_database(backend: PostgresBackend, workspace_id: UUID) -> None:
 
 def _step_migrate_core(backend: PostgresBackend, workspace_id: UUID) -> None:
     row = _registry_row(backend, workspace_id)
-    engine = backend.pools.engine_for(row.database_name)
-    with UnitOfWork(engine, row.database_name) as uow:
+    engine = backend.pools.engine_for(row.database_name, pin=True)
+    with UnitOfWork(engine, row.database_name, pool=backend.pools) as uow:
         # The orchestrator creates the ``core`` schema itself, under its lock.
         run_chain(uow.connection, CORE_CHAIN, expected_database=row.database_name)
         repositories.write_composition(
@@ -224,8 +224,8 @@ def _step_migrate_core(backend: PostgresBackend, workspace_id: UUID) -> None:
 
 def _step_write_default_settings(backend: PostgresBackend, workspace_id: UUID) -> None:
     row = _registry_row(backend, workspace_id)
-    engine = backend.pools.engine_for(row.database_name)
-    with UnitOfWork(engine, row.database_name) as uow:
+    engine = backend.pools.engine_for(row.database_name, pin=True)
+    with UnitOfWork(engine, row.database_name, pool=backend.pools) as uow:
         for spec in REGISTRY.explicit_per_workspace():
             repositories.insert_workspace_setting_if_absent(
                 uow.connection,

@@ -659,16 +659,16 @@ def restore_artifact(
         row = get_workspace(control, workspace_id)
     record_id = uuid7() if restore_id is None else restore_id
     if row is not None:
-        engine = backend.pools.engine_for(row.database_name)
-        with engine.connect() as connection:
-            completed = connection.execute(
-                select(export_tables.export_record.c.id).where(
-                    export_tables.export_record.c.id == record_id,
-                    export_tables.export_record.c.kind == "restore",
-                    export_tables.export_record.c.state == "complete",
-                    export_tables.export_record.c.source_digest == source_digest,
-                )
-            ).scalar_one_or_none()
+        with backend.pools.acquire(row.database_name) as engine:
+            with engine.connect() as connection:
+                completed = connection.execute(
+                    select(export_tables.export_record.c.id).where(
+                        export_tables.export_record.c.id == record_id,
+                        export_tables.export_record.c.kind == "restore",
+                        export_tables.export_record.c.state == "complete",
+                        export_tables.export_record.c.source_digest == source_digest,
+                    )
+                ).scalar_one_or_none()
         if completed is not None:
             if row.state is WorkspaceState.RESTORING:
                 with backend.control_engine.begin() as control:
@@ -696,8 +696,8 @@ def restore_artifact(
             row = get_workspace(control, workspace_id)
     if row is None:  # pragma: no cover - provision either raises or writes the row
         raise RuntimeError(f"provisioned workspace {workspace_id} has no registry row")
-    engine = backend.pools.engine_for(row.database_name)
-    with UnitOfWork(engine, row.database_name) as uow:
+    engine = backend.pools.engine_for(row.database_name, pin=True)
+    with UnitOfWork(engine, row.database_name, pool=backend.pools) as uow:
         _install_modules(uow.connection, manifest)
         _import_settings(uow.connection, entries[SETTINGS_NAME])
         approval_ids = _import_approvals(uow.connection, entries[APPROVALS_NAME])

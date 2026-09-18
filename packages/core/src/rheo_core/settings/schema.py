@@ -393,13 +393,15 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         explicit_per_workspace=False,
         default="template1",
     ),
-    # The hard ceiling on cached engines. Its product with
+    # The hard ceiling on idle cached engines. Its product with
     # ``storage.pool_max_connections``, plus the connections the backend reserves
     # outside the cache (its control engine, itself sized at
-    # ``storage.pool_max_connections``), is this process's worst-case connection count,
-    # and core and worker are separate processes each holding their own: the default
-    # pair is 16 * 5 + 5 = 85 per process. The previous default of 32 put that at 165
-    # against a stock Postgres ``max_connections`` of 100 (issue #12).
+    # ``storage.pool_max_connections``, and one serialized maintenance connection),
+    # is this process's configured budget, and core and worker are separate
+    # processes each holding their own: the default pair is 16 * 5 + 6 = 86 per
+    # process. The previous default of 32 put that at 165 against a stock Postgres
+    # ``max_connections`` of 100 (issue #12). Busy engines are not evicted (issue
+    # #62), so the cache may briefly exceed this cap.
     KeySpec(
         key="storage.pool_cache_size",
         type=ValueType.INT,

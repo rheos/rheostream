@@ -1099,75 +1099,78 @@ def visit_workspace(
     """
     row = active_workspace(workspace.workspace_id)
     database = row.database_name
-    engine = backend.pools.engine_for(database)
-    acquired = 0
-    drained = False
-    for _ in range(MAX_JOBS_PER_VISIT):
-        now = clock()
-        with UnitOfWork(engine, database) as uow:
-            leased = acquire_lease(
-                uow.connection, owner=owner, now=now, lease_seconds=LEASE_SECONDS
-            )
-            uow.commit()
-        if leased is None:
-            drained = True
-            break
-        acquired += 1
-        _run_leased_job(
-            engine,
-            database,
-            leased=leased,
-            kinds=kinds,
-            owner=owner,
-            now=now,
-            clock=clock,
-            jitter=jitter,
-        )
-
-    deliveries_acquired = 0
-    deliveries_drained = False
-    for _ in range(MAX_JOBS_PER_VISIT):
-        with UnitOfWork(engine, database) as uow:
-            leased_delivery = lease_delivery(
-                uow.connection,
+    with backend.pools.acquire(database) as engine:
+        acquired = 0
+        drained = False
+        for _ in range(MAX_JOBS_PER_VISIT):
+            now = clock()
+            with UnitOfWork(engine, database) as uow:
+                leased = acquire_lease(
+                    uow.connection, owner=owner, now=now, lease_seconds=LEASE_SECONDS
+                )
+                uow.commit()
+            if leased is None:
+                drained = True
+                break
+            acquired += 1
+            _run_leased_job(
+                engine,
+                database,
+                leased=leased,
+                kinds=kinds,
                 owner=owner,
-                now=clock(),
-                lease_seconds=LEASE_SECONDS,
+                now=now,
+                clock=clock,
+                jitter=jitter,
             )
-            uow.commit()
-        if leased_delivery is None:
-            deliveries_drained = True
-            break
-        deliveries_acquired += 1
-        _run_leased_delivery(
-            engine,
-            database,
-            leased=leased_delivery,
-            consumers=consumers,
-            owner=owner,
-            clock=clock,
-            jitter=jitter,
-        )
 
-    with UnitOfWork(engine, database) as uow:
-        remaining = _earliest(
-            earliest_due_at(uow.connection),
-            earliest_delivery_due_at(uow.connection),
+        deliveries_acquired = 0
+        deliveries_drained = False
+        for _ in range(MAX_JOBS_PER_VISIT):
+            with UnitOfWork(engine, database) as uow:
+                leased_delivery = lease_delivery(
+                    uow.connection,
+                    owner=owner,
+                    now=clock(),
+                    lease_seconds=LEASE_SECONDS,
+                )
+                uow.commit()
+            if leased_delivery is None:
+                deliveries_drained = True
+                break
+            deliveries_acquired += 1
+            _run_leased_delivery(
+                engine,
+                database,
+                leased=leased_delivery,
+                consumers=consumers,
+                owner=owner,
+                clock=clock,
+                jitter=jitter,
+            )
+
+        with UnitOfWork(engine, database) as uow:
+            remaining = _earliest(
+                earliest_due_at(uow.connection),
+                earliest_delivery_due_at(uow.connection),
+            )
+        # A visitor that stopped at the cap with work still to do must say so in the
+        # index immediately rather than let the workspace wait out the 900 s
+        # reconcile floor, so the instant it reports is read *here*, once this
+        # branch is known to fire — after the last handler returned. The last
+        # job's acquire instant, which this line used to report, is stale by the
+        # whole of that handler's run. ``remaining is None`` means the cap and
+        # the drain coincided.
+        next_due_at = (
+            remaining
+            if (drained and deliveries_drained) or remaining is None
+            else clock()
         )
-    # A visitor that stopped at the cap with work still to do must say so in the index
-    # immediately rather than let the workspace wait out the 900 s reconcile floor, so
-    # the instant it reports is read *here*, once this branch is known to fire — after
-    # the last handler returned. The last job's acquire instant, which this line used to
-    # report, is stale by the whole of that handler's run.
-    # ``remaining is None`` means the cap and the drain coincided.
-    next_due_at = (
-        remaining if (drained and deliveries_drained) or remaining is None else clock()
-    )
-    return VisitResult(
-        next_due_at=next_due_at,
-        jobs_acquired=acquired,
-        deliveries_acquired=deliveries_acquired,
-    )
+        return VisitResult(
+            next_due_at=next_due_at,
+            jobs_acquired=acquired,
+            deliveries_acquired=deliveries_acquired,
+        )
 
 
 def run_one_pass(

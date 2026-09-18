@@ -61,5 +61,6 @@ def open_unit_of_work(ctx: WorkspaceContext) -> UnitOfWork:
     if not isinstance(ctx, WorkspaceContext):
         raise TypeError("open_unit_of_work() takes a WorkspaceContext")
     row = active_workspace(ctx.workspace_id)
-    engine = get_backend().pools.engine_for(row.database_name)
-    return UnitOfWork(engine, row.database_name)
+    pools = get_backend().pools
+    engine = pools.engine_for(row.database_name, pin=True)
+    return UnitOfWork(engine, row.database_name, pool=pools)

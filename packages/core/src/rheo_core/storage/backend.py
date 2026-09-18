@@ -33,6 +33,7 @@ from sqlalchemy.engine import Transaction
 
 if TYPE_CHECKING:
     from rheo_core.migrations.orchestrator import MigrationResult
+    from rheo_core.storage.pools import EnginePool
 
 WORKSPACE_UNAVAILABLE: Final = "workspace_unavailable"
 WORKSPACE_MISSING: Final = "workspace_missing"
@@ -69,7 +70,13 @@ class StorageRefusal(Exception):
 class UnitOfWork:
     """One connection, one transaction, one workspace database."""
 
-    __slots__ = ("_connection", "_engine", "_expected_database", "_transaction")
+    __slots__ = (
+        "_connection",
+        "_engine",
+        "_expected_database",
+        "_pool",
+        "_transaction",
+    )
 
     verify_database: ClassVar[bool] = False
     """Whether ``__enter__`` probes ``current_database()`` against the expected name.
@@ -81,11 +88,18 @@ class UnitOfWork:
     transaction in production.
     """
 
-    def __init__(self, engine: Engine, expected_database: str) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        expected_database: str,
+        *,
+        pool: "EnginePool | None" = None,
+    ) -> None:
         if not isinstance(expected_database, str) or not expected_database:
             raise TypeError("UnitOfWork needs the expected database name")
         self._engine = engine
         self._expected_database = expected_database
+        self._pool = pool
         self._connection: Connection | None = None
         self._transaction: Transaction | None = None
 
@@ -119,13 +133,18 @@ class UnitOfWork:
         connection = self._connection
         transaction = self._transaction
         self._transaction = None
-        if connection is None:
-            return
         try:
-            if transaction is not None and transaction.is_active:
-                transaction.rollback()
+            if connection is None:
+                return
+            try:
+                if transaction is not None and transaction.is_active:
+                    transaction.rollback()
+            finally:
+                connection.close()
         finally:
-            connection.close()
+            if self._pool is not None:
+                self._pool.unpin(self._engine)
+                self._pool = None
 
     @property
     def connection(self) -> Connection:
@@ -216,6 +235,7 @@ class HandlerUnitOfWork(UnitOfWork):
         self._expected_database = uow._expected_database
         self._connection = uow._connection
         self._transaction = uow._transaction
+        self._pool = None
         self._operation_id = operation_id
 
     @property
