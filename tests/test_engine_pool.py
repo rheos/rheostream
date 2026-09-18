@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 from conftest import ClusterSession
 from rheo_core.storage import pools as pools_module
+from rheo_core.storage.backend import StorageRefusal, UnitOfWork
 from rheo_core.storage.pools import EnginePool, check_database_name
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -242,6 +243,36 @@ def test_a_pin_keeps_an_engine_through_idle_and_the_count_cap(
         assert p.close_idle() == 2
         assert p.cached() == ()
     finally:
+        p.dispose_all()
+
+
+@pytest.mark.postgres
+def test_a_failed_unit_of_work_enter_releases_the_pin(
+    cluster: ClusterSession,
+) -> None:
+    """``__enter__`` raising must not leave the engine permanently busy."""
+    held = cluster.control_database
+    p = EnginePool(
+        cluster.backend.pools.cluster_url,
+        cache_size=1,
+        pool_size=5,
+        idle_close_seconds=0.01,
+        reserved_connections=0,
+    )
+    previous = UnitOfWork.verify_database
+    UnitOfWork.verify_database = True
+    try:
+        engine = p.engine_for(held, pin=True)
+        with pytest.raises(StorageRefusal, match="mismatch"):
+            with UnitOfWork(engine, "not_this_database", pool=p):
+                raise AssertionError("enter should have refused")
+        time.sleep(0.05)
+        assert p.close_idle() == 1
+        assert p.cached() == ()
+        with pytest.raises(ValueError, match="currently holds"):
+            p.pin(engine)
+    finally:
+        UnitOfWork.verify_database = previous
         p.dispose_all()
 
 

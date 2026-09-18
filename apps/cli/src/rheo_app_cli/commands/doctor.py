@@ -132,7 +132,8 @@ def _check_connection_budget(backend: PostgresBackend) -> Check:
     detail = (
         f"{pools.cache_size} * {pools.pool_size} + {pools.reserved_connections} = "
         f"{pooled} per process from the engine pools (control plus one serialized "
-        f"maintenance connection); 2 processes = {pooled * 2}; "
+        f"maintenance connection); 2 processes configured = {pooled * 2}"
+        f"{'' if process == pooled else f', effective {process * 2}'}; "
         f"cluster max_connections = {ceiling}; held now = {held}. "
         f"Busy engines are not evicted, so the cache may briefly exceed "
         f"cache_size until those connections return. Levers: raise "

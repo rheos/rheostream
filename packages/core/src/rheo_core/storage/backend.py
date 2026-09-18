@@ -106,23 +106,33 @@ class UnitOfWork:
     def __enter__(self) -> Self:
         if self._connection is not None:
             raise StorageRefusal(UNIT_OF_WORK_CLOSED, "a unit of work is entered once")
-        connection = self._engine.connect()
-        transaction = connection.begin()
-        if UnitOfWork.verify_database:
-            actual = str(
-                connection.execute(text("SELECT current_database()")).scalar_one()
-            )
-            if actual != self._expected_database:
-                transaction.rollback()
-                connection.close()
-                raise StorageRefusal(
-                    DATABASE_MISMATCH,
-                    f"unit of work expected database {self._expected_database!r} "
-                    f"but the connection is to {actual!r}",
+        connection: Connection | None = None
+        transaction: Transaction | None = None
+        try:
+            connection = self._engine.connect()
+            transaction = connection.begin()
+            if UnitOfWork.verify_database:
+                actual = str(
+                    connection.execute(text("SELECT current_database()")).scalar_one()
                 )
-        self._connection = connection
-        self._transaction = transaction
-        return self
+                if actual != self._expected_database:
+                    raise StorageRefusal(
+                        DATABASE_MISMATCH,
+                        f"unit of work expected database {self._expected_database!r} "
+                        f"but the connection is to {actual!r}",
+                    )
+            self._connection = connection
+            self._transaction = transaction
+            return self
+        except BaseException:
+            if transaction is not None and transaction.is_active:
+                transaction.rollback()
+            if connection is not None:
+                connection.close()
+            if self._pool is not None:
+                self._pool.unpin(self._engine)
+                self._pool = None
+            raise
 
     def __exit__(
         self,

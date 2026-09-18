@@ -303,7 +303,7 @@ def test_migrate_and_doctor_return_zero(
     )
     assert budget.startswith("warn "), budget
     assert "16 * 5 + 6 = 86 per process" in budget, budget
-    assert "2 processes = 172" in budget, budget
+    assert "2 processes configured = 172" in budget, budget
     assert "serialized maintenance" in budget, budget
     assert "held now =" in budget, budget
     # The detail names every lever an operator could move, not merely a number.

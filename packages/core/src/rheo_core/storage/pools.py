@@ -197,13 +197,17 @@ class EnginePool:
         return self._cluster_url
 
     def pin(self, engine: Engine) -> None:
-        """Mark ``engine`` busy until the matching :meth:`unpin`.
+        """Increment the busy count for a **currently cached** engine.
 
-        Closes the handout window: an engine just returned by :meth:`engine_for` has
-        zero checkouts until the caller connects, and without a pin a concurrent
-        sweep would treat it as idle.
+        Does not close the handout window by itself. Call :meth:`engine_for` with
+        ``pin=True`` or :meth:`acquire` so the pin is taken under the same lock as
+        the hand-out. This method refuses an engine the pool no longer tracks.
         """
         with self._lock:
+            if engine not in self._engines.values():
+                raise ValueError(
+                    "pin() only accepts an engine this pool currently holds"
+                )
             key = id(engine)
             self._pins[key] = self._pins.get(key, 0) + 1
 
