@@ -36,18 +36,24 @@ from rheo_core.settings import resolve
 from rheo_core.storage.postgres import get_backend, reset_backend
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import worker_loop
+from rheo_core.work.schedules import (
+    RETENTION_SWEEP,
+    RetentionSweepPayload,
+    run_retention_sweep,
+)
 from rheo_runtimes import ClaudeCliRuntime
 
 JOB_KINDS = JobKindRegistry()
 """The process-wide job-kind registry.
 
-Export, restore, and ``core.runtime.run`` are registered here, at the composition
-root, not in ``rheo_core.work.kinds`` — that module holds no process-wide instance
-so a test can build its own. ``claude_cli`` is registered on the process
-``ADAPTERS`` instance in this same module.
+Export, restore, ``core.runtime.run``, and ``core.retention_sweep`` are registered
+here, at the composition root, not in ``rheo_core.work.kinds`` — that module holds
+no process-wide instance so a test can build its own. ``claude_cli`` is registered
+on the process ``ADAPTERS`` instance in this same module.
 """
 JOB_KINDS.register(EXPORT_JOB_KIND, ExportJobPayload, run_export_job)
 JOB_KINDS.register(RESTORE_JOB_KIND, RestoreJobPayload, run_restore_job)
+JOB_KINDS.register(RETENTION_SWEEP, RetentionSweepPayload, run_retention_sweep)
 
 ADAPTERS = AdapterRegistry()
 """Process-wide adapter registry. Production registers ``claude_cli`` here."""

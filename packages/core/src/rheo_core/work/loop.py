@@ -115,6 +115,7 @@ from rheo_core.work.jobs import (
     requeue_for_retry,
 )
 from rheo_core.work.kinds import JobKindRegistry, JobKindUnknown
+from rheo_core.work.schedules import earliest_schedule_due_at, run_due_schedules
 
 LEASE_SECONDS: Final = 60
 """``docs/architecture/intake-and-events.md`` § Jobs and the worker, step 1."""
@@ -1020,10 +1021,11 @@ def _earliest(*instants: datetime | None) -> datetime | None:
     """The earliest instant present, or ``None`` when none is — Postgres ``LEAST``
     over a set that may be entirely null, in Python.
 
-    The union :func:`visit_workspace` reports is computed here rather than in a third
-    query, because the two sides live in two tables with two different state
-    vocabularies and a query spanning them would be a third place to keep in step with
-    ``jobs.earliest_due_at`` and ``deliveries.earliest_delivery_due_at``.
+    The union :func:`visit_workspace` reports is computed here rather than in a join,
+    because jobs, deliveries, and schedules live in three tables with three different
+    state vocabularies and a query spanning them would be a fourth place to keep in
+    step with ``jobs.earliest_due_at``, ``deliveries.earliest_delivery_due_at``, and
+    ``schedules.earliest_schedule_due_at``.
     """
     present = [instant for instant in instants if instant is not None]
     return min(present) if present else None
@@ -1092,14 +1094,24 @@ def visit_workspace(
     between the index read and this call) and none of the ones a first run actually
     produces.
 
-    **Schedules stay a one-function insertion, and this is where the run that builds
-    them will look.** That run adds ``run_due_schedules(conn, *, now)`` at the top of
-    this function plus one enqueue per due row — no redesign, because the visit already
-    holds the workspace connection and already computes ``next_due_at`` below.
+    **Schedules are a one-function insertion.** After ``pools.acquire`` and before
+    the job-drain loop this function opens a short unit of work and calls
+    ``run_due_schedules(conn, *, workspace_id, now)`` on that connection — the visit
+    does not hold a connection at entry, only an engine. Due rows enqueue with the
+    visit's ``workspace_id``. The remaining-instant write below folds the soonest
+    enabled schedule instant into :func:`_earliest` beside jobs and deliveries.
     """
     row = active_workspace(workspace.workspace_id)
     database = row.database_name
     with backend.pools.acquire(database) as engine:
+        now = clock()
+        with UnitOfWork(engine, database) as uow:
+            run_due_schedules(
+                uow.connection,
+                workspace_id=workspace.workspace_id,
+                now=now,
+            )
+            uow.commit()
         acquired = 0
         drained = False
         for _ in range(MAX_JOBS_PER_VISIT):
@@ -1153,6 +1165,7 @@ def visit_workspace(
             remaining = _earliest(
                 earliest_due_at(uow.connection),
                 earliest_delivery_due_at(uow.connection),
+                earliest_schedule_due_at(uow.connection),
             )
         # A visitor that stopped at the cap with work still to do must say so in the
         # index immediately rather than let the workspace wait out the 900 s
