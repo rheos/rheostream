@@ -12,6 +12,7 @@ from rheo_core.exports import (
 )
 from rheo_core.runtime import RUNTIME_RUN, AdapterRegistry, RuntimeJobPayload
 from rheo_core.work.kinds import JobKindUnknown
+from rheo_runtimes import ClaudeCliRuntime
 
 
 def test_production_job_kinds_include_core_runtime_run() -> None:
@@ -31,7 +32,8 @@ def test_production_job_kinds_include_core_runtime_run() -> None:
     assert runtime_model is RuntimeJobPayload
     assert runtime_handler is not None
     assert isinstance(ADAPTERS, AdapterRegistry)
-    assert ADAPTERS.names() == frozenset()
+    assert ADAPTERS.names() == frozenset({"claude_cli"})
+    assert isinstance(ADAPTERS.lookup("claude_cli"), ClaudeCliRuntime)
 
 
 def test_production_job_kinds_still_refuse_an_unknown_kind() -> None:

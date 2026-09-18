@@ -2,11 +2,12 @@
 name = "rheo-app-worker"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["rheo-core", "rheo-contracts"]
+dependencies = ["rheo-core", "rheo-contracts", "rheo-runtimes"]
 
 [tool.uv.sources]
 rheo-core = { workspace = true }
 rheo-contracts = { workspace = true }
+rheo-runtimes = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

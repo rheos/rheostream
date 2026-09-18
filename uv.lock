@@ -802,12 +802,14 @@ source = { editable = "apps/worker" }
 dependencies = [
     { name = "rheo-contracts" },
     { name = "rheo-core" },
+    { name = "rheo-runtimes" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "rheo-contracts", editable = "packages/contracts" },
     { name = "rheo-core", editable = "packages/core" },
+    { name = "rheo-runtimes", editable = "runtimes" },
 ]
 
 [[package]]
@@ -880,6 +882,18 @@ source = { editable = "modules/relationships" }
 name = "rheo-runtimes"
 version = "0.1.0"
 source = { editable = "runtimes" }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "rheo-contracts" },
+    { name = "rheo-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jsonschema", specifier = ">=4,<5" },
+    { name = "rheo-contracts", editable = "packages/contracts" },
+    { name = "rheo-core", editable = "packages/core" },
+]
 
 [[package]]
 name = "rpds-py"
