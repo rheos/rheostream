@@ -8,6 +8,7 @@ themselves; isolation uses the literal token ``isolation=enforced``.
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 from rheo_contracts import (
     Actor,
     ActorKind,
@@ -15,6 +16,7 @@ from rheo_contracts import (
     Audience,
     AudienceKind,
     ContextPurpose,
+    FinalOutputEvent,
     Isolation,
     RuntimeCapabilities,
     RuntimeGate,
@@ -126,3 +128,25 @@ def test_gate_refuses_isolation_enforced_against_advisory_without_start() -> Non
         _check_then_start(adapter, ["isolation=enforced"])
     assert caught.value.name == "isolation=enforced"
     assert adapter.start_calls == 0
+
+
+def test_gate_refuses_unknown_requirement_without_start() -> None:
+    adapter = _RecordingAdapter(_capabilities())
+    with pytest.raises(UnmetCapability) as caught:
+        _check_then_start(adapter, ["not_a_capability"])
+    assert caught.value.name == "not_a_capability"
+    assert adapter.start_calls == 0
+
+
+def test_final_output_accepts_explicit_json_null_structured() -> None:
+    event = FinalOutputEvent(structured=None)
+    assert "structured" in event.model_fields_set
+    assert "text" not in event.model_fields_set
+    assert event.structured is None
+
+
+def test_final_output_rejects_both_or_neither_body() -> None:
+    with pytest.raises(ValidationError):
+        FinalOutputEvent()
+    with pytest.raises(ValidationError):
+        FinalOutputEvent(text="ok", structured={"a": 1})

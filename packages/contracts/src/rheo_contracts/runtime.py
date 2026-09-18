@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import Annotated, ClassVar, Literal, Protocol, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from rheo_contracts.context import Actor, Audience
 
@@ -85,7 +85,7 @@ class StructuredOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: Literal["structured"] = "structured"
-    json_schema: Mapping[str, object]
+    json_schema: Mapping[str, JsonValue]
 
 
 class StreamOutput(BaseModel):
@@ -259,11 +259,13 @@ class FinalOutputEvent(BaseModel):
 
     type: Literal["final_output"] = "final_output"
     text: str | None = None
-    structured: object | None = None
+    structured: JsonValue | None = None
 
     @model_validator(mode="after")
     def _exactly_one_body(self) -> Self:
-        if (self.text is None) == (self.structured is None):
+        has_text = "text" in self.model_fields_set
+        has_structured = "structured" in self.model_fields_set
+        if has_text == has_structured:
             raise ValueError("final_output requires exactly one of text or structured")
         return self
 
@@ -355,7 +357,7 @@ class RuntimeGate:
                 if capabilities.isolation == Isolation.ADVISORY:
                     raise UnmetCapability(name=ISOLATION_ENFORCED)
                 continue
-            if requirement in _BOOL_CAPABILITY_NAMES and not getattr(
-                capabilities, requirement
-            ):
+            if requirement not in _BOOL_CAPABILITY_NAMES:
+                raise UnmetCapability(name=requirement)
+            if not getattr(capabilities, requirement):
                 raise UnmetCapability(name=requirement)
