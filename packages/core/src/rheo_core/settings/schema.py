@@ -21,7 +21,8 @@ adds ``storage.pool_idle_close_seconds``, for thirty-three, and C7 (run 0c0) add
 ``work.due_reconcile_seconds``, for thirty-four. C1 (run 0c1) adds
 ``work.max_attempts``, for thirty-five; C6 (run 0c3) adds the three ``approvals.*``
 keys, for thirty-eight; the public-authority split adds
-``routing.public_host`` (seventeen routing keys), for thirty-nine.
+``routing.public_host`` (seventeen routing keys), for thirty-nine; C2 (run 0c4)
+adds the eleven ``runtime.*`` keys, for fifty.
 ``api.cors_origins`` and ``modules.installed`` (the runs that read them) are not
 declared here: a key with no reader is machinery with no caller, and the
 registry/TOML identity check holds per merge SHA — every later chunk that adds a key
@@ -438,8 +439,9 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         default="development",
         choices=PROFILES,
     ),
-    # The two token_max_days keys are the only floored production keys in the design
-    # and criterion 69 needs one; nothing in 0b1 reads them except that test.
+    # The two token_max_days keys were the first floored production keys; criterion
+    # 69 still needs one. Runtime floors (below) add ``min`` and the first production
+    # ``subset`` keys.
     KeySpec(
         key="identity.token_max_days.cli",
         type=ValueType.INT,
@@ -739,7 +741,7 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         explicit_per_workspace=False,
         default=900,
     ),
-    # **Workspace scope with a ``min`` floor — the third floored key in the tree.**
+    # **Workspace scope with a ``min`` floor — a floored key in the tree.**
     # ``confirmation-and-safety.md``'s own row reads "maximum
     # ``approvals.max_window_seconds`` 86400, floor ``min``", and in this codebase a
     # floor only does anything on a key a workspace may override: the two
@@ -758,6 +760,100 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=Floor.MIN,
         explicit_per_workspace=False,
         default=86400,
+    ),
+    # --- runtime (C2, run 0c4) --------------------------------------------------------
+    # Six deployment keys the workspace may not override, then five workspace-scoped
+    # floors: three ``min`` ceilings and the first production ``subset`` keys
+    # (allowed runtimes and models). Empty-string defaults on the Claude CLI path
+    # match the GitHub secret-ref pattern: an unconfigured skeleton starts up.
+    KeySpec(
+        key="runtime.claude_cli.executable",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
+    KeySpec(
+        key="runtime.claude_cli.credential_kind",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="login",
+        choices=("login", "api_key"),
+    ),
+    KeySpec(
+        key="runtime.claude_cli.login_seed_dir",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
+    KeySpec(
+        key="runtime.claude_cli.credential_account_id",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
+    KeySpec(
+        key="runtime.claude_cli.credential_ref",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
+    KeySpec(
+        key="runtime.session_ttl_hours",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=72,
+    ),
+    KeySpec(
+        key="runtime.max_deadline_seconds",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=600,
+    ),
+    KeySpec(
+        key="runtime.max_context_bytes",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=200000,
+    ),
+    KeySpec(
+        key="runtime.transcript_retention_days",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=90,
+    ),
+    KeySpec(
+        key="runtime.allowed_runtimes",
+        type=ValueType.STR_LIST,
+        scope=Scope.WORKSPACE,
+        floor=Floor.SUBSET,
+        explicit_per_workspace=False,
+        default=["claude_cli"],
+    ),
+    KeySpec(
+        key="runtime.allowed_models",
+        type=ValueType.STR_LIST,
+        scope=Scope.WORKSPACE,
+        floor=Floor.SUBSET,
+        explicit_per_workspace=False,
+        default=["sonnet"],
     ),
 )
 

@@ -95,6 +95,17 @@ PRODUCTION_KEYS = {
     "approvals.max_payload_bytes": 65536,
     "approvals.default_window_seconds": 900,
     "approvals.max_window_seconds": 86400,
+    "runtime.claude_cli.executable": "",
+    "runtime.claude_cli.credential_kind": "login",
+    "runtime.claude_cli.login_seed_dir": "",
+    "runtime.claude_cli.credential_account_id": "",
+    "runtime.claude_cli.credential_ref": "",
+    "runtime.session_ttl_hours": 72,
+    "runtime.max_deadline_seconds": 600,
+    "runtime.max_context_bytes": 200000,
+    "runtime.transcript_retention_days": 90,
+    "runtime.allowed_runtimes": ("claude_cli",),
+    "runtime.allowed_models": ("sonnet",),
 }
 
 FLOORED_KEYS = frozenset(
@@ -102,15 +113,20 @@ FLOORED_KEYS = frozenset(
         "identity.token_max_days.cli",
         "identity.token_max_days.mcp",
         "approvals.max_window_seconds",
+        "runtime.max_deadline_seconds",
+        "runtime.max_context_bytes",
+        "runtime.transcript_retention_days",
+        "runtime.allowed_runtimes",
+        "runtime.allowed_models",
     }
 )
-"""The only production keys a workspace may override, each with a ``min`` floor.
+"""The production keys a workspace may override, each with a floor.
 
 Named as a literal rather than matched by prefix. The loop below asserts that every
 *other* declared key is deployment-scope and unfloored, so this set is the exhaustive
-answer to "who can a workspace tighten"; a prefix test (`identity.`) answered that
-question by accident and stopped being true the moment run 0c3 floored a key in
-another namespace."""
+answer to "who can a workspace tighten". ``min`` floors cap numeric ceilings;
+``subset`` floors (``runtime.allowed_runtimes``, ``runtime.allowed_models``) are the
+first production subset keys."""
 
 
 class Rows:
@@ -174,6 +190,35 @@ def test_the_registry_declares_every_production_key_and_its_shape() -> None:
         Floor.MIN,
         ValueType.INT,
     )
+    deadline = spec_for("runtime.max_deadline_seconds")
+    assert (deadline.scope, deadline.floor, deadline.type) == (
+        Scope.WORKSPACE,
+        Floor.MIN,
+        ValueType.INT,
+    )
+    assert spec_for("runtime.max_context_bytes").floor is Floor.MIN
+    assert spec_for("runtime.transcript_retention_days").floor is Floor.MIN
+    runtimes = spec_for("runtime.allowed_runtimes")
+    assert (runtimes.scope, runtimes.floor, runtimes.type) == (
+        Scope.WORKSPACE,
+        Floor.SUBSET,
+        ValueType.STR_LIST,
+    )
+    models = spec_for("runtime.allowed_models")
+    assert (models.scope, models.floor, models.type) == (
+        Scope.WORKSPACE,
+        Floor.SUBSET,
+        ValueType.STR_LIST,
+    )
+    kind = spec_for("runtime.claude_cli.credential_kind")
+    assert (kind.scope, kind.floor, kind.choices) == (
+        Scope.DEPLOYMENT,
+        None,
+        ("login", "api_key"),
+    )
+    for key in FLOORED_KEYS:
+        assert spec_for(key).scope is Scope.WORKSPACE
+        assert spec_for(key).floor is not None
     for key in PRODUCTION_KEYS:
         if key not in FLOORED_KEYS:
             assert spec_for(key).scope is Scope.DEPLOYMENT
@@ -182,7 +227,12 @@ def test_the_registry_declares_every_production_key_and_its_shape() -> None:
 
 
 def test_defaults_toml_loads_from_the_installed_package() -> None:
-    assert load_package_defaults() == PRODUCTION_KEYS
+    loaded = load_package_defaults()
+    frozen = {
+        key: tuple(value) if isinstance(value, list) else value
+        for key, value in loaded.items()
+    }
+    assert frozen == PRODUCTION_KEYS
 
 
 def test_the_reconcile_floor_exceeds_the_pool_idle_window() -> None:

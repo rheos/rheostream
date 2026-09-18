@@ -283,6 +283,25 @@ def mark_running(conn: Connection, *, operation_id: UUID, now: datetime) -> bool
     return _apply(conn, _open(operation_id), state=RUNNING, started_at=now)
 
 
+def set_progress(
+    conn: Connection,
+    *,
+    operation_id: UUID,
+    progress_text: str,
+    progress_fraction: float,
+) -> bool:
+    """Write progress onto an open record.
+
+    Predicated the same way :func:`mark_running` is.
+    """
+    return _apply(
+        conn,
+        _open(operation_id),
+        progress_text=progress_text,
+        progress_fraction=progress_fraction,
+    )
+
+
 def mark_approval_required(
     conn: Connection, *, operation_id: UUID, approval_id: UUID
 ) -> bool:

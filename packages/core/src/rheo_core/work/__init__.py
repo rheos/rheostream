@@ -29,10 +29,25 @@ drains open and commit their own transactions there, and its module docstring ca
 the transaction map for each. Keeping the two claims apart is the point — the first is
 what makes a repository composable, the second is what a worker is for.
 
-**Schedules stay a one-function insertion.** The run that builds them adds
-``run_due_schedules(conn, *, now)`` at the top of ``loop.visit_workspace``, plus one
-enqueue per due row. Nothing here has to be redesigned to accommodate them: the visit
-already holds the workspace connection and already computes the workspace's
-``next_due_at``. The same sentence is in ``visit_workspace``'s own docstring, which is
-where that run will actually be reading.
+**Schedules are a one-function insertion.** ``run_due_schedules(conn, *, workspace_id,
+now)`` runs on a short unit of work after ``visit_workspace`` acquires the engine
+and before the job-drain loop, plus one enqueue per due row. The visit already
+computes the workspace's ``next_due_at`` and folds the soonest enabled schedule
+instant into that remaining write.
 """
+
+from rheo_core.work.schedules import (
+    RETENTION_SWEEP,
+    RetentionSweepPayload,
+    earliest_schedule_due_at,
+    run_due_schedules,
+    run_retention_sweep,
+)
+
+__all__ = [
+    "RETENTION_SWEEP",
+    "RetentionSweepPayload",
+    "earliest_schedule_due_at",
+    "run_due_schedules",
+    "run_retention_sweep",
+]

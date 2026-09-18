@@ -1033,24 +1033,36 @@ row's job. Recorded as a gap rather than as a reason.
 
 **Text:** "A workflow that declares a requirement the configured runtime cannot satisfy (structured output, streaming, or continuation) is rejected before the runtime is invoked, with a named unmet capability." (`build-plan.md:147-149`)
 
-**State:** deferred
+**State:** complete
 
-**Demonstrator:** none
+**Demonstrator:**
+- `pytest:tests/postgres/test_runtime_matrix.py::test_capability_gate_refuses_named_unmet_capability_before_start`
 
-**Mutation:** none
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/runtime/operations.py b/packages/core/src/rheo_core/runtime/operations.py
+index 5f5b1f7..ee6bdd1 100644
+--- a/packages/core/src/rheo_core/runtime/operations.py
++++ b/packages/core/src/rheo_core/runtime/operations.py
+@@ -688,7 +688,7 @@ def make_run_runtime_job(
+                 )
+                 return
+             try:
+-                check_runtime_gate(payload.requirements, adapter.capabilities())
++                pass
+             except UnmetCapability as exc:
+                 _fail(
+                     uow,
+```
 
-**Cost:** none
+**Cost:**
+- `pytest:tests/postgres/test_runtime_matrix.py::test_capability_gate_refuses_named_unmet_capability_before_start` — first observed failure line: `E       AssertionError: assert 'succeeded' == 'failed'`.
 
-**Performed by:** none
+4 failed (structured_output, streaming, continuation, isolation_enforced). Applying the hunk skips `RuntimeGate.check` in `run_runtime_job`; each named-kind demonstrator then false-succeeds and `adapter.start` runs.
 
-**Note:** Deferred to run 0c4. The capability gate needs the runtime contract and capability
-discovery; `packages/contracts/src/rheo_contracts/runtime.py` and
-`runtimes/src/rheo_runtimes/__init__.py` are one-line placeholders at this run's base — each file
-is a single docstring and nothing else, confirmed on this working tree rather than transcribed.
-Nothing in run 0c3 builds either, so there is no capability for a workflow to be rejected
-against and no runtime for it to be rejected before. Run 0c4 builds the runtime contract and
-`RuntimeGate` and closes this criterion; until it does, this row stays `deferred` and is not to
-be read as a gap in what 0c3 shipped.
+**Performed by:** C5 (2026-09-18)
+
+**Note:** The family covers AC 1 and AC 2. Bool requirements pin `error_code` to `UnmetCapability.name` (`structured_output`, `streaming`, `continuation`). The isolation row pins the literal token `isolation=enforced` against `isolation = advisory`. Every case also asserts `terminal_check_kind` is not `handler_returned`, the job row is `succeeded` (finish_failed-then-return), `start` count is zero, and `error_code` is not `job_failed`. Injectable recording doubles only; no live `claude`.
 
 ---
 
@@ -1058,22 +1070,48 @@ be read as a gap in what 0c3 shipped.
 
 **Text:** "A headless run whose executable is missing, whose credential is expired, whose tool is denied, whose deadline elapses before the runtime answers, or whose output stream truncates returns a distinct non-success state within the configured deadline. A test induces each of the five, the timeout by a runtime double that never answers, and asserts no hang and no success report." (`build-plan.md:150-154`)
 
-**State:** deferred
+**State:** complete
 
-**Demonstrator:** none
+**Demonstrator:**
+- `pytest:tests/postgres/test_runtime_matrix.py::test_executable_unavailable_fails_named_kind_within_deadline`
+- `pytest:tests/postgres/test_runtime_matrix.py::test_credential_invalid_fails_named_kind_within_deadline`
+- `pytest:tests/postgres/test_runtime_matrix.py::test_tool_denied_fails_named_kind_within_deadline`
+- `pytest:tests/postgres/test_runtime_matrix.py::test_never_answer_fails_deadline_exceeded_without_hang`
+- `pytest:tests/postgres/test_runtime_matrix.py::test_stream_truncated_fails_named_kind_within_deadline`
+- `pytest:tests/postgres/test_runtime_matrix.py::test_login_from_other_member_is_credential_not_owned_without_spawn`
 
-**Mutation:** none
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/runtime/operations.py b/packages/core/src/rheo_core/runtime/operations.py
+index 5f5b1f7..0556ffb 100644
+--- a/packages/core/src/rheo_core/runtime/operations.py
++++ b/packages/core/src/rheo_core/runtime/operations.py
+@@ -373,7 +373,7 @@ def _fail(
+         uow.connection,
+         operation_id=payload.operation_id,
+         now=now,
+-        error_code=error_code,
++        error_code="job_failed",
+         error_text=error_text,
+     )
+     if request_id is not None:
+```
 
-**Cost:** none
+**Cost:**
+- `pytest:tests/postgres/test_runtime_matrix.py::test_executable_unavailable_fails_named_kind_within_deadline` — first observed failure line: `E       AssertionError: assert 'job_failed' == 'executable_unavailable'`.
+- `pytest:tests/postgres/test_runtime_matrix.py::test_credential_invalid_fails_named_kind_within_deadline` — first observed failure line: `E       AssertionError: assert 'job_failed' == 'credential_invalid'`.
+- `pytest:tests/postgres/test_runtime_matrix.py::test_tool_denied_fails_named_kind_within_deadline` — first observed failure line: `E       AssertionError: assert 'job_failed' == 'tool_denied'`.
+- `pytest:tests/postgres/test_runtime_matrix.py::test_never_answer_fails_deadline_exceeded_without_hang` — first observed failure line: `E       AssertionError: assert 'job_failed' == 'deadline_exceeded'`.
+- `pytest:tests/postgres/test_runtime_matrix.py::test_stream_truncated_fails_named_kind_within_deadline` — first observed failure line: `E       AssertionError: assert 'job_failed' == 'stream_truncated'`.
+- `pytest:tests/postgres/test_runtime_matrix.py::test_login_from_other_member_is_credential_not_owned_without_spawn` — first observed failure line: `E       AssertionError: assert 'job_failed' == 'credential_not_owned'`.
 
-**Performed by:** none
+6 failed. The hunk collapses every named runtime handshake onto `job_failed`, which is the mapping the five criterion-16 kinds and AC 12 all share.
 
-**Note:** Deferred to run 0c4. The five induced runtime failures need an adapter to induce them
-in; none exists at this run's base. `runtimes/src/rheo_runtimes/__init__.py` is a one-line
-placeholder, so there is no `ClaudeCliRuntime` whose executable could be missing, whose
-credential could be expired or whose output stream could truncate, and no runtime double to make
-never answer. Run 0c4 builds the adapter and closes this criterion. This row is `deferred`
-because the work is 0c4's, not because the criterion was skipped.
+**Performed by:** C5 (2026-09-18)
+
+**Note:** AC 3–5/7 use a frozen injected clock and assert wall time under five seconds — named `error_code` is reached without `time.sleep` and without waiting out `deadline_seconds`. AC 6 (`NeverAnswerAdapter`) jumps the injected clock past the deadline; `finished()` stays false; `poll()` returns `None`; no hang. AC 12 is listed here because it is the same finish_failed-then-return handshake with `credential_not_owned`, driven from a different workspace member against a `login` binding; recording double, seed directory mtime and bytes unchanged, `start` count zero.
+
+**Note on a second mutation that was performed but is not this row's hunk.** Bypassing the account comparison in `run_runtime_job` (`if False and (account_id is None or str(account_id) != wanted)`) reddens the AC 12 demonstrator at `E       AssertionError: assert 'succeeded' == 'failed'` because `start` then runs. One row carries one hunk; the recorded hunk is the shared `_fail` mapping so all six named codes go red together. Injectable doubles only; no live `claude`.
 
 ---
 
@@ -1081,7 +1119,7 @@ because the work is 0c4's, not because the criterion was skipped.
 
 **Text:** "A secret is held by reference and resolves only inside the component that presents it. A test configures a model credential and the OAuth client secret as references, drives one runtime request that needs the model credential and one sign-in that needs the client secret, and asserts that the runtime request as the adapter records it, the arguments of every tool call made during the run, the operation record, and the audit record contain neither a secret value nor a reference that resolves to one; a second check asserts the resolved value is never passed to a domain service." (`build-plan.md:155-163`)
 
-**State:** partial
+**State:** complete
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_identity.py::test_github_provider_completes_with_the_documented_shape_and_a_scoped_secret`
@@ -1089,6 +1127,8 @@ because the work is 0c4's, not because the criterion was skipped.
 - `pytest:tests/postgres/test_signin_secret_boundary.py::test_resolved_settings_repr_never_carries_a_reference_or_a_value`
 - `pytest:tests/test_secrets.py::test_resolve_with_a_foreign_scope_is_denied`
 - `pytest:tests/test_secrets.py::test_bytes_are_reachable_only_through_expose`
+- `pytest:tests/postgres/test_runtime_matrix.py::test_model_credential_run_does_not_leak_secret_or_ref`
+- `pytest:tests/postgres/test_runtime_matrix.py::test_ac8_leak_into_recorded_request_reddens_the_boundary`
 
 **Mutation:**
 ```diff
@@ -1115,24 +1155,19 @@ index 775a52f..fba35b8 100644
 - `pytest:tests/test_secrets.py::test_resolve_with_a_foreign_scope_is_denied` — first observed failure line: `E           Failed: DID NOT RAISE SecretRefusal`.
 
 2 failed, 86 passed across `test_identity.py`, `test_signin_secret_boundary.py` and
-`test_secrets.py` together.
+`test_secrets.py` together. The new model-credential demonstrators stay green under this hunk:
+the recording double never calls `SecretStore.resolve`.
 
-**Performed by:** C2 (2026-09-16)
+**Performed by:** C2 (2026-09-16), C5 (2026-09-18)
 
-**Note:** Partial. The sign-in half — the OAuth client secret held by reference, resolved only
-inside the GitHub provider that presents it — is demonstrated above: the test configures
-`secret://env/RHEO_GITHUB_CLIENT_SECRET`, drives a full sign-in through a mock transport, and
-asserts the resolved value reaches the token-exchange POST body and nowhere else (no other
-request body, no URL, no header, no response, no log line), that neither the value nor the
-reference appears in any control-plane row except `identity_provider.client_secret_ref`, and
-that the same reference resolves under the provider's own scope and is refused
-`secret_scope_denied` under another component's. **The model-credential half needs a runtime
-request, and no runtime exists on this tree** — `runtimes/src/rheo_runtimes/__init__.py` and
-`packages/contracts/src/rheo_contracts/runtime.py` are one-line placeholders, so there is no
-adapter to record a request, no tool call to inspect the arguments of, and no model credential
-to configure as a reference. **Criterion 17 does not pass as a whole until run 0c4 builds the
-runtime and closes it.** Do not read this row as complete on the strength of its green
-demonstrators.
+**Note:** Complete. The sign-in half — the OAuth client secret held by reference, resolved only
+inside the GitHub provider that presents it — remains the C2 demonstrators above. C5 adds the
+model-credential half: `credential_kind=api_key` with `runtime.claude_cli.credential_ref =
+secret://env/RHEO_ANTHROPIC_API_KEY`, a recording double that captures `RuntimeRequest` and
+emits a fake `tool_call`, and assertions that the recorded request, tool-call digest, operation
+row, audit records, and runtime tables contain neither the secret value nor a resolvable
+`secret://` reference. `SecretValue.expose` is probed and must not appear in domain frames
+(`rheo_core.operations`, `rheo_core.runtime`, `rheo_core.audit`, `rheo_core.identity`).
 
 **Note on where the sign-in evidence actually lives, because the obvious file is not it.**
 `tests/postgres/test_signin_secret_boundary.py` is named for this criterion but carries the
@@ -1147,7 +1182,7 @@ this row's hunk.** The recorded hunk deletes the scope check in `SecretStore.res
 criterion's **first sentence** — "resolves only inside the component that presents it". With it
 gone, any component's scope resolves any reference, and the two demonstrators above stop raising.
 Eighty-six of eighty-eight tests stay green, so the red is precisely "a foreign scope resolved a
-secret", not a broken sign-in.
+secret", not a broken sign-in. **C5 does not replace this hunk.**
 
 A **second** mutation was applied, run and reverted on this row and is described here rather than
 in the `Mutation` block, because one row carries one hunk and this one demonstrates less: in
@@ -1159,6 +1194,16 @@ into a control-plane row')`, 1 failed and 21 passed across `test_identity.py` an
 `test_signin_secret_boundary.py`. It attacks the criterion's last clause — "nor a reference that
 resolves to one" — and was the row's recorded hunk until a cold review pointed out that the
 criterion's first sentence had none.
+
+**C5 AC 8 leak mutation (performed, not this row's hunk).** Concatenating
+`runtime.claude_cli.credential_ref` onto `RuntimeRequest.task` in `run_runtime_job` reddens
+`test_model_credential_run_does_not_leak_secret_or_ref` at
+`E       AssertionError: assert 'secret reference' is None`. The hunk is registered at
+`tests/fixtures/ac8-credential-leak.diff` and `git apply --check`'d by
+`tests/test_runtime_matrix_sources.py::test_ac8_leak_hunk_still_applies`. An in-process companion
+(`test_ac8_leak_into_recorded_request_reddens_the_boundary`) monkeypatches
+`build_runtime_request` to append only the `secret://` ref so the suite itself proves
+the reference detector bites (not the secret-value detector).
 
 **What still has no mutation, and why that is not a permission story.** The ~26 lines of boundary
 assertions at `test_identity.py:226-252` — the resolved value reaches the token-exchange POST

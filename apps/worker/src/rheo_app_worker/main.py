@@ -14,6 +14,7 @@ for the same reason.
 
 import signal
 import threading
+from datetime import UTC, datetime
 from types import FrameType
 
 from rheo_core.events import ConsumerRegistry
@@ -25,19 +26,43 @@ from rheo_core.exports import (
     run_export_job,
     run_restore_job,
 )
+from rheo_core.runtime import (
+    RUNTIME_RUN,
+    AdapterRegistry,
+    RuntimeJobPayload,
+    make_run_runtime_job,
+)
+from rheo_core.settings import resolve
 from rheo_core.storage.postgres import get_backend, reset_backend
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import worker_loop
+from rheo_core.work.schedules import (
+    RETENTION_SWEEP,
+    RetentionSweepPayload,
+    run_retention_sweep,
+)
+from rheo_runtimes import ClaudeCliRuntime
 
 JOB_KINDS = JobKindRegistry()
 """The process-wide job-kind registry.
 
-Export and restore are the kinds release one actually enqueues. They are registered
+Export, restore, ``core.runtime.run``, and ``core.retention_sweep`` are registered
 here, at the composition root, not in ``rheo_core.work.kinds`` — that module holds
-no process-wide instance so a test can build its own.
+no process-wide instance so a test can build its own. ``claude_cli`` is registered
+on the process ``ADAPTERS`` instance in this same module.
 """
 JOB_KINDS.register(EXPORT_JOB_KIND, ExportJobPayload, run_export_job)
 JOB_KINDS.register(RESTORE_JOB_KIND, RestoreJobPayload, run_restore_job)
+JOB_KINDS.register(RETENTION_SWEEP, RetentionSweepPayload, run_retention_sweep)
+
+ADAPTERS = AdapterRegistry()
+"""Process-wide adapter registry. Production registers ``claude_cli`` here."""
+ADAPTERS.register("claude_cli", ClaudeCliRuntime())
+JOB_KINDS.register(
+    RUNTIME_RUN,
+    RuntimeJobPayload,
+    make_run_runtime_job(ADAPTERS, lambda: datetime.now(UTC)),
+)
 
 CONSUMERS = ConsumerRegistry()
 """The process-wide consumer registry, beside ``JOB_KINDS`` and empty for the same
@@ -71,7 +96,26 @@ def install_stop_signals(stop: threading.Event) -> None:
     signal.signal(signal.SIGINT, _request_stop)
 
 
+def refuse_misconfigured_login() -> None:
+    """Refuse a configured login adapter that names no owning account.
+
+    An empty executable is an unconfigured skeleton and must still start.
+    """
+
+    settings = resolve()
+    executable = settings.get_str("runtime.claude_cli.executable")
+    kind = settings.get_str("runtime.claude_cli.credential_kind")
+    account_id = settings.get_str("runtime.claude_cli.credential_account_id")
+    if executable and kind == "login" and not account_id.strip():
+        raise SystemExit(
+            "runtime.claude_cli.credential_account_id is required when "
+            "runtime.claude_cli.executable is set and "
+            "runtime.claude_cli.credential_kind is login"
+        )
+
+
 def main() -> None:
+    refuse_misconfigured_login()
     backend = get_backend()
     stop = threading.Event()
     install_stop_signals(stop)

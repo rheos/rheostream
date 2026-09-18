@@ -1,7 +1,8 @@
 """Production ``JOB_KINDS`` lives on the worker composition root."""
 
 import pytest
-from rheo_app_worker.main import JOB_KINDS
+from pydantic import ValidationError
+from rheo_app_worker.main import ADAPTERS, JOB_KINDS
 from rheo_core.exports import (
     EXPORT_JOB_KIND,
     RESTORE_JOB_KIND,
@@ -10,11 +11,20 @@ from rheo_core.exports import (
     run_export_job,
     run_restore_job,
 )
+from rheo_core.runtime import RUNTIME_RUN, AdapterRegistry, RuntimeJobPayload
 from rheo_core.work.kinds import JobKindUnknown
+from rheo_core.work.schedules import (
+    RETENTION_SWEEP,
+    RetentionSweepPayload,
+    run_retention_sweep,
+)
+from rheo_runtimes import ClaudeCliRuntime
 
 
-def test_production_job_kinds_are_exactly_export_and_restore() -> None:
-    assert JOB_KINDS.names() == frozenset({EXPORT_JOB_KIND, RESTORE_JOB_KIND})
+def test_production_job_kinds_include_core_runtime_run_and_retention_sweep() -> None:
+    assert JOB_KINDS.names() == frozenset(
+        {EXPORT_JOB_KIND, RESTORE_JOB_KIND, RUNTIME_RUN, RETENTION_SWEEP}
+    )
 
     export_model, export_handler = JOB_KINDS.lookup(EXPORT_JOB_KIND)
     assert export_model is ExportJobPayload
@@ -23,6 +33,22 @@ def test_production_job_kinds_are_exactly_export_and_restore() -> None:
     restore_model, restore_handler = JOB_KINDS.lookup(RESTORE_JOB_KIND)
     assert restore_model is RestoreJobPayload
     assert restore_handler is run_restore_job
+
+    runtime_model, runtime_handler = JOB_KINDS.lookup(RUNTIME_RUN)
+    assert runtime_model is RuntimeJobPayload
+    assert runtime_handler is not None
+    assert isinstance(ADAPTERS, AdapterRegistry)
+    assert ADAPTERS.names() == frozenset({"claude_cli"})
+    assert isinstance(ADAPTERS.lookup("claude_cli"), ClaudeCliRuntime)
+
+    sweep_model, sweep_handler = JOB_KINDS.lookup(RETENTION_SWEEP)
+    assert sweep_model is RetentionSweepPayload
+    assert sweep_handler is run_retention_sweep
+
+
+def test_retention_sweep_payload_requires_workspace_id() -> None:
+    with pytest.raises(ValidationError):
+        RetentionSweepPayload.model_validate({})
 
 
 def test_production_job_kinds_still_refuse_an_unknown_kind() -> None:

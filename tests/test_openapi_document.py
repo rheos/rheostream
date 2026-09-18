@@ -56,6 +56,7 @@ from rheo_core.operations.core_ops import (
     WorkspaceStatus,
 )
 from rheo_core.operations.openapi import REF_TEMPLATE
+from rheo_core.runtime.operations import RUNTIME_RUN
 
 GENERATED_DOCUMENT = "apps/web/src/generated/openapi.json"
 
@@ -136,6 +137,7 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             WORKSPACE_EXPORT,
             WORKSPACE_DIGEST,
             WORKSPACE_RESTORE,
+            RUNTIME_RUN,
         )
     )
 

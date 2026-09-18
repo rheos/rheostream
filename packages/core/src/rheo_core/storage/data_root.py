@@ -228,3 +228,19 @@ def workspace_dir_for(workspace_id: UUID, purpose: Purpose) -> Path:
 def workspace_dir(ctx: WorkspaceContext, purpose: Purpose) -> Path:
     """The workspace directory for ``purpose`` under the context's workspace."""
     return workspace_dir_for(ctx.workspace_id, purpose)
+
+
+def run_dir_for(workspace_id: UUID, operation_id: UUID) -> Path:
+    """``<data_root>/workspaces/<workspace_id>/runs/<operation_id>/``.
+
+    Pure: touches nothing. Core-owned per-run directory, outside the
+    :class:`Purpose` set: a module asks for uploads, exports, or scratch, not for
+    a run working directory. Both ids must be ``UUID`` values (a string is a
+    ``TypeError``), so no caller can smuggle a path segment.
+    """
+    if not isinstance(workspace_id, UUID):
+        raise TypeError("workspace_id must be a UUID")
+    if not isinstance(operation_id, UUID):
+        raise TypeError("operation_id must be a UUID")
+    root = resolve_data_root().path
+    return root / "workspaces" / str(workspace_id) / "runs" / str(operation_id)

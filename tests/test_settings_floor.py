@@ -3,9 +3,10 @@
 Seams: ``validate_override()`` (its four refusal states, and a loosening override
 refused naming the key) and ``resolve()`` (a tightening row applied, a loosening row
 clamped on read, and a row that predates a tightened deployment value neutralised
-without being deleted). ``union``, ``subset`` and ``and`` have no production key in
-this run, so the harness keys carry them; ``min`` is also proved on the production key
-``identity.token_max_days.cli``, the one criterion 69 quotes.
+without being deleted). ``union`` and ``and`` have no production key in
+this run, so the harness keys carry them; ``subset`` now has production keys
+(``runtime.allowed_runtimes``, ``runtime.allowed_models``); ``min`` is also proved on
+the production key ``identity.token_max_days.cli``, the one criterion 69 quotes.
 """
 
 from collections.abc import Mapping

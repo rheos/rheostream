@@ -61,7 +61,7 @@ from rheo_core.storage.postgres import PostgresBackend
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace, workspaces_with_due_work
 from rheo_core.storage.work_index_tables import workspace_work_due
-from rheo_core.storage.work_tables import job
+from rheo_core.storage.work_tables import job, schedule
 from rheo_core.work import loop as loop_module
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import (
@@ -113,6 +113,19 @@ def _writes_its_note(
 ) -> None:
     """The durable side effect K5's "absence of any later effect" is asserted over."""
     write_note(uow.connection, body=payload.body)
+
+
+def _schedule_next_run_at(engine: Engine) -> datetime:
+    """The provisioned retention-sweep instant this visit must still report."""
+    with engine.connect() as conn:
+        value = conn.execute(
+            select(schedule.c.next_run_at).where(
+                schedule.c.job_kind == "core.retention_sweep",
+                schedule.c.enabled.is_(True),
+            )
+        ).scalar_one()
+    assert isinstance(value, datetime)
+    return value
 
 
 def _registry(
@@ -427,7 +440,9 @@ def test_a_visit_leases_runs_and_finishes_one_due_job(
     result = _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
 
     assert result.jobs_acquired == 1
-    assert result.next_due_at is None, "nothing is left to do in this workspace"
+    assert result.next_due_at == _schedule_next_run_at(engine), (
+        "with jobs drained the visit still reports the enabled schedule instant"
+    )
     row = _read(engine, job_id)
     assert row.state == "succeeded"
     assert row.attempts == 1
@@ -1221,8 +1236,9 @@ def test_a_workspace_due_only_for_a_delivery_is_never_reported_idle(
     The delivery is published **due in the future** so this visit's own drain leaves it
     alone: the assertion is about what the visit *reports*, and a delivery it had
     already drained would report nothing either way. The sibling assertion is the
-    control — a workspace with neither is still ``None``, so this test cannot pass by
-    a union that reports something unconditionally.
+    control — a workspace with neither jobs nor deliveries still reports the enabled
+    schedule instant, so this test cannot pass by a union that reports something
+    unconditionally (``now``) or that ignores schedules (``None``).
     """
     due_later = now + timedelta(minutes=5)
     with engine.begin() as conn:
@@ -1230,7 +1246,9 @@ def test_a_workspace_due_only_for_a_delivery_is_never_reported_idle(
         ensure_consumer_tables(conn)
 
     empty = _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
-    assert empty.next_due_at is None, "the control: neither table has anything due"
+    assert empty.next_due_at == _schedule_next_run_at(engine), (
+        "the control: no jobs or deliveries, only the enabled schedule"
+    )
 
     ctx = context_for_operator(workspace)
     with open_unit_of_work(ctx) as uow:

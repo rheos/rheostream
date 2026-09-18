@@ -2,7 +2,15 @@
 name = "rheo-runtimes"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "rheo-contracts",
+    "rheo-core",
+    "jsonschema>=4,<5",
+]
+
+[tool.uv.sources]
+rheo-contracts = { workspace = true }
+rheo-core = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

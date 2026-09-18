@@ -40,6 +40,7 @@ token to write.
 """
 
 import hashlib
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal
 from uuid import UUID
@@ -300,3 +301,39 @@ def revoke_handler(
             )
         revoke_access_token(connection, model_input.token_id)
     return TokenRevoked(token_id=model_input.token_id)
+
+
+def issue_runtime_token(
+    *,
+    account_id: UUID,
+    workspace_id: UUID,
+    purpose: str,
+    expires_at: datetime,
+    operations: Sequence[str],
+) -> tuple[UUID, str]:
+    """Mint a run-scoped ``kind='runtime'`` token. Opens the control-plane engine.
+
+    Returns ``(token_id, raw_value)``. The value goes only onto
+    ``AdapterSpawn.run_token``.
+    Snapshot rows may be empty: a run with no tools is allowed.
+    """
+    value, raw = mint("runtime")
+    token_hash = hashlib.sha256(raw).digest()
+    names = sorted(operations)
+    backend = get_backend()
+    with backend.control_engine.begin() as connection:
+        row = insert_access_token(
+            connection,
+            account_id=account_id,
+            workspace_id=workspace_id,
+            kind="runtime",
+            issued_from="runtime",
+            token_hash=token_hash,
+            set_name=None,
+            purpose=purpose,
+            expires_at=expires_at,
+        )
+        insert_access_token_operations(
+            connection, token_id=row.id, operation_names=names
+        )
+    return row.id, value

@@ -383,9 +383,11 @@ consumer from the outbox. It is permitted only for consumers whose subscription 
 effects or create domain records declare `replay_safe = false` and the operation refuses to target
 them. Replay therefore rebuilds derived state and never resends anything (idea document).
 
-**Retention.** Outbox rows and their deliveries are kept for `work.outbox_retention_days`
-(package default 30, floor `min`); the retention sweep removes older rows whose deliveries are all
-terminal. Replay reaches back only as far as retained rows, and `replay` refuses a
+**Retention.** Outbox rows and their deliveries are specified to be kept for
+`work.outbox_retention_days` (package default 30, floor `min`), after which older rows
+whose deliveries are all terminal would be removed. **That outbox sweep is unimplemented
+in release one** — no job, including `core.retention_sweep`, deletes those rows.
+Replay reaches back only as far as retained rows, and `replay` refuses a
 `from_position` older than the oldest retained row rather than replaying a gap. The outbox is
 outside the R5 cascade because of the rule below, not despite it.
 
@@ -470,13 +472,12 @@ write commit together, which is what makes a delivery exactly-once rather than
 at-least-once. Nothing on that side has a cancellation checkpoint, so there is no fourth.
 
 The core declares one scheduled job of its own: `core.retention_sweep` (daily), which removes
-runtime transcripts and `ClaudeCliRuntime` session files past
-`runtime.transcript_retention_days` and outbox rows past `work.outbox_retention_days`. **It is
-declared here and remains unprovisioned** — no workspace gets a schedule row for it at
-provisioning or at any other point: as of run 0c3 nothing in `packages/` registers that job kind
-or creates its schedule row, and that is deliberate rather than missed — it sweeps
-`core.runtime_transcript`, a table the runtime run creates, so scheduling it today would schedule
-a sweep over nothing
+runtime transcripts past `runtime.transcript_retention_days` and regular `ClaudeCliRuntime`
+session files under that workspace configuration directory's `projects/` subtree. Outbox
+retention named under [Events and the outbox](#events-and-the-outbox-fr-15) is unimplemented
+and is not part of that handler. Each workspace is provisioned a
+`core.schedule` row at migrate time; the worker's schedule ticker enqueues
+`RetentionSweepPayload(workspace_id)` when the row is due
 ([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep` is a job kind and never a schedule: the
 deletion coordinator enqueues it when an artifact could not be removed
 ([deletion](deletion-export-migration.md#the-cascade)), and the job table's attempts and backoff
