@@ -18,21 +18,27 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 from rheo_contracts import (
-    ALL_OPERATIONS,
     ActorKind,
     AdapterSpawn,
+    ApprovalRequiredEvent,
     Audience,
+    CancelledEvent,
     ContextItem,
     ContextPurpose,
     ContextTier,
+    FailureEvent,
+    FinalOutputEvent,
+    ProgressEvent,
     RuntimeCapabilities,
-    RuntimeEvent,
     RuntimeGate,
     RuntimeHandle,
     RuntimeLimits,
     RuntimeOutput,
     RuntimeRequest,
+    ToolCallEvent,
+    ToolResultEvent,
     UnmetCapability,
+    UsageEvent,
     WorkspaceContext,
 )
 from sqlalchemy import insert, select, update
@@ -51,7 +57,7 @@ from rheo_core.refs.resolver import LIVE, Unavailable, resolve_in
 from rheo_core.routing.config import MCP, RoutingConfig
 from rheo_core.routing.url_for import url_for
 from rheo_core.runtime.registry import AdapterRegistry
-from rheo_core.settings import resolve
+from rheo_core.settings import ResolvedSettings, resolve
 from rheo_core.settings.storage_source import PostgresOverrideSource
 from rheo_core.storage import runtime_tables
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
@@ -74,7 +80,7 @@ STREAM_TRUNCATED: Final = "stream_truncated"
 HARD_DEADLINE_SECONDS: Final = 3600
 CREDENTIAL_SLOT: Final = "model"
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
-_OUTPUT_ADAPTER: Final = TypeAdapter(RuntimeOutput)
+_OUTPUT_ADAPTER: TypeAdapter[RuntimeOutput] = TypeAdapter(RuntimeOutput)
 
 
 class RuntimeRunInput(BaseModel):
@@ -179,9 +185,7 @@ def build_context(
 ) -> list[ContextItem]:
     """Resolve live, readable refs on the sealed handler UoW. Truncate at the cap."""
     del purpose
-    settings = resolve(
-        workspace_id=ctx.workspace_id, source=PostgresOverrideSource()
-    )
+    settings = resolve(workspace_id=ctx.workspace_id, source=PostgresOverrideSource())
     cap = settings.get_int("runtime.max_context_bytes")
     items: list[ContextItem] = []
     used = 0
@@ -251,15 +255,18 @@ def runtime_run_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: RuntimeRunInput
 ) -> RuntimeRunScheduled:
     _backing_account_id(ctx)
+    if not isinstance(uow, HandlerUnitOfWork):
+        raise OperationRefused(
+            "output_invalid",
+            "core.runtime.run is long-running and needs a minted operation",
+        )
     minted_id = uow.operation_id
     if minted_id is None:
         raise OperationRefused(
             "output_invalid",
             "core.runtime.run is long-running and needs a minted operation",
         )
-    settings = resolve(
-        workspace_id=ctx.workspace_id, source=PostgresOverrideSource()
-    )
+    settings = resolve(workspace_id=ctx.workspace_id, source=PostgresOverrideSource())
     runtime_id = _sole_or_refuse(
         model_input.runtime_id,
         settings.get_list("runtime.allowed_runtimes"),
@@ -315,9 +322,10 @@ def runtime_run_handler(
 def _actor_may_call(ctx: WorkspaceContext, operation: str) -> bool:
     if operation in NON_TOKEN_ISSUABLE:
         return False
-    if ctx.operation_set is ALL_OPERATIONS:
+    permitted = ctx.operation_set
+    if not isinstance(permitted, frozenset):
         return True
-    return operation in ctx.operation_set
+    return operation in permitted
 
 
 def _permitted_tools(ctx: WorkspaceContext, requested: Sequence[str]) -> list[str]:
@@ -342,10 +350,10 @@ def _snapshot_operations(ctx: WorkspaceContext, tool_names: Sequence[str]) -> li
     return sorted(op for op in operations if _actor_may_call(ctx, op))
 
 
-def _credential_scope(settings: object) -> str:
-    kind = settings.get_str("runtime.claude_cli.credential_kind")  # type: ignore[union-attr]
+def _credential_scope(settings: ResolvedSettings) -> str:
+    kind = settings.get_str("runtime.claude_cli.credential_kind")
     if kind == "login":
-        account_id = settings.get_str("runtime.claude_cli.credential_account_id")  # type: ignore[union-attr]
+        account_id = settings.get_str("runtime.claude_cli.credential_account_id")
         return f"login:{account_id}"
     return "api_key"
 
@@ -403,17 +411,21 @@ def _lookup_continuation(
         return None, None
     if payload.actor_id is None or payload.audience_id is None:
         return None, None
-    row = uow.connection.execute(
-        select(runtime_tables.runtime_session).where(
-            runtime_tables.runtime_session.c.id == payload.continuation,
-            runtime_tables.runtime_session.c.runtime_id == payload.runtime_id,
-            runtime_tables.runtime_session.c.credential_scope == credential_scope,
-            runtime_tables.runtime_session.c.actor_kind == payload.actor_kind,
-            runtime_tables.runtime_session.c.actor_id == payload.actor_id,
-            runtime_tables.runtime_session.c.audience_kind == payload.audience_kind,
-            runtime_tables.runtime_session.c.audience_id == payload.audience_id,
+    row = (
+        uow.connection.execute(
+            select(runtime_tables.runtime_session).where(
+                runtime_tables.runtime_session.c.id == payload.continuation,
+                runtime_tables.runtime_session.c.runtime_id == payload.runtime_id,
+                runtime_tables.runtime_session.c.credential_scope == credential_scope,
+                runtime_tables.runtime_session.c.actor_kind == payload.actor_kind,
+                runtime_tables.runtime_session.c.actor_id == payload.actor_id,
+                runtime_tables.runtime_session.c.audience_kind == payload.audience_kind,
+                runtime_tables.runtime_session.c.audience_id == payload.audience_id,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         return None, None
     expires_at = row["expires_at"]
@@ -492,10 +504,6 @@ def _insert_transcript(
     )
 
 
-def _event_type(event: RuntimeEvent) -> str:
-    return event.type
-
-
 def _poll_loop(
     uow: HandlerUnitOfWork,
     payload: RuntimeJobPayload,
@@ -538,8 +546,7 @@ def _poll_loop(
                 )
                 return
             continue
-        kind = _event_type(event)
-        if kind == "progress":
+        if isinstance(event, ProgressEvent):
             _insert_transcript(
                 uow,
                 request_id=request_id,
@@ -557,7 +564,7 @@ def _poll_loop(
             )
             ordinal += 1
             continue
-        if kind == "tool_result":
+        if isinstance(event, ToolResultEvent):
             _insert_transcript(
                 uow,
                 request_id=request_id,
@@ -569,9 +576,9 @@ def _poll_loop(
             )
             ordinal += 1
             continue
-        if kind == "tool_call":
+        if isinstance(event, ToolCallEvent):
             continue
-        if kind == "usage":
+        if isinstance(event, UsageEvent):
             uow.connection.execute(
                 update(runtime_tables.runtime_request)
                 .where(runtime_tables.runtime_request.c.id == request_id)
@@ -583,7 +590,7 @@ def _poll_loop(
                 )
             )
             continue
-        if kind == "final_output":
+        if isinstance(event, FinalOutputEvent):
             if "structured" in event.model_fields_set:
                 body = json.dumps(event.structured, default=str)
             else:
@@ -613,7 +620,7 @@ def _poll_loop(
                 .values(terminal_event="final_output", ended_at=now)
             )
             return
-        if kind == "failure":
+        if isinstance(event, FailureEvent):
             _fail(
                 uow,
                 payload,
@@ -623,7 +630,7 @@ def _poll_loop(
                 request_id=request_id,
             )
             return
-        if kind == "approval_required":
+        if isinstance(event, ApprovalRequiredEvent):
             mark_approval_required(
                 uow.connection,
                 operation_id=payload.operation_id,
@@ -635,10 +642,8 @@ def _poll_loop(
                 .values(terminal_event="approval_required", ended_at=now)
             )
             return
-        if kind == "cancelled":
-            finish_cancelled(
-                uow.connection, operation_id=payload.operation_id, now=now
-            )
+        if isinstance(event, CancelledEvent):
+            finish_cancelled(uow.connection, operation_id=payload.operation_id, now=now)
             uow.connection.execute(
                 update(runtime_tables.runtime_request)
                 .where(runtime_tables.runtime_request.c.id == request_id)
@@ -784,10 +789,7 @@ def make_run_runtime_job(
             if payload.refs:
                 uow.connection.execute(
                     insert(runtime_tables.runtime_request_context),
-                    [
-                        {"request_id": request_id, "ref": ref}
-                        for ref in payload.refs
-                    ],
+                    [{"request_id": request_id, "ref": ref} for ref in payload.refs],
                 )
             credential_scope = _credential_scope(settings)
             matched_id, native_handle = _lookup_continuation(

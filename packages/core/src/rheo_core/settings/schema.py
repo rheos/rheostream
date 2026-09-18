@@ -845,7 +845,7 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         scope=Scope.WORKSPACE,
         floor=Floor.SUBSET,
         explicit_per_workspace=False,
-        default=["claude_cli"],
+        default=("claude_cli",),
     ),
     KeySpec(
         key="runtime.allowed_models",
@@ -853,7 +853,7 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         scope=Scope.WORKSPACE,
         floor=Floor.SUBSET,
         explicit_per_workspace=False,
-        default=["sonnet"],
+        default=("sonnet",),
     ),
 )
 

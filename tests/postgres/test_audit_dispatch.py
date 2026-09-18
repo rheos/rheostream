@@ -99,6 +99,7 @@ from rheo_core.operations.core_ops import (
 )
 from rheo_core.operations.operation_ops import OPERATION_RESOLVE
 from rheo_core.operations.records import AUDIENCE_NONE, mark_unresolved, mint
+from rheo_core.runtime import RUNTIME_RUN
 from rheo_core.settings import TEST_HARNESS_ORIGIN
 from rheo_core.storage.backend import (
     HANDLER_MAY_NOT_COMMIT,
@@ -115,7 +116,7 @@ TOKEN_DAYS_CLI = "identity.token_max_days.cli"
 
 NOTE = "the body an audited dispatch writes"
 
-THE_SIXTEEN = frozenset(
+THE_SEVENTEEN = frozenset(
     {
         SETTINGS_SET,
         SETTINGS_SET_MEMBER,
@@ -128,6 +129,7 @@ THE_SIXTEEN = frozenset(
         STANDING_GRANT_REVOKE,
         WORKSPACE_EXPORT,
         WORKSPACE_RESTORE,
+        RUNTIME_RUN,
         NOTE_WRITE,
         NOTE_EXPLODE,
         NOTE_SCHEDULE,
@@ -135,11 +137,12 @@ THE_SIXTEEN = frozenset(
         SINK_SEND,
     }
 )
-"""Every registered operation above the read class at the end of run 0c3's C7: nine
-core and five harness (test profile only).
+"""Every registered operation above the read class after 0c4: twelve core and five
+harness (test profile only).
 
-It was eight at the end of run 0c2 and twelve at the end of C6. C7 adds
-``core.standing_grant.create`` and ``core.standing_grant.revoke``, both ``MUTATE``.
+It was eight at the end of run 0c2, twelve at the end of 0c3 C6, and sixteen at
+the end of 0c3 C7. 0c4 adds ``core.runtime.run`` (``MUTATE``, ``long_running``).
+C7 had added ``core.standing_grant.create`` and ``core.standing_grant.revoke``.
 C6 had added ``core.approval.approve`` and ``core.approval.refuse`` (both ``MUTATE``)
 and the two upper-class harness fixtures — ``harness.fixture.act`` (``DESTRUCTIVE``)
 and ``harness.sink.send`` (``EXTERNAL``), the first operations of any class above
@@ -304,14 +307,14 @@ def _commit_from_the_handler(
 # --- AC 26: every registered mutating operation is covered ----------------------------
 
 
-def test_the_mutating_set_derived_from_the_registry_is_the_declared_sixteen(
+def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
     private_registry: OperationRegistry,
 ) -> None:
-    """AC 26's first half: the set under test comes from the registry, and is fourteen.
+    """AC 26's first half: the set under test comes from the registry, and is seventeen.
 
     Derived by safety class rather than by name, so an operation added later is in the
     set whether or not anybody remembered this file — and then fails the comparison
-    against :data:`THE_SIXTEEN`, which is the loud failure AC 26 asks for rather
+    against :data:`THE_SEVENTEEN`, which is the loud failure AC 26 asks for rather
     than a silent gap in the coverage below.
 
     ``is not SafetyClass.READ`` is what makes this cover the two upper-class fixtures
@@ -324,8 +327,8 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_sixteen(
         if (operation := private_registry.lookup(name)) is not None
         and operation.declaration.safety_class is not SafetyClass.READ
     }
-    assert mutating == set(THE_SIXTEEN), sorted(mutating)
-    assert len(mutating) == 16, sorted(mutating)
+    assert mutating == set(THE_SEVENTEEN), sorted(mutating)
+    assert len(mutating) == 17, sorted(mutating)
 
 
 def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
@@ -422,11 +425,21 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
             WORKSPACE_RESTORE,
             {"artifact_path": "/artifact-does-not-exist.tar.zst"},
         ),
+        RUNTIME_RUN: dispatch(
+            owner,
+            RUNTIME_RUN,
+            {
+                "task": "audit coverage",
+                "purpose": "respond",
+                "output": {"kind": "text"},
+                "runtime_id": "not_a_runtime",
+            },
+        ),
     }
     assert member is not None
 
     audited = {record.operation_name for record in _added(owner, before)}
-    assert audited == set(THE_SIXTEEN), sorted(audited)
+    assert audited == set(THE_SEVENTEEN), sorted(audited)
     # Every dispatch that was supposed to run did: a coverage assertion that passed
     # because most operations refused for an unrelated reason would prove nothing.
     for name, outcome in dispatched.items():
@@ -1025,7 +1038,7 @@ def test_check_audit_paths_names_every_offender(
         check_audit_paths(private_registry)
 
     message = str(excinfo.value)
-    for name in THE_SIXTEEN:
+    for name in THE_SEVENTEEN:
         assert name in message, message
     assert AUDIT_LIST not in message, message
     assert CORE_MODULE_ID in message and HARNESS_MODULE_ID in message, message
