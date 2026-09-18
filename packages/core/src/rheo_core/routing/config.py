@@ -27,9 +27,9 @@ kept from startup (run 0v, D-6).
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Final
+from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from rheo_core.settings import ResolvedSettings
 
@@ -55,6 +55,7 @@ KEY_PREFIX: Final = "routing"
 MODE_KEY: Final = f"{KEY_PREFIX}.mode"
 SCHEME_KEY: Final = f"{KEY_PREFIX}.scheme"
 BASE_HOST_KEY: Final = f"{KEY_PREFIX}.base_host"
+PUBLIC_HOST_KEY: Final = f"{KEY_PREFIX}.public_host"
 
 
 def surface_key(surface: str, field: str) -> str:
@@ -115,14 +116,37 @@ class Surfaces(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    """The whole topology: the mode, the scheme, the base host, and the surfaces."""
+    """The whole topology: the mode, the scheme, the hosts, and the surfaces."""
 
     model_config = ConfigDict(frozen=True)
 
     mode: RoutingMode
     scheme: str
     base_host: str
+    public_host: str = ""
     surfaces: Surfaces
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_hosts(cls, data: Any) -> Any:
+        """``base_host`` is port-free (issue #37). Empty ``public_host`` inherits it.
+
+        ``before`` rather than ``after`` so ``RoutingConfig(...)`` and
+        ``model_validate`` both inherit. An ``after`` validator that returns
+        ``model_copy`` is ignored on ``__init__``.
+        """
+        if not isinstance(data, dict):
+            return data
+        base_host = data.get("base_host", "")
+        if isinstance(base_host, str) and ":" in base_host:
+            raise ValueError(
+                "routing.base_host must be port-free; put a non-default port on "
+                "routing.public_host (the URL authority), not on base_host "
+                "(the Host-header match)"
+            )
+        if not data.get("public_host"):
+            return {**data, "public_host": base_host}
+        return data
 
     @classmethod
     def from_settings(
@@ -131,7 +155,7 @@ class RoutingConfig(BaseModel):
         *,
         modules: Mapping[str, SurfaceConfig] = {},
     ) -> "RoutingConfig":
-        """Build the configuration from the sixteen resolved ``routing.*`` keys.
+        """Build the configuration from the seventeen resolved ``routing.*`` keys.
 
         No database and no secret store: the routing configuration is deployment
         settings and nothing else.
@@ -148,6 +172,7 @@ class RoutingConfig(BaseModel):
             mode=RoutingMode(settings.get_str(MODE_KEY)),
             scheme=settings.get_str(SCHEME_KEY),
             base_host=settings.get_str(BASE_HOST_KEY),
+            public_host=settings.get_str(PUBLIC_HOST_KEY),
             surfaces=Surfaces(
                 shell=SurfaceConfig(
                     host=settings.get_str(surface_key(SHELL, "host")),

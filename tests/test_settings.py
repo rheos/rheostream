@@ -68,6 +68,7 @@ PRODUCTION_KEYS = {
     "routing.mode": "path",
     "routing.scheme": "https",
     "routing.base_host": "localhost",
+    "routing.public_host": "",
     "routing.shell.host": "circuit",
     "routing.shell.path": "/",
     "routing.identity.host": "auth",

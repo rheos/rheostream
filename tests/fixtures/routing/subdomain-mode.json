@@ -2,6 +2,7 @@
   "mode": "subdomain",
   "scheme": "https",
   "base_host": "example.test",
+  "public_host": "example.test",
   "surfaces": {
     "shell": { "host": "circuit", "path": "/" },
     "identity": { "host": "auth", "path": "/auth", "fixed_path": true },

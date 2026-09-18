@@ -60,6 +60,7 @@ export interface RoutingConfig {
   mode: RoutingMode;
   scheme: string;
   base_host: string;
+  public_host: string;
   surfaces: Surfaces;
 }
 
@@ -102,7 +103,11 @@ export function isRoutingConfig(value: unknown): value is RoutingConfig {
   if (value.mode !== "path" && value.mode !== "subdomain") {
     return false;
   }
-  if (typeof value.scheme !== "string" || typeof value.base_host !== "string") {
+  if (
+    typeof value.scheme !== "string" ||
+    typeof value.base_host !== "string" ||
+    typeof value.public_host !== "string"
+  ) {
     return false;
   }
   const surfaces = value.surfaces;

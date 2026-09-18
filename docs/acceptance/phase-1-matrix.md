@@ -586,15 +586,15 @@ index a7f2245..d9472a1 100644
    }
    const surfacePath = spec.path ?? "";
 -  if (config.mode === "path") {
--    return `${config.scheme}://${config.base_host}${joinPrefix(surfacePath, path)}`;
+-    return `${config.scheme}://${config.public_host}${joinPrefix(surfacePath, path)}`;
 -  }
 -  // Subdomain mode: every surface drops its prefix once it has its own host —
 -  // except `identity`, whose `fixed_path` holds `/auth/*` on every application
 -  // host in both modes.
 -  const prefix = spec.fixed_path === true ? surfacePath : "";
--  const host = `${spec.host}.${config.base_host}`;
+-  const host = `${spec.host}.${config.public_host}`;
 -  return `${config.scheme}://${host}${joinPrefix(prefix, path)}`;
-+  return `${config.scheme}://${config.base_host}${joinPrefix(surfacePath, path)}`;
++  return `${config.scheme}://${config.public_host}${joinPrefix(surfacePath, path)}`;
  }
  
  /**
@@ -607,11 +607,11 @@ index 0e678ef..7fe146f 100644
              f"routing surface {surface!r} is not served by this application"
          )
 -    if config.mode is RoutingMode.PATH:
--        return f"{config.scheme}://{config.base_host}{_join_prefix(spec.path, path)}"
+-        return f"{config.scheme}://{config.public_host}{_join_prefix(spec.path, path)}"
 -    prefix = spec.path if spec.fixed_path else ""
--    host = f"{spec.host}.{config.base_host}"
+-    host = f"{spec.host}.{config.public_host}"
 -    return f"{config.scheme}://{host}{_join_prefix(prefix, path)}"
-+    return f"{config.scheme}://{config.base_host}{_join_prefix(spec.path, path)}"
++    return f"{config.scheme}://{config.public_host}{_join_prefix(spec.path, path)}"
  
  
  def identity_path(config: RoutingConfig, path: str) -> str:
