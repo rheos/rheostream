@@ -50,6 +50,7 @@ MCP_CONFIG_NAME: Final = "mcp.json"
 POLL_WAIT_SECONDS: Final = 0.05
 POLL_WAIT_CAP_SECONDS: Final = 0.25
 CONFIG_DIR_MODE: Final = 0o700
+MCP_CONFIG_MODE: Final = 0o600
 
 _LOCALE_KEYS: Final = frozenset({"LANG", "LANGUAGE", "LC_ALL"})
 
@@ -348,6 +349,27 @@ def _child_env(*, config_dir: str, api_key: str | None) -> dict[str, str]:
     return env
 
 
+def _feed_stdin(process: subprocess.Popen[str], document: str) -> None:
+    """Write the stdin document after the handle's stdout reader is already draining.
+
+    A daemon thread keeps ``start`` from blocking on a child that ignores stdin
+    (pipe-buffer fill) or prints stream-json before finishing the read.
+    """
+
+    stdin = process.stdin
+    if stdin is None:
+        return
+
+    def _write() -> None:
+        try:
+            stdin.write(document)
+            stdin.close()
+        except BrokenPipeError:
+            pass
+
+    threading.Thread(target=_write, daemon=True).start()
+
+
 def _write_mcp_config(work_dir: Path, spawn: AdapterSpawn) -> Path:
     path = work_dir / MCP_CONFIG_NAME
     document = {
@@ -360,6 +382,7 @@ def _write_mcp_config(work_dir: Path, spawn: AdapterSpawn) -> Path:
         }
     }
     path.write_text(json.dumps(document), encoding="utf-8")
+    os.chmod(path, MCP_CONFIG_MODE)
     return path
 
 
@@ -466,14 +489,10 @@ class ClaudeCliRuntime:
                 "the executable could not be spawned",
                 output_kind=output_kind,
             )
-        if process.stdin is not None:
-            try:
-                process.stdin.write(document)
-                process.stdin.close()
-            except BrokenPipeError:
-                pass
-        return ClaudeCliHandle(
+        handle = ClaudeCliHandle(
             process=process,
             output_kind=output_kind,
             json_schema=json_schema,
         )
+        _feed_stdin(process, document)
+        return handle

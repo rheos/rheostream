@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import stat
 import time
 from pathlib import Path
 from uuid import UUID
@@ -245,9 +246,11 @@ def test_capture_stub_writes_stdin_and_keeps_task_off_argv(
     assert "7" in argv
     assert "--mcp-config" in argv
     assert "--resume" not in argv
-    mcp = (work / "mcp.json").read_text()
+    mcp_path = work / "mcp.json"
+    mcp = mcp_path.read_text()
     assert spawn.mcp_url in mcp
     assert spawn.run_token in mcp
+    assert stat.S_IMODE(mcp_path.stat().st_mode) == 0o600
     env_names = (work / "env_names.txt").read_text().splitlines()
     assert "ANTHROPIC_API_KEY" not in env_names
     assert "CLAUDE_CONFIG_DIR" in env_names
