@@ -404,7 +404,7 @@ def test_ac8_leak_into_recorded_request_reddens_the_boundary(
     owner_account_id: UUID,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """r2-w4: leaking the secret or ``secret://`` ref into the recorded request
+    """r2-w4: leaking a resolvable ``secret://`` ref into the recorded request
     must fail the criterion-17 surface assertions."""
     _api_key(monkeypatch)
     enable_harness(cluster, workspace)
@@ -412,9 +412,7 @@ def test_ac8_leak_into_recorded_request_reddens_the_boundary(
 
     def leaking(**kwargs):  # type: ignore[no-untyped-def]
         request = original(**kwargs)
-        return request.model_copy(
-            update={"task": f"{request.task} {SECRET_VALUE} {SECRET_REF}"}
-        )
+        return request.model_copy(update={"task": f"{request.task} {SECRET_REF}"})
 
     monkeypatch.setattr(runtime_ops, "build_runtime_request", leaking)
     adapter = credential_recording_adapter()
@@ -422,7 +420,7 @@ def test_ac8_leak_into_recorded_request_reddens_the_boundary(
     ctx, outcome, engine, _elapsed = _dispatch_and_visit(
         cluster, workspace, owner_account_id, adapter, frozen_clock(now)
     )
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="secret reference"):
         _assert_surfaces_clean(
             adapter=adapter,
             engine=engine,

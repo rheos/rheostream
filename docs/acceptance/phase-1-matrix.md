@@ -1201,8 +1201,9 @@ criterion's first sentence had none.
 `E       AssertionError: assert 'secret reference' is None`. The hunk is registered at
 `tests/fixtures/ac8-credential-leak.diff` and `git apply --check`'d by
 `tests/test_runtime_matrix_sources.py::test_ac8_leak_hunk_still_applies`. An in-process companion
-(`test_ac8_leak_into_recorded_request_reddens_the_boundary`) monkeypatches `build_runtime_request`
-the same way so the suite itself proves the surface assertions bite.
+(`test_ac8_leak_into_recorded_request_reddens_the_boundary`) monkeypatches
+`build_runtime_request` to append only the `secret://` ref so the suite itself proves
+the reference detector bites (not the secret-value detector).
 
 **What still has no mutation, and why that is not a permission story.** The ~26 lines of boundary
 assertions at `test_identity.py:226-252` — the resolved value reaches the token-exchange POST
