@@ -7,10 +7,10 @@ non-``deferred`` demonstrator still resolves (``pytest:`` against
 non-``deferred`` mutation hunk still applies (``git apply --check``); every
 non-``deferred`` row names a performer.
 
-A ``deferred`` row (15, 16) is routed past checks 2 and 3 the moment ``State``
-reads ``deferred``. Its ``Demonstrator`` and ``Mutation`` fields hold the literal
+A ``deferred`` row is routed past checks 2 and 3 the moment ``State`` reads
+``deferred``. Its ``Demonstrator`` and ``Mutation`` fields hold the literal
 ``none`` by grammar; they are never resolved and never passed to ``git apply``.
-A ``partial`` row (17) is exempt from nothing.
+Rows 15–17 are ``complete``; no live deferred set remains.
 
 ``vitest:`` stays in the schema and is not resolved here: no matrix row uses it,
 so ``validate`` takes no ``known_vitest_ids``. The positive control and the three
@@ -295,7 +295,7 @@ def test_the_live_matrix_is_clean() -> None:
         demo.startswith("vitest:") for row in rows for demo in row.demonstrators
     )
     deferred = {row.number: row for row in rows if row.state == "deferred"}
-    assert set(deferred) == {15, 16}
+    assert set(deferred) == set()
     assert all(
         row.demonstrators == () and row.mutation == "none" for row in deferred.values()
     )
