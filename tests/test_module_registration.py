@@ -20,12 +20,12 @@ registry whether it holds *those*.
 single case asserting all six would red for any of the six, which proves
 ``load_modules()`` ran rather than what it registered.
 
-The fabricated-entry-point recipe is the one ``tests/test_module_loader.py`` ships and
-this file borrows rather than reinvents: a real ``EntryPoint`` whose value points back
-at a module-level name here, published by monkeypatching the loader's own
+The fabricated-entry-point recipe is the one shared recipe in ``tests/harness/
+modules.py`` rather than one of this file's own: a real ``EntryPoint`` whose value
+points back at a module-level name here, published by monkeypatching the loader's own
 ``entry_points``, with ``_probe``-suffixed ids so a fixture can never borrow the id of
-a distribution shipped later. The twenty-four-field manifest builder is imported from
-that file for the same reason ``tests/test_module_sets.py`` imports it.
+a distribution shipped later. The twenty-four-field manifest builder comes from the
+same place, for the same reason.
 
 **The one piece of process-wide state this file cannot hand back.** The settings
 registry is process-global and publishes no unregister, so
@@ -42,6 +42,9 @@ from dataclasses import dataclass
 from importlib.metadata import EntryPoint
 
 import pytest
+from harness.modules import install as _install
+from harness.modules import manifest as _manifest
+from harness.modules import publish as _publish
 from pydantic import BaseModel, ConfigDict
 from rheo_contracts import (
     CONTRACT_VERSION,
@@ -69,8 +72,6 @@ from rheo_core.modules import (
     loaded_manifests,
     reset_surfaces,
 )
-from rheo_core.modules import loader as loader_module
-from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.operations import OperationRegistry
 from rheo_core.refs.resolver import (
     NOT_FOUND,
@@ -85,16 +86,12 @@ from rheo_core.settings import (
     KeySpec,
     Scope,
     ValueType,
-    env_variable_names,
     spec_for,
 )
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.tokens.sets import ToolRegistry
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.kinds import JobKindRegistry
-from test_module_loader import _manifest
-
-MODULES_VARIABLE = env_variable_names(ALLOWLIST_KEY)[0]
 
 MODULE_ID = "alpha_probe"
 OPERATION = f"{MODULE_ID}.note.add"
@@ -271,21 +268,6 @@ def registries() -> _Registries:
         kinds=JobKindRegistry(),
         consumers=ConsumerRegistry(),
     )
-
-
-def _publish(monkeypatch: pytest.MonkeyPatch, *entry_points: EntryPoint) -> None:
-    """Make ``discovered()`` see exactly these, and nothing the environment has."""
-    monkeypatch.setattr(
-        loader_module, "entry_points", lambda group: tuple(entry_points)
-    )
-
-
-def _install(monkeypatch: pytest.MonkeyPatch, *module_ids: str) -> None:
-    """Resolve ``modules.installed`` to exactly ``module_ids`` for one test."""
-    if module_ids:
-        monkeypatch.setenv(MODULES_VARIABLE, ",".join(module_ids))
-    else:
-        monkeypatch.delenv(MODULES_VARIABLE, raising=False)
 
 
 def _load(

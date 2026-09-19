@@ -72,6 +72,7 @@ from rheo_core.audit import (
 )
 from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.factories import context_from_token
+from rheo_core.modules.operations import MODULE_INSTALL
 from rheo_core.operations import (
     AUDIT_SINK_MISSING,
     CORE_MODULE_ID,
@@ -135,13 +136,24 @@ THE_SEVENTEEN = frozenset(
         NOTE_SCHEDULE,
         FIXTURE_ACT,
         SINK_SEND,
+        MODULE_INSTALL,
     }
 )
-"""Every registered operation above the read class after 0c4: twelve core and five
-harness (test profile only).
+"""Every registered operation above the read class: thirteen core and five harness
+(test profile only).
+
+**The name is pinned by an acceptance record and does not track the count.** It says
+seventeen and the set holds eighteen, which is the right trade:
+``test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen`` below is
+one of criterion 14's demonstrator pytest node ids, listed verbatim in
+``docs/acceptance/phase-1-matrix.md``, and ``tests/test_acceptance_matrix.py`` resolves
+every demonstrator against ``pytest --collect-only``. Renaming either would red ``main``
+on that check and silently shrink the absence proof's own selection. So this widens in
+place, the way ``tests/test_absent_behaviour.py`` keeps its own probe names.
 
 It was eight at the end of run 0c2, twelve at the end of 0c3 C6, and sixteen at
-the end of 0c3 C7. 0c4 adds ``core.runtime.run`` (``MUTATE``, ``long_running``).
+the end of 0c3 C7. 0c4 adds ``core.runtime.run`` (``MUTATE``, ``long_running``), and
+run 1a0 adds ``core.module.install`` (``MUTATE``, ``long_running``).
 C7 had added ``core.standing_grant.create`` and ``core.standing_grant.revoke``.
 C6 had added ``core.approval.approve`` and ``core.approval.refuse`` (both ``MUTATE``)
 and the two upper-class harness fixtures — ``harness.fixture.act`` (``DESTRUCTIVE``)
@@ -151,7 +163,7 @@ and ``harness.sink.send`` (``EXTERNAL``), the first operations of any class abov
 **A literal, and the registry-derived set is compared against it**, not the other way
 round. Derived alone, the assertion would equal whatever the registry happened to hold
 and could not fail — an operation that lost its ``MUTATE`` class would match its own
-mistake. The count is asserted as well as the membership, so a fifteenth operation
+mistake. The count is asserted as well as the membership, so a nineteenth operation
 added later fails here loudly rather than being silently left out of the coverage
 below."""
 
@@ -310,7 +322,12 @@ def _commit_from_the_handler(
 def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
     private_registry: OperationRegistry,
 ) -> None:
-    """AC 26's first half: the set under test comes from the registry, and is seventeen.
+    """AC 26's first half: the set under test comes from the registry, and is eighteen.
+
+    **The name still says seventeen and stays that way**: it is a criterion-14
+    demonstrator node id, resolved verbatim by ``tests/test_acceptance_matrix.py``
+    against ``pytest --collect-only``, so renaming it would red ``main`` and drop a
+    demonstrator from the absence proof. See :data:`THE_SEVENTEEN`.
 
     Derived by safety class rather than by name, so an operation added later is in the
     set whether or not anybody remembered this file — and then fails the comparison
@@ -328,7 +345,7 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
         and operation.declaration.safety_class is not SafetyClass.READ
     }
     assert mutating == set(THE_SEVENTEEN), sorted(mutating)
-    assert len(mutating) == 17, sorted(mutating)
+    assert len(mutating) == 18, sorted(mutating)
 
 
 def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
@@ -434,6 +451,12 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
                 "output": {"kind": "text"},
                 "runtime_id": "not_a_runtime",
             },
+        ),
+        # Refuses ``module_unavailable`` at pre-flight, which is a refused-but-audited
+        # record and needs no worker to produce. Every other route into this operation
+        # ends in a job, and a job is not what this coverage assertion is about.
+        MODULE_INSTALL: dispatch(
+            owner, MODULE_INSTALL, {"module_id": "no_such_module"}
         ),
     }
     assert member is not None

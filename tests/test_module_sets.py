@@ -16,14 +16,14 @@ workspace. A function that started answering two of these would pass whichever t
 asked only one question, so both cases below ask their question against a live
 counter-example.
 
-**The entry point is fabricated, and the manifest builder is borrowed.** Nothing in
-the checkout publishes a real ``rheo.modules`` entry point yet, so discovery is driven
-the one way ``tests/test_module_loader.py`` already ships: a real ``EntryPoint`` whose
-value points back at a module-level name here, published by monkeypatching the
-loader's own ``entry_points``. The twenty-four-field manifest builder is imported from
-that file rather than written a second time; it fills the eighteen fields neither file
-varies. The ids are ``_probe``-suffixed so a fixture can never borrow the id of a
-distribution shipped later.
+**The entry point is fabricated, and the three helpers are shared.** Nothing in the
+checkout published a real ``rheo.modules`` entry point until Recallatron, so discovery
+is driven the one way the loader's own tests ship: a real ``EntryPoint`` whose value
+points back at a module-level name here, published by monkeypatching the loader's own
+``entry_points``. The twenty-four-field manifest builder and the two monkeypatch
+helpers come from ``tests/harness/modules.py``, which is their one home. The ids are
+``_probe``-suffixed so a fixture can never borrow the id of a distribution shipped
+later.
 """
 
 from collections.abc import Iterator
@@ -32,6 +32,9 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
+from harness.modules import install as _install
+from harness.modules import manifest as _manifest
+from harness.modules import publish as _publish
 from harness.registry import enable_harness_module
 from rheo_core.audit import reset_sinks
 from rheo_core.modules import (
@@ -41,16 +44,10 @@ from rheo_core.modules import (
     loaded_manifests,
     reset_surfaces,
 )
-from rheo_core.modules import loader as loader_module
-from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.operations import HARNESS_MODULE_ID, OperationRegistry
 from rheo_core.refs.resolver import ResolverRegistry
-from rheo_core.settings import env_variable_names
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.repositories import list_module_states
-from test_module_loader import _manifest
-
-MODULES_VARIABLE = env_variable_names(ALLOWLIST_KEY)[0]
 
 ON_DISK_ID = "on_disk_probe"
 ON_DISK_MANIFEST = _manifest(ON_DISK_ID)
@@ -83,21 +80,6 @@ def clean_process_state() -> Iterator[None]:
 def registries() -> tuple[OperationRegistry, ResolverRegistry]:
     """Local registries: the process-wide ones are never touched by this file."""
     return OperationRegistry(), ResolverRegistry()
-
-
-def _publish(monkeypatch: pytest.MonkeyPatch, *entry_points: EntryPoint) -> None:
-    """Make ``discovered()`` see exactly these, and nothing the environment has."""
-    monkeypatch.setattr(
-        loader_module, "entry_points", lambda group: tuple(entry_points)
-    )
-
-
-def _install(monkeypatch: pytest.MonkeyPatch, *module_ids: str) -> None:
-    """Resolve ``modules.installed`` to exactly ``module_ids`` for one test."""
-    if module_ids:
-        monkeypatch.setenv(MODULES_VARIABLE, ",".join(module_ids))
-    else:
-        monkeypatch.delenv(MODULES_VARIABLE, raising=False)
 
 
 # --- (a) on disk is not (b) loaded ----------------------------------------------------

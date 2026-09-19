@@ -11,6 +11,9 @@ from collections.abc import Callable, Iterator
 from importlib.metadata import EntryPoint
 
 import pytest
+from harness.modules import install as _install
+from harness.modules import manifest as _manifest
+from harness.modules import publish as _publish
 from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_app_worker import main as worker_main
 from rheo_app_worker.main import ADAPTERS, CONSUMERS, JOB_KINDS, register_modules
@@ -25,10 +28,12 @@ from rheo_core.exports import (
     run_restore_job,
 )
 from rheo_core.modules import ENTRY_POINT_GROUP, JobKind, reset_surfaces
-from rheo_core.modules import loader as loader_module
-from rheo_core.modules.loader import ALLOWLIST_KEY
+from rheo_core.modules.operations import (
+    MODULE_INSTALL,
+    ModuleInstallPayload,
+    run_module_install_job,
+)
 from rheo_core.runtime import RUNTIME_RUN, AdapterRegistry, RuntimeJobPayload
-from rheo_core.settings import env_variable_names
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.kinds import JobKindUnknown
@@ -38,9 +43,17 @@ from rheo_core.work.schedules import (
     run_retention_sweep,
 )
 from rheo_runtimes import ClaudeCliRuntime
-from test_module_loader import _manifest
 
-MODULES_VARIABLE = env_variable_names(ALLOWLIST_KEY)[0]
+PRODUCTION_KINDS = frozenset(
+    {EXPORT_JOB_KIND, RESTORE_JOB_KIND, RUNTIME_RUN, RETENTION_SWEEP, MODULE_INSTALL}
+)
+"""Every job kind the composition root registers at import, as an exact set.
+
+Named once rather than written out in both cases below, because the two ask different
+questions of it — "these and nothing else" before any module loads, and "still all of
+these" after one does — and a set that drifted between them would make the second
+vacuous.
+"""
 
 WORKER_MODULE_ID = "worker_probe"
 WORKER_JOB_KIND = f"{WORKER_MODULE_ID}.sweep"
@@ -97,9 +110,7 @@ WORKER_ENTRY_POINT = EntryPoint(
 
 
 def test_production_job_kinds_include_core_runtime_run_and_retention_sweep() -> None:
-    assert JOB_KINDS.names() == frozenset(
-        {EXPORT_JOB_KIND, RESTORE_JOB_KIND, RUNTIME_RUN, RETENTION_SWEEP}
-    )
+    assert JOB_KINDS.names() == PRODUCTION_KINDS
 
     export_model, export_handler = JOB_KINDS.lookup(EXPORT_JOB_KIND)
     assert export_model is ExportJobPayload
@@ -119,6 +130,12 @@ def test_production_job_kinds_include_core_runtime_run_and_retention_sweep() -> 
     sweep_model, sweep_handler = JOB_KINDS.lookup(RETENTION_SWEEP)
     assert sweep_model is RetentionSweepPayload
     assert sweep_handler is run_retention_sweep
+
+    # ``core.module.install`` is the operation's own continuation, so the kind is
+    # registered here and its name is the operation's name; nothing else enqueues it.
+    install_model, install_handler = JOB_KINDS.lookup(MODULE_INSTALL)
+    assert install_model is ModuleInstallPayload
+    assert install_handler is run_module_install_job
 
 
 def test_retention_sweep_payload_requires_workspace_id() -> None:
@@ -164,10 +181,8 @@ def test_register_modules_puts_a_modules_job_kind_and_consumer_on_the_worker(
     assertion is made against ``JOB_KINDS`` and ``CONSUMERS`` themselves — the
     instances ``worker_loop`` is handed — rather than against a pair built here.
     """
-    monkeypatch.setattr(
-        loader_module, "entry_points", lambda group: (WORKER_ENTRY_POINT,)
-    )
-    monkeypatch.setenv(MODULES_VARIABLE, WORKER_MODULE_ID)
+    _publish(monkeypatch, WORKER_ENTRY_POINT)
+    _install(monkeypatch, WORKER_MODULE_ID)
 
     assert WORKER_JOB_KIND not in JOB_KINDS.names()
 
@@ -177,10 +192,8 @@ def test_register_modules_puts_a_modules_job_kind_and_consumer_on_the_worker(
     input_model, handler = JOB_KINDS.lookup(WORKER_JOB_KIND)
     assert input_model is _WorkerProbePayload
     assert handler is _worker_job_handler
-    # The four core kinds are still there: a module contributes, it does not replace.
-    assert {EXPORT_JOB_KIND, RESTORE_JOB_KIND, RUNTIME_RUN, RETENTION_SWEEP} <= (
-        JOB_KINDS.names()
-    )
+    # The core kinds are still there: a module contributes, it does not replace.
+    assert PRODUCTION_KINDS <= JOB_KINDS.names()
 
     assert CONSUMERS.lookup(WORKER_CONSUMER_ID) is WORKER_SUBSCRIPTION
     assert CONSUMERS.for_type(WORKER_EVENT_TYPE) == (WORKER_SUBSCRIPTION,)

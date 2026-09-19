@@ -27,6 +27,11 @@ from rheo_core.exports import (
     run_restore_job,
 )
 from rheo_core.modules import load_modules
+from rheo_core.modules.operations import (
+    MODULE_INSTALL,
+    ModuleInstallPayload,
+    run_module_install_job,
+)
 from rheo_core.runtime import (
     RUNTIME_RUN,
     AdapterRegistry,
@@ -47,14 +52,16 @@ from rheo_runtimes import ClaudeCliRuntime
 JOB_KINDS = JobKindRegistry()
 """The process-wide job-kind registry.
 
-Export, restore, ``core.runtime.run``, and ``core.retention_sweep`` are registered
-here, at the composition root, not in ``rheo_core.work.kinds`` — that module holds
-no process-wide instance so a test can build its own. ``claude_cli`` is registered
-on the process ``ADAPTERS`` instance in this same module.
+Export, restore, ``core.runtime.run``, ``core.retention_sweep`` and
+``core.module.install`` are registered here, at the composition root, not in
+``rheo_core.work.kinds`` — that module holds no process-wide instance so a test can
+build its own. ``claude_cli`` is registered on the process ``ADAPTERS`` instance in
+this same module.
 """
 JOB_KINDS.register(EXPORT_JOB_KIND, ExportJobPayload, run_export_job)
 JOB_KINDS.register(RESTORE_JOB_KIND, RestoreJobPayload, run_restore_job)
 JOB_KINDS.register(RETENTION_SWEEP, RetentionSweepPayload, run_retention_sweep)
+JOB_KINDS.register(MODULE_INSTALL, ModuleInstallPayload, run_module_install_job)
 
 ADAPTERS = AdapterRegistry()
 """Process-wide adapter registry. Production registers ``claude_cli`` here."""

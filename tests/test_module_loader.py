@@ -26,6 +26,10 @@ because a fixture that borrowed the id of a distribution shipped later would col
 with it. ``test_the_fixture_id_cannot_collide_with_a_real_distribution`` pins that
 against the real, unmonkeypatched environment, so the guard survives the first real
 module rather than depending on nobody noticing.
+
+The three helpers that build, publish and allow a fixture module live in
+``tests/harness/modules.py`` — they were duplicated across four files — and are
+imported below under the private names their call sites here already used.
 """
 
 import os
@@ -33,6 +37,10 @@ from collections.abc import Iterator
 from importlib.metadata import EntryPoint
 
 import pytest
+from harness.modules import MODULES_VARIABLE, MODULES_VARIABLE_UPPER
+from harness.modules import install as _install
+from harness.modules import manifest as _manifest
+from harness.modules import publish as _publish
 from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import (
     AuditSpec,
@@ -46,7 +54,6 @@ from rheo_contracts import (
 from rheo_core.audit import reset_sinks, sink_for
 from rheo_core.modules import (
     ENTRY_POINT_GROUP,
-    ExportDeclaration,
     ManifestInvalid,
     ModuleManifest,
     StorageDeclaration,
@@ -57,7 +64,6 @@ from rheo_core.modules import (
     module_surfaces,
     reset_surfaces,
 )
-from rheo_core.modules import loader as loader_module
 from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.operations import OperationRegistry
 from rheo_core.refs.resolver import (
@@ -66,10 +72,7 @@ from rheo_core.refs.resolver import (
     ResolverRegistry,
     Unavailable,
 )
-from rheo_core.settings import env_variable_names
 from rheo_core.storage.backend import UnitOfWork
-
-MODULES_VARIABLE, MODULES_VARIABLE_UPPER = env_variable_names(ALLOWLIST_KEY)
 
 MODULE_ID = "fixture_probe"
 OPERATION = f"{MODULE_ID}.note.add"
@@ -126,63 +129,6 @@ DECLARATION = OperationDeclaration(
 )
 
 SINK = _ProbeSink()
-
-
-def _exporter(*args: object, **kwargs: object) -> object:
-    """Never called: no test here exports the fabricated module."""
-    return None
-
-
-def _importer(*args: object, **kwargs: object) -> object:
-    """Never called: no test here imports the fabricated module."""
-    return None
-
-
-def _manifest(module_id: str, **overrides: object) -> ModuleManifest:
-    """A valid manifest for ``module_id``, with everything this file does not care
-    about declared empty.
-
-    Twenty-one of the model's twenty-four fields are required, and only three of
-    them (``operations``, ``resolvers``, ``web``) say anything about the *loader*.
-    The other eighteen are declared here once rather than eighteen times per
-    fixture, so a reader of this file sees what each fixture actually varies.
-    That the required fields really are required is
-    ``tests/test_module_manifest.py``'s assertion, not this file's.
-    """
-    fields: dict[str, object] = {
-        "module_id": module_id,
-        "package_version": "0.0.0",
-        "core_contract_versions": (1,),
-        "dependencies": (),
-        "record_types": (),
-        "storage": StorageDeclaration(
-            schema_name=module_id,
-            migrations_path=f"modules/{module_id}/migrations",
-            required_extensions=(),
-        ),
-        "configuration_schema": (),
-        "operations": (),
-        "tools": (),
-        "events": (),
-        "subscriptions": (),
-        "jobs": (),
-        "schedules": (),
-        "resolvers": (),
-        "deletion_participants": (),
-        "export": ExportDeclaration(
-            format_version=1,
-            schema_path=f"modules/{module_id}/schema.json",
-            exporter=_exporter,
-            importer=_importer,
-        ),
-        "secret_scopes": (),
-        "connector_bindings": (),
-        "health_checks": (),
-        "contract_tests": f"tests/modules/{module_id}",
-        "sensitivity": {},
-    }
-    fields.update(overrides)
-    return ModuleManifest(**fields)
 
 
 MANIFEST = _manifest(
@@ -251,27 +197,6 @@ def clean_process_state() -> Iterator[None]:
 def registries() -> tuple[OperationRegistry, ResolverRegistry]:
     """Local registries: the process-wide ones are never touched by this file."""
     return OperationRegistry(), ResolverRegistry()
-
-
-def _publish(monkeypatch: pytest.MonkeyPatch, *entry_points: EntryPoint) -> None:
-    """Make ``discovered()`` see exactly these, and nothing the environment has."""
-    monkeypatch.setattr(
-        loader_module, "entry_points", lambda group: tuple(entry_points)
-    )
-
-
-def _install(monkeypatch: pytest.MonkeyPatch, *module_ids: str) -> None:
-    """Resolve ``modules.installed`` to exactly ``module_ids`` for one test.
-
-    Through the deployment layer rather than by patching the loader: what a
-    deployment does is set the key, and the coercion from text to ``list[str]`` is
-    part of what these tests are about. No ids at all removes the variable, so the
-    key falls back to its empty package default.
-    """
-    if module_ids:
-        monkeypatch.setenv(MODULES_VARIABLE, ",".join(module_ids))
-    else:
-        monkeypatch.delenv(MODULES_VARIABLE, raising=False)
 
 
 # --- the allowlist's read -------------------------------------------------------------

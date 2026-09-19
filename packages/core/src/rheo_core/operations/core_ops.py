@@ -45,6 +45,14 @@ whose own row is the ``:105`` the cited range now reaches.
   session's act. Their declarations, models and handlers live in
   ``rheo_core.approvals.grant_operations``, for the same import-direction reason the
   approval pair's do; this module only registers them.
+- ``core.module.install`` — ``mutate``, ``long_running``; roles ``owner,
+  operator`` (``module-contract.md`` § Install). Its models, its five pre-flight
+  refusals and its job handler live in ``rheo_core.modules.operations``; only the
+  registration is here, and it is built **inside**
+  :func:`register_core_operations` for the import-direction reason the token and
+  approval operations already are — ``rheo_core.modules`` reaches back into this
+  package through ``modules/loader.py``'s ``OperationRegistry`` import, so a
+  module-level import here would close that cycle.
 - ``core.audit.list`` — ``read``; roles ``owner, operator``, ratified at
   ``module-contract.md:105``. The supported read of the audit record (run 0c2,
   C5). Its models and handler live in ``rheo_core.audit.operations``, beside the
@@ -543,6 +551,15 @@ def register_core_operations(
     their handlers in ``rheo_core.approvals.operations`` rather than in this file for
     the same reason: a declaration here would have to be built inside this function.
 
+    **``core.module.install`` is built here for the same reason, and its own.**
+    ``rheo_core.modules.loader`` imports ``rheo_core.operations.registry`` at module
+    level — that is how a loaded manifest's operations get registered at all — so a
+    module-level ``from rheo_core.modules.operations import ...`` in this file would
+    have this package and ``rheo_core.modules`` each half-initialised while the other
+    needed it, whichever was imported first. Deferring the import to call time avoids
+    it regardless of order, exactly as the token import above does, and is why the
+    declaration is not in :data:`CORE_OPERATIONS`.
+
     **It also installs the core's audit sink** (D4). The core is a module with no
     manifest, so ``modules/loader.py`` never loads a sink for it and the
     registration that declares the operations is the only place that knows the
@@ -555,6 +572,12 @@ def register_core_operations(
     """
     from rheo_core.approvals.grant_operations import GRANT_OPERATIONS
     from rheo_core.approvals.operations import APPROVAL_OPERATIONS
+    from rheo_core.modules.operations import (
+        MODULE_INSTALL,
+        ModuleInstallInput,
+        ModuleInstallScheduled,
+        module_install_handler,
+    )
     from rheo_core.tokens.issue import (
         TokenIssued,
         TokenIssueInput,
@@ -591,10 +614,35 @@ def register_core_operations(
             revoke_handler,
         ),
     )
+    module_operations: tuple[tuple[OperationDeclaration, Handler], ...] = (
+        (
+            OperationDeclaration(
+                name=MODULE_INSTALL,
+                safety_class=SafetyClass.MUTATE,
+                # ``module-contract.md`` § Install ratifies ``owner or operator``.
+                # The declaration default is ``{OWNER, MEMBER}``, so leaving this
+                # field off would silently ship the wrong pair rather than fail.
+                roles=frozenset({Role.OWNER, Role.OPERATOR}),
+                input_model=ModuleInstallInput,
+                output=ModuleInstallScheduled,
+                # ``NONE``, never ``NATURAL``: a repeat install is *refused* naming
+                # the module's current state, so there is no "same row" for a second
+                # call to fold into. ``NATURAL`` would claim the opposite.
+                idempotency=Idempotency.NONE,
+                # ``MUTATE``, so this is required. ``subject_field=None`` because
+                # ``AuditSpec.subject_field`` names an input field carrying a
+                # ``RecordRef``, and a module id is not one.
+                audit=AuditSpec(subject_field=None),
+                long_running=True,
+            ),
+            module_install_handler,
+        ),
+    )
     return tuple(
         registry.register(declaration, handler, origin=CORE_ORIGIN)
         for declaration, handler in CORE_OPERATIONS
         + token_operations
         + APPROVAL_OPERATIONS
         + GRANT_OPERATIONS
+        + module_operations
     )

@@ -3,16 +3,18 @@ module state rows, and the two settings tables.
 
 No ``member_credential`` repository: the table's DDL ships in ``core_tables.py`` and
 its repository is deferred to the run that first reads or writes it. ``module_state``
-has a reader here (``core.workspace.status`` in C4) and no writer yet: its writers
-arrive with module install. ``module_schema_version`` has a reader and now one
-writer, ``insert_module_schema_version``, called by ``run_module_chain``.
+and ``module_schema_version`` each have a reader here (``core.workspace.status`` in C4)
+and, from module install, their writers: :func:`insert_module_state`,
+:func:`set_module_state` and :func:`insert_module_schema_version`.
 
-**That writer is not yet the table's only one.** ``exports/artifact.py``'s
-``_install_modules`` still hand-builds ``insert(core_tables.module_schema_version)``
-on the export-restore path, outside this file and outside any migration. FR 10's
-sole-writer property is the outcome of routing that call site onto this function,
-which is phase 6's work together with the static scan that measures it. Until then
-this is the writer a migration uses, not the only writer the table has.
+**This module is now the only code that inserts into either table (FR 10).** The three
+callers are ``core.module.install`` (``modules/operations.py``), a module's migration
+chain (``migrations/module_chain.py``) and the export-restore path
+(``exports/artifact.py``'s ``_install_modules``); each of them calls a function here
+rather than building a statement of its own. No migration inserts into either table —
+the core chain only creates them. ``tests/test_module_state_writers.py`` is the static
+scan that measures the property, asserted both ways over ``packages/``, ``apps/``,
+``modules/``, ``scripts/`` and ``tests/``, with this file as its one declared exception.
 
 Every function takes the caller's ``Connection`` (a ``UnitOfWork.connection``) and
 runs inside its transaction; none commits.
@@ -22,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Connection, insert, select
+from sqlalchemy import Connection, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 
@@ -103,9 +105,85 @@ def _module_state(row: RowMapping) -> ModuleStateRow:
 
 
 def list_module_states(conn: Connection) -> tuple[ModuleStateRow, ...]:
-    """Every module row, by module id. Empty until module install lands (phase 2)."""
+    """Every module row, by module id. Empty in a workspace that installed nothing."""
     statement = select(c.module_state).order_by(c.module_state.c.module_id)
     return tuple(_module_state(row) for row in conn.execute(statement).mappings())
+
+
+def insert_module_state(
+    conn: Connection,
+    *,
+    module_id: str,
+    package_version: str,
+    state: str,
+    installed_at: datetime,
+    enabled_at: datetime | None = None,
+    state_detail: str | None = None,
+) -> ModuleStateRow:
+    """Write the one ``core.module_state`` row a module gets in this workspace.
+
+    **A plain insert, so a second row for one module id raises on the primary key**
+    rather than folding into the first. That is deliberate and it is the writer half
+    of Decision D: ``core.module.install`` refuses ``module_already_installed`` for a
+    module that already has a row *in any state*, and an ``ON CONFLICT DO NOTHING``
+    here would turn the race that slipped past that pre-flight check into a silent
+    success reporting an install that never happened — with the recorded package
+    version possibly a different one from the package this deployment loaded. A caller
+    that genuinely wants "insert or leave alone" reads :func:`list_module_states`
+    first; ``tests/harness/registry.py``'s ``enable_harness_module`` is the one such
+    caller and does exactly that.
+
+    ``installed_at`` is the caller's, not this function's, for the reason
+    :func:`insert_module_schema_version` gives: install stamps the instant its own
+    transaction ran, and export-restore replays the artifact's.
+
+    ``disabled_at`` is never set here — a row is not born disabled — and
+    :func:`set_module_state` is what moves an existing row.
+    """
+    row = ModuleStateRow(
+        module_id=module_id,
+        package_version=package_version,
+        state=state,
+        installed_at=installed_at,
+        enabled_at=enabled_at,
+        disabled_at=None,
+        state_detail=state_detail,
+    )
+    conn.execute(
+        insert(c.module_state).values(
+            module_id=row.module_id,
+            package_version=row.package_version,
+            state=row.state,
+            installed_at=row.installed_at,
+            enabled_at=row.enabled_at,
+            disabled_at=row.disabled_at,
+            state_detail=row.state_detail,
+        )
+    )
+    return row
+
+
+def set_module_state(
+    conn: Connection, *, module_id: str, state: str, enabled_at: datetime | None
+) -> bool:
+    """Move an existing module's row to ``state``; answer whether one was there.
+
+    ``False`` means no row matched, which is a caller's error rather than this
+    function's: ``core.module.enable`` refuses a module with no row before it gets
+    here, and the return value is what lets it prove that rather than assume it. An
+    ``UPDATE`` that matched nothing is otherwise indistinguishable from one that
+    worked.
+
+    ``enabled_at`` is a parameter rather than ``_now()`` so the caller stamps the
+    instant of its own transaction, and so an export-restore replaying a recorded
+    value can use the same writer.
+    """
+    result = conn.execute(
+        update(c.module_state)
+        .where(c.module_state.c.module_id == module_id)
+        .values(state=state, enabled_at=enabled_at)
+    )
+    return result.rowcount > 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,11 +212,12 @@ def insert_module_schema_version(
 
     ``applied_at`` and ``core_version_at_apply`` are the caller's, not this function's:
     the caller knows which transaction the step ran in and which ``rheo-core`` applied
-    it (``storage.provisioning.core_version()``), and the export-restore path — phase
-    6's second caller — replays the values the artifact recorded rather than today's.
+    it (``storage.provisioning.core_version()``), and the export-restore path — the
+    second caller — replays the values the artifact recorded rather than today's.
 
-    Its one caller today is ``migrations.module_chain.run_module_chain``. It is not
-    yet the table's only writer; see this module's own docstring.
+    Its two callers are ``migrations.module_chain.run_module_chain`` and
+    ``exports/artifact.py``'s ``_install_modules``, and it is now the table's only
+    writer; see this module's own docstring.
     """
     row = ModuleSchemaVersionRow(
         module_id=module_id,
@@ -163,8 +242,8 @@ def list_module_schema_versions(
     """Every applied module step, oldest first (``core.workspace.status``'s reader).
 
     Ordered by ``applied_at`` then ``module_id``, so two modules' steps interleave by
-    when they were applied. Rows reach it from :func:`insert_module_schema_version`
-    and, until phase 6 routes it, from ``exports/artifact.py``'s restore path.
+    when they were applied. Every row reaches it through
+    :func:`insert_module_schema_version`, including the export-restore path's.
     """
     statement = select(c.module_schema_version).order_by(
         c.module_schema_version.c.applied_at, c.module_schema_version.c.module_id
