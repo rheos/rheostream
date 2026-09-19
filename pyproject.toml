@@ -77,6 +77,8 @@ mypy_path = [
 explicit_package_bases = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# `modules` beside `tests` so each module distribution's own `contract_tests` suite
+# is collected by `make test` and by CI, not only when somebody names its path.
+testpaths = ["tests", "modules"]
 asyncio_mode = "auto"
 markers = ["postgres: needs the local Postgres"]

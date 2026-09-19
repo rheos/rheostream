@@ -874,6 +874,16 @@ source = { editable = "modules/leads" }
 name = "rheo-recallatron"
 version = "0.1.0"
 source = { editable = "modules/recallatron" }
+dependencies = [
+    { name = "rheo-contracts" },
+    { name = "rheo-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "rheo-contracts", editable = "packages/contracts" },
+    { name = "rheo-core", editable = "packages/core" },
+]
 
 [[package]]
 name = "rheo-relationships"

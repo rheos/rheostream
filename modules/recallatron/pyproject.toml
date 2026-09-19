@@ -2,7 +2,22 @@
 name = "rheo-recallatron"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = ["rheo-core", "rheo-contracts"]
+
+# The manifest is typed against `rheo_core.modules.manifest` and reads
+# `rheo_contracts.CONTRACT_VERSION`, so both are real runtime dependencies, not test
+# extras. Both are local workspace members with no index to resolve from — the same
+# `[tool.uv.sources]` pattern `packages/core/pyproject.toml` already uses for
+# `rheo-contracts`.
+[tool.uv.sources]
+rheo-core = { workspace = true }
+rheo-contracts = { workspace = true }
+
+# The one `rheo.modules` entry point in this tree. The name IS the module id: the
+# allowlist gates the name before the entry point is loaded, and `load_modules()`
+# raises `ManifestInvalid` if the loaded manifest's `module_id` disagrees with it.
+[project.entry-points."rheo.modules"]
+recallatron = "rheo_recallatron:MANIFEST"
 
 [build-system]
 requires = ["hatchling"]

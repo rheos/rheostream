@@ -206,11 +206,27 @@ check:
 # the same bytes on a developer's laptop and in the `web` CI job, which is what
 # makes the `git diff --exit-code` gate meaningful.
 #
-# **Depends on, not enforces.** This recipe pins neither source today, so an ambient
-# `RHEO__modules__installed` or a `deployment.toml` under the resolved data root does
-# reach `rheo openapi`. Nothing in the checkout publishes a `rheo.modules` entry
-# point, so there is nothing for either to activate and the gate cannot yet be moved
-# by one; the recipe pins both in the commit that ships the first real entry point.
+# **Enforced here, from the commit that ships the first real `rheo.modules` entry
+# point.** The recipe used to only *depend* on that environment, which was safe
+# while `entry_points(group="rheo.modules")` returned nothing: with no module
+# discoverable, neither ambient source had anything to activate and neither could
+# move a byte. `modules/recallatron` publishes one now, so both are pinned:
+#
+#   - `RHEO__modules__installed=` — the empty string decodes to the empty list
+#     (`settings/schema.py`'s `decode_text`: a `list[str]` drops empty items), and
+#     the environment layer is applied over `deployment.toml`, so this is a
+#     positive "no module is installed", not merely an absent variable.
+#   - `RHEO_DATA_ROOT` at a fresh `mktemp -d`, removed by a `trap` on exit, so the
+#     `<data_root>/config/deployment.toml` that data-root resolution would
+#     otherwise find on a developer's machine does not exist for this command.
+#
+# CI never needed either pin (a runner carries no `RHEO__*` and no
+# `deployment.toml`); this keeps a developer from regenerating a *different*
+# `openapi.json` than the one `repository-checks.yml` diffs, which is the hardest
+# kind of generated-artifact disagreement to reproduce. The `trap` and the command
+# it protects share one logical line on purpose: without `.ONESHELL` make runs each
+# recipe line in its own shell, so a `trap` set on an earlier line would fire at
+# that line's end and delete the data root before `rheo openapi` ran.
 #
 # **The second command's paths are relative to `apps/web`, not to the repository
 # root, and that is not a style choice.** `pnpm -C apps/web` sets the working
@@ -226,5 +242,8 @@ check:
 # recipe below with it; the loader now reads the setting instead of a process
 # variable, so there is nothing for this recipe to pass either way.
 codegen:
-	uv run rheo openapi --out apps/web/src/generated/openapi.json
+	codegen_data_root="$$(mktemp -d)" || exit 1; \
+		trap 'rm -rf "$$codegen_data_root"' EXIT; \
+		RHEO__modules__installed= RHEO_DATA_ROOT="$$codegen_data_root" \
+		uv run rheo openapi --out apps/web/src/generated/openapi.json
 	pnpm -C apps/web exec openapi-typescript src/generated/openapi.json -o src/generated/api-types.ts
