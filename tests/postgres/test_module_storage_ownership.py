@@ -79,6 +79,22 @@ def _workspace_engine(cluster: ClusterSession, workspace: UUID) -> tuple[str, En
 def _objects(connection: Connection) -> set[tuple[str, str, str]]:
     rows = connection.execute(
         text(
+            # These objects inherit their namespace from a relation, while
+            # pg_identify_object reports a NULL schema for them. Internal
+            # triggers and a view's generated _RETURN rule belong to the
+            # constraint/relation already represented in the census.
+            "WITH table_owned (classid, objid, relid, is_internal) AS ("
+            "SELECT 'pg_catalog.pg_trigger'::regclass, oid, tgrelid, tgisinternal "
+            "FROM pg_catalog.pg_trigger "
+            "UNION ALL "
+            "SELECT 'pg_catalog.pg_policy'::regclass, oid, polrelid, false "
+            "FROM pg_catalog.pg_policy "
+            "UNION ALL "
+            "SELECT 'pg_catalog.pg_rewrite'::regclass, rule.oid, rule.ev_class, "
+            "EXISTS (SELECT 1 FROM pg_catalog.pg_depend AS dependency "
+            "WHERE dependency.classid = 'pg_catalog.pg_rewrite'::regclass "
+            "AND dependency.objid = rule.oid AND dependency.deptype = 'i') "
+            "FROM pg_catalog.pg_rewrite AS rule) "
             "SELECT namespace.nspname::text, object.relname::text, "
             "object.relkind::text "
             "FROM pg_catalog.pg_class AS object "
@@ -88,14 +104,24 @@ def _objects(connection: Connection) -> set[tuple[str, str, str]]:
             "AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
             "AND object.relkind IN ('r', 'p', 'i', 'I', 'S', 't', 'v', 'm', 'f', 'c') "
             "UNION "
-            "SELECT identified.schema, identified.identity, identified.type "
+            "SELECT COALESCE(identified.schema, owner_namespace.nspname), "
+            "identified.identity, identified.type "
             "FROM (SELECT DISTINCT classid, objid FROM pg_catalog.pg_depend "
             "      WHERE objsubid = 0 AND classid <> 'pg_catalog.pg_class'::regclass) "
             "AS dependent "
             "CROSS JOIN LATERAL pg_catalog.pg_identify_object("
             "dependent.classid, dependent.objid, 0) AS identified "
-            "WHERE identified.schema <> 'information_schema' "
-            "AND identified.schema NOT LIKE 'pg\\_%' ESCAPE '\\' "
+            "LEFT JOIN table_owned ON table_owned.classid = dependent.classid "
+            "AND table_owned.objid = dependent.objid "
+            "LEFT JOIN pg_catalog.pg_class AS owner_relation "
+            "ON owner_relation.oid = table_owned.relid "
+            "LEFT JOIN pg_catalog.pg_namespace AS owner_namespace "
+            "ON owner_namespace.oid = owner_relation.relnamespace "
+            "WHERE COALESCE(identified.schema, owner_namespace.nspname) "
+            "<> 'information_schema' "
+            "AND COALESCE(identified.schema, owner_namespace.nspname) "
+            "NOT LIKE 'pg\\_%' ESCAPE '\\' "
+            "AND NOT COALESCE(table_owned.is_internal, false) "
             # Relations already account for their automatic row types; generated
             # arrays are accounted for by their element type (including enums).
             "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type AS type "
@@ -196,6 +222,98 @@ def test_object_census_reports_non_relation_objects_outside_the_owned_schema(
             assert _outside_owned_schema(created) == {expected}
         finally:
             transaction.rollback()
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    [
+        (
+            "CREATE TRIGGER recallatron_trigger_leak "
+            "BEFORE UPDATE ON core.module_state FOR EACH ROW "
+            "EXECUTE FUNCTION pg_catalog.suppress_redundant_updates_trigger()",
+            ("core", "recallatron_trigger_leak on core.module_state", "trigger"),
+        ),
+        (
+            "CREATE POLICY recallatron_policy_leak ON core.module_state USING (true)",
+            ("core", "recallatron_policy_leak on core.module_state", "policy"),
+        ),
+        (
+            "CREATE RULE recallatron_rule_leak AS ON DELETE TO core.module_state "
+            "DO INSTEAD NOTHING",
+            ("core", "recallatron_rule_leak on core.module_state", "rule"),
+        ),
+    ],
+    ids=["trigger", "policy", "rule"],
+)
+def test_object_census_reports_table_owned_objects_outside_the_owned_schema(
+    cluster: ClusterSession,
+    workspace: UUID,
+    recallatron_loaded: None,
+    statement: str,
+    expected: tuple[str, str, str],
+) -> None:
+    database_name, engine = _workspace_engine(cluster, workspace)
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        before = _objects(connection)
+        try:
+            run_module_chain(
+                connection,
+                MANIFEST,
+                expected_database=database_name,
+                core_version=core_version(),
+            )
+            assert _objects(connection) - before == _EXPECTED_SKELETON_OBJECTS
+            connection.execute(text(statement))
+            created = _objects(connection) - before
+            assert created == _EXPECTED_SKELETON_OBJECTS | {expected}
+            assert _outside_owned_schema(created) == {expected}
+        finally:
+            transaction.rollback()
+            assert _objects(connection) == before
+
+
+def test_object_census_does_not_double_count_internal_triggers_and_view_rules(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    _, engine = _workspace_engine(cluster, workspace)
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        before = _objects(connection)
+        try:
+            connection.execute(
+                text(
+                    "CREATE TABLE public.recallatron_automatic_probe ("
+                    "id integer PRIMARY KEY, parent_id integer "
+                    "REFERENCES public.recallatron_automatic_probe(id))"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE VIEW public.recallatron_automatic_view AS "
+                    "SELECT id FROM public.recallatron_automatic_probe"
+                )
+            )
+            assert _objects(connection) - before == {
+                ("public", "recallatron_automatic_probe", "r"),
+                ("public", "recallatron_automatic_probe_pkey", "i"),
+                (
+                    "public",
+                    "recallatron_automatic_probe_pkey "
+                    "on public.recallatron_automatic_probe",
+                    "table constraint",
+                ),
+                (
+                    "public",
+                    "recallatron_automatic_probe_parent_id_fkey "
+                    "on public.recallatron_automatic_probe",
+                    "table constraint",
+                ),
+                ("public", "recallatron_automatic_view", "v"),
+            }
+        finally:
+            transaction.rollback()
+            assert _objects(connection) == before
 
 
 def _python_files(root: Path) -> list[Path]:
