@@ -15,6 +15,14 @@ and each of its two refusals reaches the caller under its own ``error_code`` the
 install's pre-flight five do. Its handler runs inside the dispatcher's own
 transaction, so a refusal at step 2 leaves nothing of step 3 behind.
 
+**What one transaction does not buy is serialization, and enable takes the row lock
+that does.** Two dispatches at once both read the module's state from their own
+snapshots, so both would pass step 1 and both would succeed;
+``repositories.lock_module_state``'s ``FOR UPDATE`` on the target row, taken before
+step 1 and held through step 4, is what makes the second one wait and then read what
+the first committed. It also covers the ``core.schedule`` write, which has no unique
+index to fall back on the way the settings write does.
+
 **Everything reachable without the workspace database is refused synchronously, and
 everything that needs it runs in the job.** A refusal raised from the dispatch handler
 reaches the caller as ``OperationRefused`` — its own ``error_code``, its own
@@ -86,6 +94,7 @@ from rheo_core.storage.repositories import (
     insert_schedule_if_absent,
     insert_workspace_setting_if_absent,
     list_module_states,
+    lock_module_state,
     set_module_state,
 )
 from rheo_core.work.cancellation import CancellationToken
@@ -516,15 +525,18 @@ def run_module_install_job(
 # --- core.module.enable ---------------------------------------------------------------
 
 
-def _enable_refuse_unless_state(rows: dict[str, ModuleStateRow], module_id: str) -> str:
+def _enable_refuse_unless_state(row: ModuleStateRow | None, module_id: str) -> str:
     """Step 1. The module's actual state, or the refusal naming it.
 
     First, and before the loaded-manifest lookup, because the state is the question a
     caller asking "can this be enabled" is asking: a module id nothing ever installed
     is ``absent`` here, not ``module_unavailable``, and an operator who mistyped the id
     reads the same answer as one who forgot to install it.
+
+    ``row`` comes from :func:`~rheo_core.storage.repositories.lock_module_state` rather
+    than from the workspace-wide listing, so the state judged here is the one no
+    concurrent enable can still be about to change.
     """
-    row = rows.get(module_id)
     current = ABSENT_STATE if row is None else row.state
     if current not in _ENABLEABLE_STATES:
         raise OperationRefused(
@@ -623,10 +635,34 @@ def module_enable_handler(
     ``ctx.workspace_id`` would be asking the same question twice.
     """
     module_id = model_input.module_id
-    rows = {row.module_id: row for row in list_module_states(uow.connection)}
+
+    # **The target row is locked before it is judged**, and the lock is what makes
+    # every step below a decision rather than a guess. Without it two enables dispatched
+    # at once both read ``installed`` from their own snapshots, both pass step 1, and
+    # both succeed — measured, not reasoned: the pair leaves two terminal ``succeeded``
+    # records, two audit rows, and, for a module whose manifest declares a default
+    # schedule but no ``explicit_per_workspace`` key, **two ``core.schedule`` rows for
+    # one ``(module_id, name)``**, which ``run_due_schedules`` then enqueues twice a day
+    # for ever. (A module that declares such a key is accidentally serialized by that
+    # unique index and shows only the double success — an accident, not a guard, and
+    # not one a module author chooses.)
+    #
+    # ``FOR UPDATE`` and not a from-state in ``set_module_state``'s ``WHERE``: the
+    # conditional update would serialize step 4 alone, leaving steps 2 and 3 — including
+    # the schedule read-then-write that has no unique index to fall back on — exactly as
+    # racy as they are now. The lock spans all four because it lives until the
+    # dispatcher's transaction ends.
+    #
+    # The loser does not fail: it waits here, and under ``READ COMMITTED`` PostgreSQL
+    # re-reads the row the winner committed, so it sees ``enabled`` and refuses
+    # ``module_state_invalid`` naming that state — the same answer it would have got by
+    # arriving a second later, in the ratified vocabulary.
+    locked = lock_module_state(uow.connection, module_id=module_id)
 
     # 1. module_state_invalid, naming the state this workspace actually holds.
-    _enable_refuse_unless_state(rows, module_id)
+    _enable_refuse_unless_state(locked, module_id)
+
+    rows = {row.module_id: row for row in list_module_states(uow.connection)}
 
     # The manifest, needed from step 2 on. Reached *after* step 1 so the state answer
     # wins for an id this deployment does not load; a module whose row says
@@ -645,15 +681,18 @@ def module_enable_handler(
     _write_enable_rows(uow, manifest, now=now)
 
     # 4. The row. ``set_module_state`` answers whether one matched, and the answer is
-    #    read rather than discarded: step 1 established the row exists, so a ``False``
-    #    here means it stopped existing between that read and this write — a
-    #    concurrent remove, the one thing this transaction cannot see. Raised as a
-    #    plain error rather than a refusal because it is not the caller's mistake and
-    #    carries no vocabulary of its own; the dispatcher rolls the transaction back
-    #    and reports ``handler_failed``, which is the honest answer for a state that
-    #    is supposed to be unreachable. Nothing else is needed to make "from the next
-    #    request, ``enabled_modules`` includes it" true: ``boundary/factories.py``
-    #    derives that set from these rows on every context it builds.
+    #    read rather than discarded. With the lock above held, ``False`` is genuinely
+    #    unreachable — a concurrent delete would have to wait for this transaction,
+    #    and a delete that landed *before* the lock read leaves ``locked is None`` and
+    #    refuses at step 1 — so this is a consistency assertion and not an expected
+    #    branch. It stays because an assertion that cannot fire costs one comparison,
+    #    while a writer whose answer is thrown away is how "the row was there" becomes
+    #    an assumption again the next time this function is edited. Raised as a plain
+    #    error rather than a refusal because it is not the caller's mistake and carries
+    #    no vocabulary of its own; the dispatcher rolls the transaction back and reports
+    #    ``handler_failed``. Nothing else is needed to make "from the next request,
+    #    ``enabled_modules`` includes it" true: ``boundary/factories.py`` derives that
+    #    set from these rows on every context it builds.
     if not set_module_state(
         uow.connection, module_id=module_id, state=ENABLED_STATE, enabled_at=now
     ):

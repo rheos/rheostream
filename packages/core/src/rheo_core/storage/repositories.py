@@ -165,6 +165,38 @@ def insert_module_state(
     return row
 
 
+def lock_module_state(conn: Connection, *, module_id: str) -> ModuleStateRow | None:
+    """One module's row, held against concurrent writers until this transaction ends.
+
+    :func:`list_module_states` answers the same question from a *snapshot*: two callers
+    reading concurrently both see the state as it was before either acted, and both
+    then act on it. This takes ``FOR UPDATE`` on the one row, so the second caller
+    waits at this statement instead — and under ``READ COMMITTED`` PostgreSQL re-reads
+    the row once the first caller commits, so what the loser gets back is the state the
+    **winner** left rather than the state it would have read for itself. That is what
+    makes a state check written over this reader a decision instead of a guess.
+
+    ``core.module.enable`` is the caller and takes it before its own step 1, so the
+    lock spans every write that follows — including the ``core.schedule``
+    read-then-write, which has no unique index of its own to fall back on (see
+    :func:`insert_schedule_if_absent`).
+
+    ``None`` when the module has no row, and nothing is locked in that case because
+    there is nothing to lock: two concurrent enables of a module neither has installed
+    both refuse, which is the right answer and needs no lock to reach.
+    ``work/jobs.py``'s lease read is this same mechanism with ``skip_locked=True`` —
+    the opposite choice for the opposite reason, since a worker wants the next
+    *unlocked* job and this caller wants this particular row or nothing.
+    """
+    statement = (
+        select(c.module_state)
+        .where(c.module_state.c.module_id == module_id)
+        .with_for_update()
+    )
+    found = conn.execute(statement).mappings().first()
+    return None if found is None else _module_state(found)
+
+
 def set_module_state(
     conn: Connection, *, module_id: str, state: str, enabled_at: datetime | None
 ) -> bool:
@@ -175,6 +207,16 @@ def set_module_state(
     here, and the return value is what lets it prove that rather than assume it. An
     ``UPDATE`` that matched nothing is otherwise indistinguishable from one that
     worked.
+
+    **The ``WHERE`` names the module and not the state it is moving from**, so this is
+    not itself an atomic conditional transition and must not be read as one: two
+    callers that both saw ``installed`` would both update to ``enabled`` here, the
+    second simply overwriting the first. Serializing them is
+    :func:`lock_module_state`'s job, taken by the caller before it decides. Folding the
+    from-state into this ``WHERE`` was considered and rejected: it would make ``False``
+    mean "no row **or** the wrong state", collapsing the one distinction this return
+    value exists to make, and it would still leave the settings and schedule writes
+    that run *before* it unserialized.
 
     ``enabled_at`` is a parameter rather than ``_now()`` so the caller stamps the
     instant of its own transaction, and so an export-restore replaying a recorded
@@ -388,10 +430,16 @@ def insert_schedule_if_absent(
     :func:`insert_workspace_setting_if_absent` uses one screen up. Writing this as a
     single ``INSERT ... WHERE NOT EXISTS`` would read as though it closed the race and
     would not: two transactions whose snapshots both predate either insert find
-    nothing either way. What keeps the duplicate unreachable is the caller —
-    ``core.module.enable`` refuses a module that is already ``enabled``, so a second
-    enable refuses before it reaches here — and closing it properly needs a unique
-    index, which is a core migration and a later run's.
+    nothing either way.
+
+    **So this function is safe only because its caller serializes it, and that was
+    measured rather than assumed.** Two concurrent enables of one module really do
+    write two rows for one ``(module_id, name)`` — reproduced against this cluster
+    before :func:`lock_module_state` existed. ``core.module.enable`` takes that row
+    lock before its own step 1 and holds it through this write, which is what makes
+    the read-then-write here a decision. Any *other* caller added later inherits the
+    obligation, and the only way to remove it is a unique index over
+    ``(module_id, name)`` — a core migration, and a later run's.
 
     Returns ``True`` when a row was inserted.
     """

@@ -26,6 +26,12 @@ uses Recallatron for exactly that reason. The one thing seeding cannot fake is t
 loaded manifest, which enable reads from step 2 on, so every case that gets past step 1
 loads its fixture through the shared recipe.
 
+**The last case is about two callers rather than one.** Everything above drives a
+single dispatch, and a single dispatch cannot show that step 1's read is a decision
+rather than a snapshot — the unguarded version passed every case above while letting
+two concurrent enables both succeed and duplicate a schedule row. That one drives the
+row lock from the other side, with a second connection holding it.
+
 **``set_module_state``'s return value is pinned, because assuming the row is the
 mistake it exists to prevent.** Step 1 established that a row is there, so ``False`` at
 step 4 is unreachable through any seeding this file could do — and an implementation
@@ -35,6 +41,8 @@ pins it replaces the writer at the call site, the way
 replaces ``insert_module_state`` at its own.
 """
 
+import threading
+import time
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -75,6 +83,7 @@ from rheo_core.storage.repositories import (
     ModuleStateRow,
     insert_module_state,
     list_module_states,
+    set_module_state,
     workspace_settings,
 )
 from sqlalchemy import Engine, select
@@ -479,3 +488,103 @@ def test_enable_fails_when_the_row_it_was_about_to_move_is_gone(
     ctx = context_for_operator(workspace)
     assert isinstance(ctx, WorkspaceContext), ctx
     assert CONFIG_ID not in ctx.enabled_modules
+
+
+# --- serializing two enables ----------------------------------------------------------
+
+
+def test_enable_waits_for_the_row_and_then_judges_what_it_finds(
+    monkeypatch: pytest.MonkeyPatch,
+    engine: Engine,
+    database: str,
+    operator: WorkspaceContext,
+) -> None:
+    """Step 1 reads the row under ``FOR UPDATE``, so a concurrent enable cannot pass it.
+
+    **This case exists because the unguarded version was measured, not suspected.** Two
+    enables dispatched at once each read the module's state from their own snapshot, so
+    both saw ``installed``, both passed step 1 and both reported ``succeeded`` — two
+    terminal records and two audit rows for one transition. Worse for a module that
+    declares a default schedule and no ``explicit_per_workspace`` key: with nothing to
+    serialize them, the ``core.schedule`` read-then-write ran twice and left **two rows
+    for one ``(module_id, name)``**, which ``run_due_schedules`` would enqueue twice a
+    day for ever. A module that does declare such a key was serialized by that settings
+    unique index instead — an accident of the manifest, not a guard.
+
+    Reproducing that needs two threads racing into a window microseconds wide, which is
+    a flaky test. This drives the same mechanism deterministically from the other side:
+    a second connection takes the row lock **first** and holds it, so the dispatch below
+    has to queue behind exactly the lock the fix introduces. While it is queued, the
+    holder commits the very transition the loser was about to make. PostgreSQL re-reads
+    the locked row under ``READ COMMITTED`` once the holder commits, so what the waiter
+    finds is ``enabled`` — the winner's state, not the ``installed`` it would have read
+    for itself.
+
+    What this kills: dropping ``with_for_update()`` from ``lock_module_state``. Then
+    the dispatch reads ``installed`` straight past the holder, writes its rows, queues
+    at its own ``UPDATE`` instead, and — because that ``UPDATE``'s ``WHERE`` names the
+    module and not the state it is moving from — re-evaluates against the winner's row
+    and succeeds anyway. The refusal below becomes a success and the rows below appear.
+    """
+    seed(engine, database, CONFIG_ID, state=INSTALLED_STATE)
+    reading = threading.Event()
+    real_lock = module_operations.lock_module_state
+
+    def announce_then_lock(conn: object, **fields: object) -> object:
+        """Signal *before* the real read, because with the fix the read blocks.
+
+        Announcing afterwards would never fire while the holder has the row, and the
+        holder would then commit before the dispatch had read anything — which is a
+        state the unguarded implementation refuses too, so the case would pass for the
+        wrong reason.
+        """
+        reading.set()
+        return real_lock(conn, **fields)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(module_operations, "lock_module_state", announce_then_lock)
+    results: list[OperationOutcome] = []
+
+    with loaded_probe_modules(monkeypatch, CONFIG_ID):
+        with engine.connect() as holder:
+            with holder.begin():
+                assert real_lock(holder, module_id=CONFIG_ID) is not None
+
+                caller = threading.Thread(
+                    target=lambda: results.append(enable(operator, CONFIG_ID))
+                )
+                caller.start()
+                assert reading.wait(timeout=30), "the dispatch never reached step 1"
+                # Long enough that an implementation without the lock would have
+                # finished its read — that is the whole difference being measured.
+                time.sleep(0.5)
+                assert caller.is_alive(), (
+                    "the dispatch finished while another transaction held the row "
+                    "lock, so it never waited for it"
+                )
+                assert set_module_state(
+                    holder,
+                    module_id=CONFIG_ID,
+                    state=ENABLED_STATE,
+                    enabled_at=datetime.now(UTC),
+                )
+            # Leaving that block commits the holder and releases the row; the waiter
+            # then re-reads it. Joined inside the loaded-modules block, because the
+            # dispatch needs the manifest from step 2 on.
+            caller.join(timeout=60)
+        assert not caller.is_alive(), (
+            "the dispatch never resumed after the lock cleared"
+        )
+
+    (outcome,) = results
+    assert outcome.state == MODULE_STATE_INVALID, outcome
+    assert outcome.error is not None
+    assert ENABLED_STATE in outcome.error.error_text, outcome.error.error_text
+
+    # The waiter refused before step 3, so it wrote nothing. The holder moved the row
+    # with ``set_module_state`` alone and creates no schedule, so an empty table here is
+    # the waiter's own steps 3 and 4 not having run — which is what an implementation
+    # that read past the lock would fail: it would leave one schedule row and one
+    # settings row behind on its way to succeeding.
+    assert schedules_of(engine, database, CONFIG_ID) == {}
+    assert CONFIG_EXPLICIT_KEY not in settings_rows(engine, database)
+    assert module_states(engine, database)[CONFIG_ID].state == ENABLED_STATE
