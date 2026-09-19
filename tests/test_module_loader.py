@@ -29,7 +29,7 @@ from collections.abc import Iterator
 from importlib.metadata import EntryPoint
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import (
     AuditSpec,
     Idempotency,
@@ -43,15 +43,16 @@ from rheo_core.audit import reset_sinks, sink_for
 from rheo_core.modules import (
     ALLOWLIST_VARIABLE,
     ENTRY_POINT_GROUP,
+    ExportDeclaration,
     ManifestInvalid,
     ModuleManifest,
+    StorageDeclaration,
     WebSurface,
     allowed_module_ids,
     discovered,
     load_modules,
     module_surfaces,
     reset_surfaces,
-    validate,
 )
 from rheo_core.modules import loader as loader_module
 from rheo_core.operations import OperationRegistry
@@ -62,7 +63,6 @@ from rheo_core.refs.resolver import (
     Unavailable,
 )
 from rheo_core.storage.backend import UnitOfWork
-from sqlalchemy import Connection
 
 MODULE_ID = "fixture_probe"
 OPERATION = f"{MODULE_ID}.note.add"
@@ -82,10 +82,6 @@ class _ProbeOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     body: str
-
-
-def _create_schema(connection: Connection) -> None:
-    """Never called: no test here provisions the fabricated module's schema."""
 
 
 def _handler(
@@ -124,11 +120,66 @@ DECLARATION = OperationDeclaration(
 
 SINK = _ProbeSink()
 
-MANIFEST = ModuleManifest(
-    module_id=MODULE_ID,
-    package_version="0.0.0",
-    schema_name=MODULE_ID,
-    create_schema=_create_schema,
+
+def _exporter(*args: object, **kwargs: object) -> object:
+    """Never called: no test here exports the fabricated module."""
+    return None
+
+
+def _importer(*args: object, **kwargs: object) -> object:
+    """Never called: no test here imports the fabricated module."""
+    return None
+
+
+def _manifest(module_id: str, **overrides: object) -> ModuleManifest:
+    """A valid manifest for ``module_id``, with everything this file does not care
+    about declared empty.
+
+    Twenty-one of the model's twenty-four fields are required, and only three of
+    them (``operations``, ``resolvers``, ``web``) say anything about the *loader*.
+    The other eighteen are declared here once rather than eighteen times per
+    fixture, so a reader of this file sees what each fixture actually varies.
+    That the required fields really are required is
+    ``tests/test_module_manifest.py``'s assertion, not this file's.
+    """
+    fields: dict[str, object] = {
+        "module_id": module_id,
+        "package_version": "0.0.0",
+        "core_contract_versions": (1,),
+        "dependencies": (),
+        "record_types": (),
+        "storage": StorageDeclaration(
+            schema_name=module_id,
+            migrations_path=f"modules/{module_id}/migrations",
+            required_extensions=(),
+        ),
+        "configuration_schema": (),
+        "operations": (),
+        "tools": (),
+        "events": (),
+        "subscriptions": (),
+        "jobs": (),
+        "schedules": (),
+        "resolvers": (),
+        "deletion_participants": (),
+        "export": ExportDeclaration(
+            format_version=1,
+            schema_path=f"modules/{module_id}/schema.json",
+            exporter=_exporter,
+            importer=_importer,
+        ),
+        "secret_scopes": (),
+        "connector_bindings": (),
+        "health_checks": (),
+        "contract_tests": f"tests/modules/{module_id}",
+        "sensitivity": {},
+    }
+    fields.update(overrides)
+    return ModuleManifest(**fields)
+
+
+MANIFEST = _manifest(
+    MODULE_ID,
     operations=((DECLARATION, _handler),),
     resolvers=((RECORD_TYPE, _resolver),),
     web=WebSurface(surface=MODULE_ID, host=MODULE_ID, path="/fixture-probe"),
@@ -143,11 +194,8 @@ ENTRY_POINT = EntryPoint(
 )
 
 SURFACE_ONLY_ID = "surface_probe"
-SURFACE_ONLY_MANIFEST = ModuleManifest(
-    module_id=SURFACE_ONLY_ID,
-    package_version="0.0.0",
-    schema_name=SURFACE_ONLY_ID,
-    create_schema=_create_schema,
+SURFACE_ONLY_MANIFEST = _manifest(
+    SURFACE_ONLY_ID,
     # A surface whose name is NOT the module id: ``module_surfaces()`` is keyed by
     # the surface, and the two are not required to agree.
     web=WebSurface(surface="probe_ui", host="probe", path="/probe"),
@@ -159,15 +207,22 @@ SURFACE_ONLY_ENTRY_POINT = EntryPoint(
 )
 
 NO_SURFACE_ID = "quiet_probe"
-NO_SURFACE_MANIFEST = ModuleManifest(
-    module_id=NO_SURFACE_ID,
-    package_version="0.0.0",
-    schema_name=NO_SURFACE_ID,
-    create_schema=_create_schema,
-)
+NO_SURFACE_MANIFEST = _manifest(NO_SURFACE_ID)
 NO_SURFACE_ENTRY_POINT = EntryPoint(
     name=NO_SURFACE_ID,
     value=f"{__name__}:NO_SURFACE_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
+IMPOSTOR_ID = "impostor_probe"
+NOT_A_MANIFEST = object()
+"""What the impostor entry point below loads to: a real, importable module-level
+object that is simply not a ``ModuleManifest``. The entry point resolves for real,
+so the refusal is the loader's rather than an import error's."""
+
+IMPOSTOR_ENTRY_POINT = EntryPoint(
+    name=IMPOSTOR_ID,
+    value=f"{__name__}:NOT_A_MANIFEST",
     group=ENTRY_POINT_GROUP,
 )
 
@@ -424,25 +479,49 @@ def test_a_manifest_published_under_a_different_name_is_refused(
     assert registry.names() == frozenset()
 
 
-def test_validate_refuses_a_schema_that_is_not_the_module_id() -> None:
-    with pytest.raises(ManifestInvalid):
-        validate(
-            ModuleManifest(
-                module_id=MODULE_ID,
-                package_version="0.0.0",
+def test_a_schema_that_is_not_the_module_id_is_refused() -> None:
+    """The rule the deleted ``validate()`` carried, now the model's own: one module
+    owns one schema, named for it."""
+    with pytest.raises(ValidationError) as excinfo:
+        _manifest(
+            MODULE_ID,
+            storage=StorageDeclaration(
                 schema_name="somewhere_else",
-                create_schema=_create_schema,
-            )
+                migrations_path="modules/fixture_probe/migrations",
+                required_extensions=(),
+            ),
         )
+    assert "somewhere_else" in str(excinfo.value)
 
 
-def test_validate_refuses_something_that_is_not_a_manifest() -> None:
+def test_an_entry_point_that_is_not_a_manifest_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    registries: tuple[OperationRegistry, ResolverRegistry],
+) -> None:
+    """Asserted at the loader's public seam rather than against the private
+    ``_as_manifest``: what a deployment actually does is publish an entry point and
+    start, so that is the direction the refusal has to hold in."""
+    registry, resolvers = registries
+    _publish(monkeypatch, IMPOSTOR_ENTRY_POINT)
+    monkeypatch.setenv(ALLOWLIST_VARIABLE, IMPOSTOR_ID)
+
     with pytest.raises(ManifestInvalid):
-        validate(object())
+        load_modules(registry=registry, resolvers=resolvers)
+    assert registry.names() == frozenset()
 
 
-def test_validate_accepts_the_fixture() -> None:
-    assert validate(MANIFEST) is MANIFEST
+def test_the_fixture_manifest_is_a_manifest_and_loads(
+    monkeypatch: pytest.MonkeyPatch,
+    registries: tuple[OperationRegistry, ResolverRegistry],
+) -> None:
+    """The positive case the deleted ``test_validate_accepts_the_fixture`` held:
+    a manifest this file constructs is accepted and loads under its own id."""
+    registry, resolvers = registries
+    assert isinstance(MANIFEST, ModuleManifest)
+    _publish(monkeypatch, ENTRY_POINT)
+    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+
+    assert load_modules(registry=registry, resolvers=resolvers) == (MODULE_ID,)
 
 
 # --- the fixture's own guard ----------------------------------------------------------
@@ -456,7 +535,7 @@ def test_the_fixture_id_cannot_collide_with_a_real_distribution() -> None:
     claims the fabricated ids — not that the group is empty, which would go red the
     moment a real module is installed.
     """
-    fabricated = {MODULE_ID, SURFACE_ONLY_ID, NO_SURFACE_ID}
+    fabricated = {MODULE_ID, SURFACE_ONLY_ID, NO_SURFACE_ID, IMPOSTOR_ID}
     assert fabricated.isdisjoint({entry.name for entry in discovered()})
 
 

@@ -9,8 +9,9 @@ release one and writes the full lifecycle on paper as D5 requires.
 
 A module is an ordinary Python distribution that exposes one `Module` object through the
 `rheo.modules` packaging entry-point group. The object carries a **manifest** (a typed,
-validated model in `packages/contracts`) and a **register** function that the core calls once per
-process start to attach the module's operations, tools, event handlers, jobs, schedules,
+validated model in `packages/core`, for the reason [the manifest](#the-manifest) gives) and a
+**register** function that the core calls once per process start to attach the module's
+operations, tools, event handlers, jobs, schedules,
 resolvers, and web contribution to the global registry. Host-installed availability is "the
 distribution is importable"; per-workspace activation is a row in `core.module_state`. The core
 imports no module; a module imports the core and the contracts and, if it declares one, another
@@ -19,8 +20,19 @@ the manifest says and what the lifecycle does.
 
 ## The manifest
 
-`rheo_contracts.ModuleManifest`, a pydantic model. Every field is required unless marked
-optional; a missing field fails validation at install with the field named (criterion 25).
+`rheo_core.modules.ModuleManifest`, a frozen pydantic model. Every field is required unless
+marked optional; a missing field fails validation at install with the field named
+(criterion 25), and nothing wraps pydantic's own `ValidationError`, because wrapping is what
+would lose that name.
+
+**The type's real home is `rheo_core.modules`, not `rheo_contracts`.** This document once
+named it `rheo_contracts.ModuleManifest`. It cannot live there: the manifest carries each
+operation's handler, typed against `UnitOfWork`, and `rheo_contracts` may import nothing but
+the standard library, `pydantic` and itself (the boundary `tests/test_imports.py` enforces).
+So the handler travels *beside* its declaration in an `(OperationDeclaration, Handler)` pair,
+which is the same deviation, for the same reason, that already keeps `handler` off
+`OperationDeclaration` itself — `packages/contracts/src/rheo_contracts/manifest.py` carries
+that argument in full.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -30,23 +42,24 @@ optional; a missing field fails validation at install with the field named (crit
 | `dependencies` | list of `Dependency(module_id, version_range, optional)` | Required and optional modules. Cycles and unsatisfiable ranges are rejected at install. |
 | `record_types` | list of `RecordType` | See [owned record types](#owned-record-types). |
 | `storage` | `StorageDeclaration(schema_name, migrations_path, required_extensions)` | `schema_name` must equal `module_id`. `required_extensions` names Postgres extensions the migrations need. |
-| `configuration_schema` | a pydantic model class | The module's settings keys with scope and floor annotations ([configuration](storage-and-workspaces.md#a5-configuration-precedence-and-the-policy-floor-fr-12)). Keys must start with `<module_id>.`. |
+| `configuration_schema` | `tuple[KeySpec, ...]` | The module's settings keys with scope and floor annotations ([configuration](storage-and-workspaces.md#a5-configuration-precedence-and-the-policy-floor-fr-12)). Keys must start with `<module_id>.`. **Named deviation:** this row once read "a pydantic model class". The settings system already declares a key as a `KeySpec` and registers it through `SettingsRegistry.register(spec, *, origin)`, so a second declaration form would be a shape with no reader; the manifest carries the `KeySpec` values themselves. |
 | `operations` | list of `OperationDeclaration` | Name, safety class, input and output models, idempotency, audit subject, guards. See [operations](#operations-tools-events). |
 | `tools` | list of `ToolDeclaration` | MCP tools, each naming an operation and restating its class. |
-| `events` | list of `EventDeclaration(type, schema_version, data_model)` | Events the module publishes. |
+| `events` | list of `EventDeclaration(type, schema_version, data)` | Events the module publishes. **Named deviation:** the third field is `data`, not the `data_model` this row once printed — the shorter name is what the code carries, what every later run types, and what the namespacing check reads past, so the row was corrected to the code rather than the other way round. |
 | `subscriptions` | list of `Subscription(event_type, consumer_id, replay_safe)` | Events the module consumes. |
-| `jobs` | list of `JobKind(name, handler, max_attempts, cancellable)` | Background work kinds. |
+| `jobs` | list of `JobKind(name, input_model, handler, max_attempts, cancellable)` | Background work kinds. **Named deviation:** this row once omitted `input_model`. `JobKindRegistry.register(kind, input_model, handler)` (`packages/core/src/rheo_core/work/kinds.py`) takes exactly those three positional arguments, so a `JobKind` carrying no input model could not be registered at all; the row gained the field rather than the registry losing it. |
 | `schedules` | list of `Schedule(name, job_kind, cron, enabled_by_default)` | Per-workspace schedules created at enable. |
 | `resolvers` | mapping of record type to resolver | One per owned record type ([identifiers](identifiers.md#resolution-under-permission)). |
 | `deletion_participants` | list of `DeletionParticipant(record_types, handler)` | Hooks the [deletion coordinator](deletion-export-migration.md#the-cascade) calls. |
 | `export` | `ExportDeclaration(format_version, schema_path, exporter, importer)` | The module's versioned export format. |
-| `web` | optional `WebContribution(package_name, navigation, routes, record_views, forms, search_providers)` | The TypeScript contribution composed into `apps/web`. |
+| `web` | optional `WebContribution(package_name, navigation, routes, record_views, forms, search_providers)` | The TypeScript contribution composed into `apps/web`. **Release one ships `WebSurface \| None` instead** (`packages/core/src/rheo_core/modules/manifest.py`): the surface name, host label and path prefix, and nothing else, because its one consumer is the internal listener's `routing_config()` (`apps/core/src/rheo_app_core/internal_routes.py`). The interface contribution above is run 1a3's, and widening or replacing this field is that run's to do. |
 | `agent_guidance` | optional path | Text a runtime may include as tool guidance. It describes use; it grants nothing (idea document). |
 | `secret_scopes` | list of scope prefixes | Empty for domain modules in release one. Only components that present secrets declare any. |
 | `connector_bindings` | list of `ConnectorBinding(transport, service_operation, route)` | Which of the module's operations a transport connector may call, and the HTTP route the binding registers on the `api` surface when the transport has one (`route` is null otherwise). Leads declares three, one per transport, all naming `leads.intake.accept_delivery` ([the three bindings](intake-and-events.md#transports)). |
 | `health_checks` | list of callables | Run by `rheo doctor` and the workspace status operation. |
 | `contract_tests` | path | The module's behavioural suite entry, run by the install path in test profile and by CI. |
 | `sensitivity` | mapping of record type to field tiers | Which fields are `public`, `internal`, `restricted` for the [redaction contract](runtime-and-mcp.md#the-redaction-contract). |
+| `audit_sink` | optional `AuditSink` | The writer for the module's own audit rows, installed under the module's id by `_register` in `packages/core/src/rheo_core/modules/loader.py`. **Not one of the twenty-three ratified fields**, and added because it is the only channel a module has: `rheo_core.operations.dispatch` resolves a sink by the *operation's* owning module and refuses every above-`READ` operation with `AUDIT_SINK_MISSING` when that module has none. Optional, because a module declaring only `READ` operations needs no sink. |
 
 The manifest is code, not a sidecar file: one source of truth, type-checked, no cross-validation
 between two declarations. The export `schema_path` is the one static file: a JSON Schema for the
@@ -264,7 +277,11 @@ first.
 - **Contract version.** `packages/contracts` carries `CONTRACT_VERSION = 1`. A breaking change
   to any model in it increments the major; a module lists the majors it supports. The core loads
   a module only for a listed major.
-- **Module version.** Semantic. Dependency ranges use the usual caret and tilde forms. A
+- **Module version.** Semantic. Dependency ranges are **PEP 440 version specifiers**
+  (`>=1.2,<2`, `~=1.2`, `==1.*`), parsed by `packaging.specifiers.SpecifierSet` in the
+  manifest's own validator, so an unparseable range is a validation error at construction.
+  This document once said "the usual caret and tilde forms", which describes npm's grammar,
+  not Python's; a caret range is not a PEP 440 specifier and is refused. A
   dependency on a module's *behaviour* is a dependency on its package version, because release
   one has no separate capability registry (the requirements keep it out of scope); the idea
   document's "capabilities as versioned semantic contracts" arrives with the framework-proof

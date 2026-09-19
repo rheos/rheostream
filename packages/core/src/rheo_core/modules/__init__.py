@@ -1,8 +1,9 @@
 """Module manifests and the entry-point loader: what a distribution declares about
 itself, and the allowlist that decides whether it loads at all.
 
-- ``manifest.py`` — the minimal ``ModuleManifest``, its ``WebSurface``, and
-  ``validate``. Not in ``rheo_contracts``, which may not import ``UnitOfWork`` (F3).
+- ``manifest.py`` — ``ModuleManifest`` as a frozen pydantic model, its ten
+  declaration types and its ``WebSurface``. Not in ``rheo_contracts``, which may not
+  import ``UnitOfWork`` (F3).
 - ``loader.py`` — ``discovered()`` over the ``rheo.modules`` entry-point group,
   ``allowed_module_ids()`` over ``RHEO_MODULES``, ``load_modules()``, and
   ``module_surfaces()``.
@@ -22,22 +23,48 @@ from rheo_core.modules.loader import (
     reset_surfaces,
 )
 from rheo_core.modules.manifest import (
+    ConnectorBinding,
+    DeletionHandler,
+    DeletionParticipant,
+    Dependency,
+    EventDeclaration,
+    ExportDeclaration,
+    Exporter,
+    HealthCheck,
+    Importer,
+    JobKind,
     ManifestInvalid,
     ModuleManifest,
+    RecordType,
+    Schedule,
+    SensitivityTier,
+    StorageDeclaration,
     WebSurface,
-    validate,
 )
 
 __all__ = [
     "ALLOWLIST_VARIABLE",
     "ENTRY_POINT_GROUP",
+    "ConnectorBinding",
+    "DeletionHandler",
+    "DeletionParticipant",
+    "Dependency",
+    "EventDeclaration",
+    "ExportDeclaration",
+    "Exporter",
+    "HealthCheck",
+    "Importer",
+    "JobKind",
     "ManifestInvalid",
     "ModuleManifest",
+    "RecordType",
+    "Schedule",
+    "SensitivityTier",
+    "StorageDeclaration",
     "WebSurface",
     "allowed_module_ids",
     "discovered",
     "load_modules",
     "module_surfaces",
     "reset_surfaces",
-    "validate",
 ]

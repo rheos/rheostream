@@ -42,7 +42,6 @@ from typing import Final
 
 from rheo_core.audit.sink import install_sink
 from rheo_core.modules.manifest import ManifestInvalid, ModuleManifest, WebSurface
-from rheo_core.modules.manifest import validate as validate_manifest
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.refs.resolver import RESOLVERS, ResolverRegistry
 
@@ -82,6 +81,23 @@ def reset_surfaces() -> None:
     _SURFACES.clear()
 
 
+def _as_manifest(loaded: object) -> ModuleManifest:
+    """The one load-time check that is not a field-shape check.
+
+    A ``ModuleManifest`` instance was already validated by pydantic at construction,
+    so nothing here re-validates it: a second ``model_validate`` pass would either
+    be a no-op or, on a model carrying callables, a rebuild with no gain. What an
+    entry point can still hand back is *not a manifest at all*, and that is what
+    this refuses — the failure the deleted ``manifest.validate()`` opened with.
+    """
+    if not isinstance(loaded, ModuleManifest):
+        raise ManifestInvalid(
+            str(getattr(loaded, "module_id", loaded)),
+            "a rheo.modules entry point must load to a ModuleManifest",
+        )
+    return loaded
+
+
 def load_modules(
     *,
     registry: OperationRegistry = REGISTRY,
@@ -106,7 +122,7 @@ def load_modules(
     for entry_point in discovered():
         if entry_point.name not in permitted:
             continue
-        manifest = validate_manifest(entry_point.load())
+        manifest = _as_manifest(entry_point.load())
         if manifest.module_id != entry_point.name:
             raise ManifestInvalid(
                 manifest.module_id,
