@@ -280,14 +280,29 @@ Per workspace, in `core.module_state.state`:
 4. State becomes `enabled`; from the next request, the workspace's `enabled_modules` includes it,
    and its tools, routes, navigation, subscriptions, and jobs are live for that workspace.
 
+Enable has **three** caller-visible refusals, not the two its steps imply. Steps 1 and 2 refuse
+`module_state_invalid` (naming the state the workspace actually holds, including `absent` for a
+module with no row at all) and `dependency_not_enabled`. The third is `module_unavailable`,
+install's own name reused rather than a fourth code meaning the same thing: enable needs the
+manifest from step 2 on, and a workspace can hold an `installed` row for a module this deployment
+has since dropped from `modules.installed`. It is checked *after* step 1, so a module that was
+never installed is still `module_state_invalid` naming `absent`.
+
+Step 1's read takes `SELECT … FOR UPDATE` on the target `core.module_state` row and holds it until
+commit. Without it, two concurrent enables read the state from their own snapshots, both pass step 1
+and both succeed — and for a manifest declaring a schedule but no `explicit_per_workspace` key,
+step 3's `core.schedule` write duplicates as well, because that table has no unique index over
+`(module_id, name)` to fall back on. The loser of the race waits at that read and then sees the
+state the winner committed, so it refuses `module_state_invalid` naming `enabled`.
+
 The memory module's install and enable is criterion 24's test: no core file changes, and the
 workspace status operation reports the version and schema version afterward. Relationships and
 Leads install the same way in phase three.
 
 **Criterion 24 is only partially closed by run 1a0, and a reader who marks it done after that
-run alone is reading a wrong record.** What 1a0 closes is the module-contract half: `core.module.
-install` and `core.module.enable` exist, Recallatron goes from `absent` to `enabled` through those
-two operations alone, and `core.workspace.status` reports its package version, its state and its
+run alone is reading a wrong record.** What 1a0 closes is the module-contract half:
+`core.module.install` and `core.module.enable` exist, Recallatron goes from `absent` to `enabled`
+through those two operations alone, and `core.workspace.status` reports its version, its state and its
 schema version afterwards (`tests/postgres/test_module_lifecycle.py`). What it does not close is
 the interface-contribution half — the `WebContribution` shape this document's manifest table still
 describes as run 1a3's, the `apps/web/src/modules.generated.ts` composition step, and the test

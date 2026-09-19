@@ -525,7 +525,7 @@ def run_module_install_job(
 # --- core.module.enable ---------------------------------------------------------------
 
 
-def _enable_refuse_unless_state(row: ModuleStateRow | None, module_id: str) -> str:
+def _enable_refuse_unless_state(row: ModuleStateRow | None, module_id: str) -> None:
     """Step 1. The module's actual state, or the refusal naming it.
 
     First, and before the loaded-manifest lookup, because the state is the question a
@@ -544,7 +544,6 @@ def _enable_refuse_unless_state(row: ModuleStateRow | None, module_id: str) -> s
             f"module {module_id!r} is {current!r} in this workspace; "
             f"enable needs {sorted(_ENABLEABLE_STATES)}",
         )
-    return current
 
 
 def _refuse_unless_dependencies_enabled(
@@ -562,6 +561,19 @@ def _refuse_unless_dependencies_enabled(
     dependency that is present but disabled is therefore not a refusal: ``optional``
     says this module runs without it, and a module that cannot is declaring the wrong
     flag.
+
+    **``rows`` is an unlocked snapshot, and whoever builds ``core.module.disable``
+    inherits that.** The caller holds ``FOR UPDATE`` on the module being enabled, not on
+    its dependencies, so a concurrent transaction is free to move a dependency's row
+    between this read and this transaction's commit — the identical shape to the race
+    that made the target row's own lock necessary, one row over. It is unreachable
+    today only because nothing in the tree moves a module *out* of ``enabled``: there is
+    no disable operation, and the only other writers are install (which refuses a module
+    that already has a row) and export-restore. The moment a disable exists, a module
+    can be enabled against a dependency that is being disabled underneath it, and the
+    fix is the same one: lock the dependency rows too, in a deterministic order, so two
+    operations acquiring both cannot deadlock. Stated here rather than left to be
+    rediscovered, because the discovery cost this run a review cycle already.
     """
     for dependency in manifest.dependencies:
         if dependency.optional:

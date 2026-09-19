@@ -41,8 +41,10 @@ pins it replaces the writer at the call site, the way
 replaces ``insert_module_state`` at its own.
 """
 
+import sys
 import threading
 import time
+import traceback
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -70,6 +72,7 @@ from rheo_core.modules.operations import (
     INSTALLED_STATE,
     MODULE_ENABLE,
     MODULE_STATE_INVALID,
+    MODULE_UNAVAILABLE,
 )
 from rheo_core.operations import (
     HANDLER_FAILED,
@@ -77,7 +80,7 @@ from rheo_core.operations import (
     register_core_operations,
 )
 from rheo_core.operations.dispatch import OperationOutcome
-from rheo_core.storage import work_tables
+from rheo_core.storage import core_tables, work_tables
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.repositories import (
     ModuleStateRow,
@@ -232,6 +235,62 @@ def test_enable_refuses_a_module_that_is_not_installed_or_disabled(
         {} if seeded is None else {CONFIG_ID: seeded}
     )
     assert CONFIG_EXPLICIT_KEY not in settings_rows(engine, database)
+
+
+def test_enable_refuses_a_module_this_deployment_no_longer_loads(
+    monkeypatch: pytest.MonkeyPatch,
+    engine: Engine,
+    database: str,
+    operator: WorkspaceContext,
+) -> None:
+    """The third caller-visible refusal, and the contract's § Enable names only two.
+
+    ``module_unavailable`` is reused rather than invented: enable needs the manifest
+    from step 2 on, and a workspace can hold an ``installed`` row for a module whose
+    distribution this deployment has since dropped out of ``modules.installed``. That
+    is install's own name for exactly this condition, so enable answers with it instead
+    of a second code meaning the same thing.
+
+    It is reachable, which is why it is tested rather than asserted in a comment: the
+    row here says ``installed`` and the loaded set is empty, which is what a deployment
+    that narrowed its allowlist after installing looks like from inside the workspace.
+
+    The ordering matters and is what the first assertion below pins. Step 1 runs before
+    the manifest lookup, so this refusal can only be reached by a module whose *state*
+    is fine — a never-installed module is still ``module_state_invalid`` naming
+    ``absent``, which the case above covers.
+    """
+    seed(engine, database, CONFIG_ID, state=INSTALLED_STATE)
+
+    # No ids: the recipe publishes no entry points and allows nothing, so
+    # ``loaded_manifests()`` is empty for the body of this block regardless of what the
+    # ambient environment installs or what an earlier test left behind.
+    with loaded_probe_modules(monkeypatch):
+        outcome = enable(operator, CONFIG_ID)
+
+    assert outcome.state == MODULE_UNAVAILABLE, outcome
+    assert outcome.error is not None
+    assert outcome.error.error_code == MODULE_UNAVAILABLE
+    assert CONFIG_ID in outcome.error.error_text
+
+    # Refused after step 1 and before step 3: the row is untouched and nothing declared
+    # was written.
+    assert module_states(engine, database)[CONFIG_ID].state == INSTALLED_STATE
+    assert CONFIG_EXPLICIT_KEY not in settings_rows(engine, database)
+    assert schedules_of(engine, database, CONFIG_ID) == {}
+
+    # **And the order is pinned here, in the one case that can tell.** A module id that
+    # is neither installed nor loaded satisfies both refusals, so which one the caller
+    # reads is decided purely by their order. It must be the state: that is what
+    # ``tests/postgres/test_audit_dispatch.py``'s inventory entry dispatches and what an
+    # operator who mistyped an id needs to hear. Hoisting the manifest lookup above step
+    # 1 passes every other case in this file and reds this assertion.
+    with loaded_probe_modules(monkeypatch):
+        neither = enable(operator, "no_such_module")
+
+    assert neither.state == MODULE_STATE_INVALID, neither
+    assert neither.error is not None
+    assert ABSENT_STATE in neither.error.error_text
 
 
 def test_a_disabled_module_enables_again(
@@ -493,6 +552,54 @@ def test_enable_fails_when_the_row_it_was_about_to_move_is_gone(
 # --- serializing two enables ----------------------------------------------------------
 
 
+def _parked_in_the_database(thread: threading.Thread) -> bool:
+    """Is ``thread`` sitting inside a database call from inside the enable handler?
+
+    Read off the thread's own stack rather than out of ``pg_stat_activity``. The
+    server-side route was tried first and is not reliable here: with the holder's
+    connection inside an open transaction, a poll of ``pg_stat_activity`` from that same
+    connection did not see the waiting backend at all, while a stack dump taken at the
+    same instant showed the waiter parked in ``psycopg``'s ``wait`` under
+    ``lock_module_state``. The reason was not established, so the check that *was*
+    demonstrably right is the one kept.
+    """
+    frame = sys._current_frames().get(thread.ident or -1)
+    if frame is None:
+        return False
+    stack = traceback.extract_stack(frame)
+    in_handler = any(entry.name == "module_enable_handler" for entry in stack)
+    in_database = any(
+        entry.name == "wait" and "psycopg" in entry.filename for entry in stack
+    )
+    return in_handler and in_database
+
+
+def _wait_until_parked(thread: threading.Thread, *, timeout: float = 30.0) -> bool:
+    """Poll until ``thread`` is parked in a database call, and stays parked.
+
+    **Two samples a tenth of a second apart, because one proves nothing.** Every
+    statement the handler runs passes through ``psycopg``'s ``wait`` on its way, so a
+    single sample can catch a call that is merely in flight. A call still parked 100ms
+    later is one that is waiting on something, which is the condition this file's lock
+    case needs and the one a fixed ``sleep`` could only approximate.
+
+    Deliberately **not** specific to *which* statement is parked. Under the fix it is
+    the ``FOR UPDATE`` in step 1; under the mutation that removes ``with_for_update()``
+    it is step 4's ``UPDATE``, queued behind the same holder one statement later. Both
+    satisfy this, so the mutation is decided by the refusal at the end of the case
+    rather than here — which is the whole point of putting the discriminating assertion
+    after the holder commits.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _parked_in_the_database(thread):
+            time.sleep(0.1)
+            if _parked_in_the_database(thread):
+                return True
+        time.sleep(0.02)
+    return False
+
+
 def test_enable_waits_for_the_row_and_then_judges_what_it_finds(
     monkeypatch: pytest.MonkeyPatch,
     engine: Engine,
@@ -520,43 +627,51 @@ def test_enable_waits_for_the_row_and_then_judges_what_it_finds(
     finds is ``enabled`` — the winner's state, not the ``installed`` it would have read
     for itself.
 
-    What this kills: dropping ``with_for_update()`` from ``lock_module_state``. Then
-    the dispatch reads ``installed`` straight past the holder, writes its rows, queues
-    at its own ``UPDATE`` instead, and — because that ``UPDATE``'s ``WHERE`` names the
-    module and not the state it is moving from — re-evaluates against the winner's row
-    and succeeds anyway. The refusal below becomes a success and the rows below appear.
+    **The holder takes its lock with its own statement, not through
+    ``lock_module_state``**, and that is what makes the mutation land where this
+    paragraph says it does. An earlier version reached for the shipped reader for the
+    holder too, which disarmed the *fixture* along with the subject: with
+    ``with_for_update()`` gone, the holder locked nothing either, the dispatch sailed
+    through, and the case reded four assertions early on ``caller.is_alive()``. It still
+    killed the mutant, but it recorded a mechanism that was not happening — the same
+    defect class as a docstring claiming a blind spot it does not have.
+
+    What this kills, with the holder independent: dropping ``with_for_update()`` from
+    ``lock_module_state``. The dispatch then reads ``installed`` straight past the
+    holder, writes its settings and schedule rows, and queues at its own ``UPDATE``
+    instead — so it is still blocked when the wait below observes it, and
+    ``caller.is_alive()`` still holds. What changes is the end: that ``UPDATE``'s
+    ``WHERE`` names the module and not the state it is moving from, so once the holder
+    commits it re-evaluates against the winner's row and succeeds anyway. The refusal
+    becomes a success, and the two "wrote nothing" assertions find the rows it left.
     """
     seed(engine, database, CONFIG_ID, state=INSTALLED_STATE)
-    reading = threading.Event()
-    real_lock = module_operations.lock_module_state
-
-    def announce_then_lock(conn: object, **fields: object) -> object:
-        """Signal *before* the real read, because with the fix the read blocks.
-
-        Announcing afterwards would never fire while the holder has the row, and the
-        holder would then commit before the dispatch had read anything — which is a
-        state the unguarded implementation refuses too, so the case would pass for the
-        wrong reason.
-        """
-        reading.set()
-        return real_lock(conn, **fields)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(module_operations, "lock_module_state", announce_then_lock)
     results: list[OperationOutcome] = []
 
     with loaded_probe_modules(monkeypatch, CONFIG_ID):
         with engine.connect() as holder:
             with holder.begin():
-                assert real_lock(holder, module_id=CONFIG_ID) is not None
+                held = holder.execute(
+                    select(core_tables.module_state.c.state)
+                    .where(core_tables.module_state.c.module_id == CONFIG_ID)
+                    .with_for_update()
+                ).scalar_one()
+                assert held == INSTALLED_STATE
 
                 caller = threading.Thread(
                     target=lambda: results.append(enable(operator, CONFIG_ID))
                 )
                 caller.start()
-                assert reading.wait(timeout=30), "the dispatch never reached step 1"
-                # Long enough that an implementation without the lock would have
-                # finished its read — that is the whole difference being measured.
-                time.sleep(0.5)
+                # **Wait for the dispatch to be genuinely parked, rather than sleeping
+                # long enough that it probably is.** A fixed delay can only ever
+                # false-*pass* here: a dispatch that had not yet reached the row when
+                # the holder committed would read ``enabled`` unaided and refuse for a
+                # reason this case is not about, and the assertions below could not tell
+                # the two apart.
+                assert _wait_until_parked(caller), (
+                    "the dispatch never parked in a database call inside the handler, "
+                    "so it never queued behind the row this case is about"
+                )
                 assert caller.is_alive(), (
                     "the dispatch finished while another transaction held the row "
                     "lock, so it never waited for it"
