@@ -363,7 +363,11 @@ def run_module_install_job(
 
     # 8. The row, *after* the migration — FR 7 step 5. Ordered last of the two so a
     #    crash between them leaves no row and a repeat install can proceed cleanly,
-    #    rather than a row claiming a schema that is not there.
+    #    rather than a row claiming a schema that is not there. Under ``profile =
+    #    test`` no test can tell this ordering from its opposite, because the one
+    #    step that could fail after it is the health-check step the test profile
+    #    skips; ``tests/postgres/test_module_install.py``'s docstring records that
+    #    rather than leaving a reader to assume a guard that is not there.
     insert_module_state(
         uow.connection,
         module_id=manifest.module_id,

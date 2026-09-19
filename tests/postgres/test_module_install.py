@@ -13,6 +13,18 @@ exception and would prove nothing about which of those two shapes a caller gets.
 code for every route to ``failed`` and is shared by every job kind in this system.
 Widening it into a per-kind code is not the repair for a test that wanted otherwise.
 
+**One property of the job handler is deliberately left unpinned, and saying so is
+better than a test that looks like it pins it.** Step 8 — the ``core.module_state``
+row — is written *after* the migration so that a crash between the two leaves no row
+claiming a schema that was never applied. Nothing here can tell that ordering from
+its opposite: the whole job runs in one transaction, and under ``profile = test``
+there is no failure reachable *after* step 8 at all, because the health checks that
+could fail there are the one step the test profile skips. Moving the row ahead of the
+chain, and even writing it on its own separately committed connection, both leave
+every assertion in this file green — measured, not assumed. What *is* pinned is the
+consequence that matters: a failed install leaves no row, asserted on the extension
+failure, the refused-creation failure and the migration failure alike.
+
 **Edge Case 7 is deliberately not here, and was not missed.** A ``modules.installed``
 entry naming a module id nothing on disk provides is not an install-time failure: the
 loader simply never loads it, so it never reaches ``loaded_manifests()`` and
@@ -228,6 +240,25 @@ def schema_exists(engine: Engine, schema: str) -> bool:
         )
 
 
+def column_type(engine: Engine, schema: str, table: str, column: str) -> str:
+    """One column's declared type, for the assertion that the extension was usable.
+
+    ``udt_name`` rather than ``data_type``: an extension-provided type reports
+    ``USER-DEFINED`` in the latter, which would be the same answer for any of them.
+    """
+    with engine.connect() as connection:
+        return str(
+            connection.execute(
+                text(
+                    "SELECT udt_name FROM information_schema.columns "
+                    "WHERE table_schema = :schema AND table_name = :table "
+                    "AND column_name = :column"
+                ),
+                {"schema": schema, "table": table, "column": column},
+            ).scalar_one()
+        )
+
+
 def extensions_in(engine: Engine) -> set[str]:
     with engine.connect() as connection:
         return {
@@ -249,7 +280,7 @@ def test_a_declared_extension_is_created_and_the_module_installs(
     database: str,
     operator: WorkspaceContext,
 ) -> None:
-    """AC 11's positive half, read as four separate facts about the workspace.
+    """AC 11's positive half, read as five separate facts about the workspace.
 
     The extension is there afterwards, the module's own schema carries both the table
     its revision created and the version table its ``env.py`` configured, the
@@ -257,6 +288,15 @@ def test_a_declared_extension_is_created_and_the_module_installs(
     ``core.module_schema_version`` row names the revision that ran. The version-table
     assertion is the one that catches a fixture chain left on Alembic's defaults,
     which would migrate cleanly while recording nothing.
+
+    **The column-type assertion is what makes "before any migration statement" mean
+    anything**, and it is the fifth fact rather than decoration. The whole job runs in
+    one transaction, so an implementation that created the extension *after* the chain
+    leaves exactly the same empty database behind when anything fails — every "nothing
+    ran" assertion in this file passes against it. What does not pass is this: the
+    fixture's revision declares a ``citext`` column, so running the extension step
+    second makes the migration fail on an undefined type and this case reports
+    ``migration_failed`` instead of succeeding.
     """
     assert EXTENSION_NAME not in extensions_in(engine)
 
@@ -272,6 +312,7 @@ def test_a_declared_extension_is_created_and_the_module_installs(
         PROBE_TABLE,
         version_table(EXTENSION_ID),
     }
+    assert column_type(engine, EXTENSION_ID, PROBE_TABLE, "label") == EXTENSION_NAME
 
     row = module_states(engine, database)[EXTENSION_ID]
     assert row.state == "installed"
