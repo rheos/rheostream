@@ -1,6 +1,6 @@
 # Agent-framework benchmark — Bureau vs LangGraph, and the Bureau across runtimes
 
-**Status:** draft idea + plan, pre-registration. Not started. Uncommitted.
+**Status:** draft idea + plan, pre-registration. Not started (prep pending). Committed to `main`.
 **Arena:** this repository's phased build plan.
 **Owner:** maintainer.
 
@@ -222,8 +222,8 @@ repo, not here).
   self-contained, genuinely stateful, strong test hooks. Confirm or swap.
 - **Pins:** model ids per runtime, LangGraph checkpointer choice, library versions.
 - **Trial budget:** 3 per cell is the floor; token cost scales roughly linearly.
-- **Publication:** this doc sits in a public repo and includes a note on the maintainer's own job
-  funnel. Keep it here, or move it private until results are in?
+- **Publication — resolved (public).** This doc lives in the public repo, the job-funnel note
+  included; the maintainer chose to keep it public (2026-09-09).
 
 ## Non-goals
 
