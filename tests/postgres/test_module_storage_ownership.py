@@ -30,6 +30,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MODULE_SRC = _REPO_ROOT / "modules" / "recallatron" / "src"
 _OWNED_SCHEMA = MANIFEST.storage.schema_name
 _VERSION_TABLE = "alembic_version_recallatron"
+_EXPECTED_SKELETON_OBJECTS = {
+    (_OWNED_SCHEMA, _VERSION_TABLE, "r"),
+    (_OWNED_SCHEMA, f"{_VERSION_TABLE}_pkc", "i"),
+}
 _FOREIGN_QUALIFIED = re.compile(
     r"\b(?:core|relationships|leads|current)\.[A-Za-z_][A-Za-z0-9_]*\b"
 )
@@ -63,18 +67,27 @@ def _workspace_engine(cluster: ClusterSession, workspace: UUID) -> tuple[str, En
     return row.database_name, cluster.backend.pools.engine_for(row.database_name)
 
 
-def _relations(connection: Connection) -> set[tuple[str, str]]:
+def _objects(connection: Connection) -> set[tuple[str, str, str]]:
     rows = connection.execute(
         text(
-            "SELECT table_schema, table_name FROM information_schema.tables "
-            "WHERE table_schema NOT IN ('information_schema', 'pg_catalog')"
+            "SELECT namespace.nspname, object.relname, object.relkind "
+            "FROM pg_catalog.pg_class AS object "
+            "JOIN pg_catalog.pg_namespace AS namespace "
+            "ON namespace.oid = object.relnamespace "
+            "WHERE namespace.nspname <> 'information_schema' "
+            "AND namespace.nspname NOT LIKE 'pg\\_%' ESCAPE '\\' "
+            "AND object.relkind IN ('r', 'p', 'i', 'I', 'S', 't', 'v', 'm', 'f', 'c')"
         )
     )
-    return {(str(schema), str(name)) for schema, name in rows}
+    return {
+        (str(schema), str(name), str(object_kind)) for schema, name, object_kind in rows
+    }
 
 
-def _outside_owned_schema(relations: set[tuple[str, str]]) -> set[tuple[str, str]]:
-    return {relation for relation in relations if relation[0] != _OWNED_SCHEMA}
+def _outside_owned_schema(
+    objects: set[tuple[str, str, str]],
+) -> set[tuple[str, str, str]]:
+    return {object_ for object_ in objects if object_[0] != _OWNED_SCHEMA}
 
 
 def test_recallatron_migration_creates_only_its_version_table_in_its_schema(
@@ -84,33 +97,31 @@ def test_recallatron_migration_creates_only_its_version_table_in_its_schema(
 ) -> None:
     database_name, engine = _workspace_engine(cluster, workspace)
     with engine.begin() as connection:
-        before = _relations(connection)
+        before = _objects(connection)
         run_module_chain(
             connection,
             MANIFEST,
             expected_database=database_name,
             core_version=core_version(),
         )
-        created = _relations(connection) - before
+        created = _objects(connection) - before
 
-    assert created == {(_OWNED_SCHEMA, _VERSION_TABLE)}
+    assert created == _EXPECTED_SKELETON_OBJECTS
     assert not _outside_owned_schema(created)
 
 
-def test_relation_diff_reports_a_relation_outside_the_owned_schema(
+def test_object_census_reports_a_non_table_object_outside_the_owned_schema(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
     _, engine = _workspace_engine(cluster, workspace)
     with engine.connect() as connection:
         transaction = connection.begin()
         try:
-            before = _relations(connection)
-            connection.execute(
-                text("CREATE TABLE public.recallatron_probe_leak (id int)")
-            )
-            created = _relations(connection) - before
+            before = _objects(connection)
+            connection.execute(text("CREATE SEQUENCE public.recallatron_probe_leak"))
+            created = _objects(connection) - before
             assert _outside_owned_schema(created) == {
-                ("public", "recallatron_probe_leak")
+                ("public", "recallatron_probe_leak", "S")
             }
         finally:
             transaction.rollback()

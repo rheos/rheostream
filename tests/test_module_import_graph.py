@@ -21,6 +21,10 @@ _DECLARED_TEST_DEPENDENCIES = {
 def _docstring_nodes(tree: ast.AST) -> set[int]:
     nodes: set[int] = set()
     for owner in ast.walk(tree):
+        if not isinstance(
+            owner, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
         body = getattr(owner, "body", None)
         if not isinstance(body, list) or not body:
             continue
@@ -32,6 +36,10 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
         ):
             nodes.add(id(first.value))
     return nodes
+
+
+def _names_module(value: str) -> bool:
+    return value == _MODULE_TOKEN or value.startswith(f"{_MODULE_TOKEN}.")
 
 
 def _mentions(path: Path) -> list[str]:
@@ -54,9 +62,11 @@ def _mentions(path: Path) -> list[str]:
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
             and id(node) not in docstrings
-            and _PATH_TOKEN in node.value
         ):
-            found.append(f"path {_PATH_TOKEN}@{node.lineno}")
+            if _names_module(node.value):
+                found.append(f"module {_MODULE_TOKEN}@{node.lineno}")
+            if _PATH_TOKEN in node.value:
+                found.append(f"path {_PATH_TOKEN}@{node.lineno}")
     return sorted(found)
 
 
@@ -90,3 +100,20 @@ def test_core_contracts_and_apps_do_not_depend_on_recallatron() -> None:
         and any(_MODULE_TOKEN in mention for mention in mentions)
     }
     assert controls, "the dependency scan found no declared positive control"
+
+
+def test_string_dependency_routes_exclude_narrative_text(tmp_path: Path) -> None:
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        '"""rheo_recallatron and modules/recallatron are documentation only."""\n'
+        '# importlib.import_module("rheo_recallatron")\n'
+        'lookalike = "rheo_recallatronically"\n'
+        'module = importlib.import_module("rheo_recallatron")\n'
+        'source = resources.files("modules/recallatron")\n',
+        encoding="utf-8",
+    )
+
+    assert _mentions(probe) == [
+        "module rheo_recallatron@4",
+        "path modules/recallatron@5",
+    ]
