@@ -266,7 +266,14 @@ def test_migrate_workspace_refuses_an_unknown_id_and_module_chains(
     with pytest.raises(StorageRefusal) as excinfo:
         migrate_workspace(cluster.backend, UUID(int=0))
     assert excinfo.value.state == WORKSPACE_MISSING
-    with pytest.raises(NotImplementedError, match="phase 2"):
+    # A module chain is refused here too, and by name: it runs through
+    # ``run_module_chain``, whose failures reach their caller instead of this
+    # function's ``unavailable`` branch. ``tests/postgres/test_module_migrations.py``
+    # is where that rule is proved against the row it must not write; this line only
+    # keeps the refusal beside the other two the function makes. The chain name is
+    # unloaded in this process, so it is refused whether or not it names a real
+    # distribution.
+    with pytest.raises(ValueError, match="run_module_chain"):
         migrate_workspace(cluster.backend, workspace, chains=("recallatron",))
     with pytest.raises(ValueError, match="control chain"):
         migrate_workspace(cluster.backend, workspace, chains=(CONTROL_CHAIN,))

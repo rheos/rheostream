@@ -3,8 +3,9 @@ module state rows, and the two settings tables.
 
 No ``member_credential`` repository: the table's DDL ships in ``core_tables.py`` and
 its repository is deferred to the run that first reads or writes it. ``module_state``
-has a reader here (``core.workspace.status`` in C4) and no writer: writes arrive with
-module install in phase 2.
+has a reader here (``core.workspace.status`` in C4) and no writer yet: its writers
+arrive with module install. ``module_schema_version`` has both — its writer is
+``run_module_chain``'s, one row per newly applied module migration step.
 
 Every function takes the caller's ``Connection`` (a ``UnitOfWork.connection``) and
 runs inside its transaction; none commits.
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Connection, select
+from sqlalchemy import Connection, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 
@@ -108,11 +109,52 @@ class ModuleSchemaVersionRow:
     core_version_at_apply: str
 
 
+def insert_module_schema_version(
+    conn: Connection,
+    *,
+    module_id: str,
+    schema_version: str,
+    applied_at: datetime,
+    core_version_at_apply: str,
+) -> ModuleSchemaVersionRow:
+    """Append one applied migration step for ``module_id``.
+
+    Append-only: the table keeps history, so there is no upsert and no update path
+    here. A second row for the same ``(module_id, schema_version)`` violates the
+    primary key and raises, which is the behaviour wanted — its caller writes one row
+    per *newly applied* revision, so a duplicate means the caller miscounted rather
+    than that the step ran twice.
+
+    ``applied_at`` and ``core_version_at_apply`` are the caller's, not this function's:
+    the caller knows which transaction the step ran in and which ``rheo-core`` applied
+    it (``storage.provisioning.core_version()``), and the export-restore path replays
+    the values the artifact recorded rather than today's.
+    """
+    row = ModuleSchemaVersionRow(
+        module_id=module_id,
+        schema_version=schema_version,
+        applied_at=applied_at,
+        core_version_at_apply=core_version_at_apply,
+    )
+    conn.execute(
+        insert(c.module_schema_version).values(
+            module_id=row.module_id,
+            schema_version=row.schema_version,
+            applied_at=row.applied_at,
+            core_version_at_apply=row.core_version_at_apply,
+        )
+    )
+    return row
+
+
 def list_module_schema_versions(
     conn: Connection,
 ) -> tuple[ModuleSchemaVersionRow, ...]:
-    """Every applied module step, oldest first (``core.workspace.status``'s reader;
-    the writer arrives with module chains in phase 2). Empty in this run."""
+    """Every applied module step, oldest first (``core.workspace.status``'s reader).
+
+    Ordered by ``applied_at`` then ``module_id``, so two modules' steps interleave by
+    when they were applied. :func:`insert_module_schema_version` is its writer.
+    """
     statement = select(c.module_schema_version).order_by(
         c.module_schema_version.c.applied_at, c.module_schema_version.c.module_id
     )
