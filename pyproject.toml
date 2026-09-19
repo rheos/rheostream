@@ -30,6 +30,12 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.format]
+# docs/notes/ holds verbatim copies of Bureau run records (planning artifacts committed at
+# close-out). They are frozen records, byte-identical to the run directory, so the formatter
+# must not reflow the Python fences inside them.
+exclude = ["docs/notes/**"]
+
 [tool.mypy]
 strict = true
 python_version = "3.12"
