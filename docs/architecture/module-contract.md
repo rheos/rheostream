@@ -7,12 +7,18 @@ release one and writes the full lifecycle on paper as D5 requires.
 
 ## The shape in one paragraph
 
-A module is an ordinary Python distribution that exposes one `Module` object through the
-`rheo.modules` packaging entry-point group. The object carries a **manifest** (a typed,
-validated model in `packages/core`) and a **register** function that the core calls once per
-process start to attach the module's operations, tools, event handlers, jobs, schedules,
-resolvers, and web contribution to the global registry. Host-installed availability is "the
-distribution is importable"; per-workspace activation is a row in `core.module_state`. The core
+A module is an ordinary Python distribution that publishes one `rheo.modules` packaging entry
+point, and that entry point resolves straight to a **manifest**: a `ModuleManifest`, the typed,
+validated model in `packages/core` the next section describes. The core's own `_register`
+(`packages/core/src/rheo_core/modules/loader.py`) is what attaches the manifest's operations,
+resolvers, tools, job kinds, subscriptions, settings keys, audit sink and web surface to the live
+registries, once per process start, by iterating the manifest's own tuples. **Named deviation:**
+this paragraph once described a `Module` object carrying both a manifest and a `register`
+function that the core called. No such object and no such author-supplied function exists in the
+tree, and the difference is load-bearing rather than cosmetic — it is precisely why discovery
+step 4's manifest-to-registration cross-check below is satisfied by construction rather than
+performed. Host-installed availability is "the distribution is importable"; per-workspace
+activation is a row in `core.module_state`. The core
 imports no module; a module imports the core and the contracts and, if it declares one, another
 module's public contract package. That is the whole mechanism; the rest of this document is what
 the manifest says and what the lifecycle does.
@@ -46,7 +52,7 @@ that argument in full.
 | `tools` | list of `ToolDeclaration` | MCP tools, each naming an operation and restating its class. |
 | `events` | list of `EventDeclaration(type, schema_version, data)` | Events the module publishes. **Named deviation:** the third field is `data`, not the `data_model` this row once printed — the shorter name is what the code carries, what every later run types, and what the namespacing check reads past, so the row was corrected to the code rather than the other way round. |
 | `subscriptions` | list of `Subscription(event_type, consumer_id, replay_safe)` | Events the module consumes. |
-| `jobs` | list of `JobKind(name, input_model, handler, max_attempts, cancellable)` | Background work kinds. **Named deviation:** this row once omitted `input_model`. `JobKindRegistry.register(kind, input_model, handler)` (`packages/core/src/rheo_core/work/kinds.py`) takes exactly those three positional arguments, so a `JobKind` carrying no input model could not be registered at all; the row gained the field rather than the registry losing it. |
+| `jobs` | list of `JobKind(name, input_model, handler, max_attempts, cancellable)` | Background work kinds. **Named deviation:** this row once omitted `input_model`. `JobKindRegistry.register(kind, input_model, handler)` (`packages/core/src/rheo_core/work/kinds.py`) takes exactly those three positional arguments, so a `JobKind` carrying no input model could not be registered at all; the row gained the field rather than the registry losing it. **`max_attempts` and `cancellable` are carried on the declaration and read by nothing in release one:** the loader passes the registry only the three arguments it takes, and widening a shipped signature for a caller that does not exist is what this deliberately does not do. Each has a named future reader — an enqueue call site for `max_attempts` (today `work.max_attempts` supplies the budget and the job row's own column is the authority from then on), and Disable for `cancellable`, whose contract below already says each job kind's flag decides which queued jobs are cancelled and which drain. |
 | `schedules` | list of `Schedule(name, job_kind, cron, enabled_by_default)` | Per-workspace schedules created at enable. |
 | `resolvers` | mapping of record type to resolver | One per owned record type ([identifiers](identifiers.md#resolution-under-permission)). |
 | `deletion_participants` | list of `DeletionParticipant(record_types, handler)` | Hooks the [deletion coordinator](deletion-export-migration.md#the-cascade) calls. |
@@ -200,9 +206,17 @@ At process start, in `core` and `worker` alike:
    against the other selected modules, contract version against the running core.
 3. Dependencies are topologically sorted; a cycle or an unsatisfied required dependency fails
    startup naming both modules.
-4. `register(registry)` runs per module in that order. Every registration is checked against the
-   manifest: an operation registered in code that the manifest does not declare, or declared and
-   not registered, fails startup.
+4. The core's `_register` runs per module in that order, attaching what the manifest declares:
+   operations, resolvers, tools, job kinds, subscriptions and `configuration_schema` keys, each
+   through the same shipped `register` the core's own startup calls. **The manifest-to-registration
+   cross-check this step once described is satisfied by construction in this tree, and there is
+   nothing for it to check against.** It was written for the `register(registry)` function the
+   opening section used to describe, where a module author wrote registration calls by hand and
+   could write one the manifest did not declare. No such function exists: `_register` iterates the
+   manifest's own tuples and nothing else, so "registered but not declared" and "declared but not
+   registered" are both unreachable rather than refused. `tests/test_module_registration.py` pins
+   the property instead of building a second mechanism for it. A future run that lets a module
+   supply registration code of its own is the run that has to build the check.
 5. The production-profile assertion runs (criterion 18): under `RHEO_PROFILE=production` the
    registry must contain no item whose `origin` is `test_harness` and no operation in the
    `EXTERNAL` or `FINANCIAL` classes. Test fixtures register with `origin=test_harness` through a

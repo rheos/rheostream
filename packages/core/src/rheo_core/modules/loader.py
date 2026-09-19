@@ -5,10 +5,38 @@ it is named.
 ``allowed_module_ids()`` reads the deployment-scope settings key ``modules.installed``,
 a ``list[str]`` whose package default is empty — so an unconfigured deployment names no
 module at all. ``load_modules()`` loads **only** the discovered entry points whose name
-is in that set, validates each manifest, and then registers its operations and
-resolvers through the shipped registries with ``origin = manifest.module_id``, so every
-registration check a hand-written registration faces (name grammar, origin/prefix
-agreement, reserved input fields, ``extra = "allow"``) applies unchanged.
+is in that set, validates each manifest, and then registers what it declares through
+the shipped registries with ``origin = manifest.module_id``, so every registration
+check a hand-written registration faces (name grammar, origin/prefix agreement,
+reserved input fields, ``extra = "allow"``) applies unchanged.
+
+**Six extension points, six shipped registries, and no registry of this module's
+own.** ``_register`` attaches a manifest's operations (``OperationRegistry``),
+resolvers (``ResolverRegistry``), tools (``ToolRegistry``), job kinds
+(``JobKindRegistry``), subscriptions (``ConsumerRegistry``) and
+``configuration_schema`` keys (``settings.schema.REGISTRY``) — each through the same
+public ``register`` the core's own startup calls, never a loader-local table. Declared
+**events** are the exception and deliberately so: ``rheo_core.events`` indexes
+subscriptions, not declarations, so there is nothing to populate and a declared event
+is read back from ``loaded_manifests()[module_id].events``. What the loader does for
+events instead is refuse them — a type not namespaced under its declaring module, or
+a type two loaded manifests both declare.
+
+**Loading a module widens every workspace provisioned afterwards, and that is not a
+bug to fix here.** ``settings.schema.REGISTRY`` is process-global, and
+``storage/provisioning.py``'s ``_step_write_default_settings`` iterates
+``REGISTRY.explicit_per_workspace()`` and writes a row for every spec it finds. So
+from the moment a module loads, any ``KeySpec`` it declares as
+``explicit_per_workspace`` is written into **every workspace this process provisions
+from then on**, whether or not that module is installed or enabled there; a later
+run's enable step writes the same rows for workspaces provisioned before. Both
+writers go through ``insert_workspace_setting_if_absent``, so the overlap is
+idempotent rather than a conflict, and the row is inert in a workspace that never
+enables the module. Filtering it in ``provisioning.py`` would make that step depend on
+per-workspace module state it does not hold, and giving modules a second,
+module-local settings registry would put two answers behind one settings key. Recorded
+here so the next run reads it as a known consequence rather than rediscovering it as a
+defect.
 
 **Nothing loads by default, and that is the whole gate.** ``Dockerfile`` COPYs
 ``modules/`` and runs ``uv sync --frozen``, so every ``modules/*`` distribution in the
@@ -40,15 +68,23 @@ with the name it was found under, because otherwise the allowlist would gate one
 while a different one registered.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from graphlib import CycleError, TopologicalSorter
 from importlib.metadata import EntryPoint, entry_points
 from typing import Final
 
+from packaging.specifiers import SpecifierSet
+from rheo_contracts import CONTRACT_VERSION
+
 from rheo_core.audit.sink import install_sink
+from rheo_core.events.consumers import ConsumerRegistry
 from rheo_core.modules.manifest import ManifestInvalid, ModuleManifest, WebSurface
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.refs.resolver import RESOLVERS, ResolverRegistry
 from rheo_core.settings import resolve
+from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
+from rheo_core.tokens.sets import TOOL_REGISTRY, ToolRegistry
+from rheo_core.work.kinds import JobKindRegistry
 
 ENTRY_POINT_GROUP: Final = "rheo.modules"
 ALLOWLIST_KEY: Final = "modules.installed"
@@ -129,6 +165,9 @@ def load_modules(
     *,
     registry: OperationRegistry = REGISTRY,
     resolvers: ResolverRegistry = RESOLVERS,
+    tools: ToolRegistry = TOOL_REGISTRY,
+    kinds: JobKindRegistry | None = None,
+    consumers: ConsumerRegistry | None = None,
     allow: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     """Register the allowed discovered modules; return their ids, sorted.
@@ -139,13 +178,30 @@ def load_modules(
     deployment's variable a dependency on its image's build context, which is the
     coupling finding F17 is about.
 
-    Idempotent, because everything it calls is: both registries treat an identical
+    **``kinds`` and ``consumers`` default to ``None``, and that is not an oversight.**
+    ``registry``, ``resolvers`` and ``tools`` each default to the process-global
+    instance their production consumers read.
+    :class:`~rheo_core.work.kinds.JobKindRegistry` and
+    :class:`~rheo_core.events.consumers.ConsumerRegistry` publish no module-level
+    instance to default to — both are composition-root locals, built as ``JOB_KINDS``
+    and ``CONSUMERS`` in ``apps/worker/src/rheo_app_worker/main.py`` — so ``None``
+    means "do not register that category", and the ``core`` process, which runs
+    neither a job handler nor a consumer, legitimately passes neither.
+
+    **Nothing registers until the whole loaded set has passed every check.** The
+    permitted manifests are collected first, each gated on the entry-point name and
+    on the contract version; then the set's event declarations, dependency ranges and
+    dependency graph are checked; and only then is anything registered, in
+    dependency-sorted order. So a refusal leaves the registries as it found them
+    rather than stranding half a set behind the manifest that failed.
+
+    Idempotent, because everything it calls is: every registry treats an identical
     re-registration as a no-op and :func:`~rheo_core.audit.sink.install_sink` treats an
     identical re-install as one. ``apps/core``'s FastAPI lifespan runs more than once
     in the same process under test, so this function does too.
     """
     permitted = allowed_module_ids() if allow is None else allow
-    loaded: list[str] = []
+    manifests: list[ModuleManifest] = []
     for entry_point in discovered():
         if entry_point.name not in permitted:
             continue
@@ -157,9 +213,128 @@ def load_modules(
                 f"{entry_point.name!r}; the allowlist gates the name, so the two "
                 "must agree",
             )
-        _register(manifest, registry=registry, resolvers=resolvers)
+        if CONTRACT_VERSION not in manifest.core_contract_versions:
+            # Before anything of this manifest's is registered: a module written
+            # against a contract major this core does not publish is refused rather
+            # than loaded and left to fail on the first shape that moved.
+            raise ManifestInvalid(
+                manifest.module_id,
+                f"is written against core contract version(s) "
+                f"{list(manifest.core_contract_versions)}, which do not include "
+                f"this core's CONTRACT_VERSION {CONTRACT_VERSION}",
+            )
+        manifests.append(manifest)
+    _check_events(manifests)
+    loaded: list[str] = []
+    for manifest in _dependency_order(manifests):
+        _register(
+            manifest,
+            registry=registry,
+            resolvers=resolvers,
+            tools=tools,
+            kinds=kinds,
+            consumers=consumers,
+        )
         loaded.append(manifest.module_id)
     return tuple(sorted(loaded))
+
+
+def _check_events(manifests: Sequence[ModuleManifest]) -> None:
+    """The two refusals a declared event faces, over the whole loaded set.
+
+    A type's first dot-separated segment must be the declaring manifest's own
+    ``module_id``, and no two loaded manifests may declare the same type.
+
+    **The two rules are not independent, and the containment is worth stating.**
+    Namespacing forces every declared type's first segment to be the declaring
+    manifest's own id, so two manifests with *different* ids can never collide on a
+    type: the second one's type fails namespacing first. What the duplicate rule is
+    left covering is the case packaging can really produce — two installed
+    distributions both publishing under one ``module_id``, both clearing the
+    entry-point-name check above and both clearing namespacing, with nothing else to
+    tell them apart. A test written as "two modules, one type" therefore asserts the
+    namespacing refusal while believing it asserted this one.
+
+    Nothing is populated here: ``rheo_core.events`` indexes subscriptions, not
+    declarations, and a declared event is read back from
+    ``loaded_manifests()[module_id].events``.
+    """
+    declared_by: dict[str, str] = {}
+    for manifest in manifests:
+        for event in manifest.events:
+            namespace = event.type.split(".", 1)[0]
+            if namespace != manifest.module_id:
+                raise ManifestInvalid(
+                    manifest.module_id,
+                    f"declares event type {event.type!r}, which is namespaced under "
+                    f"{namespace!r} rather than under its own module id",
+                )
+            owner = declared_by.get(event.type)
+            if owner is not None:
+                raise ManifestInvalid(
+                    manifest.module_id,
+                    f"declares event type {event.type!r}, which a manifest loaded "
+                    f"under module id {owner!r} already declares; one event type is "
+                    "declared by exactly one loaded manifest",
+                )
+            declared_by[event.type] = manifest.module_id
+
+
+def _dependency_order(
+    manifests: Sequence[ModuleManifest],
+) -> tuple[ModuleManifest, ...]:
+    """The loaded set in registration order: every required dependency ahead of its
+    dependent.
+
+    Dependencies resolve against the **loaded** set rather than against what is
+    installed on the host, because a module this deployment did not load cannot
+    satisfy anything. A required dependency missing from that set, or present at a
+    version outside the declared range, refuses the load naming both module ids and
+    the range; an optional dependency absent from the set is skipped, which is what
+    ``optional = True`` means.
+
+    ``graphlib.TopologicalSorter`` produces the order and ``graphlib.CycleError`` is
+    re-raised as :class:`~rheo_core.modules.manifest.ManifestInvalid` naming the
+    cycle. This is the tree's one dependency order: a later run's module migration
+    chains mean this when they say "the manifest's dependency-sorted order", rather
+    than computing a second one.
+    """
+    by_id = {manifest.module_id: manifest for manifest in manifests}
+    graph: dict[str, set[str]] = {}
+    for manifest in manifests:
+        predecessors = graph.setdefault(manifest.module_id, set())
+        for dependency in manifest.dependencies:
+            required = by_id.get(dependency.module_id)
+            if required is None:
+                if dependency.optional:
+                    continue
+                raise ManifestInvalid(
+                    manifest.module_id,
+                    f"requires module {dependency.module_id!r} at "
+                    f"{dependency.version_range!r}, which this deployment did not "
+                    "load",
+                )
+            if not SpecifierSet(dependency.version_range).contains(
+                required.package_version
+            ):
+                raise ManifestInvalid(
+                    manifest.module_id,
+                    f"requires module {dependency.module_id!r} at "
+                    f"{dependency.version_range!r}, but {dependency.module_id!r} is "
+                    f"loaded at version {required.package_version}",
+                )
+            predecessors.add(dependency.module_id)
+    try:
+        order = tuple(TopologicalSorter(graph).static_order())
+    except CycleError as cycle:
+        nodes = [str(node) for node in cycle.args[1]]
+        raise ManifestInvalid(
+            nodes[0], f"is in a dependency cycle: {' -> '.join(nodes)}"
+        ) from cycle
+    position = {module_id: index for index, module_id in enumerate(order)}
+    # ``sorted`` is stable, so two manifests published under one module id keep the
+    # order discovery handed them over in.
+    return tuple(sorted(manifests, key=lambda manifest: position[manifest.module_id]))
 
 
 def _register(
@@ -167,14 +342,53 @@ def _register(
     *,
     registry: OperationRegistry,
     resolvers: ResolverRegistry,
+    tools: ToolRegistry,
+    kinds: JobKindRegistry | None,
+    consumers: ConsumerRegistry | None,
 ) -> None:
-    """One validated manifest's operations, resolvers, sink and web surface."""
+    """One validated manifest's six extension points, its sink and its web surface.
+
+    Every branch iterates the manifest's own tuples and calls a shipped ``register``,
+    so "an item registered that the manifest did not declare" and "declared and not
+    registered" are both unreachable by construction — there is no second,
+    author-supplied ``register`` function in this tree for a cross-check to compare
+    against. ``module-contract.md``'s discovery step 4 records the same.
+    """
     for declaration, handler in manifest.operations:
         registry.register(declaration, handler, origin=manifest.module_id)
     for record_type, resolver in manifest.resolvers:
         resolvers.register(
             manifest.module_id, record_type, resolver, origin=manifest.module_id
         )
+    for tool in manifest.tools:
+        tools.register(tool, origin=manifest.module_id)
+    if kinds is not None:
+        for job in manifest.jobs:
+            # ``JobKindRegistry.register`` takes exactly these three. ``max_attempts``
+            # and ``cancellable`` travel on the declaration with no reader in release
+            # one — an enqueue call site reads the first and Disable the second — and
+            # widening a shipped signature for a caller that does not exist yet is
+            # what this deliberately does not do.
+            kinds.register(job.name, job.input_model, job.handler)
+    if consumers is not None:
+        for subscription in manifest.subscriptions:
+            if subscription.module_id != manifest.module_id:
+                # The registry does not check this: it stores whatever ``module_id``
+                # the subscription carries, and fan-out later tests that id against
+                # the workspace's enabled modules. A subscription declared under
+                # somebody else's id would register cleanly here and then be
+                # filtered by, or delivered under, the wrong module.
+                raise ManifestInvalid(
+                    manifest.module_id,
+                    f"declares subscription {subscription.consumer_id!r} owned by "
+                    f"module {subscription.module_id!r}",
+                )
+            consumers.register(subscription)
+    for spec in manifest.configuration_schema:
+        # The process-global settings registry, which is also what provisioning
+        # reads — see this module's docstring for what that means for every
+        # workspace provisioned after a module loads.
+        SETTINGS_REGISTRY.register(spec, origin=manifest.module_id)
     if manifest.audit_sink is not None:
         # Under the manifest's own module id, and never any other key — the
         # dispatcher resolves a sink by the *operation's* owning module, so a sink

@@ -26,6 +26,7 @@ from rheo_core.exports import (
     run_export_job,
     run_restore_job,
 )
+from rheo_core.modules import load_modules
 from rheo_core.runtime import (
     RUNTIME_RUN,
     AdapterRegistry,
@@ -114,8 +115,32 @@ def refuse_misconfigured_login() -> None:
         )
 
 
+def register_modules() -> None:
+    """Load the modules ``modules.installed`` names into this process's registries.
+
+    ``JOB_KINDS`` and ``CONSUMERS`` are read from module scope at call time rather
+    than taken as parameters, because they are this composition root's own instances
+    and there is nowhere else a worker's job kinds and consumers could go. Passing
+    them is what gives module-declared job kinds and subscriptions a registry at all:
+    neither ``rheo_core.work.kinds`` nor ``rheo_core.events.consumers`` publishes a
+    process-wide one, so ``load_modules()`` defaults both to ``None`` and registers
+    neither category unless a composition root supplies it.
+
+    Its own function rather than a line inside :func:`main` so a test can drive it
+    without a backend, a cluster or a loop — the same reason
+    :func:`install_stop_signals` is one. Called **from** :func:`main`, never at module
+    level: a module-level call would resolve settings on the bare
+    ``import rheo_app_worker.main`` that the deploy smoke check and this module's own
+    signal test run with no environment configured, and it would populate
+    ``JOB_KINDS`` before ``tests/test_worker_job_kinds.py``'s import-time assertion
+    about the production kinds could read it.
+    """
+    load_modules(kinds=JOB_KINDS, consumers=CONSUMERS)
+
+
 def main() -> None:
     refuse_misconfigured_login()
+    register_modules()
     backend = get_backend()
     stop = threading.Event()
     install_stop_signals(stop)
