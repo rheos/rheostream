@@ -54,8 +54,13 @@ MANIFEST: Final = ModuleManifest(
     # Read from the installed distribution's own metadata rather than repeated as a
     # literal, the way ``provisioning.core_version()`` already reads ``rheo-core``'s.
     # A manifest is only ever reached through the entry point, which exists only for
-    # an installed distribution, so the lookup cannot fail where this is read — and
-    # it cannot drift from ``pyproject.toml``'s ``version`` the way a literal can.
+    # an installed distribution, so the lookup cannot fail where this is read.
+    # The bound, because "cannot drift" would be too strong a word for it: this
+    # reports what is INSTALLED. Bump ``pyproject.toml``'s ``version`` and run under
+    # ``uv run --no-sync`` and it still reports the previous one until a sync
+    # reinstalls the distribution. That is a property of every installed-metadata
+    # read rather than of this call, and it is still the better source — a literal
+    # here drifts silently and permanently instead of until the next sync.
     package_version=metadata.version(DISTRIBUTION),
     core_contract_versions=(CONTRACT_VERSION,),
     dependencies=(),
