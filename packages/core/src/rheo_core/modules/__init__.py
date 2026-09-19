@@ -6,7 +6,7 @@ itself, and the allowlist that decides whether it loads at all.
   import ``UnitOfWork`` (F3).
 - ``loader.py`` — ``discovered()`` over the ``rheo.modules`` entry-point group,
   ``allowed_module_ids()`` over the ``modules.installed`` setting, ``load_modules()``,
-  ``loaded_manifests()`` and ``module_surfaces()``.
+  ``loaded_manifests()``, ``loaded_in_dependency_order()`` and ``module_surfaces()``.
 
 **No lifecycle.** Install, enable and disable are phase 2's; nothing in release one can
 install a module, and the ``core.module_state`` row a workspace needs is written by
@@ -18,6 +18,7 @@ from rheo_core.modules.loader import (
     allowed_module_ids,
     discovered,
     load_modules,
+    loaded_in_dependency_order,
     loaded_manifests,
     module_surfaces,
     reset_surfaces,
@@ -68,6 +69,7 @@ __all__ = [
     "allowed_module_ids",
     "discovered",
     "load_modules",
+    "loaded_in_dependency_order",
     "loaded_manifests",
     "module_surfaces",
     "reset_surfaces",

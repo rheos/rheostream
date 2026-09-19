@@ -197,6 +197,17 @@ class Dependency(BaseModel):
     range against the versions a workspace actually has is install-time work, and
     the manifest table's "cycles and unsatisfiable ranges are rejected at install"
     is still the contract for it.
+
+    **Two things a module author needs to know about how the range is applied**, both
+    decided by ``loader.py``'s ``_dependency_order`` at load time:
+
+    - **Prereleases do not satisfy it.** ``SpecifierSet.contains`` excludes them by
+      default — PEP 440's rule and ``packaging``'s — and nothing overrides that, so a
+      dependency loaded at ``2.0.0rc1`` does not satisfy ``">=2,<3"`` and the load is
+      refused. Write ``">=2.0.0rc1,<3"`` when a prerelease is genuinely acceptable.
+    - **``optional = True`` exempts the dependency from being present, not from the
+      range.** An optional dependency this deployment did not load is skipped; one
+      that *is* loaded is held to the range exactly as a required one is.
     """
 
     optional: bool = False

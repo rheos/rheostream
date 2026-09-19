@@ -11,8 +11,12 @@ A module is an ordinary Python distribution that publishes one `rheo.modules` pa
 point, and that entry point resolves straight to a **manifest**: a `ModuleManifest`, the typed,
 validated model in `packages/core` the next section describes. The core's own `_register`
 (`packages/core/src/rheo_core/modules/loader.py`) is what attaches the manifest's operations,
-resolvers, tools, job kinds, subscriptions, settings keys, audit sink and web surface to the live
-registries, once per process start, by iterating the manifest's own tuples. **Named deviation:**
+resolvers, tools, job kinds, subscriptions, settings keys and audit sink to the live registries,
+by iterating the manifest's own tuples, and records the manifest itself — the `web` surface is
+read back off that record by `module_surfaces()` rather than registered anywhere. Loading is
+idempotent rather than once-per-process: `apps/core`'s FastAPI lifespan runs it more than once in
+a single process under test, and every registry it calls treats an identical re-registration as a
+no-op. **Named deviation:**
 this paragraph once described a `Module` object carrying both a manifest and a `register`
 function that the core called. No such object and no such author-supplied function exists in the
 tree, and the difference is load-bearing rather than cosmetic — it is precisely why discovery

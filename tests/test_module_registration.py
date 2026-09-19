@@ -65,6 +65,7 @@ from rheo_core.modules import (
     JobKind,
     ManifestInvalid,
     load_modules,
+    loaded_in_dependency_order,
     loaded_manifests,
     reset_surfaces,
 )
@@ -740,6 +741,75 @@ MISSING_OPTIONAL_ENTRY_POINT = EntryPoint(
     group=ENTRY_POINT_GROUP,
 )
 
+# The two optional-dependency cases that are NOT about absence. `optional = True`
+# exempts the dependency from having to be there; it does not exempt it from the
+# declared range once it is.
+OPTIONAL_IN_RANGE_ID = "optional_in_range_probe"
+OPTIONAL_IN_RANGE_MANIFEST = _manifest(
+    OPTIONAL_IN_RANGE_ID,
+    dependencies=(
+        Dependency(module_id=PROVIDER_ID, version_range=">=1,<2", optional=True),
+    ),
+)
+OPTIONAL_IN_RANGE_ENTRY_POINT = EntryPoint(
+    name=OPTIONAL_IN_RANGE_ID,
+    value=f"{__name__}:OPTIONAL_IN_RANGE_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
+OPTIONAL_OUT_OF_RANGE_ID = "optional_out_of_range_probe"
+OPTIONAL_OUT_OF_RANGE_MANIFEST = _manifest(
+    OPTIONAL_OUT_OF_RANGE_ID,
+    dependencies=(
+        Dependency(
+            module_id=PROVIDER_ID, version_range=UNSATISFIED_RANGE, optional=True
+        ),
+    ),
+)
+OPTIONAL_OUT_OF_RANGE_ENTRY_POINT = EntryPoint(
+    name=OPTIONAL_OUT_OF_RANGE_ID,
+    value=f"{__name__}:OPTIONAL_OUT_OF_RANGE_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
+# PEP 440 excludes prereleases from a range unless the range names one.
+PRERELEASE_PROVIDER_ID = "prerelease_provider_probe"
+PRERELEASE_VERSION = "2.0.0rc1"
+PRERELEASE_PROVIDER_MANIFEST = _manifest(
+    PRERELEASE_PROVIDER_ID, package_version=PRERELEASE_VERSION
+)
+PRERELEASE_PROVIDER_ENTRY_POINT = EntryPoint(
+    name=PRERELEASE_PROVIDER_ID,
+    value=f"{__name__}:PRERELEASE_PROVIDER_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
+NEEDS_STABLE_TWO_ID = "needs_stable_two_probe"
+NEEDS_STABLE_TWO_MANIFEST = _manifest(
+    NEEDS_STABLE_TWO_ID,
+    dependencies=(
+        Dependency(module_id=PRERELEASE_PROVIDER_ID, version_range=">=2,<3"),
+    ),
+)
+NEEDS_STABLE_TWO_ENTRY_POINT = EntryPoint(
+    name=NEEDS_STABLE_TWO_ID,
+    value=f"{__name__}:NEEDS_STABLE_TWO_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
+ACCEPTS_PRERELEASE_ID = "accepts_prerelease_probe"
+ACCEPTS_PRERELEASE_MANIFEST = _manifest(
+    ACCEPTS_PRERELEASE_ID,
+    dependencies=(
+        Dependency(module_id=PRERELEASE_PROVIDER_ID, version_range=">=2.0.0rc1,<3"),
+    ),
+)
+ACCEPTS_PRERELEASE_ENTRY_POINT = EntryPoint(
+    name=ACCEPTS_PRERELEASE_ID,
+    value=f"{__name__}:ACCEPTS_PRERELEASE_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
 SHARED_EVENT_TYPE = "core.probe.happened"
 ORDERED_PROVIDER_ID = "ordered_provider_probe"
 ORDERED_DEPENDENT_ID = "ordered_dependent_probe"
@@ -836,6 +906,113 @@ def test_an_optional_dependency_the_deployment_did_not_load_is_skipped(
     assert _load(monkeypatch, registries, MISSING_OPTIONAL_ENTRY_POINT) == (
         MISSING_OPTIONAL_ID,
     )
+
+
+def test_an_optional_dependency_that_is_present_and_in_range_loads(
+    monkeypatch: pytest.MonkeyPatch, registries: _Registries
+) -> None:
+    """The middle of the three optional cases, and the one that keeps the third
+    honest: without it, "optional + out of range refuses" would also be satisfied by
+    a loader that refused every optional dependency it could actually see."""
+    assert _load(
+        monkeypatch, registries, OPTIONAL_IN_RANGE_ENTRY_POINT, PROVIDER_ENTRY_POINT
+    ) == (OPTIONAL_IN_RANGE_ID, PROVIDER_ID)
+
+
+def test_an_optional_dependency_that_is_present_and_out_of_range_is_refused(
+    monkeypatch: pytest.MonkeyPatch, registries: _Registries
+) -> None:
+    """**Deviation from the ratified text, pinned deliberately.** Task 3 scopes the
+    range check to required dependencies. ``optional = True`` says the dependency may
+    be *absent*; it does not say a declared range stops meaning anything when the
+    module is right there. A manifest that named a range has told us which versions
+    it can work beside, and loading it against one it excluded would be using the
+    author's own information to ignore them.
+
+    Read with the two cases above, the three of them isolate the flag: absent loads,
+    present and in range loads, present and out of range refuses — naming both
+    modules and the range, exactly as a required dependency does.
+    """
+    with pytest.raises(ManifestInvalid) as excinfo:
+        _load(
+            monkeypatch,
+            registries,
+            OPTIONAL_OUT_OF_RANGE_ENTRY_POINT,
+            PROVIDER_ENTRY_POINT,
+        )
+
+    message = str(excinfo.value)
+    assert OPTIONAL_OUT_OF_RANGE_ID in message
+    assert PROVIDER_ID in message
+    assert UNSATISFIED_RANGE in message
+    assert PROVIDER_VERSION in message
+
+
+def test_a_prerelease_does_not_satisfy_a_dependency_range(
+    monkeypatch: pytest.MonkeyPatch, registries: _Registries
+) -> None:
+    """``SpecifierSet.contains`` excludes prereleases and nothing here overrides it.
+
+    PEP 440's own default rather than a decision this run made, which is why the
+    behaviour is documented on ``Dependency.version_range`` instead of being changed.
+    A module author who means to accept one writes the prerelease into the range.
+    """
+    with pytest.raises(ManifestInvalid) as excinfo:
+        _load(
+            monkeypatch,
+            registries,
+            NEEDS_STABLE_TWO_ENTRY_POINT,
+            PRERELEASE_PROVIDER_ENTRY_POINT,
+        )
+
+    assert PRERELEASE_VERSION in str(excinfo.value)
+
+    # The same pair with the prerelease written into the range loads, so the refusal
+    # above is the prerelease rule and not the provider being unreachable.
+    assert _load(
+        monkeypatch,
+        registries,
+        ACCEPTS_PRERELEASE_ENTRY_POINT,
+        PRERELEASE_PROVIDER_ENTRY_POINT,
+    ) == (ACCEPTS_PRERELEASE_ID, PRERELEASE_PROVIDER_ID)
+
+
+def test_the_dependency_order_is_readable_and_survives_a_second_load(
+    monkeypatch: pytest.MonkeyPatch, registries: _Registries
+) -> None:
+    """``loaded_in_dependency_order()`` is how a later caller reaches the order.
+
+    ``load_modules()`` answers alphabetically — ``apps/core``'s startup report and
+    ``rheo openapi`` read that and neither wants an ordering that shifts when an edge
+    is added — so the registration order it computes would otherwise leave no trace.
+    A module migration chain that means "the manifest's dependency-sorted order" has
+    to be able to read it rather than derive a second one.
+
+    The dependent is published first, so discovery order and dependency order
+    disagree and an accessor that just handed back ``_LOADED``'s insertion order
+    would answer the wrong way round. The load is then repeated, because
+    ``apps/core``'s lifespan loads more than once in one process and an order cached
+    at registration time would answer for whichever set was current when it was
+    written.
+    """
+    ids = _load(
+        monkeypatch,
+        registries,
+        ORDERED_DEPENDENT_ENTRY_POINT,
+        ORDERED_PROVIDER_ENTRY_POINT,
+    )
+    assert ids == (ORDERED_DEPENDENT_ID, ORDERED_PROVIDER_ID)
+
+    expected = [ORDERED_PROVIDER_ID, ORDERED_DEPENDENT_ID]
+    assert [manifest.module_id for manifest in loaded_in_dependency_order()] == expected
+
+    _load(
+        monkeypatch,
+        registries,
+        ORDERED_DEPENDENT_ENTRY_POINT,
+        ORDERED_PROVIDER_ENTRY_POINT,
+    )
+    assert [manifest.module_id for manifest in loaded_in_dependency_order()] == expected
 
 
 def test_a_satisfied_dependency_registers_before_its_dependent(
@@ -969,6 +1146,29 @@ UNSATISFIED_ON_CANARY_ENTRY_POINT = EntryPoint(
     group=ENTRY_POINT_GROUP,
 )
 
+# The three remaining ManifestInvalid raise sites, so the matrix below covers all
+# nine rather than the six it started with. All three refuse during collection,
+# which is why the property is expected to hold for them — expected is not checked,
+# so they get a row each.
+IMPOSTOR_ID = "impostor_probe"
+NOT_A_MANIFEST = object()
+"""A real, importable module-level object that is simply not a ``ModuleManifest``,
+so the entry point resolves for real and the refusal is ``_as_manifest``'s rather
+than an import error's."""
+
+IMPOSTOR_ENTRY_POINT = EntryPoint(
+    name=IMPOSTOR_ID, value=f"{__name__}:NOT_A_MANIFEST", group=ENTRY_POINT_GROUP
+)
+
+MISLABELLED_NAME = "mislabelled_probe"
+MISLABELLED_ENTRY_POINT = EntryPoint(
+    name=MISLABELLED_NAME,
+    # Points at a perfectly valid manifest whose module_id is `current_contract_probe`,
+    # so the allowlist would gate one name while a different one registered.
+    value=f"{__name__}:CURRENT_CONTRACT_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
 
 def test_a_subscription_declared_under_another_modules_id_is_refused(
     monkeypatch: pytest.MonkeyPatch, registries: _Registries
@@ -1050,6 +1250,9 @@ def test_the_canary_module_really_registers_on_a_clean_load(
         ("dependency range", (UNSATISFIED_ON_CANARY_ENTRY_POINT,)),
         ("dependency cycle", (CYCLE_A_ENTRY_POINT, CYCLE_B_ENTRY_POINT)),
         ("subscription ownership", (BORROWED_SUB_ENTRY_POINT,)),
+        ("not a manifest", (IMPOSTOR_ENTRY_POINT,)),
+        ("entry-point name mismatch", (MISLABELLED_ENTRY_POINT,)),
+        ("required dependency not loaded", (MISSING_REQUIRED_ENTRY_POINT,)),
     ],
 )
 def test_a_refused_load_leaves_every_registry_untouched(
@@ -1069,6 +1272,13 @@ def test_a_refused_load_leaves_every_registry_untouched(
 
     The canary is published first in every case, so a loader that registered as it
     walked would leave it behind regardless of which check does the refusing.
+
+    All nine ``ManifestInvalid`` raise sites are covered, not the six the property was
+    first written against. The last three — an entry point that does not resolve to a
+    manifest, one whose name disagrees with the manifest's own id, and a required
+    dependency the deployment did not load — all refuse during collection, so the
+    property is near-certain for them by inspection. Near-certain by inspection is
+    what the subscription case looked like too, right up until it was measured.
     """
     with pytest.raises(ManifestInvalid):
         _load(monkeypatch, registries, CANARY_ENTRY_POINT, *offenders)

@@ -22,6 +22,30 @@ is read back from ``loaded_manifests()[module_id].events``. What the loader does
 events instead is refuse them — a type not namespaced under its declaring module, or
 a type two loaded manifests both declare.
 
+**The residual gap, stated rather than left for a reader to find: a module's job kind
+or consumer id can silently replace the core's, and nothing here refuses it.**
+``JobKindRegistry`` and ``ConsumerRegistry`` are last-writer-wins by design, and each
+documents that as safe on the grounds that the composition root is its only writer
+and populates it once at import. This module makes a module a *second* writer. A
+loaded manifest declaring ``JobKind(name="core.retention_sweep", ...)`` therefore
+replaces the production handler and input model for that kind with its own, refused
+by nothing — not the registry, not ``_register``, not the manifest model — and a
+``ConsumerSubscription`` reusing a core ``consumer_id`` displaces that consumer the
+same way.
+
+That is an asymmetry with the two guards above rather than an oversight, and the
+reason is what is missing from the contract. Events get a namespacing rule because
+``module-contract.md`` ratifies the grammar ``<module_id>.<record_type>.<verb>`` for
+them; subscriptions get an ownership check because a ``ConsumerSubscription`` carries
+the ``module_id`` there is something to check it against. Neither holds for a job-kind
+name: the contract states no prefix rule for one, so a guard here would have to invent
+the grammar it enforced, which is a ratification and not an implementation. Closing it
+waits on that rule — the position ``tokens/sets.py`` already records for tool names
+(nothing binds a tool's name to its registering origin, for want of a ratified prefix
+rule), and the deferral the plan already applies to an event registry and a
+``publish()`` gate over undeclared types. Nothing in the checkout declares a job kind
+or a subscription today, so this is a contract gap and not a live exposure.
+
 **Loading a module widens every workspace provisioned afterwards, and that is not a
 bug to fix here.** ``settings.schema.REGISTRY`` is process-global, and
 ``storage/provisioning.py``'s ``_step_write_default_settings`` iterates
@@ -118,6 +142,36 @@ def loaded_manifests() -> Mapping[str, ModuleManifest]:
     loader's own table through it. The manifests themselves are frozen models.
     """
     return dict(_LOADED)
+
+
+def loaded_in_dependency_order() -> tuple[ModuleManifest, ...]:
+    """What this deployment loaded, every required dependency ahead of its dependant.
+
+    The tree's one dependency-sorted order, made reachable. :func:`load_modules`
+    computes that order to register in and then returns ids sorted *alphabetically* —
+    ``apps/core``'s startup report and ``rheo openapi`` both read that return value
+    and neither wants an ordering that shifts when a dependency edge is added — so
+    without this accessor the order would leave no trace a later caller could read,
+    and the next caller needing one (a module migration chain, which means exactly
+    this by "the manifest's dependency-sorted order") would derive a second.
+
+    **Re-derived from :data:`_LOADED` on every call, never stored**, which is what
+    makes it survive a second load in one process. A tuple cached at registration
+    time would answer for the set that existed when it was written, and
+    ``apps/core``'s lifespan loads more than once per process under test.
+    :func:`module_surfaces` derives from the same table for the same reason: one
+    record of what loaded cannot disagree with itself.
+
+    It answers for the **accumulated** loaded set, because that is what
+    :data:`_LOADED` holds. Every manifest in there cleared :func:`_dependency_order`
+    as part of the set it arrived with, so for one load, or for repeated identical
+    loads, this cannot raise. It is deliberately *not* promised total across two loads
+    under different allowlists: reloading one module id at a version that no longer
+    satisfies a dependant loaded earlier leaves an inconsistent accumulated set, and
+    this reports that with the same ``ManifestInvalid`` rather than handing back a
+    stale order.
+    """
+    return _dependency_order(tuple(_LOADED.values()))
 
 
 def module_surfaces() -> Mapping[str, WebSurface]:
@@ -341,6 +395,25 @@ def _dependency_order(
     version outside the declared range, refuses the load naming both module ids and
     the range; an optional dependency absent from the set is skipped, which is what
     ``optional = True`` means.
+
+    **Named deviation: the range is enforced for an optional dependency too, and the
+    ratified text scoped it to required ones.** ``optional = True`` says the
+    dependency may be *absent*; it does not say a declared range stops meaning
+    anything when the module is right there. A manifest that writes
+    ``Dependency(module_id="x", version_range=">=2,<3", optional=True)`` has stated
+    which versions of ``x`` it can work beside, and loading it against ``x`` at 1.4
+    would be using the one piece of information the author gave us to ignore them.
+    So an optional dependency that is present and out of range refuses the load, with
+    the same message a required one gets, and an optional dependency that is absent
+    still loads clean.
+
+    **``SpecifierSet.contains`` excludes prereleases, and nothing here overrides
+    that.** A provider loaded at ``2.0.0rc1`` does not satisfy ``">=2,<3"`` and the
+    load is refused naming both — PEP 440's own default, and ``packaging``'s. Passing
+    ``prereleases=True`` would be a policy choice no requirement in this run asks for,
+    so it is left at the default and recorded here and on
+    :attr:`~rheo_core.modules.manifest.Dependency.version_range`, which is where a
+    module author reads about the field.
 
     ``graphlib.TopologicalSorter`` produces the order and ``graphlib.CycleError`` is
     re-raised as :class:`~rheo_core.modules.manifest.ManifestInvalid` naming the
