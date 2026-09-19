@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from copy import deepcopy
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+
+import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "absence_proof.py"
@@ -92,6 +95,28 @@ def test_checkout_rejects_dirty_status_and_accepts_clean_status() -> None:
     assert absence.checkout_status_exit_code("?? uncommitted.py\n") != 0
     assert absence.checkout_status_errors("?? uncommitted.py\n")[-1] == (
         "commit before running the absence proof"
+    )
+
+
+def test_cli_rejects_unsupported_demonstrators_and_accepts_pytest_and_ci(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = [SimpleNamespace(demonstrators=[f"pytest:{_NODE}", _CI])]
+    monkeypatch.setattr(
+        absence,
+        "_load_matrix_parser",
+        lambda root: SimpleNamespace(parse=lambda path: rows),
+    )
+    summary = tmp_path / "summary.json"
+    summary.write_text(json.dumps(_summary()), encoding="utf-8")
+    command = ["--mode", "compare", str(summary), str(summary)]
+    assert absence.main(command) == 0
+    assert not capsys.readouterr().err
+
+    rows[0].demonstrators.extend(["shell:probe", "manual:probe"])
+    assert absence.main(command) != 0
+    assert capsys.readouterr().err.strip() == (
+        "unsupported acceptance-matrix demonstrator kinds: manual, shell"
     )
 
 

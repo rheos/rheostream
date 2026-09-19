@@ -26,6 +26,10 @@ _MODULE_DIR = Path("modules") / "recallatron"
 Summary = dict[str, object]
 
 
+class UnsupportedDemonstratorsError(ValueError):
+    """The matrix contains evidence this proof cannot run or explicitly exclude."""
+
+
 def _load_matrix_parser(root: Path) -> ModuleType:
     path = root / "tests" / "test_acceptance_matrix.py"
     name = f"_rheo_acceptance_matrix_{abs(hash(path))}"
@@ -41,6 +45,17 @@ def _load_matrix_parser(root: Path) -> ModuleType:
 def _matrix_selection(root: Path) -> tuple[set[str], set[str]]:
     parser = _load_matrix_parser(root)
     rows = parser.parse(root / "docs" / "acceptance" / "phase-1-matrix.md")
+    unsupported = {
+        demo.partition(":")[0]
+        for row in rows
+        for demo in row.demonstrators
+        if not demo.startswith(("pytest:", "ci:"))
+    }
+    if unsupported:
+        raise UnsupportedDemonstratorsError(
+            "unsupported acceptance-matrix demonstrator kinds: "
+            + ", ".join(sorted(unsupported))
+        )
     selected = {
         demo.removeprefix("pytest:")
         for row in rows
@@ -378,17 +393,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("summaries", nargs="*", type=Path)
     args = parser.parse_args(argv)
-    if args.mode == "compare":
-        return _compare(args.summaries)
-    if args.summaries:
-        parser.error("summary paths are accepted only by --mode compare")
-    if args.out is None:
-        parser.error(f"--mode {args.mode} requires --out")
-    if args.mode == "run":
-        return _run(_REPO_ROOT, args.out)
-    if args.mode == "config":
-        return _configured_run(args.out)
-    return _checkout_run(args.out)
+    try:
+        if args.mode == "compare":
+            return _compare(args.summaries)
+        if args.summaries:
+            parser.error("summary paths are accepted only by --mode compare")
+        if args.out is None:
+            parser.error(f"--mode {args.mode} requires --out")
+        if args.mode == "run":
+            return _run(_REPO_ROOT, args.out)
+        if args.mode == "config":
+            return _configured_run(args.out)
+        return _checkout_run(args.out)
+    except UnsupportedDemonstratorsError as error:
+        print(error, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
