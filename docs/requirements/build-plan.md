@@ -636,8 +636,10 @@ to the core. Domain packs and their composition rules. The invitation flow and s
 member management that R1 left out of release one, so that a workspace can gain a second member
 without an operator command; with a second member present, FR 6 gains its test, that the first
 member's personal preferences and personal credentials are not readable by the second. The
-licence decision, which is deliberately deferred to this point because it must be made before
-accepting substantial outside contributions and after the contracts it governs are real.
+licence decision was planned for this point, to be made before accepting substantial outside
+contributions and after the contracts it governs are real; it was settled early, on 2026-09-17,
+as AGPL-3.0 (`LICENSE`, SPDX `AGPL-3.0-only`), so this phase inherits it and reviews only the
+contribution terms.
 
 **Key boundaries.** The synthetic module is an example, not a product for another profession. The
 acceptance scenarios this phase must satisfy are **A new specialist module**, **Module disabled
