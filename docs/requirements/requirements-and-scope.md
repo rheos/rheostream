@@ -590,7 +590,8 @@ These three are appended after FR 50 so that the numbering above stays stable.
 - Invitation flow, seat management, and roles beyond `owner` and `member`. The invitation flow
   lands in the framework-proof phase of the build plan.
 - Bidirectional offline synchronization and multi-device concurrent writes.
-- The licence decision, which is deliberately deferred to the framework-proof phase.
+- The contributor model. The licence itself was settled on 2026-09-17 as AGPL-3.0 (`LICENSE`),
+  earlier than the framework-proof phase this document first planned for it.
 
 ## UI port inventory
 
@@ -721,7 +722,7 @@ All 24, none dropped.
 | 11 | Confirmation policy for messages, submissions, destructive changes, financial actions | **Answered here**, R3, as policy shape and safety classes. Final rules deferred to the architecture specification. |
 | 12 | What data is sent to model providers; redaction, retention, user control | Deferred to the architecture specification's security section. FR 13 and FR 27 fix the boundary; the specification fixes the redaction contract. |
 | 13 | How export/import, schema migration, and disaster recovery are tested | Partly answered by FR 52 and FR 53: export and restore is required and is tested at the end of each release-one phase, and a predecessor migration is verified before switchover. The full disaster-recovery test plan is deferred to the architecture specification. |
-| 14 | Which open-source licence and contributor model | **Deliberately deferred** to the framework-proof phase, before a v0.1 release and before accepting substantial outside contributions. |
+| 14 | Which open-source licence and contributor model | Licence **answered 2026-09-17: AGPL-3.0** (`LICENSE`, SPDX `AGPL-3.0-only`; recorded in the idea document's decision ledger). The contributor model stays deferred to the framework-proof phase, before a v0.1 release and before accepting substantial outside contributions. |
 | 15 | Minimum useful direct-voice experience, and whether voice waits | Deferred to the channels phase. Direction recorded: voice waits until text interaction and the permission model are stable. |
 | 16 | Which intake transports and which two unrelated custom-funnel examples validate the contract | **Answered here**: three transports in FR 32; the two funnels are the maintainer's own inbound-inquiry form and a synthetic event-referral funnel exercised as a fixture, per the opportunity-core phase. |
 | 17 | What users can configure in pipeline presets, and how records migrate on change | Deferred to the architecture specification. FR 43 fixes the required property (pinned configuration versions); the specification fixes the limits and the migration operation. |
@@ -774,8 +775,8 @@ Deliberately absent, and owned by the architecture specification: database schem
 endpoint shapes, event payload contracts, MCP tool signatures, the identifier scheme, the
 module manifest format, the redaction contract, the pipeline preset configuration limits, and
 whether the per-workspace storage unit under D1 is a database or a schema, which changes the
-migration orchestration and the connection routing but no requirement here. Also absent: the
-licence, which waits for the framework-proof phase.
+migration orchestration and the connection routing but no requirement here. The licence, once
+also absent here, was settled on 2026-09-17 as AGPL-3.0 (`LICENSE`).
 
 The phased plan, with per-phase goals, scope boundaries, and numbered acceptance criteria,
 is in the [build plan](build-plan.md).
