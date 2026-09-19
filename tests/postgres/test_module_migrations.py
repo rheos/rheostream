@@ -253,24 +253,35 @@ def test_migrate_workspace_refuses_a_module_chain_and_writes_nothing(
     before = cluster.registry_row(workspace)
     assert before.state is WorkspaceState.ACTIVE
 
-    # ``ValueError``, not ``NotImplementedError``: this is a routing rule, the same
-    # class the control chain already gets, not "not built yet". ``pytest.raises``
-    # pins that — ``NotImplementedError`` is a ``RuntimeError`` and would not match.
-    with pytest.raises(ValueError) as excinfo:
-        migrate_workspace(cluster.backend, workspace, chains=(MODULE_ID,))
-    message = str(excinfo.value)
-    assert "run_module_chain" in message, message
-    assert MODULE_ID in message, message
-    assert "unavailable" in message, message
+    # Deliberately not ``pytest.raises`` yet. FR 11's promise is about the ROW, so the
+    # row is read first and asserted first: an implementation that let the chain
+    # through to the ``unavailable`` write fails on the next three lines, before the
+    # type of ``outcome`` is ever considered. Ordering the exception check first would
+    # make the row read unreachable on exactly the violation it exists to catch.
+    outcome: object
+    try:
+        outcome = migrate_workspace(cluster.backend, workspace, chains=(MODULE_ID,))
+    except ValueError as exc:
+        outcome = exc
 
     # Untouched: the whole row, not just the state, so a rewritten ``state_detail`` or
     # a bumped ``state_changed_at`` fails here too. (``state_detail`` is not None on a
     # healthy workspace — provisioning leaves its last step's name there — so the
     # comparison is against the row as it was, never against a presumed empty one.)
     after = cluster.registry_row(workspace)
-    assert after == before
+    assert after == before, f"migrate_workspace wrote the row: {after}"
     assert after.state is WorkspaceState.ACTIVE
     assert after.state_detail == before.state_detail
+
+    # Then the refusal itself. ``ValueError``, not ``NotImplementedError``: this is a
+    # routing rule, the same class the control chain already gets, not "not built
+    # yet" — and ``NotImplementedError`` is a ``RuntimeError``, so it would not
+    # satisfy this check either.
+    assert isinstance(outcome, ValueError), f"no refusal was raised: {outcome!r}"
+    message = str(outcome)
+    assert "run_module_chain" in message, message
+    assert MODULE_ID in message, message
+    assert "unavailable" in message, message
 
     # The guard is a PRE-loop routing rule: it fires before the control-plane read, so
     # even an id with no workspace row gets it rather than ``workspace_missing``.
