@@ -131,8 +131,12 @@ class Dependency(BaseModel):
     """A PEP 440 specifier set (``>=1.2,<2``), not npm's caret and tilde grammar.
 
     Parsed by :class:`~packaging.specifiers.SpecifierSet` in the manifest's own
-    ``@model_validator``, so an unsatisfiable or misspelled range is a validation
-    error at construction rather than a surprise at install.
+    ``@model_validator``, so a range that is not PEP 440 **syntax** is a validation
+    error at construction. Satisfiability is a different question and is not asked
+    here: ``SpecifierSet(">=2,<1")`` parses cleanly and matches nothing. Resolving a
+    range against the versions a workspace actually has is install-time work, and
+    the manifest table's "cycles and unsatisfiable ranges are rejected at install"
+    is still the contract for it.
     """
 
     optional: bool = False
