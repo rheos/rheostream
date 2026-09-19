@@ -24,12 +24,16 @@ importing this one, because the two files sit in different chunks' file maps.
 
 import ast
 import os
+from collections.abc import Sequence
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_SCAN_DIRS = ("packages", "apps", "scripts", "tests")
+_SCAN_DIRS = ("packages", "apps", "scripts", "tests", "modules")
 _SECRETS_PACKAGE = _REPO_ROOT / "packages" / "core" / "src" / "rheo_core" / "secrets"
 _MODULES_DIR = _REPO_ROOT / "modules"
+_MODULE_SCAN_CONTROL = (
+    _REPO_ROOT / "tests" / "fixtures" / "modules" / "probe_pkg" / "src" / "probe.py.txt"
+)
 _SECRETS_MODULE = "rheo_core.secrets"
 _IDENTITY_MODULE = "rheo_core.identity"
 
@@ -71,17 +75,22 @@ def _secret_scope_call_lines(tree: ast.AST) -> list[int]:
     return lines
 
 
-def test_secret_scope_is_constructed_only_inside_the_secrets_package() -> None:
+def _scan(root: Path, scan_dirs: Sequence[str]) -> tuple[int, dict[str, list[int]]]:
     scanned = 0
     violations: dict[str, list[int]] = {}
-    for top in _SCAN_DIRS:
-        for path in _python_files(_REPO_ROOT / top):
+    for top in scan_dirs:
+        for path in _python_files(root / top):
             scanned += 1
             if path.is_relative_to(_SECRETS_PACKAGE):
                 continue
             lines = _secret_scope_call_lines(_parse(path))
             if lines:
-                violations[str(path.relative_to(_REPO_ROOT))] = lines
+                violations[str(path.relative_to(root))] = lines
+    return scanned, violations
+
+
+def test_secret_scope_is_constructed_only_inside_the_secrets_package() -> None:
+    scanned, violations = _scan(_REPO_ROOT, _SCAN_DIRS)
     assert scanned, "no Python files scanned"
     assert not violations, (
         f"SecretScope( is constructed outside rheo_core/secrets/: {violations}"
@@ -93,6 +102,22 @@ def test_secret_scope_is_constructed_only_inside_the_secrets_package() -> None:
         if _secret_scope_call_lines(_parse(path))
     ]
     assert sites == ["scope.py"], sites
+
+
+def test_secret_scope_scan_walks_the_modules_root(tmp_path: Path) -> None:
+    assert "modules" in _SCAN_DIRS
+    source = tmp_path / "modules" / "probe_pkg" / "src" / "probe.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _MODULE_SCAN_CONTROL.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    _, violations = _scan(tmp_path, _SCAN_DIRS)
+    assert violations == {"modules/probe_pkg/src/probe.py": [2]}
+
+    without_modules = tuple(top for top in _SCAN_DIRS if top != "modules")
+    _, missed = _scan(tmp_path, without_modules)
+    assert missed == {}
 
 
 def _secrets_imports(tree: ast.AST) -> list[str]:
@@ -201,7 +226,7 @@ def _scope_private_mentions(tree: ast.AST) -> list[str]:
 def test_scope_privates_are_named_only_inside_the_secrets_package() -> None:
     this_file = Path(__file__).resolve()
     violations: dict[str, list[str]] = {}
-    for top in (*_SCAN_DIRS, "modules"):
+    for top in _SCAN_DIRS:
         for path in _python_files(_REPO_ROOT / top):
             # This scan must spell the names it hunts for; no other file may.
             if path.is_relative_to(_SECRETS_PACKAGE) or path.resolve() == this_file:

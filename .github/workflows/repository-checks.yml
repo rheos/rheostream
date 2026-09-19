@@ -82,6 +82,39 @@ jobs:
       - name: Pytest
         run: uv run pytest
 
+  absence-proof:
+    name: Recallatron absence proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rheo
+          POSTGRES_PASSWORD: rheo_dev_only
+          POSTGRES_DB: rheo
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U rheo" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Deliberately NOT RHEO_CLUSTER_DSN: tests/conftest.py derives it from
+      # RHEO_TEST_CLUSTER_DSN so the suite reaches the cluster through the
+      # production settings->secret-scope path, not an injected DSN.
+      RHEO_TEST_CLUSTER_DSN: postgresql://rheo:rheo_dev_only@localhost:5432/postgres
+      RHEO_PROFILE: test
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.29"
+      - name: Sync (frozen)
+        run: uv sync --frozen
+      - name: Run make absence-proof
+        run: make absence-proof
+
   web:
     name: Web checks
     runs-on: ubuntu-latest

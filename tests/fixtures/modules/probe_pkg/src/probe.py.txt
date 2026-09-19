@@ -1,0 +1,2 @@
+WorkspaceContext(workspace_id="probe")
+SecretScope(component="probe")

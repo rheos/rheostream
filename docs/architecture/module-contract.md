@@ -353,8 +353,11 @@ never installed. Structurally that holds because:
 
 - `rheo_core` and `rheo_contracts` depend on no module distribution (an import-graph check in
   CI).
-- The composition root reads `modules.installed` from configuration; the test profile for the
-  no-memory run sets it to `relationships, leads`.
+- The composition root reads `modules.installed` from configuration. The absence proof compares
+  two configurations node by node: Recallatron remains installed on disk while the setting is
+  empty, then a detached checkout removes the distribution before syncing and running the same
+  phase-one demonstrators. `relationships`, `leads`, and `current` are placeholder directories,
+  not distributions, so naming them would be equivalent to naming no installed module here.
 - `leads` declares `recallatron` as an optional dependency and calls it only through
   `ctx.enabled_modules` checks around a registered operation name, never an import.
 - Event fan-out at write time consults the workspace's enabled consumers, so an event nobody

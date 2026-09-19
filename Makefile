@@ -12,7 +12,10 @@
 # (tests/conftest.py, pytest.exit) with a message naming the remedy — it never
 # skips, because a skipped `postgres` marker would pass this gate vacuously.
 
-.PHONY: install test lint typecheck build up down demo check migrate codegen
+.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof
+
+ABSENCE_PROOF_CONFIG := $(shell git rev-parse --git-path rheo-absence-config.json)
+ABSENCE_PROOF_CHECKOUT := $(shell git rev-parse --git-path rheo-absence-checkout.json)
 
 install:
 	uv sync --frozen
@@ -188,6 +191,12 @@ demo:
 
 check:
 	python3 scripts/check_repository.py
+
+# The tree must be committed first because checkout builds its comparison from HEAD.
+absence-proof:
+	uv run python scripts/absence_proof.py --mode config --out $(ABSENCE_PROOF_CONFIG)
+	uv run python scripts/absence_proof.py --mode checkout --out $(ABSENCE_PROOF_CHECKOUT)
+	uv run python scripts/absence_proof.py --mode compare $(ABSENCE_PROOF_CONFIG) $(ABSENCE_PROOF_CHECKOUT)
 
 # Regenerate the two committed artifacts under apps/web/src/generated/ from the
 # operation registry: `rheo openapi` builds the document, `openapi-typescript`
