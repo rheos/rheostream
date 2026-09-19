@@ -13,14 +13,17 @@ precisely so this is possible.
 ``deployment.toml``".** 0c0's branch cut removed the last distribution publishing
 a ``rheo.modules`` entry point, so nothing is discoverable to load, and the module
 allowlist is now the deployment-scope setting ``modules.installed``, which either
-source can set. The subprocess tests at the bottom run with every ``RHEO_*``
-variable stripped, so the setting resolves to its empty package default — which is
-exactly what AC 3's byte-exact regeneration check depends on.
+source can set. The subprocess tests at the bottom therefore close **both** sources:
+every ``RHEO_*`` variable is stripped, and the child is given an empty temporary
+``RHEO_DATA_ROOT`` so the ``deployment.toml`` it resolves is one that does not exist.
+The setting lands on its empty package default either way — which is exactly what
+AC 3's byte-exact regeneration check depends on.
 """
 
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -222,10 +225,21 @@ def test_the_registry_is_the_only_input(registry: OperationRegistry) -> None:
 #   process-wide REGISTRY, which `rheo_core.tokens.sets` is evaluated over at issue
 #   time -- and `tests/postgres/test_tokens.py` asserts those sets exactly. The child
 #   process pays that cost and exits.
-# - It is the one subcommand that bootstraps nothing. The child runs with **every**
-#   `RHEO_*` variable stripped, so it has no profile, no data root, no cluster DSN
-#   and no database, and still emits the document. That is what makes AC 3's
-#   byte-exact regeneration check environment-independent.
+# - It is the one subcommand that opens no database. The child runs with **every**
+#   `RHEO_*` variable stripped and then a single one put back — an empty temporary
+#   `RHEO_DATA_ROOT` — so it has no profile, no cluster DSN and no database, and
+#   still emits the document. That is what makes AC 3's byte-exact regeneration
+#   check environment-independent.
+#
+# **The empty data root is the load-bearing half, and stripping alone is not
+# enough.** `load_modules()` resolves `modules.installed` now, and the deployment
+# layer reads `<data_root>/config/deployment.toml` on the way. With `RHEO_DATA_ROOT`
+# merely stripped, `resolve_data_root` falls through to the *platform*
+# application-data directory, so a developer with a real deployment.toml there would
+# have this test's byte-exactness guard reading a file outside the checkout — and, once
+# a distribution publishes a `rheo.modules` entry point, possibly loading a module.
+# A fresh empty directory per call closes that: it is created here rather than taken
+# as a fixture argument, so no future caller can forget to isolate its child.
 
 
 def _run_openapi(*, modules: str | None = None) -> str:
@@ -234,14 +248,16 @@ def _run_openapi(*, modules: str | None = None) -> str:
     }
     if modules is not None:
         env[MODULES_VARIABLE] = modules
-    completed = subprocess.run(
-        ["uv", "run", "--frozen", "rheo", "openapi", "--out", "-"],
-        cwd=Path(__file__).resolve().parents[1],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="rheo-openapi-root-") as empty_root:
+        env["RHEO_DATA_ROOT"] = empty_root
+        completed = subprocess.run(
+            ["uv", "run", "--frozen", "rheo", "openapi", "--out", "-"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     assert completed.returncode == 0, completed.stderr
     return completed.stdout
 

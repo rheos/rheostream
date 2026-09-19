@@ -197,7 +197,7 @@ check:
 # regenerated here, never hand-patched.
 #
 # NO `RHEO_*` variable AND no `deployment.toml`: that pair is the canonical
-# generation environment AC 3 polices. Both halves matter, because the module
+# generation environment AC 3 depends on. Both halves matter, because the module
 # allowlist is the deployment-scope setting `modules.installed` and either source
 # can set it. With neither, the allowlist resolves to its empty package default,
 # so the emitted bytes depend on exactly one thing — the installed distributions
@@ -205,6 +205,12 @@ check:
 # resolves settings and reads no database. The same command therefore produces
 # the same bytes on a developer's laptop and in the `web` CI job, which is what
 # makes the `git diff --exit-code` gate meaningful.
+#
+# **Depends on, not enforces.** This recipe pins neither source today, so an ambient
+# `RHEO__modules__installed` or a `deployment.toml` under the resolved data root does
+# reach `rheo openapi`. Nothing in the checkout publishes a `rheo.modules` entry
+# point, so there is nothing for either to activate and the gate cannot yet be moved
+# by one; the recipe pins both in the commit that ships the first real entry point.
 #
 # **The second command's paths are relative to `apps/web`, not to the repository
 # root, and that is not a style choice.** `pnpm -C apps/web` sets the working

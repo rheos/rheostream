@@ -2,11 +2,15 @@
 operation.
 
 **The one subcommand that does not call** :func:`~rheo_app_cli.context.bootstrap`.
-It needs no settings, no data root and no database: the document is built from the
-registry alone, and registration reaches ``current_profile()`` only for the
-``test_harness`` origin, which neither the core operations nor a real module use.
-That is what makes the CI regeneration diff environment-independent — the emitted
-bytes depend on exactly two things, the installed distributions and the resolved
+It opens no database and migrates nothing: the document is built from the registry
+alone, and registration reaches ``current_profile()`` only for the ``test_harness``
+origin, which neither the core operations nor a real module use. It does resolve
+settings, because ``load_modules()`` reads the ``modules.installed`` allowlist — so
+it resolves a data root far enough to read ``<data_root>/config/deployment.toml``
+when one is there, and reads the ``RHEO__*`` environment. Both are reads: neither
+creates anything, and an absent ``deployment.toml`` is simply an empty layer.
+The CI regeneration diff stays environment-independent because the emitted bytes
+depend on exactly two things, the installed distributions and the resolved
 ``modules.installed`` setting, and on nothing else about the machine it ran on.
 
 **It registers the core operations and then loads the allowed modules**, in that

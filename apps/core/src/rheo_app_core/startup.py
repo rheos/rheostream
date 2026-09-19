@@ -21,9 +21,8 @@ whether every registered operation above the read class has a path for its recor
 With ``modules.installed`` left at its empty package default — a fresh clone, ``make
 demo``, and every image ``make build`` produces — it loads nothing, so that line is a
 no-op there by design rather than by luck, and the check then sees the core's own
-operations alone, whose sink
-``register_core_operations()`` installed one step earlier. See
-``rheo_core.modules.loader`` and ``rheo_core.operations.audit_paths``.
+operations alone, whose sink ``register_core_operations()`` installed one step
+earlier. See ``rheo_core.modules.loader`` and ``rheo_core.operations.audit_paths``.
 """
 
 import logging
