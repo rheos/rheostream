@@ -63,6 +63,10 @@ SPIKE_SURVIVORS = {
     "docs/notes/0c0-substrate-boundary.md": (
         "this run's own record, which has to name what was deleted"
     ),
+    "docs/notes/1a0-module-contract/prompts.md": (
+        "run 1a0's ratified prompts, committed verbatim at its planning-only close-out; "
+        "they cite this test by name when scoping the allowlist-variable census"
+    ),
     "tests/test_findings_note.py": (
         "the structure test for that note; its docstring names what 0v produced"
     ),
