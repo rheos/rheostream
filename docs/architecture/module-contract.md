@@ -190,9 +190,12 @@ screens, which is the "code installation may require a build or restart" the ide
 At process start, in `core` and `worker` alike:
 
 1. `importlib.metadata.entry_points(group="rheo.modules")` lists the host-installed modules. The
-   deployment setting `modules.installed` (a list of module ids, default: every discovered module)
-   selects which of them the host loads; a discovered module not in the list is ignored, so a
-   private module's presence on disk does not activate it (workspace-layout rule).
+   deployment setting `modules.installed` (a list of module ids, default: the empty list) selects
+   which of them the host loads; a discovered module the list does not name is simply not loaded,
+   with no exception raised and no refusal to start, so a private module's presence on disk does
+   not activate it (workspace-layout rule). The default is empty and never widens to "every
+   discovered module": the image installs every `modules/*` distribution, so a default of
+   everything would make discovery itself the activation.
 2. Each selected module's manifest is validated: schema, namespace prefixes, dependency ranges
    against the other selected modules, contract version against the running core.
 3. Dependencies are topologically sorted; a cycle or an unsatisfied required dependency fails

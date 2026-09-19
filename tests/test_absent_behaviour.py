@@ -103,7 +103,8 @@ def test_no_spike_remains() -> None:
 
     A completeness check over the tracked tree rather than a token list. Revision 0's
     five-token version passed over a half-deleted spike: none of its tokens matched
-    the ``RHEO_MODULES`` value, the ``Makefile`` target or its ``.PHONY`` entry, the
+    the allowlist variable's value, the ``Makefile`` target or its ``.PHONY`` entry,
+    the
     ``make`` invocation in the deploy README, the registered note operation, or the
     web route segment. A bare case-insensitive grep needs no token list kept in step
     with the deletion.

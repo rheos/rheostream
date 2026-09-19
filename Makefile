@@ -196,13 +196,15 @@ check:
 # a wrong-looking output is fixed in the generator or the source model and
 # regenerated here, never hand-patched.
 #
-# NO RHEO_* variable at all: that is the canonical generation environment AC 3
-# polices, and it is why the emitted bytes depend on exactly one thing — the
-# installed distributions — and on nothing about the machine. `rheo openapi` is
-# the one subcommand that does not bootstrap, so it needs no settings, data root
-# or database; the same command therefore produces the same bytes on a
-# developer's laptop and in the `web` CI job, which is what makes the
-# `git diff --exit-code` gate meaningful.
+# NO `RHEO_*` variable AND no `deployment.toml`: that pair is the canonical
+# generation environment AC 3 polices. Both halves matter, because the module
+# allowlist is the deployment-scope setting `modules.installed` and either source
+# can set it. With neither, the allowlist resolves to its empty package default,
+# so the emitted bytes depend on exactly one thing — the installed distributions
+# — and on nothing about the machine. `rheo openapi` still bootstraps nothing: it
+# resolves settings and reads no database. The same command therefore produces
+# the same bytes on a developer's laptop and in the `web` CI job, which is what
+# makes the `git diff --exit-code` gate meaningful.
 #
 # **The second command's paths are relative to `apps/web`, not to the repository
 # root, and that is not a style choice.** `pnpm -C apps/web` sets the working
@@ -214,9 +216,9 @@ check:
 #
 # This target is permanent. It generates whatever the then-current registry
 # holds. Run 0v's throwaway module was the last distribution to publish a
-# `rheo.modules` entry point, so its branch cut took the `RHEO_MODULES=` prefix
-# off the recipe below with it; the env read itself goes from the loader when the
-# real `modules.installed` settings key lands.
+# `rheo.modules` entry point, so its branch cut took the allowlist prefix off the
+# recipe below with it; the loader now reads the setting instead of a process
+# variable, so there is nothing for this recipe to pass either way.
 codegen:
 	uv run rheo openapi --out apps/web/src/generated/openapi.json
 	pnpm -C apps/web exec openapi-typescript src/generated/openapi.json -o src/generated/api-types.ts

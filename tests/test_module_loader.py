@@ -1,12 +1,16 @@
-"""FR 6 / AC 8: nothing loads unless ``RHEO_MODULES`` names it, and what does load is
-registered through the shipped registries.
+"""FR 6 / AC 8: nothing loads unless ``modules.installed`` names it, and what does load
+is registered through the shipped registries.
 
-Seams under test: ``allowed_module_ids()``'s parse of the process variable;
-``load_modules()``'s allowlist (only a named entry point loads, and a named one really
-does register its operations, its resolvers and its audit sink); and
-``module_surfaces()``'s bookkeeping — populated only for a loaded manifest that
-declares a ``web`` surface, keyed by that surface's own name rather than by the
+Seams under test: ``allowed_module_ids()``'s read of the deployment-scope settings key
+``modules.installed``; ``load_modules()``'s allowlist (only a named entry point loads,
+and a named one really does register its operations, its resolvers and its audit
+sink); and ``module_surfaces()``'s bookkeeping — populated only for a loaded manifest
+that declares a ``web`` surface, keyed by that surface's own name rather than by the
 module id.
+
+The key is set here the way a deployment sets it: through the deployment layer's own
+environment spelling, ``RHEO__modules__installed``, derived from the key rather than
+written out, so these tests follow the shipped mapping instead of restating it.
 
 **The entry point is fabricated, and that is not a shortcut.** Nothing in the
 checkout publishes a real ``rheo.modules`` entry point: the four ``modules/*``
@@ -41,7 +45,6 @@ from rheo_contracts import (
 )
 from rheo_core.audit import reset_sinks, sink_for
 from rheo_core.modules import (
-    ALLOWLIST_VARIABLE,
     ENTRY_POINT_GROUP,
     ExportDeclaration,
     ManifestInvalid,
@@ -55,6 +58,7 @@ from rheo_core.modules import (
     reset_surfaces,
 )
 from rheo_core.modules import loader as loader_module
+from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.operations import OperationRegistry
 from rheo_core.refs.resolver import (
     NOT_FOUND,
@@ -62,7 +66,10 @@ from rheo_core.refs.resolver import (
     ResolverRegistry,
     Unavailable,
 )
+from rheo_core.settings import env_variable_names
 from rheo_core.storage.backend import UnitOfWork
+
+MODULES_VARIABLE, MODULES_VARIABLE_UPPER = env_variable_names(ALLOWLIST_KEY)
 
 MODULE_ID = "fixture_probe"
 OPERATION = f"{MODULE_ID}.note.add"
@@ -253,15 +260,21 @@ def _publish(monkeypatch: pytest.MonkeyPatch, *entry_points: EntryPoint) -> None
     )
 
 
-# --- the allowlist's parse ------------------------------------------------------------
+def _install(monkeypatch: pytest.MonkeyPatch, *module_ids: str) -> None:
+    """Resolve ``modules.installed`` to exactly ``module_ids`` for one test.
+
+    Through the deployment layer rather than by patching the loader: what a
+    deployment does is set the key, and the coercion from text to ``list[str]`` is
+    part of what these tests are about. No ids at all removes the variable, so the
+    key falls back to its empty package default.
+    """
+    if module_ids:
+        monkeypatch.setenv(MODULES_VARIABLE, ",".join(module_ids))
+    else:
+        monkeypatch.delenv(MODULES_VARIABLE, raising=False)
 
 
-def test_the_allowlist_variable_is_not_a_settings_override() -> None:
-    """One underscore, deliberately. ``rheo_core.settings.deployment`` raises
-    ``SettingUndeclared`` for any ``RHEO__``-prefixed variable no schema declares, and
-    AC 18 forbids adding that key — so the name is load-bearing, not cosmetic."""
-    assert ALLOWLIST_VARIABLE == "RHEO_MODULES"
-    assert not ALLOWLIST_VARIABLE.startswith("RHEO__")
+# --- the allowlist's read -------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -279,13 +292,19 @@ def test_the_allowlist_variable_is_not_a_settings_override() -> None:
         ("surface_probe,,surface_probe", frozenset({"surface_probe"})),
     ],
 )
-def test_allowed_module_ids_reads_the_variable(
+def test_allowed_module_ids_reads_the_setting(
     monkeypatch: pytest.MonkeyPatch, value: str | None, expected: frozenset[str]
 ) -> None:
+    """The key's declared ``list[str]`` coercion, read back through the loader.
+
+    Unset, empty and all-whitespace all resolve to the empty set — the package
+    default and the two ways an operator can write "none" — and a duplicate or a
+    stray comma collapses, because the loader answers with a ``frozenset``.
+    """
     if value is None:
-        monkeypatch.delenv(ALLOWLIST_VARIABLE, raising=False)
+        monkeypatch.delenv(MODULES_VARIABLE, raising=False)
     else:
-        monkeypatch.setenv(ALLOWLIST_VARIABLE, value)
+        monkeypatch.setenv(MODULES_VARIABLE, value)
     assert allowed_module_ids() == expected
 
 
@@ -296,7 +315,7 @@ def test_no_module_loads_unless_it_is_named(
     monkeypatch: pytest.MonkeyPatch,
     registries: tuple[OperationRegistry, ResolverRegistry],
 ) -> None:
-    """A discoverable module, an unset variable, and nothing registers.
+    """A discoverable module, an unset key, and nothing registers.
 
     This is the configuration ``make demo`` and every image ``make build`` produces
     run in: ``Dockerfile`` COPYs ``modules/`` and ``uv sync --frozen`` installs each
@@ -304,7 +323,7 @@ def test_no_module_loads_unless_it_is_named(
     """
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.delenv(ALLOWLIST_VARIABLE, raising=False)
+    _install(monkeypatch)
 
     assert discovered() == (ENTRY_POINT,)
     assert load_modules(registry=registry, resolvers=resolvers) == ()
@@ -321,7 +340,7 @@ def test_a_named_module_registers_its_operations(
 ) -> None:
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (MODULE_ID,)
 
@@ -347,7 +366,7 @@ def test_only_the_named_module_loads_when_two_are_discoverable(
     not carry its neighbour in."""
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT, NO_SURFACE_ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (MODULE_ID,)
     assert registry.names() == frozenset({OPERATION})
@@ -358,11 +377,11 @@ def test_a_named_module_that_is_not_installed_is_simply_absent(
     registries: tuple[OperationRegistry, ResolverRegistry],
 ) -> None:
     """The allowlist says what *may* load. Refusing startup over a name nothing
-    provides would make a deployment's variable a dependency on its image's build
+    provides would make a deployment's own setting a dependency on its image's build
     context, which is the coupling finding F17 is about."""
     registry, resolvers = registries
     _publish(monkeypatch)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == ()
 
@@ -376,7 +395,7 @@ def test_load_modules_is_idempotent(
     either registry or in ``install_sink`` would crash the second run."""
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     first = load_modules(registry=registry, resolvers=resolvers)
     second = load_modules(registry=registry, resolvers=resolvers)
@@ -386,13 +405,13 @@ def test_load_modules_is_idempotent(
     assert sink_for(MODULE_ID) is SINK
 
 
-def test_the_explicit_allow_argument_overrides_the_variable(
+def test_the_explicit_allow_argument_overrides_the_setting(
     monkeypatch: pytest.MonkeyPatch,
     registries: tuple[OperationRegistry, ResolverRegistry],
 ) -> None:
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers, allow=frozenset()) == ()
     assert registry.names() == frozenset()
@@ -417,7 +436,7 @@ def test_a_loaded_manifest_records_its_surface_keyed_by_the_surface_name(
     """
     registry, resolvers = registries
     _publish(monkeypatch, SURFACE_ONLY_ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, SURFACE_ONLY_ID)
+    _install(monkeypatch, SURFACE_ONLY_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (SURFACE_ONLY_ID,)
 
@@ -435,7 +454,7 @@ def test_a_loaded_manifest_without_a_surface_records_none(
 ) -> None:
     registry, resolvers = registries
     _publish(monkeypatch, NO_SURFACE_ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, NO_SURFACE_ID)
+    _install(monkeypatch, NO_SURFACE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (NO_SURFACE_ID,)
     assert module_surfaces() == {}
@@ -448,7 +467,7 @@ def test_module_surfaces_hands_back_a_copy(
     """Read-only in the way that matters: a caller cannot edit the loader's table."""
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
     load_modules(registry=registry, resolvers=resolvers)
 
     surfaces = dict(module_surfaces())
@@ -471,7 +490,7 @@ def test_a_manifest_published_under_a_different_name_is_refused(
         name="something_else", value=f"{__name__}:MANIFEST", group=ENTRY_POINT_GROUP
     )
     _publish(monkeypatch, mislabelled)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, "something_else")
+    _install(monkeypatch, "something_else")
 
     with pytest.raises(ManifestInvalid) as excinfo:
         load_modules(registry=registry, resolvers=resolvers)
@@ -503,7 +522,7 @@ def test_an_entry_point_that_is_not_a_manifest_is_refused(
     start, so that is the direction the refusal has to hold in."""
     registry, resolvers = registries
     _publish(monkeypatch, IMPOSTOR_ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, IMPOSTOR_ID)
+    _install(monkeypatch, IMPOSTOR_ID)
 
     with pytest.raises(ManifestInvalid):
         load_modules(registry=registry, resolvers=resolvers)
@@ -519,7 +538,7 @@ def test_the_fixture_manifest_is_a_manifest_and_loads(
     registry, resolvers = registries
     assert isinstance(MANIFEST, ModuleManifest)
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (MODULE_ID,)
 
@@ -539,8 +558,19 @@ def test_the_fixture_id_cannot_collide_with_a_real_distribution() -> None:
     assert fabricated.isdisjoint({entry.name for entry in discovered()})
 
 
-def test_the_process_variable_is_not_set_by_the_suite() -> None:
-    """If a developer exported ``RHEO_MODULES`` in their shell, the negative
-    direction above would still pass (it deletes the variable) but the rest of the
-    suite would silently run with a module loaded. Fail loudly instead."""
-    assert os.environ.get(ALLOWLIST_VARIABLE) in (None, "")
+def test_the_allowlist_setting_is_not_set_by_the_suite() -> None:
+    """``modules.installed`` is deployment-scope, so there is no process variable a
+    developer's shell can leak into a *workspace*'s answer — but the deployment layer
+    still reads one, and an exported ``RHEO__modules__installed`` would resolve the
+    key for the whole session.
+
+    The negative directions above would still pass (each removes the variable for its
+    own test) while every other file ran with a module loaded, so this fails loudly
+    instead. Both spellings the deployment layer accepts are checked, because it tries
+    the exact form first and then the fully-uppercased one.
+    """
+    for name in (MODULES_VARIABLE, MODULES_VARIABLE_UPPER):
+        assert os.environ.get(name) in (None, ""), (
+            f"{name} is set in this process; the suite must resolve "
+            f"{ALLOWLIST_KEY} to its empty package default"
+        )

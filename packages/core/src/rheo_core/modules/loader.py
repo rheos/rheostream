@@ -1,31 +1,36 @@
-"""Entry-point discovery and the ``RHEO_MODULES`` allowlist: nothing loads unless it
-is named.
+"""Entry-point discovery and the ``modules.installed`` allowlist: nothing loads unless
+it is named.
 
 ``discovered()`` walks the ``rheo.modules`` packaging entry-point group.
-``allowed_module_ids()`` reads the comma-separated ``RHEO_MODULES`` process variable —
-unset, empty, or all-whitespace is the empty set. ``load_modules()`` loads **only** the
-discovered entry points whose name is in that set, validates each manifest, and then
-registers its operations and resolvers through the shipped registries with
-``origin = manifest.module_id``, so every registration check a hand-written
-registration faces (name grammar, origin/prefix agreement, reserved input fields,
-``extra = "allow"``) applies unchanged.
+``allowed_module_ids()`` reads the deployment-scope settings key ``modules.installed``,
+a ``list[str]`` whose package default is empty — so an unconfigured deployment names no
+module at all. ``load_modules()`` loads **only** the discovered entry points whose name
+is in that set, validates each manifest, and then registers its operations and
+resolvers through the shipped registries with ``origin = manifest.module_id``, so every
+registration check a hand-written registration faces (name grammar, origin/prefix
+agreement, reserved input fields, ``extra = "allow"``) applies unchanged.
 
 **Nothing loads by default, and that is the whole gate.** ``Dockerfile`` COPYs
 ``modules/`` and runs ``uv sync --frozen``, so every ``modules/*`` distribution in the
 checkout is installed into the image and its entry point is discoverable at run time;
 ``make demo``'s ``core`` runs under ``RHEO_PROFILE: development``. A loader that
 registered what it discovered would therefore change the behaviour of two shipped
-targets this run does not own, invisibly to the test suite. A profile branch would not
-help: ``development`` is not ``production``. So the gate is an explicit allowlist on
-the deployment's side, which is also the shape the ratified ``modules.installed`` key
-should have had (run 0v's finding **F5**; **F17** on installed-versus-loaded).
+targets, invisibly to the test suite. A profile branch would not help: ``development``
+is not ``production``. So the gate is an explicit allowlist on the deployment's side
+(run 0v's finding **F5**; **F17** on installed-versus-loaded), and a discovered id the
+list does not name is simply not loaded — no exception, and no refusal to start.
 
-**``RHEO_MODULES`` carries one underscore, deliberately.** A ``RHEO__``-prefixed name
-is read by the settings layer as a deployment override, and
-``rheo_core.settings.deployment`` raises ``SettingUndeclared`` for any ``RHEO__``
-variable no schema declares. This run declares no settings key (AC 18: open PR #22
-already edits ``tests/test_settings.py``'s exact-key assertion). The run that lands the
-real ``modules.installed`` key deletes this variable and the two lines that read it.
+**Read through the typed accessor, not a subscript.** ``ResolvedSettings.get_list``
+returns ``list[str]`` and raises ``SettingTypeMismatch`` if ``modules.installed`` is
+ever redeclared at another ``ValueType``; a bare subscript hands back the
+``FrozenValue`` union, which would take a wrongly-typed key without a word.
+
+**Three sets, three names, and no function here answers for two of them.**
+:func:`discovered` is "installed on this host"; :func:`allowed_module_ids` and
+:func:`loaded_manifests` are "loaded by this deployment"; the ``core.module_state``
+rows read through ``rheo_core.storage.repositories.list_module_states`` are "installed
+and enabled in this workspace". ``tests/test_module_sets.py`` is where that separation
+is pinned.
 
 **The entry-point name is the module id**, and the allowlist is matched against it
 *before* the entry point is loaded. Loading an entry point imports the distribution, so
@@ -35,7 +40,6 @@ with the name it was found under, because otherwise the allowlist would gate one
 while a different one registered.
 """
 
-import os
 from collections.abc import Mapping
 from importlib.metadata import EntryPoint, entry_points
 from typing import Final
@@ -44,19 +48,20 @@ from rheo_core.audit.sink import install_sink
 from rheo_core.modules.manifest import ManifestInvalid, ModuleManifest, WebSurface
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.refs.resolver import RESOLVERS, ResolverRegistry
+from rheo_core.settings import resolve
 
 ENTRY_POINT_GROUP: Final = "rheo.modules"
-ALLOWLIST_VARIABLE: Final = "RHEO_MODULES"
+ALLOWLIST_KEY: Final = "modules.installed"
 
-_SURFACES: Final[dict[str, WebSurface]] = {}
-"""surface name -> the loaded manifest's web surface.
+_LOADED: Final[dict[str, ModuleManifest]] = {}
+"""module id -> the manifest ``load_modules()`` loaded under it.
 
-The one thing ``load_modules()`` keeps about what it loaded. Keyed by the manifest's
-own ``WebSurface.surface``, not by its ``module_id``: the two are not required to
-match, and the consumer — the internal listener's ``routing_config()`` — looks a
-surface up by name. Deliberately not a broader ``loaded_manifests()``: nothing else in
-this run needs the manifest back, and an accessor with no caller is a shape guessed
-early.
+The deployment-loaded set, and the only record of what this process actually
+registered. Keyed by ``module_id`` because that is the name the allowlist gated and
+the name both registries recorded as the registration's origin; ``module_surfaces()``
+re-keys by ``WebSurface.surface`` on the way out, because the two are not required to
+match and that consumer — the internal listener's ``routing_config()`` — looks a
+surface up by name.
 """
 
 
@@ -66,19 +71,41 @@ def discovered() -> tuple[EntryPoint, ...]:
 
 
 def allowed_module_ids() -> frozenset[str]:
-    """The module ids ``RHEO_MODULES`` names; the empty set when it names none."""
-    raw = os.environ.get(ALLOWLIST_VARIABLE, "")
-    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+    """The module ids ``modules.installed`` names; the empty set when it names none."""
+    return frozenset(resolve().get_list(ALLOWLIST_KEY))
+
+
+def loaded_manifests() -> Mapping[str, ModuleManifest]:
+    """What this deployment loaded, read-only, by module id.
+
+    Read-only in the way that matters: a fresh dict, so a caller cannot edit the
+    loader's own table through it. The manifests themselves are frozen models.
+    """
+    return dict(_LOADED)
 
 
 def module_surfaces() -> Mapping[str, WebSurface]:
-    """The web surfaces the loaded manifests declared, read-only, by surface name."""
-    return dict(_SURFACES)
+    """The web surfaces the loaded manifests declared, read-only, by surface name.
+
+    Derived from :data:`_LOADED` rather than from a second table kept beside it: one
+    record of what loaded cannot disagree with itself about which surfaces are live.
+    """
+    return {
+        manifest.web.surface: manifest.web
+        for manifest in _LOADED.values()
+        if manifest.web is not None
+    }
 
 
 def reset_surfaces() -> None:
-    """Forget what was loaded. For tests, and for a process that reloads modules."""
-    _SURFACES.clear()
+    """Forget what was loaded. For tests, and for a process that reloads modules.
+
+    Keeps the name it had when the table it emptied held surfaces alone. What callers
+    want of it has not changed — "empty the loader's process-wide record" — and the
+    surfaces are still forgotten, because :func:`module_surfaces` now reads the table
+    this clears.
+    """
+    _LOADED.clear()
 
 
 def _as_manifest(loaded: object) -> ModuleManifest:
@@ -153,5 +180,6 @@ def _register(
         # dispatcher resolves a sink by the *operation's* owning module, so a sink
         # installed anywhere else would fire on somebody else's operations.
         install_sink(manifest.module_id, manifest.audit_sink)
-    if manifest.web is not None:
-        _SURFACES[manifest.web.surface] = manifest.web
+    # The deployment-loaded record, written for every manifest rather than only for one
+    # declaring a web surface: ``module_surfaces()`` derives its answer from here.
+    _LOADED[manifest.module_id] = manifest

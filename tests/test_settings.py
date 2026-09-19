@@ -106,6 +106,7 @@ PRODUCTION_KEYS = {
     "runtime.transcript_retention_days": 90,
     "runtime.allowed_runtimes": ("claude_cli",),
     "runtime.allowed_models": ("sonnet",),
+    "modules.installed": (),
 }
 
 FLOORED_KEYS = frozenset(
