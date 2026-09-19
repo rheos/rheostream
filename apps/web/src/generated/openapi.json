@@ -499,6 +499,35 @@
         "type": "object"
       },
       "JsonValue": {},
+      "ModuleInstallInput": {
+        "description": "The module to install. The workspace comes from the context.",
+        "properties": {
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id"
+        ],
+        "title": "ModuleInstallInput",
+        "type": "object"
+      },
+      "ModuleInstallScheduled": {
+        "description": "What the dispatch returns: the minted record the worker will terminalise.",
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "title": "ModuleInstallScheduled",
+        "type": "object"
+      },
       "ModuleStatus": {
         "properties": {
           "module_id": {
@@ -1563,6 +1592,69 @@
           }
         },
         "summary": "core.audit.list (read)"
+      }
+    },
+    "/api/v1/operations/core.module.install": {
+      "post": {
+        "operationId": "core.module.install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleInstallInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ModuleInstallScheduled"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.module.install (mutate)"
       }
     },
     "/api/v1/operations/core.operation.get": {

@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.module.install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.module.install (mutate) */
+        post: operations["core.module.install"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.operation.get": {
         parameters: {
             query?: never;
@@ -583,6 +600,25 @@ export interface components {
             limit: number;
         };
         JsonValue: unknown;
+        /**
+         * ModuleInstallInput
+         * @description The module to install. The workspace comes from the context.
+         */
+        ModuleInstallInput: {
+            /** Module Id */
+            module_id: string;
+        };
+        /**
+         * ModuleInstallScheduled
+         * @description What the dispatch returns: the minted record the worker will terminalise.
+         */
+        ModuleInstallScheduled: {
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+        };
         /** ModuleStatus */
         ModuleStatus: {
             /** Module Id */
@@ -1114,6 +1150,39 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["AuditList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.module.install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModuleInstallInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ModuleInstallScheduled"];
                         state: string;
                     };
                 };
