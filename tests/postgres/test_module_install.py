@@ -412,11 +412,18 @@ def test_a_module_migration_failure_leaves_the_control_workspace_row_untouched(
     """AC 12. **The row is the assertion; the outcome is the corroboration.**
 
     ``control.workspace`` is read before and after and compared whole, and that
-    comparison is made *first*. An implementation that routed a module chain through
-    the startup door would flip this workspace to ``unavailable`` — taking ``core``
-    and every other module down with it — and would **still** fail the install
-    operation, so a test that only checked "the install failed" would pass against
-    exactly the implementation AC 12 exists to forbid.
+    comparison is made *first* — before the operation record is even read. An
+    implementation that routed a module chain through the startup door would flip this
+    workspace to ``unavailable``, taking ``core`` and every other module down with it,
+    and would **still** fail the install operation, so a test that only checked "the
+    install failed" would pass against exactly the implementation AC 12 forbids.
+
+    **The ordering is not tidiness, and it was measured.** Against that wrong
+    implementation an unavailable workspace also makes the *next dispatch* refuse
+    ``workspace_unavailable`` — so with the record read first, this case reds on the
+    record read and the row comparison is never reached. It would still be a red, but
+    it would be a red about routing rather than about the row, and the row assertion
+    would be doing no work while appearing to.
 
     The failure is forced with no fixture module at all: Recallatron's version table
     is pre-seeded with a revision this code does not know, so ``run_chain``'s own
@@ -449,12 +456,16 @@ def test_a_module_migration_failure_leaves_the_control_workspace_row_untouched(
         outcome = install(operator, RECALLATRON_ID)
         assert outcome.state == "pending", outcome
         run_the_worker(cluster, workspace)
-        record = record_of(operator, outcome.operation_id)
 
-    after = cluster.registry_row(workspace)
-    assert after == before, f"the failed install wrote control.workspace: {after}"
-    assert after.state is WorkspaceState.ACTIVE
-    assert after.state_detail == before.state_detail
+        # The whole row, not just the state, so a rewritten ``state_detail`` or a
+        # bumped ``state_changed_at`` fails here too — and read before anything else
+        # this workspace is asked, for the reason the docstring gives.
+        after = cluster.registry_row(workspace)
+        assert after == before, f"the failed install wrote control.workspace: {after}"
+        assert after.state is WorkspaceState.ACTIVE
+        assert after.state_detail == before.state_detail
+
+        record = record_of(operator, outcome.operation_id)
 
     assert record.state == "failed", record
     assert record.error_code == JOB_FAILED
