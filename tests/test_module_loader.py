@@ -1,12 +1,16 @@
-"""FR 6 / AC 8: nothing loads unless ``RHEO_MODULES`` names it, and what does load is
-registered through the shipped registries.
+"""FR 6 / AC 8: nothing loads unless ``modules.installed`` names it, and what does load
+is registered through the shipped registries.
 
-Seams under test: ``allowed_module_ids()``'s parse of the process variable;
-``load_modules()``'s allowlist (only a named entry point loads, and a named one really
-does register its operations, its resolvers and its audit sink); and
-``module_surfaces()``'s bookkeeping — populated only for a loaded manifest that
-declares a ``web`` surface, keyed by that surface's own name rather than by the
+Seams under test: ``allowed_module_ids()``'s read of the deployment-scope settings key
+``modules.installed``; ``load_modules()``'s allowlist (only a named entry point loads,
+and a named one really does register its operations, its resolvers and its audit
+sink); and ``module_surfaces()``'s bookkeeping — populated only for a loaded manifest
+that declares a ``web`` surface, keyed by that surface's own name rather than by the
 module id.
+
+The key is set here the way a deployment sets it: through the deployment layer's own
+environment spelling, ``RHEO__modules__installed``, derived from the key rather than
+written out, so these tests follow the shipped mapping instead of restating it.
 
 **The entry point is fabricated, and that is not a shortcut.** Nothing in the
 checkout publishes a real ``rheo.modules`` entry point: the four ``modules/*``
@@ -22,6 +26,10 @@ because a fixture that borrowed the id of a distribution shipped later would col
 with it. ``test_the_fixture_id_cannot_collide_with_a_real_distribution`` pins that
 against the real, unmonkeypatched environment, so the guard survives the first real
 module rather than depending on nobody noticing.
+
+The three helpers that build, publish and allow a fixture module live in
+``tests/harness/modules.py`` — they were duplicated across four files — and are
+imported below under the private names their call sites here already used.
 """
 
 import os
@@ -29,7 +37,11 @@ from collections.abc import Iterator
 from importlib.metadata import EntryPoint
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from harness.modules import MODULES_VARIABLE, MODULES_VARIABLE_UPPER
+from harness.modules import install as _install
+from harness.modules import manifest as _manifest
+from harness.modules import publish as _publish
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import (
     AuditSpec,
     Idempotency,
@@ -41,19 +53,18 @@ from rheo_contracts import (
 )
 from rheo_core.audit import reset_sinks, sink_for
 from rheo_core.modules import (
-    ALLOWLIST_VARIABLE,
     ENTRY_POINT_GROUP,
     ManifestInvalid,
     ModuleManifest,
+    StorageDeclaration,
     WebSurface,
     allowed_module_ids,
     discovered,
     load_modules,
     module_surfaces,
     reset_surfaces,
-    validate,
 )
-from rheo_core.modules import loader as loader_module
+from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.operations import OperationRegistry
 from rheo_core.refs.resolver import (
     NOT_FOUND,
@@ -62,7 +73,6 @@ from rheo_core.refs.resolver import (
     Unavailable,
 )
 from rheo_core.storage.backend import UnitOfWork
-from sqlalchemy import Connection
 
 MODULE_ID = "fixture_probe"
 OPERATION = f"{MODULE_ID}.note.add"
@@ -82,10 +92,6 @@ class _ProbeOutput(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     body: str
-
-
-def _create_schema(connection: Connection) -> None:
-    """Never called: no test here provisions the fabricated module's schema."""
 
 
 def _handler(
@@ -124,11 +130,9 @@ DECLARATION = OperationDeclaration(
 
 SINK = _ProbeSink()
 
-MANIFEST = ModuleManifest(
-    module_id=MODULE_ID,
-    package_version="0.0.0",
-    schema_name=MODULE_ID,
-    create_schema=_create_schema,
+
+MANIFEST = _manifest(
+    MODULE_ID,
     operations=((DECLARATION, _handler),),
     resolvers=((RECORD_TYPE, _resolver),),
     web=WebSurface(surface=MODULE_ID, host=MODULE_ID, path="/fixture-probe"),
@@ -143,11 +147,8 @@ ENTRY_POINT = EntryPoint(
 )
 
 SURFACE_ONLY_ID = "surface_probe"
-SURFACE_ONLY_MANIFEST = ModuleManifest(
-    module_id=SURFACE_ONLY_ID,
-    package_version="0.0.0",
-    schema_name=SURFACE_ONLY_ID,
-    create_schema=_create_schema,
+SURFACE_ONLY_MANIFEST = _manifest(
+    SURFACE_ONLY_ID,
     # A surface whose name is NOT the module id: ``module_surfaces()`` is keyed by
     # the surface, and the two are not required to agree.
     web=WebSurface(surface="probe_ui", host="probe", path="/probe"),
@@ -159,15 +160,22 @@ SURFACE_ONLY_ENTRY_POINT = EntryPoint(
 )
 
 NO_SURFACE_ID = "quiet_probe"
-NO_SURFACE_MANIFEST = ModuleManifest(
-    module_id=NO_SURFACE_ID,
-    package_version="0.0.0",
-    schema_name=NO_SURFACE_ID,
-    create_schema=_create_schema,
-)
+NO_SURFACE_MANIFEST = _manifest(NO_SURFACE_ID)
 NO_SURFACE_ENTRY_POINT = EntryPoint(
     name=NO_SURFACE_ID,
     value=f"{__name__}:NO_SURFACE_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
+IMPOSTOR_ID = "impostor_probe"
+NOT_A_MANIFEST = object()
+"""What the impostor entry point below loads to: a real, importable module-level
+object that is simply not a ``ModuleManifest``. The entry point resolves for real,
+so the refusal is the loader's rather than an import error's."""
+
+IMPOSTOR_ENTRY_POINT = EntryPoint(
+    name=IMPOSTOR_ID,
+    value=f"{__name__}:NOT_A_MANIFEST",
     group=ENTRY_POINT_GROUP,
 )
 
@@ -191,22 +199,7 @@ def registries() -> tuple[OperationRegistry, ResolverRegistry]:
     return OperationRegistry(), ResolverRegistry()
 
 
-def _publish(monkeypatch: pytest.MonkeyPatch, *entry_points: EntryPoint) -> None:
-    """Make ``discovered()`` see exactly these, and nothing the environment has."""
-    monkeypatch.setattr(
-        loader_module, "entry_points", lambda group: tuple(entry_points)
-    )
-
-
-# --- the allowlist's parse ------------------------------------------------------------
-
-
-def test_the_allowlist_variable_is_not_a_settings_override() -> None:
-    """One underscore, deliberately. ``rheo_core.settings.deployment`` raises
-    ``SettingUndeclared`` for any ``RHEO__``-prefixed variable no schema declares, and
-    AC 18 forbids adding that key — so the name is load-bearing, not cosmetic."""
-    assert ALLOWLIST_VARIABLE == "RHEO_MODULES"
-    assert not ALLOWLIST_VARIABLE.startswith("RHEO__")
+# --- the allowlist's read -------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -224,13 +217,19 @@ def test_the_allowlist_variable_is_not_a_settings_override() -> None:
         ("surface_probe,,surface_probe", frozenset({"surface_probe"})),
     ],
 )
-def test_allowed_module_ids_reads_the_variable(
+def test_allowed_module_ids_reads_the_setting(
     monkeypatch: pytest.MonkeyPatch, value: str | None, expected: frozenset[str]
 ) -> None:
+    """The key's declared ``list[str]`` coercion, read back through the loader.
+
+    Unset, empty and all-whitespace all resolve to the empty set — the package
+    default and the two ways an operator can write "none" — and a duplicate or a
+    stray comma collapses, because the loader answers with a ``frozenset``.
+    """
     if value is None:
-        monkeypatch.delenv(ALLOWLIST_VARIABLE, raising=False)
+        monkeypatch.delenv(MODULES_VARIABLE, raising=False)
     else:
-        monkeypatch.setenv(ALLOWLIST_VARIABLE, value)
+        monkeypatch.setenv(MODULES_VARIABLE, value)
     assert allowed_module_ids() == expected
 
 
@@ -241,7 +240,7 @@ def test_no_module_loads_unless_it_is_named(
     monkeypatch: pytest.MonkeyPatch,
     registries: tuple[OperationRegistry, ResolverRegistry],
 ) -> None:
-    """A discoverable module, an unset variable, and nothing registers.
+    """A discoverable module, an unset key, and nothing registers.
 
     This is the configuration ``make demo`` and every image ``make build`` produces
     run in: ``Dockerfile`` COPYs ``modules/`` and ``uv sync --frozen`` installs each
@@ -249,7 +248,7 @@ def test_no_module_loads_unless_it_is_named(
     """
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.delenv(ALLOWLIST_VARIABLE, raising=False)
+    _install(monkeypatch)
 
     assert discovered() == (ENTRY_POINT,)
     assert load_modules(registry=registry, resolvers=resolvers) == ()
@@ -266,7 +265,7 @@ def test_a_named_module_registers_its_operations(
 ) -> None:
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (MODULE_ID,)
 
@@ -292,7 +291,7 @@ def test_only_the_named_module_loads_when_two_are_discoverable(
     not carry its neighbour in."""
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT, NO_SURFACE_ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (MODULE_ID,)
     assert registry.names() == frozenset({OPERATION})
@@ -303,11 +302,11 @@ def test_a_named_module_that_is_not_installed_is_simply_absent(
     registries: tuple[OperationRegistry, ResolverRegistry],
 ) -> None:
     """The allowlist says what *may* load. Refusing startup over a name nothing
-    provides would make a deployment's variable a dependency on its image's build
+    provides would make a deployment's own setting a dependency on its image's build
     context, which is the coupling finding F17 is about."""
     registry, resolvers = registries
     _publish(monkeypatch)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == ()
 
@@ -321,7 +320,7 @@ def test_load_modules_is_idempotent(
     either registry or in ``install_sink`` would crash the second run."""
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     first = load_modules(registry=registry, resolvers=resolvers)
     second = load_modules(registry=registry, resolvers=resolvers)
@@ -331,13 +330,13 @@ def test_load_modules_is_idempotent(
     assert sink_for(MODULE_ID) is SINK
 
 
-def test_the_explicit_allow_argument_overrides_the_variable(
+def test_the_explicit_allow_argument_overrides_the_setting(
     monkeypatch: pytest.MonkeyPatch,
     registries: tuple[OperationRegistry, ResolverRegistry],
 ) -> None:
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers, allow=frozenset()) == ()
     assert registry.names() == frozenset()
@@ -362,7 +361,7 @@ def test_a_loaded_manifest_records_its_surface_keyed_by_the_surface_name(
     """
     registry, resolvers = registries
     _publish(monkeypatch, SURFACE_ONLY_ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, SURFACE_ONLY_ID)
+    _install(monkeypatch, SURFACE_ONLY_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (SURFACE_ONLY_ID,)
 
@@ -380,7 +379,7 @@ def test_a_loaded_manifest_without_a_surface_records_none(
 ) -> None:
     registry, resolvers = registries
     _publish(monkeypatch, NO_SURFACE_ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, NO_SURFACE_ID)
+    _install(monkeypatch, NO_SURFACE_ID)
 
     assert load_modules(registry=registry, resolvers=resolvers) == (NO_SURFACE_ID,)
     assert module_surfaces() == {}
@@ -393,7 +392,7 @@ def test_module_surfaces_hands_back_a_copy(
     """Read-only in the way that matters: a caller cannot edit the loader's table."""
     registry, resolvers = registries
     _publish(monkeypatch, ENTRY_POINT)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, MODULE_ID)
+    _install(monkeypatch, MODULE_ID)
     load_modules(registry=registry, resolvers=resolvers)
 
     surfaces = dict(module_surfaces())
@@ -416,7 +415,7 @@ def test_a_manifest_published_under_a_different_name_is_refused(
         name="something_else", value=f"{__name__}:MANIFEST", group=ENTRY_POINT_GROUP
     )
     _publish(monkeypatch, mislabelled)
-    monkeypatch.setenv(ALLOWLIST_VARIABLE, "something_else")
+    _install(monkeypatch, "something_else")
 
     with pytest.raises(ManifestInvalid) as excinfo:
         load_modules(registry=registry, resolvers=resolvers)
@@ -424,25 +423,49 @@ def test_a_manifest_published_under_a_different_name_is_refused(
     assert registry.names() == frozenset()
 
 
-def test_validate_refuses_a_schema_that_is_not_the_module_id() -> None:
-    with pytest.raises(ManifestInvalid):
-        validate(
-            ModuleManifest(
-                module_id=MODULE_ID,
-                package_version="0.0.0",
+def test_a_schema_that_is_not_the_module_id_is_refused() -> None:
+    """The rule the deleted ``validate()`` carried, now the model's own: one module
+    owns one schema, named for it."""
+    with pytest.raises(ValidationError) as excinfo:
+        _manifest(
+            MODULE_ID,
+            storage=StorageDeclaration(
                 schema_name="somewhere_else",
-                create_schema=_create_schema,
-            )
+                migrations_path="modules/fixture_probe/migrations",
+                required_extensions=(),
+            ),
         )
+    assert "somewhere_else" in str(excinfo.value)
 
 
-def test_validate_refuses_something_that_is_not_a_manifest() -> None:
+def test_an_entry_point_that_is_not_a_manifest_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    registries: tuple[OperationRegistry, ResolverRegistry],
+) -> None:
+    """Asserted at the loader's public seam rather than against the private
+    ``_as_manifest``: what a deployment actually does is publish an entry point and
+    start, so that is the direction the refusal has to hold in."""
+    registry, resolvers = registries
+    _publish(monkeypatch, IMPOSTOR_ENTRY_POINT)
+    _install(monkeypatch, IMPOSTOR_ID)
+
     with pytest.raises(ManifestInvalid):
-        validate(object())
+        load_modules(registry=registry, resolvers=resolvers)
+    assert registry.names() == frozenset()
 
 
-def test_validate_accepts_the_fixture() -> None:
-    assert validate(MANIFEST) is MANIFEST
+def test_the_fixture_manifest_is_a_manifest_and_loads(
+    monkeypatch: pytest.MonkeyPatch,
+    registries: tuple[OperationRegistry, ResolverRegistry],
+) -> None:
+    """The positive case the deleted ``test_validate_accepts_the_fixture`` held:
+    a manifest this file constructs is accepted and loads under its own id."""
+    registry, resolvers = registries
+    assert isinstance(MANIFEST, ModuleManifest)
+    _publish(monkeypatch, ENTRY_POINT)
+    _install(monkeypatch, MODULE_ID)
+
+    assert load_modules(registry=registry, resolvers=resolvers) == (MODULE_ID,)
 
 
 # --- the fixture's own guard ----------------------------------------------------------
@@ -456,12 +479,23 @@ def test_the_fixture_id_cannot_collide_with_a_real_distribution() -> None:
     claims the fabricated ids — not that the group is empty, which would go red the
     moment a real module is installed.
     """
-    fabricated = {MODULE_ID, SURFACE_ONLY_ID, NO_SURFACE_ID}
+    fabricated = {MODULE_ID, SURFACE_ONLY_ID, NO_SURFACE_ID, IMPOSTOR_ID}
     assert fabricated.isdisjoint({entry.name for entry in discovered()})
 
 
-def test_the_process_variable_is_not_set_by_the_suite() -> None:
-    """If a developer exported ``RHEO_MODULES`` in their shell, the negative
-    direction above would still pass (it deletes the variable) but the rest of the
-    suite would silently run with a module loaded. Fail loudly instead."""
-    assert os.environ.get(ALLOWLIST_VARIABLE) in (None, "")
+def test_the_allowlist_setting_is_not_set_by_the_suite() -> None:
+    """``modules.installed`` is deployment-scope, so there is no process variable a
+    developer's shell can leak into a *workspace*'s answer — but the deployment layer
+    still reads one, and an exported ``RHEO__modules__installed`` would resolve the
+    key for the whole session.
+
+    The negative directions above would still pass (each removes the variable for its
+    own test) while every other file ran with a module loaded, so this fails loudly
+    instead. Both spellings the deployment layer accepts are checked, because it tries
+    the exact form first and then the fully-uppercased one.
+    """
+    for name in (MODULES_VARIABLE, MODULES_VARIABLE_UPPER):
+        assert os.environ.get(name) in (None, ""), (
+            f"{name} is set in this process; the suite must resolve "
+            f"{ALLOWLIST_KEY} to its empty package default"
+        )

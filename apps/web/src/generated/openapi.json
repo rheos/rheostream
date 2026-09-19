@@ -499,6 +499,69 @@
         "type": "object"
       },
       "JsonValue": {},
+      "ModuleEnableInput": {
+        "description": "The module to enable. The workspace comes from the context.\n\nThe same one field ``ModuleInstallInput`` carries, declared separately rather than\nshared: the input model is half of what the OpenAPI document publishes for an\noperation, and two operations pointed at one model would make a later change to\neither one a change to both.",
+        "properties": {
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id"
+        ],
+        "title": "ModuleEnableInput",
+        "type": "object"
+      },
+      "ModuleEnabled": {
+        "description": "What a successful enable returns: the module, and when the row says so.\n\n``enabled_at`` rather than a bare acknowledgement because it is the one fact the\ncaller cannot read back from ``core.workspace.status``, which reports a module's\nversion, state and schema version and not its timestamps.",
+        "properties": {
+          "enabled_at": {
+            "format": "date-time",
+            "title": "Enabled At",
+            "type": "string"
+          },
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id",
+          "enabled_at"
+        ],
+        "title": "ModuleEnabled",
+        "type": "object"
+      },
+      "ModuleInstallInput": {
+        "description": "The module to install. The workspace comes from the context.",
+        "properties": {
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id"
+        ],
+        "title": "ModuleInstallInput",
+        "type": "object"
+      },
+      "ModuleInstallScheduled": {
+        "description": "What the dispatch returns: the minted record the worker will terminalise.",
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "title": "ModuleInstallScheduled",
+        "type": "object"
+      },
       "ModuleStatus": {
         "properties": {
           "module_id": {
@@ -1563,6 +1626,132 @@
           }
         },
         "summary": "core.audit.list (read)"
+      }
+    },
+    "/api/v1/operations/core.module.enable": {
+      "post": {
+        "operationId": "core.module.enable",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleEnableInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ModuleEnabled"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.module.enable (mutate)"
+      }
+    },
+    "/api/v1/operations/core.module.install": {
+      "post": {
+        "operationId": "core.module.install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleInstallInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ModuleInstallScheduled"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.module.install (mutate)"
       }
     },
     "/api/v1/operations/core.operation.get": {

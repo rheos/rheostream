@@ -21,9 +21,17 @@ this serves is stated once, in ``rheo_core.migrations``). Before upgrading it:
 continues to the next workspace and completes. The control chain is different: a
 failure there raises, because without the control plane nothing is routable.
 
-Module chains in manifest dependency order, and the ``core.module_schema_version``
-row per applied module step, are phase 2: ``chains`` is the hook, and anything other
-than ``core`` is refused.
+**Two doors, and a module chain comes through only one of them.**
+``migrate_workspace`` is the unattended startup pass over ``core``: it marks a
+workspace ``unavailable`` rather than raising, and it refuses a module chain name
+outright. ``run_module_chain`` (:mod:`rheo_core.migrations.module_chain`) is the
+caller-initiated door a module install uses: it runs one module's chain on the
+caller's own connection, appends one ``core.module_schema_version`` row per newly
+applied revision, and raises the chain's own exception to its caller. The split is
+the point — the startup door's failure branch is generic over its whole ``chains``
+loop, so routing a module chain through it would let one module's bad revision flip
+the entire workspace's control-plane row ``unavailable``, taking ``core`` and every
+other module down with it.
 """
 
 import logging
@@ -60,6 +68,7 @@ from rheo_core.storage.core_tables import CORE_SCHEMA, CORE_VERSION_TABLE
 from rheo_core.storage.postgres import advisory_lock
 
 if TYPE_CHECKING:
+    from rheo_core.modules.manifest import ModuleManifest
     from rheo_core.storage.postgres import PostgresBackend
 
 logger = logging.getLogger("rheo_core.migrations")
@@ -78,18 +87,80 @@ _VERSION_TABLES: Final[dict[str, tuple[str, str]]] = {
 }
 _DETAIL_LIMIT: Final = 2000
 
+MODULE_VERSION_TABLE_PREFIX: Final = "alembic_version_"
+"""What a module chain's version table is called, before its module id.
 
-def _check_chain(chain: str) -> str:
-    if chain not in _VERSION_TABLES:
-        raise ValueError(f"unknown migration chain {chain!r}; expected one of {CHAINS}")
-    return chain
+Public and named because **this side derives the name while the module's own
+``env.py`` writes it as a literal**, and nothing at runtime makes the two agree. An
+``env.py`` left on Alembic's default ``alembic_version`` in the default schema
+migrates perfectly happily, and the only symptom is silent: ``recorded_revisions``
+reads a table that never fills, so the ``schema_ahead`` guard is vacuous and
+``run_module_chain`` records no step. A module's contract tests are what close that,
+by asserting its ``env.py`` against this prefix and its own
+``storage.schema_name``; the pairing is stated in ``docs/architecture/
+module-contract.md`` § Storage.
+"""
+
+
+def _module_manifest(chain: str) -> "ModuleManifest":
+    """The loaded manifest ``chain`` names, or the one refusal for an unknown chain.
+
+    Imported at call time: ``rheo_core.modules.loader`` reaches this module through
+    ``storage.provisioning``, so a module-level import is a cycle — the same reason
+    ``storage/postgres.py``'s ``migrate`` imports ``migrate_workspace`` at call time.
+    """
+    from rheo_core.modules import loaded_manifests
+
+    manifests = loaded_manifests()
+    manifest = manifests.get(chain)
+    if manifest is None:
+        raise ValueError(
+            f"unknown migration chain {chain!r}; expected one of {CHAINS} or a loaded "
+            f"module id (loaded: {sorted(manifests)})"
+        )
+    return manifest
+
+
+def version_table_for(chain: str) -> tuple[str, str]:
+    """The ``(schema, version_table)`` pair ``chain``'s Alembic environment writes.
+
+    ``control`` and ``core`` answer from :data:`_VERSION_TABLES`, unchanged. Any other
+    name is read as a module id and answers
+    ``<module_id>.alembic_version_<module_id>``, so a module chain's recorded history
+    can never be confused with ``core``'s or with another module's. The schema is the
+    module id itself because ``StorageDeclaration.schema_name`` is held equal to
+    ``module_id`` by the manifest's own validator.
+
+    **Every caller that used to subscript :data:`_VERSION_TABLES` goes through here**,
+    which is what lets that table keep exactly its two shipped entries: a module id
+    resolves against the loaded manifests instead, and a name no loaded manifest
+    claims is refused rather than reaching Alembic. Together with
+    :func:`_module_manifest` this is the only membership test for a chain name.
+
+    What it cannot do is make a module's ``env.py`` agree with what it derives; see
+    :data:`MODULE_VERSION_TABLE_PREFIX`.
+    """
+    known = _VERSION_TABLES.get(chain)
+    if known is not None:
+        return known
+    _module_manifest(chain)
+    return chain, f"{MODULE_VERSION_TABLE_PREFIX}{chain}"
 
 
 def script_location(chain: str) -> Path:
-    """The chain's script directory inside the installed ``rheo_core`` package."""
-    location = Path(
-        str(resources.files("rheo_core.migrations").joinpath(_check_chain(chain)))
-    )
+    """The chain's script directory: inside the installed ``rheo_core`` package for
+    the two shipped chains, inside the module's own distribution for a module chain.
+
+    Both resolve through ``importlib.resources`` so an installed wheel works and not
+    only a checkout, and both face the same assertion: a manifest whose
+    ``storage.migrations_path`` names a package holding no ``env.py`` is refused here
+    rather than at ``command.upgrade``.
+    """
+    if chain in _VERSION_TABLES:
+        anchor = resources.files("rheo_core.migrations").joinpath(chain)
+    else:
+        anchor = resources.files(_module_manifest(chain).storage.migrations_path)
+    location = Path(str(anchor))
     if not (location / "env.py").is_file():
         raise RuntimeError(f"migration chain {chain!r} has no env.py at {location}")
     return location
@@ -115,7 +186,7 @@ def known_revisions(chain: str) -> frozenset[str]:
 
 def recorded_revisions(connection: Connection, chain: str) -> frozenset[str]:
     """The revision ids the database's version table records; empty when absent."""
-    schema, table = _VERSION_TABLES[_check_chain(chain)]
+    schema, table = version_table_for(chain)
     qualified = f"{schema}.{table}"
     present = connection.execute(
         text("SELECT to_regclass(:name)"), {"name": qualified}
@@ -149,8 +220,12 @@ def run_chain(connection: Connection, chain: str, *, expected_database: str) -> 
     be silently rolled back at close. Raises ``database_mismatch``, ``schema_ahead``,
     or whatever the revision raised, in which case the caller's rollback undoes the
     partial DDL.
+
+    A module chain runs here too, under this same ``ADVISORY_LOCK_KEY`` — there is no
+    second lock key in this file — and the schema created below is then the module's
+    own, because :func:`version_table_for` resolved it from the module's manifest.
     """
-    schema, _ = _VERSION_TABLES[_check_chain(chain)]
+    schema, _ = version_table_for(chain)
     if not connection.in_transaction():
         raise ValueError(
             "run_chain needs a connection inside a transaction the caller commits"
@@ -181,7 +256,13 @@ class MigrationResult:
     detail: str | None
 
 
-def _error_text(exc: BaseException) -> str:
+def error_text(exc: BaseException) -> str:
+    """One chain exception rendered the way ``state_detail`` renders it: the type name
+    first, then the message, with a ``DBAPIError``'s ``orig`` unwrapped so the reader
+    sees ``DuplicateTable: ... already exists`` rather than SQLAlchemy's wrapper and
+    the whole failing statement. Public because a module install's job handler renders
+    its chain's failure the same way, and two renderings of one thing would drift.
+    """
     if isinstance(exc, DBAPIError) and exc.orig is not None:
         described = f"{type(exc.orig).__name__}: {exc.orig}"
     else:
@@ -206,17 +287,24 @@ def migrate_workspace(
     """Run ``chains`` on one workspace database; never raise for a chain failure.
 
     ``workspace_missing`` for an unknown id is the one exception. ``control`` is not
-    a workspace chain (``ValueError``); any other name is a module chain, which is
-    a ``NotImplementedError`` until phase 2 wires manifest dependency order.
+    a workspace chain (``ValueError``), and neither is a module chain (``ValueError``
+    as well): a module chain runs through ``run_module_chain``, which raises to its
+    caller instead of marking the workspace unavailable. Both are routing rules, not
+    "not built yet", which is why both are the same class.
     """
     for chain in chains:
         if chain == CORE_CHAIN:
             continue
         if chain == CONTROL_CHAIN:
             raise ValueError("the control chain does not run on a workspace database")
-        raise NotImplementedError(
-            f"module migration chain {chain!r} is phase 2; only 'core' runs per "
-            "workspace"
+        # Retyped, never deleted. The failure branch below is generic over ``chains``
+        # and writes ``unavailable`` on any exception from any chain in the loop, so
+        # letting a module chain past this point is the FR 11 violation itself.
+        raise ValueError(
+            f"module migration chain {chain!r} does not run through "
+            "migrate_workspace; call run_module_chain from core.module.install, "
+            "which surfaces a failure to its caller instead of marking the workspace "
+            "unavailable"
         )
     with backend.control_engine.connect() as connection:
         row = get_workspace(connection, workspace_id)
@@ -230,10 +318,10 @@ def migrate_workspace(
                     run_chain(connection, chain, expected_database=row.database_name)
         except StorageRefusal as refusal:
             detail = (
-                SCHEMA_AHEAD if refusal.state == SCHEMA_AHEAD else _error_text(refusal)
+                SCHEMA_AHEAD if refusal.state == SCHEMA_AHEAD else error_text(refusal)
             )
         except Exception as exc:
-            detail = _error_text(exc)
+            detail = error_text(exc)
         else:
             return MigrationResult(row.id, row.database_name, CORE_CHAIN, True, None)
         with backend.control_engine.begin() as connection:

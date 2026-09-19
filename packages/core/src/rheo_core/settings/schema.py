@@ -22,11 +22,13 @@ adds ``storage.pool_idle_close_seconds``, for thirty-three, and C7 (run 0c0) add
 ``work.max_attempts``, for thirty-five; C6 (run 0c3) adds the three ``approvals.*``
 keys, for thirty-eight; the public-authority split adds
 ``routing.public_host`` (seventeen routing keys), for thirty-nine; C2 (run 0c4)
-adds the eleven ``runtime.*`` keys, for fifty.
-``api.cors_origins`` and ``modules.installed`` (the runs that read them) are not
-declared here: a key with no reader is machinery with no caller, and the
-registry/TOML identity check holds per merge SHA — every later chunk that adds a key
-adds it to both files.
+adds the eleven ``runtime.*`` keys, for fifty; run 1a0's module contract adds
+``modules.installed``, for fifty-one.
+``api.cors_origins`` is still not declared here, for the reason this key was not
+until now: a key with no reader is machinery with no caller, and the registry/TOML
+identity check holds per merge SHA — every later chunk that adds a key adds it to
+both files. ``modules.installed`` earns its declaration in this run because
+``rheo_core.modules.loader.allowed_module_ids()`` reads it.
 
 The text codec (:func:`decode_text` / :func:`encode_text`) also lives here because the
 same encoding serves three readers: environment variables, the ``value text`` column
@@ -854,6 +856,28 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=Floor.SUBSET,
         explicit_per_workspace=False,
         default=("sonnet",),
+    ),
+    # --- modules (run 1a0) ------------------------------------------------------------
+    # The module allowlist: the ids ``load_modules()`` may load. It replaces the bare
+    # process variable the loader read before this run, which is deleted with it.
+    #
+    # **The empty default is load-bearing.** Every ``modules/*`` distribution in the
+    # checkout is installed into the image (``Dockerfile`` COPYs ``modules/`` and runs
+    # ``uv sync --frozen``), so every one of them is *discoverable* at run time. An
+    # unlisted module id is simply not loaded — no exception, no startup refusal — and
+    # the default never becomes "every discovered module", or discovery would activate
+    # whatever happened to be installed.
+    #
+    # Deployment scope, and unfloored: which code a host runs is the deployment's
+    # decision, not a workspace's. What a *workspace* has installed and enabled is a
+    # different set entirely, held in its own ``core.module_state`` rows.
+    KeySpec(
+        key="modules.installed",
+        type=ValueType.STR_LIST,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=(),
     ),
 )
 

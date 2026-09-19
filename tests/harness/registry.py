@@ -26,8 +26,9 @@ Also two pieces of control-plane scaffolding the C4 tests share: ``add_member``
 (an account plus its ``control.membership`` row through C3's repositories, because
 ``rheo member add`` is 0b2's) and ``enable_harness_module`` (a ``core.module_state``
 row for ``harness`` in state ``enabled``, so a context built over that workspace
-carries ``harness`` in ``enabled_modules`` — module install is phase 2, and this row
-is the only way a 0b1 test can exercise the ``module_disabled`` branch both ways).
+carries ``harness`` in ``enabled_modules`` — ``harness`` is not a loaded distribution
+and ``core.module.install`` will never write its row, so this is the only way a test
+can exercise the ``module_disabled`` branch both ways).
 
 Registration is explicit (:func:`register_harness`), idempotent, and never an import
 side effect. Nothing under ``rheo_core`` knows any of this exists.
@@ -78,14 +79,13 @@ from rheo_core.refs.resolver import (
     resolve_in,
 )
 from rheo_core.settings import TEST_HARNESS_ORIGIN, resolve
-from rheo_core.storage import core_tables
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.control_plane import insert_account, insert_membership_if_absent
 from rheo_core.storage.postgres import PostgresBackend
+from rheo_core.storage.repositories import insert_module_state, list_module_states
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
 from sqlalchemy import Connection, inspect
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from harness.records import (
     HARNESS_SCHEMA,
@@ -637,18 +637,30 @@ def add_member(
 
 def enable_harness_module(conn: Connection) -> None:
     """A ``core.module_state`` row for ``harness`` in state ``enabled`` (idempotent),
-    in the connection's workspace database."""
+    in the connection's workspace database.
+
+    **Through ``insert_module_state``, which is the table's only writer (FR 10), and
+    with the idempotency moved here rather than into it.** This helper is called more
+    than once against one workspace across several files, so "insert or do nothing" is
+    a property callers depend on — but the writer itself must stay a strict insert, or
+    a repeat ``core.module.install`` racing past its own ``module_already_installed``
+    pre-flight check would report success while writing nothing and leaving whatever
+    version the earlier row recorded. A read-then-write is the right shape *here*,
+    where the caller is a test harness inside its own transaction and there is no
+    concurrency for the window to matter to.
+
+    ``harness`` is not a loaded module and never will be: this row is what puts it in
+    a context's ``enabled_modules`` so a 0b1-era test can drive the ``module_disabled``
+    branch both ways.
+    """
+    if any(row.module_id == HARNESS_MODULE_ID for row in list_module_states(conn)):
+        return
     now = datetime.now(UTC)
-    conn.execute(
-        pg_insert(core_tables.module_state)
-        .values(
-            module_id=HARNESS_MODULE_ID,
-            package_version="0",
-            state="enabled",
-            installed_at=now,
-            enabled_at=now,
-            disabled_at=None,
-            state_detail=None,
-        )
-        .on_conflict_do_nothing(index_elements=[core_tables.module_state.c.module_id])
+    insert_module_state(
+        conn,
+        module_id=HARNESS_MODULE_ID,
+        package_version="0",
+        state="enabled",
+        installed_at=now,
+        enabled_at=now,
     )

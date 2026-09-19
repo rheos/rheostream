@@ -1,41 +1,61 @@
-"""``ModuleManifest``: the minimum a distribution tells the loader about itself.
+"""``ModuleManifest``: what one distribution declares about itself, as a model.
 
-**Deliberately minimal, and deliberately not in ``rheo_contracts``.**
-``module-contract.md`` names the type ``rheo_contracts.ModuleManifest``, but the
-manifest carries its operations' handlers, typed against ``UnitOfWork``, and
-``tests/test_imports.py`` refuses any ``rheo_contracts`` import outside the standard
-library, ``pydantic`` and itself — the same collision that already forced
-``OperationDeclaration.handler`` out of that model. So the manifest lives here and
-the handler travels beside the declaration, exactly as the registry's own
-``register(decl, handler, *, origin)`` already does. Run 0v's findings note carries
-that as **F3**.
+**Deliberately not in ``rheo_contracts``.** ``module-contract.md`` used to name the
+type ``rheo_contracts.ModuleManifest``, but the manifest carries its operations'
+handlers, typed against ``UnitOfWork``, and ``tests/test_imports.py`` refuses any
+``rheo_contracts`` import outside the standard library, ``pydantic`` and itself —
+the same collision that already forced ``OperationDeclaration.handler`` out of that
+model. So the manifest lives here and each handler travels beside its declaration,
+exactly as ``OperationRegistry.register(decl, handler, *, origin)`` already does.
+The doc now names this module as the type's real home.
 
-**No ``production_eligible`` field.** What a deployment loads is decided by the
-loader's allowlist, not by a boolean a module sets about itself: ``Dockerfile`` COPYs
-``modules/`` and runs ``uv sync --frozen``, so every distribution in the checkout is
-installed into the image and discoverable at run time whatever profile it runs under.
-The gate has to be configuration on the deployment's side. Run 0v's **F5** records the
-ratified key this stands in for (``modules.installed``, whose stated default of "every
-discovered module" defeats the sentence after it) and **F17** records that the image's
-*installed* set and the deployment's *loaded* set are different things.
+**Every field is required unless it carries ``= None``**, and only ``web``,
+``agent_guidance`` and ``audit_sink`` do. Eight required fields have no consumer in
+this plan yet (``record_types``, ``events``, ``subscriptions``, ``jobs``,
+``schedules``, ``deletion_participants``, ``connector_bindings``, ``sensitivity``).
+They stay required so a module author writes an empty ``()`` or ``{}`` on purpose
+rather than by omission, and the run that builds the consumer reads a declaration
+rather than a default nobody chose.
 
-**Phase 2 replaces this whole model**, together with install/enable/disable lifecycle
-(**F15**: nothing in release one can install a module; the ``core.module_state`` row a
-test needs is written by hand). This type exists so a real distribution can be
-discovered, validated and registered through the shipped registries today — not as a
-proposal for what the ratified manifest should eventually carry.
+**``audit_sink`` is the twenty-fourth field and is not in the ratified table.** It
+is carried over from the 0c0 stub because it is the only channel by which a module
+supplies the sink ``loader.py``'s ``_register`` installs and ``dispatch.py``'s
+``AUDIT_SINK_MISSING`` refuses every above-``READ`` operation without. Its
+annotation is a ``PlainValidator`` rather than a bare ``AuditSink``, and that is
+forced rather than stylistic: ``AuditSink`` is a ``typing.Protocol`` **without**
+``@runtime_checkable``, so pydantic can build no schema for it and raises
+``PydanticSchemaGenerationError`` at class-definition time. Adding
+``arbitrary_types_allowed`` would not fix it — under that flag pydantic falls back
+to an ``is_instance_schema`` whose build probes ``isinstance(None, AuditSink)``, a
+probe a non-runtime-checkable Protocol refuses with ``TypeError`` — so the same
+moment fails again, but silently, out of a flag that looks like it should have
+helped. The validator applies the same duck check ``install_sink`` already does, so
+the manifest and the installer agree on what a sink is.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Final
+from enum import StrEnum
+from typing import Annotated, Final, Self, TypeVar
 
-from rheo_contracts import OperationDeclaration
-from sqlalchemy import Connection
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    PlainValidator,
+    model_validator,
+)
+from rheo_contracts import OperationDeclaration, Role, ToolDeclaration
+from rheo_contracts.refs import is_reserved_module
 
 from rheo_core.audit.sink import AuditSink
+from rheo_core.events.consumers import ConsumerSubscription
 from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import RecordResolver
+from rheo_core.settings.schema import KeySpec
+from rheo_core.storage.backend import UnitOfWork
+from rheo_core.work.kinds import JobHandler
 
 _SEGMENT_MESSAGE: Final = "a module id is a lowercase identifier"
 
@@ -45,6 +65,13 @@ class ManifestInvalid(Exception):
 
     Raised, never returned, mirroring ``RegistrationRefused``: a bad manifest is a
     packaging mistake found at load time, not a caller's error.
+
+    **Not a wrapper for pydantic's own ``ValidationError``.** A field-shape failure
+    is pydantic's to report, with the offending field named in its ``loc`` — which
+    is exactly what wrapping would throw away. This exception covers the load-time
+    failures that are *not* field shape: an entry point resolving to something other
+    than a ``ModuleManifest``, and a manifest whose id disagrees with the
+    entry-point name it was published under.
     """
 
     def __init__(self, module_id: str, detail: str) -> None:
@@ -68,48 +95,341 @@ class WebSurface:
     path: str
 
 
-@dataclass(frozen=True, slots=True)
-class ModuleManifest:
+HealthCheck = Callable[[UnitOfWork], None]
+"""``(uow) -> None``: one check install step 6 calls directly, so it is typed."""
+
+DeletionHandler = Callable[..., object]
+"""What the deletion coordinator calls for a participant's record types.
+
+Unnarrowed on purpose: no run in the current plan reads it, and a guessed signature
+is a shape a later run would have to break rather than merely narrow.
+"""
+
+Exporter = Callable[..., object]
+"""What writes the module's records into an export.
+
+Unnarrowed on purpose: no run in the current plan reads it.
+"""
+
+Importer = Callable[..., object]
+"""What reads the module's records back out of an export.
+
+Unnarrowed on purpose: no run in the current plan reads it.
+"""
+
+
+class SensitivityTier(StrEnum):
+    """The three redaction tiers a field can carry (``runtime-and-mcp.md``)."""
+
+    PUBLIC = "public"
+    INTERNAL = "internal"
+    RESTRICTED = "restricted"
+
+
+_V = TypeVar("_V")
+
+
+class FrozenMap(Mapping[str, _V]):
+    """A read-only, hashable mapping, so ``frozen=True`` is true of the whole model.
+
+    ``ConfigDict(frozen=True)`` promises two things: no field reassignment, and a
+    working ``__hash__``. Pydantic validates a ``Mapping[...]`` annotation into a
+    plain ``dict``, which keeps neither — ``manifest.sensitivity["note"]["body"] =
+    ...`` mutates a "frozen" manifest in place, and ``hash(manifest)`` raises
+    ``TypeError`` on the unhashable dict. Every other field on the manifest is a
+    tuple, a frozen model or a frozen dataclass and so already holds; ``sensitivity``
+    was the one that did not, and the 0c0 frozen dataclass this model replaced *was*
+    hashable, so leaving it would have been a quiet regression behind a flag that
+    says otherwise.
+
+    Deliberately small. It is not a general-purpose frozendict and nothing here
+    needs one: it exists so one declared property of ``ModuleManifest`` is true.
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items: Mapping[str, _V]) -> None:
+        self._items: dict[str, _V] = dict(items)
+
+    def __getitem__(self, key: str) -> _V:
+        return self._items[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self._items.items()))
+
+    def __repr__(self) -> str:
+        return f"FrozenMap({self._items!r})"
+
+
+def _freeze_sensitivity(
+    value: Mapping[str, Mapping[str, SensitivityTier]],
+) -> Mapping[str, Mapping[str, SensitivityTier]]:
+    """Both levels, because only freezing the outer one leaves the inner dict open."""
+    return FrozenMap({key: FrozenMap(tiers) for key, tiers in value.items()})
+
+
+Sensitivity = Annotated[
+    Mapping[str, Mapping[str, SensitivityTier]],
+    AfterValidator(_freeze_sensitivity),
+]
+"""Record type -> field name -> tier, frozen at both levels on validation."""
+
+
+class Dependency(BaseModel):
+    """Another module this one needs, and the versions that satisfy it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    module_id: str
+    version_range: str
+    """A PEP 440 specifier set (``>=1.2,<2``), not npm's caret and tilde grammar.
+
+    Parsed by :class:`~packaging.specifiers.SpecifierSet` in the manifest's own
+    ``@model_validator``, so a range that is not PEP 440 **syntax** is a validation
+    error at construction. Satisfiability is a different question and is not asked
+    here: ``SpecifierSet(">=2,<1")`` parses cleanly and matches nothing. Resolving a
+    range against the versions a workspace actually has is install-time work, and
+    the manifest table's "cycles and unsatisfiable ranges are rejected at install"
+    is still the contract for it.
+
+    **Two things a module author needs to know about how the range is applied**, both
+    decided by ``loader.py``'s ``_dependency_order`` at load time:
+
+    - **A prerelease sorts below its own release, which bites at a lower bound.**
+      ``">=2,<3"`` does **not** admit ``2.0.0rc1``: PEP 440 orders the release
+      candidate below ``2.0.0``, so the lower bound excludes it and the load is
+      refused naming both. This is not a ban on prereleases — ``">=1,<3"`` accepts
+      ``2.0.0rc1`` — so the rule worth carrying is about the *boundary*, not about
+      prereleases in general. Write ``">=2.0.0rc1,<3"`` when a particular release's
+      prereleases are acceptable. Measured against ``packaging`` 26.3, the version
+      resolved here: ``SpecifierSet.contains`` **admits** prereleases by default and
+      passing ``prereleases=True`` changes no answer this code can produce, so there
+      is no filtering flag in play. Older ``packaging`` did exclude them by default,
+      which makes this a property of the resolved version rather than of PEP 440.
+    - **``optional = True`` exempts the dependency from being present, not from the
+      range.** An optional dependency this deployment did not load is skipped; one
+      that *is* loaded is held to the range exactly as a required one is.
+    """
+
+    optional: bool = False
+
+
+class RecordType(BaseModel):
+    """One record type the module owns (``module-contract.md`` § Owned record
+    types). A record type appears in exactly one manifest."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    table: str
+    deletable: bool
+    delete_roles: frozenset[Role]
+    exportable: bool
+    audience_field: str | None
+
+
+class StorageDeclaration(BaseModel):
+    """Where the module's tables live and how they get there.
+
+    ``schema_name`` must equal the ``module_id``; the manifest's own
+    ``@model_validator`` is what holds it to that, so the resolver, the audit sink
+    and the migration chain all address one place without being told twice.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_name: str
+    migrations_path: str
+    required_extensions: tuple[str, ...]
+
+
+_ModelClass = type[BaseModel]
+"""``type[BaseModel]``, spelled once so :class:`EventDeclaration` can name it.
+
+That class's first field is called ``type`` — the ratified name — which shadows the
+builtin for a type checker reading the class body, so ``data: type[BaseModel]``
+there is "Variable ... is not valid as a type" under ``mypy --strict``.
+"""
+
+
+class EventDeclaration(BaseModel):
+    """One event type the module publishes.
+
+    **The payload field is ``data``, not the ratified table's ``data_model``**, and
+    the doc row was corrected to match rather than the other way around: ``data`` is
+    the name every later run types and the one the namespacing check reads past.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    type: str
+    schema_version: int
+    data: _ModelClass
+
+
+class JobKind(BaseModel):
+    """One background work kind the module contributes to the worker.
+
+    **``input_model`` is not in the ratified row and is added deliberately.**
+    ``JobKindRegistry.register(kind, input_model, handler)``
+    (``rheo_core/work/kinds.py``) takes exactly those three positional arguments, so
+    a ``JobKind`` carrying no input model could not be registered at all. The doc
+    row gained the field rather than the registry losing it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    input_model: type[BaseModel]
+    handler: JobHandler
+    max_attempts: int
+    cancellable: bool
+
+
+class Schedule(BaseModel):
+    """A per-workspace schedule row created when the module is enabled."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    job_kind: str
+    cron: str
+    enabled_by_default: bool
+
+
+class DeletionParticipant(BaseModel):
+    """A hook the deletion coordinator calls for the named record types."""
+
+    model_config = ConfigDict(frozen=True)
+
+    record_types: tuple[str, ...]
+    handler: DeletionHandler
+
+
+class ExportDeclaration(BaseModel):
+    """The module's versioned export format and the two callables that move it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    format_version: int
+    schema_path: str
+    exporter: Exporter
+    importer: Importer
+
+
+class ConnectorBinding(BaseModel):
+    """Which of the module's operations a transport connector may call.
+
+    ``route`` is the HTTP route the binding registers on the ``api`` surface when
+    the transport has one, and ``None`` otherwise.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    transport: str
+    service_operation: str
+    route: str | None
+
+
+def _audit_sink(value: object) -> object:
+    """The duck check ``install_sink`` applies, as a pydantic validator.
+
+    A plain validator rather than an ``isinstance`` probe because ``AuditSink`` is a
+    Protocol that is not ``@runtime_checkable``; see this module's docstring.
+    """
+    if callable(getattr(value, "record", None)):
+        return value
+    raise ValueError("an audit sink must provide record()")
+
+
+class ModuleManifest(BaseModel):
     """What one distribution exposes through its ``rheo.modules`` entry point."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     module_id: str
     package_version: str
-    schema_name: str
-    create_schema: Callable[[Connection], None]
-    operations: tuple[tuple[OperationDeclaration, Handler], ...] = ()
-    resolvers: tuple[tuple[str, RecordResolver], ...] = ()
-    web: WebSurface | None = None
-    audit_sink: AuditSink | None = None
+    core_contract_versions: tuple[int, ...]
+    dependencies: tuple[Dependency, ...]
+    record_types: tuple[RecordType, ...]
+    storage: StorageDeclaration
+    configuration_schema: tuple[KeySpec, ...]
+    """The module's settings keys, as ``KeySpec`` values.
 
-
-def validate(manifest: object) -> ModuleManifest:
-    """Refuse anything that is not a well-formed manifest; return it otherwise.
-
-    The checks are only the ones the loader itself depends on. Everything a
-    *registration* refuses — the operation-name grammar, the origin/prefix agreement,
-    reserved input fields, ``extra = "allow"`` — is left to
-    ``OperationRegistry.register`` and ``ResolverRegistry.register``, which the loader
-    calls with ``origin = manifest.module_id``. Re-checking any of it here would be a
-    second, weaker copy of a shipped gate.
+    **Not a pydantic model class**, which is the ratified table's word for it: the
+    settings system already declares keys as ``KeySpec`` and registers them through
+    ``SettingsRegistry.register(spec, *, origin)``, so a second declaration form
+    would be a shape with no reader. Recorded as a deviation in the doc.
     """
-    if not isinstance(manifest, ModuleManifest):
-        raise ManifestInvalid(
-            str(getattr(manifest, "module_id", manifest)),
-            "a rheo.modules entry point must load to a ModuleManifest",
-        )
-    module_id = manifest.module_id
-    if not isinstance(module_id, str) or not module_id.isidentifier():
-        raise ManifestInvalid(str(module_id), _SEGMENT_MESSAGE)
-    if module_id != module_id.lower():
-        raise ManifestInvalid(module_id, _SEGMENT_MESSAGE)
-    if manifest.schema_name != module_id:
-        # One module owns one schema, named for it: the resolver, the audit sink and
-        # the migration all address the same place without being told twice.
-        raise ManifestInvalid(
-            module_id, f"schema_name {manifest.schema_name!r} is not the module id"
-        )
-    if not callable(manifest.create_schema):
-        raise ManifestInvalid(module_id, "create_schema must be callable")
-    if manifest.web is not None and not isinstance(manifest.web, WebSurface):
-        raise ManifestInvalid(module_id, "web must be a WebSurface or None")
-    return manifest
+
+    operations: tuple[tuple[OperationDeclaration, Handler], ...]
+    """Each declaration with the handler that runs it.
+
+    The handler travels beside the declaration rather than inside it because it is
+    typed against ``UnitOfWork``, which ``rheo_contracts`` may not import.
+    """
+
+    tools: tuple[ToolDeclaration, ...]
+    events: tuple[EventDeclaration, ...]
+    subscriptions: tuple[ConsumerSubscription, ...]
+    jobs: tuple[JobKind, ...]
+    schedules: tuple[Schedule, ...]
+    resolvers: tuple[tuple[str, RecordResolver], ...]
+    deletion_participants: tuple[DeletionParticipant, ...]
+    export: ExportDeclaration
+    web: WebSurface | None = None
+    agent_guidance: str | None = None
+    secret_scopes: tuple[str, ...]
+    connector_bindings: tuple[ConnectorBinding, ...]
+    health_checks: tuple[HealthCheck, ...]
+    contract_tests: str
+    sensitivity: Sensitivity
+    audit_sink: Annotated[AuditSink, PlainValidator(_audit_sink)] | None = None
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> Self:
+        """The five rules the 0c0 stub's ``validate()`` carried, now inside the
+        model so a manifest cannot exist in a state that breaks one.
+
+        Everything a *registration* refuses — the operation-name grammar, the
+        origin/prefix agreement, reserved input fields, ``extra = "allow"`` — is
+        still left to ``OperationRegistry.register`` and ``ResolverRegistry.
+        register``, which the loader calls with ``origin = manifest.module_id``.
+        Re-checking any of it here would be a second, weaker copy of a shipped gate.
+        """
+        module_id = self.module_id
+        if not module_id.isidentifier() or module_id != module_id.lower():
+            raise ValueError(f"module_id {module_id!r}: {_SEGMENT_MESSAGE}")
+        if is_reserved_module(module_id):
+            raise ValueError(
+                f"module_id {module_id!r} is the segment reserved for core records"
+            )
+        if self.storage.schema_name != module_id:
+            # One module owns one schema, named for it: the resolver, the audit sink
+            # and the migration all address the same place without being told twice.
+            raise ValueError(
+                f"storage.schema_name {self.storage.schema_name!r} is not the "
+                f"module id {module_id!r}"
+            )
+        for spec in self.configuration_schema:
+            if not spec.key.startswith(f"{module_id}."):
+                raise ValueError(
+                    f"configuration_schema key {spec.key!r} does not start with "
+                    f"{module_id + '.'!r}"
+                )
+        for dependency in self.dependencies:
+            try:
+                SpecifierSet(dependency.version_range)
+            except InvalidSpecifier as exc:
+                raise ValueError(
+                    f"dependencies: version_range "
+                    f"{dependency.version_range!r} for {dependency.module_id!r} "
+                    "is not a PEP 440 specifier set"
+                ) from exc
+        return self

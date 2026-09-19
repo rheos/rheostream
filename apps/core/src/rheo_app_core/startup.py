@@ -3,9 +3,9 @@
 In order: settings → the production/https invariant → data root → the
 ``secret://env/*`` reference check → ensure the control database and run the
 ``control`` chain → the identity-provider sync → migrate active workspaces serially
-→ build the operation registry → build the tool registry → load the modules
-``RHEO_MODULES`` names → check that every registered operation above the read class
-has an installed audit sink.
+→ build the operation registry → build the tool registry → load the modules the
+resolved ``modules.installed`` setting names → check that every registered operation
+above the read class has an installed audit sink.
 "Ensure the control database" treats psycopg's ``DuplicateDatabase`` as success
 (``PostgresBackend.ensure_database``), mirroring provisioning's "already exists is a
 retry": the advisory lock covers the migration chain, not the ``CREATE DATABASE``
@@ -18,11 +18,11 @@ Module loading comes before the audit check because a module registers against t
 registry the step before it builds **and supplies its audit sink at load time**
 (``modules/loader.py``), so loading is the first point at which the check can know
 whether every registered operation above the read class has a path for its record.
-With ``RHEO_MODULES`` unset — a fresh clone, ``make demo``, and every image ``make
-build`` produces — it loads nothing, so that line is a no-op there by design rather
-than by luck, and the check then sees the core's own operations alone, whose sink
-``register_core_operations()`` installed one step earlier. See
-``rheo_core.modules.loader`` and ``rheo_core.operations.audit_paths``.
+With ``modules.installed`` left at its empty package default — a fresh clone, ``make
+demo``, and every image ``make build`` produces — it loads nothing, so that line is a
+no-op there by design rather than by luck, and the check then sees the core's own
+operations alone, whose sink ``register_core_operations()`` installed one step
+earlier. See ``rheo_core.modules.loader`` and ``rheo_core.operations.audit_paths``.
 """
 
 import logging

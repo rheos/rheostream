@@ -42,6 +42,7 @@ from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import insert_account
 from rheo_core.storage.data_root import Purpose, workspace_dir_for
 from rheo_core.storage.provisioning import core_version
+from rheo_core.storage.repositories import insert_module_schema_version
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
@@ -217,13 +218,15 @@ def test_restore_matches_source_by_workspace_digest(
         cluster.backend.pools.engine_for(source_row.database_name),
         source_row.database_name,
     ) as uow:
-        uow.connection.execute(
-            insert(core_tables.module_schema_version).values(
-                module_id="harness",
-                schema_version="0001_harness",
-                applied_at=datetime.now(UTC),
-                core_version_at_apply=core_version(),
-            )
+        # Through the repository writer, never a statement of this file's own:
+        # ``repositories.py`` is the only code that inserts into this table, and
+        # ``tests/test_module_state_writers.py`` scans ``tests/`` for exactly this.
+        insert_module_schema_version(
+            uow.connection,
+            module_id="harness",
+            schema_version="0001_harness",
+            applied_at=datetime.now(UTC),
+            core_version_at_apply=core_version(),
         )
         uow.commit()
     artifact = _export(cluster, source)

@@ -196,13 +196,52 @@ check:
 # a wrong-looking output is fixed in the generator or the source model and
 # regenerated here, never hand-patched.
 #
-# NO RHEO_* variable at all: that is the canonical generation environment AC 3
-# polices, and it is why the emitted bytes depend on exactly one thing — the
-# installed distributions — and on nothing about the machine. `rheo openapi` is
-# the one subcommand that does not bootstrap, so it needs no settings, data root
-# or database; the same command therefore produces the same bytes on a
-# developer's laptop and in the `web` CI job, which is what makes the
-# `git diff --exit-code` gate meaningful.
+# A canonical generation environment is what AC 3 depends on: the emitted bytes
+# must follow from the installed distributions and from nothing about the machine
+# that ran the command. The module allowlist is the deployment-scope setting
+# `modules.installed`, and TWO ambient sources can set it — the
+# `RHEO__modules__installed` variable, and a `deployment.toml` under the resolved
+# data root. `rheo openapi` still bootstraps nothing: it resolves settings and
+# reads no database.
+#
+# **Pinned here, from the commit that ships the first real `rheo.modules` entry
+# point.** The recipe used to only *depend* on that environment, which cost nothing
+# while `entry_points(group="rheo.modules")` returned nothing: with no module
+# discoverable, neither source had anything to activate. `modules/recallatron`
+# publishes one now, so both are pinned:
+#
+#   - `RHEO__modules__installed=` — the empty string decodes to the empty list
+#     (`settings/schema.py`'s `decode_text`: a `list[str]` drops empty items), and
+#     the environment layer is applied over `deployment.toml`, so this is a
+#     positive "no module is installed", not merely an absent variable.
+#   - `RHEO_DATA_ROOT` at a fresh `mktemp -d`, removed by a `trap` on exit, so the
+#     `<data_root>/config/deployment.toml` that data-root resolution would
+#     otherwise find on a developer's machine does not exist for this command.
+#
+# **What the pin does and does not cover, stated exactly rather than as "no `RHEO_*`
+# variable".** It pins ONE key by name and relocates the file layer; it does not
+# scrub the environment, any other `RHEO__*` variable still reaches `rheo openapi`,
+# and this recipe itself sets two `RHEO_*` variables. That is sufficient because
+# `modules.installed` is the only resolved setting the emitted document is built
+# from — registration reaches `current_profile()` only for the `test_harness`
+# origin, which neither the core operations nor a real module use. A later setting
+# that moved the emitted bytes would need its own pin on this line; none does today.
+#
+# **The drift it guards is not yet byte-visible, and the honest form of the claim
+# matters more than the stronger one.** The shipped Recallatron skeleton declares no
+# operation, tool or web surface, so naming it through either source yields a
+# byte-identical document. What the pin stops *today* is a malformed
+# `deployment.toml`, which aborts `rheo openapi` outright rather than silently. A
+# developer regenerating a genuinely *different* `openapi.json` than the one
+# `repository-checks.yml` diffs becomes reachable the moment a module declares
+# something the document carries — so the recipe is pinned before that rather than
+# after it. CI needs neither pin: a runner carries no `RHEO__*` and no
+# `deployment.toml`.
+#
+# The `trap` and the command it protects share one logical line on purpose: without
+# `.ONESHELL` make runs each recipe line in its own shell, so a `trap` set on an
+# earlier line would fire at that line's end and delete the data root before
+# `rheo openapi` ran.
 #
 # **The second command's paths are relative to `apps/web`, not to the repository
 # root, and that is not a style choice.** `pnpm -C apps/web` sets the working
@@ -212,11 +251,14 @@ check:
 # `openapi-typescript` is linked into `apps/web/node_modules/.bin`, and the root
 # `node_modules/.bin` does not carry it.
 #
-# This target is permanent. It generates whatever the then-current registry
-# holds. Run 0v's throwaway module was the last distribution to publish a
-# `rheo.modules` entry point, so its branch cut took the `RHEO_MODULES=` prefix
-# off the recipe below with it; the env read itself goes from the loader when the
-# real `modules.installed` settings key lands.
+# This target is permanent. It generates whatever the then-current registry holds.
+# Run 0v's throwaway module used to be the last distribution publishing a
+# `rheo.modules` entry point, and while that held there was nothing for this recipe
+# to pass either way; `modules/recallatron` publishes one again, which is why the
+# recipe now pins the setting rather than passing nothing.
 codegen:
-	uv run rheo openapi --out apps/web/src/generated/openapi.json
+	codegen_data_root="$$(mktemp -d)" || exit 1; \
+		trap 'rm -rf "$$codegen_data_root"' EXIT; \
+		RHEO__modules__installed= RHEO_DATA_ROOT="$$codegen_data_root" \
+		uv run rheo openapi --out apps/web/src/generated/openapi.json
 	pnpm -C apps/web exec openapi-typescript src/generated/openapi.json -o src/generated/api-types.ts

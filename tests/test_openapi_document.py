@@ -9,17 +9,21 @@ test_tokens.py`` asserts those sets exactly. A private registry sidesteps it
 entirely, and ``build_document(registry)`` takes the registry as an argument
 precisely so this is possible.
 
-**The canonical generation environment is now "no ``RHEO_*`` variable at all".**
-0c0's branch cut removed the last distribution publishing a ``rheo.modules``
-entry point, so nothing is discoverable to load and ``make codegen`` passes no
-``RHEO_MODULES``. The subprocess tests at the bottom run with every ``RHEO_*``
-variable stripped, which is exactly what AC 3's byte-exact regeneration check
-depends on.
+**The canonical generation environment is "no ``RHEO_*`` variable and no
+``deployment.toml``".** 0c0's branch cut removed the last distribution publishing
+a ``rheo.modules`` entry point, so nothing is discoverable to load, and the module
+allowlist is now the deployment-scope setting ``modules.installed``, which either
+source can set. The subprocess tests at the bottom therefore close **both** sources:
+every ``RHEO_*`` variable is stripped, and the child is given an empty temporary
+``RHEO_DATA_ROOT`` so the ``deployment.toml`` it resolves is one that does not exist.
+The setting lands on its empty package default either way — which is exactly what
+AC 3's byte-exact regeneration check depends on.
 """
 
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,6 +34,8 @@ from rheo_core.approvals import (
     STANDING_GRANT_CREATE,
     STANDING_GRANT_REVOKE,
 )
+from rheo_core.modules.loader import ALLOWLIST_KEY
+from rheo_core.modules.operations import MODULE_ENABLE, MODULE_INSTALL
 from rheo_core.operations import (
     GENERATED_BANNER,
     OPERATION_GET,
@@ -57,8 +63,14 @@ from rheo_core.operations.core_ops import (
 )
 from rheo_core.operations.openapi import REF_TEMPLATE
 from rheo_core.runtime.operations import RUNTIME_RUN
+from rheo_core.settings import env_variable_names
 
 GENERATED_DOCUMENT = "apps/web/src/generated/openapi.json"
+
+MODULES_VARIABLE = env_variable_names(ALLOWLIST_KEY)[0]
+"""How a child process sets the module allowlist: the deployment layer's own
+environment spelling of ``modules.installed``, derived rather than written out, so
+this test follows the key and its mapping rather than restating both."""
 
 
 @pytest.fixture
@@ -138,6 +150,11 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             WORKSPACE_DIGEST,
             WORKSPACE_RESTORE,
             RUNTIME_RUN,
+            # Run 1a0's ``core.module.install`` and ``core.module.enable``, both
+            # declared in ``rheo_core.modules.operations`` and registered inside the
+            # registrar for the same import-direction reason the token pair is.
+            MODULE_INSTALL,
+            MODULE_ENABLE,
         )
     )
 
@@ -214,10 +231,21 @@ def test_the_registry_is_the_only_input(registry: OperationRegistry) -> None:
 #   process-wide REGISTRY, which `rheo_core.tokens.sets` is evaluated over at issue
 #   time -- and `tests/postgres/test_tokens.py` asserts those sets exactly. The child
 #   process pays that cost and exits.
-# - It is the one subcommand that bootstraps nothing. The child runs with **every**
-#   `RHEO_*` variable stripped, so it has no profile, no data root, no cluster DSN
-#   and no database, and still emits the document. That is what makes AC 3's
-#   byte-exact regeneration check environment-independent.
+# - It is the one subcommand that opens no database. The child runs with **every**
+#   `RHEO_*` variable stripped and then a single one put back — an empty temporary
+#   `RHEO_DATA_ROOT` — so it has no profile, no cluster DSN and no database, and
+#   still emits the document. That is what makes AC 3's byte-exact regeneration
+#   check environment-independent.
+#
+# **The empty data root is the load-bearing half, and stripping alone is not
+# enough.** `load_modules()` resolves `modules.installed` now, and the deployment
+# layer reads `<data_root>/config/deployment.toml` on the way. With `RHEO_DATA_ROOT`
+# merely stripped, `resolve_data_root` falls through to the *platform*
+# application-data directory, so a developer with a real deployment.toml there would
+# have this test's byte-exactness guard reading a file outside the checkout — and, once
+# a distribution publishes a `rheo.modules` entry point, possibly loading a module.
+# A fresh empty directory per call closes that: it is created here rather than taken
+# as a fixture argument, so no future caller can forget to isolate its child.
 
 
 def _run_openapi(*, modules: str | None = None) -> str:
@@ -225,15 +253,17 @@ def _run_openapi(*, modules: str | None = None) -> str:
         key: value for key, value in os.environ.items() if not key.startswith("RHEO")
     }
     if modules is not None:
-        env["RHEO_MODULES"] = modules
-    completed = subprocess.run(
-        ["uv", "run", "--frozen", "rheo", "openapi", "--out", "-"],
-        cwd=Path(__file__).resolve().parents[1],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+        env[MODULES_VARIABLE] = modules
+    with tempfile.TemporaryDirectory(prefix="rheo-openapi-root-") as empty_root:
+        env["RHEO_DATA_ROOT"] = empty_root
+        completed = subprocess.run(
+            ["uv", "run", "--frozen", "rheo", "openapi", "--out", "-"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     assert completed.returncode == 0, completed.stderr
     return completed.stdout
 
@@ -259,8 +289,9 @@ def test_the_command_emits_the_core_operations_and_nothing_else() -> None:
 
 
 def test_naming_a_module_that_does_not_exist_changes_nothing() -> None:
-    """``RHEO_MODULES`` still parses and still gates: naming an id no distribution
-    publishes loads nothing and emits the same bytes as naming none at all.
+    """``modules.installed`` still parses and still gates: naming an id no
+    distribution publishes loads nothing and emits the same bytes as naming none at
+    all.
 
     This is the surviving half of the allowlist's own check. Its positive half (a
     named module's paths appearing) went with the last module distribution and is
@@ -286,8 +317,9 @@ def test_the_committed_artifact_is_what_the_command_emits() -> None:
     environment's own output, byte for byte. A hand-edit fails here as well as at
     AC 3's CI step — this one runs in the `python` job, which has no Node.
 
-    It also pins `make codegen`'s recipe from the other side: the recipe passes no
-    `RHEO_MODULES`, and so does this test.
+    It also pins `make codegen`'s recipe from the other side: the recipe sets no
+    module allowlist, and neither does this test, so both resolve `modules.installed`
+    to its empty package default.
     """
     committed = Path(__file__).resolve().parents[1] / GENERATED_DOCUMENT
     assert committed.read_text(encoding="utf-8") == _run_openapi()

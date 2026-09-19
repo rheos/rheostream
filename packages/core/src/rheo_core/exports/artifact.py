@@ -548,32 +548,43 @@ def _import_settings(connection: Connection, body: bytes) -> None:
 
 
 def _install_modules(connection: Connection, manifest: Mapping[str, object]) -> None:
+    """Replay the artifact's module rows through the two repository writers.
+
+    **The third caller of those writers, beside install and enable, and the reason
+    ``storage/repositories.py`` can claim to be the only code that inserts into either
+    table** (FR 10). This function used to hand-build both statements; routing them
+    changed no column and widened no signature, which is what made the sole-writer
+    property something a static scan can assert rather than something a reader has to
+    take on trust.
+
+    The values stay the *artifact's*, not today's: the recorded package version, the
+    recorded state, and the source's ``core_version`` for the schema-version row. Only
+    ``installed_at``/``enabled_at``/``applied_at`` are this restore's own instant,
+    exactly as before.
+    """
     modules = manifest["modules"]
     assert isinstance(modules, list)
     manifest_core_version = str(manifest["core_version"])
     for module in modules:
         assert isinstance(module, dict)
         now = datetime.now(UTC)
-        connection.execute(
-            insert(core_tables.module_state).values(
-                module_id=str(module["module_id"]),
-                package_version=str(module["package_version"]),
-                state=str(module.get("state", "enabled")),
-                installed_at=now,
-                enabled_at=now,
-                disabled_at=None,
-                state_detail=None,
-            )
+        module_id = str(module["module_id"])
+        repositories.insert_module_state(
+            connection,
+            module_id=module_id,
+            package_version=str(module["package_version"]),
+            state=str(module.get("state", "enabled")),
+            installed_at=now,
+            enabled_at=now,
         )
         schema_version = module["schema_version"]
         if schema_version is not None:
-            connection.execute(
-                insert(core_tables.module_schema_version).values(
-                    module_id=str(module["module_id"]),
-                    schema_version=str(schema_version),
-                    applied_at=now,
-                    core_version_at_apply=manifest_core_version,
-                )
+            repositories.insert_module_schema_version(
+                connection,
+                module_id=module_id,
+                schema_version=str(schema_version),
+                applied_at=now,
+                core_version_at_apply=manifest_core_version,
             )
 
 

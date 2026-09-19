@@ -840,6 +840,7 @@ source = { editable = "packages/core" }
 dependencies = [
     { name = "alembic" },
     { name = "httpx" },
+    { name = "packaging" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "rheo-contracts" },
@@ -851,6 +852,7 @@ dependencies = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.20.0,<2" },
     { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "packaging", specifier = ">=24" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.5,<4" },
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "rheo-contracts", editable = "packages/contracts" },
@@ -872,6 +874,16 @@ source = { editable = "modules/leads" }
 name = "rheo-recallatron"
 version = "0.1.0"
 source = { editable = "modules/recallatron" }
+dependencies = [
+    { name = "rheo-contracts" },
+    { name = "rheo-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "rheo-contracts", editable = "packages/contracts" },
+    { name = "rheo-core", editable = "packages/core" },
+]
 
 [[package]]
 name = "rheo-relationships"
