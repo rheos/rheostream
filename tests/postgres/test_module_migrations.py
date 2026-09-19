@@ -12,6 +12,7 @@ real distribution from Prompt 4 on, and the whole point of this file is that a r
 module chain runs.
 """
 
+import ast
 from collections.abc import Iterator
 from importlib import resources
 from pathlib import Path
@@ -19,10 +20,11 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
-from rheo_core.migrations.module_chain import run_module_chain
+from rheo_core.migrations.module_chain import newly_applied, run_module_chain
 from rheo_core.migrations.orchestrator import (
     CONTROL_CHAIN,
     CORE_CHAIN,
+    MODULE_VERSION_TABLE_PREFIX,
     migrate_workspace,
     recorded_revisions,
     script_location,
@@ -49,6 +51,18 @@ MODULE_ID = MANIFEST.module_id
 MODULE_VERSION_TABLE = f"alembic_version_{MODULE_ID}"
 MODULE_HEAD = "0001_schema"
 CORE_HEAD = "0006_runtime"
+# The `core` chain's six revisions, oldest first. Spelled out because this file uses
+# them as the multi-revision chain Recallatron is not: with one revision, "the
+# revisions newly applied" and "the recorded head" are the same answer, so nothing a
+# module chain alone can express distinguishes a history walk from a set difference.
+CORE_REVISIONS = (
+    "0001_core_schema",
+    "0002_durable_work",
+    "0003_approvals",
+    "0004_standing_grants",
+    "0005_export_records",
+    "0006_runtime",
+)
 
 
 @pytest.fixture
@@ -101,6 +115,33 @@ def schema_versions(engine: Engine, module_id: str) -> list[str]:
         ]
 
 
+def _env_configure_kwargs() -> dict[str, str]:
+    """The string keywords the module's ``env.py`` passes to ``context.configure``.
+
+    Parsed, not imported: ``env.py`` raises unless the orchestrator has already put a
+    live connection on the Alembic config, which is the no-Alembic-by-hand rule doing
+    its job. Only the two version-table keywords are compared below, so the dict is
+    narrowed to them rather than asserting on every constant the file happens to pass.
+    """
+    source = (
+        Path(str(resources.files(MANIFEST.storage.migrations_path))) / "env.py"
+    ).read_text()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "configure"
+        ):
+            return {
+                keyword.arg: keyword.value.value
+                for keyword in node.keywords
+                if keyword.arg in {"version_table", "version_table_schema"}
+                and isinstance(keyword.value, ast.Constant)
+                and isinstance(keyword.value.value, str)
+            }
+    raise AssertionError("the module's env.py makes no context.configure(...) call")
+
+
 def install(cluster: ClusterSession, workspace_id: UUID) -> None:
     """One ``run_module_chain`` call, in its own committed transaction."""
     database_name, engine = workspace_engine(cluster, workspace_id)
@@ -113,6 +154,50 @@ def install(cluster: ClusterSession, workspace_id: UUID) -> None:
         )
 
 
+# --- what "newly applied" means -------------------------------------------------------
+
+
+def test_newly_applied_walks_the_history_rather_than_differencing_the_heads() -> None:
+    """The rule ``run_module_chain``'s row count rests on, pinned where it is visible.
+
+    **Recallatron cannot pin this and it is worth saying why.** Its chain has exactly
+    one revision, so ``after - before`` and a full history walk return the same single
+    id, and an implementation doing the wrong one passes every module-chain test in
+    this file. The idempotency case does not catch it either — that reds on the
+    composite primary key, which is the database doing the assertion's job.
+
+    The shipped ``core`` chain has six revisions and is the cheap pin: upgrading it
+    from base records **one** id in its version table while **six** revisions ran, so
+    the difference reports one applied step and the walk reports six. No second
+    migration has to be invented to prove it.
+    """
+    # Base to head: six steps ran, oldest first. `after - before` gives one.
+    assert (
+        newly_applied(CORE_CHAIN, before=frozenset(), after=frozenset({CORE_HEAD}))
+        == CORE_REVISIONS
+    )
+    # A partial upgrade: four steps, and again the difference would give one.
+    assert (
+        newly_applied(
+            CORE_CHAIN,
+            before=frozenset({"0002_durable_work"}),
+            after=frozenset({CORE_HEAD}),
+        )
+        == CORE_REVISIONS[2:]
+    )
+    # Agreeing snapshots apply nothing — this is what makes a re-run write no row,
+    # independently of the primary key that would also have refused it.
+    assert (
+        newly_applied(
+            CORE_CHAIN, before=frozenset({CORE_HEAD}), after=frozenset({CORE_HEAD})
+        )
+        == ()
+    )
+    # Oldest first, not newest first: Alembic walks downwards and the rows must not.
+    walked = newly_applied(CORE_CHAIN, before=frozenset(), after=frozenset({CORE_HEAD}))
+    assert walked[0] == "0001_core_schema" and walked[-1] == CORE_HEAD
+
+
 # --- the three call sites -------------------------------------------------------------
 
 
@@ -121,19 +206,30 @@ def test_every_version_table_call_site_resolves_a_module_chain(
 ) -> None:
     """``version_table_for`` is reached from three places, and all three must widen.
 
-    ``_check_chain`` (through ``script_location``), ``recorded_revisions``, and
-    ``run_chain``. A bare ``_VERSION_TABLES[...]`` subscript left at any of them
-    ``KeyError``s on a module chain name the moment ``_check_chain`` stops rejecting
-    one, because ``_VERSION_TABLES`` never gains a module entry.
+    ``script_location``, ``recorded_revisions``, and ``run_chain``. A bare
+    ``_VERSION_TABLES[...]`` subscript left at any of them ``KeyError``s on a module
+    chain name the moment the membership test stops rejecting one, because
+    ``_VERSION_TABLES`` never gains a module entry.
     """
     assert version_table_for(CONTROL_CHAIN) == (CONTROL_SCHEMA, CONTROL_VERSION_TABLE)
     assert version_table_for(CORE_CHAIN) == (CORE_SCHEMA, CORE_VERSION_TABLE)
     assert version_table_for(MODULE_ID) == (MODULE_ID, MODULE_VERSION_TABLE)
+    assert MODULE_VERSION_TABLE == f"{MODULE_VERSION_TABLE_PREFIX}{MODULE_ID}"
     with pytest.raises(ValueError, match="unknown migration chain"):
         version_table_for("nope_probe")
 
-    # Call site 1, ``_check_chain``: the chain now resolves a script directory, and it
-    # is the module's own package rather than anything under ``rheo_core.migrations``.
+    # The other half of that pair, closed end to end: what the orchestrator DERIVES
+    # has to be what the module's env.py actually CONFIGURES. The module's own
+    # contract test asserts this statically, from the manifest and the prefix; here
+    # it is asserted against the live derivation, so the two cannot drift apart
+    # without one of them reding.
+    assert _env_configure_kwargs() == {
+        "version_table": MODULE_VERSION_TABLE,
+        "version_table_schema": MODULE_ID,
+    }
+
+    # Call site 1, ``script_location``: the chain now resolves a script directory, and
+    # it is the module's own package, not anything under ``rheo_core.migrations``.
     located = script_location(MODULE_ID)
     assert located == Path(str(resources.files(MANIFEST.storage.migrations_path)))
     assert (located / "env.py").is_file()

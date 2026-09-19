@@ -68,6 +68,7 @@ from rheo_core.storage.core_tables import CORE_SCHEMA, CORE_VERSION_TABLE
 from rheo_core.storage.postgres import advisory_lock
 
 if TYPE_CHECKING:
+    from rheo_core.modules.manifest import ModuleManifest
     from rheo_core.storage.postgres import PostgresBackend
 
 logger = logging.getLogger("rheo_core.migrations")
@@ -86,48 +87,64 @@ _VERSION_TABLES: Final[dict[str, tuple[str, str]]] = {
 }
 _DETAIL_LIMIT: Final = 2000
 
+MODULE_VERSION_TABLE_PREFIX: Final = "alembic_version_"
+"""What a module chain's version table is called, before its module id.
+
+Public and named because **this side derives the name while the module's own
+``env.py`` writes it as a literal**, and nothing at runtime makes the two agree. An
+``env.py`` left on Alembic's default ``alembic_version`` in the default schema
+migrates perfectly happily, and the only symptom is silent: ``recorded_revisions``
+reads a table that never fills, so the ``schema_ahead`` guard is vacuous and
+``run_module_chain`` records no step. A module's contract tests are what close that,
+by asserting its ``env.py`` against this prefix and its own
+``storage.schema_name``; the pairing is stated in ``docs/architecture/
+module-contract.md`` § Storage.
+"""
+
+
+def _module_manifest(chain: str) -> "ModuleManifest":
+    """The loaded manifest ``chain`` names, or the one refusal for an unknown chain.
+
+    Imported at call time: ``rheo_core.modules.loader`` reaches this module through
+    ``storage.provisioning``, so a module-level import is a cycle — the same reason
+    ``storage/postgres.py``'s ``migrate`` imports ``migrate_workspace`` at call time.
+    """
+    from rheo_core.modules import loaded_manifests
+
+    manifests = loaded_manifests()
+    manifest = manifests.get(chain)
+    if manifest is None:
+        raise ValueError(
+            f"unknown migration chain {chain!r}; expected one of {CHAINS} or a loaded "
+            f"module id (loaded: {sorted(manifests)})"
+        )
+    return manifest
+
 
 def version_table_for(chain: str) -> tuple[str, str]:
     """The ``(schema, version_table)`` pair ``chain``'s Alembic environment writes.
 
     ``control`` and ``core`` answer from :data:`_VERSION_TABLES`, unchanged. Any other
-    name is read as a module id, and answers ``alembic_version_<module_id>`` inside
-    the module's own schema — the pair that module's ``env.py`` configures, so a
-    module chain's recorded history can never be confused with ``core``'s or with
-    another module's. The schema is the module id itself because
-    ``StorageDeclaration.schema_name`` is held equal to ``module_id`` by the
-    manifest's own validator.
+    name is read as a module id and answers
+    ``<module_id>.alembic_version_<module_id>``, so a module chain's recorded history
+    can never be confused with ``core``'s or with another module's. The schema is the
+    module id itself because ``StorageDeclaration.schema_name`` is held equal to
+    ``module_id`` by the manifest's own validator.
 
     **Every caller that used to subscript :data:`_VERSION_TABLES` goes through here**,
     which is what lets that table keep exactly its two shipped entries: a module id
     resolves against the loaded manifests instead, and a name no loaded manifest
-    claims is refused here rather than reaching Alembic.
+    claims is refused rather than reaching Alembic. Together with
+    :func:`_module_manifest` this is the only membership test for a chain name.
+
+    What it cannot do is make a module's ``env.py`` agree with what it derives; see
+    :data:`MODULE_VERSION_TABLE_PREFIX`.
     """
     known = _VERSION_TABLES.get(chain)
     if known is not None:
         return known
-    # Imported at call time: ``rheo_core.modules.loader`` reaches this module through
-    # ``storage.provisioning``, so a module-level import is a cycle — the same reason
-    # ``storage/postgres.py``'s ``migrate`` imports ``migrate_workspace`` at call time.
-    from rheo_core.modules import loaded_manifests
-
-    manifests = loaded_manifests()
-    if chain not in manifests:
-        raise ValueError(
-            f"unknown migration chain {chain!r}; expected one of {CHAINS} or a loaded "
-            f"module id (loaded: {sorted(manifests)})"
-        )
-    return chain, f"alembic_version_{chain}"
-
-
-def _check_chain(chain: str) -> str:
-    """``chain`` back, once :func:`version_table_for` accepts it as a chain name.
-
-    The membership test is no longer ``_VERSION_TABLES`` alone: a loaded module id is
-    a chain name too, and this function is the one place that says so.
-    """
-    version_table_for(chain)
-    return chain
+    _module_manifest(chain)
+    return chain, f"{MODULE_VERSION_TABLE_PREFIX}{chain}"
 
 
 def script_location(chain: str) -> Path:
@@ -139,13 +156,10 @@ def script_location(chain: str) -> Path:
     ``storage.migrations_path`` names a package holding no ``env.py`` is refused here
     rather than at ``command.upgrade``.
     """
-    _check_chain(chain)
     if chain in _VERSION_TABLES:
         anchor = resources.files("rheo_core.migrations").joinpath(chain)
     else:
-        from rheo_core.modules import loaded_manifests
-
-        anchor = resources.files(loaded_manifests()[chain].storage.migrations_path)
+        anchor = resources.files(_module_manifest(chain).storage.migrations_path)
     location = Path(str(anchor))
     if not (location / "env.py").is_file():
         raise RuntimeError(f"migration chain {chain!r} has no env.py at {location}")

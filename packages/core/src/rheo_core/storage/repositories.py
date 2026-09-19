@@ -4,8 +4,15 @@ module state rows, and the two settings tables.
 No ``member_credential`` repository: the table's DDL ships in ``core_tables.py`` and
 its repository is deferred to the run that first reads or writes it. ``module_state``
 has a reader here (``core.workspace.status`` in C4) and no writer yet: its writers
-arrive with module install. ``module_schema_version`` has both — its writer is
-``run_module_chain``'s, one row per newly applied module migration step.
+arrive with module install. ``module_schema_version`` has a reader and now one
+writer, ``insert_module_schema_version``, called by ``run_module_chain``.
+
+**That writer is not yet the table's only one.** ``exports/artifact.py``'s
+``_install_modules`` still hand-builds ``insert(core_tables.module_schema_version)``
+on the export-restore path, outside this file and outside any migration. FR 10's
+sole-writer property is the outcome of routing that call site onto this function,
+which is phase 6's work together with the static scan that measures it. Until then
+this is the writer a migration uses, not the only writer the table has.
 
 Every function takes the caller's ``Connection`` (a ``UnitOfWork.connection``) and
 runs inside its transaction; none commits.
@@ -127,8 +134,11 @@ def insert_module_schema_version(
 
     ``applied_at`` and ``core_version_at_apply`` are the caller's, not this function's:
     the caller knows which transaction the step ran in and which ``rheo-core`` applied
-    it (``storage.provisioning.core_version()``), and the export-restore path replays
-    the values the artifact recorded rather than today's.
+    it (``storage.provisioning.core_version()``), and the export-restore path — phase
+    6's second caller — replays the values the artifact recorded rather than today's.
+
+    Its one caller today is ``migrations.module_chain.run_module_chain``. It is not
+    yet the table's only writer; see this module's own docstring.
     """
     row = ModuleSchemaVersionRow(
         module_id=module_id,
@@ -153,7 +163,8 @@ def list_module_schema_versions(
     """Every applied module step, oldest first (``core.workspace.status``'s reader).
 
     Ordered by ``applied_at`` then ``module_id``, so two modules' steps interleave by
-    when they were applied. :func:`insert_module_schema_version` is its writer.
+    when they were applied. Rows reach it from :func:`insert_module_schema_version`
+    and, until phase 6 routes it, from ``exports/artifact.py``'s restore path.
     """
     statement = select(c.module_schema_version).order_by(
         c.module_schema_version.c.applied_at, c.module_schema_version.c.module_id

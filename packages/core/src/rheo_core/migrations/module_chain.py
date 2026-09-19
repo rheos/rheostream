@@ -22,6 +22,31 @@ from rheo_core.modules.manifest import ModuleManifest
 from rheo_core.storage.repositories import insert_module_schema_version
 
 
+def newly_applied(
+    chain: str, *, before: frozenset[str], after: frozenset[str]
+) -> tuple[str, ...]:
+    """Every revision id ``chain`` gained between two recorded-head snapshots, oldest
+    first.
+
+    **A set difference is not the answer, and the difference is invisible on a
+    one-revision chain.** Alembic's version table records only the current head, not
+    the history that reached it, so a chain upgraded from base to its sixth revision
+    records exactly one id — and ``after - before`` reports one applied step where six
+    ran. The walk down the script directory is what recovers the six.
+    ``iterate_revisions(after, lower)`` yields every revision above ``lower`` up to and
+    including ``after``, newest first, and yields nothing when the two snapshots agree.
+
+    ``"base"`` for an empty ``before``: the version table did not exist, or held
+    nothing, so every revision reaching ``after`` is newly applied.
+    """
+    script = ScriptDirectory.from_config(build_config(chain))
+    lower = tuple(sorted(before)) if before else "base"
+    walked = tuple(script.iterate_revisions(tuple(sorted(after)), lower))
+    # Reversed, because the rows go in oldest first so the table reads as the order
+    # the steps actually ran in.
+    return tuple(revision.revision for revision in reversed(walked))
+
+
 def run_module_chain(
     connection: Connection,
     manifest: ModuleManifest,
@@ -37,32 +62,19 @@ def run_module_chain(
     ``run_chain`` takes the same ``ADVISORY_LOCK_KEY`` the ``core`` chain takes, and
     creates the module's own schema under it.
 
-    **Why the chain is walked rather than read.** Alembic's version table records only
-    the current head, not the history that reached it, so "which revisions did this
-    call apply" cannot be read back afterwards. Snapshotting the recorded heads either
-    side of ``run_chain`` and walking the script directory between them answers it
-    exactly: ``iterate_revisions(after, before)`` yields every revision above the old
-    heads up to and including the new ones, and yields *nothing* when the two agree.
-    That is what makes a re-run a clean no-op — the second call applies no revision,
-    so it writes no row — and it is why the row count tracks applied steps rather than
-    calls.
+    One row per **newly applied** revision, which :func:`newly_applied` is what
+    computes: a second call applies nothing, so it writes nothing, and a re-run is a
+    clean no-op rather than a duplicate.
     """
     module_id = manifest.module_id
     before = recorded_revisions(connection, module_id)
     run_chain(connection, module_id, expected_database=expected_database)
     after = recorded_revisions(connection, module_id)
-    script = ScriptDirectory.from_config(build_config(module_id))
-    # ``"base"`` rather than an empty lower bound: the version table did not exist (or
-    # held nothing) before this call, so every revision reaching ``after`` is new.
-    lower = tuple(sorted(before)) if before else "base"
-    applied = tuple(script.iterate_revisions(tuple(sorted(after)), lower))
-    # ``iterate_revisions`` walks downwards, newest first; the rows go in oldest first
-    # so the table reads as the order the steps actually ran in.
-    for revision in reversed(applied):
+    for revision in newly_applied(module_id, before=before, after=after):
         insert_module_schema_version(
             connection,
             module_id=module_id,
-            schema_version=revision.revision,
+            schema_version=revision,
             # Per row rather than one timestamp for the batch: the table's documented
             # reading is that the latest row is the current version, and a multi-step
             # chain sharing one timestamp would leave that unresolvable.
