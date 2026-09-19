@@ -149,13 +149,28 @@ def install(monkeypatch: pytest.MonkeyPatch, *module_ids: str) -> None:
 
     Through the deployment layer rather than by patching the loader: what a
     deployment does is set the key, and the coercion from text to ``list[str]`` is
-    part of what these tests are about. No ids at all removes the variable, so the
+    part of what these tests are about. No ids at all removes the variables, so the
     key falls back to its empty package default.
+
+    **Both spellings, and the deleting half is why.** The deployment layer accepts
+    ``RHEO__modules__installed`` and ``RHEO__MODULES__INSTALLED``, tries the exact
+    form first and falls through to the uppercase one. Measured on this tree: with
+    both set the exact form wins, so *setting* one would have been enough — but
+    *deleting* only the exact form falls through to an ambient uppercase value, and
+    that is precisely the direction AC 8's "nothing loads unless it is named" cases
+    drive. A developer with ``RHEO__MODULES__INSTALLED`` exported would have those
+    cases quietly loading a module.
+
+    ``tests/test_module_loader.py::test_the_allowlist_setting_is_not_set_by_the_suite``
+    asserts both are unset across the session, but that is one test in a session: it
+    makes such a leak *loud*, it does not prevent it, and it protects nothing that ran
+    before it. Handling both here lets this helper answer for itself.
     """
-    if module_ids:
-        monkeypatch.setenv(MODULES_VARIABLE, ",".join(module_ids))
-    else:
-        monkeypatch.delenv(MODULES_VARIABLE, raising=False)
+    for variable in (MODULES_VARIABLE, MODULES_VARIABLE_UPPER):
+        if module_ids:
+            monkeypatch.setenv(variable, ",".join(module_ids))
+        else:
+            monkeypatch.delenv(variable, raising=False)
 
 
 # --- the install fixtures -------------------------------------------------------------

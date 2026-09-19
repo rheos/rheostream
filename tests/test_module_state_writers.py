@@ -65,14 +65,29 @@ DECLARED_WRITERS: Final[dict[str, str]] = {
 
 _SYNTHETIC = """
 from sqlalchemy import insert
+from sqlalchemy import insert as ins
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from rheo_core.storage import core_tables
+from rheo_core.storage.core_tables import core_metadata, module_state
+from rheo_core.storage.core_tables import module_schema_version as versions
+from rheo_core.storage.core_tables import workspace_setting
 
 insert(core_tables.module_state).values(module_id="x")
 pg_insert(core_tables.module_schema_version).values(module_id="x")
+ins(module_state).values(module_id="x")
+ins(versions).values(module_id="x")
+insert(core_metadata.tables["module_state"]).values(module_id="x")
 insert(core_tables.workspace_setting).values(key="k")
+ins(workspace_setting).values(key="k")
 """
-"""A source the scan's answer is known for: two hits, and one near miss it must skip."""
+"""A source whose answer is known: five hits by five different routes, two near misses.
+
+Every route a writer could take past this scan without naming the table as an
+attribute of a module — an aliased constructor, a directly imported table, an aliased
+table, and a metadata subscript — is here **and** is paired with a near miss on
+another table by the same route. Without the near misses a scan that matched every
+call would score full marks.
+"""
 
 
 def _callee(func: ast.expr) -> str | None:
@@ -84,24 +99,71 @@ def _callee(func: ast.expr) -> str | None:
     return None
 
 
+def _bound_names(tree: ast.Module) -> dict[str, str]:
+    """Local name -> imported name, over every ``from X import Y [as Z]`` in the file.
+
+    **Without this the scan is evadable, which was measured rather than argued.** A
+    file writing ``from sqlalchemy import insert as ins`` and
+    ``from rheo_core.storage.core_tables import module_state``, then
+    ``ins(module_state)``, inserts into the table twice over and scored **zero** hits
+    against the first version of this scan — so the exclusivity assertion passed with
+    a live breach tracked in the tree. Matching the bare spelling was never enough:
+    both halves of a construction can be renamed at the import.
+
+    Every ``ImportFrom`` in the file, not just the module-level ones, because
+    ``ast.walk`` reaches a function-local import and a writer hidden inside a function
+    is exactly the shape worth catching.
+    """
+    bound: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound[alias.asname or alias.name] = alias.name
+    return bound
+
+
+def _table_named(node: ast.expr, bound: dict[str, str]) -> str | None:
+    """The target table a construction's first argument names, by any of three routes.
+
+    ``core_tables.module_state`` (attribute, matched on the attribute rather than the
+    receiver, because an AST scan cannot see what a receiver is bound to and
+    ``core_tables.``, ``c.`` and ``tables.`` are all the same module); a bare name
+    that an import bound to one of the tables; and ``metadata.tables["module_state"]``.
+    """
+    if isinstance(node, ast.Attribute):
+        return node.attr if node.attr in TARGET_TABLES else None
+    if isinstance(node, ast.Name):
+        resolved = bound.get(node.id, node.id)
+        return resolved if resolved in TARGET_TABLES else None
+    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+        key = node.slice.value
+        return key if isinstance(key, str) and key in TARGET_TABLES else None
+    return None
+
+
 def _constructions(source: str, label: str) -> tuple[tuple[str, int], ...]:
     """Every ``(table, line)`` an insert construction in ``source`` targets.
 
-    Matched on the *attribute* name rather than the receiver, because an AST scan
-    cannot see what a receiver is bound to — ``core_tables.module_state``,
-    ``c.module_state`` and ``tables.module_state`` are all the same table and all
-    spelled differently. No other object in this tree is named for either table.
+    **What this still cannot see, stated rather than left for someone to find.** A
+    table reached through ``getattr``, through a local variable assigned somewhere
+    else, or passed into a helper that takes the table as a parameter, is invisible to
+    a scan that reads one call expression. Those are shapes nothing in this tree uses
+    and that a reviewer would question on sight; the alias shapes above are ordinary
+    Python that a writer could reach for without meaning to hide anything, which is
+    why they are the ones worth resolving.
     """
     tree = ast.parse(source, filename=label)
+    bound = _bound_names(tree)
     found: list[tuple[str, int]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _callee(node.func) not in CONSTRUCTORS:
+        if not isinstance(node, ast.Call) or not node.args:
             continue
-        if not node.args:
+        callee = _callee(node.func)
+        if callee is None or bound.get(callee, callee) not in CONSTRUCTORS:
             continue
-        first = node.args[0]
-        if isinstance(first, ast.Attribute) and first.attr in TARGET_TABLES:
-            found.append((first.attr, node.lineno))
+        table = _table_named(node.args[0], bound)
+        if table is not None:
+            found.append((table, node.lineno))
     return tuple(found)
 
 
@@ -131,10 +193,22 @@ def _scan() -> dict[str, tuple[tuple[str, int], ...]]:
 # --- the instrument checks itself -----------------------------------------------------
 
 
-def test_the_scan_matches_both_call_shapes_and_skips_another_table() -> None:
-    """A walker that matched nothing would make every assertion below vacuous."""
+def test_the_scan_matches_every_route_to_the_table_and_skips_another_table() -> None:
+    """A walker that matched nothing would make every assertion below vacuous.
+
+    Five routes, in source order: the two attribute forms, an aliased constructor
+    against a directly imported table, an aliased table, and a metadata subscript.
+    The two near misses on ``workspace_setting`` are what stop a scan that matched
+    every call from passing this.
+    """
     found = _constructions(_SYNTHETIC, label="<synthetic>")
-    assert [table for table, _ in found] == ["module_state", "module_schema_version"]
+    assert [table for table, _ in found] == [
+        "module_state",
+        "module_schema_version",
+        "module_state",
+        "module_schema_version",
+        "module_state",
+    ]
 
 
 def test_the_scan_finds_both_writers_inside_the_declared_file() -> None:
