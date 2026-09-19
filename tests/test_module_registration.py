@@ -873,7 +873,66 @@ def test_a_dependency_cycle_refuses_the_load_naming_both_modules(
     assert loaded_manifests() == {}
 
 
-# --- the subscription's own module id -------------------------------------------------
+# --- a refusal leaves every registry untouched ----------------------------------------
+#
+# The canary is a wholly valid module declaring five registrable things plus a sink.
+# It is published FIRST in every refusal case below, so under a loader that registered
+# as it walked, it would be fully in the registries by the time the offender behind it
+# was refused. It declares no `configuration_schema`: the settings registry is
+# process-global and publishes no unregister, so "absent after a refusal" is not a
+# claim any one test in a shared session can make about it.
+
+CANARY_ID = "canary_probe"
+CANARY_VERSION = "1.0.0"
+CANARY_OPERATION = f"{CANARY_ID}.note.add"
+CANARY_TOOL_NAME = f"{CANARY_ID}_add_note"
+CANARY_JOB_KIND = f"{CANARY_ID}.sweep"
+CANARY_DECLARATION = OperationDeclaration(
+    name=CANARY_OPERATION,
+    safety_class=SafetyClass.MUTATE,
+    roles=frozenset({Role.OWNER}),
+    input_model=_ProbeInput,
+    output=_ProbeOutput,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field=None),
+)
+CANARY_SINK = _ProbeSink()
+CANARY_MANIFEST = _manifest(
+    CANARY_ID,
+    package_version=CANARY_VERSION,
+    operations=((CANARY_DECLARATION, _operation_handler),),
+    resolvers=((RECORD_TYPE, _resolver),),
+    tools=(
+        ToolDeclaration(
+            name=CANARY_TOOL_NAME,
+            safety_class=SafetyClass.MUTATE,
+            operation=CANARY_OPERATION,
+            input_model=_ProbeInput,
+        ),
+    ),
+    jobs=(
+        JobKind(
+            name=CANARY_JOB_KIND,
+            input_model=_ProbeJobInput,
+            handler=_job_handler,
+            max_attempts=1,
+            cancellable=False,
+        ),
+    ),
+    subscriptions=(
+        ConsumerSubscription(
+            consumer_id=f"{CANARY_ID}.order",
+            event_type=SHARED_EVENT_TYPE,
+            module_id=CANARY_ID,
+            replay_safe=True,
+            handler=_consumer_handler,
+        ),
+    ),
+    audit_sink=CANARY_SINK,
+)
+CANARY_ENTRY_POINT = EntryPoint(
+    name=CANARY_ID, value=f"{__name__}:CANARY_MANIFEST", group=ENTRY_POINT_GROUP
+)
 
 BORROWED_SUB_ID = "borrowed_sub_probe"
 BORROWED_SUB_MANIFEST = _manifest(
@@ -884,7 +943,7 @@ BORROWED_SUB_MANIFEST = _manifest(
             event_type=SHARED_EVENT_TYPE,
             # Somebody else's module id, which the registry itself would store
             # without a word.
-            module_id=PROVIDER_ID,
+            module_id=CANARY_ID,
             replay_safe=True,
             handler=_consumer_handler,
         ),
@@ -893,6 +952,20 @@ BORROWED_SUB_MANIFEST = _manifest(
 BORROWED_SUB_ENTRY_POINT = EntryPoint(
     name=BORROWED_SUB_ID,
     value=f"{__name__}:BORROWED_SUB_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
+UNSATISFIED_ON_CANARY_ID = "needs_canary_probe"
+UNSATISFIED_ON_CANARY_RANGE = ">=2,<3"
+UNSATISFIED_ON_CANARY_MANIFEST = _manifest(
+    UNSATISFIED_ON_CANARY_ID,
+    dependencies=(
+        Dependency(module_id=CANARY_ID, version_range=UNSATISFIED_ON_CANARY_RANGE),
+    ),
+)
+UNSATISFIED_ON_CANARY_ENTRY_POINT = EntryPoint(
+    name=UNSATISFIED_ON_CANARY_ID,
+    value=f"{__name__}:UNSATISFIED_ON_CANARY_MANIFEST",
     group=ENTRY_POINT_GROUP,
 )
 
@@ -909,4 +982,95 @@ def test_a_subscription_declared_under_another_modules_id_is_refused(
 
     message = str(excinfo.value)
     assert BORROWED_SUB_ID in message
-    assert PROVIDER_ID in message
+    assert CANARY_ID in message
+
+
+def test_a_subscription_is_checked_even_when_no_consumer_registry_is_supplied(
+    monkeypatch: pytest.MonkeyPatch, registries: _Registries
+) -> None:
+    """The ``core`` process refuses it too, though it would register no subscription.
+
+    A manifest declaring somebody else's subscription is malformed whatever this
+    process would have done with it; a core that accepted what the worker refused
+    would be two answers to one question about the same distribution.
+    """
+    _publish(monkeypatch, BORROWED_SUB_ENTRY_POINT)
+    _install(monkeypatch, BORROWED_SUB_ID)
+
+    with pytest.raises(ManifestInvalid):
+        load_modules(
+            registry=registries.operations,
+            resolvers=registries.resolvers,
+            tools=registries.tools,
+        )
+
+
+def _nothing_is_registered(registries: _Registries) -> bool:
+    """Every surface a load writes, other than the process-global settings registry."""
+    return (
+        not registries.operations.names()
+        and not registries.resolvers.record_types()
+        and not registries.tools.names()
+        and not registries.kinds.names()
+        and not registries.consumers.for_type(SHARED_EVENT_TYPE)
+        and sink_for(CANARY_ID) is None
+        and loaded_manifests() == {}
+    )
+
+
+def test_the_canary_module_really_registers_on_a_clean_load(
+    monkeypatch: pytest.MonkeyPatch, registries: _Registries
+) -> None:
+    """The positive control for the refusal cases below.
+
+    Without it, "nothing was registered after the refusal" is equally satisfied by a
+    canary that registers nothing under any circumstances, and the whole parametrised
+    case below would be vacuous.
+    """
+    assert _load(monkeypatch, registries, CANARY_ENTRY_POINT) == (CANARY_ID,)
+
+    assert registries.operations.names() == frozenset({CANARY_OPERATION})
+    assert registries.resolvers.record_types() == frozenset(
+        {f"{CANARY_ID}.{RECORD_TYPE}"}
+    )
+    assert registries.tools.names() == frozenset({CANARY_TOOL_NAME})
+    assert registries.kinds.names() == frozenset({CANARY_JOB_KIND})
+    assert registries.consumers.for_type(SHARED_EVENT_TYPE) != ()
+    assert sink_for(CANARY_ID) is CANARY_SINK
+    assert set(loaded_manifests()) == {CANARY_ID}
+    assert not _nothing_is_registered(registries)
+
+
+@pytest.mark.parametrize(
+    ("refusal", "offenders"),
+    [
+        ("event namespacing", (MISNAMED_EVENT_ENTRY_POINT,)),
+        ("duplicate event type", (TWIN_ONE_ENTRY_POINT, TWIN_TWO_ENTRY_POINT)),
+        ("contract version", (STALE_CONTRACT_ENTRY_POINT,)),
+        ("dependency range", (UNSATISFIED_ON_CANARY_ENTRY_POINT,)),
+        ("dependency cycle", (CYCLE_A_ENTRY_POINT, CYCLE_B_ENTRY_POINT)),
+        ("subscription ownership", (BORROWED_SUB_ENTRY_POINT,)),
+    ],
+)
+def test_a_refused_load_leaves_every_registry_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+    registries: _Registries,
+    refusal: str,
+    offenders: tuple[EntryPoint, ...],
+) -> None:
+    """`load_modules()` validates the whole set before it registers any of it.
+
+    Asserting the raise is not enough, and the subscription-ownership case is why:
+    that check began life inside ``_register``, where it fired only after the canary
+    ahead of it was fully registered — so the load raised, every "does it refuse?"
+    case stayed green, and the registries were left holding a module from a load that
+    failed. On a multi-module set that is the difference between a refused startup
+    and a half-configured process.
+
+    The canary is published first in every case, so a loader that registered as it
+    walked would leave it behind regardless of which check does the refusing.
+    """
+    with pytest.raises(ManifestInvalid):
+        _load(monkeypatch, registries, CANARY_ENTRY_POINT, *offenders)
+
+    assert _nothing_is_registered(registries), refusal

@@ -188,12 +188,23 @@ def load_modules(
     means "do not register that category", and the ``core`` process, which runs
     neither a job handler nor a consumer, legitimately passes neither.
 
-    **Nothing registers until the whole loaded set has passed every check.** The
-    permitted manifests are collected first, each gated on the entry-point name and
-    on the contract version; then the set's event declarations, dependency ranges and
-    dependency graph are checked; and only then is anything registered, in
-    dependency-sorted order. So a refusal leaves the registries as it found them
-    rather than stranding half a set behind the manifest that failed.
+    **No manifest is registered until the whole loaded set has passed every check
+    this module makes.** The permitted manifests are collected first, each gated on
+    the entry-point name and on the contract version; then the set's event
+    declarations, subscription ownership, dependency ranges and dependency graph are
+    checked; and only then is anything registered, in dependency-sorted order. So a
+    ``ManifestInvalid`` raised here leaves every registry as it found it rather than
+    stranding half a set behind the manifest that failed — which matters most on a
+    multi-module load, where the alternative is an earlier module fully registered
+    behind a later one's refusal.
+
+    The promise is bounded to this module's own refusals, deliberately. A shipped
+    ``register`` called from :func:`_register` can still refuse on its own rules — a
+    tool naming a non-token-issuable operation raises ``RegistrationRefused``, a
+    settings key already declared under another origin raises ``SettingRedeclared`` —
+    and one of those does land part-way through, because a registry's own validation
+    is not something this function can run ahead of time without keeping a second
+    copy of it.
 
     Idempotent, because everything it calls is: every registry treats an identical
     re-registration as a no-op and :func:`~rheo_core.audit.sink.install_sink` treats an
@@ -225,6 +236,7 @@ def load_modules(
             )
         manifests.append(manifest)
     _check_events(manifests)
+    _check_subscriptions(manifests)
     loaded: list[str] = []
     for manifest in _dependency_order(manifests):
         _register(
@@ -278,6 +290,43 @@ def _check_events(manifests: Sequence[ModuleManifest]) -> None:
                     "declared by exactly one loaded manifest",
                 )
             declared_by[event.type] = manifest.module_id
+
+
+def _check_subscriptions(manifests: Sequence[ModuleManifest]) -> None:
+    """Every declared subscription is owned by the manifest that declares it.
+
+    ``ConsumerRegistry.register`` does not check this and should not: it stores
+    whatever ``module_id`` the subscription carries, and the fan-out later tests that
+    id against the workspace's enabled modules. Only the loader knows which manifest
+    a subscription arrived on, so only the loader can catch one declared under
+    somebody else's id — which would register cleanly and then be filtered by, or
+    delivered under, the wrong module.
+
+    **Here rather than in ``_register``, and the placement is the substance.** This
+    check began inside ``_register``'s consumer branch, where it ran *after* that
+    manifest's operations, resolvers and tools were already registered and after
+    every earlier manifest in dependency order was fully registered. It was therefore
+    the one refusal that falsified the "a refusal leaves every registry untouched"
+    promise :func:`load_modules` is documented under — proven rather than reasoned
+    about: a two-module load whose second manifest borrowed the first's id left the
+    first module's operation, resolver, tool, job kind, audit sink and ``_LOADED``
+    entry in place behind the raise.
+
+    Unconditional, unlike the registration it guards. ``_register`` skips
+    subscriptions entirely when no ``ConsumerRegistry`` is supplied, but a manifest
+    declaring somebody else's subscription is malformed whether or not *this* process
+    is the one that would have registered it. A core process that accepted it while
+    the worker refused it would be two answers to one question about the same
+    distribution.
+    """
+    for manifest in manifests:
+        for subscription in manifest.subscriptions:
+            if subscription.module_id != manifest.module_id:
+                raise ManifestInvalid(
+                    manifest.module_id,
+                    f"declares subscription {subscription.consumer_id!r} owned by "
+                    f"module {subscription.module_id!r}",
+                )
 
 
 def _dependency_order(
@@ -371,18 +420,10 @@ def _register(
             # what this deliberately does not do.
             kinds.register(job.name, job.input_model, job.handler)
     if consumers is not None:
+        # Ownership was settled by ``_check_subscriptions`` before any registration
+        # began; this branch registers and nothing else, so it cannot raise a
+        # ``ManifestInvalid`` after an earlier module is already in the registries.
         for subscription in manifest.subscriptions:
-            if subscription.module_id != manifest.module_id:
-                # The registry does not check this: it stores whatever ``module_id``
-                # the subscription carries, and fan-out later tests that id against
-                # the workspace's enabled modules. A subscription declared under
-                # somebody else's id would register cleanly here and then be
-                # filtered by, or delivered under, the wrong module.
-                raise ManifestInvalid(
-                    manifest.module_id,
-                    f"declares subscription {subscription.consumer_id!r} owned by "
-                    f"module {subscription.module_id!r}",
-                )
             consumers.register(subscription)
     for spec in manifest.configuration_schema:
         # The process-global settings registry, which is also what provisioning
