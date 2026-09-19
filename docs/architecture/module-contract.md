@@ -9,9 +9,8 @@ release one and writes the full lifecycle on paper as D5 requires.
 
 A module is an ordinary Python distribution that exposes one `Module` object through the
 `rheo.modules` packaging entry-point group. The object carries a **manifest** (a typed,
-validated model in `packages/core`, for the reason [the manifest](#the-manifest) gives) and a
-**register** function that the core calls once per process start to attach the module's
-operations, tools, event handlers, jobs, schedules,
+validated model in `packages/core`) and a **register** function that the core calls once per
+process start to attach the module's operations, tools, event handlers, jobs, schedules,
 resolvers, and web contribution to the global registry. Host-installed availability is "the
 distribution is importable"; per-workspace activation is a row in `core.module_state`. The core
 imports no module; a module imports the core and the contracts and, if it declares one, another

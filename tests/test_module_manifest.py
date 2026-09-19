@@ -19,6 +19,7 @@ import pydantic
 import pytest
 import rheo_contracts
 from packaging.requirements import Requirement
+from rheo_contracts.refs import RESERVED_MODULE_SEGMENT
 from rheo_core.audit import CORE_AUDIT_SINK
 from rheo_core.modules.manifest import (
     Dependency,
@@ -27,6 +28,7 @@ from rheo_core.modules.manifest import (
     SensitivityTier,
     StorageDeclaration,
 )
+from rheo_core.settings.schema import KeySpec, Scope, ValueType
 
 MODULE_ID = "manifest_probe"
 
@@ -186,6 +188,45 @@ def test_sensitivity_carries_the_three_tiers() -> None:
         **_fields(sensitivity={"note": {"body": SensitivityTier.RESTRICTED}})
     )
     assert manifest.sensitivity["note"]["body"] is SensitivityTier.RESTRICTED
+    assert manifest.sensitivity == {"note": {"body": SensitivityTier.RESTRICTED}}
+
+
+# --- frozen=True means both of the things it promises ---------------------------------
+
+
+def test_a_manifest_is_hashable() -> None:
+    """``ConfigDict(frozen=True)`` promises a working ``__hash__``, and the frozen
+    dataclass this model replaced had one. A plain ``dict`` in ``sensitivity`` would
+    make this raise TypeError."""
+    manifest = ModuleManifest(
+        **_fields(sensitivity={"note": {"body": SensitivityTier.INTERNAL}})
+    )
+    assert isinstance(hash(manifest), int)
+    assert hash(manifest) == hash(manifest)
+
+
+def test_sensitivity_cannot_be_mutated_in_place_at_either_level() -> None:
+    """The other half of the promise. Only freezing the outer mapping would leave
+    ``manifest.sensitivity["note"]["body"] = ...`` working on a frozen manifest."""
+    manifest = ModuleManifest(
+        **_fields(sensitivity={"note": {"body": SensitivityTier.INTERNAL}})
+    )
+    with pytest.raises(TypeError):
+        manifest.sensitivity["other"] = {}  # type: ignore[index]
+    with pytest.raises(TypeError):
+        manifest.sensitivity["note"]["body"] = SensitivityTier.PUBLIC  # type: ignore[index]
+    assert manifest.sensitivity["note"]["body"] is SensitivityTier.INTERNAL
+
+
+def test_the_caller_s_own_dict_cannot_reach_back_into_the_manifest() -> None:
+    """A copy, not a view: mutating the mapping that was passed in must not change
+    what the manifest holds."""
+    source = {"note": {"body": SensitivityTier.INTERNAL}}
+    manifest = ModuleManifest(**_fields(sensitivity=source))
+    source["note"]["body"] = SensitivityTier.PUBLIC
+    source["added"] = {}
+    assert manifest.sensitivity["note"]["body"] is SensitivityTier.INTERNAL
+    assert "added" not in manifest.sensitivity
 
 
 # --- audit_sink: the duck check, not an isinstance probe ------------------------------
@@ -235,6 +276,78 @@ def test_a_pep_440_version_range_is_accepted() -> None:
         )
     )
     assert manifest.dependencies[0].optional is False
+
+
+@pytest.mark.parametrize(
+    "bad_id", ["Probe", "manifest-probe", "1probe", "manifest probe"]
+)
+def test_a_module_id_that_is_not_a_lowercase_identifier_is_refused(bad_id: str) -> None:
+    """One of the two rules the deleted ``validate()`` carried that nothing else in
+    the tree re-checks. ``storage.schema_name`` is set to match, so only the
+    identifier rule can be what fires."""
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        ModuleManifest(
+            **_fields(
+                module_id=bad_id,
+                storage=StorageDeclaration(
+                    schema_name=bad_id,
+                    migrations_path="m",
+                    required_extensions=(),
+                ),
+            )
+        )
+    assert "module_id" in str(excinfo.value)
+    assert "lowercase identifier" in str(excinfo.value)
+
+
+def test_the_reserved_core_module_id_is_refused() -> None:
+    """``core`` is the segment the core itself mints references under
+    (``rheo_contracts.refs.RESERVED_MODULE_SEGMENT``), so a module claiming it would
+    shadow core-owned records. Read from the contract rather than spelled here, so
+    the test follows the constant if it ever moves."""
+    assert RESERVED_MODULE_SEGMENT == "core"
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        ModuleManifest(
+            **_fields(
+                module_id=RESERVED_MODULE_SEGMENT,
+                storage=StorageDeclaration(
+                    schema_name=RESERVED_MODULE_SEGMENT,
+                    migrations_path="m",
+                    required_extensions=(),
+                ),
+            )
+        )
+    assert "reserved" in str(excinfo.value)
+
+
+def _key_spec(key: str) -> KeySpec:
+    return KeySpec(
+        key=key,
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=None,
+        explicit_per_workspace=False,
+        default=30,
+    )
+
+
+def test_a_configuration_key_outside_the_module_namespace_is_refused() -> None:
+    """Keys must start with ``<module_id>.`` so one module cannot declare, and then
+    write, another module's settings."""
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        ModuleManifest(
+            **_fields(configuration_schema=(_key_spec("somewhere_else.retention"),))
+        )
+    assert "configuration_schema" in str(excinfo.value)
+    assert "somewhere_else.retention" in str(excinfo.value)
+
+
+def test_a_configuration_key_inside_the_module_namespace_is_accepted() -> None:
+    """The control: the same read, one prefix different, has to pass."""
+    manifest = ModuleManifest(
+        **_fields(configuration_schema=(_key_spec(f"{MODULE_ID}.retention"),))
+    )
+    assert manifest.configuration_schema[0].key == f"{MODULE_ID}.retention"
 
 
 def test_a_storage_schema_that_is_not_the_module_id_is_refused() -> None:

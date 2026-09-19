@@ -29,18 +29,23 @@ forced rather than stylistic: ``AuditSink`` is a ``typing.Protocol`` **without**
 to an ``is_instance_schema`` whose build probes ``isinstance(None, AuditSink)``, a
 probe a non-runtime-checkable Protocol refuses with ``TypeError`` — so the same
 moment fails again, but silently, out of a flag that looks like it should have
-helped. The
-validator applies the same duck check ``install_sink`` already does, so the manifest
-and the installer agree on what a sink is.
+helped. The validator applies the same duck check ``install_sink`` already does, so
+the manifest and the installer agree on what a sink is.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Final, Self
+from typing import Annotated, Final, Self, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
-from pydantic import BaseModel, ConfigDict, PlainValidator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    PlainValidator,
+    model_validator,
+)
 from rheo_contracts import OperationDeclaration, Role, ToolDeclaration
 from rheo_contracts.refs import is_reserved_module
 
@@ -119,6 +124,61 @@ class SensitivityTier(StrEnum):
     PUBLIC = "public"
     INTERNAL = "internal"
     RESTRICTED = "restricted"
+
+
+_V = TypeVar("_V")
+
+
+class FrozenMap(Mapping[str, _V]):
+    """A read-only, hashable mapping, so ``frozen=True`` is true of the whole model.
+
+    ``ConfigDict(frozen=True)`` promises two things: no field reassignment, and a
+    working ``__hash__``. Pydantic validates a ``Mapping[...]`` annotation into a
+    plain ``dict``, which keeps neither — ``manifest.sensitivity["note"]["body"] =
+    ...`` mutates a "frozen" manifest in place, and ``hash(manifest)`` raises
+    ``TypeError`` on the unhashable dict. Every other field on the manifest is a
+    tuple, a frozen model or a frozen dataclass and so already holds; ``sensitivity``
+    was the one that did not, and the 0c0 frozen dataclass this model replaced *was*
+    hashable, so leaving it would have been a quiet regression behind a flag that
+    says otherwise.
+
+    Deliberately small. It is not a general-purpose frozendict and nothing here
+    needs one: it exists so one declared property of ``ModuleManifest`` is true.
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items: Mapping[str, _V]) -> None:
+        self._items: dict[str, _V] = dict(items)
+
+    def __getitem__(self, key: str) -> _V:
+        return self._items[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self._items.items()))
+
+    def __repr__(self) -> str:
+        return f"FrozenMap({self._items!r})"
+
+
+def _freeze_sensitivity(
+    value: Mapping[str, Mapping[str, SensitivityTier]],
+) -> Mapping[str, Mapping[str, SensitivityTier]]:
+    """Both levels, because only freezing the outer one leaves the inner dict open."""
+    return FrozenMap({key: FrozenMap(tiers) for key, tiers in value.items()})
+
+
+Sensitivity = Annotated[
+    Mapping[str, Mapping[str, SensitivityTier]],
+    AfterValidator(_freeze_sensitivity),
+]
+"""Record type -> field name -> tier, frozen at both levels on validation."""
 
 
 class Dependency(BaseModel):
@@ -311,11 +371,11 @@ class ModuleManifest(BaseModel):
     connector_bindings: tuple[ConnectorBinding, ...]
     health_checks: tuple[HealthCheck, ...]
     contract_tests: str
-    sensitivity: Mapping[str, Mapping[str, SensitivityTier]]
+    sensitivity: Sensitivity
     audit_sink: Annotated[AuditSink, PlainValidator(_audit_sink)] | None = None
 
     @model_validator(mode="after")
-    def _check_namespacing(self) -> Self:
+    def _check_invariants(self) -> Self:
         """The five rules the 0c0 stub's ``validate()`` carried, now inside the
         model so a manifest cannot exist in a state that breaks one.
 
