@@ -45,6 +45,7 @@ from rheo_core.modules import (
     Dependency,
     ExportDeclaration,
     ModuleManifest,
+    Schedule,
     StorageDeclaration,
     discovered,
     load_modules,
@@ -55,7 +56,8 @@ from rheo_core.modules import loader as loader_module
 from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.operations import OperationRegistry
 from rheo_core.refs.resolver import ResolverRegistry
-from rheo_core.settings import env_variable_names
+from rheo_core.settings import KeySpec, Scope, ValueType, env_variable_names
+from rheo_core.settings.schema import SettingsRegistry
 from rheo_core.tokens.sets import ToolRegistry
 
 MODULES_VARIABLE, MODULES_VARIABLE_UPPER = env_variable_names(ALLOWLIST_KEY)
@@ -281,6 +283,64 @@ because both have to be loadable at once for the dependency cases to be set up i
 workspace.
 """
 
+CONFIG_ID: Final = "config_probe"
+CONFIG_EXPLICIT_KEY: Final = f"{CONFIG_ID}.retention_days"
+CONFIG_EXPLICIT_DEFAULT: Final = 30
+CONFIG_OTHER_KEY: Final = f"{CONFIG_ID}.quiet"
+CONFIG_DEFAULT_SCHEDULE: Final = "nightly_sweep"
+CONFIG_OFF_SCHEDULE: Final = "opt_in_sweep"
+
+CONFIG_MANIFEST: Final = manifest(
+    CONFIG_ID,
+    contract_tests=PROBE_CONTRACT_TESTS,
+    configuration_schema=(
+        KeySpec(
+            key=CONFIG_EXPLICIT_KEY,
+            type=ValueType.INT,
+            scope=Scope.WORKSPACE,
+            floor=None,
+            explicit_per_workspace=True,
+            default=CONFIG_EXPLICIT_DEFAULT,
+        ),
+        KeySpec(
+            key=CONFIG_OTHER_KEY,
+            type=ValueType.BOOL,
+            scope=Scope.WORKSPACE,
+            floor=None,
+            explicit_per_workspace=False,
+            default=True,
+        ),
+    ),
+    schedules=(
+        Schedule(
+            name=CONFIG_DEFAULT_SCHEDULE,
+            job_kind=f"{CONFIG_ID}.sweep",
+            cron="0 4 * * *",
+            enabled_by_default=True,
+        ),
+        Schedule(
+            name=CONFIG_OFF_SCHEDULE,
+            job_kind=f"{CONFIG_ID}.opt_in",
+            cron="0 5 * * *",
+            enabled_by_default=False,
+        ),
+    ),
+)
+"""``core.module.enable``'s step 3, with one declaration of each kind on each side.
+
+**Two keys and two schedules, not one of each, because the step filters.** Enable
+writes a row for a key marked ``explicit_per_workspace`` and for a schedule marked
+``enabled_by_default``, and writes nothing for the others — so a fixture declaring
+only the ones that land cannot tell "wrote what was marked" from "wrote everything",
+which is the whole mistake worth catching here.
+
+Its ``migrations_path`` is the builder's default and no chain exists behind it: this
+module is seeded into a workspace through the repository writers rather than installed
+through ``core.module.install``, because what these cases are about is enable's own
+steps and not the install job. Its ``contract_tests`` is real anyway, so a later case
+that does want to install it does not have to change the fixture to do so.
+"""
+
 MISSING_TESTS_ID: Final = "notests_probe"
 MISSING_TESTS_MANIFEST: Final = manifest(MISSING_TESTS_ID)
 """Every field on the builder's defaults, including a ``contract_tests`` path that is
@@ -309,6 +369,7 @@ PROBE_ENTRY_POINTS: Final[dict[str, EntryPoint]] = {
         (DEPENDANT_MANIFEST, "DEPENDANT_MANIFEST"),
         (OPTIONAL_DEPENDANT_MANIFEST, "OPTIONAL_DEPENDANT_MANIFEST"),
         (MISSING_TESTS_MANIFEST, "MISSING_TESTS_MANIFEST"),
+        (CONFIG_MANIFEST, "CONFIG_MANIFEST"),
     )
 }
 """Every fixture module this file publishes, by id.
@@ -339,6 +400,22 @@ def loaded_probe_modules(
     process-wide and cannot be local, which is what :func:`reset_surfaces` either side
     is for.
 
+    **The settings registry is local too, and it is the one that would otherwise
+    escape.** ``load_modules`` takes the operation, resolver and tool registries as
+    arguments, but ``loader.py``'s ``_register`` writes ``configuration_schema`` keys
+    straight into the process-global ``settings.schema.REGISTRY``, which publishes no
+    unregister — so a fixture key declared here would stay declared for the rest of the
+    session. That is inert for a key marked ``explicit_per_workspace = False`` (the
+    residue ``tests/test_module_registration.py`` documents and accepts), and it is
+    **not** inert for one marked ``True``: ``storage/provisioning.py``'s step 4
+    iterates ``REGISTRY.explicit_per_workspace()`` and would write that key's row into
+    every workspace provisioned afterwards in the session, so
+    ``tests/test_settings.py::test_explicit_per_workspace_keys_carry_their_default``
+    and ``tests/postgres/test_provisioning.py``'s exact row assertions would red or not
+    depending on collection order. Rebinding the loader's own name for that registry —
+    the same technique :func:`publish` uses on ``entry_points`` — keeps the write local
+    without touching the real registry every other reader still resolves through.
+
     **The audit-sink table is deliberately left alone.** Every fixture here declares
     ``audit_sink = None``, so loading one installs nothing to clean up, while
     ``reset_sinks()`` would take out the ``core`` sink ``tests/conftest.py`` installs
@@ -347,6 +424,7 @@ def loaded_probe_modules(
     """
     reset_surfaces()
     try:
+        monkeypatch.setattr(loader_module, "SETTINGS_REGISTRY", SettingsRegistry())
         publish(monkeypatch, *_entry_points_for(module_ids))
         install(monkeypatch, *module_ids)
         loaded = load_modules(

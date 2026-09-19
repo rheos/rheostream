@@ -1,5 +1,5 @@
 """Workspace-database repositories over the ``core`` schema: the composition row, the
-module state rows, and the two settings tables.
+module state rows, the two settings tables, and the schedule writer enable uses.
 
 No ``member_credential`` repository: the table's DDL ships in ``core_tables.py`` and
 its repository is deferred to the run that first reads or writes it. ``module_state``
@@ -28,8 +28,10 @@ from sqlalchemy import Connection, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 
+from rheo_core.refs import uuid7
 from rheo_core.settings import ValueType
 from rheo_core.storage import core_tables as c
+from rheo_core.storage import work_tables as w
 
 
 def _now() -> datetime:
@@ -355,3 +357,61 @@ def upsert_member_setting(
         )
     )
     conn.execute(statement)
+
+
+# --- schedules ------------------------------------------------------------------------
+
+
+def insert_schedule_if_absent(
+    conn: Connection,
+    *,
+    module_id: str,
+    name: str,
+    job_kind: str,
+    cron: str,
+    enabled: bool,
+    next_run_at: datetime,
+) -> bool:
+    """Insert one ``core.schedule`` row unless ``(module_id, name)`` already has one.
+
+    The columns are exactly the ones the only other insert into this table writes —
+    ``migrations/core/versions/0006_runtime.py``'s ``core.retention_sweep`` row —
+    including the ``id`` this function mints and the ``last_run_at`` that is null
+    because a schedule has never run when it is created. ``next_run_at`` is the
+    caller's, as every timestamp in this module is: ``0006`` stamps migrate-time plus
+    a day, and ``core.module.enable`` stamps its own transaction's.
+
+    **Absence is read rather than enforced by an index, and the shape is worth
+    stating rather than hiding.** ``core.schedule`` is keyed on ``id`` alone and
+    carries no unique constraint over ``(module_id, name)``, so there is no conflict
+    target for the ``ON CONFLICT DO NOTHING`` that
+    :func:`insert_workspace_setting_if_absent` uses one screen up. Writing this as a
+    single ``INSERT ... WHERE NOT EXISTS`` would read as though it closed the race and
+    would not: two transactions whose snapshots both predate either insert find
+    nothing either way. What keeps the duplicate unreachable is the caller —
+    ``core.module.enable`` refuses a module that is already ``enabled``, so a second
+    enable refuses before it reaches here — and closing it properly needs a unique
+    index, which is a core migration and a later run's.
+
+    Returns ``True`` when a row was inserted.
+    """
+    existing = conn.execute(
+        select(w.schedule.c.id).where(
+            w.schedule.c.module_id == module_id, w.schedule.c.name == name
+        )
+    ).first()
+    if existing is not None:
+        return False
+    conn.execute(
+        insert(w.schedule).values(
+            id=uuid7(),
+            module_id=module_id,
+            name=name,
+            job_kind=job_kind,
+            cron=cron,
+            enabled=enabled,
+            last_run_at=None,
+            next_run_at=next_run_at,
+        )
+    )
+    return True

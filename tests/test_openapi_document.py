@@ -35,7 +35,7 @@ from rheo_core.approvals import (
     STANDING_GRANT_REVOKE,
 )
 from rheo_core.modules.loader import ALLOWLIST_KEY
-from rheo_core.modules.operations import MODULE_INSTALL
+from rheo_core.modules.operations import MODULE_ENABLE, MODULE_INSTALL
 from rheo_core.operations import (
     GENERATED_BANNER,
     OPERATION_GET,
@@ -150,10 +150,11 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             WORKSPACE_DIGEST,
             WORKSPACE_RESTORE,
             RUNTIME_RUN,
-            # Run 1a0's ``core.module.install``, declared in
-            # ``rheo_core.modules.operations`` and registered inside the registrar
-            # for the same import-direction reason the token pair is.
+            # Run 1a0's ``core.module.install`` and ``core.module.enable``, both
+            # declared in ``rheo_core.modules.operations`` and registered inside the
+            # registrar for the same import-direction reason the token pair is.
             MODULE_INSTALL,
+            MODULE_ENABLE,
         )
     )
 

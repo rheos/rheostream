@@ -1,8 +1,19 @@
-"""``core.module.install``: the five pre-flight refusals and the four job steps.
+"""``core.module.install`` and ``core.module.enable``: the two operations FR 7 and FR 8
+give a workspace for taking a host-loaded module and making it live in that workspace.
 
 FR 7's install, split across a synchronous dispatch handler and an asynchronous job
 handler exactly as ``module-contract.md`` § Install and Decision G describe. The split
 is not an implementation detail, it is the whole reason the refusals have names.
+
+**Enable is not split, and the asymmetry is the point.** ``module-contract.md`` §
+Enable is four steps — a state check, a dependency check, two ``if_absent`` row
+writes, and the ``core.module_state`` update — and every one of them is a bounded
+statement against the workspace database the dispatcher has already opened. Nothing
+here creates an extension, runs a migration chain or calls a module's code, which is
+what made install long-running; so enable declares no ``long_running``, mints no job,
+and each of its two refusals reaches the caller under its own ``error_code`` the way
+install's pre-flight five do. Its handler runs inside the dispatcher's own
+transaction, so a refusal at step 2 leaves nothing of step 3 behind.
 
 **Everything reachable without the workspace database is refused synchronously, and
 everything that needs it runs in the job.** A refusal raised from the dispatch handler
@@ -48,7 +59,7 @@ from a wheel into a deployment that has none, and the refusal says the declared 
 absent from the checkout rather than that the module is broken.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
 from uuid import UUID
@@ -63,13 +74,20 @@ from rheo_core.migrations.orchestrator import error_text
 from rheo_core.modules.loader import loaded_manifests
 from rheo_core.modules.manifest import ModuleManifest
 from rheo_core.operations.refusals import OperationRefused
-from rheo_core.settings import current_profile
+from rheo_core.settings import current_profile, encode_text
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.control_plane import get_workspace
 from rheo_core.storage.data_root import find_checkout_root
 from rheo_core.storage.postgres import get_backend
 from rheo_core.storage.provisioning import core_version
-from rheo_core.storage.repositories import insert_module_state, list_module_states
+from rheo_core.storage.repositories import (
+    ModuleStateRow,
+    insert_module_state,
+    insert_schedule_if_absent,
+    insert_workspace_setting_if_absent,
+    list_module_states,
+    set_module_state,
+)
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
 
@@ -81,18 +99,59 @@ nothing else enqueues it, so a second spelling would be a second thing to keep i
 step. ``apps/worker``'s ``JOB_KINDS.register(MODULE_INSTALL, ...)`` reads this name.
 """
 
+MODULE_ENABLE: Final = "core.module.enable"
+"""The operation name. Unlike :data:`MODULE_INSTALL` it names no job kind.
+
+Enable enqueues nothing: every one of its four steps is a bounded statement inside the
+dispatcher's transaction, so there is no continuation for a job kind to carry.
+"""
+
 MODULE_UNAVAILABLE: Final = "module_unavailable"
 MODULE_ALREADY_INSTALLED: Final = "module_already_installed"
 DEPENDENCY_MISSING: Final = "dependency_missing"
 DEPENDENCY_VERSION: Final = "dependency_version"
 CONTRACT_TESTS_MISSING: Final = "contract_tests_missing"
 
+MODULE_STATE_INVALID: Final = "module_state_invalid"
+DEPENDENCY_NOT_ENABLED: Final = "dependency_not_enabled"
+
 EXTENSION_FAILED: Final = "extension_failed"
 MIGRATION_FAILED: Final = "migration_failed"
 HEALTH_CHECK_FAILED: Final = "health_check_failed"
 
 INSTALLED_STATE: Final = "installed"
+ENABLED_STATE: Final = "enabled"
 TEST_PROFILE: Final = "test"
+
+ABSENT_STATE: Final = "absent"
+"""What :data:`MODULE_STATE_INVALID` names for a module with no row at all.
+
+Not one of ``core_tables.MODULE_STATES``, deliberately: ``absent`` is the first state
+of ``module-contract.md`` § Lifecycle's diagram and the one with no row to record it,
+so it is a name this refusal supplies rather than a value it read. A module nothing
+ever installed and a module whose row says ``removed`` are different answers and the
+refusal gives each its own.
+"""
+
+_ENABLEABLE_STATES: Final = frozenset({INSTALLED_STATE, "disabled"})
+"""The two ``core.module_state.state`` values enable accepts (§ Enable step 1).
+
+``disabled`` is in the set because re-enable is the same operation: § Re-enable's
+contract is "same checks as enable", and a disabled module's schema and rows are
+already there. ``enabled`` is **not** in it — enable is not idempotent and says so,
+the same call Decision D makes for a repeat install — and neither is ``removed``,
+whose bindings are revoked and whose way back is restore.
+"""
+
+_FIRST_SCHEDULE_RUN: Final = timedelta(days=1)
+"""How far ahead a schedule created at enable first becomes due.
+
+The same offset ``migrations/core/versions/0006_runtime.py`` stamps on the core's own
+``core.retention_sweep`` row, and the same one ``work/schedules.py``'s
+``run_due_schedules`` advances by on every tick. A schedule due the instant it is
+created would fire on the next worker visit, which is not what "created at enable"
+means anywhere in the contract.
+"""
 
 INSTALL_ATTEMPTS: Final = 1
 """``max_attempts`` for the enqueued job, explicitly rather than by the setting.
@@ -173,6 +232,34 @@ class ModuleInstallFailed(Exception):
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail
+
+
+class ModuleEnableInput(BaseModel):
+    """The module to enable. The workspace comes from the context.
+
+    The same one field ``ModuleInstallInput`` carries, declared separately rather than
+    shared: the input model is half of what the OpenAPI document publishes for an
+    operation, and two operations pointed at one model would make a later change to
+    either one a change to both.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    module_id: str
+
+
+class ModuleEnabled(BaseModel):
+    """What a successful enable returns: the module, and when the row says so.
+
+    ``enabled_at`` rather than a bare acknowledgement because it is the one fact the
+    caller cannot read back from ``core.workspace.status``, which reports a module's
+    version, state and schema version and not its timestamps.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    module_id: str
+    enabled_at: datetime
 
 
 def _minted_operation(uow: UnitOfWork) -> UUID:
@@ -424,3 +511,154 @@ def run_module_install_job(
                     HEALTH_CHECK_FAILED, getattr(check, "__name__", repr(check))
                 ) from exc
     token.checkpoint()
+
+
+# --- core.module.enable ---------------------------------------------------------------
+
+
+def _enable_refuse_unless_state(rows: dict[str, ModuleStateRow], module_id: str) -> str:
+    """Step 1. The module's actual state, or the refusal naming it.
+
+    First, and before the loaded-manifest lookup, because the state is the question a
+    caller asking "can this be enabled" is asking: a module id nothing ever installed
+    is ``absent`` here, not ``module_unavailable``, and an operator who mistyped the id
+    reads the same answer as one who forgot to install it.
+    """
+    row = rows.get(module_id)
+    current = ABSENT_STATE if row is None else row.state
+    if current not in _ENABLEABLE_STATES:
+        raise OperationRefused(
+            MODULE_STATE_INVALID,
+            f"module {module_id!r} is {current!r} in this workspace; "
+            f"enable needs {sorted(_ENABLEABLE_STATES)}",
+        )
+    return current
+
+
+def _refuse_unless_dependencies_enabled(
+    rows: dict[str, ModuleStateRow], manifest: ModuleManifest
+) -> None:
+    """Step 2. Every **required** dependency ``enabled`` in this workspace.
+
+    ``enabled`` and not merely ``installed``, which is the whole difference from
+    install's own dependency check: install needs the dependency's *schema* to exist
+    (``_INSTALLED_AT_MINIMUM``), enable needs its *behaviour* to be live, because from
+    the next request this module's code may call it.
+
+    An optional dependency is skipped entirely, matching install and matching
+    ``module-contract.md`` § Enable step 2's "required dependencies". An optional
+    dependency that is present but disabled is therefore not a refusal: ``optional``
+    says this module runs without it, and a module that cannot is declaring the wrong
+    flag.
+    """
+    for dependency in manifest.dependencies:
+        if dependency.optional:
+            continue
+        present = rows.get(dependency.module_id)
+        if present is None or present.state != ENABLED_STATE:
+            found = f"is {ABSENT_STATE}" if present is None else f"is {present.state!r}"
+            raise OperationRefused(
+                DEPENDENCY_NOT_ENABLED,
+                f"module {manifest.module_id!r} requires {dependency.module_id!r} to "
+                f"be {ENABLED_STATE!r} in this workspace, which {found}",
+            )
+
+
+def _write_enable_rows(
+    uow: UnitOfWork, manifest: ModuleManifest, *, now: datetime
+) -> None:
+    """Step 3. The ``explicit_per_workspace`` settings rows and the default schedules.
+
+    **The settings write overlaps ``storage/provisioning.py``'s step 4 on purpose.**
+    ``modules/loader.py``'s ``_register`` puts a module's ``KeySpec``s into the
+    process-global settings registry at load time, and ``_step_write_default_settings``
+    iterates ``REGISTRY.explicit_per_workspace()`` for every workspace it provisions —
+    so a workspace provisioned *after* the module loaded already has these rows before
+    enable runs, and a workspace provisioned before it does not. Both writers go
+    through :func:`~rheo_core.storage.repositories.insert_workspace_setting_if_absent`,
+    which is what makes the two safe together: neither overwrites a value the workspace
+    has since set, and neither may assume the other ran.
+
+    The specs are read off **this manifest** rather than out of that registry, which is
+    the narrower and the correct source: the registry holds every loaded module's keys,
+    and enabling one module must not write another's.
+    """
+    for spec in manifest.configuration_schema:
+        if not spec.explicit_per_workspace:
+            continue
+        insert_workspace_setting_if_absent(
+            uow.connection,
+            key=spec.key,
+            value=encode_text(spec, spec.default),
+            value_type=spec.type,
+            updated_by=None,
+        )
+    for schedule in manifest.schedules:
+        if not schedule.enabled_by_default:
+            continue
+        insert_schedule_if_absent(
+            uow.connection,
+            module_id=manifest.module_id,
+            name=schedule.name,
+            job_kind=schedule.job_kind,
+            cron=schedule.cron,
+            enabled=True,
+            next_run_at=now + _FIRST_SCHEDULE_RUN,
+        )
+
+
+def module_enable_handler(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: ModuleEnableInput
+) -> ModuleEnabled:
+    """§ Enable's four steps, in the dispatcher's own transaction.
+
+    Each step is independently refusable and none of them is reached out of order: a
+    module in the wrong state never has its dependencies read, and a module whose
+    dependency is disabled never has a settings row or a schedule written. That is what
+    running inside one transaction buys — a refusal at any step leaves the workspace
+    exactly as it found it, including the rows step 3 would have written.
+
+    ``ctx`` is unused beyond the routing the dispatcher already did with it: the
+    connection ``uow`` carries **is** this workspace's, so a second read of
+    ``ctx.workspace_id`` would be asking the same question twice.
+    """
+    module_id = model_input.module_id
+    rows = {row.module_id: row for row in list_module_states(uow.connection)}
+
+    # 1. module_state_invalid, naming the state this workspace actually holds.
+    _enable_refuse_unless_state(rows, module_id)
+
+    # The manifest, needed from step 2 on. Reached *after* step 1 so the state answer
+    # wins for an id this deployment does not load; a module whose row says
+    # ``installed`` while the deployment has stopped loading it is the deployment
+    # fault ``module_unavailable`` already names, and it gets that name here too
+    # rather than a second one meaning the same thing.
+    manifest = _refuse_unless_loaded(module_id)
+
+    # 2. dependency_not_enabled, naming the dependency and what it is instead.
+    _refuse_unless_dependencies_enabled(rows, manifest)
+
+    # 3. The declared rows, before the state moves: a failure writing either of them
+    #    must not leave a module reported enabled without the configuration and the
+    #    schedules enabling it is defined to create.
+    now = datetime.now(UTC)
+    _write_enable_rows(uow, manifest, now=now)
+
+    # 4. The row. ``set_module_state`` answers whether one matched, and the answer is
+    #    read rather than discarded: step 1 established the row exists, so a ``False``
+    #    here means it stopped existing between that read and this write — a
+    #    concurrent remove, the one thing this transaction cannot see. Raised as a
+    #    plain error rather than a refusal because it is not the caller's mistake and
+    #    carries no vocabulary of its own; the dispatcher rolls the transaction back
+    #    and reports ``handler_failed``, which is the honest answer for a state that
+    #    is supposed to be unreachable. Nothing else is needed to make "from the next
+    #    request, ``enabled_modules`` includes it" true: ``boundary/factories.py``
+    #    derives that set from these rows on every context it builds.
+    if not set_module_state(
+        uow.connection, module_id=module_id, state=ENABLED_STATE, enabled_at=now
+    ):
+        raise RuntimeError(
+            f"module {module_id!r} had a core.module_state row when this enable "
+            "began and has none now; nothing is enabled"
+        )
+    return ModuleEnabled(module_id=module_id, enabled_at=now)

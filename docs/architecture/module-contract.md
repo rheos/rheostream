@@ -66,7 +66,7 @@ that argument in full.
 | `secret_scopes` | list of scope prefixes | Empty for domain modules in release one. Only components that present secrets declare any. |
 | `connector_bindings` | list of `ConnectorBinding(transport, service_operation, route)` | Which of the module's operations a transport connector may call, and the HTTP route the binding registers on the `api` surface when the transport has one (`route` is null otherwise). Leads declares three, one per transport, all naming `leads.intake.accept_delivery` ([the three bindings](intake-and-events.md#transports)). |
 | `health_checks` | list of callables | Run by `rheo doctor` and the workspace status operation. |
-| `contract_tests` | path | The module's behavioural suite entry, run by the install path in test profile and by CI. |
+| `contract_tests` | path | The module's behavioural suite entry: a repo-relative directory. **Named deviation:** this row once said the suite is "run by the install path in test profile and by CI". Install **validates the path and does not run the suite** — see § Install step 6 for why — and CI runs it, through the `testpaths` widening that puts `modules/` in `make test`. The row is corrected here as well as there because it is the line a module author reads first, and leaving it would have this document asserting the superseded behaviour in its most-read table. |
 | `sensitivity` | mapping of record type to field tiers | Which fields are `public`, `internal`, `restricted` for the [redaction contract](runtime-and-mcp.md#the-redaction-contract). |
 | `audit_sink` | optional `AuditSink` | The writer for the module's own audit rows, installed under the module's id by `_register` in `packages/core/src/rheo_core/modules/loader.py`. **Not one of the twenty-three ratified fields**, and added because it is the only channel a module has: `rheo_core.operations.dispatch` resolves a sink by the *operation's* owning module and refuses every above-`READ` operation with `AUDIT_SINK_MISSING` when that module has none. Optional, because a module declaring only `READ` operations needs no sink. |
 
@@ -256,8 +256,18 @@ Per workspace, in `core.module_state.state`:
 4. The module's schema is created and its migration chain applied under the workspace's advisory
    lock; each applied step writes `core.module_schema_version`.
 5. `core.module_state` gets the row `installed` with the package version.
-6. The module's `contract_tests` run when the profile is `test`; in other profiles the health
-   checks run.
+6. The module's `contract_tests` path is **resolved and validated** when the profile is `test`;
+   in other profiles the health checks run. **Named deviation:** this step once said the tests
+   "run". They do not run here, and they do not run in the install job either — the suite is
+   CI's to run, through the `testpaths` widening that puts `modules/` in `make test`. Spawning a
+   test runner from inside a mutate operation's own transaction would be re-entrant (the suite
+   that drives install *is* pytest) and would put an arbitrary subprocess inside a transaction
+   holding the workspace's advisory lock. What install does instead is resolve the declared
+   repo-relative path against the checkout and refuse when it is absent — and it does that at
+   **pre-flight**, before any job is enqueued, which is why `contract_tests_missing` is one of
+   the caller's own five refusal codes rather than an in-job `job_failed`. The check is guarded by
+   `profile == "test"` because a built wheel does not package a module's test suite, so the
+   question is only meaningful in a checkout.
 7. Configuration keys from the module's schema become settable; none are required to enable.
 
 **Enable** (`core.module.enable`, owner or operator, class mutate):
@@ -273,6 +283,16 @@ Per workspace, in `core.module_state.state`:
 The memory module's install and enable is criterion 24's test: no core file changes, and the
 workspace status operation reports the version and schema version afterward. Relationships and
 Leads install the same way in phase three.
+
+**Criterion 24 is only partially closed by run 1a0, and a reader who marks it done after that
+run alone is reading a wrong record.** What 1a0 closes is the module-contract half: `core.module.
+install` and `core.module.enable` exist, Recallatron goes from `absent` to `enabled` through those
+two operations alone, and `core.workspace.status` reports its package version, its state and its
+schema version afterwards (`tests/postgres/test_module_lifecycle.py`). What it does not close is
+the interface-contribution half — the `WebContribution` shape this document's manifest table still
+describes as run 1a3's, the `apps/web/src/modules.generated.ts` composition step, and the test
+that a module's screens appear once it is enabled. That half belongs to run 1a3, `apps/web/**` is
+outside 1a0's scope by decision, and until 1a3 lands, criterion 24 stays open.
 
 ### Upgrade, disable, re-enable, remove, purge, restore (on paper, D5)
 

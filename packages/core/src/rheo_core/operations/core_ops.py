@@ -45,14 +45,15 @@ whose own row is the ``:105`` the cited range now reaches.
   session's act. Their declarations, models and handlers live in
   ``rheo_core.approvals.grant_operations``, for the same import-direction reason the
   approval pair's do; this module only registers them.
-- ``core.module.install`` — ``mutate``, ``long_running``; roles ``owner,
-  operator`` (``module-contract.md`` § Install). Its models, its five pre-flight
-  refusals and its job handler live in ``rheo_core.modules.operations``; only the
-  registration is here, and it is built **inside**
-  :func:`register_core_operations` for the import-direction reason the token and
-  approval operations already are — ``rheo_core.modules`` reaches back into this
-  package through ``modules/loader.py``'s ``OperationRegistry`` import, so a
-  module-level import here would close that cycle.
+- ``core.module.install`` — ``mutate``, ``long_running``; and
+  ``core.module.enable`` — ``mutate``, **not** ``long_running``; both roles ``owner,
+  operator`` (``module-contract.md`` § Install and § Enable). Their models, install's
+  five pre-flight refusals and its job handler, and enable's two refusals all live in
+  ``rheo_core.modules.operations``; only the registrations are here, and both are
+  built **inside** :func:`register_core_operations` for the import-direction reason
+  the token and approval operations already are — ``rheo_core.modules`` reaches back
+  into this package through ``modules/loader.py``'s ``OperationRegistry`` import, so
+  a module-level import here would close that cycle.
 - ``core.audit.list`` — ``read``; roles ``owner, operator``, ratified at
   ``module-contract.md:105``. The supported read of the audit record (run 0c2,
   C5). Its models and handler live in ``rheo_core.audit.operations``, beside the
@@ -551,7 +552,8 @@ def register_core_operations(
     their handlers in ``rheo_core.approvals.operations`` rather than in this file for
     the same reason: a declaration here would have to be built inside this function.
 
-    **``core.module.install`` is built here for the same reason, and its own.**
+    **``core.module.install`` and ``core.module.enable`` are built here for the same
+    reason, and their own.**
     ``rheo_core.modules.loader`` imports ``rheo_core.operations.registry`` at module
     level — that is how a loaded manifest's operations get registered at all — so a
     module-level ``from rheo_core.modules.operations import ...`` in this file would
@@ -573,9 +575,13 @@ def register_core_operations(
     from rheo_core.approvals.grant_operations import GRANT_OPERATIONS
     from rheo_core.approvals.operations import APPROVAL_OPERATIONS
     from rheo_core.modules.operations import (
+        MODULE_ENABLE,
         MODULE_INSTALL,
+        ModuleEnabled,
+        ModuleEnableInput,
         ModuleInstallInput,
         ModuleInstallScheduled,
+        module_enable_handler,
         module_install_handler,
     )
     from rheo_core.tokens.issue import (
@@ -636,6 +642,29 @@ def register_core_operations(
                 long_running=True,
             ),
             module_install_handler,
+        ),
+        (
+            OperationDeclaration(
+                name=MODULE_ENABLE,
+                safety_class=SafetyClass.MUTATE,
+                # ``module-contract.md`` § Enable ratifies the same pair install
+                # carries, and for the same reason the default ``{OWNER, MEMBER}``
+                # is spelled out rather than inherited.
+                roles=frozenset({Role.OWNER, Role.OPERATOR}),
+                input_model=ModuleEnableInput,
+                output=ModuleEnabled,
+                # ``NONE``: enabling an already-``enabled`` module is refused naming
+                # that state, so there is no "same row" a repeat could fold into.
+                idempotency=Idempotency.NONE,
+                # ``MUTATE``, so this is required; ``subject_field=None`` because a
+                # module id is not a ``RecordRef``.
+                audit=AuditSpec(subject_field=None),
+                # **No ``long_running``, unlike install.** Four bounded statements in
+                # the dispatcher's own transaction — no extension, no migration chain,
+                # no module code — so there is nothing for a job to continue and the
+                # caller gets the answer rather than an operation id.
+            ),
+            module_enable_handler,
         ),
     )
     return tuple(
