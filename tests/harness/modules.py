@@ -187,9 +187,27 @@ ABSENT_EXTENSION_ID: Final = "noext_probe"
 ABSENT_EXTENSION_NAME: Final = "rheo_no_such_extension_probe"
 """An extension name no installation provides, so ``CREATE EXTENSION`` really fails.
 
-See ``tests/postgres/test_module_install.py`` for why this stands in for the ratified
-"an extension the role may not create": the test cluster's ``rheo`` role is a
-superuser, and a superuser is refused no extension it has the files for.
+**DEVIATION FROM RATIFIED TEXT — run 1a0, phase 6, Edge Case 3.** The ratified edge
+case asks for the extension failure to be driven by "a test role explicitly denied the
+privilege". That is unreachable on this cluster and the premise was measured, not
+assumed: the ``rheo`` role is a PostgreSQL **superuser** (``usesuper = true``, and it
+is the only login role), and a superuser is refused no extension whose files are
+present. So the privilege branch of ``CREATE EXTENSION`` cannot be entered through the
+install path here at all.
+
+Two substitutes cover what the edge case is *for* — a ``CREATE EXTENSION`` the
+database genuinely refuses, told apart from a name it has never heard of:
+
+1. this fixture, naming an extension the server does not provide; and
+2. :data:`EXTENSION_MANIFEST` installed into a workspace where a conflicting object of
+   that name already exists — the extension is available, the manifest is fine, and
+   the database still says no.
+
+Recorded here, on the fixture that exists because of it, rather than only in the test
+that uses it: this is the module a later prompt reads when it reaches for these
+fixtures, and a deviation from ratified text should be found by whoever picks the
+fixture up. ``tests/postgres/test_module_install.py`` carries the same note beside the
+assertions.
 """
 
 PROVIDER_ID: Final = "provider_probe"

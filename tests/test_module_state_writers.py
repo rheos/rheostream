@@ -77,16 +77,24 @@ pg_insert(core_tables.module_schema_version).values(module_id="x")
 ins(module_state).values(module_id="x")
 ins(versions).values(module_id="x")
 insert(core_metadata.tables["module_state"]).values(module_id="x")
+core_tables.module_state.insert().values(module_id="x")
+versions.insert().values(module_id="x")
 insert(core_tables.workspace_setting).values(key="k")
 ins(workspace_setting).values(key="k")
+insert(core_metadata.tables["workspace_setting"]).values(key="k")
+core_tables.workspace_setting.insert().values(key="k")
 """
-"""A source whose answer is known: five hits by five different routes, two near misses.
+"""A source whose answer is known: seven hits by six routes, four near misses.
 
 Every route a writer could take past this scan without naming the table as an
 attribute of a module — an aliased constructor, a directly imported table, an aliased
-table, and a metadata subscript — is here **and** is paired with a near miss on
-another table by the same route. Without the near misses a scan that matched every
-call would score full marks.
+table, a metadata subscript, and the zero-argument ``<table>.insert()`` where the
+table is the *receiver* — is here, **and every one is paired with a near miss on
+another table by the same route**. The pairing is the point: without it a scan that
+matched every call scores full marks, and a branch that had stopped narrowing to
+:data:`TARGET_TABLES` would pass unnoticed. The subscript route shipped for one round
+with its hit and no near miss, so dropping its ``in TARGET_TABLES`` narrowing left
+every test green — which is how a control rots.
 """
 
 
@@ -144,24 +152,47 @@ def _table_named(node: ast.expr, bound: dict[str, str]) -> str | None:
 def _constructions(source: str, label: str) -> tuple[tuple[str, int], ...]:
     """Every ``(table, line)`` an insert construction in ``source`` targets.
 
-    **What this still cannot see, stated rather than left for someone to find.** A
-    table reached through ``getattr``, through a local variable assigned somewhere
-    else, or passed into a helper that takes the table as a parameter, is invisible to
-    a scan that reads one call expression. Those are shapes nothing in this tree uses
-    and that a reviewer would question on sight; the alias shapes above are ordinary
-    Python that a writer could reach for without meaning to hide anything, which is
-    why they are the ones worth resolving.
+    Two call shapes, because the table is not always an argument.
+    ``insert(<table>)`` carries it as the first one; ``<table>.insert()`` carries it as
+    the **receiver** and takes no arguments at all. Skipping zero-argument calls, which
+    this did for one round, made the second shape invisible — and it is not a
+    hypothetical spelling: ``runtime_session.insert()`` is live at three sites under
+    ``tests/postgres/``.
+
+    **What this still cannot see, stated plainly because the previous wording was
+    convenient rather than honest.** It used to say the unseen shapes were "shapes
+    nothing in this tree uses", which was false of ``<table>.insert()`` at the moment
+    it was written. What is genuinely unseen:
+
+    - raw SQL — ``text("INSERT INTO core.module_state ...")`` is a string, not a call
+      to a constructor, and nothing here parses SQL. (Detecting it would also make
+      *this* file its own hit, since the phrase would sit in a literal here.)
+    - a table reached through ``getattr``, or through a subscript whose key is not a
+      literal;
+    - a table bound to a local variable from something the scan cannot follow — a
+      function's return value, a loop variable;
+    - a table passed *into* a helper that does the inserting.
+
+    None of that is claimed to be unused. The claim is only that this scan does not
+    see it, so a future breach through one of those routes will not be caught here.
     """
     tree = ast.parse(source, filename=label)
     bound = _bound_names(tree)
     found: list[tuple[str, int]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
+        if not isinstance(node, ast.Call):
             continue
         callee = _callee(node.func)
         if callee is None or bound.get(callee, callee) not in CONSTRUCTORS:
             continue
-        table = _table_named(node.args[0], bound)
+        if node.args:
+            target: ast.expr = node.args[0]
+        elif isinstance(node.func, ast.Attribute):
+            # ``<table>.insert()``: the table is what the method was reached through.
+            target = node.func.value
+        else:
+            continue
+        table = _table_named(target, bound)
         if table is not None:
             found.append((table, node.lineno))
     return tuple(found)
@@ -196,18 +227,23 @@ def _scan() -> dict[str, tuple[tuple[str, int], ...]]:
 def test_the_scan_matches_every_route_to_the_table_and_skips_another_table() -> None:
     """A walker that matched nothing would make every assertion below vacuous.
 
-    Five routes, in source order: the two attribute forms, an aliased constructor
-    against a directly imported table, an aliased table, and a metadata subscript.
-    The two near misses on ``workspace_setting`` are what stop a scan that matched
-    every call from passing this.
+    Seven hits by six routes, and four near misses on ``workspace_setting`` that a
+    scan matching every call would also report.
+
+    **Sorted by line, not left in traversal order.** ``ast.walk`` is breadth-first, so
+    the order it yields these is an implementation detail of the standard library;
+    asserting it was a hidden dependency that happened to hold. Line order is the
+    "source order" this list actually means.
     """
     found = _constructions(_SYNTHETIC, label="<synthetic>")
-    assert [table for table, _ in found] == [
+    assert [table for table, _ in sorted(found, key=lambda hit: hit[1])] == [
         "module_state",
         "module_schema_version",
         "module_state",
         "module_schema_version",
         "module_state",
+        "module_state",
+        "module_schema_version",
     ]
 
 

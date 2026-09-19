@@ -13,17 +13,27 @@ exception and would prove nothing about which of those two shapes a caller gets.
 code for every route to ``failed`` and is shared by every job kind in this system.
 Widening it into a per-kind code is not the repair for a test that wanted otherwise.
 
-**One property of the job handler is deliberately left unpinned, and saying so is
-better than a test that looks like it pins it.** Step 8 — the ``core.module_state``
-row — is written *after* the migration so that a crash between the two leaves no row
-claiming a schema that was never applied. Nothing here can tell that ordering from
-its opposite: the whole job runs in one transaction, and under ``profile = test``
-there is no failure reachable *after* step 8 at all, because the health checks that
-could fail there are the one step the test profile skips. Moving the row ahead of the
-chain, and even writing it on its own separately committed connection, both leave
-every assertion in this file green — measured, not assumed. What *is* pinned is the
-consequence that matters: a failed install leaves no row, asserted on the extension
-failure, the refused-creation failure and the migration failure alike.
+**Two things about step 8 — the ``core.module_state`` row — and only one of them is
+pinnable. An earlier version of this docstring said neither was, and was wrong.**
+
+*Its transactional binding is pinned*, by
+``test_a_cancellation_after_the_last_write_rolls_the_module_state_row_back``. The
+claim that nothing could reach past step 8 under ``profile = test`` was false: the
+handler's trailing ``token.checkpoint()`` follows the row in every profile, and the
+health-check step the test profile skips was never the only way out. What actually
+hid it was the *fixed clock* the other cases here use — ``CancellationToken``
+throttles against that clock, so a handler's later checkpoints never reach the
+database. A row written on its own committed connection survives that rollback and
+reds the case.
+
+*Its position relative to the chain is not pinned, and cannot be.* The row and the
+migration commit or roll back together, so no reader outside that transaction can
+observe which was written first. That is a property of running them in one
+transaction rather than a gap in this file, and it is the right trade: what the
+ordering buys is a crash between the two leaving no row claiming a schema that was
+never applied, and what one transaction buys is that no *failure* between them can
+either. Moving the row ahead of the chain leaves every assertion here green —
+measured, not assumed.
 
 **Edge Case 7 is deliberately not here, and was not missed.** A ``modules.installed``
 entry naming a module id nothing on disk provides is not an install-time failure: the
@@ -49,7 +59,8 @@ The second is the one that matters: the extension exists, the manifest is fine, 
 the database still says no.
 """
 
-from collections.abc import Iterator
+import itertools
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -75,6 +86,7 @@ from rheo_contracts import WorkspaceContext
 from rheo_core.boundary import context_for_operator
 from rheo_core.events import ConsumerRegistry
 from rheo_core.migrations.orchestrator import MODULE_VERSION_TABLE_PREFIX
+from rheo_core.modules import operations as install_operations
 from rheo_core.modules.operations import (
     CONTRACT_TESTS_MISSING,
     DEPENDENCY_MISSING,
@@ -90,6 +102,7 @@ from rheo_core.modules.operations import (
 )
 from rheo_core.operations import OPERATION_GET, dispatch, register_core_operations
 from rheo_core.operations.dispatch import OperationOutcome
+from rheo_core.storage import work_tables
 from rheo_core.storage.backend import SCHEMA_AHEAD, UnitOfWork
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.repositories import (
@@ -100,10 +113,11 @@ from rheo_core.storage.repositories import (
     set_module_state,
 )
 from rheo_core.storage.work_index import DueWorkspace
-from rheo_core.work.kinds import JobKindRegistry
-from rheo_core.work.loop import JOB_FAILED, visit_workspace
+from rheo_core.work.jobs import request_cancellation
+from rheo_core.work.kinds import JobHandler, JobKindRegistry
+from rheo_core.work.loop import HEARTBEAT_SECONDS, JOB_FAILED, visit_workspace
 from rheo_recallatron import MANIFEST as RECALLATRON_MANIFEST
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, Engine, select, text
 
 pytestmark = pytest.mark.postgres
 
@@ -161,7 +175,33 @@ def install(ctx: WorkspaceContext, module_id: str) -> OperationOutcome:
     return dispatch(ctx, MODULE_INSTALL, {"module_id": module_id})
 
 
-def run_the_worker(cluster: ClusterSession, workspace_id: UUID) -> None:
+def advancing_clock(
+    step: int = HEARTBEAT_SECONDS + 1,
+) -> Callable[[], datetime]:
+    """A clock that moves more than one heartbeat on every read.
+
+    **The fixed clock every other case here uses is not neutral, and that is worth
+    knowing before reaching for it.** ``CancellationToken.checkpoint`` throttles
+    against the clock it was given: the first call after the acquire always
+    round-trips, and every later one returns without touching the database until
+    ``heartbeat_seconds`` have passed *on that clock*. Under a clock that never moves,
+    a handler's second and later checkpoints are silent no-ops — so a cancellation
+    requested mid-handler is never observed, and the failure path after the last write
+    is unreachable. One tick per read, longer than a heartbeat, makes every checkpoint
+    a real round trip.
+    """
+    base = datetime.now(UTC) + timedelta(seconds=1)
+    reads = itertools.count()
+    return lambda: base + timedelta(seconds=step * next(reads))
+
+
+def run_the_worker(
+    cluster: ClusterSession,
+    workspace_id: UUID,
+    *,
+    handler: JobHandler = run_module_install_job,
+    clock: Callable[[], datetime] | None = None,
+) -> None:
     """One real worker visit, with a registry holding only the install job kind.
 
     A local :class:`JobKindRegistry` rather than ``apps/worker``'s module-level
@@ -170,22 +210,29 @@ def run_the_worker(cluster: ClusterSession, workspace_id: UUID) -> None:
     from here would make that file's answer depend on collection order. What this
     registry holds is the same three arguments the composition root registers.
 
-    The clock is read here, one second ahead of the wall clock, because the job was
-    enqueued by the *handler* during the dispatch above: a visit pinned to an instant
-    captured before that would be a visit in the job's past, ``acquire_lease`` would
-    match nothing, and every assertion would fail for the timeline rather than for the
-    behaviour.
+    The default clock is read here, one second ahead of the wall clock and fixed,
+    because the job was enqueued by the *handler* during the dispatch above: a visit
+    pinned to an instant captured before that would be a visit in the job's past,
+    ``acquire_lease`` would match nothing, and every assertion would fail for the
+    timeline rather than for the behaviour. A case that needs the handler's later
+    checkpoints to reach the database passes :func:`advancing_clock`.
+
+    ``handler`` is a seam for one case only: the cancellation pin needs to request the
+    cancellation *while the row is leased*, which is a window only something running
+    inside the handler is in.
     """
     kinds = JobKindRegistry()
-    kinds.register(MODULE_INSTALL, ModuleInstallPayload, run_module_install_job)
-    instant = datetime.now(UTC) + timedelta(seconds=1)
+    kinds.register(MODULE_INSTALL, ModuleInstallPayload, handler)
+    if clock is None:
+        instant = datetime.now(UTC) + timedelta(seconds=1)
+        clock = lambda: instant  # noqa: E731
     visit_workspace(
         DueWorkspace(workspace_id=workspace_id, observed_due_at=None),
         kinds=kinds,
         consumers=ConsumerRegistry(),
         backend=cluster.backend,
         owner=OWNER,
-        clock=lambda: instant,
+        clock=clock,
         jitter=None,
     )
 
@@ -319,6 +366,103 @@ def test_a_declared_extension_is_created_and_the_module_installs(
     assert row.package_version == "0.0.0"
     assert row.enabled_at is None
     assert schema_versions(engine, database, EXTENSION_ID) == [PROBE_REVISION]
+
+
+def test_a_cancellation_after_the_last_write_rolls_the_module_state_row_back(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    operator: WorkspaceContext,
+) -> None:
+    """Step 8 shares the job's transaction, pinned at the one failure that follows it.
+
+    **This case exists because the claim that it could not exist was wrong.** The
+    handler's trailing ``token.checkpoint()`` runs *after* the ``core.module_state``
+    row is written, in every profile — so there **is** a post-step-8 failure, and the
+    row's transactional binding is observable after all. What hid it was the fixed
+    clock the other cases here use: ``CancellationToken`` throttles against that clock,
+    so a handler's later checkpoints never reach the database and a cancellation is
+    never seen. :func:`advancing_clock` is the whole difference.
+
+    **The cancellation has to land in a window, and the first version of this test
+    missed it.** Requesting it before delegating to the handler put the flag in place
+    for the handler's *first* checkpoint, which always round-trips — so the job died on
+    its opening line, nothing was written, and "no row afterwards" was true because
+    nothing ran. It passed against the very mutation it was written to kill. The flag
+    must go in **after** step 8 and **before** the trailing checkpoint, which is a
+    window only something the handler itself calls is inside.
+
+    So ``insert_module_state`` is wrapped where ``operations.py`` looks it up: the real
+    writer runs, through the real call site, and the cancellation is requested the
+    instant it returns. ``wrote`` records that this happened, because a test whose
+    window silently stopped being reached would otherwise go back to passing for the
+    old wrong reason.
+
+    What this kills: a step 8 written on its own connection and committed there. Every
+    other case in this file stays green against that mutation, because their failures
+    all happen *before* step 8 and there is nothing committed yet to survive. Here the
+    row is written, the checkpoint raises, and the transaction rolls back — so a row
+    still present afterwards was written outside it.
+    """
+    with UnitOfWork(engine, database) as uow:
+        job_id = uow.connection.execute(
+            select(work_tables.job.c.id).where(work_tables.job.c.kind == MODULE_INSTALL)
+        ).scalar_one_or_none()
+    assert job_id is None, "this workspace should hold no install job yet"
+
+    with loaded_probe_modules(monkeypatch, EXTENSION_ID):
+        outcome = install(operator, EXTENSION_ID)
+        assert outcome.state == "pending", outcome
+
+        with UnitOfWork(engine, database) as uow:
+            queued = uow.connection.execute(
+                select(work_tables.job.c.id).where(
+                    work_tables.job.c.operation_id == outcome.operation_id
+                )
+            ).scalar_one()
+
+        wrote: list[str] = []
+        real_writer = install_operations.insert_module_state
+
+        def write_then_cancel(conn: Connection, **fields: object) -> ModuleStateRow:
+            """Step 8 for real, then the cancellation, on its own connection.
+
+            Never the handler's connection: a flag written inside the transaction
+            that is about to roll back would vanish with it, and the checkpoint reads
+            it from a short transaction of its own.
+            """
+            row = real_writer(conn, **fields)  # type: ignore[arg-type]
+            wrote.append(str(fields["module_id"]))
+            with engine.begin() as connection:
+                request_cancellation(connection, queued, now=datetime.now(UTC))
+            return row
+
+        monkeypatch.setattr(
+            install_operations, "insert_module_state", write_then_cancel
+        )
+        run_the_worker(cluster, workspace, clock=advancing_clock())
+
+    assert wrote == [EXTENSION_ID], (
+        "the handler never reached step 8, so this case proves nothing about what "
+        f"happens after it: {wrote}"
+    )
+
+    # The row step 8 wrote went down with the transaction, and so did everything
+    # before it — the chain's DDL and the extension alike. Four reads rather than one,
+    # because a row written outside the transaction, a schema created outside it and
+    # an extension created outside it are three different mistakes.
+    assert module_states(engine, database) == {}
+    assert not schema_exists(engine, EXTENSION_ID)
+    assert schema_versions(engine, database, EXTENSION_ID) == []
+    assert EXTENSION_NAME not in extensions_in(engine)
+
+    with UnitOfWork(engine, database) as uow:
+        state = uow.connection.execute(
+            select(work_tables.job.c.state).where(work_tables.job.c.id == queued)
+        ).scalar_one()
+    assert state == "cancelled", state
 
 
 def test_an_extension_the_server_does_not_provide_fails_before_any_migration(

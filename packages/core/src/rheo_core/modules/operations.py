@@ -143,10 +143,20 @@ class ModuleInstallPayload(BaseModel):
     *control plane* holds for this workspace rather than the name of whatever database
     the connection happens to be on. Deriving it from the connection would make the
     orchestrator's wrong-pool assertion compare a value with itself.
+
+    ``package_version`` is the version the **dispatcher** validated against, carried so
+    the worker can refuse a version that moved underneath it. ``_LOADED``
+    (``modules/loader.py``) is a module-level table and the dispatcher runs in
+    ``apps/core`` while the job runs in ``apps/worker``, so the two answer
+    independently: a rolling deploy or a worker restart between the enqueue and the
+    lease can leave the handler holding a different version of the same module id.
+    Without this field the chain that ran would be version B's while the dependency
+    ranges and the ``contract_tests`` path that cleared pre-flight were version A's.
     """
 
     workspace_id: UUID
     module_id: str
+    package_version: str
 
 
 class ModuleInstallFailed(Exception):
@@ -277,7 +287,11 @@ def module_install_handler(
         uow.connection,
         kind=MODULE_INSTALL,
         payload=ModuleInstallPayload(
-            workspace_id=ctx.workspace_id, module_id=module_id
+            workspace_id=ctx.workspace_id,
+            module_id=module_id,
+            # The version every check above was made against, so the worker can tell
+            # whether it is installing the same thing that cleared pre-flight.
+            package_version=manifest.package_version,
         ).model_dump(mode="json"),
         now=datetime.now(UTC),
         max_attempts=INSTALL_ATTEMPTS,
@@ -345,18 +359,27 @@ def run_module_install_job(
             "dispatcher that enqueued this job had loaded; check that every process "
             "resolves the same modules.installed"
         )
-    # **The coarse half of that disagreement is refused above; the fine half is a
-    # known residual and is not.** ``_LOADED`` (``loader.py``) is a module-level table,
-    # and the dispatcher runs in ``apps/core`` while this runs in ``apps/worker``, so
-    # the two processes answer independently — a rolling deploy or a worker restart
-    # between the enqueue and the lease can leave this handler holding a *different
-    # package version* of the same module id. The row written below then records the
-    # version whose chain actually ran, which is truthful; what is stale is the
-    # pre-flight verdict, because the dependency ranges and the ``contract_tests``
-    # path were checked against the version the dispatcher held. Closing it needs a
-    # name for the refusal, and the vocabulary is ratified at five pre-flight codes
-    # and three in-job prefixes — so it is carried as a named risk rather than settled
-    # here, exactly as ``loader.py`` carries the job-kind collision gap.
+    if manifest.package_version != payload.package_version:
+        # **The same fault as above, one notch finer, closed the same way.** The check
+        # above catches a worker that has not loaded the module at all; this catches
+        # one that has loaded a *different version* of it. Both are the dispatcher's
+        # loaded set and this worker's disagreeing, both are a deployment fault rather
+        # than an outcome of installing this module, and both are therefore a bare
+        # ``RuntimeError`` — no fourth ``ModuleInstallFailed`` code, so the ratified
+        # vocabulary of five pre-flight refusals and three in-job prefixes is
+        # untouched.
+        #
+        # Refused rather than allowed-and-recorded, because the pre-flight verdict is
+        # what goes stale: the dependency ranges and the ``contract_tests`` path that
+        # cleared belong to the version the dispatcher held, and nothing re-checks
+        # them here. The row would have recorded the version whose chain really ran,
+        # so the *record* was never the problem — the unchecked install was.
+        raise RuntimeError(
+            f"module {payload.module_id!r} was {payload.package_version} when this "
+            f"install was dispatched and is {manifest.package_version} in this "
+            "worker; the dependency and contract-test checks were made against the "
+            "version that is no longer loaded, so nothing is installed"
+        )
 
     # 6. Extensions first, so a failure here cannot have run a migration statement.
     _create_extensions(uow, manifest)
@@ -375,11 +398,13 @@ def run_module_install_job(
 
     # 8. The row, *after* the migration — FR 7 step 5. Ordered last of the two so a
     #    crash between them leaves no row and a repeat install can proceed cleanly,
-    #    rather than a row claiming a schema that is not there. Under ``profile =
-    #    test`` no test can tell this ordering from its opposite, because the one
-    #    step that could fail after it is the health-check step the test profile
-    #    skips; ``tests/postgres/test_module_install.py``'s docstring records that
-    #    rather than leaving a reader to assume a guard that is not there.
+    #    rather than a row claiming a schema that is not there. The ordering guards a
+    #    *crash*; running both in one transaction is what guards a *failure*, and that
+    #    half is pinned — the trailing checkpoint below is a real failure after this
+    #    line, and ``tests/postgres/test_module_install.py::test_a_cancellation_after
+    #    _the_last_write_rolls_the_module_state_row_back`` uses it to prove this row
+    #    goes down with the rollback. The ordering itself no test can observe, because
+    #    two writes in one transaction land or vanish together.
     insert_module_state(
         uow.connection,
         module_id=manifest.module_id,
