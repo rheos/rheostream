@@ -201,10 +201,17 @@ class Dependency(BaseModel):
     **Two things a module author needs to know about how the range is applied**, both
     decided by ``loader.py``'s ``_dependency_order`` at load time:
 
-    - **Prereleases do not satisfy it.** ``SpecifierSet.contains`` excludes them by
-      default — PEP 440's rule and ``packaging``'s — and nothing overrides that, so a
-      dependency loaded at ``2.0.0rc1`` does not satisfy ``">=2,<3"`` and the load is
-      refused. Write ``">=2.0.0rc1,<3"`` when a prerelease is genuinely acceptable.
+    - **A prerelease sorts below its own release, which bites at a lower bound.**
+      ``">=2,<3"`` does **not** admit ``2.0.0rc1``: PEP 440 orders the release
+      candidate below ``2.0.0``, so the lower bound excludes it and the load is
+      refused naming both. This is not a ban on prereleases — ``">=1,<3"`` accepts
+      ``2.0.0rc1`` — so the rule worth carrying is about the *boundary*, not about
+      prereleases in general. Write ``">=2.0.0rc1,<3"`` when a particular release's
+      prereleases are acceptable. Measured against ``packaging`` 26.3, the version
+      resolved here: ``SpecifierSet.contains`` **admits** prereleases by default and
+      passing ``prereleases=True`` changes no answer this code can produce, so there
+      is no filtering flag in play. Older ``packaging`` did exclude them by default,
+      which makes this a property of the resolved version rather than of PEP 440.
     - **``optional = True`` exempts the dependency from being present, not from the
       range.** An optional dependency this deployment did not load is skipped; one
       that *is* loaded is held to the range exactly as a required one is.

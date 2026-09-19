@@ -407,12 +407,16 @@ def _dependency_order(
     the same message a required one gets, and an optional dependency that is absent
     still loads clean.
 
-    **``SpecifierSet.contains`` excludes prereleases, and nothing here overrides
-    that.** A provider loaded at ``2.0.0rc1`` does not satisfy ``">=2,<3"`` and the
-    load is refused naming both — PEP 440's own default, and ``packaging``'s. Passing
-    ``prereleases=True`` would be a policy choice no requirement in this run asks for,
-    so it is left at the default and recorded here and on
-    :attr:`~rheo_core.modules.manifest.Dependency.version_range`, which is where a
+    **The prerelease trap is version ordering, not a filter, and the difference
+    matters to whoever writes a range.** ``">=2,<3"`` refuses a provider loaded at
+    ``2.0.0rc1`` because PEP 440 sorts the release candidate below ``2.0.0``, so the
+    lower bound excludes it — *not* because prereleases are filtered out. Measured
+    against ``packaging`` 26.3: ``SpecifierSet.contains`` admits prereleases by
+    default, ``">=1,<3"`` accepts ``2.0.0rc1``, and passing ``prereleases=True``
+    changes no answer any range here can produce, so there is no flag to set and
+    nothing is overridden. ``tests/test_module_registration.py`` pins all three facts
+    so the claim cannot rot silently if the resolved ``packaging`` changes, and
+    :attr:`~rheo_core.modules.manifest.Dependency.version_range` carries it where a
     module author reads about the field.
 
     ``graphlib.TopologicalSorter`` produces the order and ``graphlib.CycleError`` is

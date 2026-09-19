@@ -810,6 +810,44 @@ ACCEPTS_PRERELEASE_ENTRY_POINT = EntryPoint(
     group=ENTRY_POINT_GROUP,
 )
 
+SPANS_PRERELEASE_ID = "spans_prerelease_probe"
+SPANS_PRERELEASE_MANIFEST = _manifest(
+    SPANS_PRERELEASE_ID,
+    dependencies=(
+        Dependency(module_id=PRERELEASE_PROVIDER_ID, version_range=">=1,<3"),
+    ),
+)
+SPANS_PRERELEASE_ENTRY_POINT = EntryPoint(
+    name=SPANS_PRERELEASE_ID,
+    value=f"{__name__}:SPANS_PRERELEASE_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
+# `_LOADED`'s insertion order and the dependency order diverge only across loads, and
+# an optional dependency is what makes that reachable: the dependant loads first and
+# alone, with its dependency legitimately absent, and the dependency arrives on a
+# later load. So `_LOADED` holds [dependant, dependency] while the dependency order
+# over the accumulated set is the reverse.
+LATE_PROVIDER_ID = "late_provider_probe"
+LATE_DEPENDENT_ID = "late_dependent_probe"
+LATE_PROVIDER_MANIFEST = _manifest(LATE_PROVIDER_ID, package_version=PROVIDER_VERSION)
+LATE_DEPENDENT_MANIFEST = _manifest(
+    LATE_DEPENDENT_ID,
+    dependencies=(
+        Dependency(module_id=LATE_PROVIDER_ID, version_range=">=1,<2", optional=True),
+    ),
+)
+LATE_PROVIDER_ENTRY_POINT = EntryPoint(
+    name=LATE_PROVIDER_ID,
+    value=f"{__name__}:LATE_PROVIDER_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+LATE_DEPENDENT_ENTRY_POINT = EntryPoint(
+    name=LATE_DEPENDENT_ID,
+    value=f"{__name__}:LATE_DEPENDENT_MANIFEST",
+    group=ENTRY_POINT_GROUP,
+)
+
 SHARED_EVENT_TYPE = "core.probe.happened"
 ORDERED_PROVIDER_ID = "ordered_provider_probe"
 ORDERED_DEPENDENT_ID = "ordered_dependent_probe"
@@ -948,15 +986,25 @@ def test_an_optional_dependency_that_is_present_and_out_of_range_is_refused(
     assert PROVIDER_VERSION in message
 
 
-def test_a_prerelease_does_not_satisfy_a_dependency_range(
+def test_a_prerelease_is_refused_at_a_release_boundary_but_not_in_general(
     monkeypatch: pytest.MonkeyPatch, registries: _Registries
 ) -> None:
-    """``SpecifierSet.contains`` excludes prereleases and nothing here overrides it.
+    """Three facts about one provider at ``2.0.0rc1``, because two of them alone
+    would leave the wrong rule in a reader's head.
 
-    PEP 440's own default rather than a decision this run made, which is why the
-    behaviour is documented on ``Dependency.version_range`` instead of being changed.
-    A module author who means to accept one writes the prerelease into the range.
+    The trap is PEP 440 *ordering*, not a prerelease filter. ``>=2`` excludes
+    ``2.0.0rc1`` because the candidate sorts below ``2.0.0``; a range that spans the
+    version accepts it perfectly well. Measured on ``packaging`` 26.3, which admits
+    prereleases by default — ``contains(v, prereleases=True)`` returns the same answer
+    as ``contains(v)`` for every range this code can build, so there is no flag being
+    relied on here and none being overridden.
+
+    All three are pinned rather than documented alone, because the docstrings on
+    ``Dependency.version_range`` and ``_dependency_order`` state this as measured
+    behaviour of the resolved ``packaging``, and a version bump that changed it would
+    otherwise leave two files quietly lying.
     """
+    # 1. The boundary. `>=2` does not reach down to its own release candidate.
     with pytest.raises(ManifestInvalid) as excinfo:
         _load(
             monkeypatch,
@@ -964,17 +1012,59 @@ def test_a_prerelease_does_not_satisfy_a_dependency_range(
             NEEDS_STABLE_TWO_ENTRY_POINT,
             PRERELEASE_PROVIDER_ENTRY_POINT,
         )
-
     assert PRERELEASE_VERSION in str(excinfo.value)
 
-    # The same pair with the prerelease written into the range loads, so the refusal
-    # above is the prerelease rule and not the provider being unreachable.
+    # 2. Not a ban on prereleases: a range that spans the version takes it.
+    assert _load(
+        monkeypatch,
+        registries,
+        SPANS_PRERELEASE_ENTRY_POINT,
+        PRERELEASE_PROVIDER_ENTRY_POINT,
+    ) == (PRERELEASE_PROVIDER_ID, SPANS_PRERELEASE_ID)
+
+    # 3. The workaround the docstring tells an author to write.
     assert _load(
         monkeypatch,
         registries,
         ACCEPTS_PRERELEASE_ENTRY_POINT,
         PRERELEASE_PROVIDER_ENTRY_POINT,
     ) == (ACCEPTS_PRERELEASE_ID, PRERELEASE_PROVIDER_ID)
+
+
+def test_the_dependency_order_is_re_derived_across_two_loads(
+    monkeypatch: pytest.MonkeyPatch, registries: _Registries
+) -> None:
+    """The case where ``_LOADED``'s insertion order and the dependency order disagree.
+
+    Within one load they cannot: ``_register`` is called in dependency order, so
+    insertion order *is* dependency order and an accessor that handed back
+    ``_LOADED.values()`` would look correct. They diverge across loads, and an
+    optional dependency is what makes that reachable — the dependant loads first and
+    alone with its dependency legitimately absent, and the dependency arrives on a
+    second load.
+
+    So ``_LOADED`` holds [dependant, provider] and the dependency order over the
+    accumulated set is [provider, dependant]. That kills both wrong implementations
+    at once: one returning insertion order answers backwards, and one caching what
+    the last ``load_modules()`` computed answers for the provider alone. Note the
+    insertion order here is also the alphabetical one, so sorting cannot produce the
+    right answer either.
+    """
+    assert _load(monkeypatch, registries, LATE_DEPENDENT_ENTRY_POINT) == (
+        LATE_DEPENDENT_ID,
+    )
+    assert list(loaded_manifests()) == [LATE_DEPENDENT_ID]
+
+    assert _load(monkeypatch, registries, LATE_PROVIDER_ENTRY_POINT) == (
+        LATE_PROVIDER_ID,
+    )
+    # The loader's own record, in the order the two loads wrote it.
+    assert list(loaded_manifests()) == [LATE_DEPENDENT_ID, LATE_PROVIDER_ID]
+    # The dependency order over the same accumulated set: the other way round.
+    assert [manifest.module_id for manifest in loaded_in_dependency_order()] == [
+        LATE_PROVIDER_ID,
+        LATE_DEPENDENT_ID,
+    ]
 
 
 def test_the_dependency_order_is_readable_and_survives_a_second_load(
