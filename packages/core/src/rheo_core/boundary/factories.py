@@ -2,17 +2,27 @@
 
 Every factory returns ``WorkspaceContext | Refusal``. The repository-wide AST scan in
 ``tests/test_boundary.py`` asserts that the class is constructed in no file outside
-this package, tests included, so the two functions here (and the session and token
-factories 0b2 adds beside them) are the only way to obtain a context.
+this package, tests included, so the functions here are the only way to obtain a
+context: the operator and harness factories, the session and token factories 0b2 added
+beside them, ``context_from_operation`` for a caller rebuilt from stored provenance,
+and 1a1's ``context_for_approved_execution``, which is that last one asked on an
+approval's behalf.
 
-Both factories share one tail: the ``control.workspace`` row must be ``active``
-(otherwise ``workspace_unavailable`` with the row's state as the detail), and
-``enabled_modules`` is loaded from that workspace's ``core.module_state`` rows. That
-tail is B16's factory clause for this run.
+They share one tail: the ``control.workspace`` row must be ``active`` (otherwise
+``workspace_unavailable`` with the row's state as the detail), and ``enabled_modules``
+is loaded from that workspace's ``core.module_state`` rows. That tail is B16's factory
+clause for this run.
+
+**Every factory also states the context's ``principal``, and none takes one from its
+caller.** It carries the account the boundary actually verified and the purpose that
+boundary is bound to -- null for everything but a purpose-carrying token and a rebuild
+of a purpose-bound stored caller. That is what makes ``ctx.principal`` a server fact
+rather than a request field; ``RESERVED_INPUT_FIELDS`` closes the other end.
 """
 
 import hashlib
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from rheo_contracts import (
@@ -22,6 +32,8 @@ from rheo_contracts import (
     AllOperations,
     Audience,
     AudienceKind,
+    AuthenticatedPrincipal,
+    ContextPurpose,
     Entry,
     Role,
     WorkspaceContext,
@@ -29,6 +41,7 @@ from rheo_contracts import (
 
 from rheo_core.boundary.context import (
     MEMBERSHIP_MISSING,
+    OPERATION_PROVENANCE_MISSING,
     PROFILE_REQUIRED,
     SESSION_EXPIRED,
     SESSION_MISSING,
@@ -61,9 +74,51 @@ from rheo_core.storage.repositories import list_module_states
 # caller happens to import first.
 from rheo_core.tokens.presentation import resolve_token
 
+if TYPE_CHECKING:
+    # Type-only, never at runtime: ``rheo_core.approvals`` and ``rheo_core.operations``
+    # both reach this package, so a runtime import either way would close a cycle.
+    # ``context_for_approved_execution`` only reads attributes off the rows it is
+    # handed or fetches, so the names are needed for signatures and nothing else.
+    from rheo_core.approvals.records import ApprovalRow
+    from rheo_core.operations.records import OperationContextProvenance
+
 # The ``core.module_state.state`` value that makes a module enabled; one of
 # ``rheo_core.storage.core_tables.MODULE_STATES``.
 _MODULE_ENABLED = "enabled"
+
+
+def _purpose_mismatch(detail: str) -> Refusal:
+    """``Refusal(PURPOSE_MISMATCH, detail)``, with the constant read at call time.
+
+    ``PURPOSE_MISMATCH`` lives beside ``RUNTIME_ACTOR_REQUIRED`` in
+    ``rheo_core.runtime.operations``, which imports this module at module level, so a
+    module-level import back would close a real cycle -- the same reason
+    :func:`context_from_operation` spells ``"runtime_actor_required"`` as a literal.
+    Deferred here instead of spelled twice, so there is one definition of the state
+    name; it runs only on a refusal, where a module import is not the cost.
+    """
+    # Deferred: see this function's docstring.
+    from rheo_core.runtime.operations import PURPOSE_MISMATCH
+
+    return Refusal(PURPOSE_MISMATCH, detail)
+
+
+def _parse_purpose(purpose: str | None) -> ContextPurpose | None | Refusal:
+    """The supplied job/approval purpose as the binding a rebuilt context carries.
+
+    ``None`` stays ``None`` -- an original caller that was never purpose-bound (a web
+    session, an unbound token, or an approval minted before this column was written)
+    rebuilds as unbound, and the token-side agreement check below is skipped for it. A
+    string outside the closed ``ContextPurpose`` set refuses rather than degrading to
+    unbound, which would turn a job whose purpose this process cannot read into one
+    with no memory-purpose gate at all.
+    """
+    if purpose is None:
+        return None
+    try:
+        return ContextPurpose(purpose)
+    except ValueError:
+        return _purpose_mismatch(f"{purpose!r} is not a context purpose")
 
 
 def _active_workspace_modules(
@@ -121,6 +176,9 @@ def context_for_operator(
         operation_set=ALL_OPERATIONS,
         enabled_modules=enabled,
         request_id=uuid7(),
+        # An operator is not an account and carries no bound purpose: the `rheo`
+        # command authenticates against the host, not against `control.account`.
+        principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),
     )
 
 
@@ -185,6 +243,10 @@ def context_for_harness(
         operation_set=ALL_OPERATIONS,
         enabled_modules=enabled,
         request_id=uuid7(),
+        # Architecture A4: an account factory sets the authenticated account and an
+        # unbound purpose. Browsing as a person is not done *for* a purpose, so there
+        # is no memory-purpose gate to apply here.
+        principal=AuthenticatedPrincipal(account_id=account_id, bound_purpose=None),
     )
 
 
@@ -250,6 +312,10 @@ def context_from_session(
         operation_set=ALL_OPERATIONS,
         enabled_modules=enabled,
         request_id=uuid7(),
+        # A4 again, with the session's own account: authenticated, purpose unbound.
+        principal=AuthenticatedPrincipal(
+            account_id=session_row.account_id, bound_purpose=None
+        ),
     )
 
 
@@ -286,6 +352,12 @@ def context_from_token(value: str, surface: str) -> WorkspaceContext | Refusal:
         operation_set=resolved.operation_set,
         enabled_modules=enabled,
         request_id=uuid7(),
+        # The account behind the token and whatever purpose the row was minted with:
+        # ``resolve_token`` has already refused a runtime token missing one and any
+        # token whose stored string is not a ``ContextPurpose``.
+        principal=AuthenticatedPrincipal(
+            account_id=resolved.account_id, bound_purpose=resolved.bound_purpose
+        ),
     )
 
 
@@ -297,14 +369,33 @@ def context_from_operation(
     audience_kind: str,
     audience_id: UUID | None,
     entry: str,
+    purpose: str | None,
 ) -> WorkspaceContext | Refusal:
-    """Rebuild a worker's ``WorkspaceContext`` from a job payload's copied fields.
+    """Rebuild a stored caller's ``WorkspaceContext`` from copied provenance fields.
 
     ACCOUNT uses membership of ``(actor_id, workspace_id)`` and ``ALL_OPERATIONS``.
     TOKEN uses the access-token row for ``actor_id``, membership of that token's
     account, and the snapshot as the operation set. OPERATOR / SYSTEM / CONNECTION
     refuse so the job can handshake ``runtime_actor_required``. Audience comes from
     the arguments, not an invented session.
+
+    ``purpose`` is the binding the *stored* caller carried -- a runtime job's
+    ``payload.purpose``, or an approval's ``core.approval.purpose``. It is
+    ``str | None`` rather than ``str`` because both of this function's callers can
+    legitimately have none: an approval minted for a caller that was not purpose-bound
+    (a web session, or any approval written before 1a1 began storing the column) must
+    still rebuild. ``None`` means unbound and skips the agreement check below; it is
+    never a way to *drop* a binding, because the check that would have caught a
+    dropped one is exactly the one the token branch runs.
+
+    **A ``TOKEN`` actor's supplied purpose is checked against the token's own stored
+    ``access_token.purpose``**, and a disagreement refuses ``purpose_mismatch``. The
+    supplied value travels in a job payload, which is durable rows a later writer
+    could edit; the token row is the mint-time record. Without the comparison, editing
+    one JSON field would re-bind a runtime job to a purpose its token never carried.
+
+    Every successful branch supplies ``principal``: the account this function actually
+    resolved, and the purpose it actually parsed. Neither is taken from a caller.
     """
     if not isinstance(workspace_id, UUID):
         raise TypeError("workspace_id must be a UUID")
@@ -322,8 +413,16 @@ def context_from_operation(
             "runtime_actor_required",
             f"core.runtime.run cannot run as actor kind {kind.value!r}",
         )
+    # After the actor-kind refusals and before anything reads the database: an
+    # operator/system/connection job still handshakes ``runtime_actor_required``
+    # rather than being told about its purpose, which is the order
+    # ``tests/test_boundary.py`` pins.
+    bound_purpose = _parse_purpose(purpose)
+    if isinstance(bound_purpose, Refusal):
+        return bound_purpose
     backend = get_backend()
     operation_set: frozenset[str] | AllOperations
+    account_id: UUID
     if kind is ActorKind.ACCOUNT:
         if actor_id is None:
             return Refusal("runtime_actor_required", "an account actor needs an id")
@@ -340,6 +439,7 @@ def context_from_operation(
         role = membership.role
         actor = Actor(kind=ActorKind.ACCOUNT, id=actor_id)
         operation_set = ALL_OPERATIONS
+        account_id = actor_id
     elif kind is ActorKind.TOKEN:
         if actor_id is None:
             return Refusal("runtime_actor_required", "a token actor needs an id")
@@ -370,9 +470,17 @@ def context_from_operation(
                 f"no control.membership row for account {token_row.account_id} in "
                 f"workspace {workspace_id}",
             )
+        if (token_row.purpose or None) != (
+            None if bound_purpose is None else bound_purpose.value
+        ):
+            return _purpose_mismatch(
+                f"the stored purpose {purpose!r} disagrees with what access token "
+                f"{actor_id} was minted with"
+            )
         role = membership.role
         actor = Actor(kind=ActorKind.TOKEN, id=actor_id)
         operation_set = operations
+        account_id = token_row.account_id
     else:
         return Refusal(
             "runtime_actor_required",
@@ -390,4 +498,84 @@ def context_from_operation(
         operation_set=operation_set,
         enabled_modules=enabled,
         request_id=uuid7(),
+        principal=AuthenticatedPrincipal(
+            account_id=account_id, bound_purpose=bound_purpose
+        ),
     )
+
+
+def context_for_approved_execution(
+    ctx: WorkspaceContext, approval: "ApprovalRow"
+) -> WorkspaceContext | Refusal:
+    """The **original held caller's** context, rebuilt for an approved execution.
+
+    ``core.approval.approve`` runs inside the *approver's* context, and before 1a1 the
+    gated handler ran under it too: a member's held call executed with an owner's role,
+    operation set and audience once the owner released it. This factory is what makes
+    "the approver decides, the original caller acts" true of the handler and not only
+    of :class:`~rheo_core.approvals.guards.ActorPermissionGuard`'s two field reads.
+
+    **It takes nothing identifying from ``ctx`` except ``ctx.workspace_id``.** The
+    actor is the approval's own ``actor_kind``/``actor_id``; the audience and entry
+    come from the ``core.operation`` row ``hold_for_approval`` minted, read through
+    :func:`~rheo_core.operations.records.get_context_provenance`; the purpose is the
+    approval's own column. Reading the workspace off ``ctx`` is not a loophole -- the
+    approval was read through a connection already routed to that workspace, so it is
+    the workspace either way, and threading a second copy of it would only create
+    somewhere for the two to disagree.
+
+    The rebuild itself is :func:`context_from_operation`, unchanged and shared with
+    the worker: both are the same question -- "who was this, really?" -- asked of
+    stored provenance rather than of a live credential, and a second implementation
+    would be a second set of membership rules to keep in step.
+
+    ``purpose=approval.purpose`` may be ``None``, and must be: an approval held by a
+    caller that was not purpose-bound, or one minted before this column had a writer,
+    still has to execute. ``context_from_operation`` reads that as unbound and skips
+    the agreement check; a *bound* original caller still has its token's stored
+    purpose compared against the column.
+    """
+    provenance = _approval_provenance(ctx, approval)
+    if isinstance(provenance, Refusal):
+        return provenance
+    return context_from_operation(
+        ctx.workspace_id,
+        actor_kind=approval.actor_kind,
+        actor_id=approval.actor_id,
+        audience_kind=provenance.audience_kind,
+        audience_id=provenance.audience_id,
+        entry=provenance.entry,
+        purpose=approval.purpose,
+    )
+
+
+def _approval_provenance(
+    ctx: WorkspaceContext, approval: "ApprovalRow"
+) -> "OperationContextProvenance | Refusal":
+    """The held ``core.operation`` row's audience and entry, or a refusal naming it.
+
+    Deferred imports for the cycle this package's own docstring and
+    ``approvals/gate.py``'s describe: ``rheo_core.operations`` imports this module
+    through its registrar. The read is a separate narrow accessor rather than a
+    widening of ``OperationRow``, whose published shape is deliberately narrower than
+    the row.
+
+    A missing row refuses rather than defaulting the audience: an approval whose
+    operation record has gone is not an execution whose audience can be guessed, and
+    guessing one is exactly how an output reaches somebody it was not resolved for.
+    """
+    # Both deferred: see this function's docstring.
+    from rheo_core.operations.records import get_context_provenance
+    from rheo_core.storage.routing import open_unit_of_work
+
+    with open_unit_of_work(ctx) as uow:
+        provenance = get_context_provenance(
+            uow.connection, operation_id=approval.operation_id
+        )
+    if provenance is None:
+        return Refusal(
+            OPERATION_PROVENANCE_MISSING,
+            f"approval {approval.id} names the operation record "
+            f"{approval.operation_id}, which is not in this workspace",
+        )
+    return provenance

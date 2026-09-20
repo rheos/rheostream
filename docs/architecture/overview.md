@@ -75,6 +75,13 @@ and no service accepts a workspace or actor any other way (FR 2, FR 23).
 | `operation_set` | frozen set of operation names, or `all` | from the token's snapshot rows; `all` for a web session and the operator; for a `connection` actor the operations its module's `connector_bindings` name for that transport; for a `system` actor at `entry = job` the operations whose declared roles include `service` |
 | `enabled_modules` | frozen set of module ids | from `core.module_state` for this workspace |
 | `request_id` | uuid | for logs and the audit record |
+| `principal` | `AuthenticatedPrincipal(account_id, bound_purpose)` | server-resolved, never from a request: the account the boundary verified (null for the operator), and the purpose it is bound to (from `access_token.purpose` for a token, from the stored job or approval purpose on a rebuild, null when unbound) |
+
+WorkspaceContext carries a server-resolved frozen principal containing the authenticated account,
+when one exists, and the bound purpose, when one exists. Only boundary factories construct it.
+Session/human/service browsing without a bound purpose has no memory-purpose gate; runtime tokens
+and purpose-bound jobs must carry a valid purpose and cannot override it through operation
+arguments.
 
 The class lives in `packages/core/boundary/` and only that package's factory functions construct
 it; a test asserts no module or app package calls the constructor. Boundary adapters are the four

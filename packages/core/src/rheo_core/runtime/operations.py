@@ -72,6 +72,16 @@ from rheo_core.work.jobs import enqueue_job
 
 RUNTIME_RUN: Final = "core.runtime.run"
 RUNTIME_ACTOR_REQUIRED: Final = "runtime_actor_required"
+PURPOSE_MISMATCH: Final = "purpose_mismatch"
+"""A stored caller's purpose could not be turned into the binding its rebuilt context
+would carry: an unparseable string, or -- for a ``TOKEN`` actor -- a supplied purpose
+that disagrees with the ``access_token.purpose`` the token was minted with.
+
+Raised by ``boundary/factories.py:context_from_operation`` and reached through
+``context_for_approved_execution``. It lives here beside
+:data:`RUNTIME_ACTOR_REQUIRED` because it is the same kind of thing -- a rebuilt
+context refusing what the stored payload claims -- and that factory spells the other
+one as a literal for the cycle this module's own import of it creates."""
 RUNTIME_UNKNOWN: Final = "runtime_unknown"
 MODEL_UNKNOWN: Final = "model_unknown"
 CREDENTIAL_NOT_OWNED: Final = "credential_not_owned"
@@ -178,13 +188,18 @@ def build_runtime_request(
 
 def build_context(
     ctx: WorkspaceContext,
-    purpose: ContextPurpose | str,
     refs: Sequence[str],
     *,
     uow: UnitOfWork,
 ) -> list[ContextItem]:
-    """Resolve live, readable refs on the sealed handler UoW. Truncate at the cap."""
-    del purpose
+    """Resolve live, readable refs on the sealed handler UoW. Truncate at the cap.
+
+    No ``purpose`` parameter: the binding is on ``ctx.principal.bound_purpose``, put
+    there by the factory that rebuilt the job's context, so a caller cannot hand this
+    function a purpose the context was not resolved under. It took one until 1a1 and
+    discarded it (``del purpose``), which is the shape that made the parameter worth
+    removing rather than wiring up.
+    """
     settings = resolve(workspace_id=ctx.workspace_id, source=PostgresOverrideSource())
     cap = settings.get_int("runtime.max_context_bytes")
     items: list[ContextItem] = []
@@ -671,6 +686,7 @@ def make_run_runtime_job(
                 audience_kind=payload.audience_kind,
                 audience_id=payload.audience_id,
                 entry=payload.entry,
+                purpose=payload.purpose,
             )
             if isinstance(ctx, Refusal):
                 _fail(
@@ -730,7 +746,7 @@ def make_run_runtime_job(
                     error_text="deadline_seconds is not positive",
                 )
                 return
-            items = build_context(ctx, payload.purpose, payload.refs, uow=uow)
+            items = build_context(ctx, payload.refs, uow=uow)
             digest = _context_digest(items)
             output = _OUTPUT_ADAPTER.validate_python(payload.output)
             purpose = ContextPurpose(payload.purpose)

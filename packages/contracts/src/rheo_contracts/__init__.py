@@ -18,6 +18,7 @@ from rheo_contracts.context import (
     AllOperations,
     Audience,
     AudienceKind,
+    AuthenticatedPrincipal,
     Entry,
     Role,
     WorkspaceContext,
@@ -30,6 +31,7 @@ from rheo_contracts.manifest import (
     OperationDeclaration,
     ToolDeclaration,
 )
+from rheo_contracts.purposes import ContextPurpose
 from rheo_contracts.refs import (
     RESERVED_MODULE_SEGMENT,
     RecordRef,
@@ -43,7 +45,6 @@ from rheo_contracts.runtime import (
     ApprovalRequiredEvent,
     CancelledEvent,
     ContextItem,
-    ContextPurpose,
     ContextTier,
     FailureEvent,
     FailureKind,
@@ -91,6 +92,7 @@ __all__ = [
     "AuditSpec",
     "Audience",
     "AudienceKind",
+    "AuthenticatedPrincipal",
     "CancelledEvent",
     "ContextItem",
     "ContextPurpose",

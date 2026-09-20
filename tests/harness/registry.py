@@ -5,9 +5,10 @@ creates through the storage backend, never a shipped migration), the operations
 ``harness.note.explode(body, message)`` (a handler that raises after writing, for the
 dispatcher's rollback and failure envelope) and ``harness.note.schedule(body)`` (the
 tree's one ``long_running`` declaration, which enqueues a job carrying the minted
-operation id), the two upper-class fixtures ``harness.fixture.act(ref)`` (destructive)
-and ``harness.sink.send(destination, message)`` (external), and the scaffolding B2
-needs to drive the reserved-field refusal.
+operation id), the two upper-class fixtures ``harness.fixture.act(ref)`` (destructive,
+and since 1a1 the tree's one window onto the context an approved handler actually runs
+under) and ``harness.sink.send(destination, message)`` (external), and the scaffolding
+B2 needs to drive the reserved-field refusal.
 
 **The two upper-class fixtures are named ``harness.*`` and the ratified document
 names them ``test.*``, and that is a forced deviation rather than a choice.**
@@ -118,6 +119,14 @@ A prefix on a body in the table the harness already owns, rather than two tables
 their own: what a test needs of these fixtures is "did it run, how many times, and
 with what", and ``harness.note`` answers all three. A second and third harness table
 would be DDL nothing else reads."""
+
+_ACTING_SEPARATOR: Final = "@as:"
+"""What splits ``harness.fixture.act``'s recorded reference from the identity of the
+context its handler actually ran under.
+
+A sequence no record reference (``<module>.<record_type>:<uuid>``) can contain, so
+:func:`recorded_acts` still answers exactly the references it always did and
+:func:`recorded_act_callers` answers the other half."""
 NOTE_SCHEDULE_KIND: Final = "harness.note.schedule.job"
 """The one ``long_running`` harness operation and the job kind it enqueues.
 
@@ -386,20 +395,48 @@ class SinkSent(BaseModel):
     destination: str
 
 
+def acting_identity(ctx: WorkspaceContext) -> str:
+    """The acting context's identity, flattened to one comparable string.
+
+    Actor kind and id, role, and the bound purpose off the principal: exactly the
+    values that differ between the caller who *made* a held call and the one who
+    *approved* it. One string rather than four, because a test that compares one value
+    cannot pass by checking the easy half and leaving the rest unasserted.
+    """
+    purpose = ctx.principal.bound_purpose
+    return (
+        f"{ctx.actor.kind.value}|{ctx.actor.id}|{ctx.role.value}|"
+        f"{'-' if purpose is None else purpose.value}"
+    )
+
+
 def _fixture_act(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: FixtureActInput
 ) -> FixtureActed:
-    """Record the request and delete nothing (``confirmation-and-safety.md`` § The
-    recording sink and the destructive fixture).
+    """Record the request **and who is acting**, and delete nothing
+    (``confirmation-and-safety.md`` § The recording sink and the destructive fixture).
 
     Destructive class, and it destroys nothing on purpose: what a test needs is an
     operation the dispatcher *treats* as destructive, and a fixture that really
     deleted something would make every assertion about "nothing happened" depend on
     also restoring it.
+
+    The acting identity joined the recorded body in 1a1, when ``execute_approved``
+    began running a gated handler under the original held caller's rebuilt context
+    rather than the approver's. This is the only handler in the tree reached from
+    inside that function, so it is the only place the difference is observable — every
+    other harness handler ignores ``ctx``. It rides in the same row behind
+    :data:`_ACTING_SEPARATOR` rather than in a second one, so the row *count* this
+    fixture produces is what it always was: several tests assert on
+    ``harness.note``'s whole contents, and a fixture that silently doubled its writes
+    would change what they see.
     """
     ensure_note_table(uow.connection)
     reference = model_input.ref.format()
-    row = write_note(uow.connection, body=f"{ACT_PREFIX}{reference}")
+    row = write_note(
+        uow.connection,
+        body=f"{ACT_PREFIX}{reference}{_ACTING_SEPARATOR}{acting_identity(ctx)}",
+    )
     return FixtureActed(recorded_ref=note_ref(row.id), acted_on=reference)
 
 
@@ -456,7 +493,20 @@ def act_payload(reference: str) -> dict[str, object]:
 
 def recorded_acts(conn: Connection) -> tuple[str, ...]:
     """The references ``harness.fixture.act`` has recorded, oldest first."""
-    return _recorded(conn, ACT_PREFIX)
+    return tuple(
+        body.split(_ACTING_SEPARATOR, 1)[0] for body in _recorded(conn, ACT_PREFIX)
+    )
+
+
+def recorded_act_callers(conn: Connection) -> tuple[str, ...]:
+    """The acting identity each ``harness.fixture.act`` call ran under, oldest first.
+
+    Paired with :func:`recorded_acts` positionally: one row per call, the reference
+    before the separator and the caller after it.
+    """
+    return tuple(
+        body.split(_ACTING_SEPARATOR, 1)[1] for body in _recorded(conn, ACT_PREFIX)
+    )
 
 
 def sent_messages(conn: Connection) -> tuple[str, ...]:

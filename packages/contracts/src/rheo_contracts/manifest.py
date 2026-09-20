@@ -31,13 +31,24 @@ RESERVED_INPUT_FIELDS = frozenset(
         "sql",
         "table_name",
         "statement",
+        "principal",
     }
 )
 """Input-model field names registration refuses, verbatim from the module contract.
 
-The last three make criterion 20's "accepts no SQL, table name, or query fragment" a
-mechanical check over the registered input models. This is the single list the operation
-registry and criterion 6's test share; do not restate it anywhere else.
+``sql``, ``table_name`` and ``statement`` make criterion 20's "accepts no SQL, table
+name, or query fragment" a mechanical check over the registered input models. This is
+the single list the operation registry and criterion 6's test share; do not restate it
+anywhere else.
+
+``principal`` closes the one channel by which a caller could name the field
+:class:`~rheo_contracts.context.WorkspaceContext` carries its verified account and
+bound purpose on. Deliberately **not** joined by ``account_id`` or ``purpose``:
+``TokenIssueInput.account_id`` names an operator-issued token's *target* account and
+``RuntimeRunInput.purpose`` is that run's own typed argument, so both are legitimate
+request inputs today; reserving either would break a shipped operation to close
+nothing, since neither name reaches ``ctx.principal``, which only a boundary factory
+writes.
 """
 
 

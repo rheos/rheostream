@@ -17,6 +17,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from rheo_contracts.context import Actor, Audience
+from rheo_contracts.purposes import ContextPurpose
 
 _BOOL_CAPABILITY_NAMES = frozenset(
     {
@@ -29,15 +30,6 @@ _BOOL_CAPABILITY_NAMES = frozenset(
 )
 ISOLATION_ENFORCED = "isolation=enforced"
 """Requirements-list token meaning the adapter must report ``isolation = enforced``."""
-
-
-class ContextPurpose(StrEnum):
-    """Why context is assembled for a run (intake vocabulary, not a directory kind)."""
-
-    RESPOND = "respond"
-    FOLLOW_UP = "follow_up"
-    SHARE_WITH_REFERRAL = "share_with_referral"
-    INTERNAL_ANALYSIS = "internal_analysis"
 
 
 class ContextTier(StrEnum):

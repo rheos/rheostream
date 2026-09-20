@@ -29,6 +29,8 @@ from rheo_contracts import (
     Audience,
     AudienceKind,
     AuditSpec,
+    AuthenticatedPrincipal,
+    ContextPurpose,
     Entry,
     Idempotency,
     OperationDeclaration,
@@ -205,7 +207,25 @@ def test_workspace_context_declares_exactly_the_ratified_fields() -> None:
         "operation_set",
         "enabled_modules",
         "request_id",
+        "principal",
     }
+
+
+def test_the_principal_is_required_and_frozen() -> None:
+    """``principal`` has no default, so every factory states what it verified.
+
+    A default would make the field arrive silently on nine construction sites that
+    were written for eight, which is the one way a context could carry
+    ``account_id=None`` without anyone having decided it should.
+    """
+    assert AuthenticatedPrincipal.model_config["frozen"] is True
+    assert set(AuthenticatedPrincipal.model_fields) == {"account_id", "bound_purpose"}
+    assert WorkspaceContext.model_fields["principal"].is_required() is True
+    principal = AuthenticatedPrincipal(
+        account_id=None, bound_purpose=ContextPurpose.RESPOND
+    )
+    with pytest.raises(ValidationError):
+        principal.account_id = uuid7()  # type: ignore[misc]
 
 
 def test_workspace_context_audience_is_optional_and_the_rest_required() -> None:
@@ -218,7 +238,18 @@ def test_workspace_context_audience_is_optional_and_the_rest_required() -> None:
         assert fields[name].is_required() is True, name
 
 
-def test_reserved_input_fields_is_the_ratified_twelve() -> None:
+def test_reserved_input_fields_is_the_ratified_thirteen() -> None:
+    """The ratified twelve plus ``principal``, spelled whole.
+
+    ``principal`` joined them in 1a1, when ``WorkspaceContext`` gained the field: a
+    registered input model naming it would be a caller-supplied channel into the one
+    place the server records what it actually verified.
+
+    ``account_id`` and ``purpose`` are deliberately absent and their absence is
+    asserted below, not merely implied by this set: both are live, legitimate input
+    fields on shipped operations, and adding either here would refuse a registration
+    that must keep working.
+    """
     assert RESERVED_INPUT_FIELDS == frozenset(
         {
             "workspace_id",
@@ -233,8 +264,11 @@ def test_reserved_input_fields_is_the_ratified_twelve() -> None:
             "sql",
             "table_name",
             "statement",
+            "principal",
         }
     )
+    assert "account_id" not in RESERVED_INPUT_FIELDS
+    assert "purpose" not in RESERVED_INPUT_FIELDS
 
 
 def test_audit_spec_carries_only_the_subject_field() -> None:

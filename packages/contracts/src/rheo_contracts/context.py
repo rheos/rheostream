@@ -5,7 +5,7 @@
 nothing outside the boundary package — tests included — hand-builds a context.
 
 Field list and semantics come from ``docs/architecture/overview.md`` § The workspace
-context. Eight fields, no more: adding one here changes every boundary at once.
+context. Nine fields, no more: adding one here changes every boundary at once.
 """
 
 from enum import StrEnum
@@ -13,6 +13,8 @@ from typing import Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, InstanceOf
+
+from rheo_contracts.purposes import ContextPurpose
 
 
 class Role(StrEnum):
@@ -80,6 +82,16 @@ class Audience(BaseModel):
 
     kind: AudienceKind
     id: UUID | None
+
+
+class AuthenticatedPrincipal(BaseModel):
+    """The verified account and bound purpose behind a context, or the absence of
+    either. Constructed only where WorkspaceContext itself is."""
+
+    model_config = ConfigDict(frozen=True)
+
+    account_id: UUID | None
+    bound_purpose: ContextPurpose | None
 
 
 _ALL_OPERATIONS_CREATED = False
@@ -162,3 +174,12 @@ class WorkspaceContext(BaseModel):
     operation_set: frozenset[str] | InstanceOf[AllOperations]
     enabled_modules: frozenset[str]
     request_id: UUID
+
+    principal: AuthenticatedPrincipal
+    """The server-resolved account and bound purpose behind this context.
+
+    Required with no default, so every construction site states what it verified
+    rather than inheriting an absence. ``AuthenticatedPrincipal(account_id=None,
+    bound_purpose=None)`` is the operator's honest answer and is spelled out there;
+    a default here would make "nobody checked" and "there is nobody" the same value.
+    """

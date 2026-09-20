@@ -57,6 +57,7 @@ from rheo_core.approvals.binding import (
 from rheo_core.approvals.guards import GuardRefusal, core_guards_for, run_guards
 from rheo_core.audit import AUDIT_SUCCEEDED
 from rheo_core.boundary.context import Refusal
+from rheo_core.boundary.factories import context_for_approved_execution
 from rheo_core.operations.records import (
     AUDIENCE_NONE,
     HANDLER_RETURNED,
@@ -231,7 +232,16 @@ def hold_for_approval(
             payload_digest=payload_digest(body),
             body=body,
             byte_length=byte_length,
-            purpose=None,
+            # The purpose the *held caller* was bound to, which is what
+            # ``context_for_approved_execution`` rebuilds against. Null when the
+            # caller was unbound (a web session, an unbound token, an operator), and
+            # that null is load-bearing rather than a gap: it is the difference
+            # between "no purpose gate applied to this call" and "some purpose did".
+            purpose=(
+                None
+                if ctx.principal.bound_purpose is None
+                else ctx.principal.bound_purpose.value
+            ),
             window_start=now,
             window_end=window_end,
         )
@@ -314,6 +324,18 @@ def execute_approved(
     :func:`~rheo_core.approvals.records.mark_executed` is predicated on ``approved``
     for the same reason one layer in.
 
+    **The gated handler runs as the original held caller, never as the approver.**
+    ``ctx`` is the approving actor's context — this function is called from inside
+    ``core.approval.approve``'s handler — and
+    :func:`~rheo_core.boundary.factories.context_for_approved_execution` rebuilds the
+    context the held call was made under, from the approval's own actor fields and the
+    held ``core.operation`` row's audience and entry. Both the guards and the handler
+    receive *that* context. Before 1a1 they received ``ctx``, which meant a member's
+    held call executed with an owner's role, operation set and audience the moment an
+    owner released it. A rebuild that *refuses* does not short-circuit the guards —
+    see the comment at its call site for why a durable guard refusal has to win over
+    the rollback a raise would cause.
+
     **The registry it resolves against is the process-wide one**, because a handler
     receives ``(ctx, uow, input)`` and has no way to learn which registry dispatched
     it. Every real caller uses ``REGISTRY``; a call held through a *private* registry
@@ -376,14 +398,31 @@ def execute_approved(
     )
     if detail is not None:
         raise OperationRefused(INVALID_APPROVAL, detail)
+    # The original held caller, rebuilt and re-verified, before the guards and before
+    # the effect. ``ctx`` is the *approver's* and from here on governs nothing.
+    held_caller = context_for_approved_execution(ctx, approval)
     # After the binding check, before the effect: the position the ratified document
     # fixes for the guards (R3 item 4). ``now`` is the same instant the binding was
     # just judged against, so a guard and the window cannot disagree about when this
     # execution happened. The set is derived from this declaration rather than taken
     # whole, because ``RecordStateGuard`` attaches only to an operation whose input
     # names a subject.
+    #
+    # **The guards run even when the rebuild refused**, under the approver's context
+    # as they did before 1a1, and that fallback is load-bearing rather than defensive.
+    # The commonest reason a rebuild refuses is ``membership_missing`` — the gated
+    # actor's ``control.membership`` row is gone — which is precisely the case
+    # ``ActorPermissionGuard`` exists to answer, and the ratified answer to it is
+    # *durable*: the approval ``refused`` and the held record ``failed``, committed, so
+    # the approval is spent rather than immediately re-approvable (R3 item 4, and
+    # ``GUARD_REFUSED``'s own docstring). Raising the rebuild's refusal straight out
+    # would roll both writes back and leave the approval ``pending``, which is the one
+    # outcome that requirement exists to prevent. So the guards get first refusal, and
+    # only a rebuild failure they did *not* catch — a tampered ``purpose`` column, a
+    # missing provenance row — reaches the raise below, where a rollback is the right
+    # answer because nothing was decided.
     refusal = run_guards(
-        ctx,
+        ctx if isinstance(held_caller, Refusal) else held_caller,
         uow,
         approval=approval,
         model_input=model_input,
@@ -392,8 +431,10 @@ def execute_approved(
     )
     if refusal is not None:
         return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)
+    if isinstance(held_caller, Refusal):
+        raise OperationRefused(held_caller.state, str(held_caller))
     output = operation.handler(
-        ctx,
+        held_caller,
         HandlerUnitOfWork(uow, operation_id=approval.operation_id),
         model_input,
     )
