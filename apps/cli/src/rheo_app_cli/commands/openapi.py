@@ -2,18 +2,23 @@
 operation.
 
 **The one subcommand that does not call** :func:`~rheo_app_cli.context.bootstrap`.
-It needs no settings, no data root and no database: the document is built from the
-registry alone, and registration reaches ``current_profile()`` only for the
-``test_harness`` origin, which neither the core operations nor a real module use.
-That is what makes the CI regeneration diff environment-independent — the emitted
-bytes depend on exactly two things, the installed distributions and
-``RHEO_MODULES``, and on nothing about the machine it ran on.
+It opens no database and migrates nothing: the document is built from the registry
+alone, and registration reaches ``current_profile()`` only for the ``test_harness``
+origin, which neither the core operations nor a real module use. It does resolve
+settings, because ``load_modules()`` reads the ``modules.installed`` allowlist — so
+it resolves a data root far enough to read ``<data_root>/config/deployment.toml``
+when one is there, and reads the ``RHEO__*`` environment. Both are reads: neither
+creates anything, and an absent ``deployment.toml`` is simply an empty layer.
+The CI regeneration diff stays environment-independent because the emitted bytes
+depend on exactly two things, the installed distributions and the resolved
+``modules.installed`` setting, and on nothing else about the machine it ran on.
 
 **It registers the core operations and then loads the allowed modules**, in that
 order. Without the second call the document carries no module path at all, and
 every claim about a module's generated client is vacuous. ``load_modules()`` honours
-the ``RHEO_MODULES`` allowlist, so a module that is installed but not named emits
-nothing — which is the end-to-end proof that discovery does not activate anything.
+the ``modules.installed`` allowlist, so a module that is installed but not named
+emits nothing — which is the end-to-end proof that discovery does not activate
+anything.
 
 Output contract, as elsewhere in this CLI: the document goes to stdout (``--out -``)
 or to the named file, and the narrative goes to stderr. Serialised with sorted keys

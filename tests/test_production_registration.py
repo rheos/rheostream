@@ -433,7 +433,9 @@ def _production_child_env(
     """The environment a production child runs with, built rather than inherited.
 
     Every ``RHEO_*`` variable is stripped first — this developer machine's ``.env``
-    sets ``RHEO_PROFILE``, ``RHEO_MODULES``, ``RHEO_DATA_ROOT`` and more, and CI's
+    sets ``RHEO_PROFILE``, ``RHEO__modules__installed``, ``RHEO_DATA_ROOT`` and more,
+    and the ``RHEO__`` settings spellings begin with ``RHEO_`` too, so one strip takes
+    both kinds. CI's
     ``python`` job sets ``RHEO_PROFILE=test`` at job level, so an inherited
     environment would decide the outcome. Four go back in: the production profile;
     ``RHEO_CLUSTER_DSN`` bridged from ``RHEO_TEST_CLUSTER_DSN`` exactly as

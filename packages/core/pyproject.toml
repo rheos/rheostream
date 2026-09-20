@@ -7,6 +7,10 @@ dependencies = [
     "sqlalchemy>=2.0,<3",
     "psycopg[binary]>=3.3.5,<4",
     "alembic>=1.20.0,<2",
+    # No upper bound: `packaging` is CalVer, so a `<26` would read "nothing released
+    # from 2026 onward" and drag the lock backwards every year rather than guard a
+    # major. This phase uses only SpecifierSet and InvalidSpecifier.
+    "packaging>=24",
     "pydantic>=2,<3",
     "httpx>=0.27,<1",
     "zstandard>=0.23,<1",

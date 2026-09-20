@@ -11,6 +11,11 @@ this paragraph rather than restate it.
 Two chains live here as Alembic script directories: ``control/`` (the control plane,
 one ratified revision creating all ten tables, never edited afterwards) and ``core/``
 (the per-workspace ``core`` schema, one revision creating exactly six tables; later
-chain steps append revisions). Module chains in manifest dependency order are phase 2;
-only the hook shape exists.
+chain steps append revisions). A module chain is the third kind, and it does not live
+here: it ships inside the module's own distribution, and
+``orchestrator.script_location`` resolves it through that manifest's
+``storage.migrations_path``. ``module_chain.py`` is the door a module install comes
+through — the one that raises its chain's failure to the caller rather than marking
+the whole workspace unavailable, which is what ``migrate_workspace`` does and why it
+refuses a module chain name.
 """

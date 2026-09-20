@@ -48,6 +48,7 @@ from rheo_core.audit import (
     install_sink,
     reset_sinks,
 )
+from rheo_core.modules.operations import MODULE_ENABLE, MODULE_INSTALL
 from rheo_core.operations import (
     CORE_MODULE_ID,
     HARNESS_MODULE_ID,
@@ -337,14 +338,17 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now eighteen: 0b1's three, 0b2's C8 adds core.token.issue and
+        # Sorted, and now twenty: 0b1's three, 0b2's C8 adds core.token.issue and
         # core.token.revoke, 0c1's C3 adds core.work.failures, 0c2's C4 adds
         # core.operation.get/list/resolve, 0c2's C5 adds core.audit.list, 0c3's
         # C6 adds core.approval.approve and core.approval.refuse, 0c3's C7 adds
-        # core.standing_grant.create and core.standing_grant.revoke, and 0c4 adds
-        # core.runtime.run. Sorted by the
+        # core.standing_grant.create and core.standing_grant.revoke, 0c4 adds
+        # core.runtime.run, and run 1a0 adds core.module.install and then
+        # core.module.enable. Sorted by the
         # name string, so the two core.approval.* names lead ("approval" before
-        # "audit"), the three core.operation.* names follow core.audit.list,
+        # "audit"), the two core.module.* names sit between core.audit.list and
+        # core.operation.get with enable before install ("e" before "i"), the three
+        # core.operation.* names follow them,
         # core.runtime.run sits between core.operation.resolve and
         # core.settings.set, the two
         # core.standing_grant.* names land between core.settings.set_member and
@@ -366,6 +370,8 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             APPROVAL_APPROVE,
             APPROVAL_REFUSE,
             "core.audit.list",
+            MODULE_ENABLE,
+            MODULE_INSTALL,
             OPERATION_GET,
             OPERATION_LIST,
             OPERATION_RESOLVE,

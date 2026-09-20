@@ -44,6 +44,7 @@ shipped ``scripts/check_web_platform.py`` set plus ``__pycache__`` and ``.venv``
 import ast
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from uuid import UUID
 
@@ -80,8 +81,11 @@ from sqlalchemy import text
 pytestmark = pytest.mark.postgres
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_SCAN_DIRS = ("packages", "apps", "scripts", "tests")
+_SCAN_DIRS = ("packages", "apps", "scripts", "tests", "modules")
 _BOUNDARY_PACKAGE = _REPO_ROOT / "packages" / "core" / "src" / "rheo_core" / "boundary"
+_MODULE_SCAN_CONTROL = (
+    _REPO_ROOT / "tests" / "fixtures" / "modules" / "probe_pkg" / "src" / "probe.py.txt"
+)
 _CLASS = "WorkspaceContext"
 _CONSTRUCTORS = frozenset({"model_validate", "model_construct", "model_validate_json"})
 # A ``model_copy(update=...)`` receiver that reads as a context: ``ctx``, ``context``,
@@ -176,17 +180,22 @@ def _parse(path: Path) -> ast.AST:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def test_workspace_context_is_constructed_only_in_the_boundary_package() -> None:
+def _scan(root: Path, scan_dirs: Sequence[str]) -> tuple[int, dict[str, list[str]]]:
     scanned = 0
     violations: dict[str, list[str]] = {}
-    for top in _SCAN_DIRS:
-        for path in _python_files(_REPO_ROOT / top):
+    for top in scan_dirs:
+        for path in _python_files(root / top):
             scanned += 1
             if path.is_relative_to(_BOUNDARY_PACKAGE):
                 continue
             sites = context_construction_sites(_parse(path))
             if sites:
-                violations[str(path.relative_to(_REPO_ROOT))] = sites
+                violations[str(path.relative_to(root))] = sites
+    return scanned, violations
+
+
+def test_workspace_context_is_constructed_only_in_the_boundary_package() -> None:
+    scanned, violations = _scan(_REPO_ROOT, _SCAN_DIRS)
     assert scanned, "no Python files scanned"
     assert not violations, (
         f"WorkspaceContext is constructed outside rheo_core/boundary/: {violations}"
@@ -198,6 +207,24 @@ def test_workspace_context_is_constructed_only_in_the_boundary_package() -> None
         if context_construction_sites(_parse(path))
     ]
     assert inside == ["factories.py"], inside
+
+
+def test_workspace_context_scan_walks_the_modules_root(tmp_path: Path) -> None:
+    assert "modules" in _SCAN_DIRS
+    source = tmp_path / "modules" / "probe_pkg" / "src" / "probe.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _MODULE_SCAN_CONTROL.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    _, violations = _scan(tmp_path, _SCAN_DIRS)
+    assert violations == {
+        "modules/probe_pkg/src/probe.py": ["call@1"],
+    }
+
+    without_modules = tuple(top for top in _SCAN_DIRS if top != "modules")
+    _, missed = _scan(tmp_path, without_modules)
+    assert missed == {}
 
 
 _CONSTRUCTION_FORMS = {

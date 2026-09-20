@@ -12,7 +12,8 @@
 # for thirty-three; C7 (run 0c0) adds work.due_reconcile_seconds, for thirty-four; C1
 # (run 0c1) adds work.max_attempts, for thirty-five; C6 (run 0c3) adds the three
 # approvals.* keys, so this file carried thirty-eight; routing.public_host makes
-# thirty-nine; C2 (run 0c4) adds the eleven runtime.* keys, for fifty. Harness keys
+# thirty-nine; C2 (run 0c4) adds the eleven runtime.* keys, for fifty; run 1a0's
+# module contract adds modules.installed, for fifty-one. Harness keys
 # (tests/harness/) are registry-only by design and never appear here.
 
 profile = "development"
@@ -126,3 +127,11 @@ credential_kind = "login"
 login_seed_dir = ""
 credential_account_id = ""
 credential_ref = ""
+
+# The module allowlist (run 1a0). modules.installed names the module ids
+# load_modules() may load; empty by package default, and that empty default is the
+# whole gate — every modules/* distribution in the image is discoverable, and an id
+# this list does not name is simply not loaded, with no exception. It never defaults
+# to "every discovered module".
+[modules]
+installed = []
