@@ -115,6 +115,7 @@ from rheo_core.work.jobs import (
     requeue_for_retry,
 )
 from rheo_core.work.kinds import JobKindRegistry, JobKindUnknown
+from rheo_core.work.scheduled_authority import verified_execution_for
 from rheo_core.work.schedules import earliest_schedule_due_at, run_due_schedules
 
 LEASE_SECONDS: Final = 60
@@ -534,7 +535,27 @@ def _run_handler(
     failure: BaseException | None = None
     with UnitOfWork(engine, database) as work_uow:
         try:
-            handler(HandlerUnitOfWork(work_uow), payload, token)
+            # **The one place a ``VerifiedScheduledExecution`` is minted**, and it is
+            # minted here rather than in :func:`_run_leased_job` because the facts it
+            # attests — the lease still held, exactly one enabled schedule of this
+            # kind — have to be read in the transaction the handler then runs in, not
+            # in an earlier one whose answer could already be stale. For the
+            # overwhelming majority of jobs it is one small local ``SELECT`` that
+            # answers ``None``; see ``verified_execution_for``'s own docstring for why
+            # that query is the first of the checks and not the last.
+            handler(
+                HandlerUnitOfWork(
+                    work_uow,
+                    scheduled_execution=verified_execution_for(
+                        work_uow.connection,
+                        leased=leased,
+                        database=database,
+                        owner=owner,
+                    ),
+                ),
+                payload,
+                token,
+            )
         except (JobCancelled, JobLeaseLost) as exc:
             # Caught before the generic branch below: one exception type raised
             # specifically to be caught, caught narrowly. Defence in depth rather than

@@ -211,7 +211,7 @@ def audit_sinks() -> None:
 
 @pytest.fixture
 def harness_keys() -> None:
-    """The six harness settings keys, registered (idempotent) under profile test."""
+    """The seven harness settings keys, registered (idempotent) under profile test."""
     register_harness_keys()
 
 

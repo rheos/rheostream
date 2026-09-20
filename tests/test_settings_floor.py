@@ -21,6 +21,7 @@ from harness.settings_keys import (
     HARNESS_FLOOR_MIN,
     HARNESS_FLOOR_SUBSET,
     HARNESS_FLOOR_UNION,
+    HARNESS_RETENTION_DAYS,
     register_harness_keys,
 )
 from rheo_core.settings import (
@@ -240,6 +241,32 @@ def test_setting_type(
     verdict = validate_override(key, value, deployment_value)
     assert isinstance(verdict, SettingRefusal), verdict
     assert (verdict.state, verdict.key) == ("setting_type", key)
+
+
+def test_a_write_outside_a_bounded_keys_range_is_refused_setting_type(
+    data_root: Path,
+) -> None:
+    """The write is the third layer a bounded ``int`` key is held at, and the last one.
+
+    Folded into ``setting_type`` rather than given a fifth state:
+    :data:`REFUSAL_STATES` is what public criterion 69 quotes and the test above pins
+    it at exactly four, so a new state here would break a published contract to say
+    something ``setting_type`` already says for a ``choices`` key.
+
+    A bounded key is **not** a floored key, which is why the deployment value below
+    does not change the outcome: a floor is the deployment's current position and moves
+    with it, while these bounds are fixed at declaration and no layer may leave them.
+    """
+    for value in (0, 11):
+        verdict = validate_override(HARNESS_RETENTION_DAYS, value, 7)
+        assert isinstance(verdict, SettingRefusal), verdict
+        assert (verdict.state, verdict.key) == ("setting_type", HARNESS_RETENTION_DAYS)
+        assert "the declared range 1-10" in verdict.detail
+    for value in (1, 10):
+        accepted = validate_override(HARNESS_RETENTION_DAYS, value, 7)
+        assert isinstance(accepted, SettingAccepted), accepted
+        assert accepted.value == value
+    assert spec_for(HARNESS_RETENTION_DAYS).floor is None
 
 
 def test_accepted_override_carries_its_storage_encoding(data_root: Path) -> None:

@@ -6,7 +6,8 @@ Called before a workspace or member row is written (``core.settings.set`` and
 
 - ``setting_undeclared`` — no ``KeySpec`` for that key.
 - ``setting_scope`` — the writer may not set a key of that scope.
-- ``setting_type`` — the value does not match the declared type.
+- ``setting_type`` — the value does not match the declared type, is not one of a
+  ``choices`` key's values, or is outside a bounded ``int`` key's declared range.
 - ``setting_floor_violation`` — a floored value looser than the deployment value; the
   refusal names the key.
 
@@ -23,7 +24,9 @@ from rheo_core.settings.schema import (
     REGISTRY,
     FrozenValue,
     Scope,
+    SettingTypeMismatch,
     ValueType,
+    check_bounds,
     check_value,
     encode_text,
     freeze_value,
@@ -86,6 +89,17 @@ def validate_override(
             f"{key} is declared {spec.type.value}; the value does not match",
         )
     frozen = freeze_value(value)
+    try:
+        # The write is the third configuration layer a bounded ``int`` key has to be
+        # held at — the TOML and an environment variable go through ``check_value``,
+        # an override row through ``decode_text``, and a caller's write through here.
+        # Folded into ``setting_type`` rather than given a state of its own: criterion
+        # 69 quotes exactly four refusal states and there is no fifth, and "the value
+        # is not one this key accepts" is what that state already says for a
+        # ``choices`` key one branch above.
+        check_bounds(spec, frozen, source="the write")
+    except SettingTypeMismatch as exc:
+        return SettingRefusal("setting_type", key, str(exc))
     if spec.floor is not None:
         base = check_value(spec, deployment_value, source="deployment value")
         if is_looser(spec.floor, base, frozen):

@@ -184,6 +184,14 @@ class KeySpec:
     ``default`` is mandatory and is the package default (see the module docstring for
     why it lives here). ``choices`` constrains a ``str`` key to a closed set of values,
     which is how ``profile`` is held to ``production | development | test``.
+
+    ``minimum``/``maximum`` are the same idea for an ``int`` key: a closed range rather
+    than a closed set. They are **not** a floor. A floor combines a workspace's
+    override with the deployment's value under a comparator, so what it bounds moves
+    with the deployment; these two are fixed at declaration and every layer is held to
+    them — the package default, the TOML, an environment variable, an override row and
+    a write alike. A retention window of zero days, or of a million, is not a policy an
+    operator may set at any layer, which is what a floor cannot express.
     """
 
     key: str
@@ -193,6 +201,8 @@ class KeySpec:
     explicit_per_workspace: bool
     default: FrozenValue
     choices: tuple[str, ...] | None = None
+    minimum: int | None = None
+    maximum: int | None = None
 
     def __post_init__(self) -> None:
         if not _KEY_SHAPE.fullmatch(self.key):
@@ -220,6 +230,71 @@ class KeySpec:
                     f"settings key {self.key!r}: default {self.default!r} is not "
                     f"one of {list(self.choices)}"
                 )
+        if self.minimum is not None or self.maximum is not None:
+            if self.type is not ValueType.INT:
+                raise TypeError(
+                    f"settings key {self.key!r}: minimum/maximum apply to int keys only"
+                )
+            if (
+                self.minimum is not None
+                and self.maximum is not None
+                and self.minimum > self.maximum
+            ):
+                raise ValueError(
+                    f"settings key {self.key!r}: minimum {self.minimum} is above "
+                    f"maximum {self.maximum}"
+                )
+            if _out_of_bounds(self, self.default):
+                raise ValueError(
+                    f"settings key {self.key!r}: default {self.default!r} is outside "
+                    f"{_bound_detail(self)}"
+                )
+
+
+def _out_of_bounds(spec: KeySpec, value: object) -> bool:
+    """True when ``value`` is an integer outside ``spec``'s declared range.
+
+    A non-integer is never out of bounds *here*: an unbounded key has nothing to be
+    outside of, and a value of the wrong type is :func:`matches_type`'s refusal to
+    make, one check earlier, with the message that names the type mismatch.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return False
+    if spec.minimum is not None and value < spec.minimum:
+        return True
+    return spec.maximum is not None and value > spec.maximum
+
+
+def _bound_detail(spec: KeySpec) -> str:
+    """The declared range, named the way the refusal reads best at each half."""
+    if spec.minimum is not None and spec.maximum is not None:
+        return f"the declared range {spec.minimum}-{spec.maximum}"
+    if spec.minimum is not None:
+        return f"the declared minimum {spec.minimum}"
+    return f"the declared maximum {spec.maximum}"
+
+
+def check_bounds(spec: KeySpec, value: FrozenValue, *, source: str) -> None:
+    """Refuse an ``int`` outside a bounded key's range, naming the value and the bound.
+
+    Both value-parsing entry points call it — :func:`check_value` for a natively typed
+    value (the TOML, a write) and :func:`decode_text` for a text one (an environment
+    variable, an override row) — so there is one sentence for an out-of-range setting
+    however it arrived, and no layer can be the one that skips the check.
+
+    **The value is named here, unlike everywhere else in this module.**
+    :func:`decode_text` deliberately never echoes the text it was given, because a
+    mistyped setting can be a pasted secret; what this function prints is the *coerced
+    integer* of a key declared ``int``, which is not the text and cannot be a pasted
+    credential. Without it the refusal could not say which bound was missed by how
+    much, which is the whole of what an operator needs from it.
+    """
+    if _out_of_bounds(spec, value):
+        raise SettingTypeMismatch(
+            f"{spec.key}: {source} holds {value!r}, which is outside "
+            f"{_bound_detail(spec)}",
+            key=spec.key,
+        )
 
 
 def check_value(spec: KeySpec, value: object, *, source: str) -> FrozenValue:
@@ -240,6 +315,7 @@ def check_value(spec: KeySpec, value: object, *, source: str) -> FrozenValue:
             f"{list(spec.choices)}",
             key=spec.key,
         )
+    check_bounds(spec, frozen, source=source)
     return frozen
 
 
@@ -280,6 +356,7 @@ def decode_text(spec: KeySpec, text: str, *, source: str) -> FrozenValue:
         raise SettingTypeMismatch(
             f"{spec.key}: {source} is not one of {list(spec.choices)}", key=spec.key
         )
+    check_bounds(spec, value, source=source)
     return value
 
 

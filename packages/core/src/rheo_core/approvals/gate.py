@@ -481,6 +481,16 @@ def execute_approved(
             # operation's view; without this line the thread stops one frame short of
             # the operation that actually has an event to publish.
             consumers=uow.consumers if isinstance(uow, HandlerUnitOfWork) else None,
+            # Carried through for the same reason and in the same shape, and
+            # **carried through only**: this function never produces one. No approval
+            # reaches here from the worker's leased-job path today, so the value is
+            # ``None`` in every execution release one can run — but "a capability
+            # travels with the view rather than being rebuilt at each frame" is the
+            # rule that has to hold everywhere, because the frame that rebuilds one is
+            # the frame that could invent one.
+            scheduled_execution=(
+                uow.scheduled_execution if isinstance(uow, HandlerUnitOfWork) else None
+            ),
         ),
         model_input,
     )

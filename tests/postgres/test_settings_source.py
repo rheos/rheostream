@@ -1,4 +1,4 @@
-"""``PostgresOverrideSource`` feeding C2's resolver.
+"""Both ``OverrideSource`` implementations feeding C2's resolver.
 
 Seams: ``rheo_core.settings.storage_source.PostgresOverrideSource`` against
 ``resolve()``: a workspace row overrides the deployment value for a
@@ -6,6 +6,11 @@ Seams: ``rheo_core.settings.storage_source.PostgresOverrideSource`` against
 that account), a ``deployment``-scope key with a row is ignored, a floored key's row
 is clamped by the deployment value on read, and the source routes exactly as the
 storage layer does (a non-active workspace is ``workspace_unavailable``).
+
+And 1a1's ``TransactionBoundOverrideSource``: it reads on the connection it was handed
+— proved by the two things that separate a shared transaction from a second one, the
+caller's own uncommitted row being visible and the engine pool recording no checkout —
+and it refuses a workspace other than the one it was bound to.
 """
 
 import logging
@@ -17,16 +22,27 @@ from harness.settings_keys import (
     HARNESS_EXPLICIT,
     HARNESS_FLOOR_MIN,
     HARNESS_MEMBER,
+    HARNESS_RETENTION_DAYS,
+    HARNESS_RETENTION_DEFAULT,
 )
 from rheo_core.refs import uuid7
 from rheo_core.settings import ValueType, resolve
-from rheo_core.settings.storage_source import PostgresOverrideSource
-from rheo_core.storage.backend import WORKSPACE_UNAVAILABLE, StorageRefusal, UnitOfWork
+from rheo_core.settings.storage_source import (
+    PostgresOverrideSource,
+    TransactionBoundOverrideSource,
+)
+from rheo_core.storage.backend import (
+    DATABASE_MISMATCH,
+    WORKSPACE_UNAVAILABLE,
+    StorageRefusal,
+    UnitOfWork,
+)
 from rheo_core.storage.provisioning import STEP_CREATE_DATABASE
 from rheo_core.storage.repositories import (
     upsert_member_setting,
     upsert_workspace_setting,
 )
+from sqlalchemy import Engine, event
 
 pytestmark = pytest.mark.postgres
 
@@ -58,6 +74,108 @@ def write_member_row(
             uow.connection, account_id=account_id, key=key, value=value, value_type=kind
         )
         uow.commit()
+
+
+class CheckoutCounter:
+    """Counts pool checkouts on one engine for the length of a ``with`` block.
+
+    The property under test is "no second connection", and the only place that is
+    observable is the pool: both sources hand back the same rows, and the one that
+    opened its own connection has already returned it by the time the call ends, so a
+    count taken afterwards sees nothing. The pool's own ``checkout`` event fires while
+    it is happening.
+    """
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        self.checkouts = 0
+
+    def _count(self, *_: object) -> None:
+        self.checkouts += 1
+
+    def __enter__(self) -> "CheckoutCounter":
+        event.listen(self._engine, "checkout", self._count)
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        event.remove(self._engine, "checkout", self._count)
+
+
+def test_transaction_bound_source_reads_the_callers_own_open_transaction(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    """The row this transaction wrote and has not committed, and no second checkout.
+
+    Two assertions because either alone would pass on the wrong implementation: a
+    source that opened its own connection would still return the right rows for
+    everything already committed, and a source that reused the connection but read
+    through a nested transaction would still see the uncommitted row. Together they
+    say the read happened on this connection, inside this transaction.
+    """
+    row = cluster.registry_row(workspace)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    with UnitOfWork(engine, row.database_name) as uow:
+        upsert_workspace_setting(
+            uow.connection,
+            key=HARNESS_RETENTION_DAYS,
+            value="3",
+            value_type=ValueType.INT,
+            updated_by=None,
+        )
+        bound = TransactionBoundOverrideSource(uow.connection, workspace_id=workspace)
+        with CheckoutCounter(engine) as counted:
+            resolved = resolve(workspace_id=workspace, source=bound)
+        assert resolved[HARNESS_RETENTION_DAYS] == 3
+        assert counted.checkouts == 0
+
+        # The other source, in the same block, as the control: it does check one out,
+        # and its own connection cannot see a row this transaction has not committed.
+        with CheckoutCounter(engine) as counted_other:
+            elsewhere = resolve(workspace_id=workspace, source=PostgresOverrideSource())
+        assert counted_other.checkouts >= 1
+        assert elsewhere[HARNESS_RETENTION_DAYS] == HARNESS_RETENTION_DEFAULT
+        # Nothing is committed: the row above exists only inside this transaction.
+        uow.rollback()
+
+
+def test_transaction_bound_source_accepts_a_unit_of_work_and_reads_member_rows(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    row = cluster.registry_row(workspace)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    with UnitOfWork(engine, row.database_name) as uow:
+        upsert_member_setting(
+            uow.connection,
+            account_id=owner_account_id,
+            key=HARNESS_MEMBER,
+            value="bound-row",
+            value_type=ValueType.STR,
+        )
+        bound = TransactionBoundOverrideSource(uow, workspace_id=workspace)
+        resolved = resolve(
+            workspace_id=workspace, account_id=owner_account_id, source=bound
+        )
+        assert resolved[HARNESS_MEMBER] == "bound-row"
+        assert dict(bound.member_overrides(workspace, uuid7())) == {}
+        uow.rollback()
+
+
+def test_transaction_bound_source_refuses_a_workspace_it_is_not_bound_to(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """It opens nothing, so it cannot route — and a source that answered anyway would
+    be reading one workspace's database and calling the rows another's."""
+    row = cluster.registry_row(workspace)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    other = uuid7()
+    with UnitOfWork(engine, row.database_name) as uow:
+        bound = TransactionBoundOverrideSource(uow.connection, workspace_id=workspace)
+        with pytest.raises(StorageRefusal) as excinfo:
+            bound.workspace_overrides(other)
+        assert excinfo.value.state == DATABASE_MISMATCH
+        with pytest.raises(StorageRefusal) as excinfo:
+            bound.member_overrides(other, owner_account_id)
+        assert excinfo.value.state == DATABASE_MISMATCH
 
 
 def test_workspace_row_overrides_the_deployment_value_for_a_workspace_key(

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from rheo_core.events.consumers import ConsumerRegistry
     from rheo_core.migrations.orchestrator import MigrationResult
     from rheo_core.storage.pools import EnginePool
+    from rheo_core.work.scheduled_authority import VerifiedScheduledExecution
 
 WORKSPACE_UNAVAILABLE: Final = "workspace_unavailable"
 WORKSPACE_MISSING: Final = "workspace_missing"
@@ -205,12 +206,13 @@ class HandlerUnitOfWork(UnitOfWork):
     annotation compiling (``core_ops.py``, ``tokens/issue.py``, ``resolve_in`` and
     the test harness need no edit), and reaches the four private slots only because
     it lives in the module that declares them.
-    ``__slots__ = ("_operation_id", "_consumers")``: it adds exactly two of its own,
-    read through the :attr:`operation_id` and :attr:`consumers` properties, and
-    neither is a change to ``UnitOfWork``'s pinned surface — the guard reads
-    ``dir(UnitOfWork)`` and ``UnitOfWork.__slots__``, neither of which a subclass's
-    own slot appears in. ``tests/test_handler_uow.py`` pins the tuple exactly, so
-    every addition to it is a deliberate, reviewed change.
+    ``__slots__ = ("_operation_id", "_consumers", "_scheduled_execution")``: it adds
+    exactly three of its own, read through the :attr:`operation_id`,
+    :attr:`consumers` and :attr:`scheduled_execution` properties, and none is a change
+    to ``UnitOfWork``'s pinned surface — the guard reads ``dir(UnitOfWork)`` and
+    ``UnitOfWork.__slots__``, neither of which a subclass's own slot appears in.
+    ``tests/test_handler_uow.py`` pins the tuple exactly, so every addition to it is a
+    deliberate, reviewed change.
 
     **What ``_operation_id`` is for.** ``dispatch()`` mints a ``core.operation``
     record before it opens the work transaction for a ``long_running`` declaration,
@@ -231,6 +233,18 @@ class HandlerUnitOfWork(UnitOfWork):
     that needs one refuses ``consumers_missing`` rather than building a throwaway
     registry whose fan-out would depend on which call built it.
 
+    **What ``_scheduled_execution`` is for, and why it is the one slot with no public
+    producer.** A scheduled retention expiry is release one's only deletion without a
+    per-action approval, so the thing that stands in for the approval is proof that
+    the call really is a leased, scheduled, single-matching-schedule worker visit —
+    :class:`~rheo_core.work.scheduled_authority.VerifiedScheduledExecution`, minted
+    only by ``work/loop.py``'s own leased-job path against the live row it just
+    leased. ``dispatch()`` takes no such parameter and never will: a keyword on the
+    public dispatcher would be precisely the channel a caller could hand itself an
+    approval bypass through. It is ``None`` for every view the dispatcher builds, and
+    ``approvals/gate.py`` carries through whatever the view it was given holds rather
+    than producing one, exactly as it does for ``consumers``.
+
     **The seal is over those three names and claims no more.** ``connection`` is
     inherited and still returns a live SQLAlchemy ``Connection``, so
     ``view.connection.commit()`` still ends the transaction. Closing that would mean
@@ -242,7 +256,7 @@ class HandlerUnitOfWork(UnitOfWork):
     the connection.
     """
 
-    __slots__ = ("_operation_id", "_consumers")
+    __slots__ = ("_operation_id", "_consumers", "_scheduled_execution")
 
     def __init__(
         self,
@@ -250,17 +264,20 @@ class HandlerUnitOfWork(UnitOfWork):
         *,
         operation_id: UUID | None = None,
         consumers: "ConsumerRegistry | None" = None,
+        scheduled_execution: "VerifiedScheduledExecution | None" = None,
     ) -> None:
         """Share an already-entered unit of work's connection and transaction.
 
         Not ``(engine, expected_database)``: the view never opens anything, it
         borrows what the dispatcher already opened. The first four assignments are
         the parent's own slots, reachable here because this class sits in that
-        module; the last two are this subclass's own — the minted ``core.operation``
-        id or ``None``, and the process's consumer registry or ``None``.
+        module; the last three are this subclass's own — the minted
+        ``core.operation`` id or ``None``, the process's consumer registry or
+        ``None``, and the worker's verified scheduled-execution capability or
+        ``None``.
 
-        Both are keyword-only with a ``None`` default, so every construction site
-        that has neither — ``loop.py``'s two, and every test that builds a view
+        All three are keyword-only with a ``None`` default, so every construction
+        site that has none — the delivery drain, and every test that builds a view
         directly — needs no edit.
         """
         if not isinstance(uow, UnitOfWork):
@@ -272,6 +289,7 @@ class HandlerUnitOfWork(UnitOfWork):
         self._pool = None
         self._operation_id = operation_id
         self._consumers = consumers
+        self._scheduled_execution = scheduled_execution
 
     @property
     def operation_id(self) -> UUID | None:
@@ -295,6 +313,18 @@ class HandlerUnitOfWork(UnitOfWork):
         to build a per-call registry.
         """
         return self._consumers
+
+    @property
+    def scheduled_execution(self) -> "VerifiedScheduledExecution | None":
+        """The worker's verified scheduled-execution capability, or ``None``.
+
+        Read-only, like the two above, and ``None`` everywhere but inside a handler
+        the worker's leased-job path is running. A handler that wants to act on it
+        hands it straight back to
+        ``rheo_core.work.scheduled_authority.dispatch_verified_expiry_in``, which
+        refuses anything that is not the very object this property returned.
+        """
+        return self._scheduled_execution
 
     def __enter__(self) -> Self:
         raise StorageRefusal(
