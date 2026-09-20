@@ -286,6 +286,29 @@ def get(conn: Connection, *, approval_id: UUID) -> ApprovalRow | None:
     return None if row is None else _row(row)
 
 
+def get_for_operation(conn: Connection, *, operation_id: UUID) -> ApprovalRow | None:
+    """The approval minted for ``operation_id``, or ``None`` when there is none.
+
+    **The read a gated handler needs, because a handler is not handed its approval.**
+    ``execute_approved`` runs the original operation's handler with the ordinary
+    ``(ctx, uow, input)`` signature and puts ``approval.operation_id`` on the sealed
+    view, so a handler that has to record *which confirmation* released it — the
+    deletion coordinator, writing ``core.deletion_record.approval_id`` — reaches its
+    approval through that id and this function. Widening the handler signature, or
+    adding a fourth slot to ``HandlerUnitOfWork``, would change every registered
+    operation for one caller's column.
+
+    ``one_or_none`` rather than ``first``: ``hold_for_approval`` mints exactly one
+    approval per operation record in one transaction and nothing else writes the
+    column, so two rows would be a corruption to raise on rather than a choice to make
+    silently.
+    """
+    row = conn.execute(
+        select(*_COLUMNS).where(t.approval.c.operation_id == operation_id)
+    ).one_or_none()
+    return None if row is None else _row(row)
+
+
 def payload_body(conn: Connection, *, approval_id: UUID) -> dict[str, object] | None:
     """The stored snapshot of the operation input, or ``None`` when there is none.
 

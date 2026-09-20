@@ -816,6 +816,60 @@
         "title": "OperationResolveInput",
         "type": "object"
       },
+      "RecordDeleteInput": {
+        "description": "``core.record.delete(ref)``.\n\n**The wire form is the canonical ``<module>.<record_type>:<uuid>`` string, and\nthe validated field is a ``RecordRef``.** Both halves are load-bearing and the\nvalidator below is what makes them one field rather than two. The string is what\nthe contract gives a caller and what ``recallatron_forget`` will pass; the typed\nvalue is what ``AuditSpec(subject_field=\"ref\")`` needs, because\n``dispatch``'s ``_subject_ref`` records a subject only for a field that *is* a\n``RecordRef`` and would otherwise write a null ``subject_ref`` on every audit row\nof the one core operation that genuinely acts on a record \u2014 indistinguishable from\nthe ordinary null of an operation that acts on none. ``RecordStateGuard`` reads the\nsame field and would fail the same way.\n\nA malformed string raises ``RecordRefMalformed`` inside the validator, which\npydantic reports as a validation error and ``dispatch()`` answers ``input_invalid``\nfor \u2014 before authorization, before the hold, before anything is written.",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/RecordRef"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "title": "RecordDeleteInput",
+        "type": "object"
+      },
+      "RecordDeleted": {
+        "description": "The only thing any caller receives: the ledger row's own reference.\n\nOne field, and no second one is coming. See the module docstring on why a count\nhere would be a disclosure rather than a convenience.",
+        "properties": {
+          "deletion_ref": {
+            "title": "Deletion Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deletion_ref"
+        ],
+        "title": "RecordDeleted",
+        "type": "object"
+      },
+      "RecordRef": {
+        "description": "A reference to a record owned by ``module``, of type ``record_type``.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "module": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Module",
+            "type": "string"
+          },
+          "record_type": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Record Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "record_type",
+          "id"
+        ],
+        "title": "RecordRef",
+        "type": "object"
+      },
       "RuntimeRunInput": {
         "properties": {
           "continuation": {
@@ -1941,6 +1995,69 @@
           }
         },
         "summary": "core.operation.resolve (mutate)"
+      }
+    },
+    "/api/v1/operations/core.record.delete": {
+      "post": {
+        "operationId": "core.record.delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordDeleteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/RecordDeleted"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.record.delete (destructive)"
       }
     },
     "/api/v1/operations/core.runtime.run": {

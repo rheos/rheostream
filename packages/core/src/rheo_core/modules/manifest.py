@@ -50,6 +50,7 @@ from rheo_contracts import OperationDeclaration, Role, ToolDeclaration
 from rheo_contracts.refs import is_reserved_module
 
 from rheo_core.audit.sink import AuditSink
+from rheo_core.deletion.registry import DeletionHandler as _DeletionHandler
 from rheo_core.events.consumers import ConsumerSubscription
 from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import RecordResolver
@@ -98,11 +99,33 @@ class WebSurface:
 HealthCheck = Callable[[UnitOfWork], None]
 """``(uow) -> None``: one check install step 6 calls directly, so it is typed."""
 
-DeletionHandler = Callable[..., object]
+
+def _deletion_handler(value: object) -> object:
+    """The duck check :class:`DeletionParticipant` applies to its handler.
+
+    A plain validator rather than an ``isinstance`` probe for the reason this module's
+    docstring gives at ``audit_sink``: the narrowed type is a ``typing.Protocol``
+    without ``@runtime_checkable``, so pydantic can build no schema for it and would
+    raise ``PydanticSchemaGenerationError`` at class-definition time.
+    """
+    if callable(value):
+        return value
+    raise ValueError("a deletion participant's handler must be callable")
+
+
+DeletionHandler = Annotated[_DeletionHandler, PlainValidator(_deletion_handler)]
 """What the deletion coordinator calls for a participant's record types.
 
-Unnarrowed on purpose: no run in the current plan reads it, and a guessed signature
-is a shape a later run would have to break rather than merely narrow.
+Narrowed in 1a1 from ``Callable[..., object]`` to
+:class:`rheo_core.deletion.registry.DeletionHandler`, the protocol the coordinator
+actually calls: ``(ctx, uow, ref) -> RemovedMemories``. The old comment here said the
+alias stayed unnarrowed because no run read it and a *guessed* signature is worse than
+none — that reasoning held exactly until a caller existed, and the signature is read
+off that caller rather than guessed.
+
+``Exporter`` and ``Importer`` below keep the old alias and the old reasoning, because
+nothing in this run calls either: narrowing them now would be the guess this one no
+longer is.
 """
 
 Exporter = Callable[..., object]

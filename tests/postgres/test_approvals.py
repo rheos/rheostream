@@ -974,6 +974,62 @@ def test_an_approved_handler_runs_as_the_held_caller_not_the_approver(
     assert _act_callers(engine, database) == (acting_identity(member),)
 
 
+def _audit_rows(ctx: WorkspaceContext, operation_name: str) -> tuple[Any, ...]:
+    """Every audit record for ``operation_name``, through the supported read.
+
+    ``core.audit.list`` rather than a ``SELECT``: the row's actor is what this file is
+    about to assert on, and reading it through the operation that publishes it proves
+    the value a person would actually see rather than a column a test went looking for.
+    """
+    outcome = dispatch(ctx, AUDIT_LIST, {"limit": 100})
+    assert outcome.ok, outcome
+    result: Any = outcome.result
+    return tuple(
+        record for record in result.records if record.operation_name == operation_name
+    )
+
+
+def test_a_gated_operations_success_audit_row_names_the_held_caller(
+    owner: WorkspaceContext,
+    owner_account_id: UUID,
+    cluster: ClusterSession,
+    workspace: UUID,
+    note: str,
+) -> None:
+    """1a1: the ``succeeded`` audit row for a gated operation names the caller whose
+    call was held, not the actor who released it.
+
+    The handler and the guards moved to the rebuilt held caller when
+    ``context_for_approved_execution`` landed; ``record_operation_audit`` was still
+    handed the approver's ``ctx``, so the one durable record of *who did this* named
+    the wrong principal for every gated operation in the tree — an owner appearing to
+    have performed a member's destructive call, with nothing else in the row to
+    contradict it.
+
+    **Three rows are asserted, not one**, because the fix has a way of being wrong in
+    both directions. The held call's ``refused`` row and the execution's ``succeeded``
+    row must both name the member — they are two records of one act — and
+    ``core.approval.approve``'s own row must still name the owner, or the change would
+    have swapped the defect for its mirror image and lost the record of who approved.
+    """
+    member_id, member = _member_context(cluster, workspace, "audited-held-caller")
+    assert member_id != owner_account_id
+
+    approval_id, _ = _held(member, FIXTURE_ACT, act_payload(note))
+    _record(_approve(owner, approval_id))
+
+    gated = {row.outcome: row for row in _audit_rows(owner, FIXTURE_ACT)}
+    assert set(gated) == {"refused", "succeeded"}, gated
+    assert gated["succeeded"].actor_id == member_id
+    assert gated["succeeded"].actor_kind == member.actor.kind.value
+    assert gated["succeeded"].entry == member.entry.value
+    assert gated["succeeded"].subject_ref == note
+    assert gated["refused"].actor_id == member_id
+    (approve_row,) = _audit_rows(owner, APPROVAL_APPROVE)
+    assert approve_row.outcome == "succeeded"
+    assert approve_row.actor_id == owner_account_id
+
+
 def test_the_held_tokens_own_authority_survives_into_the_approved_handler(
     owner: WorkspaceContext,
     engine: Engine,

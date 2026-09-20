@@ -50,8 +50,8 @@ pytestmark = pytest.mark.postgres
 MODULE_ID = MANIFEST.module_id
 MODULE_VERSION_TABLE = f"alembic_version_{MODULE_ID}"
 MODULE_HEAD = "0001_schema"
-CORE_HEAD = "0006_runtime"
-# The `core` chain's six revisions, oldest first. Spelled out because this file uses
+CORE_HEAD = "0007_record_deletion"
+# The `core` chain's revisions, oldest first. Spelled out because this file uses
 # them as the multi-revision chain Recallatron is not: with one revision, "the
 # revisions newly applied" and "the recorded head" are the same answer, so nothing a
 # module chain alone can express distinguishes a history walk from a set difference.
@@ -62,6 +62,7 @@ CORE_REVISIONS = (
     "0004_standing_grants",
     "0005_export_records",
     "0006_runtime",
+    "0007_record_deletion",
 )
 
 

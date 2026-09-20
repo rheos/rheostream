@@ -140,6 +140,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.record.delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.record.delete (destructive) */
+        post: operations["core.record.delete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.runtime.run": {
         parameters: {
             query?: never;
@@ -781,6 +798,54 @@ export interface components {
              */
             terminal_check_kind: ("record_exists" | "provider_status" | "sink_recorded" | "handler_returned") | null;
         };
+        /**
+         * RecordDeleteInput
+         * @description ``core.record.delete(ref)``.
+         *
+         *     **The wire form is the canonical ``<module>.<record_type>:<uuid>`` string, and
+         *     the validated field is a ``RecordRef``.** Both halves are load-bearing and the
+         *     validator below is what makes them one field rather than two. The string is what
+         *     the contract gives a caller and what ``recallatron_forget`` will pass; the typed
+         *     value is what ``AuditSpec(subject_field="ref")`` needs, because
+         *     ``dispatch``'s ``_subject_ref`` records a subject only for a field that *is* a
+         *     ``RecordRef`` and would otherwise write a null ``subject_ref`` on every audit row
+         *     of the one core operation that genuinely acts on a record — indistinguishable from
+         *     the ordinary null of an operation that acts on none. ``RecordStateGuard`` reads the
+         *     same field and would fail the same way.
+         *
+         *     A malformed string raises ``RecordRefMalformed`` inside the validator, which
+         *     pydantic reports as a validation error and ``dispatch()`` answers ``input_invalid``
+         *     for — before authorization, before the hold, before anything is written.
+         */
+        RecordDeleteInput: {
+            ref: components["schemas"]["RecordRef"];
+        };
+        /**
+         * RecordDeleted
+         * @description The only thing any caller receives: the ledger row's own reference.
+         *
+         *     One field, and no second one is coming. See the module docstring on why a count
+         *     here would be a disclosure rather than a convenience.
+         */
+        RecordDeleted: {
+            /** Deletion Ref */
+            deletion_ref: string;
+        };
+        /**
+         * RecordRef
+         * @description A reference to a record owned by ``module``, of type ``record_type``.
+         */
+        RecordRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Module */
+            module: string;
+            /** Record Type */
+            record_type: string;
+        };
         /** RuntimeRunInput */
         RuntimeRunInput: {
             /**
@@ -1362,6 +1427,39 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["OperationRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.record.delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordDeleteInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["RecordDeleted"];
                         state: string;
                     };
                 };
