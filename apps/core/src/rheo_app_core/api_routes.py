@@ -47,6 +47,8 @@ from rheo_core.operations import (
 )
 from rheo_core.refs.resolver import NOT_FOUND
 
+from rheo_app_core.startup import CONSUMERS
+
 router = APIRouter()
 
 _TOKEN_REFUSAL_STATUS: Final = 401
@@ -177,7 +179,11 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
         body = None
     if isinstance(body, dict):
         payload.update(body)
-    outcome = dispatch(ctx, name, payload)
+    # ``consumers`` is this process's one registry, built in ``startup.py`` beside the
+    # module load that populates it. Passed on every dispatch rather than resolved
+    # inside one, because the registry belongs to the composition root and
+    # ``rheo_core`` holds no process-wide instance to fall back on.
+    outcome = dispatch(ctx, name, payload, consumers=CONSUMERS)
     status = outcome_status(outcome)
     if carries_result(outcome):
         result = (

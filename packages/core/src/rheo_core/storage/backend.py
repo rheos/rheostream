@@ -32,6 +32,11 @@ from sqlalchemy import Connection, Engine, text
 from sqlalchemy.engine import Transaction
 
 if TYPE_CHECKING:
+    # ``events/consumers.py`` imports ``HandlerUnitOfWork`` from this module at
+    # runtime, to type ``ConsumerHandler``. A runtime import back the other way would
+    # close that cycle, so the registry's type is resolved here and the annotations
+    # that use it are strings — the same shape ``EnginePool`` already has.
+    from rheo_core.events.consumers import ConsumerRegistry
     from rheo_core.migrations.orchestrator import MigrationResult
     from rheo_core.storage.pools import EnginePool
 
@@ -199,19 +204,32 @@ class HandlerUnitOfWork(UnitOfWork):
     nothing to ``dir(UnitOfWork)``, leaves every existing ``uow: UnitOfWork``
     annotation compiling (``core_ops.py``, ``tokens/issue.py``, ``resolve_in`` and
     the test harness need no edit), and reaches the four private slots only because
-    it lives in the module that declares them. ``__slots__ = ("_operation_id",)``:
-    it adds exactly one of its own, read through the :attr:`operation_id` property,
-    and that slot is **not** a change to ``UnitOfWork``'s pinned surface — the guard
-    reads ``dir(UnitOfWork)`` and ``UnitOfWork.__slots__``, neither of which a
-    subclass's own slot appears in.
+    it lives in the module that declares them.
+    ``__slots__ = ("_operation_id", "_consumers")``: it adds exactly two of its own,
+    read through the :attr:`operation_id` and :attr:`consumers` properties, and
+    neither is a change to ``UnitOfWork``'s pinned surface — the guard reads
+    ``dir(UnitOfWork)`` and ``UnitOfWork.__slots__``, neither of which a subclass's
+    own slot appears in. ``tests/test_handler_uow.py`` pins the tuple exactly, so
+    every addition to it is a deliberate, reviewed change.
 
-    **What the one slot is for.** ``dispatch()`` mints a ``core.operation`` record
-    before it opens the work transaction for a ``long_running`` declaration, and the
-    handler has to learn that id to stamp it on the job it enqueues. Carrying it on
-    the view the handler already receives is what keeps the ``(ctx, uow, input)``
-    handler signature unchanged — and therefore every registered handler, and every
-    test that builds one, unedited. It is ``None`` for every other dispatch and for
-    every view the worker loop constructs.
+    **What ``_operation_id`` is for.** ``dispatch()`` mints a ``core.operation``
+    record before it opens the work transaction for a ``long_running`` declaration,
+    and the handler has to learn that id to stamp it on the job it enqueues. Carrying
+    it on the view the handler already receives is what keeps the ``(ctx, uow,
+    input)`` handler signature unchanged — and therefore every registered handler,
+    and every test that builds one, unedited. It is ``None`` for every other dispatch
+    and for every view the worker loop constructs.
+
+    **What ``_consumers`` is for.** A handler that publishes an event needs the
+    process's one :class:`~rheo_core.events.consumers.ConsumerRegistry` —
+    ``events.publish.publish`` takes it as a required keyword — and neither that
+    package nor this one holds a process-wide instance, on purpose. The composition
+    root builds it (``apps/worker``'s ``main.py``, ``apps/core``'s ``startup.py``)
+    and hands it to ``dispatch()``, which carries it here on the same view, for the
+    same reason the minted id is carried here: the handler signature does not move.
+    It is ``None`` for a dispatch no composition root wired one into, and a handler
+    that needs one refuses ``consumers_missing`` rather than building a throwaway
+    registry whose fan-out would depend on which call built it.
 
     **The seal is over those three names and claims no more.** ``connection`` is
     inherited and still returns a live SQLAlchemy ``Connection``, so
@@ -224,20 +242,26 @@ class HandlerUnitOfWork(UnitOfWork):
     the connection.
     """
 
-    __slots__ = ("_operation_id",)
+    __slots__ = ("_operation_id", "_consumers")
 
-    def __init__(self, uow: UnitOfWork, *, operation_id: UUID | None = None) -> None:
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        *,
+        operation_id: UUID | None = None,
+        consumers: "ConsumerRegistry | None" = None,
+    ) -> None:
         """Share an already-entered unit of work's connection and transaction.
 
         Not ``(engine, expected_database)``: the view never opens anything, it
         borrows what the dispatcher already opened. The first four assignments are
         the parent's own slots, reachable here because this class sits in that
-        module; the fifth is this subclass's own, and is the minted
-        ``core.operation`` id or ``None``.
+        module; the last two are this subclass's own — the minted ``core.operation``
+        id or ``None``, and the process's consumer registry or ``None``.
 
-        ``operation_id`` is keyword-only with a ``None`` default, so every
-        construction site that does not have one — ``loop.py``'s two, and every test
-        that builds a view directly — needs no edit.
+        Both are keyword-only with a ``None`` default, so every construction site
+        that has neither — ``loop.py``'s two, and every test that builds a view
+        directly — needs no edit.
         """
         if not isinstance(uow, UnitOfWork):
             raise TypeError("HandlerUnitOfWork wraps a UnitOfWork")
@@ -247,6 +271,7 @@ class HandlerUnitOfWork(UnitOfWork):
         self._transaction = uow._transaction
         self._pool = None
         self._operation_id = operation_id
+        self._consumers = consumers
 
     @property
     def operation_id(self) -> UUID | None:
@@ -258,6 +283,18 @@ class HandlerUnitOfWork(UnitOfWork):
         record when the job finishes.
         """
         return self._operation_id
+
+    @property
+    def consumers(self) -> "ConsumerRegistry | None":
+        """The process's one consumer registry, or ``None``.
+
+        Read-only, exactly like :attr:`operation_id`: a handler reads the registry
+        the composition root built, it does not choose or construct one. ``None``
+        when no composition root wired one into this dispatch — a deployment gap
+        that a publishing handler refuses ``consumers_missing`` for, never a licence
+        to build a per-call registry.
+        """
+        return self._consumers
 
     def __enter__(self) -> Self:
         raise StorageRefusal(

@@ -44,6 +44,7 @@ from rheo_core.storage.postgres import get_backend
 
 from rheo_app_core.api_routes import carries_result, envelope, outcome_status
 from rheo_app_core.auth_routes import normalize_host
+from rheo_app_core.startup import CONSUMERS
 
 SESSION_REFUSAL_STATUS = 401
 
@@ -226,7 +227,10 @@ async def run_operation(
         body = None
     if isinstance(body, dict):
         payload.update(body)
-    outcome = dispatch(ctx, name, payload)
+    # The same one registry ``api_routes.run_operation`` passes — one process, one
+    # ``ConsumerRegistry``, so a handler's publish fans out identically whichever of
+    # the two HTTP surfaces reached it.
+    outcome = dispatch(ctx, name, payload, consumers=CONSUMERS)
     # Never ``status``: this module imports FastAPI's own ``status`` namespace for
     # require_internal_secret's HTTP_401_UNAUTHORIZED.
     status_code = outcome_status(outcome)

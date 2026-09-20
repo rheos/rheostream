@@ -2,8 +2,9 @@
 dispatch path.
 
 Seams under test: ``HandlerUnitOfWork``'s ``commit``/``rollback``/``__enter__``
-refusals, and ``dispatch()`` handing the handler that view rather than the unit of work
-it commits itself. The second half is driven through ``dispatch()`` against a real
+refusals, ``dispatch()`` handing the handler that view rather than the unit of work
+it commits itself, and ``dispatch()``'s ``consumers`` keyword reaching that view by
+identity. Those are driven through ``dispatch()`` against a real
 workspace, not by calling a handler directly: the claim is about what the *dispatcher*
 passes, and a direct call would prove only that the subclass raises.
 
@@ -31,6 +32,7 @@ from rheo_contracts import (
     WorkspaceContext,
 )
 from rheo_core.boundary import context_for_harness
+from rheo_core.events import ConsumerRegistry
 from rheo_core.operations import (
     FAILED,
     HANDLER_FAILED,
@@ -125,7 +127,7 @@ def test_the_view_shares_the_connection_and_refuses_to_end_the_transaction(
 def test_the_view_adds_nothing_to_the_pinned_unit_of_work_surface() -> None:
     """D-2's whole reason for a subclass: ``UnitOfWork`` is a pinned 0c-boundary shape
     (``tests/postgres/test_isolation.py``), and this adds nothing to it."""
-    assert HandlerUnitOfWork.__slots__ == ("_operation_id",)
+    assert HandlerUnitOfWork.__slots__ == ("_operation_id", "_consumers")
     assert issubclass(HandlerUnitOfWork, UnitOfWork)
     assert {name for name in dir(UnitOfWork) if not name.startswith("_")} == {
         "commit",
@@ -208,6 +210,67 @@ def test_the_handler_receives_the_sealed_view_not_the_dispatchers_own(
     assert type(seen[0]) is HandlerUnitOfWork
     # And the dispatcher's own commit still lands the handler's write.
     assert _rows(cluster, workspace)[PROBE_KEY] == "30"
+
+
+def test_the_handler_sees_the_registry_the_dispatch_was_given(
+    cluster: ClusterSession, workspace: UUID, owner: WorkspaceContext
+) -> None:
+    """The consumer registry a handler reads is the caller's own, by identity.
+
+    Asserted as ``is``, not as "a registry": the whole point of threading the
+    composition root's instance through ``dispatch()`` is that a publishing handler
+    fans out to the subscriptions that root registered. A per-call
+    ``ConsumerRegistry()`` would satisfy any weaker assertion and would make a
+    publish's fan-out depend on which call built it.
+
+    The mutant this kills: dropping ``consumers=`` from ``dispatch()``'s own
+    ``HandlerUnitOfWork(...)`` construction, which leaves ``uow.consumers`` ``None``
+    while every other assertion in this file still passes.
+    """
+    wired = ConsumerRegistry()
+    seen: list[object] = []
+
+    def _observe(
+        ctx: WorkspaceContext, uow: UnitOfWork, model_input: SettingWrite
+    ) -> SettingWritten:
+        assert isinstance(uow, HandlerUnitOfWork)
+        seen.append(uow.consumers)
+        return _written(model_input)
+
+    registry = OperationRegistry()
+    registry.register(DECLARATION, _observe, origin=CORE_ORIGIN)
+
+    assert dispatch(
+        owner, SETTINGS_SET, PROBE_PAYLOAD, registry=registry, consumers=wired
+    ).ok
+    assert len(seen) == 1
+    assert seen[0] is wired
+
+
+def test_a_dispatch_given_no_registry_hands_the_handler_none(
+    cluster: ClusterSession, workspace: UUID, owner: WorkspaceContext
+) -> None:
+    """No package-level default and no per-call fallback.
+
+    A composition root that wired nothing is a deployment gap a publishing handler
+    refuses (``consumers_missing``), not one the dispatcher papers over with a fresh
+    registry — so the absent case has to read back as ``None`` rather than as an
+    empty registry that would silently swallow every publish.
+    """
+    seen: list[object] = []
+
+    def _observe(
+        ctx: WorkspaceContext, uow: UnitOfWork, model_input: SettingWrite
+    ) -> SettingWritten:
+        assert isinstance(uow, HandlerUnitOfWork)
+        seen.append(uow.consumers)
+        return _written(model_input)
+
+    registry = OperationRegistry()
+    registry.register(DECLARATION, _observe, origin=CORE_ORIGIN)
+
+    assert dispatch(owner, SETTINGS_SET, PROBE_PAYLOAD, registry=registry).ok
+    assert seen == [None]
 
 
 def test_the_connection_is_not_sealed_and_that_is_the_known_gap(

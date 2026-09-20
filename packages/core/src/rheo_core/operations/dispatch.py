@@ -124,6 +124,17 @@ fixed, because no transaction spans a workspace database and the control databas
 
 **No outbox event is enqueued here.** The audit half is no longer absent — see above —
 but nothing in this function publishes an event.
+
+**It does carry the registry a handler would publish through.** ``consumers`` is an
+optional keyword, defaulting to ``None``, threaded onto the ``HandlerUnitOfWork`` the
+handler receives and read back as ``uow.consumers``. Neither ``rheo_core.events`` nor
+this package holds a process-wide ``ConsumerRegistry``, deliberately — a test builds
+its own and there is no global to reset — so the one instance is the composition
+root's: ``apps/worker``'s ``main.py`` and ``apps/core``'s ``startup.py`` each build
+one and hand it to every dispatch they make. There is no package-level default and no
+per-call fallback: a publishing handler that finds ``None`` refuses
+:data:`CONSUMERS_MISSING`, because a registry built per call would make a publish's
+fan-out depend on which call built it.
 """
 
 import json
@@ -132,7 +143,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
@@ -177,6 +188,9 @@ from rheo_core.storage.backend import HandlerUnitOfWork, StorageRefusal, UnitOfW
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.jobs import has_job_for_operation
 
+if TYPE_CHECKING:
+    from rheo_core.events.consumers import ConsumerRegistry
+
 logger = logging.getLogger("rheo_core.operations")
 
 _DETAIL_LIMIT: Final = 2000
@@ -196,6 +210,26 @@ when an approved operation's module turns out to have no sink at execution time.
 is the same refusal about the same operation at a later instant — the hold refused it
 this way before minting anything — so it is this constant rather than a second
 spelling of the same state."""
+
+CONSUMERS_MISSING: Final = "consumers_missing"
+"""The refusal state a handler that publishes an event raises when the dispatch it is
+running under carries no :class:`~rheo_core.events.consumers.ConsumerRegistry`.
+
+Declared here, beside :data:`AUDIT_SINK_MISSING`, for the same reason that one is:
+both are *deployment wiring gaps* rather than caller mistakes, and ``refusals.py``
+holds the registry's own authorization and validation states
+(``operation_unknown``, ``role_not_permitted``, ``input_invalid``, ...), which these
+are not.
+
+**Nothing in this module raises it.** ``dispatch()`` cannot: a registry is needed only
+by a handler that publishes, and no core handler publishes yet, so refusing here would
+refuse every dispatch by a composition root that has no publishing operation to reach.
+A publishing handler reads ``uow.consumers if isinstance(uow, HandlerUnitOfWork) else
+None`` — the guard ``exports/operations.py`` and ``modules/operations.py`` already use
+for ``operation_id`` — and raises ``OperationRefused(CONSUMERS_MISSING, ...)`` on
+``None``. The alternative, a per-call ``ConsumerRegistry()``, is ruled out: a publish's
+fan-out would then depend on which call built the registry, which is a silent wrong
+answer rather than a refusal."""
 
 _APPROVAL_CLASSES: Final = frozenset(
     {SafetyClass.DESTRUCTIVE, SafetyClass.EXTERNAL, SafetyClass.FINANCIAL}
@@ -900,8 +934,18 @@ def dispatch(
     payload: Mapping[str, object] | None = None,
     *,
     registry: OperationRegistry = REGISTRY,
+    consumers: "ConsumerRegistry | None" = None,
 ) -> OperationOutcome:
-    """Run ``name`` for ``ctx`` with ``payload``; see the module docstring."""
+    """Run ``name`` for ``ctx`` with ``payload``; see the module docstring.
+
+    ``consumers`` is the composition root's one
+    :class:`~rheo_core.events.consumers.ConsumerRegistry`, carried through to the
+    :class:`~rheo_core.storage.backend.HandlerUnitOfWork` the handler receives. It
+    defaults to ``None`` and there is **no package-level default registry**: a
+    process that dispatches a publishing operation without wiring one has a
+    deployment bug, and the handler refuses :data:`CONSUMERS_MISSING` rather than
+    fanning out to a registry nobody subscribed to.
+    """
     if not isinstance(ctx, WorkspaceContext):
         # Structurally outside the audit set, the first of three: there is no
         # ``WorkspaceContext`` yet, so there is no workspace to route a row to and
@@ -1033,11 +1077,13 @@ def dispatch(
     with uow:
         try:
             # The handler gets the sealed view, carrying the minted id so a
-            # long-running handler can stamp it on the job it enqueues; ending the
-            # transaction is this function's job, on the real ``uow``.
+            # long-running handler can stamp it on the job it enqueues and the
+            # caller's own consumer registry so a publishing handler reaches the one
+            # every other caller reaches; ending the transaction is this function's
+            # job, on the real ``uow``.
             output = operation.handler(
                 ctx,
-                HandlerUnitOfWork(uow, operation_id=operation_id),
+                HandlerUnitOfWork(uow, operation_id=operation_id, consumers=consumers),
                 model_input,
             )
             if not isinstance(output, declaration.output):

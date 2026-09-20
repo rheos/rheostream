@@ -53,6 +53,7 @@ from rheo_core.operations.core_ops import (
 )
 from rheo_core.operations.dispatch import (
     AUDIT_SINK_MISSING,
+    CONSUMERS_MISSING,
     OperationError,
     OperationOutcome,
     dispatch,
@@ -111,6 +112,7 @@ __all__ = [
     "AUDIT_LIST",
     "AUDIT_SINK_MISSING",
     "AUTHORIZATION_STATES",
+    "CONSUMERS_MISSING",
     "CORE_MODULE_ID",
     "FAILED",
     "HANDLER_FAILED",
