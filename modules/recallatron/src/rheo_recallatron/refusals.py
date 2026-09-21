@@ -54,6 +54,50 @@ REFERENCE_SCAN_LIMIT: Final = "reference_scan_limit"
 No partial content and no window metadata accompany it, at any step.
 """
 
+AUDIENCE_UNAVAILABLE: Final = "audience_unavailable"
+"""The requested audience is wider than this caller's write ceiling (§ A4).
+
+Bound delegated work with an account has that account's member ceiling, and an
+accountless service may create workspace memory only. Asking for more is refused
+rather than quietly narrowed, because a caller that asked for a workspace audience and
+silently got a private one would believe it had shared something it had not.
+"""
+
+AUDIENCE_EMPTY: Final = "audience_empty"
+"""A derive whose sources have no common audience — two different member audiences
+meet nowhere. Refused **before** any write, so no row and no entity is created."""
+
+PURPOSES_EMPTY: Final = "purposes_empty"
+"""No purpose survives: an explicitly empty set, an omitted set on an unbound caller,
+or a derive whose sources share none. Every memory carries at least one purpose in the
+same transaction as its row, so there is no "decide later" state to write."""
+
+USE_DERIVE: Final = "use_derive"
+"""``remember`` was handed a memory reference in a provenance or about relation.
+
+Refused before a row or an entity is created. A memory built from other memories is a
+derivation, and derivation is the operation that computes the audience meet and the
+purpose intersection — accepting the ref here would store a memory whose restrictions
+were never narrowed by the sources it came from.
+"""
+
+AUTHORITY_UNVERIFIED: Final = "authority_unverified"
+"""A trusted source unit whose authority could not be verified (§ A5).
+
+Content-free, and it writes **no receipt**: a unit whose authority is unverifiable has
+not proved which partition it belongs to, so recording an outcome against the key it
+claimed would let an unauthorized caller terminalize somebody else's identity.
+"""
+
+SOURCE_UNAVAILABLE: Final = "source_unavailable"
+"""The one answer every non-replayable receipt state gives (§ A5).
+
+A changed digest, a noncurrent or missing representation, and an erased, expired,
+noop, denied or orphaned receipt all answer with this single state. They are one word
+on purpose: telling them apart would report whether a source was once accepted and
+then erased, which is exactly the fact an erasure removes.
+"""
+
 PURPOSE_MISMATCH: Final = "purpose_mismatch"
 """A well-formed purpose that is not the one this context is bound to.
 

@@ -8,13 +8,14 @@ nobody did.
 **What this revision fills in, and what stays empty.** The storage declaration names
 the two Postgres extensions its tables need, ``configuration_schema`` carries the
 module's one settings key, ``record_types`` declares the two addressable tables, and
-``operations``/``resolvers`` now carry the read half: ``recall``, ``read`` and the
-memory record resolver. ``tools``, ``events``, ``deletion_participants``, ``export``
-and ``audit_sink`` are still empty or unimplemented, and that is deliberate: a
-declaration whose implementation is a later prompt's would be a promise the loader
-registers and nothing keeps. ``audit_sink`` in particular stays ``None`` until a
-``mutate`` operation exists to need one — the two operations below are ``READ``, which
-writes no audit row at all. See the note at the field.
+``operations``/``resolvers`` carry the read half, the write half and the two
+service-only entity reads. ``events`` declares both ratified event types and
+``audit_sink`` is installed, because the first ``mutate`` operation now exists and
+neither is optional for one: dispatch refuses every non-``READ`` call whose module has
+no sink. ``tools``, ``subscriptions``, ``deletion_participants`` and ``export`` are
+still empty or unimplemented, and that is deliberate: a declaration whose
+implementation is a later prompt's would be a promise the loader registers and nothing
+keeps.
 
 **Why the settings key is not declared in this file.** This module now imports its own
 operations, which import the eligibility service, which has to read the retention key
@@ -27,6 +28,7 @@ from importlib import metadata
 from typing import Final, NoReturn
 
 from rheo_contracts import CONTRACT_VERSION, Role
+from rheo_core.audit.core_sink import CORE_AUDIT_SINK
 from rheo_core.modules.manifest import (
     ExportDeclaration,
     ModuleManifest,
@@ -35,10 +37,12 @@ from rheo_core.modules.manifest import (
 )
 
 from rheo_recallatron.configuration import (
+    ENTITY_RECORD_TYPE,
     MEMORY_RECORD_TYPE,
     MODULE_ID,
     RETENTION_DAYS_SPEC,
 )
+from rheo_recallatron.events import EVENTS
 from rheo_recallatron.operations import OPERATIONS
 from rheo_recallatron.resolvers import resolve_memory
 
@@ -109,8 +113,8 @@ MANIFEST: Final = ModuleManifest(
             audience_field="audience_kind",
         ),
         RecordType(
-            name="memory_entity",
-            table=f"{MODULE_ID}.memory_entity",
+            name=ENTITY_RECORD_TYPE,
+            table=f"{MODULE_ID}.{ENTITY_RECORD_TYPE}",
             deletable=False,
             delete_roles=frozenset(),
             exportable=True,
@@ -132,7 +136,14 @@ MANIFEST: Final = ModuleManifest(
     configuration_schema=(RETENTION_DAYS_SPEC,),
     operations=OPERATIONS,
     tools=(),
-    events=(),
+    # Both ratified event types, declared together because the manifest names them
+    # together. ``recorded`` is published by this run's writes and by trusted
+    # acceptance; ``invalidated`` is the lifecycle closure's, and declaring only the
+    # one with a publisher would leave the other's shape for that run to invent.
+    events=EVENTS,
+    # Empty, and correct: no consumer exists in 1a1, and a publish that reaches none
+    # still writes its outbox row and completes with zero deliveries. An event nobody
+    # consumes is not an error.
     subscriptions=(),
     jobs=(),
     schedules=(),
@@ -155,10 +166,17 @@ MANIFEST: Final = ModuleManifest(
     health_checks=(),
     contract_tests="modules/recallatron/tests",
     sensitivity={},
-    # Still no sink, and now for a sharper reason than "nothing is registered": both
-    # operations above are ``READ``, and the dispatcher writes no audit row for a read
-    # at all. The first ``mutate`` operation is what needs one, and the run that adds
-    # it is the run that must set this field. Leaving it alone does not fail at load
-    # time; it fails later, as ``AUDIT_SINK_MISSING`` at that first mutating dispatch.
-    audit_sink=None,
+    # The first ``mutate`` operations now exist, so the sink does too. It is the core's
+    # own shared singleton rather than a writer of Recallatron's: this module has no
+    # audit writer, and installing ``CORE_AUDIT_SINK`` under a second module id is the
+    # documented pattern for exactly that case (``audit/core_sink.py`` — the object
+    # holds no state, reads no module identity, and writes through whichever unit of
+    # work it is handed). ``install_sink`` is idempotent for the *identical* object, so
+    # the core's own registration and this one cannot refuse each other.
+    #
+    # Nothing in this module calls it. The dispatcher is the tree's one audit caller
+    # (``tests/test_audit_sink.py``), which is what keeps a module unable to write its
+    # own audit row — and is why "the mutation and its audit row commit together" is a
+    # property of one transaction rather than of two cooperating writers.
+    audit_sink=CORE_AUDIT_SINK,
 )

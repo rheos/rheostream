@@ -39,6 +39,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -52,6 +53,7 @@ from harness.modules import (
 from harness.registry import add_member
 from pydantic import BaseModel, ConfigDict
 from rheo_contracts import (
+    ContextPurpose,
     Idempotency,
     OperationDeclaration,
     RecordRef,
@@ -59,15 +61,38 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
+from rheo_contracts.source_units import (
+    AuthorityGrant,
+    AuthorityRefused,
+    SanitizedEvidence,
+    SourceLink,
+    SourceMention,
+    TrustedSourceUnit,
+)
+from rheo_core.audit import CORE_AUDIT_SINK, install_sink, reset_sinks
 from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.boundary.factories import context_from_operation
+from rheo_core.events import ConsumerRegistry
 from rheo_core.migrations.module_chain import run_module_chain
-from rheo_core.operations import dispatch, register_core_operations
+from rheo_core.operations import (
+    CONSUMERS_MISSING,
+    CORE_MODULE_ID,
+    HARNESS_MODULE_ID,
+    dispatch,
+    register_core_operations,
+)
 from rheo_core.operations.dispatch import OperationOutcome
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import OperationRegistry
 from rheo_core.refs import uuid7
-from rheo_core.refs.resolver import RecordHead, Unavailable, resolve_in
+from rheo_core.refs.resolver import (
+    RecordHead,
+    Unavailable,
+    register_resolver,
+    resolve_in,
+)
 from rheo_core.settings import ValueType
+from rheo_core.storage import work_tables
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.provisioning import core_version
 from rheo_core.storage.repositories import (
@@ -76,7 +101,8 @@ from rheo_core.storage.repositories import (
 )
 from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
-from rheo_recallatron.configuration import RETENTION_DAYS_KEY
+from rheo_recallatron.configuration import MEMORY_RECORD_TYPE, RETENTION_DAYS_KEY
+from rheo_recallatron.contracts import EntityItem, EntityList, MemoryWritten
 from rheo_recallatron.eligibility import (
     Denied,
     MemoryRequest,
@@ -87,7 +113,23 @@ from rheo_recallatron.eligibility import (
     eligible_memory,
     memory_reference,
 )
-from rheo_recallatron.operations import MEMORY_READ, MEMORY_RECALL, ReadWindow
+from rheo_recallatron.entities import ENTITY_GET, ENTITY_LIST, remove_mention
+from rheo_recallatron.events import MEMORY_INVALIDATED, MEMORY_RECORDED
+from rheo_recallatron.operations import (
+    MEMORY_DERIVE,
+    MEMORY_READ,
+    MEMORY_RECALL,
+    MEMORY_REMEMBER,
+    ReadWindow,
+)
+from rheo_recallatron.references import entity_reference
+from rheo_recallatron.resolvers import resolve_memory
+from rheo_recallatron.source_units import (
+    LIVE_REPRESENTATION,
+    AcceptOutcome,
+    accept_source_unit,
+    retire_source_unit,
+)
 from rheo_recallatron.storage import tables as memory_tables
 from rheo_recallatron.storage.repository import (
     MemoryLinkRow,
@@ -96,8 +138,10 @@ from rheo_recallatron.storage.repository import (
     insert_memory,
     insert_memory_link,
     insert_memory_purpose,
+    list_memory_purposes,
+    set_source_receipt_state,
 )
-from sqlalchemy import Connection, Engine, insert, text
+from sqlalchemy import Connection, Engine, Row, func, insert, select, text
 
 pytestmark = pytest.mark.postgres
 
@@ -526,6 +570,7 @@ class MemoryWorkspace:
     surfaces: LoadedSurfaces
     database_name: str
     engine: Engine
+    consumers: ConsumerRegistry
 
     def context(
         self, *, account_id: UUID | None = None, role: Role = Role.OWNER
@@ -574,7 +619,86 @@ class MemoryWorkspace:
     def call(
         self, ctx: WorkspaceContext, name: str, payload: dict[str, object]
     ) -> OperationOutcome:
+        """One dispatch, carrying the registry the loader built **and** the one
+        ``ConsumerRegistry`` this workspace's composition root would have built.
+
+        Both writes publish, and a publishing handler refuses ``consumers_missing``
+        without a registry — so a helper that dropped it would make every write test
+        a test of the missing-wiring refusal.
+        """
+        return dispatch(
+            ctx,
+            name,
+            payload,
+            registry=self.surfaces.operations,
+            consumers=self.consumers,
+        )
+
+    def unwired(
+        self, ctx: WorkspaceContext, name: str, payload: dict[str, object]
+    ) -> OperationOutcome:
+        """The same dispatch with no registry wired: what a deployment bug looks
+        like."""
         return dispatch(ctx, name, payload, registry=self.surfaces.operations)
+
+    def remember(self, ctx: WorkspaceContext, **payload: object) -> OperationOutcome:
+        return self.call(ctx, MEMORY_REMEMBER, payload)
+
+    def derive(self, ctx: WorkspaceContext, **payload: object) -> OperationOutcome:
+        return self.call(ctx, MEMORY_DERIVE, payload)
+
+    def counts(self) -> dict[str, int]:
+        """Every row this module and the outbox hold, read straight from the tables.
+
+        Direct reads rather than through an operation: what these assertions are
+        about is whether anything was **written**, and a read path that correctly
+        excludes a row it should not show would report zero for a row that is there.
+
+        ``core.audit_record`` is deliberately **not** counted here. A refused mutate
+        writes a ``refused`` audit row on purpose — that is the whole point of the
+        audit path — so a refusal assertion built on this mapping would have to
+        expect the log to grow, which reads as though the refusal wrote something it
+        should not have. Audit rows are asserted by name through
+        :meth:`audit_rows` where they matter.
+        """
+        tables = {
+            "memory": memory_tables.memory,
+            "purpose": memory_tables.memory_purpose,
+            "entity": memory_tables.memory_entity,
+            "mention": memory_tables.memory_mention,
+            "link": memory_tables.memory_link,
+            "receipt": memory_tables.source_receipt,
+            "outbox": work_tables.outbox_event,
+        }
+        with self.reading() as uow:
+            return {
+                name: int(
+                    uow.connection.execute(
+                        select(func.count()).select_from(table)
+                    ).scalar_one()
+                )
+                for name, table in tables.items()
+            }
+
+    def outbox(self) -> list[Row[Any]]:
+        with self.reading() as uow:
+            return list(
+                uow.connection.execute(
+                    select(work_tables.outbox_event).order_by(
+                        work_tables.outbox_event.c.position
+                    )
+                )
+            )
+
+    def audit_rows(self, operation: str) -> list[Row[Any]]:
+        with self.reading() as uow:
+            return list(
+                uow.connection.execute(
+                    select(work_tables.audit_record).where(
+                        work_tables.audit_record.c.operation_name == operation
+                    )
+                )
+            )
 
     def read(self, ctx: WorkspaceContext, **payload: object) -> OperationOutcome:
         return self.call(ctx, MEMORY_READ, payload)
@@ -625,6 +749,22 @@ def memory(
     owner_account_id: UUID,
 ) -> Iterator[MemoryWorkspace]:
     register_core_operations()
+    # The memory resolver goes on the **process-wide** table too, which is where
+    # ``load_modules`` puts it in a real deployment. ``loaded_probe_modules`` loads
+    # into local registries on purpose, and everything that dispatches or resolves by
+    # hand passes them explicitly — but the two places a module resolves a reference
+    # *itself* (an entity's backing ref, and a memory's non-memory link) call
+    # ``resolve_in`` with its default, exactly as they will in production. Without
+    # this the positive half of those paths is unreachable from a test and only their
+    # denials could be exercised. Re-registering the same function object is a no-op,
+    # so this is safe to run per test, and a workspace that has not enabled a module
+    # still resolves nothing of it.
+    register_resolver(
+        _MEMORY_MODULE,
+        MEMORY_RECORD_TYPE,
+        resolve_memory,
+        origin=_MEMORY_MODULE,
+    )
     with loaded_probe_modules(monkeypatch, _MEMORY_MODULE) as surfaces:
         bootstrap = context_for_harness(workspace, owner_account_id, Role.OWNER)
         assert isinstance(bootstrap, WorkspaceContext), bootstrap
@@ -637,6 +777,11 @@ def memory(
             surfaces=surfaces,
             database_name=database_name,
             engine=engine,
+            # One registry for the whole fixture, built where a composition root
+            # would build it. Empty, which is the shipped state: no consumer
+            # subscribes to a Recallatron event in 1a1, and a publish that reaches
+            # none is a success with zero deliveries.
+            consumers=ConsumerRegistry(),
         )
 
 
@@ -1640,3 +1785,1607 @@ def test_the_resolver_refuses_a_read_on_a_missing_or_corrupt_retention_policy(
     with memory.reading() as uow:
         restored = resolve_in(reference, owner, uow, registry=memory.surfaces.resolvers)
     assert isinstance(restored, RecordHead) and restored.display == "visible"
+
+
+# --- the write surface ----------------------------------------------------------------
+#
+# Everything below drives ``remember``/``derive``/``entity.*`` through the real
+# dispatcher against a real installed Recallatron. Where an assertion is about whether
+# something was *written*, it reads the tables directly through ``memory.counts()``:
+# a read path that correctly hides a row it should not show would report zero for a row
+# that is nevertheless there, which is exactly the defect these cases exist to catch.
+
+_FOLLOW_UP = "follow_up"
+_FOREIGN = "harness.note"
+"""A record type another (fixture) module owns. Nothing in this workspace enables that
+module, so every reference to it is unreadable here — which is what makes it the probe
+for "a linked record this caller cannot read denies the write"."""
+
+
+def _written(outcome: OperationOutcome) -> MemoryWritten:
+    assert outcome.ok, outcome
+    assert isinstance(outcome.result, MemoryWritten), outcome
+    return outcome.result
+
+
+def _failed(outcome: OperationOutcome) -> None:
+    """A handler that broke, as the dispatcher reports it: ``failed`` with no result."""
+    assert outcome.state == "failed", outcome
+    assert outcome.result is None, outcome
+
+
+def _links_of(memory: MemoryWorkspace, reference: str) -> set[tuple[str, str]]:
+    with memory.reading() as uow:
+        rows = uow.connection.execute(
+            select(
+                memory_tables.memory_link.c.ref, memory_tables.memory_link.c.relation
+            ).where(
+                memory_tables.memory_link.c.memory_id == RecordRef.parse(reference).id
+            )
+        ).all()
+    return {(str(ref), str(relation)) for ref, relation in rows}
+
+
+def _stored(memory: MemoryWorkspace, reference: str) -> MemoryRow:
+    with memory.reading() as uow:
+        row = (
+            uow.connection.execute(
+                select(memory_tables.memory).where(
+                    memory_tables.memory.c.id == RecordRef.parse(reference).id
+                )
+            )
+            .mappings()
+            .one()
+        )
+    return MemoryRow(**{key: row[key] for key in MemoryRow.__slots__})
+
+
+def test_remember_persists_each_kind_with_its_audience_purposes_and_timestamps(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 3's first sentence, driven for all four ratified kinds.
+
+    The stored row is read back from its own table rather than from the operation's
+    answer, so a handler that returned a well-formed result and wrote something else
+    reds here.
+    """
+    owner = memory.context()
+    for kind in memory_tables.MEMORY_KINDS:
+        occurred = datetime.now(UTC) - timedelta(hours=3)
+        written = _written(
+            memory.remember(
+                owner,
+                kind=kind,
+                title=f"  a {kind}  ",
+                body=f"the body of a {kind}",
+                purposes=[_RESPOND, _INTERNAL],
+                confidence=0.5,
+                occurred_at=occurred.isoformat(),
+            )
+        )
+        assert written.kind == kind
+        assert written.audience == "workspace"
+        assert written.purposes == (_INTERNAL, _RESPOND)
+        assert written.revision == 1
+
+        row = _stored(memory, written.ref)
+        # Trimmed on the way in, and the trimmed form is what is stored.
+        assert row.title == f"a {kind}"
+        assert row.origin == "told"
+        assert row.audience_kind == "workspace" and row.audience_id is None
+        assert row.occurred_at == occurred
+        assert row.confidence == 0.5
+        # Server-owned, and inside this workspace's retention window by construction.
+        assert row.recorded_at > datetime.now(UTC) - timedelta(minutes=5)
+        assert row.recorded_by_kind == "account"
+        assert row.recorded_by_id == memory.owner_account_id
+        with memory.reading() as uow:
+            assert list_memory_purposes(uow.connection, row.id) == (
+                _INTERNAL,
+                _RESPOND,
+            )
+
+    # And the rows are readable through the ordinary read surface.
+    found = memory.recall(owner, query="body")
+    assert found.ok and found.result is not None
+    assert len(found.result.items) == len(memory_tables.MEMORY_KINDS)
+
+
+def test_remember_refuses_a_memory_reference_in_either_relation(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 3: ``use_derive``, raised **before** a row or an entity is created.
+
+    Both relations, and the counts either side prove the refusal is not a rollback of
+    work that was already half done — ``remember`` never reaches an insert at all.
+    """
+    owner = memory.context()
+    source = _written(
+        memory.remember(
+            owner, kind="note", title="a source", body="a body", purposes=[_RESPOND]
+        )
+    )
+    before = memory.counts()
+    for field in ("provenance_refs", "about_refs"):
+        outcome = memory.remember(
+            owner,
+            kind="note",
+            title="derived by hand",
+            body="a body",
+            purposes=[_RESPOND],
+            **{field: [source.ref]},
+        )
+        _refused(outcome, "use_derive")
+    assert memory.counts() == before
+
+
+def test_remember_refuses_an_absent_or_empty_purpose_set(
+    memory: MemoryWorkspace,
+) -> None:
+    """An unbound caller states its purposes; there is no guessed default.
+
+    A memory with no purpose would be a memory no bound read could ever return, so
+    the absence is refused rather than filled in.
+    """
+    owner = memory.context()
+    before = memory.counts()
+    for payload in ({}, {"purposes": []}):
+        _refused(
+            memory.remember(
+                owner, kind="note", title="unstated", body="a body", **payload
+            ),
+            "purposes_empty",
+        )
+    assert memory.counts() == before
+
+
+def test_a_bound_caller_writes_exactly_its_binding_and_its_own_member_audience(
+    memory: MemoryWorkspace,
+) -> None:
+    """§ A4's two write rules for delegated work, both directions.
+
+    The purpose is the binding whether it is stated or omitted, and any other purpose
+    in an explicit set is ``purpose_mismatch``. The audience ceiling is that account's
+    member audience: omitting it takes the ceiling, and asking for the wider workspace
+    audience is ``audience_unavailable``.
+    """
+    bound = memory.bound_context(_RESPOND)
+    written = _written(
+        memory.remember(bound, kind="fact", title="delegated", body="a body")
+    )
+    assert written.purposes == (_RESPOND,)
+    assert written.audience == "member"
+    row = _stored(memory, written.ref)
+    assert row.audience_kind == "member"
+    assert row.audience_id == memory.owner_account_id
+
+    assert _written(
+        memory.remember(
+            bound,
+            kind="fact",
+            title="stated",
+            body="a body",
+            purposes=[_RESPOND],
+            audience="member",
+        )
+    ).purposes == (_RESPOND,)
+
+    before = memory.counts()
+    _refused(
+        memory.remember(
+            bound,
+            kind="fact",
+            title="widened",
+            body="a body",
+            purposes=[_RESPOND, _INTERNAL],
+        ),
+        "purpose_mismatch",
+    )
+    _refused(
+        memory.remember(
+            bound, kind="fact", title="shared", body="a body", audience="workspace"
+        ),
+        "audience_unavailable",
+    )
+    assert memory.counts() == before
+
+
+def test_remember_refuses_a_linked_record_this_caller_cannot_read(
+    memory: MemoryWorkspace,
+) -> None:
+    """A non-memory provenance or about ref must resolve live and readable."""
+    owner = memory.context()
+    before = memory.counts()
+    for field in ("provenance_refs", "about_refs"):
+        _refused(
+            memory.remember(
+                owner,
+                kind="note",
+                title="blocked",
+                body="a body",
+                purposes=[_RESPOND],
+                **{field: [f"{_FOREIGN}:{uuid7()}"]},
+            ),
+            "not_found",
+        )
+    _refused(
+        memory.remember(
+            owner,
+            kind="note",
+            title="malformed",
+            body="a body",
+            purposes=[_RESPOND],
+            about_refs=["not-a-reference"],
+        ),
+        "input_invalid",
+    )
+    assert memory.counts() == before
+
+
+_WRITE_PAYLOADS: tuple[tuple[str, dict[str, object]], ...] = (
+    (
+        MEMORY_REMEMBER,
+        {"kind": "note", "title": "t", "body": "b", "purposes": [_RESPOND]},
+    ),
+    (
+        MEMORY_DERIVE,
+        {"kind": "summary", "title": "t", "body": "b", "purposes": [_RESPOND]},
+    ),
+)
+"""The two write operations, with the smallest payload each accepts. ``derive``'s
+``sources`` is filled in per test, because it needs a reference that exists."""
+
+
+def test_every_write_path_fails_closed_on_a_missing_or_corrupt_retention_policy(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 8's write half: ``retention_unavailable``, and **nothing written**.
+
+    The stored setting is removed and then corrupted in each of the ways a bad
+    restore or a hand-edited row could leave it, and the proof that no row landed is
+    a direct table read rather than a later read that would have hidden one anyway.
+    A writer that fell back to the 365-day package default would pass every read test
+    in this file and fail here.
+    """
+    owner = memory.context()
+    source = _written(
+        memory.remember(
+            owner, kind="note", title="a source", body="a body", purposes=[_RESPOND]
+        )
+    )
+    before = memory.counts()
+    for value in _UNUSABLE_RETENTION:
+        memory.set_retention(value)
+        _refused(
+            memory.remember(
+                owner, kind="note", title="t", body="b", purposes=[_RESPOND]
+            ),
+            "retention_unavailable",
+        )
+        _refused(
+            memory.derive(
+                owner,
+                kind="summary",
+                title="t",
+                body="b",
+                purposes=[_RESPOND],
+                sources=[source.ref],
+            ),
+            "retention_unavailable",
+        )
+    assert memory.counts() == before
+
+    memory.set_retention("365")
+    assert memory.remember(
+        owner, kind="note", title="t", body="b", purposes=[_RESPOND]
+    ).ok
+
+
+def test_derive_meets_the_source_audiences_and_intersects_their_purposes(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 4's first sentence: workspace + member-private gives member-private, with
+    only the purposes both sources carry."""
+    owner = memory.context()
+    shared = _written(
+        memory.remember(
+            owner,
+            kind="fact",
+            title="shared",
+            body="visible to the workspace",
+            purposes=[_RESPOND, _INTERNAL, _FOLLOW_UP],
+        )
+    )
+    private = _written(
+        memory.remember(
+            owner,
+            kind="fact",
+            title="private",
+            body="visible to one member",
+            audience="member",
+            purposes=[_RESPOND, _INTERNAL],
+        )
+    )
+
+    written = _written(
+        memory.derive(
+            owner,
+            kind="summary",
+            title="both",
+            body="a summary of both",
+            sources=[shared.ref, private.ref, shared.ref],
+        )
+    )
+    assert written.audience == "member"
+    assert written.purposes == (_INTERNAL, _RESPOND)
+    row = _stored(memory, written.ref)
+    assert row.origin == "derived"
+    assert row.audience_id == memory.owner_account_id
+    # Every direct source is stored as a ``derived_from`` link, and the duplicate
+    # spelling collapsed rather than becoming a second row.
+    assert _links_of(memory, written.ref) == {
+        (shared.ref, "derived_from"),
+        (private.ref, "derived_from"),
+    }
+
+
+def test_derive_refuses_an_empty_meet_or_an_empty_intersection_without_writing(
+    memory: MemoryWorkspace, cluster: ClusterSession
+) -> None:
+    """AC 4's second sentence, and AC 3's "refuses without a resulting record".
+
+    Two member audiences meet nowhere, and two disjoint purpose sets intersect
+    nowhere. Both are decided before any write, which the unchanged counts prove.
+    """
+    other = add_member(
+        cluster.backend, memory.workspace, Role.MEMBER, display_name="member-two"
+    )
+    owner = memory.context()
+    mine = _written(
+        memory.remember(
+            owner,
+            kind="fact",
+            title="mine",
+            body="a body",
+            audience="member",
+            purposes=[_RESPOND],
+        )
+    )
+    theirs = _written(
+        memory.remember(
+            memory.context(account_id=other, role=Role.MEMBER),
+            kind="fact",
+            title="theirs",
+            body="a body",
+            audience="member",
+            purposes=[_RESPOND],
+        )
+    )
+    disjoint = _written(
+        memory.remember(
+            owner,
+            kind="fact",
+            title="disjoint",
+            body="a body",
+            audience="member",
+            purposes=[_INTERNAL],
+        )
+    )
+
+    before = memory.counts()
+    # An operator context is the only way to hold both member rows eligible at once,
+    # and it has no write role — so the empty meet is driven through the member who
+    # can read both: neither can. What is reachable, and is the case A4 names, is a
+    # caller asking for an audience its sources do not admit.
+    _refused(
+        memory.derive(
+            owner,
+            kind="summary",
+            title="widened",
+            body="a body",
+            sources=[mine.ref],
+            audience="workspace",
+        ),
+        "audience_unavailable",
+    )
+    _refused(
+        memory.derive(
+            owner,
+            kind="summary",
+            title="disjoint purposes",
+            body="a body",
+            sources=[mine.ref, disjoint.ref],
+        ),
+        "purposes_empty",
+    )
+    # A source belonging to another member is not eligible at all, which is the
+    # earlier refusal the empty meet never gets to.
+    _refused(
+        memory.derive(
+            owner,
+            kind="summary",
+            title="not mine",
+            body="a body",
+            sources=[theirs.ref],
+        ),
+        "not_found",
+    )
+    _refused(
+        memory.derive(owner, kind="summary", title="none", body="a body", sources=[]),
+        "input_invalid",
+    )
+    assert memory.counts() == before
+
+
+def test_derive_inherits_its_sources_actual_restrictions(
+    memory: MemoryWorkspace,
+) -> None:
+    """§ A5: "store all direct derived_from refs and inherited actual source/about
+    restrictions".
+
+    The inherited ``about`` link is what keeps the derivation as restricted as the
+    thing it came from: drop it and a memory derived from a row that names a record
+    the caller may not read becomes readable the moment the source is deleted.
+    """
+    owner = memory.context()
+    with memory.unit() as uow:
+        readable = _write(uow.connection, _row(title="a readable source"))
+    source = _written(
+        memory.remember(
+            owner,
+            kind="fact",
+            title="with an about link",
+            body="a body",
+            purposes=[_RESPOND],
+        )
+    )
+    # Give the source an actual permission-bearing link through the repository: the
+    # write path refuses a memory ref, and what is under test is the *copy*, not how
+    # the source acquired it.
+    with memory.unit() as uow:
+        insert_memory_link(
+            uow.connection,
+            MemoryLinkRow(
+                memory_id=RecordRef.parse(source.ref).id,
+                ref=memory_reference(readable.id),
+                relation="about",
+                created_at=datetime.now(UTC),
+                supersession_lineage=False,
+            ),
+        )
+    written = _written(
+        memory.derive(
+            owner,
+            kind="summary",
+            title="inheriting",
+            body="a body",
+            sources=[source.ref],
+        )
+    )
+    assert _links_of(memory, written.ref) == {
+        (source.ref, "derived_from"),
+        (memory_reference(readable.id), "about"),
+    }
+
+
+# --- entities -------------------------------------------------------------------------
+
+
+def _create(kind: str, name: str, **extra: object) -> dict[str, object]:
+    return {"variant": "create", "kind": kind, "name": name, **extra}
+
+
+def _select(entity_ref: str, **extra: object) -> dict[str, object]:
+    return {"variant": "select", "entity_ref": entity_ref, **extra}
+
+
+def _entities(outcome: OperationOutcome) -> EntityList:
+    assert outcome.ok, outcome
+    assert isinstance(outcome.result, EntityList), outcome
+    return outcome.result
+
+
+def test_inline_creation_always_mints_a_fresh_entity_even_for_the_same_name(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 3: "typed inline creation always creates a fresh entity UUID including for
+    duplicate normalized names".
+
+    Two writes naming ``Ada Lovelace`` and ``ada   LOVELACE`` normalize to one string
+    and are still two entities. A create that matched on name would answer "does an
+    entity called this already exist here" to anyone who can write a memory.
+    """
+    owner = memory.context()
+    first = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="one",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[_create("person", "Ada Lovelace", role="author")],
+        )
+    )
+    second = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="two",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[_create("person", "ada   LOVELACE")],
+        )
+    )
+    assert first.mentions[0].ref != second.mentions[0].ref
+    assert first.mentions[0].role == "author"
+    assert second.mentions[0].role is None
+    with memory.reading() as uow:
+        normalized = (
+            uow.connection.execute(
+                select(memory_tables.memory_entity.c.normalized_name)
+            )
+            .scalars()
+            .all()
+        )
+    assert set(normalized) == {"ada lovelace"}
+
+
+def test_selection_needs_an_authorized_entity_and_collapses_a_duplicate(
+    memory: MemoryWorkspace, cluster: ClusterSession
+) -> None:
+    """Selection reaches an entity only through an eligible mention; a second
+    selection of the same entity is the same mention, not a second one.
+
+    The entity is created on a **member-private** memory, which is what makes the
+    negative half real: another member of the same workspace has no eligible mention
+    and no backing ref, so it has no route at all. Created on a workspace-audience
+    memory the entity would be reachable by everybody and the refusal below would be
+    testing nothing.
+    """
+    owner = memory.context()
+    first = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="one",
+            body="a body",
+            audience="member",
+            purposes=[_RESPOND],
+            mentions=[_create("project", "Rheo")],
+        )
+    )
+    entity_ref = first.mentions[0].ref
+
+    again = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="two",
+            body="a body",
+            audience="member",
+            purposes=[_RESPOND],
+            mentions=[
+                _select(entity_ref, role="subject"),
+                _select(entity_ref, role="subject"),
+            ],
+        )
+    )
+    assert [mention.ref for mention in again.mentions] == [entity_ref]
+
+    # Another member has no route to it: no eligible mention, no backing ref. The
+    # answer is the same ``not_found`` an unknown id gets — no label, no collision.
+    stranger = add_member(
+        cluster.backend, memory.workspace, Role.MEMBER, display_name="member-two"
+    )
+    before = memory.counts()
+    _refused(
+        memory.remember(
+            memory.context(account_id=stranger, role=Role.MEMBER),
+            kind="note",
+            title="theirs",
+            body="a body",
+            audience="member",
+            purposes=[_RESPOND],
+            mentions=[_select(entity_ref)],
+        ),
+        "not_found",
+    )
+    _refused(
+        memory.remember(
+            owner,
+            kind="note",
+            title="unknown",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[_select(entity_reference(uuid7()))],
+        ),
+        "not_found",
+    )
+    assert memory.counts() == before
+
+
+def test_a_contradictory_mention_variant_refuses_input_invalid(
+    memory: MemoryWorkspace,
+) -> None:
+    """§ A13: duplicates collapse by composite key, contradictions refuse.
+
+    One ``(memory_id, entity_id)`` row cannot carry two roles, and silently keeping
+    either would be a coin flip the caller cannot see.
+    """
+    owner = memory.context()
+    first = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="one",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[_create("topic", "retention")],
+        )
+    )
+    before = memory.counts()
+    _refused(
+        memory.remember(
+            owner,
+            kind="note",
+            title="contradictory",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[
+                _select(first.mentions[0].ref, role="author"),
+                _select(first.mentions[0].ref, role="subject"),
+            ],
+        ),
+        "input_invalid",
+    )
+    assert memory.counts() == before
+
+
+def test_a_backing_ref_must_resolve_and_becomes_an_about_link(
+    memory: MemoryWorkspace,
+) -> None:
+    """§ A3: "a backing entity ref always adds an ``about`` link in the same
+    transaction", and § A5: it must resolve before its label is returned."""
+    owner = memory.context()
+    with memory.unit() as uow:
+        backing = _write(uow.connection, _row(title="a backing record"))
+    backing_ref = memory_reference(backing.id)
+
+    written = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="backed",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[_create("thing", "the thing", backing_ref=backing_ref)],
+        )
+    )
+    assert written.mentions[0].backing_ref == backing_ref
+    assert (backing_ref, "about") in _links_of(memory, written.ref)
+
+    before = memory.counts()
+    _refused(
+        memory.remember(
+            owner,
+            kind="note",
+            title="unbacked",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[_create("thing", "no such", backing_ref=f"{_FOREIGN}:{uuid7()}")],
+        ),
+        "not_found",
+    )
+    assert memory.counts() == before
+
+
+def test_entity_reads_show_only_eligible_results_and_eligible_counts(
+    memory: MemoryWorkspace, cluster: ClusterSession
+) -> None:
+    """AC 3's entity half: no hidden label, ref, collision or count.
+
+    The owner's own count is two — the two memories it can read — while the member
+    who can read only one of them is told one. A count taken over every mention would
+    report the existence of a memory that caller may not see.
+    """
+    owner = memory.context()
+    other = add_member(
+        cluster.backend, memory.workspace, Role.MEMBER, display_name="member-two"
+    )
+    shared = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="shared",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[_create("organization", "Novadiem")],
+        )
+    )
+    entity_ref = shared.mentions[0].ref
+    _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="private",
+            body="a body",
+            audience="member",
+            purposes=[_RESPOND],
+            mentions=[_select(entity_ref)],
+        )
+    )
+
+    listed = _entities(memory.call(owner, ENTITY_LIST, {}))
+    assert [item.ref for item in listed.items] == [entity_ref]
+    assert listed.items[0].mention_count == 2
+    assert listed.items[0].name == "Novadiem"
+
+    theirs = memory.context(account_id=other, role=Role.MEMBER)
+    assert _entities(memory.call(theirs, ENTITY_LIST, {})).items[0].mention_count == 1
+
+    got = memory.call(owner, ENTITY_GET, {"entity_ref": entity_ref})
+    assert got.ok and isinstance(got.result, EntityItem)
+    assert got.result.mention_count == 2
+    _refused(
+        memory.call(owner, ENTITY_GET, {"entity_ref": entity_reference(uuid7())}),
+        "not_found",
+    )
+    _refused(
+        memory.call(owner, ENTITY_GET, {"entity_ref": shared.ref}), "input_invalid"
+    )
+    # The kind filter narrows the caller's own eligible set and nothing else.
+    assert _entities(memory.call(owner, ENTITY_LIST, {"kind": "person"})).items == ()
+    for limit in (0, 51):
+        _refused(memory.call(owner, ENTITY_LIST, {"limit": limit}), "input_invalid")
+
+
+def test_removing_the_last_mention_prunes_an_unbacked_entity(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 3: "deleting the last mention prunes an unbacked entity" — in the deleting
+    transaction, and only for one with no independent route.
+
+    Driven at the service seam rather than through an operation because no operation
+    in this run removes a mention: correction and deletion are the next prompt's, and
+    a shallow test through a path that does not exist would prove nothing. What is
+    pinned here is the rule those paths will call.
+    """
+    owner = memory.context()
+    with memory.unit() as uow:
+        backing = _write(uow.connection, _row(title="a backing record"))
+    written = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="two mentions",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[
+                _create("person", "unbacked"),
+                _create("person", "backed", backing_ref=memory_reference(backing.id)),
+            ],
+        )
+    )
+    unbacked, backed = (
+        next(m for m in written.mentions if m.name == "unbacked"),
+        next(m for m in written.mentions if m.name == "backed"),
+    )
+    memory_id = RecordRef.parse(written.ref).id
+
+    with memory.unit() as uow:
+        assert remove_mention(
+            uow.connection, memory_id, RecordRef.parse(unbacked.ref).id
+        )
+        # The backed one survives its last mention: the ref is an independent route,
+        # and pruning a row somebody else's record points at would leave it dangling.
+        assert not remove_mention(
+            uow.connection, memory_id, RecordRef.parse(backed.ref).id
+        )
+    with memory.reading() as uow:
+        surviving = (
+            uow.connection.execute(select(memory_tables.memory_entity.c.name))
+            .scalars()
+            .all()
+        )
+    assert list(surviving) == ["backed"]
+
+
+# --- events, and the three-way atomic commit (AC 1) -----------------------------------
+
+
+class _FailingSink:
+    """An audit sink whose ``record`` raises, installed for one test.
+
+    Sink management follows ``tests/postgres/test_audit_dispatch.py``'s own recipe —
+    ``reset_sinks()`` then ``install_sink`` per module, restored afterwards — rather
+    than a new mechanism. What differs is only *which* sink is installed: that file
+    injects a commit failure because its subject is the row surviving a rollback;
+    this one injects the sink itself, because AC 1 words the failure as the audit
+    sink's.
+    """
+
+    __slots__ = ()
+
+    def record(self, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("the audit sink is unavailable")
+
+
+@pytest.fixture
+def failing_audit_sink() -> Iterator[None]:
+    reset_sinks()
+    install_sink(CORE_MODULE_ID, CORE_AUDIT_SINK)
+    install_sink(MANIFEST.module_id, _FailingSink())
+    yield
+    reset_sinks()
+    install_sink(CORE_MODULE_ID, CORE_AUDIT_SINK)
+    install_sink(HARNESS_MODULE_ID, CORE_AUDIT_SINK)
+
+
+def test_the_manifest_declares_both_ratified_events_and_no_subscription() -> None:
+    """AC 1: exactly two ``EventDeclaration``s, schema version 1, three fields each."""
+    assert MANIFEST.subscriptions == ()
+    declared = {event.type: event for event in MANIFEST.events}
+    assert set(declared) == {MEMORY_RECORDED, MEMORY_INVALIDATED}
+    for event in declared.values():
+        assert event.schema_version == 1
+        assert set(event.data.model_fields) == {"memory_ref", "kind", "reason"}
+
+
+def test_a_write_commits_its_rows_its_event_and_its_audit_row_together(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 1's positive half, for both writes, read back from all three tables.
+
+    The publish reaching no subscriber is the shipped state and is a success: one
+    outbox row, zero delivery rows.
+    """
+    owner = memory.context()
+    source = _written(
+        memory.remember(
+            owner,
+            kind="note",
+            title="a source",
+            body="a body",
+            purposes=[_RESPOND],
+            mentions=[_create("topic", "events")],
+        )
+    )
+    derived = _written(
+        memory.derive(
+            owner,
+            kind="summary",
+            title="a summary",
+            body="a body",
+            sources=[source.ref],
+        )
+    )
+
+    events = memory.outbox()
+    assert [row.type for row in events] == [MEMORY_RECORDED, MEMORY_RECORDED]
+    assert [row.subject_ref for row in events] == [source.ref, derived.ref]
+    assert [row.subject_revision for row in events] == [1, 1]
+    assert [row.data for row in events] == [
+        {"memory_ref": source.ref, "kind": "note", "reason": None},
+        {"memory_ref": derived.ref, "kind": "summary", "reason": None},
+    ]
+    assert [row.source for row in events] == [
+        f"urn:rheo:module:{MANIFEST.module_id}"
+    ] * 2
+    with memory.reading() as uow:
+        deliveries = uow.connection.execute(
+            select(func.count()).select_from(work_tables.event_delivery)
+        ).scalar_one()
+    assert deliveries == 0
+
+    for operation in (MEMORY_REMEMBER, MEMORY_DERIVE):
+        rows = memory.audit_rows(operation)
+        assert [row.outcome for row in rows] == ["succeeded"], operation
+        assert rows[0].safety_class == "mutate"
+        assert rows[0].subject_ref is None
+
+
+def test_an_audit_sink_failure_commits_none_of_the_three(
+    memory: MemoryWorkspace, failing_audit_sink: None
+) -> None:
+    """AC 1's negative half, and the outbox assertion is the point of it.
+
+    A publish that had already written its outbox row and then rolled back is exactly
+    the failure this test exists to catch: the event would be delivered for a memory
+    that does not exist. So the absence of the outbox row is asserted explicitly,
+    beside the absence of the memory, its children and the audit row.
+    """
+    owner = memory.context()
+    before = memory.counts()
+
+    outcome = memory.remember(
+        owner,
+        kind="note",
+        title="never written",
+        body="a body",
+        purposes=[_RESPOND],
+        mentions=[_create("person", "nobody")],
+    )
+
+    _failed(outcome)
+    assert memory.counts() == before
+    assert memory.audit_rows(MEMORY_REMEMBER) == []
+    assert memory.outbox() == []
+
+
+def test_a_write_with_no_consumer_registry_refuses_rather_than_skipping_the_publish(
+    memory: MemoryWorkspace,
+) -> None:
+    """A composition root that wired no registry has a deployment bug.
+
+    The handler refuses rather than building a throwaway registry, whose fan-out
+    would depend on which call built it — a silent wrong answer instead of a visible
+    refusal. Nothing is written, which the counts prove.
+    """
+    before = memory.counts()
+    outcome = memory.unwired(
+        memory.context(),
+        MEMORY_REMEMBER,
+        {"kind": "note", "title": "t", "body": "b", "purposes": [_RESPOND]},
+    )
+    _refused(outcome, CONSUMERS_MISSING)
+    assert memory.counts() == before
+
+
+def test_the_kind_check_constraint_admits_exactly_the_four_ratified_kinds(
+    cluster: ClusterSession, workspace: UUID, recallatron_loaded: None
+) -> None:
+    """AC 14's second, independent proof, read off the live database.
+
+    ``modules/recallatron/tests/test_memory_contracts.py`` scans the source tree for
+    the two deferred names; this reads the constraint the migration actually created.
+    A migration that widened the vocabulary with raw DDL would pass that scan and fail
+    here.
+    """
+    _migrate(cluster, workspace)
+    _, engine = _workspace_engine(cluster, workspace)
+    with engine.connect() as connection:
+        definition = connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(constraint_class.oid) "
+                "FROM pg_catalog.pg_constraint AS constraint_class "
+                "JOIN pg_catalog.pg_class AS table_class "
+                "ON table_class.oid = constraint_class.conrelid "
+                "JOIN pg_catalog.pg_namespace AS namespace "
+                "ON namespace.oid = table_class.relnamespace "
+                "WHERE namespace.nspname = :schema "
+                "AND constraint_class.conname = 'memory_kind'"
+            ),
+            {"schema": _OWNED_SCHEMA},
+        ).scalar_one()
+    for kind in memory_tables.MEMORY_KINDS:
+        assert f"'{kind}'" in definition
+    assert definition.count("::text") == len(memory_tables.MEMORY_KINDS)
+
+
+# --- the trusted source-unit seam -----------------------------------------------------
+#
+# The two ``SourceAuthority`` implementations in this run, and both live here rather
+# than in the module: a real producer adapter belongs to the later automatic-memory
+# carrier and to the migration run, and shipping one in production code would be
+# shipping the producer this run is not authorized to build.
+#
+# Three rules that only a later producer will ever exercise in anger are built and
+# tested here against these fixtures rather than deferred with that producer:
+#
+#   1. acceptance requires ``source_recorded_at >= now - recallatron.retention.days``
+#      and terminalizes an out-of-window unit ``noop`` rather than writing a row no
+#      read could return;
+#   2. automatic acceptance binds exactly ``internal_analysis``, with the consequence
+#      that such a memory is invisible to a bound read requiring another purpose;
+#   3. one source unit yields at most one destination representation — a message
+#      carrying two *separable* explicit facts is still one unit.
+
+
+@dataclass(frozen=True)
+class SyntheticAuthority:
+    """The synthetic runtime adapter: it answers with a grant somebody chose.
+
+    A ``SourceAuthority`` that returned a bare boolean would be unfalsifiable — the
+    seam would have nothing to hold the unit against — so the protocol answers with
+    the *facts it verified* and the seam enforces them. Making the grant a fixture
+    parameter is what lets a test vary one verified fact at a time: a ceiling
+    narrower than the unit's audience, a purpose the unit does not carry, a required
+    link it omits.
+    """
+
+    grant: AuthorityGrant | None
+
+    def verify(
+        self, unit: TrustedSourceUnit, *, workspace_id: UUID, now: datetime
+    ) -> AuthorityGrant | AuthorityRefused:
+        if self.grant is None:
+            return AuthorityRefused(reason="not_enrolled")
+        return self.grant
+
+
+@dataclass(frozen=True)
+class ValidatedImporterAuthority:
+    """The validated importer's adapter: the batch was validated before it got here.
+
+    The importer is the other thing § A5 permits to exercise this seam in 1a1, and it
+    differs from the runtime adapter in exactly one way that matters: it has already
+    validated the whole batch, so it grants what the row itself claims. It is a
+    separate class rather than a flag because "trust the row" is precisely the
+    property a *runtime* adapter must never have.
+    """
+
+    workspace_id: UUID
+
+    def verify(
+        self, unit: TrustedSourceUnit, *, workspace_id: UUID, now: datetime
+    ) -> AuthorityGrant | AuthorityRefused:
+        if workspace_id != self.workspace_id:
+            return AuthorityRefused(reason="wrong_workspace")
+        return AuthorityGrant(
+            workspace_id=workspace_id,
+            producer_kind=unit.producer_kind,
+            authority_id=unit.authority_id,
+            principal_account_id=unit.principal_account_id,
+            audience_kind=unit.audience_kind,
+            audience_id=unit.audience_id,
+            bound_purpose=unit.bound_purpose,
+            source_revision=1,
+            required_links=unit.evidence.links,
+        )
+
+
+_AUTHORITY_ID = uuid7()
+
+
+def _unit(**overrides: object) -> TrustedSourceUnit:
+    """One trusted unit from the synthetic runtime producer, inside its window."""
+    now = datetime.now(UTC)
+    evidence: dict[str, object] = {
+        "kind": "note",
+        "title": "what the message said",
+        "body": "an explicitly stated fact",
+    }
+    evidence.update(overrides.pop("evidence", {}))  # type: ignore[arg-type]
+    fields: dict[str, object] = {
+        "producer_kind": "rheo_runtime",
+        "authority_id": _AUTHORITY_ID,
+        "principal_account_id": None,
+        "audience_kind": "workspace",
+        "audience_id": None,
+        "bound_purpose": _INTERNAL,
+        "source_recorded_at": now - timedelta(minutes=5),
+        "source_expires_at": now + timedelta(days=1),
+        "external_source_key": f"message-{uuid7()}",
+        "evidence": SanitizedEvidence(**evidence),  # type: ignore[arg-type]
+    }
+    fields.update(overrides)
+    return TrustedSourceUnit(**fields)  # type: ignore[arg-type]
+
+
+def _granting(
+    memory: MemoryWorkspace, unit: TrustedSourceUnit, **overrides: object
+) -> SyntheticAuthority:
+    fields: dict[str, object] = {
+        "workspace_id": memory.workspace,
+        "producer_kind": unit.producer_kind,
+        "authority_id": unit.authority_id,
+        "principal_account_id": unit.principal_account_id,
+        "audience_kind": unit.audience_kind,
+        "audience_id": unit.audience_id,
+        "bound_purpose": unit.bound_purpose,
+        "source_revision": 1,
+        "required_links": unit.evidence.links,
+    }
+    fields.update(overrides)
+    return SyntheticAuthority(AuthorityGrant(**fields))  # type: ignore[arg-type]
+
+
+def _accept(
+    memory: MemoryWorkspace,
+    unit: TrustedSourceUnit,
+    *,
+    authority: object | None = None,
+    now: datetime | None = None,
+) -> AcceptOutcome:
+    adapter = _granting(memory, unit) if authority is None else authority
+    assert hasattr(adapter, "verify")
+    with memory.unit() as uow:
+        return accept_source_unit(
+            memory.context(),
+            uow,
+            unit,
+            authority=adapter,  # type: ignore[arg-type]
+            consumers=memory.consumers,
+            now=now,
+        )
+
+
+def _receipts(memory: MemoryWorkspace) -> list[tuple[str, str, bool]]:
+    """``(external key, state, has a record id)`` for every receipt, key-ordered."""
+    with memory.reading() as uow:
+        rows = uow.connection.execute(
+            select(
+                memory_tables.source_receipt.c.external_source_key,
+                memory_tables.source_receipt.c.state,
+                memory_tables.source_receipt.c.record_id,
+            ).order_by(memory_tables.source_receipt.c.external_source_key)
+        ).all()
+    return [(str(key), str(state), record is not None) for key, state, record in rows]
+
+
+def test_acceptance_binds_internal_analysis_and_hides_it_from_another_purpose(
+    memory: MemoryWorkspace,
+) -> None:
+    """Ratified rule 2, and the product consequence § A5 states out loud.
+
+    A memory recorded automatically carries exactly ``internal_analysis``. It is
+    therefore invisible to a read bound to ``respond`` — no override — visible to an
+    unbound browse, and visible to a read bound to ``internal_analysis``.
+    """
+    unit = _unit()
+    outcome = _accept(memory, unit)
+    assert outcome.state == "active" and outcome.memory_ref is not None
+
+    row = _stored(memory, outcome.memory_ref)
+    assert row.origin == "derived"
+    assert row.recorded_at == unit.source_recorded_at
+    assert row.recorded_by_kind == "service" and row.recorded_by_id is None
+    assert row.source_namespace is not None
+    assert row.external_source_key == unit.external_source_key
+    with memory.reading() as uow:
+        assert list_memory_purposes(uow.connection, row.id) == (_INTERNAL,)
+    assert _receipts(memory) == [(unit.external_source_key, "active", True)]
+
+    found = memory.recall(memory.context(), query="explicitly")
+    assert found.ok and found.result is not None
+    assert [item.title for item in found.result.items] == [unit.evidence.title]
+
+    bound_elsewhere = memory.recall(memory.bound_context(_RESPOND), query="explicitly")
+    assert bound_elsewhere.ok and bound_elsewhere.result is not None
+    assert bound_elsewhere.result.items == ()
+
+    bound_here = memory.recall(memory.bound_context(_INTERNAL), query="explicitly")
+    assert bound_here.ok and bound_here.result is not None
+    assert len(bound_here.result.items) == 1
+
+
+def test_acceptance_terminalizes_a_born_expired_unit_as_noop_with_no_row_written(
+    memory: MemoryWorkspace,
+) -> None:
+    """Ratified rule 1, proved by a direct table read rather than by a later read.
+
+    The unit's authority, window and evidence are all fine; its ``source_recorded_at``
+    simply sits outside the workspace's *current* retention window. A memory written
+    from it would be excluded from every read and export the instant it committed, so
+    acceptance writes a ``noop`` receipt and no memory at all.
+
+    The proof is the memory table, not ``recall``: a read excludes an expired row
+    anyway, so a read-path assertion would pass just as happily if the row were there.
+    """
+    memory.set_retention("30")
+    now = datetime.now(UTC)
+    unit = _unit(
+        source_recorded_at=now - timedelta(days=45),
+        source_expires_at=now + timedelta(days=1),
+    )
+    before = memory.counts()
+
+    outcome = _accept(memory, unit, now=now)
+
+    assert outcome == AcceptOutcome("noop", None)
+    after = memory.counts()
+    assert after["memory"] == before["memory"]
+    assert after["purpose"] == before["purpose"]
+    assert after["link"] == before["link"]
+    assert after["outbox"] == before["outbox"]
+    assert _receipts(memory) == [(unit.external_source_key, "noop", False)]
+
+    # The boundary itself is retained, which is § A9's rule for every other
+    # comparison against the horizon: exactly at the horizon is still inside it.
+    inside = _unit(
+        source_recorded_at=now - timedelta(days=30) + timedelta(seconds=1),
+        source_expires_at=now + timedelta(days=1),
+    )
+    assert _accept(memory, inside, now=now).state == "active"
+
+
+def test_one_unit_with_two_separable_facts_yields_one_representation(
+    memory: MemoryWorkspace,
+) -> None:
+    """Ratified rule 3, and the grain the receipt's primary key fixes.
+
+    The evidence carries two explicit facts that could have been split. It is one
+    unit, so it is one memory, under that message's one kind, audience, purpose set
+    and confidence — and a replay of the same identity returns that same
+    representation rather than creating a second one.
+    """
+    unit = _unit(
+        evidence={
+            "kind": "fact",
+            "title": "two things at once",
+            "body": "Ada joined on Tuesday. The project ships in March.",
+            "confidence": 0.9,
+        }
+    )
+    first = _accept(memory, unit)
+    assert first.state == "active" and first.memory_ref is not None
+    after_first = memory.counts()
+
+    replay = _accept(memory, unit)
+
+    assert replay == first, "an exact-digest replay returns the same representation"
+    assert memory.counts() == after_first, "and performs no write"
+    with memory.reading() as uow:
+        titles = (
+            uow.connection.execute(select(memory_tables.memory.c.title)).scalars().all()
+        )
+    assert list(titles) == ["two things at once"]
+    assert _stored(memory, first.memory_ref).confidence == 0.9
+
+
+def test_a_changed_digest_under_one_identity_is_source_unavailable(
+    memory: MemoryWorkspace,
+) -> None:
+    """The digest detects changed sanitized evidence under the same identity.
+
+    It is the *envelope* that is digested, not the text alone — so a replay that kept
+    the body and moved the audience ceiling is a changed digest too, and is suppressed
+    rather than quietly accepted under the new ceiling.
+    """
+    unit = _unit()
+    assert _accept(memory, unit).state == "active"
+    after = memory.counts()
+
+    edited = _unit(
+        external_source_key=unit.external_source_key,
+        source_recorded_at=unit.source_recorded_at,
+        source_expires_at=unit.source_expires_at,
+        evidence={
+            "kind": "note",
+            "title": "what the message said",
+            "body": "a different body",
+        },
+    )
+    assert _accept(memory, edited) == AcceptOutcome("source_unavailable", None)
+    assert memory.counts() == after
+
+
+_TERMINAL_STATES = ("noop", "denied", "erased", "expired", "orphaned")
+"""Every receipt state that is not ``active``. All five suppress a later replay with
+the same single word: telling them apart would report whether a source was once
+accepted and then erased, which is the fact an erasure removes."""
+
+
+@pytest.mark.parametrize("state", _TERMINAL_STATES)
+def test_every_terminal_receipt_state_suppresses_a_replay(
+    memory: MemoryWorkspace, state: str
+) -> None:
+    unit = _unit()
+    accepted = _accept(memory, unit)
+    assert accepted.state == "active"
+    with memory.unit() as uow:
+        receipt = uow.connection.execute(
+            select(memory_tables.source_receipt.c.source_namespace)
+        ).scalar_one()
+        assert set_source_receipt_state(
+            uow.connection,
+            "memory",
+            str(receipt),
+            unit.external_source_key,
+            state=state,
+        )
+    after = memory.counts()
+
+    assert _accept(memory, unit) == AcceptOutcome("source_unavailable", None)
+    assert memory.counts() == after
+
+
+def test_an_active_receipt_whose_representation_is_gone_is_source_unavailable(
+    memory: MemoryWorkspace,
+) -> None:
+    """ "Noncurrent" is a state of the *row*, not of the receipt.
+
+    The receipt still says ``active``; the memory it names has been physically
+    removed. Replay must not recreate it — that is the resurrection the whole receipt
+    design exists to prevent.
+    """
+    unit = _unit()
+    accepted = _accept(memory, unit)
+    assert accepted.memory_ref is not None
+    with memory.unit() as uow:
+        uow.connection.execute(
+            memory_tables.memory.delete().where(
+                memory_tables.memory.c.id == RecordRef.parse(accepted.memory_ref).id
+            )
+        )
+    after = memory.counts()
+
+    assert _accept(memory, unit) == AcceptOutcome("source_unavailable", None)
+    assert memory.counts() == after
+
+
+def test_unverifiable_authority_writes_no_receipt_at_all(
+    memory: MemoryWorkspace,
+) -> None:
+    """A unit whose authority cannot be established cannot poison a partition.
+
+    Both shapes: an adapter that refuses outright, and one whose grant disagrees with
+    the unit about who the producer is. Neither writes a receipt, because recording an
+    outcome against a key this caller has not proved it holds is how one producer
+    terminalizes another's identity.
+    """
+    unit = _unit()
+    before = memory.counts()
+    assert _accept(memory, unit, authority=SyntheticAuthority(None)) == AcceptOutcome(
+        "authority_unverified", None
+    )
+    assert _accept(
+        memory, unit, authority=_granting(memory, unit, authority_id=uuid7())
+    ) == AcceptOutcome("authority_unverified", None)
+    assert _accept(
+        memory, unit, authority=_granting(memory, unit, workspace_id=uuid7())
+    ) == AcceptOutcome("authority_unverified", None)
+    assert memory.counts() == before
+
+
+def test_a_verified_unit_that_fails_source_policy_earns_a_content_free_receipt(
+    memory: MemoryWorkspace,
+) -> None:
+    """A verified caller failing policy is ``denied`` — with a receipt, no memory.
+
+    Four failures, each a different sentence of § A5: a purpose that is not the
+    ratified automatic binding, an audience above the verified ceiling, a reversed
+    source window, and a required canonical link the unit omits.
+    """
+    now = datetime.now(UTC)
+    account = memory.owner_account_id
+    cases: tuple[tuple[str, TrustedSourceUnit, object], ...] = (
+        (
+            "another purpose",
+            _unit(bound_purpose=ContextPurpose.RESPOND),
+            None,
+        ),
+        (
+            "an audience above the ceiling",
+            _unit(audience_kind="workspace", audience_id=None),
+            "ceiling",
+        ),
+        (
+            "a reversed window",
+            _unit(
+                source_recorded_at=now + timedelta(days=1),
+                source_expires_at=now + timedelta(days=2),
+            ),
+            None,
+        ),
+        (
+            "a missing required link",
+            _unit(),
+            "links",
+        ),
+    )
+    for label, unit, variant in cases:
+        before = memory.counts()
+        if variant == "ceiling":
+            authority: object = _granting(
+                memory, unit, audience_kind="member", audience_id=account
+            )
+        elif variant == "links":
+            authority = _granting(
+                memory,
+                unit,
+                required_links=(
+                    SourceLink(ref=f"{_FOREIGN}:{uuid7()}", relation="about"),
+                ),
+            )
+        else:
+            authority = _granting(memory, unit)
+        outcome = _accept(memory, unit, authority=authority, now=now)
+        assert outcome == AcceptOutcome("denied", None), label
+        after = memory.counts()
+        assert after["memory"] == before["memory"], label
+        assert after["receipt"] == before["receipt"] + 1, label
+
+
+def test_a_closed_source_window_is_expired_rather_than_denied(
+    memory: MemoryWorkspace,
+) -> None:
+    """A window that simply ran out is a different fact from a malformed one, and the
+    receipt records which."""
+    now = datetime.now(UTC)
+    unit = _unit(
+        source_recorded_at=now - timedelta(hours=2),
+        source_expires_at=now - timedelta(hours=1),
+    )
+    assert _accept(memory, unit, now=now) == AcceptOutcome("expired", None)
+    assert _receipts(memory) == [(unit.external_source_key, "expired", False)]
+
+
+def test_evidence_with_nothing_explicit_in_it_is_a_noop(
+    memory: MemoryWorkspace,
+) -> None:
+    """Empty or insufficiently explicit evidence is a conservative no-op, not a
+    denial: nothing was wrong with the caller, there was simply nothing to record."""
+    unit = _unit(evidence={"title": "   ", "body": "   "})
+    assert _accept(memory, unit) == AcceptOutcome("noop", None)
+    assert _receipts(memory) == [(unit.external_source_key, "noop", False)]
+
+
+def test_acceptance_fails_closed_on_a_missing_or_corrupt_retention_policy(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 8 binds the acceptance recheck exactly as it binds ``remember``/``derive``.
+
+    Not even a receipt is written: the refusal lands before anything this seam could
+    record, which is what "before any write" has to mean for a path whose *purpose*
+    is writing an outcome row.
+    """
+    before = memory.counts()
+    for value in _UNUSABLE_RETENTION:
+        memory.set_retention(value)
+        with pytest.raises(OperationRefused) as raised:
+            _accept(memory, _unit())
+        assert raised.value.state == "retention_unavailable"
+    assert memory.counts() == before
+
+
+def test_acceptance_copies_the_units_canonical_links_and_its_mentions(
+    memory: MemoryWorkspace,
+) -> None:
+    """ "Copies all actual canonical source/about restrictions", re-authorized here.
+
+    A link the accepting caller cannot resolve is not a restriction anybody can check,
+    so a unit carrying one is denied rather than creating a memory nothing could ever
+    read. Mentions are always creations: a trusted producer that could *select* an
+    entity would have had to probe for one.
+    """
+    with memory.unit() as uow:
+        readable = _write(uow.connection, _row(title="a readable source"))
+    reference = memory_reference(readable.id)
+    unit = _unit(
+        evidence={
+            "title": "linked",
+            "body": "an explicitly stated fact",
+            "links": (SourceLink(ref=reference, relation="about"),),
+            "mentions": (
+                SourceMention(kind="person", name="Ada", role="author"),
+                SourceMention(kind="person", name="Ada"),
+            ),
+        }
+    )
+    outcome = _accept(memory, unit)
+    assert outcome.state == "active" and outcome.memory_ref is not None
+    assert _links_of(memory, outcome.memory_ref) == {(reference, "about")}
+    with memory.reading() as uow:
+        names = (
+            uow.connection.execute(select(memory_tables.memory_entity.c.name))
+            .scalars()
+            .all()
+        )
+    assert list(names) == ["Ada", "Ada"], "one unit, two mentions, two fresh entities"
+
+    unreadable = _unit(
+        evidence={
+            "title": "blocked",
+            "body": "an explicitly stated fact",
+            "links": (SourceLink(ref=f"{_FOREIGN}:{uuid7()}", relation="about"),),
+        }
+    )
+    assert _accept(memory, unreadable).state == "denied"
+
+
+def test_the_validated_importer_adapter_preserves_its_rows_purposes(
+    memory: MemoryWorkspace,
+) -> None:
+    """The second of this run's two adapters, and the one asymmetry that matters.
+
+    A ``migration`` unit is not an automatic producer: it may be unbound and it
+    preserves each imported memory's own ratified purposes, under the import
+    contract that validated the whole batch before this seam saw it.
+    """
+    unit = _unit(
+        producer_kind="migration",
+        bound_purpose=None,
+        evidence={
+            "title": "an imported memory",
+            "body": "an explicitly stated fact",
+            "purposes": (ContextPurpose.RESPOND, ContextPurpose.FOLLOW_UP),
+        },
+    )
+    outcome = _accept(
+        memory, unit, authority=ValidatedImporterAuthority(memory.workspace)
+    )
+    assert outcome.state == "active" and outcome.memory_ref is not None
+    with memory.reading() as uow:
+        stored = list_memory_purposes(
+            uow.connection, RecordRef.parse(outcome.memory_ref).id
+        )
+    assert stored == (_FOLLOW_UP, _RESPOND)
+
+    # And an automatic producer presenting the same purposes is denied before a write.
+    automatic = _unit(
+        evidence={
+            "title": "an automatic memory",
+            "body": "an explicitly stated fact",
+            "purposes": (ContextPurpose.RESPOND,),
+        }
+    )
+    assert _accept(memory, automatic).state == "denied"
+
+
+def test_retirement_writes_a_terminal_receipt_and_never_touches_a_live_row(
+    memory: MemoryWorkspace,
+) -> None:
+    """§ A5's retirement rule, both halves.
+
+    For a live representation the seam writes **nothing** and says so: erasing a live
+    memory is a per-action-approved deletion under the original authorized caller, and
+    an acceptance lease is not erasure authority. For a unit with no live
+    representation it writes a content-free terminal receipt, so a later replay of the
+    same key cannot resurrect what the source withdrew.
+    """
+    unit = _unit()
+    accepted = _accept(memory, unit)
+    assert accepted.memory_ref is not None
+    authority = _granting(memory, unit)
+    before = memory.counts()
+
+    with memory.unit() as uow:
+        live = retire_source_unit(memory.context(), uow, unit, authority=authority)
+    assert live.state == LIVE_REPRESENTATION
+    assert live.memory_ref == accepted.memory_ref
+    assert memory.counts() == before
+    assert _receipts(memory) == [(unit.external_source_key, "active", True)]
+
+    with memory.unit() as uow:
+        uow.connection.execute(
+            memory_tables.memory.delete().where(
+                memory_tables.memory.c.id == RecordRef.parse(accepted.memory_ref).id
+            )
+        )
+    with memory.unit() as uow:
+        retired = retire_source_unit(memory.context(), uow, unit, authority=authority)
+    assert retired.state == "erased"
+    # The original id is retained as a pre-creation tombstone, which is the only
+    # evidence left that the identity ever had a representation.
+    assert _receipts(memory) == [(unit.external_source_key, "erased", True)]
+    assert _accept(memory, unit) == AcceptOutcome("source_unavailable", None)
+
+    unknown = _unit()
+    with memory.unit() as uow:
+        assert (
+            retire_source_unit(
+                memory.context(), uow, unknown, authority=_granting(memory, unknown)
+            ).state
+            == "erased"
+        )
+    assert (unknown.external_source_key, "erased", False) in _receipts(memory)
+
+
+def test_a_source_receipt_carries_only_identity_authority_and_outcome(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 2: opaque partitioned identity, and no source content anywhere on the row.
+
+    The namespace is minted at the boundary and is not the caller's key, not the
+    workspace id, and not anything a caller could have chosen — a producer that could
+    pick it could write into another producer's partition.
+    """
+    unit = _unit(evidence={"title": "a secret title", "body": "a secret body"})
+    assert _accept(memory, unit).state == "active"
+    with memory.reading() as uow:
+        row = (
+            uow.connection.execute(select(memory_tables.source_receipt))
+            .mappings()
+            .one()
+        )
+    namespace = str(row["source_namespace"])
+    assert namespace != unit.external_source_key
+    assert str(memory.workspace) not in namespace
+    assert len(namespace) <= 128
+    stored = " ".join(str(value) for value in row.values())
+    for secret in ("a secret title", "a secret body", "Ada"):
+        assert secret not in stored
+    assert len(bytes(row["payload_digest"])) == 32
+    assert row["bound_purpose"] == _INTERNAL
+    assert row["producer_kind"] == "rheo_runtime"

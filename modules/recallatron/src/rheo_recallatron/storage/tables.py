@@ -51,10 +51,16 @@ MEMORY_SCHEMA: Final = "recallatron"
 MEMORY_KINDS: Final = ("note", "fact", "decision", "summary")
 """The four ratified kinds.
 
-The database half of AC 14's absence proof: ``topic_thread`` and ``procedural_notes``
-are not values here, so no migration, tool or import can introduce one without
-changing this tuple and its ``CheckConstraint`` — which is a visible schema change,
-not a quiet row.
+The database half of AC 14's absence proof: the two deferred features § A0 names are
+not values here, so no migration, tool or import can introduce one without changing
+this tuple and its ``CheckConstraint`` — which is a visible schema change, not a
+quiet row.
+
+They are deliberately **not spelled out** in this file, or anywhere else under
+``src/``. ``modules/recallatron/tests/test_memory_contracts.py`` holds the only copy
+of either name in this distribution, scans this whole tree for them, and carries a
+positive control proving the scan still bites — so a reintroduced literal reds there
+rather than hiding beside a comment that explains why it should not exist.
 """
 
 MEMORY_ORIGINS: Final = ("told", "derived", "migrated")

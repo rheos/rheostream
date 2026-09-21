@@ -7,9 +7,9 @@ the manifest would close that loop. Everything here imports nothing from this pa
 so every other module in it can reach these values whichever one is imported first.
 
 § A13 asks for the module's fixed limits "centralized as named constants". This is that
-one place: the read-side bounds and the traversal budget are below, and the write-side
-bounds (title, body, entity name, source key) belong beside them when the run that
-needs them arrives.
+one place: the read-side bounds, the traversal budget and — since the write half
+exists — the write-side bounds on title, body, entity name, refs, mentions and the
+trusted-ingest identity.
 """
 
 from typing import Final
@@ -21,6 +21,14 @@ MODULE_ID: Final = "recallatron"
 MEMORY_RECORD_TYPE: Final = "memory"
 """The one record type this run's resolver answers for; a memory reference reads
 ``<module id>.<this>:<uuid>``."""
+
+ENTITY_RECORD_TYPE: Final = "memory_entity"
+"""The second addressable record type, and the one with **no** resolver.
+
+An entity is reachable only through an eligible mention or an independently readable
+backing ref, so generic resolution has nothing to answer for it: a resolver would be a
+second route to an entity, reachable by anyone holding a well-formed id.
+"""
 
 RETENTION_DAYS_KEY: Final = f"{MODULE_ID}.retention.days"
 """How long a memory stays readable in a workspace, in days.
@@ -102,3 +110,52 @@ MAX_REFERENCE_DEPTH: Final = 64
 """One request-wide budget, shared by the target, every candidate, and every link
 either of them reaches. Exceeding it refuses ``reference_scan_limit`` with no partial
 content and no window metadata."""
+
+# --- Architecture § A13: the write-side bounds ---------------------------------------
+
+TITLE_MIN_LENGTH: Final = 1
+TITLE_MAX_LENGTH: Final = 200
+"""Trimmed characters. A title of spaces is not a short title, it is a missing one."""
+
+BODY_MAX_BYTES: Final = 65536
+"""UTF-8 **bytes**, not characters, and nonblank.
+
+Bytes because that is what the column and every transport actually cost; a
+character bound would admit a body four times the size it was meant to.
+"""
+
+ENTITY_NAME_MIN_LENGTH: Final = 1
+ENTITY_NAME_MAX_LENGTH: Final = 200
+MENTION_ROLE_MAX_LENGTH: Final = 100
+"""The typed half of the bound ``memory_mention_role_length`` already holds in DDL."""
+
+MAX_REFS_PER_WRITE: Final = 64
+MAX_MENTIONS_PER_WRITE: Final = 64
+DERIVE_SOURCES_MIN: Final = 1
+DERIVE_SOURCES_MAX: Final = 64
+"""§ A13's per-write ceilings. They bound what a caller *supplies*; they deliberately
+do not bound what derive **inherits**, which is checked against the shared reference
+budget instead — a copied graph too large to read back refuses
+``reference_scan_limit`` rather than being silently truncated."""
+
+ENTITY_LIST_LIMIT_MIN: Final = 1
+ENTITY_LIST_LIMIT_MAX: Final = 50
+ENTITY_LIST_LIMIT_DEFAULT: Final = 10
+
+AUTOMATIC_BOUND_PURPOSE: Final = "internal_analysis"
+"""§ A5: automatic acceptance binds exactly one purpose, for both producer kinds.
+
+Named here rather than inlined at the seam because the product consequence is the
+reason it is a constant: a memory recorded under it is invisible to any bound read
+requiring a different purpose, and visible to an unbound browse and to a read bound to
+it. Changing this value changes that visibility for every automatic memory, which is a
+spec amendment and not a local edit.
+"""
+
+AUTOMATIC_PRODUCER_KINDS: Final = ("rheo_runtime", "claude_code_local")
+"""The two producer kinds whose acceptance binds :data:`AUTOMATIC_BOUND_PURPOSE`.
+
+``migration`` is the third receipt producer kind and is deliberately absent: it may be
+unbound and preserves each imported memory's own ratified purposes, under its
+separately verified import contract.
+"""

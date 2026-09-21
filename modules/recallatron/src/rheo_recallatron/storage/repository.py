@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Connection, insert, select
+from sqlalchemy import Connection, insert, select, update
 from sqlalchemy.engine import RowMapping
 
 from rheo_recallatron.storage import tables as t
@@ -147,6 +147,21 @@ def get_memory_purpose(
     if mapping is None:
         return None
     return MemoryPurposeRow(memory_id=mapping["memory_id"], purpose=mapping["purpose"])
+
+
+def list_memory_purposes(conn: Connection, memory_id: UUID) -> tuple[str, ...]:
+    """Every purpose one memory carries, in vocabulary order.
+
+    Ordered rather than left to the planner for the same reason
+    :func:`list_memory_links` is: a derivation intersects these sets and a caller sees
+    the result, so two runs of one request must not answer in two orders.
+    """
+    rows = conn.execute(
+        select(t.memory_purpose.c.purpose)
+        .where(t.memory_purpose.c.memory_id == memory_id)
+        .order_by(t.memory_purpose.c.purpose)
+    ).all()
+    return tuple(str(row[0]) for row in rows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +429,33 @@ def insert_source_receipt(conn: Connection, row: SourceReceiptRow) -> SourceRece
         )
     )
     return row
+
+
+def set_source_receipt_state(
+    conn: Connection,
+    representation_type: str,
+    source_namespace: str,
+    external_source_key: str,
+    *,
+    state: str,
+) -> bool:
+    """Move one receipt to a terminal ``state``; answer whether a row was matched.
+
+    The **only** column this updates. Every other column on the row is immutable
+    authority context or the digest of the evidence it was accepted under, and
+    rewriting either would make a receipt say the unit was accepted under conditions
+    it was not — which is the one thing the row exists to remember.
+    """
+    result = conn.execute(
+        update(t.source_receipt)
+        .where(
+            t.source_receipt.c.representation_type == representation_type,
+            t.source_receipt.c.source_namespace == source_namespace,
+            t.source_receipt.c.external_source_key == external_source_key,
+        )
+        .values(state=state)
+    )
+    return result.rowcount == 1
 
 
 def get_source_receipt(

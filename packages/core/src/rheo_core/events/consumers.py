@@ -26,7 +26,16 @@ from dataclasses import dataclass
 
 from rheo_contracts import EventEnvelope
 
-from rheo_core.storage.backend import HandlerUnitOfWork
+# Re-exported explicitly (``X as X``), for the same contract reason
+# ``refs/resolver.py`` re-exports ``UnitOfWork``: a module distribution may not import
+# the core's storage package — ``tests/postgres/test_module_storage_ownership.py``
+# scans ``modules/`` for exactly that — and a module handler that publishes has to
+# *name* this type to read the registry off the sealed view ``dispatch()`` handed it.
+# The guard ``operations/dispatch.py`` prescribes is ``uow.consumers if isinstance(uow,
+# HandlerUnitOfWork) else None``, and without this line a module could not write it.
+# So the package that declares the publish contract publishes the names in it, and
+# nothing else from the storage package is published here.
+from rheo_core.storage.backend import HandlerUnitOfWork as HandlerUnitOfWork
 
 ConsumerHandler = Callable[[HandlerUnitOfWork, EventEnvelope], None]
 """``(uow, envelope) -> None``: what one consumer actually does with one delivery.

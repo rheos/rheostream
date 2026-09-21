@@ -1,11 +1,16 @@
-"""Recallatron's read operations: first-cut lexical ``recall`` and the centered
-``read`` window.
+"""Recallatron's declared operations: first-cut lexical ``recall``, the centered
+``read`` window, and the two writes — ``remember`` and ``derive``.
 
-Both are ``READ``, both are owner/member/service (§ A10), and neither carries an audit
-spec because the read class needs none. Every permission decision either makes is
+The reads are ``READ`` and carry no audit spec, because the read class needs none. The
+writes are ``MUTATE``, carry ``AuditSpec(subject_field=None)``, and publish
+``recallatron.memory.recorded`` inside the same transaction as their row insert and
+the dispatcher's success audit row. All four are owner/member/service (§ A10). Every
+permission decision any of them makes is
 :func:`~rheo_recallatron.eligibility.eligible_memory`'s; what lives here is input
-validation, the lexical query, the five-step read precedence and the shape of the
-answer.
+validation, the lexical query, the five-step read precedence, the write ordering, and
+the shape of the answer. The write *machinery* — audience ceiling, purpose rule,
+reference resolution, the row insert — is ``writes.py``'s, because the trusted source
+seam has to write a memory exactly the way these two do.
 
 **The read precedence is the security core of this module, and its order is the
 guarantee.** § A6:
@@ -42,13 +47,13 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
 from rheo_contracts import (
+    AuditSpec,
     ContextPurpose,
     Idempotency,
     OperationDeclaration,
-    RecordRef,
-    RecordRefMalformed,
+    Role,
     SafetyClass,
     WorkspaceContext,
 )
@@ -71,13 +76,18 @@ from rheo_recallatron.configuration import (
     RECALL_QUERY_MAX_LENGTH,
     RECALL_QUERY_MIN_LENGTH,
 )
+from rheo_recallatron.contracts import (
+    DeriveInput,
+    MemoryWritten,
+    RememberInput,
+    Strict,
+)
 from rheo_recallatron.eligibility import (
     READ_ROLES,
     Denied,
     Eligible,
     MemoryRequest,
     ReadMode,
-    begin_request,
     container_candidates,
     eligible_memory,
     evaluate_all,
@@ -85,19 +95,42 @@ from rheo_recallatron.eligibility import (
     memory_reference,
     row_local_conditions,
 )
+from rheo_recallatron.entities import ENTITY_OPERATIONS, resolve_mentions
+from rheo_recallatron.events import consumers_for_dispatch
+from rheo_recallatron.references import canonical_ref, memory_target
 from rheo_recallatron.refusals import (
     CONTAINER_MEMBERSHIP_REQUIRED,
     INPUT_INVALID,
     NOT_FOUND,
     PURPOSE_MISMATCH,
     REFERENCE_SCAN_LIMIT,
-    RETENTION_UNAVAILABLE,
     WINDOW_SCAN_LIMIT,
 )
 from rheo_recallatron.storage import tables as t
+from rheo_recallatron.writes import (
+    ORIGIN_DERIVED,
+    ORIGIN_TOLD,
+    opened,
+    resolve_audience,
+    resolve_purposes,
+    resolve_sources,
+    resolve_stated_links,
+    write_memory,
+)
 
 MEMORY_RECALL: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.recall"
 MEMORY_READ: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.read"
+MEMORY_REMEMBER: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.remember"
+MEMORY_DERIVE: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.derive"
+
+WRITE_ROLES: Final = frozenset({Role.OWNER, Role.MEMBER, Role.SERVICE})
+"""§ A10's roles for ``remember`` and ``derive``.
+
+The same three members as :data:`~rheo_recallatron.eligibility.READ_ROLES` today, and
+declared separately anyway: § A10's table gives ``correct``/``supersede`` only
+owner/member, so the write roles are not one set that happens to equal the read set —
+they are two lists that agree here and are about to stop agreeing.
+"""
 
 STRATEGY_LEXICAL: Final = "lexical"
 """What every item this run returns is marked with.
@@ -121,18 +154,7 @@ is only ``STABLE``.
 # --- input and output models ----------------------------------------------------------
 
 
-class _Strict(BaseModel):
-    """Extra fields forbidden, frozen. Every model below is one.
-
-    ``extra = "forbid"`` is § A13's rule for this module's typed contracts and is also
-    what makes an unknown key ``input_invalid`` at the dispatcher rather than a
-    silently ignored argument.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class MemoryLinkHead(_Strict):
+class MemoryLinkHead(Strict):
     """One of a memory's links as this caller may see it.
 
     ``display`` is ``None`` for a marked lineage link: ancestry is content-free, so the
@@ -145,7 +167,7 @@ class MemoryLinkHead(_Strict):
     display: str | None
 
 
-class MemoryItem(_Strict):
+class MemoryItem(Strict):
     """One memory, with the lifecycle fields § A6 says a read returns.
 
     ``superseded_by`` is present only when the successor is itself eligible to this
@@ -173,7 +195,7 @@ class RecallItem(MemoryItem):
     strategy: str
 
 
-class RecallInput(_Strict):
+class RecallInput(Strict):
     query: str = Field(
         min_length=RECALL_QUERY_MIN_LENGTH, max_length=RECALL_QUERY_MAX_LENGTH
     )
@@ -191,11 +213,11 @@ class RecallInput(_Strict):
         return value
 
 
-class RecallResult(_Strict):
+class RecallResult(Strict):
     items: tuple[RecallItem, ...]
 
 
-class ReadInput(_Strict):
+class ReadInput(Strict):
     container_ref: str
     target_ref: str
     context: int = Field(
@@ -205,7 +227,7 @@ class ReadInput(_Strict):
     purpose: str | None = None
 
 
-class ReadWindow(_Strict):
+class ReadWindow(Strict):
     """A successful centered window, and only ever a successful one.
 
     Every field here is computed from the **fully eligible** ordering, so none of them
@@ -224,18 +246,14 @@ class ReadWindow(_Strict):
 # --- step 1: input, purpose binding and retention ------------------------------------
 
 
-def _canonical(reference: str) -> RecordRef:
-    try:
-        return RecordRef.parse(reference)
-    except (RecordRefMalformed, TypeError):
-        raise OperationRefused(INPUT_INVALID, "a reference must be canonical") from None
+_canonical = canonical_ref
+_memory_target = memory_target
+"""Reference parsing moved to ``references.py`` when the write half arrived.
 
-
-def _memory_target(reference: str) -> RecordRef:
-    parsed = _canonical(reference)
-    if parsed.module != MODULE_ID or parsed.record_type != MEMORY_RECORD_TYPE:
-        raise OperationRefused(INPUT_INVALID, "the target must be a memory reference")
-    return parsed
+Aliased here rather than renamed at every call site below: three files now parse the
+same references, and two of them would otherwise each answer ``input_invalid`` in
+their own words. The names stay because the read precedence above cites them.
+"""
 
 
 def _checked_purpose(ctx: WorkspaceContext, stated: str | None) -> None:
@@ -262,14 +280,13 @@ def _checked_purpose(ctx: WorkspaceContext, stated: str | None) -> None:
         )
 
 
-def _opened(ctx: WorkspaceContext, uow: UnitOfWork) -> MemoryRequest:
-    request = begin_request(ctx, uow)
-    if request is None:
-        raise OperationRefused(
-            RETENTION_UNAVAILABLE,
-            "this workspace has no usable retention policy",
-        )
-    return request
+_opened = opened
+"""The single retention read, shared with the write paths.
+
+One function for reads and writes alike, so AC 8's "missing or corrupt retention
+configuration refuses reads, writes, and sweep" cannot drift into two behaviours that
+happen to agree today.
+"""
 
 
 def _mode(include_invalidated: bool) -> ReadMode:
@@ -463,6 +480,112 @@ def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> Read
     )
 
 
+# --- the write handlers ---------------------------------------------------------------
+#
+# Both are ``MUTATE``, both are owner/member/service, and both take the same shape: open
+# the request (which is where a missing or corrupt retention policy refuses), decide the
+# audience and the purposes, resolve every reference under the caller, resolve the
+# mentions, and only then write. Nothing is inserted before every refusal that could
+# happen has happened — which is what makes "refuses without a resulting record" a
+# property of the ordering rather than of a rollback.
+
+
+def remember(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: RememberInput
+) -> MemoryWritten:
+    """Record a memory somebody stated, with its own non-memory provenance.
+
+    ``origin`` is ``told``, ``recorded_at`` is this request's frozen instant and
+    ``recorded_by`` is the context's actor: all three are server-owned, and none of
+    them is a field the input model has.
+
+    Explicit statement is *evidence*, not a requirement — nothing in the design says a
+    durable memory has to arrive through this operation. It is the manual path, and
+    the trusted source seam is the other one.
+    """
+    consumers = consumers_for_dispatch(uow)
+    request = _opened(ctx, uow)
+    audience = resolve_audience(ctx, model_input.audience)
+    purposes = resolve_purposes(ctx, model_input.purposes)
+    links = resolve_stated_links(
+        ctx,
+        uow,
+        provenance_refs=model_input.provenance_refs,
+        about_refs=model_input.about_refs,
+        request=request,
+    )
+    mentions = resolve_mentions(
+        ctx, uow, model_input.mentions, request=request, now=request.now
+    )
+    return write_memory(
+        ctx,
+        uow,
+        kind=model_input.kind,
+        title=model_input.title,
+        body=model_input.body,
+        audience=audience,
+        purposes=purposes,
+        confidence=model_input.confidence,
+        occurred_at=model_input.occurred_at,
+        origin=ORIGIN_TOLD,
+        recorded_at=request.now,
+        recorded_by_kind=ctx.actor.kind.value,
+        recorded_by_id=ctx.actor.id,
+        links=links,
+        mentions=mentions,
+        consumers=consumers,
+    )
+
+
+def derive(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: DeriveInput
+) -> MemoryWritten:
+    """Record a memory computed from 1-64 distinct, currently authorized sources.
+
+    The sources decide two things the caller cannot widen: the audience meet and the
+    purpose intersection. Both are computed **before** any write, so a derivation
+    whose sources meet nowhere (``audience_empty``) or share no purpose
+    (``purposes_empty``) leaves no memory, no entity and no link behind.
+
+    A derivation cannot select ``producer_kind``, an authority, source keys, worker
+    authority or source times — not by refusal but by construction: :class:`DeriveInput`
+    has no field for any of them, and :func:`~rheo_recallatron.writes.write_memory`
+    takes the provenance from this call site, which passes none.
+    """
+    consumers = consumers_for_dispatch(uow)
+    request = _opened(ctx, uow)
+    resolved = resolve_sources(
+        ctx,
+        uow,
+        model_input.sources,
+        about_refs=model_input.about_refs,
+        request=request,
+    )
+    audience = resolve_audience(ctx, model_input.audience, meet=resolved.audience)
+    purposes = resolve_purposes(ctx, model_input.purposes, available=resolved.purposes)
+    mentions = resolve_mentions(
+        ctx, uow, model_input.mentions, request=request, now=request.now
+    )
+    return write_memory(
+        ctx,
+        uow,
+        kind=model_input.kind,
+        title=model_input.title,
+        body=model_input.body,
+        audience=audience,
+        purposes=purposes,
+        confidence=model_input.confidence,
+        occurred_at=model_input.occurred_at,
+        origin=ORIGIN_DERIVED,
+        recorded_at=request.now,
+        recorded_by_kind=ctx.actor.kind.value,
+        recorded_by_id=ctx.actor.id,
+        links=resolved.links,
+        mentions=mentions,
+        consumers=consumers,
+    )
+
+
 # --- declarations -------------------------------------------------------------------
 
 
@@ -489,10 +612,42 @@ READ_DECLARATION: Final = OperationDeclaration(
     audit=None,
 )
 
+REMEMBER_DECLARATION: Final = OperationDeclaration(
+    name=MEMORY_REMEMBER,
+    safety_class=SafetyClass.MUTATE,
+    roles=WRITE_ROLES,
+    input_model=RememberInput,
+    output=MemoryWritten,
+    # Not ``NATURAL``: there is no unique index that makes a repeat the same row, and
+    # there must not be — two people writing the same sentence twice recorded two
+    # things, and the one identity-keyed write path in this module is the trusted
+    # source seam, whose key is the receipt's rather than the memory's content.
+    idempotency=Idempotency.NONE,
+    # ``subject_field=None``: an ``AuditSpec`` subject names an input field carrying a
+    # ``RecordRef`` for the record the call acts *on*, and a write that creates a
+    # record acts on none — the reference does not exist until the handler mints it.
+    # The audit row still lands, with a null subject and the request digest that
+    # distinguishes it from every other call.
+    audit=AuditSpec(subject_field=None),
+)
+
+DERIVE_DECLARATION: Final = OperationDeclaration(
+    name=MEMORY_DERIVE,
+    safety_class=SafetyClass.MUTATE,
+    roles=WRITE_ROLES,
+    input_model=DeriveInput,
+    output=MemoryWritten,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field=None),
+)
+
 OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (RECALL_DECLARATION, recall),
     (READ_DECLARATION, read),
+    (REMEMBER_DECLARATION, remember),
+    (DERIVE_DECLARATION, derive),
+    *ENTITY_OPERATIONS,
 )
-"""What the manifest declares. The write operations join this tuple when they exist;
-the record resolver is declared beside it on the manifest and shares the same
-eligibility function."""
+"""What the manifest declares: two reads, two writes and the two service-only entity
+reads. Correction and supersession join it when they exist; the record resolver is
+declared beside this tuple on the manifest and shares the same eligibility function."""
