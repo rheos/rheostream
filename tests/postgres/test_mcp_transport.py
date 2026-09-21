@@ -33,6 +33,7 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
@@ -169,10 +170,14 @@ def seam(monkeypatch: pytest.MonkeyPatch) -> _SeamCounter:
         return real_list(ctx)
 
     def counting_call(
-        ctx: WorkspaceContext, name: str, arguments: Mapping[str, object]
+        ctx: WorkspaceContext,
+        name: str,
+        arguments: Mapping[str, object],
+        *,
+        consumers: Any = None,
     ) -> Any:
         counter.call_tool += 1
-        return real_call(ctx, name, arguments)
+        return real_call(ctx, name, arguments, consumers=consumers)
 
     monkeypatch.setattr(transport, "list_tools", counting_list)
     monkeypatch.setattr(transport, "call_tool", counting_call)
@@ -188,8 +193,13 @@ def app() -> Iterator[Any]:
     the SDK's session manager, so each helper opens
     ``router.lifespan_context(app)`` around its own traffic rather than leaving a
     session manager running across tests.
+
+    ``consumers=None`` because this file drives the two core tools, both of which
+    name ``read`` operations that publish nothing. The argument has no default on
+    purpose — the composition root has to name its own registry — so "none here"
+    is stated rather than inherited.
     """
-    yield build_mcp_app()
+    yield build_mcp_app(consumers=None)
 
 
 async def _client(app: Any, bearer: str | None) -> AsyncIterator[Client]:
@@ -461,9 +471,17 @@ async def test_handlers_refuse_a_request_that_bypassed_the_gate() -> None:
     reached by calling the handlers rather than over the wire.
     """
     ungated = SimpleNamespace(request=SimpleNamespace(state=SimpleNamespace()))
+    # ``_on_call_tool`` takes the consumer registry as a keyword with no default
+    # (``build_server`` closes over the one the composition root handed it), so the
+    # bare handler is bound here to keep the pair callable through one loop. The
+    # value is irrelevant: this test's whole claim is that the handler raises before
+    # it reaches a tool.
     for handler, params in (
         (transport._on_list_tools, None),
-        (transport._on_call_tool, types.CallToolRequestParams(name="workspace_status")),
+        (
+            partial(transport._on_call_tool, consumers=None),
+            types.CallToolRequestParams(name="workspace_status"),
+        ),
     ):
         with pytest.raises(RuntimeError) as raised:
             await handler(ungated, params)  # type: ignore[arg-type]

@@ -52,6 +52,7 @@ from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
 from rheo_contracts import ToolDeclaration, WorkspaceContext
 from rheo_core.boundary.context import TOKEN_MALFORMED, Refusal
+from rheo_core.operations.tool_facade import ConsumerRegistry
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -185,14 +186,18 @@ def _as_tool(declaration: ToolDeclaration) -> types.Tool:
 
     ``input_schema`` is generated from the declaration's own input model rather
     than written out here, so a model that gains a field describes itself to a
-    client without an edit in this file. The description names the operation
-    because ``ToolDeclaration`` carries no description of its own in this tree
-    (``manifest.py``); inventing prose for it here would put a second, unreviewed
-    source of tool documentation in the transport layer.
+    client without an edit in this file. The description is the declaration's own
+    when it has one -- a module's tools are expected to name their material
+    failure modes there -- and falls back to naming the operation when it does
+    not. Nothing is invented here either way: a second, unreviewed source of tool
+    documentation in the transport layer is exactly what the fallback's one
+    mechanical sentence avoids being.
     """
     return types.Tool(
         name=declaration.name,
-        description=f"Calls the {declaration.operation} operation.",
+        description=(
+            declaration.description or f"Calls the {declaration.operation} operation."
+        ),
         input_schema=declaration.input_model.model_json_schema(),
     )
 
@@ -211,6 +216,8 @@ async def _on_list_tools(
 async def _on_call_tool(
     ctx: ServerRequestContext[Any, Any],
     params: types.CallToolRequestParams,
+    *,
+    consumers: ConsumerRegistry | None,
 ) -> types.CallToolResult:
     """``tools/call``: exactly ``call_tool(ctx, name, arguments)``, rendered.
 
@@ -219,9 +226,17 @@ async def _on_call_tool(
     call itself was well formed and the server answered it. Which state it was is
     the part a caller acts on, so it is in the structured content rather than only
     in prose.
+
+    ``consumers`` is bound by :func:`build_server` from what the composition root
+    handed :func:`build_mcp_app`, so a publishing handler reached through this
+    surface publishes into the same registry the process's HTTP routes publish
+    into. It is a parameter rather than a module-level object because this package
+    must not import ``apps/core`` -- that distribution depends on this one.
     """
     workspace_ctx = _context_of(ctx)
-    outcome = call_tool(workspace_ctx, params.name, params.arguments or {})
+    outcome = call_tool(
+        workspace_ctx, params.name, params.arguments or {}, consumers=consumers
+    )
     payload: dict[str, Any] = {"state": outcome.state}
     if outcome.result is not None:
         payload["result"] = outcome.result.model_dump(mode="json")
@@ -239,17 +254,32 @@ async def _on_call_tool(
     )
 
 
-def build_server() -> Server[Any]:
-    """The lowlevel MCP server, with the two handlers this façade answers."""
+def build_server(*, consumers: ConsumerRegistry | None) -> Server[Any]:
+    """The lowlevel MCP server, with the two handlers this façade answers.
+
+    ``on_call_tool`` is a closure over ``consumers`` rather than
+    :func:`_on_call_tool` itself, because the SDK calls its handler with the
+    request context and the params and nothing else: a registry that has to reach
+    the handler has to be bound when the server is built. The closure is the whole
+    of the binding — it adds no behaviour — so the handler stays directly callable
+    from a test with the argument spelled out.
+    """
+
+    async def on_call_tool(
+        ctx: ServerRequestContext[Any, Any], params: types.CallToolRequestParams
+    ) -> types.CallToolResult:
+        return await _on_call_tool(ctx, params, consumers=consumers)
+
     return Server(
         SERVER_NAME,
         on_list_tools=_on_list_tools,
-        on_call_tool=_on_call_tool,
+        on_call_tool=on_call_tool,
     )
 
 
 def build_mcp_app(
     *,
+    consumers: ConsumerRegistry | None,
     path: str = MCP_PATH,
     json_response: bool = False,
     host: str = "127.0.0.1",
@@ -261,12 +291,23 @@ def build_mcp_app(
     package for the composition-root edge alone. An application built at import
     time would make that edge do work nobody asked for.
 
+    ``consumers`` is keyword-only and has **no default**, and that is the whole of
+    how this surface stays wired to the same
+    :class:`~rheo_core.events.consumers.ConsumerRegistry` the process's HTTP routes
+    use. This package cannot import ``apps/core``'s ``startup.CONSUMERS``:
+    ``rheo-app-core`` declares ``rheo-app-mcp`` as a dependency, so the import back
+    would be both a package cycle and an undeclared dependency, and a deployment
+    that installed the façade alone would fail to import it. So the composition
+    root that mounts this application names its own registry here, and a caller
+    that genuinely has none -- a test driving a read-only tool -- says ``None``
+    rather than leaving the argument off and finding out at the first publish.
+
     ``host`` is passed through to the SDK, which turns it into the DNS-rebinding
     protection a browser-reachable endpoint needs; it is named here so a
     deployment can widen it deliberately rather than discovering the default by
     being blocked.
     """
-    server = build_server()
+    server = build_server(consumers=consumers)
     app = server.streamable_http_app(
         streamable_http_path=path,
         json_response=json_response,

@@ -13,11 +13,12 @@ read half, the write half, the two lifecycle changes and the two service-only en
 reads. ``events`` declares both ratified event types and ``audit_sink`` is installed,
 because the first ``mutate`` operation now exists and neither is optional for one:
 dispatch refuses every non-``READ`` call whose module has no sink.
-``deletion_participants`` carries the other half of an erasure, and ``jobs`` and
-``schedules`` carry the retention sweep and the daily row that enqueues it. ``tools``,
-``subscriptions`` and ``export`` are still empty or unimplemented, and that is
-deliberate: a declaration whose implementation is a later prompt's would be a promise
-the loader registers and nothing keeps.
+``deletion_participants`` carries the other half of an erasure, ``jobs`` and
+``schedules`` carry the retention sweep and the daily row that enqueues it, and
+``tools`` carries § A10's seven memory tools. ``subscriptions`` and ``export`` are
+still empty or unimplemented, and that is deliberate: a declaration whose
+implementation is a later prompt's would be a promise the loader registers and
+nothing keeps.
 
 **Why the settings key is not declared in this file.** This module now imports its own
 operations, which import the eligibility service, which has to read the retention key
@@ -65,6 +66,7 @@ from rheo_recallatron.retention import (
     MemoryRetentionSweepPayload,
     run_memory_retention_sweep,
 )
+from rheo_recallatron.tools import TOOLS
 
 DISTRIBUTION: Final = "rheo-recallatron"
 
@@ -167,7 +169,13 @@ MANIFEST: Final = ModuleManifest(
     # a schedule that already exists, with no backfill path to invent.
     configuration_schema=(RETENTION_EXPIRE_BY_AGE_SPEC, RETENTION_DAYS_SPEC),
     operations=OPERATIONS,
-    tools=(),
+    # § A10's seven, and no eighth. Six name this module's own operations; the
+    # seventh names the owned-deletion coordinator, which the ratified module
+    # contract permits precisely because its input restricts the reference to this
+    # module's own record type. The two entity reads stay service-only: § A10 gives
+    # them "none" in the MCP column, and a tool over them would be a second route to
+    # a vocabulary an entity is only ever reached through a readable mention.
+    tools=TOOLS,
     # Both ratified event types, declared together because the manifest names them
     # together. ``recorded`` is published by this run's writes and by trusted
     # acceptance; ``invalidated`` is the lifecycle closure's, and declaring only the

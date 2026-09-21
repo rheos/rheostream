@@ -14,25 +14,43 @@ explicitly to prove the startup sequence.
 The ``/auth/*`` routes, ``/api/v1/operations``, the internal listener, ``serve()``
 and the MCP facade seam are 0b2's; the MCP transport is 0c's. ``rheo_app_mcp`` is
 still imported at module scope to record the composition-root import edge the
-architecture draws.
+architecture draws — now as :func:`build_mcp_surface`, which binds this process's
+``ConsumerRegistry`` to the façade rather than merely naming the package.
 """
 
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 
-import rheo_app_mcp
 from fastapi import FastAPI
+from rheo_app_mcp.transport import build_mcp_app
 from rheo_contracts import CONTRACT_VERSION
 from rheo_core.storage.postgres import get_backend
+from starlette.applications import Starlette
 
 from rheo_app_core import api_routes, auth_routes
 from rheo_app_core.internal_app import internal_app as internal_app
-from rheo_app_core.startup import run_startup
+from rheo_app_core.startup import CONSUMERS, run_startup
 
-# Not called in this run; naming it here records the composition-root import edge
-# without leaving a bare unused import (ruff F401).
-_COMPOSITION_ROOT_EDGES = (rheo_app_mcp,)
+
+def build_mcp_surface() -> Starlette:
+    """The MCP façade, wired to **this** process's one ``ConsumerRegistry``.
+
+    Not mounted in this run, and not called from anywhere in it: mounting the
+    façade into this process's request-serving path is a later step
+    (``rheo_app_mcp.transport``'s own docstring says so). What this function is for
+    is the wiring decision, which belongs at the composition root and nowhere else.
+    ``build_mcp_app`` takes ``consumers`` as a keyword with no default, so a
+    mounting that forgot it would not compile rather than quietly publishing into a
+    registry nobody subscribed to; naming :data:`~rheo_app_core.startup.CONSUMERS`
+    here is what makes the in-process MCP surface and the HTTP routes above reach
+    the same object once it is mounted.
+
+    A function rather than a module-level application: constructing the SDK's
+    session manager has real setup behind it, and the composition-root import edge
+    this replaces did no work at all. Calling it is still the mounting step's job.
+    """
+    return build_mcp_app(consumers=CONSUMERS)
 
 
 def _dispose_backend() -> None:
