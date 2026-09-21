@@ -107,7 +107,7 @@ from rheo_core.work.scheduled_authority import (
     SCHEDULED_AUTHORITY_INVALID,
     ExpiredRecord,
     VerifiedScheduledExecution,
-    dispatch_verified_expiry_in,
+    dispatch_memory_expiry_in,
 )
 from sqlalchemy import Engine, Row, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -1955,7 +1955,7 @@ def _expiring_handler(
     ) -> None:
         capability = uow.scheduled_execution if substitute is None else substitute(uow)
         seen.append(
-            dispatch_verified_expiry_in(
+            dispatch_memory_expiry_in(
                 uow,
                 capability,  # type: ignore[arg-type]
                 record_type=record_type,
@@ -2085,10 +2085,10 @@ def test_a_verified_expiry_deletes_the_record_and_leaves_a_retention_expiry_ledg
     # unioned by the coordinator rather than added up twice.
     assert row.invalidated_memory_count == 4  # type: ignore[attr-defined]
     assert row.cause == RETENTION_EXPIRY  # type: ignore[attr-defined]
-    # No approval, and an operator actor with no account: a schedule is the
-    # deployment's own timer, acting on nobody's behalf.
+    # No approval, and a system actor with no account: § A9's expiry context, which
+    # is nobody — no person confirmed this and no account owns it.
     assert row.approval_id is None  # type: ignore[attr-defined]
-    assert (row.actor_kind, row.actor_id) == ("operator", None)  # type: ignore[attr-defined]
+    assert (row.actor_kind, row.actor_id) == ("system", None)  # type: ignore[attr-defined]
     assert row.record_type == PROBE_TYPE  # type: ignore[attr-defined]
     # The three phase-three counters stay zero, as they do on the approved path.
     assert (
@@ -2169,7 +2169,7 @@ def test_a_forged_capability_for_another_job_kind_refuses_rather_than_deleting(
     )
     with UnitOfWork(engine, database) as uow:
         view = HandlerUnitOfWork(uow, scheduled_execution=forged)
-        answer = dispatch_verified_expiry_in(
+        answer = dispatch_memory_expiry_in(
             view,
             forged,
             record_type=PROBE_TYPE,

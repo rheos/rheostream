@@ -436,6 +436,45 @@ def deletion_admits(ctx: WorkspaceContext, uow: UnitOfWork, row: MemoryRow) -> b
     )
 
 
+def expiry_admits(
+    ctx: WorkspaceContext, uow: UnitOfWork, row: MemoryRow
+) -> bool | None:
+    """§ A9's scheduled-expiry check: is this row the sweep's to remove, right now?
+
+    The counterpart of :func:`deletion_admits` for the one deletion path with no
+    person behind it, and the differences are the whole reason it is a second function
+    rather than a flag on that one.
+
+    **It asks nothing about the caller.** No role, no audience, no bound purpose. A
+    retention window is the *workspace's* stated policy and it covers every memory in
+    the workspace, including a member's own; a check that asked whose record this was
+    would leave every member-audience memory unexpirable for ever, silently, because
+    the sweep has no account and never will. What stands in for those checks is the
+    sealed scheduled execution the core verified against the live transaction before
+    it ever reached this module — see
+    :class:`~rheo_core.deletion.registry.Disposition`.
+
+    **It asks the one thing a caller check never does**: whether the row is actually
+    past the horizon, re-read here under the workspace lifecycle lock the core wrapper
+    already holds. That is § A9's "locks and rechecks target expiry immediately before
+    deletion", and it has to live in this module because core knows nothing about
+    which column carries a memory's clock.
+
+    ``None`` is AC 8's ``retention_unavailable``: the policy row is missing,
+    unparseable or out of range, and a sweep that carried on would be deleting against
+    a window nobody stated. Fail closed, exactly as every read does.
+    """
+    if MODULE_ID not in ctx.enabled_modules:
+        return False
+    request = begin_request(ctx, uow)
+    if request is None:
+        return None
+    # ``<``, not ``<=``: § A9 retains the boundary instant. A memory recorded exactly
+    # ``days`` ago is still readable, so it is not the sweep's yet either — the two
+    # comparisons are the same one, and ``MemoryRequest.horizon`` is where it lives.
+    return row.recorded_at < request.horizon
+
+
 def _mode_admits(row: MemoryRow, mode: ReadMode) -> bool:
     if mode is ReadMode.CURRENT:
         return row.invalidated_at is None and row.superseded_by_id is None

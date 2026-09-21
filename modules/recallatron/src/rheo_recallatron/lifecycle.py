@@ -43,6 +43,13 @@ verbatim):
   record and its own children, step 3 runs the participants — and it is what makes
   the coordinator's union of removed identifiers observable with one real module
   instead of one synthetic one.
+- *Scheduled expiry* is the same two halves over a **narrower** closure: ordinary
+  dependents only, every marked lineage hop skipped, so a fresh replacement survives
+  its expired predecessor's sweep. The coordinator says which of the two is running
+  through :class:`~rheo_core.deletion.registry.Disposition`, because neither
+  :func:`authorize_memory_delete` nor :func:`on_record_deleted` can see the sealed
+  authority core verified on its way here — and both of them answer differently
+  depending on it.
 
 **``.invalidated`` is published for exactly the rows a closure marks non-erasure
 invalidated, and for nothing else.** A physically removed row is covered by the
@@ -68,6 +75,7 @@ from rheo_core.boundary.context import Refusal
 from rheo_core.deletion import (
     NOTHING_REMOVED,
     DeleteAuthorization,
+    Disposition,
     RemovedMemories,
     lock_workspace_lifecycle,
 )
@@ -92,6 +100,7 @@ from rheo_recallatron.eligibility import (
     ReadMode,
     deletion_admits,
     eligible_memory,
+    expiry_admits,
     memory_reference,
 )
 from rheo_recallatron.entities import remove_mention
@@ -101,7 +110,12 @@ from rheo_recallatron.events import (
     publish_memory_event,
 )
 from rheo_recallatron.references import canonical_ref
-from rheo_recallatron.refusals import NOT_FOUND, RECORD_STALE, REFERENCE_SCAN_LIMIT
+from rheo_recallatron.refusals import (
+    NOT_FOUND,
+    RECORD_STALE,
+    REFERENCE_SCAN_LIMIT,
+    RETENTION_UNAVAILABLE,
+)
 from rheo_recallatron.source_units import REPRESENTATION_MEMORY, STATE_ERASED
 from rheo_recallatron.storage.repository import (
     MemoryRow,
@@ -456,26 +470,57 @@ def _unauthorized(ref: RecordRef) -> Refusal:
 
 
 def authorize_memory_delete(
-    ctx: WorkspaceContext, uow: UnitOfWork, ref: RecordRef
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    ref: RecordRef,
+    *,
+    disposition: Disposition,
 ) -> DeleteAuthorization | Refusal:
     """The owned-delete authorizer: a reference and a revision, or a refusal.
 
     Content-free by shape and by content: it answers
     :class:`~rheo_core.deletion.DeleteAuthorization`, which has nowhere to put a
     title or a body, and it reads nothing beyond what
-    :func:`~rheo_recallatron.eligibility.deletion_admits` needs.
+    :func:`~rheo_recallatron.eligibility.deletion_admits` or
+    :func:`~rheo_recallatron.eligibility.expiry_admits` needs.
 
-    **It permits an authorized retained or expired row**, which is § A7's wording and
-    is what the scheduled sweep depends on: the rows retention wants gone are exactly
-    the ones a read can no longer see. The approved deletion path does not reach them
-    anyway — the core's record-state guard resolves the subject in ``current`` mode
-    before the effect and refuses a row that no longer resolves — so the breadth here
-    costs nothing on that path and is the whole authorization on the scheduled one.
+    **Two dispositions, two questions, and they are not narrowings of each other.**
+
+    *User erasure* asks whose record this is: the module enabled here, one of § A10's
+    two lifecycle roles, the row's audience, and the caller's bound purpose. It
+    permits an authorized **retained or expired** row, which is § A7's wording: the
+    approved path does not reach one anyway, because the core's record-state guard
+    resolves the subject in ``current`` mode before the effect.
+
+    *Scheduled expiry* asks nothing about the caller at all and asks instead whether
+    the row is genuinely past the workspace's current retention horizon, re-read here
+    under the lifecycle lock. A sweep is accountless and carries neither lifecycle
+    role, so running it through the erasure question would refuse **every** memory in
+    the workspace and expire nothing at all; running it through the erasure question
+    with the roles widened would let a service token erase what a person may not. The
+    authority is instead the sealed scheduled execution the core verified before this
+    module was reached, which is exactly what ``disposition`` reports.
+
+    A missing retention policy is the sweep's ``retention_unavailable`` rather than a
+    ``not_found``: the record may well be there, and the thing that is missing is the
+    workspace's own statement of how long it keeps it.
     """
     if ref.module != MODULE_ID or ref.record_type != MEMORY_RECORD_TYPE:
         return _unauthorized(ref)
     row = get_memory(uow.connection, ref.id)
-    if row is None or not deletion_admits(ctx, uow, row):
+    if row is None:
+        return _unauthorized(ref)
+    if disposition is Disposition.SCHEDULED_EXPIRY:
+        expired = expiry_admits(ctx, uow, row)
+        if expired is None:
+            return Refusal(
+                RETENTION_UNAVAILABLE,
+                "this workspace states no usable retention policy",
+            )
+        if not expired:
+            return _unauthorized(ref)
+        return DeleteAuthorization(ref=ref, revision=row.revision)
+    if not deletion_admits(ctx, uow, row):
         return _unauthorized(ref)
     return DeleteAuthorization(ref=ref, revision=row.revision)
 
@@ -528,12 +573,22 @@ def delete_owned_memory(
     It runs under the workspace lifecycle lock without taking one: both callers, the
     approved coordinator and the scheduled-expiry wrapper, take it immediately before
     the third authorization and hold it through the effect.
+
+    **It takes no ``disposition`` and needs none**, unlike the authorizer and the
+    participant either side of it. It traverses nothing — the one row the
+    authorization names, and the children that hang off it by cascade — so there are
+    no edges for a disposition to choose between, and "physically remove the target"
+    is the same instruction whether a person asked or a timer did.
     """
     return RemovedMemories(_erase(uow.connection, (authorization.ref.id,)))
 
 
 def on_record_deleted(
-    ctx: WorkspaceContext, uow: UnitOfWork, ref: RecordRef
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    ref: RecordRef,
+    *,
+    disposition: Disposition,
 ) -> RemovedMemories:
     """The participant: every memory that depended on a deleted record.
 
@@ -544,12 +599,30 @@ def on_record_deleted(
     A reference of some other type answers "removed nothing" rather than raising: a
     participant that raised would abort a deletion it has no stake in, and the
     coordinator only offers it references it registered for anyway.
+
+    **``disposition`` chooses the edges, and it is the one line in this module where
+    getting it wrong destroys something nobody asked to lose.** § A5's closure table
+    gives user erasure the marked supersession-lineage hops — "copied ancestry keeps
+    closure connected across missing middle rows", so erasing A still reaches the C
+    that replaced the B that replaced it — and gives scheduled expiry the ordinary
+    edges only, so *a replacement reached only by ancestry survives on its own clock*.
+    Following ancestry on the expiry path would mean that sweeping an expired
+    predecessor silently took the fresh replacement written yesterday with it, and no
+    assertion that watched only the predecessor would ever notice.
+
+    A replacement reached by an **ordinary** path is still removed on both, which is
+    the other half of the same table row and the reason this is a choice of edges
+    rather than a choice of whether to cascade at all.
     """
     if ref.module != MODULE_ID or ref.record_type != MEMORY_RECORD_TYPE:
         return NOTHING_REMOVED
     return RemovedMemories(
         _erase(
             uow.connection,
-            dependent_closure(uow.connection, ref.id, include_marked=True),
+            dependent_closure(
+                uow.connection,
+                ref.id,
+                include_marked=disposition is not Disposition.SCHEDULED_EXPIRY,
+            ),
         )
     )

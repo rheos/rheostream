@@ -22,7 +22,7 @@ rather than a request field; ``RESERVED_INPUT_FIELDS`` closes the other end.
 
 import hashlib
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from rheo_contracts import (
@@ -178,6 +178,69 @@ def context_for_operator(
         request_id=uuid7(),
         # An operator is not an account and carries no bound purpose: the `rheo`
         # command authenticates against the host, not against `control.account`.
+        principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),
+    )
+
+
+MEMORY_EXPIRY_OPERATIONS: Final = frozenset({"core.record.delete"})
+"""The one operation a scheduled retention expiry is allowed to reach.
+
+Spelled rather than imported from ``rheo_core.deletion.operations``, which reaches
+``rheo_core.operations`` and back into this package -- the same cycle
+:func:`_purpose_mismatch` describes, and the same answer ``context_from_operation``
+already gives for ``"runtime_actor_required"``.
+``tests/postgres/test_memory_retention.py`` pins this set against
+``deletion.operations.RECORD_DELETE`` so the copy cannot drift.
+
+A ``frozenset`` and never ``ALL_OPERATIONS``: this is the narrowest operation set any
+factory in this file issues, and the narrowness is the whole of what the sweep's
+context grants. Compare ``context_for_operator``, which carries the full set.
+"""
+
+
+def context_for_memory_expiry(workspace_id: UUID) -> WorkspaceContext | Refusal:
+    """The context one scheduled retention expiry runs under
+    (``deletion-export-migration.md`` § Retention).
+
+    Actor ``system`` with no id, role ``service``, entry ``job``, no audience, no
+    account and no bound purpose, and :data:`MEMORY_EXPIRY_OPERATIONS` as the whole
+    operation set. A sweep is nobody: no person confirmed it, no account owns it, and
+    it is running because a timer came round.
+
+    **It is a value and not an authority, and the distinction is load-bearing.**
+    Anything in this process may call this function, exactly as anything may call
+    :func:`context_for_operator` -- which carries strictly more. What makes a
+    scheduled expiry a scheduled expiry is the sealed
+    :class:`~rheo_core.work.scheduled_authority.VerifiedScheduledExecution` the worker
+    minted onto the handler's own unit of work, re-derived against the live
+    transaction before anything is deleted. This context is what that authority *acts
+    as* once it has been verified; holding one on its own deletes nothing.
+
+    **``service`` rather than ``operator``, and the consequence is deliberate.** An
+    operator role carries the deployment's own hand; a sweep carries the workspace's
+    stated retention policy, which is a service of the workspace rather than an
+    administrator acting in it. Neither role is one of the two an owner's *erasure*
+    authorizer admits, which is why the owned-delete callables are told which
+    :class:`~rheo_core.deletion.registry.Disposition` is asking rather than left to
+    read a role that means something else on this path.
+    """
+    if not isinstance(workspace_id, UUID):
+        raise TypeError("workspace_id must be a UUID")
+    enabled = _active_workspace_modules(get_backend(), workspace_id)
+    if isinstance(enabled, Refusal):
+        return enabled
+    return WorkspaceContext(
+        workspace_id=workspace_id,
+        actor=Actor(kind=ActorKind.SYSTEM, id=None),
+        role=Role.SERVICE,
+        entry=Entry.JOB,
+        # None, for the reason ``context_for_operator`` gives at length: ``overview.
+        # md``'s context table says of the ``job`` kind that "a scheduled job has
+        # none", and this is that job.
+        audience=None,
+        operation_set=MEMORY_EXPIRY_OPERATIONS,
+        enabled_modules=enabled,
+        request_id=uuid7(),
         principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),
     )
 

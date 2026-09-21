@@ -50,6 +50,7 @@ from rheo_core.deletion.records import deletion_ref, insert_deletion_record
 from rheo_core.deletion.registry import (
     OWNED_DELETIONS,
     DeleteAuthorization,
+    Disposition,
     OwnedDeletion,
     OwnedDeletionRegistry,
     RemovedMemories,
@@ -161,7 +162,13 @@ def pre_mint_refusal(
         model_input, RecordDeleteInput
     ):
         return None
-    authorized = authorize_owned_delete(ctx, uow, model_input.ref, registry=registry)
+    authorized = authorize_owned_delete(
+        ctx,
+        uow,
+        model_input.ref,
+        disposition=Disposition.USER_ERASURE,
+        registry=registry,
+    )
     return authorized if isinstance(authorized, Refusal) else None
 
 
@@ -177,7 +184,9 @@ def _authorized_or_refused(
     raised as an ``OperationRefused`` carrying the refusal's own state — the shape
     ``execute_approved`` already uses for a rebuild that failed.
     """
-    authorized = authorize_owned_delete(ctx, uow, ref, registry=registry)
+    authorized = authorize_owned_delete(
+        ctx, uow, ref, disposition=Disposition.USER_ERASURE, registry=registry
+    )
     if isinstance(authorized, Refusal):
         raise OperationRefused(authorized.state, str(authorized))
     return authorized
@@ -239,7 +248,9 @@ def delete_owned(
     ):
         # A participant that raises aborts the whole deletion: it is not caught here,
         # so the exception reaches ``dispatch()`` and everything above rolls back.
-        removed = removed.union(participant.handler(ctx, uow, ref))
+        removed = removed.union(
+            participant.handler(ctx, uow, ref, disposition=Disposition.USER_ERASURE)
+        )
         participants.append(participant.module_id)
     deletion_id = insert_deletion_record(
         uow.connection,

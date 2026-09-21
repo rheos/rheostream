@@ -12,6 +12,7 @@ _PATH_TOKEN = "modules/recallatron"
 _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_memory_lifecycle.py",
     "tests/postgres/test_memory_records.py",
+    "tests/postgres/test_memory_retention.py",
     "tests/postgres/test_module_install.py",
     "tests/postgres/test_module_lifecycle.py",
     "tests/postgres/test_module_migrations.py",

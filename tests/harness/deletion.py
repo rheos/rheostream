@@ -38,6 +38,7 @@ from rheo_core.boundary.context import Refusal
 from rheo_core.deletion import (
     OWNED_DELETIONS,
     DeleteAuthorization,
+    Disposition,
     OwnedDeletion,
     OwnedDeletionRegistry,
     RemovedMemories,
@@ -216,7 +217,11 @@ def resolve_probe(
 
 
 def authorize_probe_delete(
-    ctx: WorkspaceContext, uow: UnitOfWork, ref: RecordRef
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    ref: RecordRef,
+    *,
+    disposition: Disposition,
 ) -> DeleteAuthorization | Refusal:
     """Content-free: the reference and a revision, or a refusal naming neither.
 
@@ -224,6 +229,12 @@ def authorize_probe_delete(
     nothing about what is in it — no label, no memory body — because an authorizer that
     returned content would make the pre-approval check a read of the record it is
     about to refuse to delete.
+
+    ``disposition`` is accepted and deliberately not read. The probe has no clock, no
+    audience and no lifecycle roles, so the two dispositions genuinely ask the same
+    question of it; a fixture that branched here would be asserting a difference it
+    does not have. The real one is
+    ``modules/recallatron/src/rheo_recallatron/lifecycle.py``, which does.
     """
     if not probe_exists(uow.connection, ref.id):
         return Refusal(
@@ -262,9 +273,17 @@ def delete_probe_owned(
 
 
 def on_probe_deleted(
-    ctx: WorkspaceContext, uow: UnitOfWork, ref: RecordRef
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    ref: RecordRef,
+    *,
+    disposition: Disposition,
 ) -> RemovedMemories:
     """The participant: remove the derived rows, or raise when told to.
+
+    ``disposition`` is accepted and not read, for the reason
+    :func:`authorize_probe_delete` gives: ``harness.probe_memory`` has no lineage
+    edges, so there is no traversal here for a disposition to narrow.
 
     Raising is how a test drives "a participant that raises aborts the whole deletion;
     the record survives untouched" — and it raises *before* its own delete, so the only

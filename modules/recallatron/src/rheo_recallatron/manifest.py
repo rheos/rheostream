@@ -13,7 +13,8 @@ read half, the write half, the two lifecycle changes and the two service-only en
 reads. ``events`` declares both ratified event types and ``audit_sink`` is installed,
 because the first ``mutate`` operation now exists and neither is optional for one:
 dispatch refuses every non-``READ`` call whose module has no sink.
-``deletion_participants`` carries the other half of an erasure. ``tools``,
+``deletion_participants`` carries the other half of an erasure, and ``jobs`` and
+``schedules`` carry the retention sweep and the daily row that enqueues it. ``tools``,
 ``subscriptions`` and ``export`` are still empty or unimplemented, and that is
 deliberate: a declaration whose implementation is a later prompt's would be a promise
 the loader registers and nothing keeps.
@@ -33,8 +34,10 @@ from rheo_core.audit.core_sink import CORE_AUDIT_SINK
 from rheo_core.modules.manifest import (
     DeletionParticipant,
     ExportDeclaration,
+    JobKind,
     ModuleManifest,
     RecordType,
+    Schedule,
     StorageDeclaration,
 )
 
@@ -54,6 +57,13 @@ from rheo_recallatron.lifecycle import (
 )
 from rheo_recallatron.operations import OPERATIONS
 from rheo_recallatron.resolvers import resolve_memory
+from rheo_recallatron.retention import (
+    MEMORY_RETENTION_SWEEP,
+    SWEEP_CRON,
+    SWEEP_MAX_ATTEMPTS,
+    MemoryRetentionSweepPayload,
+    run_memory_retention_sweep,
+)
 
 DISTRIBUTION: Final = "rheo-recallatron"
 
@@ -160,8 +170,37 @@ MANIFEST: Final = ModuleManifest(
     # still writes its outbox row and completes with zero deliveries. An event nobody
     # consumes is not an error.
     subscriptions=(),
-    jobs=(),
-    schedules=(),
+    # The retention sweep, and the daily row that enqueues it. Separate from the
+    # core's own ``core.retention_sweep`` in both halves on purpose: the two retain
+    # different things under different policies, and one schedule feeding both would
+    # make disabling either impossible.
+    #
+    # ``enabled_by_default=True`` because a workspace that enables this module has
+    # thereby stated a retention policy — ``core.module.enable``'s step 3 writes the
+    # explicit ``retention.days`` row in the same transaction as this schedule — and a
+    # retention policy nothing enforces is a promise the product does not keep.
+    #
+    # ``cancellable`` is ``False``: a sweep is short by construction (at most a
+    # hundred roots), commits its batch and its continuation together, and has no
+    # partial state a cancellation could usefully stop at. A running batch that must
+    # be stopped is stopped by disabling the schedule, which ends the continuations.
+    jobs=(
+        JobKind(
+            name=MEMORY_RETENTION_SWEEP,
+            input_model=MemoryRetentionSweepPayload,
+            handler=run_memory_retention_sweep,
+            max_attempts=SWEEP_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
+    ),
+    schedules=(
+        Schedule(
+            name="memory_retention_sweep",
+            job_kind=MEMORY_RETENTION_SWEEP,
+            cron=SWEEP_CRON,
+            enabled_by_default=True,
+        ),
+    ),
     # One resolver, for the one record type a reference can name. An entity is reached
     # only through a mention on a memory the caller may already read, so it has no
     # resolution of its own to declare. The resolver calls straight into the shared

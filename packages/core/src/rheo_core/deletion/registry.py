@@ -35,15 +35,47 @@ module-owned types at all — see that function's own docstring.
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Final, Protocol
 from uuid import UUID
 
 from rheo_contracts import RecordRef, WorkspaceContext, is_reserved_module
 
 from rheo_core.boundary.context import Refusal
+from rheo_core.deletion.tables import RETENTION_EXPIRY as _RETENTION_EXPIRY
+from rheo_core.deletion.tables import USER_ERASURE as _USER_ERASURE
 from rheo_core.operations.refusals import RegistrationRefused
 from rheo_core.operations.registry import check_origin
 from rheo_core.storage.backend import UnitOfWork
+
+
+class Disposition(StrEnum):
+    """Which of the two physical-removal entries the coordinator is running.
+
+    ``docs/architecture/deletion-export-migration.md``'s closure table gives *user
+    erasure* and *scheduled expiry* the same traversal and **different edges**: an
+    erasure follows marked supersession-lineage hops, so a replacement stays reachable
+    from an ancestor nobody can read any more, and an expiry skips every one of them,
+    so a fresh replacement survives its expired predecessor's sweep on its own clock.
+    It also gives them different authority: an erasure is a person's, checked against
+    that person's role and the record's audience; an expiry is the *workspace's own
+    retention policy*, which applies to every memory in the workspace and is carried by
+    the sealed :class:`~rheo_core.work.scheduled_authority.VerifiedScheduledExecution`
+    the worker minted rather than by anyone's membership.
+
+    **So an owner cannot infer it, and is told.** Both differences live inside the
+    owner's own callables — the authorizer and the participant handler — and neither
+    can read the capability core verified. A keyword rather than a second pair of
+    registered callables, because it is one axis with two values and a second
+    registration would be a second place for an owner to forget one.
+
+    The two values are the ledger causes the same deletion will be recorded under, so
+    "which disposition ran" and "what the ledger says happened" are one vocabulary.
+    """
+
+    USER_ERASURE = _USER_ERASURE
+    SCHEDULED_EXPIRY = _RETENTION_EXPIRY
+
 
 RECORD_NOT_DELETABLE: Final = "record_not_deletable"
 """The one refusal a caller gets for a reference core will not delete.
@@ -106,10 +138,19 @@ delete and every participant on a non-memory type answers this.
 
 
 class DeleteAuthorizer(Protocol):
-    """``(ctx, uow, ref) -> DeleteAuthorization | Refusal``, content-free."""
+    """``(ctx, uow, ref, *, disposition) -> DeleteAuthorization | Refusal``.
+
+    Content-free, and told which disposition is asking: see :class:`Disposition` for
+    why an owner cannot work that out for itself.
+    """
 
     def __call__(
-        self, ctx: WorkspaceContext, uow: UnitOfWork, ref: RecordRef
+        self,
+        ctx: WorkspaceContext,
+        uow: UnitOfWork,
+        ref: RecordRef,
+        *,
+        disposition: Disposition,
     ) -> DeleteAuthorization | Refusal: ...
 
 
@@ -130,16 +171,25 @@ class OwnedDeleter(Protocol):
 
 
 class DeletionHandler(Protocol):
-    """``(ctx, uow, ref) -> RemovedMemories``: one participant's hook.
+    """``(ctx, uow, ref, *, disposition) -> RemovedMemories``: one participant's hook.
 
     Narrowed from ``Callable[..., object]`` in this run, which is the first one that
     calls it. A participant that raises aborts the whole deletion — the record survives
     untouched and the operation reports the participant's error — so a handler has no
     refusal channel of its own and does not need one.
+
+    ``disposition`` is what tells a participant which edges its closure may follow;
+    see :class:`Disposition`. It is keyword-only so a handler that ignores it still
+    reads as a handler that was offered it and chose not to care.
     """
 
     def __call__(
-        self, ctx: WorkspaceContext, uow: UnitOfWork, ref: RecordRef
+        self,
+        ctx: WorkspaceContext,
+        uow: UnitOfWork,
+        ref: RecordRef,
+        *,
+        disposition: Disposition,
     ) -> RemovedMemories: ...
 
 
@@ -266,6 +316,7 @@ def authorize_owned_delete(
     uow: UnitOfWork,
     ref: RecordRef,
     *,
+    disposition: Disposition,
     registry: OwnedDeletionRegistry = OWNED_DELETIONS,
 ) -> tuple[OwnedDeletion, DeleteAuthorization] | Refusal:
     """The owned-delete authorization for ``ref``: the declaration and its answer.
@@ -274,7 +325,12 @@ def authorize_owned_delete(
     approval is minted, again at approval execution under the reconstructed original
     caller, and a third time under the lifecycle lock immediately before the physical
     delete. One function rather than three call sites with their own conditions, so
-    the three checks cannot come to differ.
+    the three checks cannot come to differ. The scheduled-expiry wrapper runs it once,
+    under the lock, with the other :class:`Disposition`.
+
+    ``disposition`` has **no default**, deliberately: a caller that did not say which
+    one it is would silently get the erasure rules, which is the wrong answer for the
+    one path that has no approval behind it.
 
     A reference core will not delete gets :data:`RECORD_NOT_DELETABLE` with one fixed
     sentence, whatever the reason; the owner's own refusal is returned unchanged.
@@ -288,7 +344,7 @@ def authorize_owned_delete(
             RECORD_NOT_DELETABLE,
             f"{ref.format()} is not a record this workspace can delete",
         )
-    authorization = owner.authorize_delete(ctx, uow, ref)
+    authorization = owner.authorize_delete(ctx, uow, ref, disposition=disposition)
     if isinstance(authorization, Refusal):
         return authorization
     return owner, authorization

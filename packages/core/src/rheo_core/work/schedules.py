@@ -9,6 +9,17 @@ release-one cadence is ``next_run_at + 1 day``. Every enqueue carries
 no workspace slot), deletes expired ``core.runtime_transcript`` rows, and unlinks
 regular files under that workspace's Claude CLI ``projects/`` subtree only. The
 once-copied login seed at the configuration-directory root is not a session file.
+
+**One scheduled kind is treated differently here, and only one.**
+``scheduled_authority.CATCH_UP_JOB_KIND`` is the ratified exception
+(``deletion-export-migration.md`` § Retention): its due row is claimed with
+``SELECT ... FOR UPDATE SKIP LOCKED`` so a sweep already draining a backlog is
+*observed* rather than waited for, it is not enqueued twice while one of its jobs is
+still queued or leased, it is excluded from :func:`earliest_schedule_due_at` while
+that is so, and :func:`rearm_catch_up_schedule` is how one committed batch asks for
+the next. Every other kind — ``core.retention_sweep`` included — keeps the unlocked
+once-a-day iteration it has always had, in the same pass, and that is the point of
+the scoping: a blocking lock on the one row would stall all of them behind a sweep.
 """
 
 from __future__ import annotations
@@ -20,8 +31,9 @@ from typing import Final
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import Connection, delete, func, select, update
+from sqlalchemy import Connection, delete, func, literal, or_, select, update
 
+from rheo_core.boundary.context import Refusal
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import PostgresOverrideSource
 from rheo_core.storage import work_tables as t
@@ -29,12 +41,42 @@ from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.data_root import Purpose, workspace_dir_for
 from rheo_core.storage.runtime_tables import runtime_transcript
 from rheo_core.work.cancellation import CancellationToken
-from rheo_core.work.jobs import enqueue_job
+from rheo_core.work.jobs import LEASED, QUEUED, enqueue_job
+from rheo_core.work.scheduled_authority import CATCH_UP_JOB_KIND, sealed_execution
 
 RETENTION_SWEEP: Final = "core.retention_sweep"
 _CLI_CONFIG_DIR: Final = "claude-cli"
 _SESSION_SUBDIR: Final = "projects"
 _DAY: Final = timedelta(days=1)
+_CATCH_UP_GAP: Final = timedelta(seconds=1)
+"""How far past a batch's finish instant the next batch is asked for.
+
+One second, and its job is to be *small but not zero*: the next visit finds the
+schedule due almost immediately, and the instant is still strictly in the future when
+it is written, so nothing about the row says "run me now, again, in this same pass".
+"""
+
+_UNFINISHED_JOB_STATES: Final = (QUEUED, LEASED)
+"""What "a job of this kind already exists" means, for coalescing.
+
+Both states, because both are work that will run: a ``queued`` row is a first attempt
+or a retry waiting out its backoff, and a ``leased`` row is either running now or a
+lease awaiting recovery after a worker died. Enqueueing a second batch beside either
+would be two sweeps racing over one backlog.
+"""
+
+
+def _unfinished_job_exists(conn: Connection, kind: str) -> bool:
+    """Whether any ``queued`` or ``leased`` ``core.job`` row carries ``kind``."""
+    return bool(
+        conn.execute(
+            select(
+                select(t.job.c.id)
+                .where(t.job.c.kind == kind, t.job.c.state.in_(_UNFINISHED_JOB_STATES))
+                .exists()
+            )
+        ).scalar_one()
+    )
 
 
 class RetentionSweepPayload(BaseModel):
@@ -48,11 +90,63 @@ def earliest_schedule_due_at(conn: Connection) -> datetime | None:
 
     Folded into ``visit_workspace``'s remaining-instant write beside job and
     delivery instants. Disabled rows are not a reason to wake the worker.
+
+    **Nor is a coalesced catch-up schedule, and that exclusion is load-bearing.** A
+    sweep that asked for another batch wrote ``finish + 1 s`` onto its own row and
+    then failed, or is still leased: the row's instant is in the past and would wake
+    the worker on every single pass while the job it points at sits under a retry
+    backoff or a live lease. ``jobs.earliest_due_at`` already owns that wake through
+    the queued retry's ``next_run_at`` or the lease's ``lease_until``, which are the
+    instants something will actually happen at. Scoped to
+    :data:`~rheo_core.work.scheduled_authority.CATCH_UP_JOB_KIND`: every other
+    schedule's instant is reported exactly as before, coalesced or not, because no
+    other kind coalesces.
     """
+    coalesced = (
+        select(literal(1))
+        .where(
+            t.job.c.kind == t.schedule.c.job_kind,
+            t.job.c.state.in_(_UNFINISHED_JOB_STATES),
+        )
+        .exists()
+    )
     value = conn.execute(
-        select(func.min(t.schedule.c.next_run_at)).where(t.schedule.c.enabled.is_(True))
+        select(func.min(t.schedule.c.next_run_at)).where(
+            t.schedule.c.enabled.is_(True),
+            or_(t.schedule.c.job_kind != CATCH_UP_JOB_KIND, ~coalesced),
+        )
     ).scalar_one_or_none()
     return value if isinstance(value, datetime) else None
+
+
+def _claim_catch_up_row(conn: Connection, schedule_id: UUID, now: datetime) -> bool:
+    """Try to claim the catch-up schedule row without waiting for it.
+
+    ``SKIP LOCKED`` and **never** a plain blocking ``FOR UPDATE``: an in-flight sweep
+    holds this row for the whole of its handler (``scheduled_authority
+    ._hold_catch_up_row``), and this statement runs inside the visit's single
+    pre-drain transaction, ahead of every other due schedule in the same pass. Waiting
+    here would put ``core.retention_sweep`` and every other due row behind a sweep
+    that may take minutes, which is the one outcome § A9 names.
+
+    ``False`` means *skip this schedule for this visit* — no error, no enqueue, no
+    ``next_run_at`` change — and it covers both ways of getting there: the row is
+    locked by a sweep that already owns the finish-and-rearm decision, or it is no
+    longer enabled and due (the outer read was unlocked, so it may be stale). Both
+    answers are the same instruction, so they are one branch.
+    """
+    return (
+        conn.execute(
+            select(t.schedule.c.id)
+            .where(
+                t.schedule.c.id == schedule_id,
+                t.schedule.c.enabled.is_(True),
+                t.schedule.c.next_run_at <= now,
+            )
+            .with_for_update(skip_locked=True)
+        ).first()
+        is not None
+    )
 
 
 def run_due_schedules(conn: Connection, *, workspace_id: UUID, now: datetime) -> None:
@@ -60,6 +154,14 @@ def run_due_schedules(conn: Connection, *, workspace_id: UUID, now: datetime) ->
 
     ``workspace_id`` is keyword-only beside ``now`` and is dumped onto every job
     as ``str(workspace_id)``. Stored ``cron`` is ignored. Does not enqueue ``{}``.
+
+    **One kind takes two extra steps and the rest take none.** For
+    :data:`~rheo_core.work.scheduled_authority.CATCH_UP_JOB_KIND` the row is claimed
+    with :func:`_claim_catch_up_row` and then checked for an unfinished job of its own
+    kind; either answer skips it for this visit, silently, and the loop carries on to
+    the next due schedule in the same pass. No other kind is locked, coalesced, or
+    changed in any way by this function — that is what makes a long Recallatron sweep
+    invisible to ``core.retention_sweep`` rather than a queue in front of it.
     """
     budget = resolve().get_int("work.max_attempts")
     rows = conn.execute(
@@ -69,9 +171,15 @@ def run_due_schedules(conn: Connection, *, workspace_id: UUID, now: datetime) ->
         )
     ).all()
     for row in rows:
+        kind = str(row.job_kind)
+        if kind == CATCH_UP_JOB_KIND and (
+            not _claim_catch_up_row(conn, row.id, now)
+            or _unfinished_job_exists(conn, kind)
+        ):
+            continue
         enqueue_job(
             conn,
-            kind=str(row.job_kind),
+            kind=kind,
             payload={"workspace_id": str(workspace_id)},
             now=now,
             max_attempts=budget,
@@ -81,6 +189,51 @@ def run_due_schedules(conn: Connection, *, workspace_id: UUID, now: datetime) ->
             .where(t.schedule.c.id == row.id)
             .values(last_run_at=now, next_run_at=now + _DAY)
         )
+
+
+def rearm_catch_up_schedule(
+    uow: HandlerUnitOfWork, capability: object, *, finished_at: datetime
+) -> bool:
+    """Move this sweep's own schedule to ``finished_at`` + one second. Does not commit.
+
+    § A9's durable continuation marker, and the whole of it: *the schedule row that
+    already exists*, moved forward by a second. No cursor, no backlog count, no second
+    job state machine. It is written in the worker's one handler transaction, so it
+    commits with the batch's deletions or rolls back with them — a lost lease or a
+    cancellation cannot leave a continuation behind for work that did not happen.
+
+    **Four things a caller cannot ask this for**, which is why it is a core helper and
+    not an ``UPDATE`` a module writes:
+
+    - *Another schedule.* The row is ``capability.schedule_id``, and the capability is
+      re-derived from the database by
+      :func:`~rheo_core.work.scheduled_authority.sealed_execution` — never read off a
+      caller's argument.
+    - *Another kind's schedule.* Only :data:`CATCH_UP_JOB_KIND` coalesces and only it
+      rearms; a capability for any other scheduled kind answers ``False`` here.
+    - *A time of its choosing.* ``finished_at`` is the caller's instant, and the only
+      thing it can do with it is ask for its **own** next run one second later.
+    - *A disabled schedule, enabled.* ``enabled IS TRUE`` is in the predicate, so a
+      schedule an operator turned off stays off and the write matches nothing.
+
+    Answers a ``bool`` rather than raising: the caller has just done real work, and a
+    continuation that could not be written is not a reason to roll that work back. The
+    daily trigger is still there, and the next tick picks the remainder up.
+    """
+    verified = sealed_execution(uow, capability)
+    if isinstance(verified, Refusal) or verified.job_kind != CATCH_UP_JOB_KIND:
+        return False
+    return (
+        uow.connection.execute(
+            update(t.schedule)
+            .where(
+                t.schedule.c.id == verified.schedule_id,
+                t.schedule.c.enabled.is_(True),
+            )
+            .values(next_run_at=finished_at + _CATCH_UP_GAP)
+        ).rowcount
+        == 1
+    )
 
 
 def run_retention_sweep(

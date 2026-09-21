@@ -16,22 +16,21 @@ schedule of that kind exists for the workspace.
 **Carrying it is not the same as trusting it, and the difference is the design.** The
 value is an ordinary frozen dataclass — anything in this process could build one, and
 no guard on ``__init__`` would change that, since the guard's key would be readable by
-whatever could call it. So :func:`dispatch_verified_expiry_in` does not trust the
-object it is handed: it refuses anything that is not the very capability the view it
-was given already carries, and then re-derives every fact on that value against the
-live transaction before it deletes anything. A forged capability buys nothing, because
-what is checked is the database's answer and not the object's.
+whatever could call it. So :func:`sealed_execution` does not trust the object it is
+handed: it refuses anything that is not the very capability the view it was given
+already carries, and then re-derives every fact on that value against the live
+transaction before anything is deleted or rearmed. A forged capability buys nothing,
+because what is checked is the database's answer and not the object's.
 
 ``dispatch()`` gains no parameter for this, ever. A keyword on the public dispatcher
 would be exactly the channel a caller could route an approval bypass through; the only
-producer is the worker, and the only consumer is the entry below.
+producer is the worker, and the only consumers are the two entries below.
 
-**What this module does not do.** It publishes no ``core.record.deleted`` event: the
-worker's own ``HandlerUnitOfWork`` carries no ``ConsumerRegistry`` (``work/loop.py``
-builds the view bare, and threading the worker's composition-root registry into it is
-not this prompt's), so an expiry that tried to publish would refuse
-``consumers_missing`` and take the deletion with it. The ledger row is written; the
-event is the run that wires the worker's registry.
+**The expiry publishes ``core.record.deleted``, exactly as the approved coordinator
+does.** ``work/loop.py`` now threads the worker's composition-root ``ConsumerRegistry``
+onto the handler's view, so the event fires on this path and on the approved one
+alike; a worker wired with no registry refuses ``consumers_missing`` and takes the
+deletion with it rather than committing a silent removal.
 """
 
 from dataclasses import dataclass
@@ -50,6 +49,26 @@ from rheo_core.storage.backend import HandlerUnitOfWork, StorageRefusal
 from rheo_core.storage.repositories import list_module_states
 from rheo_core.storage.routing import active_workspace
 from rheo_core.work.jobs import LEASED, LeasedJob
+
+CATCH_UP_JOB_KIND: Final = "recallatron.retention_sweep"
+"""The one scheduled kind whose ticker row is locked, coalesced and rearmed.
+
+**A module's kind, named in core, and that is ratified rather than convenient**
+(``deletion-export-migration.md`` § Retention, the catch-up paragraph): the drain-a
+-backlog-across-batches protocol is scoped to *this exact schedule* and every other
+kind — ``core.retention_sweep`` included — keeps the unlocked, once-a-day iteration it
+has today. A flag on ``Schedule`` would offer the behaviour to any module that set it,
+which is a wider promise than the one that was ratified and a wider blast radius than
+one workspace's memory retention.
+
+It lives in this module rather than in ``work/schedules.py`` so that the schedule
+ticker can import it beside :func:`sealed_execution` without this module having to
+import the ticker back.
+
+Core still names **no module's record type and no module's settings key**:
+:func:`dispatch_memory_expiry_in` takes both as parameters, for the reason that
+function's own docstring gives.
+"""
 
 SCHEDULED_AUTHORITY_INVALID: Final = "scheduled_authority_invalid"
 """The capability is not this view's own, or its facts no longer hold.
@@ -92,9 +111,9 @@ class VerifiedScheduledExecution:
     """What the worker verified about one leased job before its handler ran.
 
     Every field is a fact re-derivable from the workspace's own rows, and
-    :func:`dispatch_verified_expiry_in` re-derives all of them. Nothing here is a
-    decision, a permission or a payload: a capability says what *was true*, and the
-    entry that consumes it decides what that allows.
+    :func:`sealed_execution` re-derives all of them before either consumer acts.
+    Nothing here is a decision, a permission or a payload: a capability says what
+    *was true*, and the entry that consumes it decides what that allows.
     """
 
     workspace_id: UUID
@@ -147,6 +166,41 @@ def _single_enabled_schedule(
     if len(rows) != 1:
         return None
     return rows[0].id, str(rows[0].module_id)
+
+
+def _hold_catch_up_row(conn: Connection, schedule_id: UUID, job_kind: str) -> bool:
+    """Lock the catch-up schedule row for the rest of this transaction.
+
+    § A9's lock order begins here: *the exact schedule row before the lifecycle, the
+    setting and the target*. Holding it for the length of the handler is what makes a
+    long sweep visible to every other ticker — ``run_due_schedules`` attempts the same
+    row with ``SKIP LOCKED`` and moves on rather than enqueueing a second batch on top
+    of this one — and it is why that attempt must never be a blocking ``FOR UPDATE``.
+
+    A **blocking** lock is right on *this* side: the ticker holds the row only for the
+    few statements of its own short transaction, so a sweep that waits for it waits
+    for almost nothing, and a sweep that skipped it would run with no claim on the row
+    it is about to rearm.
+
+    Scoped to :data:`CATCH_UP_JOB_KIND` by the caller. Every other scheduled kind
+    reaches :func:`verified_execution_for` without locking anything, which is what
+    keeps this a Recallatron-shaped change rather than a change to every schedule.
+
+    The re-derivation after the lock is not ceremony: the read that found the row ran
+    unlocked, so between it and the lock another transaction could have disabled this
+    schedule, deleted it, or added a second enabled one of the same kind. § A9 denies
+    authority for all three, and the only place they can be ruled out is after the
+    lock is held.
+    """
+    locked = conn.execute(
+        select(t.schedule.c.id)
+        .where(t.schedule.c.id == schedule_id, t.schedule.c.enabled.is_(True))
+        .with_for_update()
+    ).first()
+    if locked is None:
+        return False
+    entry = _single_enabled_schedule(conn, job_kind)
+    return entry is not None and entry[0] == schedule_id
 
 
 def _module_is_enabled(conn: Connection, module_id: str) -> bool:
@@ -205,6 +259,11 @@ def verified_execution_for(
     ``{"workspace_id": ...}`` onto every job it enqueues — and is then *checked*
     against the database this connection is on, which is what keeps "from a payload"
     from being the same thing as "on a payload's word".
+
+    **The last check is a lock, and only for :data:`CATCH_UP_JOB_KIND`.** That kind's
+    schedule row is held for the rest of the handler's transaction
+    (:func:`_hold_catch_up_row`), which is what the ticker's ``SKIP LOCKED`` attempt
+    observes. Every other kind reaches here locking nothing at all, exactly as before.
     """
     entry = _single_enabled_schedule(conn, leased.kind)
     if entry is None:
@@ -224,6 +283,10 @@ def verified_execution_for(
     if not _module_is_enabled(conn, module_id):
         return None
     if not _lease_is_held(conn, job_id=leased.id, owner=owner):
+        return None
+    if leased.kind == CATCH_UP_JOB_KIND and not _hold_catch_up_row(
+        conn, schedule_id, leased.kind
+    ):
         return None
     return VerifiedScheduledExecution(
         workspace_id=workspace_id,
@@ -257,9 +320,43 @@ def _still_verified(conn: Connection, capability: VerifiedScheduledExecution) ->
     return _lease_is_held(conn, job_id=capability.job_id, owner=capability.lease_owner)
 
 
-def dispatch_verified_expiry_in(
+def sealed_execution(
+    uow: HandlerUnitOfWork, capability: object
+) -> VerifiedScheduledExecution | Refusal:
+    """``capability`` if it is this view's own and its facts still hold; else a refusal.
+
+    The one verification, used by both consumers of the authority — the expiry entry
+    below and ``work/schedules.py``'s rearm helper — so "is this really the worker's
+    own scheduled execution?" is answered in one place and cannot come to differ
+    between the deletion and the continuation it commits with.
+
+    Three questions, in this order and for three different reasons. Is it the right
+    *type*; is it the very object the worker minted onto **this** view (identity, not
+    equality: an equal copy would mean a handler could assemble the facts itself,
+    which is the whole thing this value exists to prevent); and do the facts it
+    asserts still match the database (:func:`_still_verified`).
+    """
+    if not isinstance(capability, VerifiedScheduledExecution):
+        return Refusal(
+            SCHEDULED_AUTHORITY_INVALID,
+            "a verified scheduled execution is required here",
+        )
+    if capability is not uow.scheduled_execution:
+        return Refusal(
+            SCHEDULED_AUTHORITY_INVALID,
+            "the capability is not the one this unit of work carries",
+        )
+    if not _still_verified(uow.connection, capability):
+        return Refusal(
+            SCHEDULED_AUTHORITY_INVALID,
+            "this is no longer a verified scheduled execution",
+        )
+    return capability
+
+
+def dispatch_memory_expiry_in(
     uow: HandlerUnitOfWork,
-    capability: VerifiedScheduledExecution,
+    capability: object,
     *,
     record_type: str,
     target_ref: RecordRef,
@@ -293,6 +390,21 @@ def dispatch_verified_expiry_in(
     column anywhere: ``core.deletion_record``'s own check constraint refuses one on
     any cause but ``retention_expiry``.
 
+    **The owner is told which disposition is asking**
+    (:class:`~rheo_core.deletion.registry.Disposition`), and on this path that is the
+    whole of how the deletion authorises itself: the context below carries no account,
+    no audience and neither of the two roles an *erasure* authorizer admits, because a
+    retention sweep is the workspace's own policy rather than a person. The owner's
+    expiry branch is also where "is this record actually expired?" is asked — core
+    knows nothing about a module's clock column — which is § A9's recheck under the
+    lock, immediately before the delete.
+
+    **One context per target, and the cost is deliberate.** The factory reads the
+    control plane and the workspace's module states, so a hundred-root batch pays a
+    hundred short reads on a second connection. The alternative is a caller-supplied
+    context, which is exactly the parameter this whole value exists to avoid handing
+    anyone.
+
     Returns :class:`~rheo_core.boundary.context.Refusal` rather than raising, for every
     refusal it owns: the caller is a job handler, a raise would fail the whole job, and
     a sweep that finds one record it may not expire has not failed.
@@ -302,55 +414,51 @@ def dispatch_verified_expiry_in(
     # this package. The same deferral ``operations/core_ops.py`` and
     # ``approvals/gate.py`` already use to reach the coordinator. ``rheo_core.boundary``
     # is here for company rather than for a cycle.
-    from rheo_core.boundary import context_for_operator
+    from rheo_core.boundary import context_for_memory_expiry
     from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
+    from rheo_core.deletion.operations import (
+        RECORD_DELETED,
+        RECORD_DELETED_SCHEMA_VERSION,
+    )
     from rheo_core.deletion.records import deletion_ref, insert_deletion_record
     from rheo_core.deletion.registry import (
         OWNED_DELETIONS,
+        Disposition,
         RemovedMemories,
         authorize_owned_delete,
     )
     from rheo_core.deletion.tables import RETENTION_EXPIRY
+    from rheo_core.events.publish import NewEvent, publish
+    from rheo_core.operations import CONSUMERS_MISSING, OperationRefused
 
     registry = OWNED_DELETIONS
-    if not isinstance(capability, VerifiedScheduledExecution):
-        return Refusal(
-            SCHEDULED_AUTHORITY_INVALID,
-            "a verified scheduled execution is required to expire a record",
-        )
-    if capability is not uow.scheduled_execution:
-        # Identity, not equality: the capability has to be the one the worker minted
-        # onto this very view. An equal copy would mean a handler could assemble the
-        # facts itself, which is the whole thing this value exists to prevent.
-        return Refusal(
-            SCHEDULED_AUTHORITY_INVALID,
-            "the capability is not the one this unit of work carries",
-        )
     conn = uow.connection
     if f"{target_ref.module}.{target_ref.record_type}" != record_type:
         return Refusal(
             EXPIRY_TYPE_MISMATCH,
             f"{target_ref.format()} is not a {record_type} record",
         )
-    if not _still_verified(conn, capability):
-        return Refusal(
-            SCHEDULED_AUTHORITY_INVALID,
-            "this is no longer a verified scheduled execution",
+    verified = sealed_execution(uow, capability)
+    if isinstance(verified, Refusal):
+        return verified
+    # Prompt 2's guard, verbatim, and it is a raise rather than a refusal on purpose:
+    # a worker wired with no registry is a deployment fault for every target in the
+    # batch, not a record this sweep may not expire, so it must end the attempt rather
+    # than be counted as one skipped row.
+    consumers = uow.consumers if isinstance(uow, HandlerUnitOfWork) else None
+    if consumers is None:
+        raise OperationRefused(
+            CONSUMERS_MISSING, "no ConsumerRegistry is wired for this dispatch"
         )
     # Built before the lock, because it opens a second connection of its own: taking
-    # the lifecycle lock first would hold it across that checkout for no reason. An
-    # operator context is what a schedule is — the deployment's own timer acting on
-    # nobody's behalf — and it is the only factory whose audience is ``None``, which
-    # ``overview.md`` records as what a scheduled job carries.
-    ctx = context_for_operator(capability.workspace_id)
+    # the lifecycle lock first would hold it across that checkout for no reason.
+    ctx = context_for_memory_expiry(verified.workspace_id)
     if isinstance(ctx, Refusal):
         return ctx
     lock_workspace_lifecycle(conn)
     settled = resolve(
-        workspace_id=capability.workspace_id,
-        source=TransactionBoundOverrideSource(
-            conn, workspace_id=capability.workspace_id
-        ),
+        workspace_id=verified.workspace_id,
+        source=TransactionBoundOverrideSource(conn, workspace_id=verified.workspace_id),
     ).get_int(retention_key)
     if settled != retention_days:
         return Refusal(
@@ -358,8 +466,17 @@ def dispatch_verified_expiry_in(
             f"{retention_key} is {settled}, not the {retention_days} this sweep "
             "selected its records against",
         )
-    authorized = authorize_owned_delete(ctx, uow, target_ref, registry=registry)
+    authorized = authorize_owned_delete(
+        ctx,
+        uow,
+        target_ref,
+        disposition=Disposition.SCHEDULED_EXPIRY,
+        registry=registry,
+    )
     if isinstance(authorized, Refusal):
+        # An absent record, and one that is no longer expired, both land here — and
+        # both are skips rather than failures: § A9 asks for neither a deletion record
+        # nor a count for either, and returning before the insert is what gives it.
         return authorized
     owner, authorization = authorized
     removed: RemovedMemories = owner.delete_owned(ctx, uow, authorization)
@@ -369,8 +486,15 @@ def dispatch_verified_expiry_in(
     ):
         # Uncaught, exactly as the approved coordinator leaves it: a participant that
         # raises takes the whole expiry with it and the record survives untouched.
-        removed = removed.union(participant.handler(ctx, uow, target_ref))
+        removed = removed.union(
+            participant.handler(
+                ctx, uow, target_ref, disposition=Disposition.SCHEDULED_EXPIRY
+            )
+        )
         participants.append(participant.module_id)
+    # One reading for the ledger row and the event, so the two cannot disagree about
+    # when the record was removed — the approved coordinator's own rule.
+    now = datetime.now(UTC)
     deletion_id = insert_deletion_record(
         conn,
         ref=target_ref,
@@ -383,6 +507,25 @@ def dispatch_verified_expiry_in(
         invalidated_memory_count=len(removed.memory_ids),
         cause=RETENTION_EXPIRY,
         retained_successor_ref=retained_successor_ref,
-        now=datetime.now(UTC),
+        now=now,
     )
-    return ExpiredRecord(deletion_ref=deletion_ref(deletion_id).format())
+    reference = deletion_ref(deletion_id)
+    publish(
+        ctx,
+        uow,
+        NewEvent(
+            type=RECORD_DELETED,
+            schema_version=RECORD_DELETED_SCHEMA_VERSION,
+            subject_ref=target_ref.format(),
+            # The revision the owner authorised under the lock, exactly as the
+            # approved coordinator reports it.
+            subject_revision=authorization.revision,
+            data={
+                "ref": target_ref.format(),
+                "deletion_record_ref": reference.format(),
+            },
+        ),
+        now=now,
+        consumers=consumers,
+    )
+    return ExpiredRecord(deletion_ref=reference.format())

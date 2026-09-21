@@ -199,6 +199,66 @@ def delete_memory_embeddings(conn: Connection, memory_id: UUID) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class ExpiredRoot:
+    """One memory the retention sweep selected, and the replacement it was retired for.
+
+    ``retained_successor_id`` is the row's own ``superseded_by_id`` and is ``None``
+    for a memory nothing replaced. The sweep copies it onto the deletion ledger's
+    ``retained_successor_ref``, which § A7 words as *expiring A records
+    ``retention_expiry`` and ``retained_successor_ref = B`` before removing A* — an
+    identifier-only chain in the deletion evidence, so a later reader can follow a
+    supersession across generations neither of whose rows is there any more.
+    """
+
+    id: UUID
+    retained_successor_id: UUID | None
+
+
+def list_expired_memory_roots(
+    conn: Connection, *, horizon: datetime, limit: int
+) -> tuple[ExpiredRoot, ...]:
+    """At most ``limit`` memories recorded before ``horizon``, oldest first.
+
+    ``<``, never ``<=``: § A9 retains the boundary instant, so a memory recorded
+    exactly on the horizon is still readable and is not selected here.
+
+    ``ORDER BY (recorded_at, id)`` is § A9's, and it is the same pair the
+    ``memory_recorded_at_id`` index carries, so the ordering costs a range scan rather
+    than a sort of the whole table. Oldest first also means a backlog drains in the
+    order it accumulated instead of a batch re-picking rows a previous one skipped.
+
+    **These are *roots*, not a closure.** ``limit`` bounds how many the caller will
+    hand to the coordinator one at a time; each one's own ordinary dependants go with
+    it and are not counted against the bound. A root that an earlier root in the same
+    batch already removed as a dependant is simply absent by the time its turn comes,
+    and the coordinator skips it.
+    """
+    rows = conn.execute(
+        select(t.memory.c.id, t.memory.c.superseded_by_id)
+        .where(t.memory.c.recorded_at < horizon)
+        .order_by(t.memory.c.recorded_at, t.memory.c.id)
+        .limit(limit)
+    ).all()
+    return tuple(ExpiredRoot(row.id, row.superseded_by_id) for row in rows)
+
+
+def expired_memory_exists(conn: Connection, *, horizon: datetime) -> bool:
+    """Whether any memory is recorded before ``horizon``. An ``EXISTS``, not a count.
+
+    § A9's batch-end remainder check: the sweep needs to know *whether* to ask for
+    another batch and explicitly does not store how many are left, so the statement
+    stops at the first row rather than counting a backlog nobody records.
+    """
+    return bool(
+        conn.execute(
+            select(
+                select(t.memory.c.id).where(t.memory.c.recorded_at < horizon).exists()
+            )
+        ).scalar_one()
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryPurposeRow:
     memory_id: UUID
     purpose: str
