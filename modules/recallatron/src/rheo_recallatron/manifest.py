@@ -46,6 +46,7 @@ from rheo_recallatron.configuration import (
     MEMORY_RECORD_TYPE,
     MODULE_ID,
     RETENTION_DAYS_SPEC,
+    RETENTION_EXPIRE_BY_AGE_SPEC,
 )
 from rheo_recallatron.eligibility import LIFECYCLE_ROLES
 from rheo_recallatron.events import EVENTS
@@ -158,7 +159,13 @@ MANIFEST: Final = ModuleManifest(
         # module owns must not put anything there.
         required_extensions=("vector", "pg_trgm"),
     ),
-    configuration_schema=(RETENTION_DAYS_SPEC,),
+    # **Two explicit rows, and enable writes both** (§ A9). The gate decides whether
+    # this workspace deletes memories by age at all and defaults to ``false``; the
+    # window is read only while it is true. Declaring both here is what makes every
+    # workspace's retention posture a stored readable value rather than an inference
+    # from an absent row — and what makes turning expiry on one settings write against
+    # a schedule that already exists, with no backfill path to invent.
+    configuration_schema=(RETENTION_EXPIRE_BY_AGE_SPEC, RETENTION_DAYS_SPEC),
     operations=OPERATIONS,
     tools=(),
     # Both ratified event types, declared together because the manifest names them

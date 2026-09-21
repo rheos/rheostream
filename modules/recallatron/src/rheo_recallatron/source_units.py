@@ -448,7 +448,7 @@ def accept_source_unit(
         # server clock a preserved row may borrow, because its ``recorded_at`` is the
         # thing the import is supposed to preserve.
         return _terminalize(uow, unit, grant, namespace, state=STATE_DENIED)
-    if recorded_at < request.horizon:
+    if _born_expired(unit, recorded_at, request):
         # The acceptance-time recheck, immediately before creation and against the
         # same horizon every read applies. A born-expired row would be invisible the
         # instant it committed, so none is written.
@@ -494,6 +494,39 @@ def accept_source_unit(
         ),
     )
     return AcceptOutcome(STATE_ACTIVE, written.ref)
+
+
+def _born_expired(
+    unit: TrustedSourceUnit, recorded_at: datetime, request: MemoryRequest
+) -> bool:
+    """Would accepting this unit write a row no read or export could ever return?
+
+    **Two qualifications, and both are load-bearing** (§ A5). The recheck runs when,
+    and only when, the workspace's ``retention.expire_by_age`` gate is on *and* the
+    unit's verified audience is ``workspace``.
+
+    *Gate off:* there is no window, so there is no such thing as an out-of-window
+    unit. The check is skipped entirely rather than run against a substituted default
+    — a default would invent a horizon the workspace explicitly declined.
+
+    *Member audience, gate on:* § A9 puts the resulting row outside the retention
+    mechanism altogether — never age-filtered, never swept, never counted by export —
+    so it is not born expired at all; it is permanently readable by its own member.
+    Terminalizing it ``noop`` would write a **replay-proof** receipt that destroys
+    legitimate member evidence for a reason that does not apply to it, and no later
+    replay could recover the unit. This is the half a cold review caught, and it is
+    the one that costs evidence rather than merely writing an invisible row.
+
+    The unit's own audience is the right question rather than the grant's ceiling:
+    ``_within_ceiling`` has already run, so a ``workspace`` audience implies a
+    ``workspace`` ceiling, while a ``member`` audience under a ``workspace`` ceiling
+    still produces a member row — and it is the row's audience that decides whether
+    the mechanism reaches it.
+    """
+    horizon = request.horizon
+    if horizon is None or unit.audience_kind != AUDIENCE_WORKSPACE:
+        return False
+    return recorded_at < horizon
 
 
 def _policy_state(

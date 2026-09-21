@@ -16,6 +16,14 @@ cross-workspace, expired or otherwise ineligible target collapses to ``not_found
 no head, label or partial metadata — the cross-workspace case for free, because the
 unit of work is routed to the caller's own database and the row simply is not in it.
 
+**Retention is a check that usually is not there.** Recallatron never auto-forgets a
+memory by age (§ A9): unless the workspace has explicitly turned
+``retention.expire_by_age`` on, :attr:`MemoryRequest.horizon` is ``None`` and no age
+predicate is built at all — not a wide default window, no predicate. Even with the gate
+on, the predicate covers ``workspace``-audience rows only; a member-private memory is
+outside the mechanism in both states, because the sweep can never remove one and a row
+hidden forever with no deletion record is worse than a row kept.
+
 **Two budgets, one per request.** § A13 bounds a read at 4096 distinct references and
 depth 64. Both live on :class:`MemoryRequest`, so a target, its links, every candidate
 in a window and *their* links all draw on the same allowance; exhausting it refuses
@@ -33,7 +41,7 @@ after the scan, per candidate, and before any content leaves the service.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final
 from uuid import UUID
@@ -65,6 +73,9 @@ from rheo_recallatron.configuration import (
     MODULE_ID,
     RETENTION_DAYS_KEY,
     RETENTION_DAYS_SPEC,
+    RETENTION_EXPIRE_BY_AGE_KEY,
+    RETENTION_EXPIRE_BY_AGE_SPEC,
+    RetentionPolicy,
 )
 from rheo_recallatron.refusals import NOT_FOUND, REFERENCE_SCAN_LIMIT
 from rheo_recallatron.storage import tables as t
@@ -220,27 +231,27 @@ class MemoryRequest:
     """The values § A6 says to freeze for one request, and the decisions taken under
     them.
 
-    ``now`` and ``retention_days`` are read once and never re-read: a retention value
-    that changed, or a clock that advanced, part-way through one window would make the
+    ``now`` and ``retention`` are read once and never re-read: a retention value that
+    changed, or a clock that advanced, part-way through one window would make the
     window describe two different moments. The decision cache is keyed by
     ``(memory id, mode)`` so a candidate that is also somebody's source is evaluated
     once, and ``_active`` is the recursion stack that makes a reference cycle fail
     closed instead of recursing.
     """
 
-    __slots__ = ("ctx", "now", "retention_days", "budget", "_decisions", "_active")
+    __slots__ = ("ctx", "now", "retention", "budget", "_decisions", "_active")
 
     def __init__(
         self,
         ctx: WorkspaceContext,
         *,
         now: datetime,
-        retention_days: int,
+        retention: RetentionPolicy,
         budget: ReferenceBudget | None = None,
     ) -> None:
         self.ctx = ctx
         self.now = now
-        self.retention_days = retention_days
+        self.retention = retention
         self.budget = ReferenceBudget() if budget is None else budget
         self._decisions: dict[tuple[UUID, ReadMode], Eligible | Denied] = {}
         self._active: set[UUID] = set()
@@ -258,28 +269,77 @@ class MemoryRequest:
         return self.ctx.principal.bound_purpose
 
     @property
-    def horizon(self) -> datetime:
-        """The oldest ``recorded_at`` still readable. Equality is retained (§ A9), so
-        every comparison against it is ``>=``."""
-        return self.now - timedelta(days=self.retention_days)
+    def horizon(self) -> datetime | None:
+        """The oldest ``recorded_at`` still readable, or ``None`` for no horizon.
+
+        ``None`` is the default posture (§ A9): this workspace has not turned
+        age-based expiry on, so no age predicate exists to apply. Every caller that
+        builds one omits it entirely rather than substituting a default window.
+
+        When there is a horizon, equality is retained (§ A9), so every comparison
+        against it is ``>=`` for kept and ``<`` for expired.
+        """
+        return self.retention.horizon(self.now)
 
 
-def effective_retention_days(ctx: WorkspaceContext, uow: UnitOfWork) -> int | None:
-    """The workspace's stored retention window, or ``None`` when it is unusable.
+def expire_by_age_enabled(ctx: WorkspaceContext, uow: UnitOfWork) -> bool:
+    """Does this workspace delete memories by age at all? (§ A9's gate.)
 
-    ``None`` means AC 8's ``retention_unavailable``: the row is absent, will not parse
-    as an integer, or is outside the declared 1-3650 range. The caller decides how to
-    say so — an operation raises the refusal, the record resolver answers
-    ``Unavailable`` — but no caller may carry on, and **none substitutes the package
-    default**. The settings resolver's own rule is to drop a bad stored value and log
-    it, which is right for a setting whose default is a safe answer and wrong for this
-    one: silently restoring 365 days is how a workspace that meant to keep thirty ends
-    up serving a year of content the moment its policy row goes missing.
+    **Absent or unparseable means ``false``**, which is this key's own rule and the
+    exact opposite of the window's below. Falling back to the package default here is
+    the *retaining* direction, so it is safe; falling back for the window would widen
+    a policy at the moment it went missing, so it is not. A workspace enabled before
+    this key existed therefore holds no row, resolves ``false``, and needs no backfill.
 
-    Read on the caller's own connection through the transaction-bound override source,
-    so the value is the one **this** transaction sees — the same read a write's
-    acceptance recheck and the sweep's own locked read will make.
+    Read through the **transaction-bound** override source on the caller's own
+    connection, exactly as :func:`effective_retention` reads the window — never through
+    the process-wide layered resolver, which would open a second connection and could
+    disagree with the value this transaction sees.
     """
+    overrides = TransactionBoundOverrideSource(
+        uow, workspace_id=ctx.workspace_id
+    ).workspace_overrides(ctx.workspace_id)
+    stored = overrides.get(RETENTION_EXPIRE_BY_AGE_KEY)
+    if stored is None:
+        return False
+    try:
+        value = decode_text(
+            RETENTION_EXPIRE_BY_AGE_SPEC, stored, source="the stored workspace override"
+        )
+    except SettingTypeMismatch:
+        return False
+    return value is True
+
+
+def effective_retention(
+    ctx: WorkspaceContext, uow: UnitOfWork
+) -> RetentionPolicy | None:
+    """This workspace's retention posture, or ``None`` when it is unusable.
+
+    Three answers, and the third is why this is not an ``int | None`` any more:
+
+    - :meth:`~rheo_recallatron.configuration.RetentionPolicy.unbounded` — the gate is
+      off, which is the package default. There is no horizon, so no read, write,
+      acceptance or sweep applies an age predicate. The window row is **not read at
+      all** in this state, so a missing or corrupt one cannot refuse anything.
+    - :meth:`~rheo_recallatron.configuration.RetentionPolicy.of_days` — the gate is on
+      and the stored window parses inside its declared range.
+    - ``None`` — AC 8's ``retention_unavailable``, reachable only while the gate is on:
+      the window row is absent, will not parse as an integer, or is outside the
+      declared 1-3650 range. The caller decides how to say so — an operation raises the
+      refusal, the record resolver answers ``Unavailable`` — but no caller may carry
+      on, and **none substitutes the package default**. The settings resolver's own
+      rule is to drop a bad stored value and log it, which is right for a setting whose
+      default is a safe answer and wrong for this one: silently restoring 365 days is
+      how a workspace that meant to keep thirty ends up serving a year of content the
+      moment its policy row goes missing.
+
+    Both rows are read on the caller's own connection through the transaction-bound
+    override source, so the values are the ones **this** transaction sees — the same
+    read a write's acceptance recheck and the sweep's own locked read will make.
+    """
+    if not expire_by_age_enabled(ctx, uow):
+        return RetentionPolicy.unbounded()
     overrides = TransactionBoundOverrideSource(
         uow, workspace_id=ctx.workspace_id
     ).workspace_overrides(ctx.workspace_id)
@@ -296,22 +356,23 @@ def effective_retention_days(ctx: WorkspaceContext, uow: UnitOfWork) -> int | No
         return None
     if not isinstance(value, int) or isinstance(value, bool):
         return None
-    return value
+    return RetentionPolicy.of_days(value)
 
 
 def begin_request(
     ctx: WorkspaceContext, uow: UnitOfWork, *, now: datetime | None = None
 ) -> MemoryRequest | None:
-    """Freeze this request's clock, retention window and reference budget.
+    """Freeze this request's clock, retention posture and reference budget.
 
     ``None`` when retention is unavailable — which is why every read path calls this
-    **first**, before it parses a container, scans a neighbour or resolves a head.
+    **first**, before it parses a container, scans a neighbour or resolves a head. With
+    the gate off that answer is unreachable: the posture is simply unbounded.
     """
-    days = effective_retention_days(ctx, uow)
-    if days is None:
+    retention = effective_retention(ctx, uow)
+    if retention is None:
         return None
     return MemoryRequest(
-        ctx, now=datetime.now(UTC) if now is None else now, retention_days=days
+        ctx, now=datetime.now(UTC) if now is None else now, retention=retention
     )
 
 
@@ -380,7 +441,7 @@ def _decide(
         get_memory_purpose(uow.connection, memory_id, purpose.value) is None
     ):
         return Denied(NOT_FOUND)
-    if row.recorded_at < request.horizon:
+    if age_expired(row, request):
         return Denied(NOT_FOUND)
     if not _mode_admits(row, mode):
         return Denied(NOT_FOUND)
@@ -389,6 +450,44 @@ def _decide(
 
 def _audience_admits(row: MemoryRow, request: MemoryRequest) -> bool:
     return audience_admits(row, request.account_id)
+
+
+def subject_to_age(row: MemoryRow) -> bool:
+    """Is this row inside the age mechanism at all? (§ A9's member exemption.)
+
+    Only ``workspace``-audience rows are. A ``member``-audience memory is never
+    selected by the sweep, never age-filtered on read, and never counted by export's
+    unswept-content refusal — in either gate state.
+
+    **The read half is what makes the exemption coherent rather than merely kind.**
+    Two independent reasons agree that the *sweep* cannot take a member row: it runs
+    under an accountless SYSTEM context that could not authorize the deletion of
+    member-private content, and a workspace operator's data-minimization setting is
+    not authority over one member's own record — the ordinary approved deletion path
+    already covers that. Given the sweep will never remove it, age-*filtering* it on
+    read would strand it permanently unreadable, with no deletion record and no route
+    back except turning the gate off. Hiding a row forever without removing it is
+    worse than either alternative.
+
+    One predicate, named once, so the SQL prefilter below and
+    :func:`eligible_memory` cannot come to disagree about which rows the mechanism
+    covers.
+    """
+    return row.audience_kind == AUDIENCE_WORKSPACE
+
+
+def age_expired(row: MemoryRow, request: MemoryRequest) -> bool:
+    """Is this row past a horizon that actually applies to it?
+
+    ``False`` whenever there is no horizon (the gate is off) or the row sits outside
+    the mechanism (member audience). Those are not "passed the check"; they are "there
+    was no check", which is why this is one function rather than a comparison against
+    a substituted default.
+    """
+    horizon = request.horizon
+    if horizon is None or not subject_to_age(row):
+        return False
+    return row.recorded_at < horizon
 
 
 def audience_admits(row: MemoryRow, account_id: UUID | None) -> bool:
@@ -425,10 +524,25 @@ def deletion_admits(ctx: WorkspaceContext, uow: UnitOfWork, row: MemoryRow) -> b
     row's audience has to admit the caller, and a bound context has to be inside the
     row's purpose set. It answers a bare boolean and never the row, which is what
     makes the authorizer built on it content-free by construction.
+
+    **The owner passes the audience check for a member-audience memory, and reads
+    none of it** (§ A8). Erasure authority and read authority are distinct, and this
+    is the point of a content-free authorizer: the owner authorizes, the coordinator
+    removes, and nothing in the path returns a title, a body, a count or even
+    confirmation of who the member is. § A9's retention exemption is what makes it
+    necessary rather than merely convenient — a member-audience memory is never
+    swept, so approved deletion is its *only* removal path, and requiring the
+    member's own account would leave a departed member's memories unremovable by
+    anyone: an unbounded retention obligation with no operator remedy. The member
+    still erases their own directly; the owner's route exists so the workspace is
+    never stuck, and it stays per-action approved and audited like every other
+    destructive one.
     """
     if MODULE_ID not in ctx.enabled_modules or ctx.role not in LIFECYCLE_ROLES:
         return False
-    if not audience_admits(row, ctx.principal.account_id):
+    if ctx.role is not Role.OWNER and not audience_admits(
+        row, ctx.principal.account_id
+    ):
         return False
     purpose = ctx.principal.bound_purpose
     return purpose is None or (
@@ -445,34 +559,44 @@ def expiry_admits(
     person behind it, and the differences are the whole reason it is a second function
     rather than a flag on that one.
 
-    **It asks nothing about the caller.** No role, no audience, no bound purpose. A
-    retention window is the *workspace's* stated policy and it covers every memory in
-    the workspace, including a member's own; a check that asked whose record this was
-    would leave every member-audience memory unexpirable for ever, silently, because
-    the sweep has no account and never will. What stands in for those checks is the
-    sealed scheduled execution the core verified against the live transaction before
-    it ever reached this module — see
+    **It asks nothing about the caller's identity.** No role, no bound purpose, and no
+    audience *membership*. A retention window is the workspace's stated policy rather
+    than a person's reach, and the sweep has no account and never will. What stands in
+    for those checks is the sealed scheduled execution the core verified against the
+    live transaction before it ever reached this module — see
     :class:`~rheo_core.deletion.registry.Disposition`.
 
-    **It asks the one thing a caller check never does**: whether the row is actually
-    past the horizon, re-read here under the workspace lifecycle lock the core wrapper
-    already holds. That is § A9's "locks and rechecks target expiry immediately before
-    deletion", and it has to live in this module because core knows nothing about
-    which column carries a memory's clock.
+    **It does ask which rows the mechanism covers**, which is not the same question.
+    § A9 puts ``member``-audience memories outside age-based expiry entirely, so
+    :func:`subject_to_age` refuses one here however old it is: the accountless sweep
+    could not authorize erasing member-private content anyway, and an operator's
+    data-minimization setting is not authority over one member's own record. Approved
+    deletion — which an owner may authorize content-free, see :func:`deletion_admits`
+    — is that row's removal path.
 
-    ``None`` is AC 8's ``retention_unavailable``: the policy row is missing,
-    unparseable or out of range, and a sweep that carried on would be deleting against
-    a window nobody stated. Fail closed, exactly as every read does.
+    **And it asks the one thing a caller check never does**: whether the row is
+    actually past a horizon that applies, re-read here under the workspace lifecycle
+    lock the core wrapper already holds. That is § A9's "locks and rechecks target
+    expiry immediately before deletion", and it has to live in this module because
+    core knows nothing about which column carries a memory's clock.
+
+    ``False`` when the gate is off: there is no horizon, so nothing is the sweep's.
+    ``None`` is AC 8's ``retention_unavailable``, reachable only while the gate is on:
+    the window row is missing, unparseable or out of range, and a sweep that carried
+    on would be deleting against a window nobody stated. Fail closed, exactly as every
+    read does.
     """
     if MODULE_ID not in ctx.enabled_modules:
+        return False
+    if not subject_to_age(row):
         return False
     request = begin_request(ctx, uow)
     if request is None:
         return None
     # ``<``, not ``<=``: § A9 retains the boundary instant. A memory recorded exactly
     # ``days`` ago is still readable, so it is not the sweep's yet either — the two
-    # comparisons are the same one, and ``MemoryRequest.horizon`` is where it lives.
-    return row.recorded_at < request.horizon
+    # comparisons are the same one, and :func:`age_expired` is where it lives.
+    return age_expired(row, request)
 
 
 def _mode_admits(row: MemoryRow, mode: ReadMode) -> bool:
@@ -637,10 +761,20 @@ def row_local_conditions(
                 memory.c.audience_id == account_id,
             ),
         )
-    conditions: list[ColumnElement[bool]] = [
-        audience,
-        memory.c.recorded_at >= request.horizon,
-    ]
+    conditions: list[ColumnElement[bool]] = [audience]
+    horizon = request.horizon
+    if horizon is not None:
+        # The gate is on, so an age predicate exists — and it covers workspace-audience
+        # rows only (§ A9). A member row is admitted by age unconditionally, which is
+        # :func:`subject_to_age`'s rule expressed in SQL; the two must agree, or the
+        # prefilter would drop a row :func:`eligible_memory` would have allowed and no
+        # caller could ever see it.
+        conditions.append(
+            or_(
+                memory.c.audience_kind != AUDIENCE_WORKSPACE,
+                memory.c.recorded_at >= horizon,
+            )
+        )
     purpose = request.bound_purpose
     if purpose is not None:
         conditions.append(

@@ -26,7 +26,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Connection, delete, insert, select, update
+from sqlalchemy import (
+    ColumnElement,
+    Connection,
+    and_,
+    delete,
+    insert,
+    select,
+    update,
+)
 from sqlalchemy.engine import RowMapping
 
 from rheo_recallatron.storage import tables as t
@@ -214,10 +222,39 @@ class ExpiredRoot:
     retained_successor_id: UUID | None
 
 
+_SWEEPABLE_AUDIENCE, _ = t.AUDIENCE_KINDS
+"""``workspace``. The only audience age-based expiry reaches (§ A9).
+
+Taken off the table's own vocabulary rather than written out, so the predicate and the
+column's check constraint cannot drift apart.
+"""
+
+
+def _expired_workspace_memory(horizon: datetime) -> ColumnElement[bool]:
+    """§ A9's expiry predicate: a workspace-audience row past ``horizon``.
+
+    **One expression, two callers, and that is the point.** The batch selects roots
+    with it and the batch-end remainder check asks ``EXISTS`` with it; if the two
+    disagreed, a sweep could select nothing and still find a remainder, rearm a second
+    later, and do that for ever.
+
+    Member-audience rows are outside the mechanism at any age: the sweep runs
+    accountless and could not authorize erasing member-private content, and a
+    workspace operator's data-minimization setting is not authority over one member's
+    own record. Their removal path is the ordinary approved deletion, which § A8 lets
+    the owner authorize content-free.
+    """
+    return and_(
+        t.memory.c.audience_kind == _SWEEPABLE_AUDIENCE,
+        t.memory.c.recorded_at < horizon,
+    )
+
+
 def list_expired_memory_roots(
     conn: Connection, *, horizon: datetime, limit: int
 ) -> tuple[ExpiredRoot, ...]:
-    """At most ``limit`` memories recorded before ``horizon``, oldest first.
+    """At most ``limit`` **workspace-audience** memories recorded before ``horizon``,
+    oldest first.
 
     ``<``, never ``<=``: § A9 retains the boundary instant, so a memory recorded
     exactly on the horizon is still readable and is not selected here.
@@ -231,11 +268,12 @@ def list_expired_memory_roots(
     hand to the coordinator one at a time; each one's own ordinary dependants go with
     it and are not counted against the bound. A root that an earlier root in the same
     batch already removed as a dependant is simply absent by the time its turn comes,
-    and the coordinator skips it.
+    and the coordinator skips it. A member-audience row may still be removed here as
+    somebody else's ordinary dependant; what it may never be is a root.
     """
     rows = conn.execute(
         select(t.memory.c.id, t.memory.c.superseded_by_id)
-        .where(t.memory.c.recorded_at < horizon)
+        .where(_expired_workspace_memory(horizon))
         .order_by(t.memory.c.recorded_at, t.memory.c.id)
         .limit(limit)
     ).all()
@@ -243,16 +281,17 @@ def list_expired_memory_roots(
 
 
 def expired_memory_exists(conn: Connection, *, horizon: datetime) -> bool:
-    """Whether any memory is recorded before ``horizon``. An ``EXISTS``, not a count.
+    """Whether any expirable memory is recorded before ``horizon``. An ``EXISTS``.
 
     § A9's batch-end remainder check: the sweep needs to know *whether* to ask for
     another batch and explicitly does not store how many are left, so the statement
-    stops at the first row rather than counting a backlog nobody records.
+    stops at the first row rather than counting a backlog nobody records. Same
+    predicate as the selection above, for the reason given there.
     """
     return bool(
         conn.execute(
             select(
-                select(t.memory.c.id).where(t.memory.c.recorded_at < horizon).exists()
+                select(t.memory.c.id).where(_expired_workspace_memory(horizon)).exists()
             )
         ).scalar_one()
     )

@@ -101,7 +101,12 @@ from rheo_core.storage.repositories import (
 )
 from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
-from rheo_recallatron.configuration import MEMORY_RECORD_TYPE, RETENTION_DAYS_KEY
+from rheo_recallatron.configuration import (
+    MEMORY_RECORD_TYPE,
+    RETENTION_DAYS_KEY,
+    RETENTION_EXPIRE_BY_AGE_KEY,
+    RetentionPolicy,
+)
 from rheo_recallatron.contracts import EntityItem, EntityList, MemoryWritten
 from rheo_recallatron.eligibility import (
     Denied,
@@ -110,7 +115,9 @@ from rheo_recallatron.eligibility import (
     ReferenceBudget,
     begin_request,
     contact_permitted,
+    effective_retention,
     eligible_memory,
+    expire_by_age_enabled,
     memory_reference,
 )
 from rheo_recallatron.entities import ENTITY_GET, ENTITY_LIST, remove_mention
@@ -729,6 +736,42 @@ class MemoryWorkspace:
                     updated_by=None,
                 )
 
+    def stored_setting(self, key: str) -> str | None:
+        """The raw stored value of one workspace setting, or ``None`` for no row."""
+        with self.reading() as uow:
+            statement = text(
+                "SELECT value FROM " + _core_setting_table() + " WHERE key = :key"
+            )
+            return uow.connection.execute(statement, {"key": key}).scalar_one_or_none()
+
+    def expire_by_age(self, value: str | None = "true") -> None:
+        """Turn § A9's gate on — **nothing in this file ages out until it is called.**
+
+        Recallatron never auto-forgets a memory by age, so the fixture leaves the gate
+        where ``core.module.enable`` writes it, at ``false``. Every case below that
+        expects an age exclusion, or a ``retention_unavailable`` for a broken window,
+        says so here first: with the gate off there is no window, so the window row is
+        never read and nothing can refuse for it.
+
+        ``value`` takes the same escape hatch as :meth:`set_retention` — ``None``
+        deletes the row, a string stores it verbatim — so the pre-correction workspace
+        shape (no gate row at all) and an unparseable one are both reachable.
+        """
+        with self.unit() as uow:
+            if value is None:
+                uow.connection.execute(
+                    text("DELETE FROM " + _core_setting_table() + " WHERE key = :key"),
+                    {"key": RETENTION_EXPIRE_BY_AGE_KEY},
+                )
+            else:
+                upsert_workspace_setting(
+                    uow.connection,
+                    key=RETENTION_EXPIRE_BY_AGE_KEY,
+                    value=value,
+                    value_type=ValueType.BOOL,
+                    updated_by=None,
+                )
+
 
 def _core_setting_table() -> str:
     """The workspace-setting table's qualified name, assembled rather than written.
@@ -1048,7 +1091,7 @@ def test_eligibility_refuses_when_the_reference_budget_is_exhausted(
         spent = MemoryRequest(
             owner,
             now=datetime.now(UTC),
-            retention_days=365,
+            retention=RetentionPolicy.of_days(365),
             budget=ReferenceBudget(limit=1),
         )
         decision = eligible_memory(
@@ -1059,14 +1102,16 @@ def test_eligibility_refuses_when_the_reference_budget_is_exhausted(
         shallow = MemoryRequest(
             owner,
             now=datetime.now(UTC),
-            retention_days=365,
+            retention=RetentionPolicy.of_days(365),
             budget=ReferenceBudget(depth_limit=0),
         )
         assert eligible_memory(
             owner, uow, derived.id, mode=ReadMode.CURRENT, request=shallow
         ) == Denied("reference_scan_limit")
 
-        roomy = MemoryRequest(owner, now=datetime.now(UTC), retention_days=365)
+        roomy = MemoryRequest(
+            owner, now=datetime.now(UTC), retention=RetentionPolicy.of_days(365)
+        )
         assert not isinstance(
             eligible_memory(
                 owner, uow, derived.id, mode=ReadMode.CURRENT, request=roomy
@@ -1191,6 +1236,10 @@ def test_recall_returns_eligible_rows_marked_lexical(memory: MemoryWorkspace) ->
                 recorded_at=_long_ago(),
             ),
         )
+    # The ancient row is excluded because this workspace **asked** for an age bound.
+    # Without this line it stays, and that is the ratified default — see
+    # ``test_a_workspace_that_configures_nothing_keeps_its_oldest_memories``.
+    memory.expire_by_age()
 
     outcome = memory.recall(memory.context(), query="apples")
     assert outcome.ok, outcome
@@ -1494,6 +1543,10 @@ def test_read_current_and_history_modes_over_the_lifecycle_states(
             links=link,
         )
 
+    # The ``expired`` member is excluded only because this workspace turned the age
+    # gate on; with the gate off — the default — it is an ordinary current member.
+    memory.expire_by_age()
+
     owner = memory.context()
     current = _window(
         memory.read(
@@ -1645,6 +1698,11 @@ def test_read_scan_limit_is_five_hundred_eligible_candidates(
             links=link,
         )
 
+    # The gate is on so that the ``expired`` member is one of the four row-locally
+    # prefiltered rows this case is about; with it off that member would be eligible
+    # and the boundary under test would sit at 499 real members plus it.
+    memory.expire_by_age()
+
     owner = memory.context()
     target = memory_reference(members[250].id)
     window = _window(
@@ -1711,13 +1769,19 @@ def test_a_source_denied_candidate_can_still_trigger_the_read_scan_limit(
 
 
 # --- AC 8: every read path fails closed on a missing or corrupt retention policy ------
+#
+# **Only while the gate is on**, which is why every case below turns it on first. With
+# ``retention.expire_by_age`` off there is no window, nothing reads the ``days`` row,
+# and ``retention_unavailable`` is unreachable — a workspace that declined age-based
+# expiry must not be broken by a setting it never uses. The gate-off half of that rule
+# has its own case further down.
 
 _UNUSABLE_RETENTION = (None, "0", "4000", "-1", "not-a-number", "")
 """Absent, below the minimum, above the maximum, negative, unparseable, empty.
 
-Every one of them is a row a reader must refuse rather than fall back from. ``None``
-deletes the row entirely, which is the case the settings resolver would answer with the
-365-day package default.
+Every one of them is a row a reader must refuse rather than fall back from, once the
+gate is on. ``None`` deletes the row entirely, which is the case the settings resolver
+would answer with the 365-day package default.
 """
 
 
@@ -1725,6 +1789,7 @@ def test_read_refuses_a_missing_or_corrupt_retention_policy(
     memory: MemoryWorkspace,
 ) -> None:
     reference, members = _container_with(memory, 3)
+    memory.expire_by_age()
     owner = memory.context()
     target = memory_reference(members[1].id)
     assert (
@@ -1751,6 +1816,7 @@ def test_recall_refuses_a_missing_or_corrupt_retention_policy(
 ) -> None:
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples", body="a note about apples"))
+    memory.expire_by_age()
 
     owner = memory.context()
     assert memory.recall(owner, query="apples").ok
@@ -1768,6 +1834,7 @@ def test_the_resolver_refuses_a_read_on_a_missing_or_corrupt_retention_policy(
 ) -> None:
     with memory.unit() as uow:
         live = _write(uow.connection, _row(title="visible"))
+    memory.expire_by_age()
     reference = memory_reference(live.id)
     owner = memory.context()
 
@@ -1785,6 +1852,163 @@ def test_the_resolver_refuses_a_read_on_a_missing_or_corrupt_retention_policy(
     with memory.reading() as uow:
         restored = resolve_in(reference, owner, uow, registry=memory.surfaces.resolvers)
     assert isinstance(restored, RecordHead) and restored.display == "visible"
+
+
+# --- AC 8: the default. Nothing is hidden by age in a workspace that never asked ------
+#
+# Recallatron never auto-forgets a memory by age. These are the cases that prove the
+# *absence* of a mechanism, which is why each one drives a real read rather than
+# asserting a resolved policy value: a policy object that said "unbounded" while a
+# predicate somewhere still compared a timestamp would satisfy the second and fail the
+# first, and the first is the promise.
+
+
+def test_a_workspace_that_configures_nothing_keeps_its_oldest_memories(
+    memory: MemoryWorkspace,
+) -> None:
+    """The ratified default, on every read surface, for both audiences.
+
+    The workspace is exactly as ``core.module.enable`` left it: an
+    ``expire_by_age`` row reading ``false`` and a 365-day window nothing reads. Two
+    memories recorded well beyond that window — one workspace-audience, one
+    member-private — are still returned by recall, by the centered read, and by
+    generic resolution.
+
+    Both audiences on purpose. The member row would survive even with the gate on
+    (§ A9's exemption), so a case that used only a member row would pass against a
+    build whose gate did nothing; the workspace row is the one that distinguishes
+    "no horizon" from "a horizon that happens not to reach this row".
+    """
+    account = memory.owner_account_id
+    with memory.unit() as uow:
+        # A body with no shared term, so the recall below scores the two aged rows
+        # and not the container they hang off.
+        container = _write(
+            uow.connection, _row(title="container", body="a holder for two notes")
+        )
+        reference = memory_reference(container.id)
+        link: tuple[Link, ...] = ((reference, "derived_from", False),)
+        shared = _write(
+            uow.connection,
+            _row(
+                title="ancient apples",
+                body="an old note about apples",
+                recorded_at=_long_ago(),
+            ),
+            links=link,
+        )
+        private = _write(
+            uow.connection,
+            _row(
+                title="ancient private apples",
+                body="an old private note about apples",
+                recorded_at=_long_ago(),
+                audience_kind="member",
+                audience_id=account,
+            ),
+            links=link,
+        )
+    # Nothing is configured: the rows are the ones enable wrote, untouched.
+    assert str(memory.stored_setting(RETENTION_EXPIRE_BY_AGE_KEY)).lower() == "false"
+
+    owner = memory.context()
+    recalled = memory.recall(owner, query="apples")
+    assert recalled.ok, recalled
+    assert recalled.result is not None
+    assert {item.title for item in recalled.result.items} == {
+        "ancient apples",
+        "ancient private apples",
+    }
+
+    window = _window(
+        memory.read(
+            owner,
+            container_ref=reference,
+            target_ref=memory_reference(shared.id),
+            context=10,
+        )
+    )
+    assert {item.title for item in window.items} == {
+        "ancient apples",
+        "ancient private apples",
+    }
+    assert window.total == 2
+
+    with memory.reading() as uow:
+        for row in (shared, private):
+            head = resolve_in(
+                memory_reference(row.id),
+                owner,
+                uow,
+                registry=memory.surfaces.resolvers,
+            )
+            assert isinstance(head, RecordHead), (row.title, head)
+            assert head.readable and head.display == row.title
+
+
+def test_with_the_gate_off_a_broken_window_row_refuses_nothing(
+    memory: MemoryWorkspace,
+) -> None:
+    """``retention_unavailable`` is unreachable while the gate is off (§ A13).
+
+    The one stated exception to fail-closed, and it is not a softening: a missing or
+    corrupt ``days`` row is not a *mandatory* setting in a workspace that reads it
+    nowhere. Failing closed on it would break every read and write of a workspace
+    over a policy it explicitly declined.
+
+    The same six rows refuse once the gate goes on, which is the case above; the
+    pairing is what makes this an exception rather than a hole.
+    """
+    with memory.unit() as uow:
+        live = _write(uow.connection, _row(title="visible"))
+        old = _write(uow.connection, _row(title="ancient", recorded_at=_long_ago()))
+    owner = memory.context()
+
+    for value in _UNUSABLE_RETENTION:
+        memory.set_retention(value)
+        assert memory.recall(owner, query="memory").ok, value
+        assert memory.remember(
+            owner, kind="note", title="t", body="b", purposes=[_RESPOND]
+        ).ok, value
+        with memory.reading() as uow:
+            for row in (live, old):
+                head = resolve_in(
+                    memory_reference(row.id),
+                    owner,
+                    uow,
+                    registry=memory.surfaces.resolvers,
+                )
+                assert isinstance(head, RecordHead), (value, row.title, head)
+
+
+def test_a_workspace_with_no_gate_row_at_all_resolves_false_without_a_backfill(
+    memory: MemoryWorkspace,
+) -> None:
+    """The pre-correction shape: a ``days`` row, and no gate row anywhere.
+
+    ``_write_enable_rows`` runs only at enable and there is no backfill path, so a
+    workspace enabled before this key existed holds no row for it — and must resolve
+    the package default ``false`` rather than refusing, rather than inheriting a
+    horizon it never chose, and **without a reader quietly writing the row**. The
+    last clause is asserted directly: a reader that backfilled would turn every read
+    into a write and would do it on a connection that may be read-only.
+    """
+    memory.expire_by_age(None)
+    with memory.unit() as uow:
+        old = _write(uow.connection, _row(title="ancient", recorded_at=_long_ago()))
+    owner = memory.context()
+
+    with memory.reading() as uow:
+        assert expire_by_age_enabled(owner, uow) is False
+        assert effective_retention(owner, uow) == RetentionPolicy.unbounded()
+        head = resolve_in(
+            memory_reference(old.id), owner, uow, registry=memory.surfaces.resolvers
+        )
+    assert isinstance(head, RecordHead) and head.readable
+
+    assert memory.stored_setting(RETENTION_EXPIRE_BY_AGE_KEY) is None, (
+        "a reader backfilled the gate row; resolving a default must not write one"
+    )
 
 
 # --- the write surface ----------------------------------------------------------------
@@ -2053,6 +2277,7 @@ def test_every_write_path_fails_closed_on_a_missing_or_corrupt_retention_policy(
             owner, kind="note", title="a source", body="a body", purposes=[_RESPOND]
         )
     )
+    memory.expire_by_age()
     before = memory.counts()
     for value in _UNUSABLE_RETENTION:
         memory.set_retention(value)
@@ -2955,13 +3180,18 @@ def test_acceptance_terminalizes_a_born_expired_unit_as_noop_with_no_row_written
     """Ratified rule 1, proved by a direct table read rather than by a later read.
 
     The unit's authority, window and evidence are all fine; its ``source_recorded_at``
-    simply sits outside the workspace's *current* retention window. A memory written
-    from it would be excluded from every read and export the instant it committed, so
-    acceptance writes a ``noop`` receipt and no memory at all.
+    simply sits outside the workspace's *current* retention window, **and this
+    workspace has turned age-based expiry on**. A memory written from it would be
+    excluded from every read and export the instant it committed, so acceptance
+    writes a ``noop`` receipt and no memory at all.
 
     The proof is the memory table, not ``recall``: a read excludes an expired row
     anyway, so a read-path assertion would pass just as happily if the row were there.
+
+    The two cases where the *same* out-of-window clock is accepted instead — the gate
+    off, and a member-audience ceiling — are the two cases below.
     """
+    memory.expire_by_age()
     memory.set_retention("30")
     now = datetime.now(UTC)
     unit = _unit(
@@ -2987,6 +3217,81 @@ def test_acceptance_terminalizes_a_born_expired_unit_as_noop_with_no_row_written
         source_expires_at=now + timedelta(days=1),
     )
     assert _accept(memory, inside, now=now).state == "active"
+
+
+def test_acceptance_keeps_an_ancient_unit_when_the_workspace_has_no_age_gate(
+    memory: MemoryWorkspace,
+) -> None:
+    """The same out-of-window clock, in the default workspace: accepted, live.
+
+    There is no window to be outside of, so the recheck is **skipped** rather than
+    run against a substituted default — a default would invent a horizon the
+    workspace explicitly declined. The row is written, it is current, and it is
+    returned by an ordinary read.
+    """
+    memory.set_retention("30")
+    now = datetime.now(UTC)
+    unit = _unit(
+        source_recorded_at=now - timedelta(days=45),
+        source_expires_at=now + timedelta(days=1),
+    )
+
+    outcome = _accept(memory, unit, now=now)
+
+    assert outcome.state == "active"
+    assert outcome.memory_ref is not None
+    assert _receipts(memory) == [(unit.external_source_key, "active", True)]
+    with memory.reading() as uow:
+        head = resolve_in(
+            outcome.memory_ref,
+            memory.context(),
+            uow,
+            registry=memory.surfaces.resolvers,
+        )
+    assert isinstance(head, RecordHead) and head.readable, head
+
+
+def test_acceptance_writes_no_terminal_noop_for_an_old_member_audience_unit(
+    memory: MemoryWorkspace,
+) -> None:
+    """The gate is **on** and the clock is out of window, and it is still accepted.
+
+    § A9 puts member-audience rows outside the retention mechanism entirely — never
+    swept, never age-filtered, never counted by export — so the resulting row is not
+    born expired at all: it is permanently readable by its own member. Terminalizing
+    it ``noop`` would be worse than merely writing an invisible row, which is why
+    this case is asserted on the **receipt** and not only on the memory: a terminal
+    receipt is replay-proof, so the unit could never be re-offered and that member's
+    evidence would be destroyed for a reason the age mechanism does not apply to it.
+    """
+    memory.expire_by_age()
+    memory.set_retention("30")
+    account = memory.owner_account_id
+    now = datetime.now(UTC)
+    unit = _unit(
+        principal_account_id=account,
+        audience_kind="member",
+        audience_id=account,
+        source_recorded_at=now - timedelta(days=45),
+        source_expires_at=now + timedelta(days=1),
+    )
+
+    outcome = _accept(memory, unit, now=now)
+
+    assert outcome.state == "active", outcome
+    assert _receipts(memory) == [(unit.external_source_key, "active", True)]
+    # And it is readable by the account whose memory it is, which is the other half
+    # of the exemption. (That account is the workspace owner here because the fixture
+    # provisions one membership; the audience test is on the account id, not a role.)
+    assert outcome.memory_ref is not None
+    with memory.reading() as uow:
+        head = resolve_in(
+            outcome.memory_ref,
+            memory.context(account_id=account),
+            uow,
+            registry=memory.surfaces.resolvers,
+        )
+    assert isinstance(head, RecordHead) and head.readable, head
 
 
 def test_one_unit_with_two_separable_facts_yields_one_representation(
@@ -3219,7 +3524,11 @@ def test_acceptance_fails_closed_on_a_missing_or_corrupt_retention_policy(
     Not even a receipt is written: the refusal lands before anything this seam could
     record, which is what "before any write" has to mean for a path whose *purpose*
     is writing an outcome row.
+
+    **While the gate is on**, like every other ``retention_unavailable``: with it off
+    the window row is not read at all, so acceptance carries on — the case below.
     """
+    memory.expire_by_age()
     before = memory.counts()
     for value in _UNUSABLE_RETENTION:
         memory.set_retention(value)

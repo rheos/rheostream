@@ -56,7 +56,11 @@ from harness.deletion import (
 )
 from harness.records import ensure_note_table, list_notes, write_note
 from harness.registry import NOTE_SCHEDULE, enable_harness_module, register_harness
-from harness.settings_keys import HARNESS_RETENTION_DAYS, HARNESS_RETENTION_DEFAULT
+from harness.settings_keys import (
+    HARNESS_EXPIRE_BY_AGE,
+    HARNESS_RETENTION_DAYS,
+    HARNESS_RETENTION_DEFAULT,
+)
 from pydantic import BaseModel
 from rheo_app_worker.main import install_stop_signals
 from rheo_contracts import RecordRef, Role, WorkspaceContext
@@ -1960,6 +1964,7 @@ def _expiring_handler(
                 capability,  # type: ignore[arg-type]
                 record_type=record_type,
                 target_ref=target,
+                gate_key=HARNESS_EXPIRE_BY_AGE,
                 retention_key=HARNESS_RETENTION_DAYS,
                 retention_days=retention_days,
             )
@@ -2174,6 +2179,7 @@ def test_a_forged_capability_for_another_job_kind_refuses_rather_than_deleting(
             forged,
             record_type=PROBE_TYPE,
             target_ref=probe_ref(probe.id),
+            gate_key=HARNESS_EXPIRE_BY_AGE,
             retention_key=HARNESS_RETENTION_DAYS,
             retention_days=HARNESS_RETENTION_DEFAULT,
         )
@@ -2239,6 +2245,50 @@ def test_a_retention_value_that_moved_under_the_lock_refuses(
     )
     _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
     assert isinstance(second[0], ExpiredRecord), second[0]
+
+
+def test_a_gate_switched_off_under_the_lock_refuses_rather_than_expiring(
+    cluster: ClusterSession,
+    expiry_workspace: UUID,
+    engine: Engine,
+    probe: ProbeRow,
+    now: datetime,
+) -> None:
+    """The **other** row the entry rechecks under the lock, and the reason for it.
+
+    Age-based expiry is opt-in, so an operator who switches it off has withdrawn the
+    authority this whole path runs on — not merely narrowed which rows it reaches.
+    The withdrawal has to bite before the next deletion rather than at the end of the
+    batch, so the entry reads the gate in the same locked read as the window and
+    refuses on it first.
+
+    The window is left exactly where the handler declares it, so a build that checked
+    only the window would delete the probe and this case would be the one that
+    catches it.
+    """
+    with engine.begin() as conn:
+        upsert_workspace_setting(
+            conn,
+            key=HARNESS_EXPIRE_BY_AGE,
+            value="false",
+            value_type=ValueType.BOOL,
+            updated_by=None,
+        )
+    seen: list[object] = []
+    kinds = _expiry_registry(_expiring_handler(seen, target=probe_ref(probe.id)))
+    _put(
+        engine,
+        now=now,
+        kind=EXPIRY_KIND,
+        payload={"workspace_id": str(expiry_workspace)},
+    )
+
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+
+    assert isinstance(seen[0], Refusal)
+    assert seen[0].state == RETENTION_SETTING_CHANGED
+    with engine.connect() as conn:
+        assert probe_exists(conn, probe.id)
 
 
 def test_a_reference_of_another_type_than_the_sweep_declared_refuses(

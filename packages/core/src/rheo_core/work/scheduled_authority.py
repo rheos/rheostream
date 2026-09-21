@@ -360,6 +360,7 @@ def dispatch_memory_expiry_in(
     *,
     record_type: str,
     target_ref: RecordRef,
+    gate_key: str,
     retention_key: str,
     retention_days: int,
     retained_successor_ref: str | None = None,
@@ -377,13 +378,17 @@ def dispatch_memory_expiry_in(
     assumed, because a sweep hands over references one at a time and an owner that
     authorises a reference of another type would otherwise be enough.
 
-    ``retention_key`` and ``retention_days`` are the sweep's own authority, rechecked:
-    the key is read back through :class:`~rheo_core.settings.storage_source.
-    TransactionBoundOverrideSource` on this transaction's connection, **after** the
-    workspace lifecycle lock is taken, and a value other than ``retention_days``
-    refuses. A parameter rather than a constant because core declares no retention key
-    of its own — ``recallatron.retention.days`` is a module's, and hardcoding it here
-    would put a module's name in core.
+    ``gate_key``, ``retention_key`` and ``retention_days`` are the sweep's own
+    authority, rechecked. Both rows are read back through
+    :class:`~rheo_core.settings.storage_source.TransactionBoundOverrideSource` on this
+    transaction's connection in **one locked read, after** the workspace lifecycle lock
+    is taken: a ``gate_key`` that is no longer true refuses, and so does a
+    ``retention_key`` whose value is other than ``retention_days``. Two keys rather
+    than one because the module's own rule is that age-based expiry is opt-in — an
+    operator who switches it off mid-batch has withdrawn the authority this path runs
+    on, and the withdrawal has to bite before the next deletion rather than at the end
+    of the batch. Parameters rather than constants because core declares no retention
+    key of its own; hardcoding either would put a module's name in core.
 
     ``retained_successor_ref`` is the canonical reference of the replacement a
     superseded record was expired in favour of, and this is the only writer of that
@@ -456,10 +461,19 @@ def dispatch_memory_expiry_in(
     if isinstance(ctx, Refusal):
         return ctx
     lock_workspace_lifecycle(conn)
-    settled = resolve(
+    # One locked read of both explicit retention rows (§ A9): the gate first, because
+    # a workspace that has switched age-based expiry off has withdrawn this path's
+    # authority entirely and its window is then not even read.
+    settings = resolve(
         workspace_id=verified.workspace_id,
         source=TransactionBoundOverrideSource(conn, workspace_id=verified.workspace_id),
-    ).get_int(retention_key)
+    )
+    if not settings.get_bool(gate_key):
+        return Refusal(
+            RETENTION_SETTING_CHANGED,
+            f"{gate_key} is no longer on for this workspace",
+        )
+    settled = settings.get_int(retention_key)
     if settled != retention_days:
         return Refusal(
             RETENTION_SETTING_CHANGED,

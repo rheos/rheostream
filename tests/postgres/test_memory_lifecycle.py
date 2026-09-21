@@ -51,11 +51,14 @@ from harness.registry import add_member
 from rheo_contracts import RecordRef, Role, WorkspaceContext
 from rheo_core.approvals import APPROVAL_APPROVE
 from rheo_core.boundary import context_for_harness
+from rheo_core.boundary.context import Refusal
 from rheo_core.deletion import (
     OWNED_DELETIONS,
     USER_ERASURE,
     WORKSPACE_LIFECYCLE_LOCK_KEY,
+    DeleteAuthorization,
     DeletionRecordRow,
+    Disposition,
     get_deletion_record,
 )
 from rheo_core.deletion.operations import (
@@ -67,7 +70,7 @@ from rheo_core.events import ConsumerRegistry
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.refs import uuid7
-from rheo_core.refs.resolver import register_resolver
+from rheo_core.refs.resolver import Unavailable, register_resolver
 from rheo_core.storage import work_tables
 from rheo_core.storage.backend import UnitOfWork
 from rheo_recallatron import MANIFEST
@@ -83,7 +86,11 @@ from rheo_recallatron.events import (
     MEMORY_INVALIDATED,
     MEMORY_RECORDED,
 )
-from rheo_recallatron.lifecycle import DELETION_PARTICIPANT_TYPES, dependent_closure
+from rheo_recallatron.lifecycle import (
+    DELETION_PARTICIPANT_TYPES,
+    authorize_memory_delete,
+    dependent_closure,
+)
 from rheo_recallatron.operations import (
     MEMORY_CORRECT,
     MEMORY_DERIVE,
@@ -1081,9 +1088,9 @@ def test_a_physically_removed_row_gets_no_invalidated_event(
 def test_the_erasure_runs_as_the_held_caller_at_every_checkpoint(
     lifecycle: LifecycleWorkspace,
 ) -> None:
-    """A member holds, the owner approves, and the member's own memory is erased.
+    """One member holds, **another member** approves, and the first's memory is erased.
 
-    The target's audience is the **member's**, so the owner's context cannot
+    The target's audience is the holder's, so a *second member's* context cannot
     authorize it: the owned-delete authorizer refuses a member-audience row to any
     account but that member's. A coordinator that ran the authorizer under the
     approver's context at execution or at coordinator entry would therefore refuse,
@@ -1091,6 +1098,13 @@ def test_the_erasure_runs_as_the_held_caller_at_every_checkpoint(
     the proof that all three checkpoints saw the rebuilt original caller. The
     ledger's actor is asserted as well, because it is the durable half of the same
     claim.
+
+    **The approver is deliberately not the owner**, which it was before § A8's
+    content-free owner route existed. An owner now passes that audience check for any
+    member-audience row — see the case below — so an owner-approved erasure here
+    would succeed whichever context the coordinator used, and the claim would go
+    untested. ``core.approval.approve`` is ratified for ``owner, member`` alike, so a
+    second member is a legitimate approver and is the one that still discriminates.
     """
     member_id = add_member(
         lifecycle.cluster.backend,
@@ -1098,21 +1112,108 @@ def test_the_erasure_runs_as_the_held_caller_at_every_checkpoint(
         Role.MEMBER,
         display_name="held-caller",
     )
-    assert member_id != lifecycle.owner_account_id
+    approver_id = add_member(
+        lifecycle.cluster.backend,
+        lifecycle.workspace,
+        Role.MEMBER,
+        display_name="the-approver",
+    )
+    assert len({member_id, approver_id, lifecycle.owner_account_id}) == 3
     member = lifecycle.context(account_id=member_id, role=Role.MEMBER)
+    approver = lifecycle.context(account_id=approver_id, role=Role.MEMBER)
     target = _seed(lifecycle, _row(audience_kind="member", audience_id=member_id))
-    # The owner genuinely cannot reach it: the same reference held by the owner never
+    # The approver genuinely cannot reach it: the same reference held by *them* never
     # mints an approval at all, which is the pre-mint checkpoint refusing.
     refused = lifecycle.core_call(
-        lifecycle.context(), RECORD_DELETE, {"ref": memory_reference(target.id)}
+        approver, RECORD_DELETE, {"ref": memory_reference(target.id)}
     )
     _refused(refused, "not_found")
     assert refused.approval_id is None
 
-    row = _erase(lifecycle, target.id, holder=member, approver=lifecycle.context())
+    row = _erase(lifecycle, target.id, holder=member, approver=approver)
 
     assert row.actor_id == member_id
     assert lifecycle.stored(target.id) is None
+
+
+def test_the_owner_authorizes_erasing_a_member_memory_and_reads_none_of_it(
+    lifecycle: LifecycleWorkspace,
+) -> None:
+    """§ A8: erasure authority and read authority are distinct on this path.
+
+    **Why the owner needs this route at all.** § A9 puts member-audience memories
+    outside age-based expiry entirely — the sweep never selects one, however old —
+    so approved deletion is their *only* removal path. If that path required the
+    member's own account, a departed member's memories would be unremovable by
+    anyone: an unbounded retention obligation with no operator remedy.
+
+    **And it discloses nothing.** The authorizer answers a reference and a revision
+    and has nowhere to put anything else; the owner's own *read* of the same row
+    still refuses, which is the assertion that separates "the owner may erase it"
+    from "the owner may see it". A second member with no claim on the row is the
+    control: the relaxation is the owner's alone and is not a hole in the audience
+    rule.
+
+    **A named limitation, reported rather than papered over.** The approval this
+    mints does not currently reach its effect. Core's generic ``RecordStateGuard``
+    (``approvals/guards.py``) rechecks the subject at execution by *resolving* it
+    under the reconstructed original caller, and the resolver collapses "you may not
+    read this" into the same ``not_found`` as "it is gone" — so the owner's own
+    approval is invalidated before the coordinator runs. § A8 names that guard only
+    for retained and expired rows and carries no rule for this case; closing it means
+    giving the guard a revision source other than the read resolver for
+    owned-deletable types, which is a core change no part of this correction
+    authorizes. What this case pins is the half § A8 does specify, at the seam it
+    specifies it: the content-free authorizer, and the pre-mint check built on it.
+    """
+    member_id = add_member(
+        lifecycle.cluster.backend,
+        lifecycle.workspace,
+        Role.MEMBER,
+        display_name="departed",
+    )
+    stranger_id = add_member(
+        lifecycle.cluster.backend,
+        lifecycle.workspace,
+        Role.MEMBER,
+        display_name="unrelated",
+    )
+    target = _seed(
+        lifecycle,
+        _row(title="a private note", audience_kind="member", audience_id=member_id),
+    )
+    owner = lifecycle.context()
+    stranger = lifecycle.context(account_id=stranger_id, role=Role.MEMBER)
+    reference = canonical_ref(memory_reference(target.id))
+
+    with lifecycle.reading() as uow:
+        # The authorizer itself: a reference and a revision, for the owner.
+        authorized = authorize_memory_delete(
+            owner, uow, reference, disposition=Disposition.USER_ERASURE
+        )
+        assert isinstance(authorized, DeleteAuthorization), authorized
+        assert (authorized.ref, authorized.revision) == (reference, target.revision)
+        # The control: another member with no claim on the row is still refused, so
+        # this is the owner's route and not a relaxed audience rule.
+        assert isinstance(
+            authorize_memory_delete(
+                stranger, uow, reference, disposition=Disposition.USER_ERASURE
+            ),
+            Refusal,
+        )
+        # And reading it is still refused for the owner: the half § A8 keeps.
+        assert isinstance(resolve_memory(owner, uow, reference), Unavailable)
+
+    # Through the real operation, the pre-mint check now passes: an approval is
+    # minted where the owner used to receive ``not_found`` with no approval at all.
+    held = lifecycle.core_call(owner, RECORD_DELETE, {"ref": reference.format()})
+    assert held.state == "approval_required", held
+    assert held.approval_id is not None
+    # Still per-action approved, and nothing about the row travelled with the hold.
+    assert held.result is None
+    refused = lifecycle.core_call(stranger, RECORD_DELETE, {"ref": reference.format()})
+    _refused(refused, "not_found")
+    assert refused.approval_id is None
 
 
 def test_no_lifecycle_answer_carries_the_size_of_a_closure(

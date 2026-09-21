@@ -8,6 +8,17 @@ a second's nudge to this module's own schedule row. There is no cursor, no backl
 count, no second job state machine and no scheduler: the schedule row **is** the
 continuation marker, and the deletions themselves are the durable progress.
 
+**Usually it does none of that.** Recallatron never auto-forgets a memory by age, so
+``recallatron.retention.expire_by_age`` is off unless a workspace turned it on, and an
+inert run is this handler's *normal* behaviour rather than its edge case: the gate is
+read first — before a root is selected, a window resolved or the lifecycle lock taken
+— and a gated-off invocation returns an ordinary success on the ordinary daily
+``next_run_at``. That is deliberately **not** the no-progress failure below: a gated-off
+sweep has no remainder, and classing it as a failure would burn one retry budget and
+one core failure entry per workspace per day for every workspace that simply does not
+want expiry. The schedule row exists in both states, written at enable, so turning the
+gate on is one settings write and needs no backfill.
+
 **Three properties are worth more than the code that implements them.**
 
 *The batch is one transaction and the continuation commits inside it.* The worker's
@@ -21,9 +32,10 @@ budget and puts the job under ordinary backoff. Rearming instead would mint an e
 success every second for ever, and the only thing standing between those two
 behaviours is the ``removed`` count this handler keeps.
 
-*The window is read once.* ``eligibility.begin_request`` is the single retention read
-in this module and it refuses rather than defaulting, so a workspace whose policy row
-went missing expires nothing at all instead of quietly expiring against 365 days.
+*The policy is read once per phase.* ``eligibility.begin_request`` is the single
+retention read in this module and, while the gate is on, it refuses rather than
+defaulting — so a workspace whose window row went missing expires nothing at all
+instead of quietly expiring against 365 days.
 
 **What this handler does not authorise.** It holds nothing: the authority is the
 sealed scheduled execution the worker minted onto its own unit of work, which the core
@@ -50,8 +62,13 @@ from rheo_recallatron.configuration import (
     MEMORY_RECORD_TYPE,
     MODULE_ID,
     RETENTION_DAYS_KEY,
+    RETENTION_EXPIRE_BY_AGE_KEY,
 )
-from rheo_recallatron.eligibility import begin_request, memory_reference
+from rheo_recallatron.eligibility import (
+    begin_request,
+    expire_by_age_enabled,
+    memory_reference,
+)
 from rheo_recallatron.references import canonical_ref
 from rheo_recallatron.refusals import RETENTION_UNAVAILABLE
 from rheo_recallatron.storage.repository import (
@@ -131,11 +148,18 @@ class MemoryRetentionSweepPayload(BaseModel):
 def run_memory_retention_sweep(
     uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
 ) -> None:
-    """One leased batch: select, expire, recheck, and rearm if there is more.
+    """One leased batch: gate, select, expire, recheck, and rearm if there is more.
 
-    The order is § A9's lock order and is not rearrangeable. The schedule row is
-    already held — the worker took it when it minted the capability, before this
-    handler was entered — then the workspace lifecycle lock, then the retention
+    **The gate is read first**, before a root is selected, a window resolved or the
+    lifecycle lock taken (§ A9). A workspace that never turned age-based expiry on has
+    no horizon at all, so there is nothing to lock against and nothing to decide: the
+    handler returns, the job finishes green on the daily instant the ticker already
+    wrote, and no deletion record, rearm, retry or failure entry exists. This is the
+    common case, not a degenerate one.
+
+    Past that, the order is § A9's lock order and is not rearrangeable. The schedule
+    row is already held — the worker took it when it minted the capability, before
+    this handler was entered — then the workspace lifecycle lock, then the retention
     setting, then each target. Reading the window before taking the lifecycle lock
     would let a writer that committed in between change which rows were expired
     underneath the batch that had already chosen them.
@@ -151,6 +175,12 @@ def run_memory_retention_sweep(
     ctx = context_for_memory_expiry(payload.workspace_id)
     if isinstance(ctx, Refusal):
         raise OperationRefused(ctx.state, str(ctx))
+    if not expire_by_age_enabled(ctx, uow):
+        # An ordinary success with no work in it. Returning here rather than falling
+        # through an unbounded window matters twice over: the window row is not read,
+        # so a missing or corrupt one cannot refuse in the one state that never needed
+        # it, and ``_finish`` is not reached, so nothing can rearm.
+        return
     lock_workspace_lifecycle(uow.connection)
     request = begin_request(ctx, uow)
     if request is None:
@@ -158,8 +188,17 @@ def run_memory_retention_sweep(
             RETENTION_UNAVAILABLE,
             "this workspace states no usable retention policy",
         )
+    horizon = request.horizon
+    days = request.retention.days
+    if horizon is None or days is None:
+        # The gate went off between the read above and the lifecycle lock. Same
+        # answer as reading it off: no horizon, no roots, no remainder, no rearm.
+        # (The two are one condition — a policy has a window or it has neither — and
+        # both are named so the narrowing is the type checker's rather than a
+        # comment's.)
+        return
     roots = list_expired_memory_roots(
-        uow.connection, horizon=request.horizon, limit=SWEEP_BATCH_LIMIT
+        uow.connection, horizon=horizon, limit=SWEEP_BATCH_LIMIT
     )
     removed = 0
     for root in roots:
@@ -169,8 +208,9 @@ def run_memory_retention_sweep(
             capability,
             record_type=MEMORY_RECORD_QUALIFIED,
             target_ref=_memory_target(root.id),
+            gate_key=RETENTION_EXPIRE_BY_AGE_KEY,
             retention_key=RETENTION_DAYS_KEY,
-            retention_days=request.retention_days,
+            retention_days=days,
             retained_successor_ref=(
                 None
                 if root.retained_successor_id is None
@@ -196,12 +236,18 @@ def _finish(
 ) -> None:
     """The batch-end recheck, and the one continuation it can ask for.
 
-    **A fresh instant and a fresh window.** Both are re-read here rather than reused
+    **A fresh instant and a fresh policy.** Both are re-read here rather than reused
     from the top of the batch: a hundred closures take real time, and a remainder
     computed against the instant the batch *started* would count rows that have since
     fallen inside the window as still expired. The retention value is re-read through
     the same single reader for the same reason — an operator who lengthened the window
     mid-batch has changed the answer, and the honest answer is the current one.
+
+    **A gate turned off mid-batch leaves no remainder and no rearm** (§ A9). It
+    reaches here as an unbounded policy with no horizon, and a workspace with no
+    horizon has nothing left to expire by definition — so the daily instant stands and
+    the batch's own deletions, which were authorized when the gate was still on,
+    commit as they are.
     """
     finished_at = datetime.now(UTC)
     request = begin_request(ctx, uow, now=finished_at)
@@ -210,7 +256,8 @@ def _finish(
             RETENTION_UNAVAILABLE,
             "this workspace states no usable retention policy",
         )
-    if not expired_memory_exists(uow.connection, horizon=request.horizon):
+    horizon = request.horizon
+    if horizon is None or not expired_memory_exists(uow.connection, horizon=horizon):
         # Nothing left. The daily instant the ticker wrote when it enqueued this job
         # stands, untouched: a sweep that finished its work has no reason to ask for
         # another batch, and § A9 says so in as many words.

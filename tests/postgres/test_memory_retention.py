@@ -50,14 +50,14 @@ from rheo_core.events import ConsumerRegistry
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.refs import uuid7
-from rheo_core.refs.resolver import register_resolver
+from rheo_core.refs.resolver import RecordHead, register_resolver
 from rheo_core.settings import ValueType
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
 from rheo_core.storage import core_tables, work_tables
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_core.storage.work_index import DueWorkspace
-from rheo_core.work.jobs import enqueue_job, request_cancellation
+from rheo_core.work.jobs import enqueue_job, list_failed_jobs, request_cancellation
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
 from rheo_core.work.scheduled_authority import (
@@ -79,6 +79,8 @@ from rheo_recallatron.configuration import (
     RETENTION_DAYS_DEFAULT,
     RETENTION_DAYS_KEY,
     RETENTION_DAYS_SPEC,
+    RETENTION_EXPIRE_BY_AGE_KEY,
+    RETENTION_EXPIRE_BY_AGE_SPEC,
 )
 from rheo_recallatron.contracts import MemorySuperseded
 from rheo_recallatron.eligibility import memory_reference
@@ -105,7 +107,7 @@ from rheo_recallatron.storage.repository import (
     insert_memory_purpose,
     list_expired_memory_roots,
 )
-from sqlalchemy import Engine, func, select, text, update
+from sqlalchemy import Engine, delete, func, select, text, update
 
 pytestmark = pytest.mark.postgres
 
@@ -234,6 +236,67 @@ class SweepWorkspace:
                 updated_by=None,
             )
 
+    def expire_by_age(self, value: str = "true") -> None:
+        """Turn § A9's gate on — **the one settings write that arms this whole file.**
+
+        Nothing below expires anything until this is called, and that is the subject
+        rather than the setup: Recallatron never auto-forgets a memory by age, so the
+        fixture leaves the gate where ``core.module.enable`` writes it, at ``false``.
+        Every test that removes a row says so here first, which is what makes the
+        default-case tests further down a real control and not an assertion about a
+        fixture nobody set.
+
+        ``value`` is a string so a case below can store an unparseable one and prove
+        it resolves ``false`` rather than refusing.
+        """
+        with self.unit() as uow:
+            upsert_workspace_setting(
+                uow.connection,
+                key=RETENTION_EXPIRE_BY_AGE_KEY,
+                value=value,
+                value_type=ValueType.BOOL,
+                updated_by=None,
+            )
+
+    def drop_setting(self, key: str) -> None:
+        """Remove one stored settings row, leaving the workspace with none for it."""
+        with self.unit() as uow:
+            uow.connection.execute(
+                delete(core_tables.workspace_setting).where(
+                    core_tables.workspace_setting.c.key == key
+                )
+            )
+
+    def stored_setting(self, key: str) -> str | None:
+        with self.reading() as uow:
+            return uow.connection.execute(
+                select(core_tables.workspace_setting.c.value).where(
+                    core_tables.workspace_setting.c.key == key
+                )
+            ).scalar_one_or_none()
+
+    def attempts(self, kind: str) -> list[int]:
+        with self.reading() as uow:
+            return [
+                int(row.attempts)
+                for row in uow.connection.execute(
+                    select(work_tables.job.c.attempts).where(
+                        work_tables.job.c.kind == kind
+                    )
+                )
+            ]
+
+    def reported_failures(self) -> tuple[str, ...]:
+        """What ``core.work.failures`` would list, read through its own repository.
+
+        The operation's own source, so "no failure entry" means the operator-visible
+        list stays empty rather than merely that some table this test picked is.
+        """
+        with self.reading() as uow:
+            return tuple(
+                row.kind for row in list_failed_jobs(uow.connection, limit=500)
+            )
+
 
 @pytest.fixture
 def sweep(
@@ -265,6 +328,7 @@ def sweep(
     monkeypatch.setattr(SETTINGS_REGISTRY, "_specs", dict(SETTINGS_REGISTRY._specs))
     monkeypatch.setattr(SETTINGS_REGISTRY, "_origins", dict(SETTINGS_REGISTRY._origins))
     SETTINGS_REGISTRY.register(RETENTION_DAYS_SPEC, origin=_MEMORY_MODULE)
+    SETTINGS_REGISTRY.register(RETENTION_EXPIRE_BY_AGE_SPEC, origin=_MEMORY_MODULE)
     register_core_operations()
     register_resolver(
         _MEMORY_MODULE, MEMORY_RECORD_TYPE, resolve_memory, origin=_MEMORY_MODULE
@@ -460,26 +524,161 @@ def test_the_module_declares_one_schedule_on_its_own_job_kind(
     assert sweep.schedule_row(RETENTION_SWEEP).enabled is True
 
 
-def test_enabling_the_module_writes_the_default_retention_row_and_a_daily_schedule(
+def test_enabling_the_module_writes_both_retention_rows_and_a_daily_schedule(
     sweep: SweepWorkspace,
 ) -> None:
-    """AC 8's explicit row and its default, written by ``core.module.enable``'s step 3.
+    """AC 8's **two** explicit rows, written by ``core.module.enable``'s step 3.
 
-    The row has to exist for anything to read: every read, write and sweep refuses
-    ``retention_unavailable`` rather than substituting the package default, so a
-    module whose enable did not write it would be a module nothing could read.
+    The window row has to exist for anything to read it: while the gate is on every
+    read, write and sweep refuses ``retention_unavailable`` rather than substituting
+    the package default. The gate row has to exist for a different reason — so that a
+    workspace's retention posture is a stored readable value an operator can look at
+    and change, rather than an inference from an absent row.
+
+    And the schedule is written **in both gate states**, which is the half that has no
+    second chance: ``_write_enable_rows`` runs only at enable and there is no backfill
+    path, so a schedule created lazily when expiry was first configured would need a
+    creation path that does not exist. Turning the gate on is then one settings write.
     """
     row = sweep.schedule_row(MEMORY_RETENTION_SWEEP)
     assert row.module_id == _MEMORY_MODULE
     assert row.enabled is True
     assert row.next_run_at > datetime.now(UTC) + timedelta(hours=1)
-    with sweep.reading() as uow:
-        stored = uow.connection.execute(
-            select(core_tables.workspace_setting.c.value).where(
-                core_tables.workspace_setting.c.key == RETENTION_DAYS_KEY
-            )
-        ).scalar_one()
-    assert int(str(stored)) == RETENTION_DAYS_DEFAULT
+    assert int(str(sweep.stored_setting(RETENTION_DAYS_KEY))) == RETENTION_DAYS_DEFAULT
+    # Off, and stored as off. The default posture is a value, not a silence.
+    assert str(sweep.stored_setting(RETENTION_EXPIRE_BY_AGE_KEY)).lower() == "false"
+
+
+# --- AC 8: the default. The sweep runs, and it is inert ------------------------------
+#
+# The inert run is the *common* case, not a degenerate one: Recallatron never
+# auto-forgets a memory by age, so every workspace that does not turn the gate on gets
+# one of these every day for the life of the deployment. It therefore has to be an
+# ordinary success rather than the no-progress failure further down — that difference
+# is one retry budget and one operator-visible failure entry per workspace per day.
+
+
+def test_a_gate_off_sweep_deletes_nothing_and_finishes_an_ordinary_success(
+    sweep: SweepWorkspace,
+) -> None:
+    """Three consecutive days against a workspace that configured nothing.
+
+    Every claim § A9 makes about an inert run, and the first one is the reason for
+    the other four: **nothing is deleted.** A workspace-audience memory and a
+    member-audience memory, both arbitrarily older than the window nobody read, are
+    both still there at the end.
+
+    Then the shape of the run: no root selected, so no deletion record and no
+    published event; the job finished ``succeeded`` on its first attempt, so no
+    retry was spent; ``core.work.failures`` lists nothing, so no operator is paged
+    for a workspace that simply does not want expiry; and the schedule kept the
+    ordinary daily instant the ticker wrote, so nothing rearmed.
+
+    Three days rather than one because a per-run cost is invisible in a single run:
+    an attempt counter that crept, or a failure entry written once a day, is what a
+    repeat catches and a single call does not.
+    """
+    shared = _seed(sweep, _row(age=_EXPIRED_AGE, title="ancient and shared"))
+    private = _seed(
+        sweep,
+        _row(
+            age=_EXPIRED_AGE,
+            title="ancient and private",
+            audience_kind="member",
+            audience_id=sweep.owner_account_id,
+        ),
+    )
+
+    base = datetime.now(UTC)
+    for day in range(3):
+        at = base + timedelta(days=day)
+        _run_one_sweep(sweep, at=at)
+
+        assert sweep.stored(shared.id) is not None, f"swept on day {day}"
+        assert sweep.stored(private.id) is not None, f"swept on day {day}"
+        assert sweep.deletion_records() == 0
+        assert sweep.deleted_events() == []
+        jobs = sweep.jobs_of(MEMORY_RETENTION_SWEEP)
+        assert [job.state for job in jobs] == ["succeeded"] * (day + 1)
+        assert sweep.attempts(MEMORY_RETENTION_SWEEP) == [1] * (day + 1)
+        assert sweep.reported_failures() == ()
+        # The ordinary daily instant, not a one-second continuation.
+        assert sweep.schedule_row(MEMORY_RETENTION_SWEEP).next_run_at == at + timedelta(
+            days=1
+        )
+
+
+def test_a_gate_off_sweep_ignores_a_broken_window_row(
+    sweep: SweepWorkspace,
+) -> None:
+    """§ A13's one stated exception, on the sweep.
+
+    The gate is read **before** the window, so a workspace whose ``days`` row is
+    missing or out of range still finishes green rather than refusing
+    ``retention_unavailable`` for a setting nothing in that state reads. The same
+    row refuses once the gate is on — the case further up — which is what makes this
+    an exception and not a hole.
+    """
+    kept = _seed(sweep, _row(age=_EXPIRED_AGE))
+    sweep.drop_setting(RETENTION_DAYS_KEY)
+
+    _run_one_sweep(sweep)
+
+    assert sweep.stored(kept.id) is not None
+    (job,) = sweep.jobs_of(MEMORY_RETENTION_SWEEP)
+    assert job.state == "succeeded", job.last_error
+    assert sweep.reported_failures() == ()
+
+
+def test_a_workspace_with_no_gate_row_sweeps_nothing_and_writes_no_backfill(
+    sweep: SweepWorkspace,
+) -> None:
+    """The pre-correction workspace shape, driven through a real sweep.
+
+    ``_write_enable_rows`` runs only at enable and there is no backfill path, so a
+    workspace enabled before this key existed holds a ``days`` row and no gate row
+    at all. It resolves the package default ``false`` — it does not inherit a
+    horizon it never chose, and nothing writes the row on its behalf.
+    """
+    kept = _seed(sweep, _row(age=_EXPIRED_AGE))
+    sweep.drop_setting(RETENTION_EXPIRE_BY_AGE_KEY)
+    assert sweep.stored_setting(RETENTION_DAYS_KEY) is not None
+
+    _run_one_sweep(sweep)
+
+    assert sweep.stored(kept.id) is not None
+    (job,) = sweep.jobs_of(MEMORY_RETENTION_SWEEP)
+    assert job.state == "succeeded", job.last_error
+    assert sweep.deletion_records() == 0
+    assert sweep.stored_setting(RETENTION_EXPIRE_BY_AGE_KEY) is None, (
+        "the sweep backfilled the gate row; resolving a default must not write one"
+    )
+
+
+def test_turning_the_gate_on_needs_one_settings_write_and_no_new_schedule(
+    sweep: SweepWorkspace,
+) -> None:
+    """The flip, end to end: the same rows, the same schedule, a different answer.
+
+    The schedule row is written at enable in both states precisely so that this is
+    one settings write. Its identity is asserted across the flip — same row, same
+    id — because a build that created the schedule lazily would pass every other
+    assertion here while leaving the workspace enabled before the gate existed with
+    no schedule and no way to get one.
+    """
+    aged = _seed(sweep, _row(age=_EXPIRED_AGE))
+    before = sweep.schedule_row(MEMORY_RETENTION_SWEEP)
+
+    _run_one_sweep(sweep)
+    assert sweep.stored(aged.id) is not None
+
+    sweep.expire_by_age()
+    _run_one_sweep(sweep)
+
+    assert sweep.stored(aged.id) is None
+    after = sweep.schedule_row(MEMORY_RETENTION_SWEEP)
+    assert after.id == before.id
+    assert sweep.deletion_records() == 1
 
 
 # --- the window itself ----------------------------------------------------------------
@@ -529,6 +728,7 @@ def test_a_retention_row_outside_the_declared_range_expires_nothing(
     refuses and the job goes back on the queue; nothing is deleted.
     """
     kept = _seed(sweep, _row(age=_EXPIRED_AGE))
+    sweep.expire_by_age()
     sweep.set_retention("0")
 
     _run_one_sweep(sweep)
@@ -551,6 +751,7 @@ def test_shortening_and_lengthening_the_window_change_the_next_sweep_only(
     """
     old = _seed(sweep, _row(age=_EXPIRED_AGE, title="older than a year"))
     middle = _seed(sweep, _row(age=timedelta(days=200), title="older than a week"))
+    sweep.expire_by_age()
 
     _run_one_sweep(sweep)
     assert sweep.stored(old.id) is None
@@ -569,16 +770,23 @@ def test_shortening_and_lengthening_the_window_change_the_next_sweep_only(
     assert recorded_at == middle_row.recorded_at
 
 
-def test_a_member_audience_memory_expires_like_a_workspace_one(
+def test_a_member_audience_memory_is_outside_the_age_mechanism_entirely(
     sweep: SweepWorkspace,
 ) -> None:
-    """The sweep is accountless, and retention is the workspace's policy, not a
-    caller's reach.
+    """§ A9's exemption, with the gate **on** and both rows equally ancient.
 
-    An authorizer that asked whose record this was would refuse here for ever: the
-    expiry context carries no account, so a member-audience row admits it under no
-    audience rule that exists. Such a row would then be unexpirable — silently, and
-    only for the memories a person marked private, which is the wrong half to keep.
+    Age-based expiry reaches ``workspace``-audience rows only. Two independent
+    reasons agree that the sweep cannot take a member row: it runs under an
+    accountless SYSTEM context that could not authorize erasing member-private
+    content, and a workspace operator's data-minimization setting is not authority
+    over one member's own record.
+
+    **And the exemption is total rather than sweep-only**, which is the half worth
+    testing together with it: the member's own read still returns the row. Filtering
+    it out on read while the sweep can never remove it would strand it permanently
+    unreadable, with no deletion record and no route back except turning the gate
+    off — strictly worse than either alternative. So the pairing is the test: the
+    shared row goes, the private row stays *and stays readable*.
     """
     private = _seed(
         sweep,
@@ -587,11 +795,26 @@ def test_a_member_audience_memory_expires_like_a_workspace_one(
         ),
     )
     shared = _seed(sweep, _row(age=_EXPIRED_AGE))
+    sweep.expire_by_age()
 
     _run_one_sweep(sweep)
 
-    assert sweep.stored(private.id) is None
     assert sweep.stored(shared.id) is None
+    assert sweep.stored(private.id) is not None, (
+        "an expired member-audience memory was swept: age-based expiry reached "
+        "outside audience_kind = workspace"
+    )
+    # Not merely present in the table — still resolvable by its own member, which is
+    # the read half of the same exemption.
+    with sweep.reading() as uow:
+        resolved = resolve_memory(
+            sweep.context(), uow, canonical_ref(memory_reference(private.id))
+        )
+    assert isinstance(resolved, RecordHead) and resolved.readable, resolved
+    # The workspace row, by contrast, is gone from the ledger's point of view too.
+    assert [event["subject_ref"] for event in sweep.deleted_events()] == [
+        memory_reference(shared.id)
+    ]
 
 
 # --- the closure: the property the disposition split exists for -----------------------
@@ -622,6 +845,7 @@ def test_an_expired_predecessor_leaves_its_live_replacement_on_its_own_clock(
     predecessor = _seed(sweep, _row(age=_FRESH_AGE, title="what we used to think"))
     replacement_id = _supersede(sweep, sweep.context(), predecessor)
     _age_row(sweep, predecessor.id, _EXPIRED_AGE)
+    sweep.expire_by_age()
     before = sweep.stored(replacement_id)
     assert before is not None and before.invalidated_at is None
 
@@ -667,6 +891,7 @@ def test_a_replacement_reached_by_an_ordinary_path_goes_with_its_expired_source(
         _row(age=_FRESH_AGE, title="built on it"),
         links=[(memory_reference(source.id), _DERIVED_FROM, False)],
     )
+    sweep.expire_by_age()
 
     _run_one_sweep(sweep)
 
@@ -695,6 +920,7 @@ def test_a_chain_of_expired_ancestors_leaves_the_current_generation_standing(
     # see the note on the test above.
     _age_row(sweep, first.id, _EXPIRED_AGE)
     _age_row(sweep, second_id, _EXPIRED_AGE)
+    sweep.expire_by_age()
 
     _run_one_sweep(sweep)
 
@@ -719,6 +945,7 @@ def test_a_sweep_job_with_no_enabled_schedule_expires_nothing(
     schedule is off.
     """
     kept = _seed(sweep, _row(age=_EXPIRED_AGE))
+    sweep.expire_by_age()
     now = datetime.now(UTC)
     with sweep.unit() as uow:
         uow.connection.execute(
@@ -757,6 +984,7 @@ def test_a_forged_capability_refuses_rather_than_expiring(
     something that has already proved it is not the worker.
     """
     target = _seed(sweep, _row(age=_EXPIRED_AGE))
+    sweep.expire_by_age()
     ref = canonical_ref(memory_reference(target.id))
     real = sweep.schedule_row(MEMORY_RETENTION_SWEEP)
 
@@ -787,6 +1015,7 @@ def test_a_forged_capability_refuses_rather_than_expiring(
                 forged,
                 record_type=MEMORY_RECORD_QUALIFIED,
                 target_ref=ref,
+                gate_key=RETENTION_EXPIRE_BY_AGE_KEY,
                 retention_key=RETENTION_DAYS_KEY,
                 retention_days=RETENTION_DAYS_DEFAULT,
             )
@@ -800,6 +1029,7 @@ def test_a_forged_capability_refuses_rather_than_expiring(
             stranger,
             record_type=MEMORY_RECORD_QUALIFIED,
             target_ref=ref,
+            gate_key=RETENTION_EXPIRE_BY_AGE_KEY,
             retention_key=RETENTION_DAYS_KEY,
             retention_days=RETENTION_DAYS_DEFAULT,
         )
@@ -826,6 +1056,7 @@ def test_an_absent_or_unexpired_target_is_skipped_without_a_deletion_record(
 
     fresh = _seed(sweep, _row(age=_FRESH_AGE, title="not expired"))
     absent = uuid7()
+    sweep.expire_by_age()
     monkeypatch.setattr(
         retention_module,
         "list_expired_memory_roots",
@@ -857,6 +1088,7 @@ def test_a_verified_expiry_publishes_record_deleted_from_the_worker(
     the publish completes with zero deliveries.
     """
     target = _seed(sweep, _row(age=_EXPIRED_AGE))
+    sweep.expire_by_age()
 
     _run_one_sweep(sweep)
 
@@ -1079,6 +1311,7 @@ def test_a_backlog_larger_than_one_batch_drains_across_committed_batches(
         for row in roots:
             insert_memory(uow.connection, row)
     assert sweep.memory_count() == 250
+    sweep.expire_by_age()
 
     base = datetime.now(UTC)
     first = _run_one_sweep(sweep, at=base)
@@ -1127,6 +1360,7 @@ def test_a_batch_with_a_remainder_and_no_progress_falls_through_to_backoff(
     from rheo_recallatron import retention as retention_module
 
     stubborn = _seed(sweep, _row(age=_EXPIRED_AGE))
+    sweep.expire_by_age()
     monkeypatch.setattr(
         retention_module,
         "dispatch_memory_expiry_in",
