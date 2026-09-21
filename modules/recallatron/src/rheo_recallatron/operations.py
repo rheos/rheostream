@@ -1,16 +1,21 @@
 """Recallatron's declared operations: first-cut lexical ``recall``, the centered
-``read`` window, and the two writes — ``remember`` and ``derive``.
+``read`` window, the two writes — ``remember`` and ``derive`` — and the two lifecycle
+changes, ``correct`` and ``supersede``.
 
 The reads are ``READ`` and carry no audit spec, because the read class needs none. The
-writes are ``MUTATE``, carry ``AuditSpec(subject_field=None)``, and publish
-``recallatron.memory.recorded`` inside the same transaction as their row insert and
-the dispatcher's success audit row. All four are owner/member/service (§ A10). Every
-permission decision any of them makes is
+four writers are ``MUTATE`` and publish inside the same transaction as their row
+writes and the dispatcher's success audit row. ``remember``/``derive`` carry
+``AuditSpec(subject_field=None)`` and are owner/member/service;
+``correct``/``supersede`` carry ``AuditSpec(subject_field="ref")`` — they act on a
+record that already exists — and are owner/member alone (§ A10). Every permission
+decision any of them makes is
 :func:`~rheo_recallatron.eligibility.eligible_memory`'s; what lives here is input
 validation, the lexical query, the five-step read precedence, the write ordering, and
 the shape of the answer. The write *machinery* — audience ceiling, purpose rule,
 reference resolution, the row insert — is ``writes.py``'s, because the trusted source
-seam has to write a memory exactly the way these two do.
+seam has to write a memory exactly the way these two do, and the lifecycle closure
+itself is ``lifecycle.py``'s, because erasure reaches it through the core's deletion
+coordinator rather than through an operation of this module's.
 
 **The read precedence is the security core of this module, and its order is the
 guarantee.** § A6:
@@ -57,6 +62,7 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
+from rheo_core.deletion import lock_workspace_lifecycle
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import UnitOfWork
@@ -77,12 +83,17 @@ from rheo_recallatron.configuration import (
     RECALL_QUERY_MIN_LENGTH,
 )
 from rheo_recallatron.contracts import (
+    CorrectInput,
     DeriveInput,
+    MemoryCorrected,
+    MemorySuperseded,
     MemoryWritten,
     RememberInput,
     Strict,
+    SupersedeInput,
 )
 from rheo_recallatron.eligibility import (
+    LIFECYCLE_ROLES,
     READ_ROLES,
     Denied,
     Eligible,
@@ -97,6 +108,7 @@ from rheo_recallatron.eligibility import (
 )
 from rheo_recallatron.entities import ENTITY_OPERATIONS, resolve_mentions
 from rheo_recallatron.events import consumers_for_dispatch
+from rheo_recallatron.lifecycle import correct, supersede
 from rheo_recallatron.references import canonical_ref, memory_target
 from rheo_recallatron.refusals import (
     CONTAINER_MEMBERSHIP_REQUIRED,
@@ -122,14 +134,17 @@ MEMORY_RECALL: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.recall"
 MEMORY_READ: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.read"
 MEMORY_REMEMBER: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.remember"
 MEMORY_DERIVE: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.derive"
+MEMORY_CORRECT: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.correct"
+MEMORY_SUPERSEDE: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.supersede"
 
 WRITE_ROLES: Final = frozenset({Role.OWNER, Role.MEMBER, Role.SERVICE})
 """§ A10's roles for ``remember`` and ``derive``.
 
 The same three members as :data:`~rheo_recallatron.eligibility.READ_ROLES` today, and
 declared separately anyway: § A10's table gives ``correct``/``supersede`` only
-owner/member, so the write roles are not one set that happens to equal the read set —
-they are two lists that agree here and are about to stop agreeing.
+owner/member — :data:`~rheo_recallatron.eligibility.LIFECYCLE_ROLES`, which they and
+the memory's own delete share — so the write roles are not one set that happens to
+equal the read set.
 """
 
 STRATEGY_LEXICAL: Final = "lexical"
@@ -482,12 +497,25 @@ def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> Read
 
 # --- the write handlers ---------------------------------------------------------------
 #
-# Both are ``MUTATE``, both are owner/member/service, and both take the same shape: open
-# the request (which is where a missing or corrupt retention policy refuses), decide the
-# audience and the purposes, resolve every reference under the caller, resolve the
-# mentions, and only then write. Nothing is inserted before every refusal that could
-# happen has happened — which is what makes "refuses without a resulting record" a
-# property of the ordering rather than of a rollback.
+# Both are ``MUTATE``, both are owner/member/service, and both take the same shape: take
+# the workspace lifecycle lock, open the request (which is where a missing or corrupt
+# retention policy refuses), decide the audience and the purposes, resolve every
+# reference under the caller, resolve the mentions, and only then write. Nothing is
+# inserted before every refusal that could happen has happened — which is what makes
+# "refuses without a resulting record" a property of the ordering rather than of a
+# rollback.
+#
+# **The lock comes before the first source read, and that is § A7 rather than caution.**
+# Both of these are provenance writers: they read a source's eligibility and then store
+# a link asserting the memory they write was derived from it. Under ``READ COMMITTED`` a
+# source read issued before the lock sees whatever was committed when it ran, so a
+# concurrent correction, supersession or erasure of that source could commit between the
+# read and the insert and leave a memory derived from a row that is no longer current —
+# a dependency the closure that invalidated it has already walked past. Locking first
+# makes the reread after the wait the contract's own "a writer that was waiting must
+# reread eligibility and revision after the lock". The lock is transaction-scoped and
+# re-entrant, so the trusted source seam taking it again inside ``write_memory``'s
+# caller costs nothing.
 
 
 def remember(
@@ -504,6 +532,7 @@ def remember(
     the trusted source seam is the other one.
     """
     consumers = consumers_for_dispatch(uow)
+    lock_workspace_lifecycle(uow.connection)
     request = _opened(ctx, uow)
     audience = resolve_audience(ctx, model_input.audience)
     purposes = resolve_purposes(ctx, model_input.purposes)
@@ -553,6 +582,7 @@ def derive(
     takes the provenance from this call site, which passes none.
     """
     consumers = consumers_for_dispatch(uow)
+    lock_workspace_lifecycle(uow.connection)
     request = _opened(ctx, uow)
     resolved = resolve_sources(
         ctx,
@@ -641,13 +671,53 @@ DERIVE_DECLARATION: Final = OperationDeclaration(
     audit=AuditSpec(subject_field=None),
 )
 
+CORRECT_DECLARATION: Final = OperationDeclaration(
+    name=MEMORY_CORRECT,
+    safety_class=SafetyClass.MUTATE,
+    # No ``service``: § A10's table gives correcting and superseding to owner and
+    # member alone. A service may write what it learns and may not rewrite what
+    # somebody else recorded.
+    roles=LIFECYCLE_ROLES,
+    input_model=CorrectInput,
+    output=MemoryCorrected,
+    # Not ``NATURAL``: correcting twice with the same text is two corrections, and
+    # the compare-and-set is what stops the second one acting on a stale copy.
+    idempotency=Idempotency.NONE,
+    # The first Recallatron declaration that names a subject field, because it is the
+    # first that acts on a record that already exists. ``dispatch``'s ``_subject_ref``
+    # reads it off the validated input, so the audit row for a correction names the
+    # memory it corrected rather than carrying the null a creating write does.
+    #
+    # ``MUTATE`` attaches **no** execution guard — ``core_guards_for`` returns an
+    # empty tuple below the three gated classes — and that is correct rather than a
+    # gap. ``RecordStateGuard`` exists to recheck that an *approved* call's subject
+    # has not moved between the approval and the effect; a mutate has no approval and
+    # no such window, and its concurrency control is the ``expected_revision`` CAS in
+    # this operation's own input, judged under the lifecycle lock.
+    audit=AuditSpec(subject_field="ref"),
+)
+
+SUPERSEDE_DECLARATION: Final = OperationDeclaration(
+    name=MEMORY_SUPERSEDE,
+    safety_class=SafetyClass.MUTATE,
+    roles=LIFECYCLE_ROLES,
+    input_model=SupersedeInput,
+    output=MemorySuperseded,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field="ref"),
+)
+
 OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (RECALL_DECLARATION, recall),
     (READ_DECLARATION, read),
     (REMEMBER_DECLARATION, remember),
     (DERIVE_DECLARATION, derive),
+    (CORRECT_DECLARATION, correct),
+    (SUPERSEDE_DECLARATION, supersede),
     *ENTITY_OPERATIONS,
 )
-"""What the manifest declares: two reads, two writes and the two service-only entity
-reads. Correction and supersession join it when they exist; the record resolver is
-declared beside this tuple on the manifest and shares the same eligibility function."""
+"""What the manifest declares: two reads, two writes, the two lifecycle changes and
+the two service-only entity reads. The record resolver is declared beside this tuple
+on the manifest and shares the same eligibility function; erasure is not here at all,
+because a memory is erased through the core's own record-delete operation against the
+owned-delete pair this module declares on its record type."""

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from rheo_core.deletion import OWNED_DELETIONS
 from rheo_core.events import ConsumerRegistry
 from rheo_core.identity import sync_providers
 from rheo_core.migrations.orchestrator import (
@@ -124,7 +125,13 @@ def run_startup() -> StartupReport:
     # call ran anywhere, ``TOOL_REGISTRY`` was empty in a deployed process and
     # ``agent_default`` named nothing, so the MCP facade had no tools to list.
     register_core_tools()
-    modules = load_modules(consumers=CONSUMERS)
+    # ``deletions`` is this process's half of a module's erasure cascade, and the
+    # value is the process-global registry because that is the one the deletion
+    # coordinator resolves against — passing any other instance would register hooks
+    # it never reads. Without it, every deletion in this process runs the owner's
+    # own delete alone: a memory would be erased and every memory derived from it
+    # would survive, which is not a narrower cascade but a wrong one.
+    modules = load_modules(consumers=CONSUMERS, deletions=OWNED_DELETIONS)
     # Criterion 14's wiring layer, and the reason it is here and not one line up: a
     # module supplies its sink through its manifest, so this is the first point at
     # which "every registered operation above the read class has somewhere to write

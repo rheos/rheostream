@@ -94,6 +94,20 @@ it on the resolver path, which has no declaration of its own to be gated by.
 """
 
 
+LIFECYCLE_ROLES: Final = frozenset({Role.OWNER, Role.MEMBER})
+"""§ A10's roles for ``correct``, ``supersede`` and deleting a memory.
+
+Narrower than :data:`READ_ROLES` by exactly one member: ``service`` may read and may
+write, and may not change or erase what is already recorded. One name for the three
+because § A10's table gives them one list — unlike the read and write sets, which
+agree today and are declared apart because the table gives *them* two.
+
+It is also what the manifest's ``delete_roles`` is built from, so "who may delete a
+memory" is declared and enforced from one place rather than from a declaration and a
+check that happen to agree.
+"""
+
+
 class ReadMode(StrEnum):
     """Which lifecycle states a read admits.
 
@@ -374,10 +388,52 @@ def _decide(
 
 
 def _audience_admits(row: MemoryRow, request: MemoryRequest) -> bool:
+    return audience_admits(row, request.account_id)
+
+
+def audience_admits(row: MemoryRow, account_id: UUID | None) -> bool:
+    """§ A4's audience test over one row, for one authenticated account.
+
+    Taken as the bare account id rather than as a :class:`MemoryRequest` so the
+    deletion authorizer below can ask it too: that path has no request to build,
+    because it reads no retention window and resolves no content. Keeping it here is
+    what keeps this file the only one in the package that compares an audience.
+    """
     if row.audience_kind == AUDIENCE_WORKSPACE:
         return True
-    account_id = request.account_id
     return account_id is not None and row.audience_id == account_id
+
+
+def deletion_admits(ctx: WorkspaceContext, uow: UnitOfWork, row: MemoryRow) -> bool:
+    """§ A7's content-free deletion check: module, role, audience, bound purpose.
+
+    **Deliberately not :func:`eligible_memory`**, and the three differences are the
+    whole reason this function exists rather than a ``mode=`` on that one:
+
+    - **No retention horizon.** An expired row is the one the scheduled sweep
+      exists to erase, so a deletion authorizer that applied the horizon would
+      refuse exactly the rows retention wants gone.
+    - **No lifecycle mode.** A retained ``source_corrected`` or
+      ``source_superseded`` row is still somebody's to forget.
+    - **No link resolution.** Resolving a row's links is how a *read* decides
+      whether its content may travel; a deletion returns no content, and a memory
+      whose linked record has since been deleted must not become unerasable because
+      of it.
+
+    What it keeps is every rule that says *whose* record this is: the module has to
+    be enabled here, the caller has to hold one of § A10's lifecycle roles, the
+    row's audience has to admit the caller, and a bound context has to be inside the
+    row's purpose set. It answers a bare boolean and never the row, which is what
+    makes the authorizer built on it content-free by construction.
+    """
+    if MODULE_ID not in ctx.enabled_modules or ctx.role not in LIFECYCLE_ROLES:
+        return False
+    if not audience_admits(row, ctx.principal.account_id):
+        return False
+    purpose = ctx.principal.bound_purpose
+    return purpose is None or (
+        get_memory_purpose(uow.connection, row.id, purpose.value) is not None
+    )
 
 
 def _mode_admits(row: MemoryRow, mode: ReadMode) -> bool:

@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Annotated, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from rheo_contracts import ContextPurpose
+from rheo_contracts import ContextPurpose, RecordRef, RecordRefMalformed
 from rheo_contracts.source_units import MemoryKind
 
 from rheo_recallatron.configuration import (
@@ -37,9 +37,11 @@ from rheo_recallatron.configuration import (
     MAX_MENTIONS_PER_WRITE,
     MAX_REFS_PER_WRITE,
     MENTION_ROLE_MAX_LENGTH,
+    MINIMUM_REVISION,
     TITLE_MAX_LENGTH,
     TITLE_MIN_LENGTH,
 )
+from rheo_recallatron.references import is_memory_ref
 from rheo_recallatron.storage import tables as t
 
 EntityKind = Literal["person", "organization", "project", "topic", "place", "thing"]
@@ -215,6 +217,105 @@ class DeriveInput(_Write):
     )
 
 
+class _Lifecycle(Strict):
+    """What ``correct`` and ``supersede`` have in common: a target and a CAS.
+
+    ``ref`` is a :class:`~rheo_contracts.refs.RecordRef` rather than the ``str`` every
+    other reference field in this file carries, and the difference is load-bearing
+    rather than stylistic. ``AuditSpec(subject_field="ref")`` names an input field
+    **carrying a ``RecordRef``**, and ``dispatch``'s ``_subject_ref`` records a
+    subject only for a field that is one; a ``str`` here would write a null
+    ``subject_ref`` on the audit row of the two operations in this module that
+    genuinely act on a record, indistinguishable from the ordinary null of an
+    operation that acts on none. The validator below is what keeps the **wire** form
+    the same canonical string a caller sends everywhere else.
+
+    ``expected_revision`` is § A7's compare-and-set and is required at or above 1:
+    the column's own check constraint starts at 1, so a caller that supplied 0 would
+    be naming a revision no row can hold.
+    """
+
+    ref: RecordRef
+    expected_revision: int = Field(ge=MINIMUM_REVISION)
+
+    @field_validator("ref", mode="before")
+    @classmethod
+    def _accept_the_canonical_string(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        try:
+            parsed = RecordRef.parse(value)
+        except (RecordRefMalformed, TypeError):
+            raise ValueError("a reference must be canonical") from None
+        if not is_memory_ref(parsed):
+            raise ValueError("the target must be a memory reference")
+        return parsed
+
+
+class CorrectInput(_Lifecycle):
+    """``correct(ref, expected_revision, title, body, confidence?)``.
+
+    A correction **restates** the record rather than patching it: ``title`` and
+    ``body`` are required and ``confidence`` defaults to null, so the three columns
+    § A7 lets a correction touch are written from what the caller sent and from
+    nothing else. There is no partial form, because a patch whose omitted field means
+    "leave it" and whose null means "clear it" cannot express both over a nullable
+    column without a third sentinel nobody would remember.
+
+    No audience, purposes, references or mentions: a correction fixes what a memory
+    says, and changing who may read it or what it was derived from is a different
+    act with a different closure.
+    """
+
+    title: Title
+    body: Body
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("title")
+    @classmethod
+    def _title_is_trimmed_and_bounded(cls, value: str) -> str:
+        return _trimmed_title(value)
+
+    @field_validator("body")
+    @classmethod
+    def _body_is_nonblank_and_bounded(cls, value: str) -> str:
+        return _bounded_body(value)
+
+
+class SupersedeInput(_Lifecycle):
+    """``supersede(ref, expected_revision, kind, title, body, confidence?,
+    occurred_at?)``.
+
+    The replacement's *content* is the caller's; its **audience, purposes and
+    restrictions are not**. § A5 gives the replacement source-meet purposes and
+    audience and the predecessor's copied restrictions, so there is no audience,
+    purposes, ``about_refs`` or ``provenance_refs`` field here — and no field for
+    the marked ancestry link either, which is § A5's "the marker is not accepted in
+    caller input" expressed as an absence rather than as a refusal.
+    """
+
+    kind: MemoryKind
+    title: Title
+    body: Body
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    occurred_at: datetime | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title_is_trimmed_and_bounded(cls, value: str) -> str:
+        return _trimmed_title(value)
+
+    @field_validator("body")
+    @classmethod
+    def _body_is_nonblank_and_bounded(cls, value: str) -> str:
+        return _bounded_body(value)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _occurred_at_is_aware(cls, value: datetime | None) -> datetime | None:
+        return _aware(value)
+
+
 class EntityHead(Strict):
     """One entity as a writer sees it on the memory it just created."""
 
@@ -240,6 +341,39 @@ class MemoryWritten(Strict):
     recorded_at: datetime
     revision: int
     mentions: tuple[EntityHead, ...]
+
+
+class MemoryCorrected(Strict):
+    """What a correction returns: the record it fixed, at its new revision.
+
+    **No count of what the closure invalidated, and no list of it.** The affected
+    rows are other memories, whose existence is exactly what a caller who may read
+    this one is not entitled to learn; a "3 derivatives invalidated" field would
+    disclose the shape of somebody else's graph on every correction, and no single
+    response would look wrong.
+    """
+
+    ref: str
+    kind: str
+    revision: int
+    corrected_at: datetime
+
+
+class MemorySuperseded(Strict):
+    """What a supersession returns: the replacement, and where it came from.
+
+    ``replacement`` is the same :class:`MemoryWritten` every other write path
+    answers with, nested rather than restated, so a field added to a write's answer
+    cannot be forgotten here. ``predecessor_revision`` is the predecessor's **new**
+    revision, which is what a caller holding the old one needs in order to know its
+    copy has moved.
+
+    Closure size is absent here for the reason :class:`MemoryCorrected` gives.
+    """
+
+    replacement: MemoryWritten
+    predecessor_ref: str
+    predecessor_revision: int
 
 
 class EntityItem(Strict):

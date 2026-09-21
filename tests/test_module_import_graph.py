@@ -10,6 +10,7 @@ _SCAN_DIRS = ("packages", "apps", "tests")
 _MODULE_TOKEN = "rheo_recallatron"
 _PATH_TOKEN = "modules/recallatron"
 _DECLARED_TEST_DEPENDENCIES = {
+    "tests/postgres/test_memory_lifecycle.py",
     "tests/postgres/test_memory_records.py",
     "tests/postgres/test_module_install.py",
     "tests/postgres/test_module_lifecycle.py",
@@ -22,10 +23,12 @@ _DECLARED_TEST_DEPENDENCIES = {
 
 FR 14 is about ``packages`` and ``apps``; a *test* may reach for the one real module
 distribution in the checkout when that is its subject, and this set is the record of
-which ones do. ``test_memory_records.py`` is the memory schema's own census and
-``test_workspace_status.py`` reads a real module's package and schema versions back
-through ``core.workspace.status`` — neither has a substitute, because a fixture module
-has no migration chain and no installed distribution metadata to report.
+which ones do. ``test_memory_records.py`` is the memory schema's own census,
+``test_memory_lifecycle.py`` drives the deletion coordinator against the one real
+owned-deletable record type in the checkout, and ``test_workspace_status.py`` reads a
+real module's package and schema versions back through ``core.workspace.status`` —
+none has a substitute, because a fixture module has no migration chain, no
+owned-delete declaration and no installed distribution metadata to report.
 
 The assertion is an equality, so an entry that stops being true reds here as a stale
 exclusion rather than lingering as permission nobody uses."""

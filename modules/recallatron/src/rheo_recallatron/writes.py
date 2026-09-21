@@ -109,10 +109,19 @@ WORKSPACE_AUDIENCE: Final = WriteAudience(AUDIENCE_WORKSPACE, None)
 
 @dataclass(frozen=True, slots=True)
 class ProposedLink:
-    """One permission-bearing link a write proposes, before it is deduplicated."""
+    """One link a write proposes, before it is deduplicated.
+
+    ``supersession_lineage`` defaults to ``False``, which is what every caller-facing
+    path produces: an ordinary link is permission-bearing, and a caller cannot ask
+    for a marked one. Only the supersession closure sets it — for the ancestry it
+    copies off a predecessor and for the one marked ``derived_from`` it adds to that
+    predecessor — so "the marker is not accepted in caller input" (§ A5) is a
+    property of who can reach this field rather than of a refusal.
+    """
 
     ref: str
     relation: str
+    supersession_lineage: bool = False
 
 
 def opened(ctx: WorkspaceContext, uow: UnitOfWork) -> MemoryRequest:
@@ -489,7 +498,7 @@ def write_memory(
                 ref=link.ref,
                 relation=link.relation,
                 created_at=recorded_at,
-                supersession_lineage=False,
+                supersession_lineage=link.supersession_lineage,
             ),
         )
     reference = memory_reference(memory_id)

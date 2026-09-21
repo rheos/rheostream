@@ -7,15 +7,16 @@ nobody did.
 
 **What this revision fills in, and what stays empty.** The storage declaration names
 the two Postgres extensions its tables need, ``configuration_schema`` carries the
-module's one settings key, ``record_types`` declares the two addressable tables, and
-``operations``/``resolvers`` carry the read half, the write half and the two
-service-only entity reads. ``events`` declares both ratified event types and
-``audit_sink`` is installed, because the first ``mutate`` operation now exists and
-neither is optional for one: dispatch refuses every non-``READ`` call whose module has
-no sink. ``tools``, ``subscriptions``, ``deletion_participants`` and ``export`` are
-still empty or unimplemented, and that is deliberate: a declaration whose
-implementation is a later prompt's would be a promise the loader registers and nothing
-keeps.
+module's one settings key, ``record_types`` declares the two addressable tables and
+carries the memory's own owned-delete pair, and ``operations``/``resolvers`` carry the
+read half, the write half, the two lifecycle changes and the two service-only entity
+reads. ``events`` declares both ratified event types and ``audit_sink`` is installed,
+because the first ``mutate`` operation now exists and neither is optional for one:
+dispatch refuses every non-``READ`` call whose module has no sink.
+``deletion_participants`` carries the other half of an erasure. ``tools``,
+``subscriptions`` and ``export`` are still empty or unimplemented, and that is
+deliberate: a declaration whose implementation is a later prompt's would be a promise
+the loader registers and nothing keeps.
 
 **Why the settings key is not declared in this file.** This module now imports its own
 operations, which import the eligibility service, which has to read the retention key
@@ -27,9 +28,10 @@ manifest from there.
 from importlib import metadata
 from typing import Final, NoReturn
 
-from rheo_contracts import CONTRACT_VERSION, Role
+from rheo_contracts import CONTRACT_VERSION
 from rheo_core.audit.core_sink import CORE_AUDIT_SINK
 from rheo_core.modules.manifest import (
+    DeletionParticipant,
     ExportDeclaration,
     ModuleManifest,
     RecordType,
@@ -42,7 +44,14 @@ from rheo_recallatron.configuration import (
     MODULE_ID,
     RETENTION_DAYS_SPEC,
 )
+from rheo_recallatron.eligibility import LIFECYCLE_ROLES
 from rheo_recallatron.events import EVENTS
+from rheo_recallatron.lifecycle import (
+    DELETION_PARTICIPANT_TYPES,
+    authorize_memory_delete,
+    delete_owned_memory,
+    on_record_deleted,
+)
 from rheo_recallatron.operations import OPERATIONS
 from rheo_recallatron.resolvers import resolve_memory
 
@@ -92,10 +101,14 @@ MANIFEST: Final = ModuleManifest(
     # gains a synthetic id to make it one.
     #
     # ``deletable=True`` on ``memory`` alone: a memory is the thing a person asks to
-    # forget, and the owned-delete registration that acts on it is the deletion
-    # prompt's. An entity is pruned as a consequence of losing its last mention, which
-    # is the service's own housekeeping rather than a ``core.record.delete`` target, so
-    # it declares no delete roles.
+    # forget, and it carries the owned-delete pair the deletion coordinator calls. An
+    # entity is pruned as a consequence of losing its last mention, which is the
+    # service's own housekeeping rather than a deletion target, so it declares no
+    # delete roles and no pair.
+    #
+    # ``delete_roles`` is the same frozen set the authorizer checks, not a second copy
+    # of it: the declaration a reader sees and the check a caller meets cannot come
+    # to disagree if there is one of them.
     #
     # ``audience_field`` names the column carrying the record's audience. A memory's
     # audience is the ``(audience_kind, audience_id)`` pair and the *kind* is the
@@ -108,9 +121,11 @@ MANIFEST: Final = ModuleManifest(
             name=MEMORY_RECORD_TYPE,
             table=f"{MODULE_ID}.{MEMORY_RECORD_TYPE}",
             deletable=True,
-            delete_roles=frozenset({Role.OWNER, Role.MEMBER}),
+            delete_roles=LIFECYCLE_ROLES,
             exportable=True,
             audience_field="audience_kind",
+            authorize_delete=authorize_memory_delete,
+            delete_owned=delete_owned_memory,
         ),
         RecordType(
             name=ENTITY_RECORD_TYPE,
@@ -152,7 +167,18 @@ MANIFEST: Final = ModuleManifest(
     # resolution of its own to declare. The resolver calls straight into the shared
     # eligibility function — it is not a second permission check.
     resolvers=((MEMORY_RECORD_TYPE, resolve_memory),),
-    deletion_participants=(),
+    # One participant, over the one owned record type release one has for it to hook.
+    # It is the other half of a memory's erasure: the owned-delete pair above removes
+    # the target and the rows that hang off it, and this removes every memory that
+    # depended on the reference — the ratified cascade's step 2 and step 3. Its
+    # handler works from the reference rather than from the row, so it is correct
+    # whether the target was a memory this module owned or, when another owned type
+    # exists, somebody else's record.
+    deletion_participants=(
+        DeletionParticipant(
+            record_types=DELETION_PARTICIPANT_TYPES, handler=on_record_deleted
+        ),
+    ),
     export=ExportDeclaration(
         format_version=1,
         schema_path="export.schema.json",

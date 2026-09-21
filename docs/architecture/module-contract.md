@@ -85,11 +85,34 @@ RecordType
   delete_roles: set[Role]         # who may call core.record.delete for it; required when deletable
   exportable: bool
   audience_field: str | None      # column holding the record's audience, when records carry one
+  authorize_delete: DeleteAuthorizer | None   # (ctx, uow, ref) -> DeleteAuthorization | Refusal
+  delete_owned: OwnedDeleter | None           # (ctx, uow, authorization) -> RemovedMemories
 ```
 
 A record type appears in exactly one manifest. Two modules declaring the same
 `<module_id>.<name>` cannot happen because the module id is the prefix; two modules declaring a
 table outside their schema fail install.
+
+**Named deviation: the owned-delete pair is a field of `RecordType`, added in run 1a1.** The
+[deletion coordinator](deletion-export-migration.md#the-cascade) reaches a module's own delete
+through two callables, and the manifest carried no field for them — so until a real owner
+existed, only a test harness registered a declaration, by hand. The pair lives here rather than
+in a twenty-fifth manifest field because "a record type appears in exactly one manifest" is
+already the invariant the owned-delete registry needs: hanging the pair off the type makes
+"exactly one declaration owns a record type" structural, with nowhere to write a declaration for
+a type this manifest does not own and nowhere to write two for one type. Both halves default to
+null — the empty default every manifest written before an owner keeps — and the pair is whole or
+absent: a type carrying one half fails validation, and so does a pair on a type that is not
+`deletable`. `authorize_delete` is content-free by shape, answering a reference and a revision
+or a refusal and never the record, and it authorizes a retained or expired row as readily as a
+current one, because those are exactly the rows retention exists to remove.
+
+The loader registers the pair on the process-global owned-delete registry **unconditionally**,
+unlike `deletion_participants`, which a composition root opts into by passing that registry.
+The coordinator resolves against that one instance, so a declaration routed anywhere else is one
+it never finds; and ownership is not a cascade choice the way a participant hook is — it is the
+record type's own statement that it is deletable at all, declared beside the `deletable` and
+`delete_roles` the loader already accepts without a parameter.
 
 ### Operations, tools, events
 

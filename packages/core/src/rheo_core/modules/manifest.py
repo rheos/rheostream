@@ -10,12 +10,16 @@ exactly as ``OperationRegistry.register(decl, handler, *, origin)`` already does
 The doc now names this module as the type's real home.
 
 **Every field is required unless it carries ``= None``**, and only ``web``,
-``agent_guidance`` and ``audit_sink`` do. Eight required fields have no consumer in
-this plan yet (``record_types``, ``events``, ``subscriptions``, ``jobs``,
-``schedules``, ``deletion_participants``, ``connector_bindings``, ``sensitivity``).
-They stay required so a module author writes an empty ``()`` or ``{}`` on purpose
-rather than by omission, and the run that builds the consumer reads a declaration
-rather than a default nobody chose.
+``agent_guidance`` and ``audit_sink`` do. Five required fields still have no
+consumer (``subscriptions``, ``jobs``, ``schedules``, ``connector_bindings``,
+``sensitivity``); ``record_types``, ``events`` and ``deletion_participants`` have
+since gained one. They stay required so a module author writes an empty ``()`` or
+``{}`` on purpose rather than by omission, and the run that builds the consumer
+reads a declaration rather than a default nobody chose.
+
+**The owned-delete pair is the one addition since**, and it is a field of
+:class:`RecordType` rather than a twenty-fifth manifest field; that class's own
+docstring carries why.
 
 **``audit_sink`` is the twenty-fourth field and is not in the ratified table.** It
 is carried over from the 0c0 stub because it is the only channel by which a module
@@ -50,7 +54,15 @@ from rheo_contracts import OperationDeclaration, Role, ToolDeclaration
 from rheo_contracts.refs import is_reserved_module
 
 from rheo_core.audit.sink import AuditSink
-from rheo_core.deletion.registry import DeletionHandler as _DeletionHandler
+from rheo_core.deletion.registry import (
+    DeleteAuthorizer as _DeleteAuthorizer,
+)
+from rheo_core.deletion.registry import (
+    DeletionHandler as _DeletionHandler,
+)
+from rheo_core.deletion.registry import (
+    OwnedDeleter as _OwnedDeleter,
+)
 from rheo_core.events.consumers import ConsumerSubscription
 from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import RecordResolver
@@ -127,6 +139,32 @@ off that caller rather than guessed.
 nothing in this run calls either: narrowing them now would be the guess this one no
 longer is.
 """
+
+
+def _owned_delete_callable(value: object) -> object:
+    """The duck check :class:`RecordType`'s owned-delete pair applies.
+
+    ``None`` passes, because the pair is absent on every record type whose module
+    does not own deleting it. Everything else must be callable, and the check is a
+    plain validator rather than an ``isinstance`` probe for the reason this module's
+    docstring gives at ``audit_sink``: both narrowed types are ``typing.Protocol``
+    without ``@runtime_checkable``.
+    """
+    if value is None or callable(value):
+        return value
+    raise ValueError("an owned-delete callable must be callable")
+
+
+DeleteAuthorizer = Annotated[
+    _DeleteAuthorizer | None, PlainValidator(_owned_delete_callable)
+]
+"""``(ctx, uow, ref) -> DeleteAuthorization | Refusal``: may this be deleted, and at
+which revision. Content-free by shape — see
+:class:`~rheo_core.deletion.registry.DeleteAuthorization`."""
+
+OwnedDeleter = Annotated[_OwnedDeleter | None, PlainValidator(_owned_delete_callable)]
+"""``(ctx, uow, authorization) -> RemovedMemories``: remove the record and the rows the
+owner holds because of it."""
 
 Exporter = Callable[..., object]
 """What writes the module's records into an export.
@@ -245,7 +283,25 @@ class Dependency(BaseModel):
 
 class RecordType(BaseModel):
     """One record type the module owns (``module-contract.md`` § Owned record
-    types). A record type appears in exactly one manifest."""
+    types). A record type appears in exactly one manifest.
+
+    **``authorize_delete``/``delete_owned`` are the additive owned-delete
+    declaration**, and they live here rather than in a twenty-fifth manifest field
+    on purpose. "A record type appears in exactly one manifest" is already the
+    invariant :class:`~rheo_core.deletion.registry.OwnedDeletionRegistry` needs —
+    exactly one declaration owns a record type — so hanging the pair off the type
+    makes that structural: there is nowhere to write an owned-delete declaration for
+    a type this manifest does not own, and nowhere to write two for one type. A
+    parallel top-level tuple keyed by ``record_type`` would have made both
+    expressible and then had to refuse them.
+
+    Both default to ``None`` — the empty default every manifest written before an
+    owner existed keeps — and the pair is whole or absent: a type carrying one half
+    is a module that meant to own its deletion and stopped half way, which is worth
+    a validation error rather than a registration the coordinator silently never
+    makes. A pair is meaningful only on a ``deletable`` type, so one on a type that
+    is not deletable is refused too.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -255,6 +311,25 @@ class RecordType(BaseModel):
     delete_roles: frozenset[Role]
     exportable: bool
     audience_field: str | None
+    authorize_delete: DeleteAuthorizer = None
+    delete_owned: OwnedDeleter = None
+
+    @model_validator(mode="after")
+    def _the_owned_delete_pair_is_whole(self) -> Self:
+        halves = (self.authorize_delete, self.delete_owned)
+        if any(half is not None for half in halves) and not all(
+            half is not None for half in halves
+        ):
+            raise ValueError(
+                f"record type {self.name!r} declares one half of an owned-delete "
+                "pair; authorize_delete and delete_owned are declared together"
+            )
+        if self.authorize_delete is not None and not self.deletable:
+            raise ValueError(
+                f"record type {self.name!r} declares an owned-delete pair but is "
+                "not deletable"
+            )
+        return self
 
 
 class StorageDeclaration(BaseModel):

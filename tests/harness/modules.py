@@ -46,6 +46,7 @@ from uuid import UUID
 import pytest
 from alembic.script import ScriptDirectory
 from rheo_contracts import WorkspaceContext
+from rheo_core.deletion import OwnedDeletionRegistry
 from rheo_core.events import ConsumerRegistry
 from rheo_core.migrations.orchestrator import build_config
 from rheo_core.modules import (
@@ -426,9 +427,24 @@ class LoadedSurfaces:
 
 @contextmanager
 def loaded_probe_modules(
-    monkeypatch: pytest.MonkeyPatch, *module_ids: str
+    monkeypatch: pytest.MonkeyPatch,
+    *module_ids: str,
+    deletions: OwnedDeletionRegistry | None = None,
 ) -> Iterator[LoadedSurfaces]:
     """Load exactly ``module_ids`` for the body of the ``with``, then forget them.
+
+    ``deletions`` is opt-in and defaults to ``None``, which is what
+    ``load_modules()``'s own parameter defaults to and means the same thing here: a
+    manifest's **deletion participants** are not registered unless a caller asks for
+    them. A test that drives an erasure cascade passes
+    ``rheo_core.deletion.OWNED_DELETIONS``, because that is the instance the deletion
+    coordinator resolves against and any other one would register hooks it never
+    reads. Every other caller keeps the isolation it had: a registry that publishes
+    no unregister is the wrong thing to write into by default from a fixture.
+
+    An owned record type's own ``authorize_delete``/``delete_owned`` pair is **not**
+    behind this parameter — the loader registers it unconditionally — so a test that
+    only needs the type to be deletable needs nothing here.
 
     A fabricated id is published from this file; any other id is taken from the real
     ``rheo.modules`` entry points, so a test that needs Recallatron beside a fixture
@@ -476,6 +492,7 @@ def loaded_probe_modules(
             registry=surfaces.operations,
             resolvers=surfaces.resolvers,
             tools=surfaces.tools,
+            deletions=deletions,
             allow=frozenset(module_ids),
         )
         assert loaded == tuple(sorted(module_ids)), loaded

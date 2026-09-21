@@ -1439,10 +1439,10 @@ except the operation it names. Both are true; neither is a pytest node.
 **Mutation:**
 ```diff
 diff --git a/apps/core/src/rheo_app_core/startup.py b/apps/core/src/rheo_app_core/startup.py
-index 36d71ef..5e02813 100644
+index af0ff97..2fe691c 100644
 --- a/apps/core/src/rheo_app_core/startup.py
 +++ b/apps/core/src/rheo_app_core/startup.py
-@@ -124,6 +124,26 @@ def run_startup() -> StartupReport:
+@@ -125,6 +125,26 @@ def run_startup() -> StartupReport:
      # call ran anywhere, ``TOOL_REGISTRY`` was empty in a deployed process and
      # ``agent_default`` named nothing, so the MCP facade had no tools to list.
      register_core_tools()
@@ -1466,9 +1466,9 @@ index 36d71ef..5e02813 100644
 +        lambda ctx, uow, model_input: _ProbeInput(),
 +        origin=TEST_HARNESS_ORIGIN,
 +    )
-     modules = load_modules(consumers=CONSUMERS)
-     # Criterion 14's wiring layer, and the reason it is here and not one line up: a
-     # module supplies its sink through its manifest, so this is the first point at
+     # ``deletions`` is this process's half of a module's erasure cascade, and the
+     # value is the process-global registry because that is the one the deletion
+     # coordinator resolves against — passing any other instance would register hooks
 diff --git a/packages/core/src/rheo_core/operations/registry.py b/packages/core/src/rheo_core/operations/registry.py
 index e33bd79..dd1e27a 100644
 --- a/packages/core/src/rheo_core/operations/registry.py
@@ -1496,7 +1496,7 @@ index e33bd79..dd1e27a 100644
 
 1 failed.
 
-**Performed by:** C4 (2026-09-16), C5 (2026-09-16)
+**Performed by:** C4 (2026-09-16), C5 (2026-09-16), 1a1 P8 (2026-09-21)
 
 **Note on why the hunk is two-part.** Neither half alone bites. Dropping
 `check_origin_profile`'s gate changes nothing on its own, because no production composition

@@ -1,9 +1,13 @@
 """Row mapping over the seven tables in :mod:`rheo_recallatron.storage.tables`.
 
-One frozen row dataclass and one ``insert``/``get`` pair per table, and nothing else:
-no eligibility, no permission check, no retention window, no audience narrowing, no
-purpose intersection. Those are the service's (Prompts 6-9), and a repository that
-knew any of them would be a second place the rules live.
+One frozen row dataclass per table and the statements the service needs over it —
+``insert``/``get``, the ordered ``list`` reads, and the lifecycle's own narrow
+``update``/``delete`` writers — and nothing else: no eligibility, no permission
+check, no retention window, no audience narrowing, no purpose intersection, and no
+traversal. Those are the service's, and a repository that knew any of them would be
+a second place the rules live. Each writer here changes the columns its name says
+and leaves every other one alone, which is what keeps "what a correction may touch"
+readable from one function rather than from a diff.
 
 **Every value is the caller's, including the identifiers and the clocks.** Minting a
 UUIDv7 here would decide *who* mints, and § A3 has an answer already: an ordinary write
@@ -22,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Connection, insert, select, update
+from sqlalchemy import Connection, delete, insert, select, update
 from sqlalchemy.engine import RowMapping
 
 from rheo_recallatron.storage import tables as t
@@ -116,6 +120,82 @@ def get_memory(conn: Connection, memory_id: UUID) -> MemoryRow | None:
         .one_or_none()
     )
     return None if mapping is None else _memory_row(mapping)
+
+
+def correct_memory(
+    conn: Connection,
+    memory_id: UUID,
+    *,
+    title: str,
+    body: str,
+    confidence: float | None,
+    revision: int,
+    corrected_at: datetime,
+) -> None:
+    """Write a correction's five columns in place, and no others.
+
+    ``search_tsv`` is generated from ``title`` and ``body``, so the database rebuilds
+    it with this statement; there is no second write to keep it in step.
+    """
+    conn.execute(
+        update(t.memory)
+        .where(t.memory.c.id == memory_id)
+        .values(
+            title=title,
+            body=body,
+            confidence=confidence,
+            revision=revision,
+            corrected_at=corrected_at,
+        )
+    )
+
+
+def invalidate_memory(
+    conn: Connection,
+    memory_id: UUID,
+    *,
+    reason: str,
+    invalidated_at: datetime,
+    revision: int,
+    superseded_by_id: UUID | None = None,
+) -> None:
+    """Mark one row invalidated, at its new revision, in the caller's transaction.
+
+    ``superseded_by_id`` is written by the supersession path and left alone by every
+    other one: the column names the *replacement*, and a row invalidated because a
+    source was corrected has none. The paired ``invalidated_at``/
+    ``invalidation_reason`` are written together because the table's own check
+    constraint refuses one without the other.
+    """
+    values: dict[str, object] = {
+        "invalidated_at": invalidated_at,
+        "invalidation_reason": reason,
+        "revision": revision,
+    }
+    if superseded_by_id is not None:
+        values["superseded_by_id"] = superseded_by_id
+    conn.execute(update(t.memory).where(t.memory.c.id == memory_id).values(**values))
+
+
+def delete_memory(conn: Connection, memory_id: UUID) -> bool:
+    """Physically remove one memory; answer whether a row was there to remove.
+
+    Its purposes, mentions, links and embeddings go with it through their own
+    ``ON DELETE CASCADE``; a predecessor naming it as successor keeps its row and
+    loses the pointer, through ``superseded_by_id``'s ``ON DELETE SET NULL``. The
+    boolean is what lets the caller count **distinct physically removed rows** rather
+    than rows it asked about — a row already absent must not reach the ledger's
+    counter.
+    """
+    result = conn.execute(delete(t.memory).where(t.memory.c.id == memory_id))
+    return result.rowcount == 1
+
+
+def delete_memory_embeddings(conn: Connection, memory_id: UUID) -> None:
+    """Remove every embedding of one memory, whatever model wrote it."""
+    conn.execute(
+        delete(t.memory_embedding).where(t.memory_embedding.c.memory_id == memory_id)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +330,21 @@ def get_memory_mention(
     )
 
 
+def list_memory_mentions(conn: Connection, memory_id: UUID) -> tuple[UUID, ...]:
+    """Every entity one memory mentions, in entity-id order.
+
+    Ordered for the reason :func:`list_memory_links` is: the erasure path walks these
+    and prunes an entity that loses its last mention, so two runs of one deletion
+    must visit them in one order rather than the planner's.
+    """
+    rows = conn.execute(
+        select(t.memory_mention.c.entity_id)
+        .where(t.memory_mention.c.memory_id == memory_id)
+        .order_by(t.memory_mention.c.entity_id)
+    ).all()
+    return tuple(row[0] for row in rows)
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryLinkRow:
     memory_id: UUID
@@ -309,6 +404,38 @@ def list_memory_links(conn: Connection, memory_id: UUID) -> tuple[MemoryLinkRow,
         select(t.memory_link)
         .where(t.memory_link.c.memory_id == memory_id)
         .order_by(t.memory_link.c.ref, t.memory_link.c.relation)
+    ).mappings()
+    return tuple(
+        MemoryLinkRow(
+            memory_id=row["memory_id"],
+            ref=row["ref"],
+            relation=row["relation"],
+            created_at=row["created_at"],
+            supersession_lineage=row["supersession_lineage"],
+        )
+        for row in rows
+    )
+
+
+def list_memory_dependents(conn: Connection, ref: str) -> tuple[MemoryLinkRow, ...]:
+    """Every link row that **names** ``ref``, in memory-id order.
+
+    The inverse read of :func:`list_memory_links`, and the one the lifecycle closure
+    walks: "which memories depend on this one" is a scan of the stored reference
+    string, because ``memory_link.ref`` carries no foreign key — a reference is a
+    value, and the row it names may belong to another module or to nothing at all.
+
+    That is also why the rows survive their target's physical removal, which is what
+    lets a deletion participant compute a closure **after** the owner has deleted
+    the record it hangs off.
+
+    Ordered by ``memory_id``, so a closure walks and locks rows in one deterministic
+    order (§ A7) rather than the planner's.
+    """
+    rows = conn.execute(
+        select(t.memory_link)
+        .where(t.memory_link.c.ref == ref)
+        .order_by(t.memory_link.c.memory_id, t.memory_link.c.relation)
     ).mappings()
     return tuple(
         MemoryLinkRow(

@@ -98,6 +98,21 @@ on purpose: telling them apart would report whether a source was once accepted a
 then erased, which is exactly the fact an erasure removes.
 """
 
+RECORD_STALE: Final = "record_stale"
+"""The supplied ``expected_revision`` is not the revision the row holds (§ A7).
+
+Compared **before** the current-state test and after the history-capable
+authorization, which is what makes it the answer the loser of a concurrent
+supersession gets: the winner has already incremented the predecessor's revision, so
+the loser's compare-and-set misses and it is told its copy is stale rather than told
+the record is gone.
+
+Distinct from ``not_found``, and the distinction is the whole value: ``not_found``
+means "nothing you may act on is here", ``record_stale`` means "something is, and it
+has moved". A caller that got ``not_found`` for a revision mismatch would retry
+nothing; one that gets this rereads and retries.
+"""
+
 PURPOSE_MISMATCH: Final = "purpose_mismatch"
 """A well-formed purpose that is not the one this context is bound to.
 

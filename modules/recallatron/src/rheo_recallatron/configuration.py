@@ -138,6 +138,14 @@ do not bound what derive **inherits**, which is checked against the shared refer
 budget instead — a copied graph too large to read back refuses
 ``reference_scan_limit`` rather than being silently truncated."""
 
+MINIMUM_REVISION: Final = 1
+"""§ A7's floor on a compare-and-set, and the database's own floor on the column.
+
+``memory_revision_positive`` refuses a row below it, so a caller supplying a smaller
+``expected_revision`` is naming a revision no row can ever hold — which is an input
+error rather than a stale copy, and is refused as one.
+"""
+
 ENTITY_LIST_LIMIT_MIN: Final = 1
 ENTITY_LIST_LIMIT_MAX: Final = 50
 ENTITY_LIST_LIMIT_DEFAULT: Final = 10
