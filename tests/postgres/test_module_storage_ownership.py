@@ -15,12 +15,9 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
+from harness.modules import create_required_extensions, loaded_probe_modules
 from rheo_core.migrations.module_chain import run_module_chain
-from rheo_core.modules import load_modules, reset_surfaces
-from rheo_core.operations.registry import OperationRegistry
-from rheo_core.refs.resolver import ResolverRegistry
 from rheo_core.storage.provisioning import core_version
-from rheo_core.tokens.sets import ToolRegistry
 from rheo_recallatron import MANIFEST
 from sqlalchemy import Connection, Engine, text
 
@@ -30,7 +27,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MODULE_SRC = _REPO_ROOT / "modules" / "recallatron" / "src"
 _OWNED_SCHEMA = MANIFEST.storage.schema_name
 _VERSION_TABLE = "alembic_version_recallatron"
-_EXPECTED_SKELETON_OBJECTS = {
+_CHAIN_VERSION_OBJECTS = {
     (_OWNED_SCHEMA, _OWNED_SCHEMA, "schema"),
     (_OWNED_SCHEMA, _VERSION_TABLE, "r"),
     (_OWNED_SCHEMA, f"{_VERSION_TABLE}_pkc", "i"),
@@ -40,6 +37,18 @@ _EXPECTED_SKELETON_OBJECTS = {
         "table constraint",
     ),
 }
+"""The schema and the chain's own version table: what every revision has in common.
+
+**A subset now, where it used to be the whole set.** This was
+``_EXPECTED_SKELETON_OBJECTS`` and the census below compared against it for equality,
+which was exact while the chain created nothing else. Revision ``0002_memory_records``
+creates the real memory schema, so the exact inventory moved to
+``tests/postgres/test_memory_records.py``, which is the file that owns the contract it
+is an inventory of. What stays here is this file's own claim — AC 3's, in its
+docstring: whatever the chain creates, it creates **inside the owned schema**, and this
+subset is the positive control that the census saw the chain run at all rather than
+walking an empty diff.
+"""
 _FOREIGN_QUALIFIED = re.compile(
     r"\b(?:core|relationships|leads|current)\.[A-Za-z_][A-Za-z0-9_]*\b"
 )
@@ -59,16 +68,20 @@ _DSN_PREFIXES = ("postgresql://", "postgresql+")
 
 
 @pytest.fixture
-def recallatron_loaded() -> Iterator[None]:
-    reset_surfaces()
-    load_modules(
-        registry=OperationRegistry(),
-        resolvers=ResolverRegistry(),
-        tools=ToolRegistry(),
-        allow=frozenset({MANIFEST.module_id}),
-    )
-    yield
-    reset_surfaces()
+def recallatron_loaded(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Recallatron loaded through the harness's one recipe.
+
+    Through :func:`loaded_probe_modules` rather than a bare ``load_modules`` here,
+    because the manifest now declares a settings key marked
+    ``explicit_per_workspace``. ``loader.py``'s ``_register`` writes every declared key
+    into the process-global settings registry, which publishes no unregister, and
+    provisioning's step 4 then writes a row for that key into every workspace
+    provisioned later in the session — making other files' exact row assertions depend
+    on collection order. The harness recipe rebinds the loader's registry for the
+    duration, which is the isolation this file now needs and did not before.
+    """
+    with loaded_probe_modules(monkeypatch, MANIFEST.module_id):
+        yield
 
 
 def _workspace_engine(cluster: ClusterSession, workspace: UUID) -> tuple[str, Engine]:
@@ -146,13 +159,22 @@ def _outside_owned_schema(
     return {object_ for object_ in objects if object_[0] != _OWNED_SCHEMA}
 
 
-def test_recallatron_migration_creates_only_its_version_table_in_its_schema(
+def test_recallatron_migration_creates_objects_only_inside_its_own_schema(
     cluster: ClusterSession,
     workspace: UUID,
     recallatron_loaded: None,
 ) -> None:
+    """AC 3: every object the chain creates is inside ``recallatron``.
+
+    The extensions are installed first, exactly as ``core.module.install`` step 6 does
+    and **before** the ``before`` snapshot, so the objects ``CREATE EXTENSION`` puts in
+    ``public`` are not attributed to this module's migration. They are the core's
+    step and the core's statement; a migration of this module's that created them
+    would be a real leak, and is what the assertion below would catch.
+    """
     database_name, engine = _workspace_engine(cluster, workspace)
     with engine.begin() as connection:
+        create_required_extensions(connection, MANIFEST)
         before = _objects(connection)
         run_module_chain(
             connection,
@@ -162,7 +184,7 @@ def test_recallatron_migration_creates_only_its_version_table_in_its_schema(
         )
         created = _objects(connection) - before
 
-    assert created == _EXPECTED_SKELETON_OBJECTS
+    assert _CHAIN_VERSION_OBJECTS <= created
     assert not _outside_owned_schema(created)
 
 
@@ -253,6 +275,10 @@ def test_object_census_reports_table_owned_objects_outside_the_owned_schema(
     expected: tuple[str, str, str],
 ) -> None:
     database_name, engine = _workspace_engine(cluster, workspace)
+    # In its own committed transaction, so the rollback below restores the database to
+    # a state the ``before`` snapshot describes: extensions installed, migration not.
+    with engine.begin() as setup:
+        create_required_extensions(setup, MANIFEST)
     with engine.connect() as connection:
         transaction = connection.begin()
         before = _objects(connection)
@@ -263,10 +289,12 @@ def test_object_census_reports_table_owned_objects_outside_the_owned_schema(
                 expected_database=database_name,
                 core_version=core_version(),
             )
-            assert _objects(connection) - before == _EXPECTED_SKELETON_OBJECTS
+            migrated = _objects(connection) - before
+            assert _CHAIN_VERSION_OBJECTS <= migrated
+            assert not _outside_owned_schema(migrated)
             connection.execute(text(statement))
             created = _objects(connection) - before
-            assert created == _EXPECTED_SKELETON_OBJECTS | {expected}
+            assert created == migrated | {expected}
             assert _outside_owned_schema(created) == {expected}
         finally:
             transaction.rollback()

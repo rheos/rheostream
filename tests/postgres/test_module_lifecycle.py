@@ -32,7 +32,7 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
-from harness.modules import loaded_probe_modules
+from harness.modules import chain_head, loaded_probe_modules
 from rheo_contracts import WorkspaceContext
 from rheo_core.boundary import context_for_operator
 from rheo_core.events import ConsumerRegistry
@@ -59,7 +59,6 @@ pytestmark = pytest.mark.postgres
 
 OWNER = "module-lifecycle-under-test"
 RECALLATRON_ID = RECALLATRON_MANIFEST.module_id
-RECALLATRON_REVISION = "0001_schema"
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +160,9 @@ def test_install_then_enable_makes_workspace_status_report_recallatron(
     assert status_of(operator).modules == []
 
     with loaded_probe_modules(monkeypatch, RECALLATRON_ID):
+        # The head its chain applies, read off the scripts while the module is loaded
+        # rather than pinned as a literal that the next revision would quietly falsify.
+        revision = chain_head(RECALLATRON_MANIFEST)
         installing = dispatch(operator, MODULE_INSTALL, {"module_id": RECALLATRON_ID})
         assert installing.state == "pending", installing
         run_the_worker(cluster, workspace)
@@ -185,7 +187,7 @@ def test_install_then_enable_makes_workspace_status_report_recallatron(
             "module_id": RECALLATRON_ID,
             "package_version": RECALLATRON_MANIFEST.package_version,
             "state": ENABLED_STATE,
-            "schema_version": RECALLATRON_REVISION,
+            "schema_version": revision,
         }
     ]
     assert status.modules[0].package_version, "the reported version must not be empty"

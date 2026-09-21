@@ -34,12 +34,19 @@ what makes it the fixture for that refusal; every manifest meant to get past pre
 overrides it with :data:`PROBE_CONTRACT_TESTS`.
 """
 
-from collections.abc import Iterator
+import itertools
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import EntryPoint
 from typing import Final
+from uuid import UUID
 
 import pytest
+from alembic.script import ScriptDirectory
+from rheo_contracts import WorkspaceContext
+from rheo_core.events import ConsumerRegistry
+from rheo_core.migrations.orchestrator import build_config
 from rheo_core.modules import (
     ENTRY_POINT_GROUP,
     Dependency,
@@ -54,11 +61,22 @@ from rheo_core.modules import (
 )
 from rheo_core.modules import loader as loader_module
 from rheo_core.modules.loader import ALLOWLIST_KEY
-from rheo_core.operations import OperationRegistry
+from rheo_core.modules.operations import (
+    MODULE_ENABLE,
+    MODULE_INSTALL,
+    ModuleInstallPayload,
+    run_module_install_job,
+)
+from rheo_core.operations import OperationRegistry, dispatch
 from rheo_core.refs.resolver import ResolverRegistry
 from rheo_core.settings import KeySpec, Scope, ValueType, env_variable_names
 from rheo_core.settings.schema import SettingsRegistry
+from rheo_core.storage.postgres import PostgresBackend
+from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.tokens.sets import ToolRegistry
+from rheo_core.work.kinds import JobKindRegistry
+from rheo_core.work.loop import HEARTBEAT_SECONDS, visit_workspace
+from sqlalchemy import Connection, text
 
 MODULES_VARIABLE, MODULES_VARIABLE_UPPER = env_variable_names(ALLOWLIST_KEY)
 """The two environment spellings the deployment layer accepts for the allowlist key.
@@ -438,6 +456,103 @@ def loaded_probe_modules(
         yield
     finally:
         reset_surfaces()
+
+
+def _advancing_clock() -> Callable[[], datetime]:
+    """A clock that moves more than one heartbeat on every read.
+
+    The install handler's cancellation checkpoints throttle against the clock they are
+    given, so a fixed clock silences every one after the first — and the visit has to
+    begin *after* the job the dispatch enqueued, or ``acquire_lease`` matches nothing.
+    """
+    base = datetime.now(UTC) + timedelta(seconds=1)
+    reads = itertools.count()
+    return lambda: base + timedelta(seconds=(HEARTBEAT_SECONDS + 1) * next(reads))
+
+
+def install_and_enable_module(
+    backend: PostgresBackend,
+    ctx: WorkspaceContext,
+    workspace_id: UUID,
+    module_id: str,
+    *,
+    owner: str = "harness-module-install",
+) -> None:
+    """Take ``module_id`` from absent to ``enabled`` through the two public operations.
+
+    ``core.module.install`` is ``long_running``, so its work happens in a job and one
+    real worker visit is what completes it; ``core.module.enable`` is synchronous. The
+    caller supplies the context and is responsible for being inside
+    :func:`loaded_probe_modules` with the core operations registered.
+
+    **A local :class:`JobKindRegistry`, not ``apps/worker``'s module-level
+    ``JOB_KINDS``**: ``tests/test_worker_job_kinds.py`` asserts that instance's exact
+    contents, so writing into it from a test would make that file's answer depend on
+    collection order. What this registers is the same three arguments the composition
+    root does.
+
+    ``tests/postgres/test_module_lifecycle.py`` deliberately spells these steps out
+    instead of calling this, because its subject *is* the sequence — the state between
+    the two operations, the operation record the worker terminalises. Everything else
+    that just needs an enabled module should come here.
+    """
+    installing = dispatch(ctx, MODULE_INSTALL, {"module_id": module_id})
+    # ``pending``, not ``succeeded``: the declaration is ``long_running``, so the
+    # dispatch hands back a minted operation id and the worker below terminalises it.
+    assert installing.state == "pending", installing
+    kinds = JobKindRegistry()
+    kinds.register(MODULE_INSTALL, ModuleInstallPayload, run_module_install_job)
+    visit_workspace(
+        DueWorkspace(workspace_id=workspace_id, observed_due_at=None),
+        kinds=kinds,
+        consumers=ConsumerRegistry(),
+        backend=backend,
+        owner=owner,
+        clock=_advancing_clock(),
+        jitter=None,
+    )
+    enabling = dispatch(ctx, MODULE_ENABLE, {"module_id": module_id})
+    assert enabling.ok, enabling
+
+
+def chain_head(manifest: ModuleManifest) -> str:
+    """The head revision of ``manifest``'s migration chain, read off its scripts.
+
+    What a fresh install leaves in ``core.module_schema_version``, and therefore what
+    ``core.workspace.status`` reports as the module's schema version. Derived rather
+    than pinned as a literal in each test that reads it: a literal is right until the
+    module's next revision and silently wrong after it, which is a failure that lands
+    on whoever adds the revision rather than on whoever wrote the assertion.
+
+    The module must be loaded — a chain name's only membership test is the loaded
+    manifests — so call it inside :func:`loaded_probe_modules`.
+    """
+    head = ScriptDirectory.from_config(
+        build_config(manifest.module_id)
+    ).get_current_head()
+    assert head is not None, f"{manifest.module_id} has no head revision"
+    return head
+
+
+def create_required_extensions(
+    connection: Connection, manifest: ModuleManifest
+) -> None:
+    """Install ``manifest.storage.required_extensions``, as install's step 6 does.
+
+    ``core.module.install`` runs ``modules/operations.py:_create_extensions`` before
+    ``run_module_chain``, so a module whose DDL needs an extension type or operator
+    class gets one. A test that drives ``run_module_chain`` **directly** skips that
+    step and would fail inside the migration on a type that does not exist — which
+    looks like a broken migration and is really a missing install step.
+
+    One helper rather than a copy per file, and it takes the manifest rather than a
+    literal list, so a module that declares a third extension needs no test edit.
+    """
+    preparer = connection.dialect.identifier_preparer
+    for extension in manifest.storage.required_extensions:
+        connection.execute(
+            text(f"CREATE EXTENSION IF NOT EXISTS {preparer.quote(extension)}")
+        )
 
 
 def _entry_points_for(module_ids: tuple[str, ...]) -> tuple[EntryPoint, ...]:

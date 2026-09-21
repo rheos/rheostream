@@ -15,6 +15,11 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
+from harness.modules import (
+    chain_head,
+    install_and_enable_module,
+    loaded_probe_modules,
+)
 from harness.registry import add_member, enable_harness_module
 from rheo_contracts import CONTRACT_VERSION, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
@@ -28,6 +33,8 @@ from rheo_core.operations import (
 from rheo_core.sessions import create_session, mint_host_secret
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import set_active_workspace
+from rheo_core.storage.repositories import list_module_schema_versions
+from rheo_recallatron import MANIFEST as RECALLATRON_MANIFEST
 from sqlalchemy import Engine, event
 
 _HOST = "shell.example.test"
@@ -124,6 +131,65 @@ def test_status_lists_an_enabled_module_with_no_applied_schema_step(
             "package_version": "0",
             "state": "enabled",
             "schema_version": None,
+        }
+    ]
+
+
+def test_status_reports_the_latest_applied_schema_version_of_a_real_module(
+    monkeypatch: pytest.MonkeyPatch, cluster: ClusterSession, workspace: UUID
+) -> None:
+    """AC 1's version half, over a chain with more than one revision.
+
+    ``test_status_lists_an_enabled_module_with_no_applied_schema_step`` above pins the
+    null case, and ``tests/postgres/test_module_lifecycle.py`` pins the two operations
+    that get a workspace from ``absent`` to a reported module. What neither could pin
+    until now is ``_workspace_status``'s **latest wins** rule: it folds every
+    ``core.module_schema_version`` row for a module into one reported value, and while
+    Recallatron's chain had a single revision the fold had nothing to choose between —
+    first, last and only were the same string, so an implementation reporting the
+    *earliest* applied step passed.
+
+    With ``0002_memory_records`` the workspace records two steps and the two answers
+    differ, so this asserts the reported version is the chain's **head** while the
+    recorded history holds strictly more than that one row.
+
+    Both values are derived: the package version off the manifest (an installed
+    distribution's own metadata, so a status reporting a literal reds), the schema
+    version off the chain's scripts. A literal here would be right today and silently
+    wrong at the next revision.
+    """
+    ctx = context_for_operator(workspace)
+    assert isinstance(ctx, WorkspaceContext)
+    assert _status_under(cluster, ctx, workspace).modules == []
+
+    with loaded_probe_modules(monkeypatch, RECALLATRON_MANIFEST.module_id):
+        head = chain_head(RECALLATRON_MANIFEST)
+        install_and_enable_module(
+            cluster.backend, ctx, workspace, RECALLATRON_MANIFEST.module_id
+        )
+
+    row = cluster.registry_row(workspace)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    with engine.connect() as connection:
+        applied = [
+            version.schema_version
+            for version in list_module_schema_versions(connection)
+            if version.module_id == RECALLATRON_MANIFEST.module_id
+        ]
+    assert len(applied) > 1, applied
+    assert applied[-1] == head
+
+    after = context_for_operator(workspace)
+    assert isinstance(after, WorkspaceContext)
+    assert [
+        module.model_dump()
+        for module in _status_under(cluster, after, workspace).modules
+    ] == [
+        {
+            "module_id": RECALLATRON_MANIFEST.module_id,
+            "package_version": RECALLATRON_MANIFEST.package_version,
+            "state": "enabled",
+            "schema_version": head,
         }
     ]
 
