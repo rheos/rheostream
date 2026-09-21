@@ -1809,18 +1809,18 @@ recorded nothing in between. *(Scenario: Export and restore; FR 52.)*"
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/exports/artifact.py b/packages/core/src/rheo_core/exports/artifact.py
-index 413dd70..19d38a0 100644
+index dbcd726..7d9ca79 100644
 --- a/packages/core/src/rheo_core/exports/artifact.py
 +++ b/packages/core/src/rheo_core/exports/artifact.py
-@@ -236,6 +236,7 @@ def digest_categories(
+@@ -393,6 +393,7 @@ def digest_categories(
          for name, body in serialised_categories(
-             connection, skip_operation_id=skip_operation_id
+             snapshot, skip_operation_id=skip_operation_id
          ).items()
 +        if name != "audit"
      }
  
  
-@@ -600,7 +601,6 @@ def _import_approvals(connection: Connection, body: bytes) -> set[UUID]:
+@@ -774,7 +775,6 @@ def _import_approvals(connection: Connection, body: bytes) -> set[UUID]:
      for row in _jsonl(body, APPROVALS_NAME):
          values = _decoded(row, approval_tables.approval.c.keys())
          values.update(
@@ -1834,4 +1834,10 @@ index 413dd70..19d38a0 100644
 `requires_reapproval` is required. The second makes the digest-comparison test report unequal
 category maps.
 
-**Performed by:** C8 (2026-09-17)
+**Performed by:** C8 (2026-09-17), 1a1 P12 (2026-09-21)
+
+**Note:** 1a1 P12 recaptured the hunk, unchanged in substance. A12's source snapshot gave
+`digest_categories` an `ExportSnapshot` parameter in place of its `Connection`, which moved the
+first hunk's context lines; both mutations were reapplied to the new code, watched go red on both
+demonstrators (`assert 'approved' == 'requires_reapproval'`, and the digest maps unequal), and
+reverted.

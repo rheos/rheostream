@@ -1,11 +1,17 @@
 """Workspace export, digest and restore."""
 
 from rheo_core.exports.artifact import (
+    EXPORT_RESOURCE_UNAVAILABLE,
+    MINIMUM_SNAPSHOT_CONNECTIONS,
     ArtifactRefused,
+    ExportSnapshot,
     artifact_identity,
+    collect_export_snapshot,
+    create_artifact,
     digest_categories,
     read_archive,
     restore_artifact,
+    serialised_categories,
     write_archive,
 )
 from rheo_core.exports.operations import (
@@ -22,18 +28,24 @@ from rheo_core.exports.operations import (
 
 __all__ = [
     "EXPORT_JOB_KIND",
+    "EXPORT_RESOURCE_UNAVAILABLE",
+    "MINIMUM_SNAPSHOT_CONNECTIONS",
     "RESTORE_JOB_KIND",
     "WORKSPACE_DIGEST",
     "WORKSPACE_EXPORT",
     "WORKSPACE_RESTORE",
     "ArtifactRefused",
+    "ExportSnapshot",
     "artifact_identity",
     "ExportJobPayload",
     "RestoreJobPayload",
+    "collect_export_snapshot",
+    "create_artifact",
     "digest_categories",
     "read_archive",
     "restore_artifact",
     "run_export_job",
     "run_restore_job",
+    "serialised_categories",
     "write_archive",
 ]

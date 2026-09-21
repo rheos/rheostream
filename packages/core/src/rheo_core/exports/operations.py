@@ -14,6 +14,7 @@ from rheo_core.exports.artifact import (
     ArtifactIdentity,
     ArtifactRefused,
     artifact_identity,
+    collect_export_snapshot,
     create_artifact,
     digest_categories,
     restore_artifact,
@@ -174,11 +175,29 @@ def export_handler(
 def digest_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, _input: WorkspaceDigestInput
 ) -> WorkspaceDigest:
-    del ctx
+    """The same category bytes an export writes, hashed rather than archived.
+
+    Through the same source snapshot, and that is the whole reason this handler
+    reads a second connection rather than the dispatcher's own: the digest is the
+    comparison an operator uses to decide that a restore matches its source, so it
+    has to describe one committed instant the way the artifact does. Read across the
+    dispatcher's read-committed transaction, two categories could straddle a
+    concurrent write and the digest would differ from an export of the same state
+    for no reason either side could show.
+
+    ``uow`` stays the dispatcher's: it is passed as ``worker_connection`` so
+    :func:`~rheo_core.exports.artifact.collect_export_snapshot` can check this
+    context's routed database against the workspace it is about to snapshot, and is
+    neither committed nor read for categories here.
+    """
+    with collect_export_snapshot(
+        ctx.workspace_id, worker_connection=uow.connection
+    ) as snapshot:
+        categories = digest_categories(snapshot)
     return WorkspaceDigest(
         categories={
             name: DigestEntry.model_validate(value)
-            for name, value in digest_categories(uow.connection).items()
+            for name, value in categories.items()
         }
     )
 
@@ -226,17 +245,43 @@ def restore_handler(
 def run_export_job(
     uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
 ) -> None:
+    """Collect one source snapshot, write the archive, then complete the record.
+
+    **The completion ``UPDATE`` is here, on the worker's own unit of work, and that
+    placement is the point.** It runs inside the transaction the worker loop commits
+    only when ``finish_succeeded`` still holds this worker's lease, so an export that
+    lost its lease mid-handler publishes no ``complete`` record for an artifact whose
+    job another worker is about to run again. Written from inside ``create_artifact``
+    — as it was — it rode the same transaction by accident of which connection that
+    function happened to be handed, and the moment collection moved to its own
+    read-only connection the accident would have become a write on a connection with
+    no lease predicate anywhere near it.
+
+    The snapshot is closed before the write: nothing after collection re-reads the
+    source, so holding the extra pooled connection across the ``UPDATE`` would only
+    widen the window A12 asks to keep narrow.
+    """
     assert isinstance(payload, ExportJobPayload)
     token.checkpoint()
-    create_artifact(
-        uow.connection,
-        workspace_id=payload.workspace_id,
-        slug=payload.slug,
-        owner_account_id=payload.owner_account_id,
-        export_id=payload.export_id,
-        destination=Path(payload.artifact_path),
-        skip_operation_id=payload.operation_id,
-        created_at=datetime.now(UTC),
+    destination = Path(payload.artifact_path)
+    with collect_export_snapshot(
+        payload.workspace_id, worker_connection=uow.connection
+    ) as snapshot:
+        byte_length = create_artifact(
+            snapshot,
+            slug=payload.slug,
+            owner_account_id=payload.owner_account_id,
+            destination=destination,
+            skip_operation_id=payload.operation_id,
+        )
+    uow.connection.execute(
+        update(tables.export_record)
+        .where(tables.export_record.c.id == payload.export_id)
+        .values(
+            artifact_path=str(destination),
+            state="complete",
+            byte_length=byte_length,
+        )
     )
     token.checkpoint()
 

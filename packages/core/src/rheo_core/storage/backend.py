@@ -20,10 +20,16 @@ connection, with ``commit``, ``rollback`` and ``__enter__`` refused. It lives he
 rather than in ``operations/`` because it needs the four private slots above, and it
 is a subclass rather than a flag on ``UnitOfWork`` because that class's public
 surface is a pinned 0c-boundary invariant. See its own docstring.
+
+``ExportSnapshotUnitOfWork`` is A12's source snapshot: the same transaction opened
+``READ ONLY`` at ``REPEATABLE READ``. A subclass for the same reason, and it fills
+one private class-level hook (``_connection_options``) rather than taking a
+constructor argument, because the options have to be applied to the connection
+*before* ``begin()``. See its own docstring.
 """
 
-from collections.abc import Callable, Sequence
-from types import TracebackType
+from collections.abc import Callable, Mapping, Sequence
+from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol, Self
 from uuid import UUID
 
@@ -94,6 +100,23 @@ class UnitOfWork:
     transaction in production.
     """
 
+    _connection_options: ClassVar[Mapping[str, object]] = MappingProxyType({})
+    """Execution options applied to the connection **before** ``begin()``.
+
+    Empty here, so an ordinary unit of work opens exactly the transaction it always
+    did. :class:`ExportSnapshotUnitOfWork` is the one subclass that fills it, and the
+    hook lives on this class rather than in that subclass's own ``__enter__`` because
+    SQLAlchemy refuses ``isolation_level`` and ``postgresql_readonly`` on a connection
+    whose transaction has already begun — so the only place they can be set is between
+    ``connect()`` and ``begin()`` below, and a subclass that reimplemented the two
+    lines around them would also have to reimplement the ``verify_database`` probe and
+    the cleanup arm it shares with every other unit of work.
+
+    Private, so it is not on the public surface ``tests/postgres/test_isolation.py``
+    pins, and a class attribute rather than a fifth ``__slots__`` entry for the same
+    reason ``verify_database`` is one.
+    """
+
     def __init__(
         self,
         engine: Engine,
@@ -116,6 +139,8 @@ class UnitOfWork:
         transaction: Transaction | None = None
         try:
             connection = self._engine.connect()
+            if self._connection_options:
+                connection = connection.execution_options(**self._connection_options)
             transaction = connection.begin()
             if UnitOfWork.verify_database:
                 actual = str(
@@ -346,6 +371,50 @@ class HandlerUnitOfWork(UnitOfWork):
             "a handler may not roll back: raise OperationRefused and the dispatcher "
             "rolls back",
         )
+
+
+class ExportSnapshotUnitOfWork(UnitOfWork):
+    """A12's export source snapshot: one ``READ ONLY``, ``REPEATABLE READ``
+    transaction, opened fresh for one collection and used for nothing else.
+
+    **What the two options buy, and why both.** ``REPEATABLE READ`` fixes one
+    committed source view at the transaction's first query, so every category an
+    export serialises describes the same instant however long the collection runs —
+    the guarantee ``serialised_categories`` could not make while it read whatever
+    connection it was handed. ``READ ONLY`` is what makes "source collection" a
+    claim the database enforces rather than a convention: a write attempted on this
+    connection is refused by PostgreSQL, so the export-record completion really
+    cannot be written from inside collection, whatever a later edit tries.
+
+    **The options are set before ``begin()``, which is why this is a subclass with a
+    filled ``_connection_options`` rather than a flag or a wrapper that sets them
+    afterwards.** SQLAlchemy applies ``isolation_level`` and ``postgresql_readonly``
+    to the DBAPI connection when they are set, and refuses both once a transaction
+    has begun; PostgreSQL likewise takes the repeatable-read snapshot at the first
+    query. So by the time :meth:`UnitOfWork.__enter__` runs the test-profile
+    ``current_database()`` probe, that probe is already the snapshot's own first
+    statement, inside the snapshot, read-only — which is the ordering A12 asks for
+    and the reason the probe is inherited rather than skipped here.
+
+    **A subclass beside ``UnitOfWork``, not a change to it**, for the reason
+    :class:`HandlerUnitOfWork`'s docstring gives at length:
+    ``tests/postgres/test_isolation.py`` pins ``UnitOfWork``'s public surface to
+    exactly four names and its ``__slots__`` to exactly four slots. This class adds
+    no slot of its own and no public name — only the private class-level hook the
+    parent declares empty.
+
+    **Both characteristics are reset when the connection returns to the pool.**
+    SQLAlchemy registers a finalizer for every connection characteristic it sets
+    (``default.py:_set_connection_characteristics``), so the pooled connection this
+    transaction borrowed is writable again at its next checkout. Nothing here has to
+    unset them, and nothing else in the process has to know an export ran.
+    """
+
+    __slots__ = ()
+
+    _connection_options: ClassVar[Mapping[str, object]] = MappingProxyType(
+        {"isolation_level": "REPEATABLE READ", "postgresql_readonly": True}
+    )
 
 
 class StorageBackend(Protocol):

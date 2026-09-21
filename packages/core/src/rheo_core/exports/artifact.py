@@ -7,7 +7,8 @@ import io
 import json
 import tarfile
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -16,18 +17,25 @@ from uuid import UUID
 
 import zstandard as zstd
 from rheo_contracts import CONTRACT_VERSION
-from sqlalchemy import Connection, delete, insert, select, update
+from sqlalchemy import Connection, delete, insert, select, text
 
 from rheo_core.approvals import tables as approval_tables
 from rheo_core.exports import tables as export_tables
 from rheo_core.refs import uuid7
 from rheo_core.settings import current_profile
+from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from rheo_core.storage import core_tables, repositories, work_tables
-from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.backend import (
+    DATABASE_MISMATCH,
+    ExportSnapshotUnitOfWork,
+    StorageRefusal,
+    UnitOfWork,
+)
 from rheo_core.storage.control_plane import get_workspace, set_workspace_state
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.postgres import get_backend
 from rheo_core.storage.provisioning import core_version, provision
+from rheo_core.storage.routing import active_workspace
 
 CONTRACT_VERSION_SUPPORTED: Final = CONTRACT_VERSION
 MANIFEST_NAME: Final = "manifest.json"
@@ -63,6 +71,20 @@ MAX_DECOMPRESSED_BYTES: Final = 1024 * 1024 * 1024
 MAX_MEMBER_BYTES: Final = 256 * 1024 * 1024
 MAX_ARCHIVE_BYTES: Final = 1024 * 1024 * 1024
 
+EXPORT_RESOURCE_UNAVAILABLE: Final = "export_resource_unavailable"
+"""Refused before a source snapshot is opened, when the configured per-workspace
+connection budget cannot hold one. See :data:`MINIMUM_SNAPSHOT_CONNECTIONS`."""
+
+MINIMUM_SNAPSHOT_CONNECTIONS: Final = 3
+"""Pooled connections to one workspace database an export needs at once.
+
+The worker's own work transaction, this source snapshot, and — because a handler's
+duration is unbounded and ``CancellationToken`` opens its own short transactions —
+a heartbeat. ``storage.pool_max_connections`` defaults to 5, so the check below is
+about a deployment that has lowered it, not about the shipped configuration. A12 is
+explicit that the answer to a pool too small is to refuse the export, never to raise
+the configured pool or open an engine the pool cannot see."""
+
 
 class ArtifactRefused(Exception):
     """A malformed or unsupported artifact, safe to show to an operator."""
@@ -73,6 +95,131 @@ class ArtifactIdentity:
     workspace_id: UUID
     owner_account_id: UUID
     source_digest: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class ExportSnapshot:
+    """One committed source view, and everything read from it must come through here.
+
+    Produced only by :func:`collect_export_snapshot`, and valid only inside that
+    context manager's block: :attr:`uow` is an open
+    :class:`~rheo_core.storage.backend.ExportSnapshotUnitOfWork`, and reading
+    :attr:`connection` after the block has closed raises ``unit_of_work_closed``
+    rather than answering from a second, later view.
+
+    :attr:`snapshot_at` is the instant the snapshot's own first statement took, from
+    ``statement_timestamp()`` on the source connection — not a Python clock reading,
+    and not resampled per category. It is both the artifact's ``created_at`` and (from
+    Prompt 13 on) the one instant retention is evaluated against, which is why it is
+    carried on the value rather than read again wherever it is wanted.
+
+    :attr:`overrides` is the settings source bound to this same transaction, so a
+    workspace override a category read depends on is the value *this* snapshot sees.
+    Resolving through the process-wide layered resolver instead would open a second
+    connection with its own view, which is the disagreement A2 removed.
+    """
+
+    uow: UnitOfWork
+    snapshot_at: datetime
+    overrides: TransactionBoundOverrideSource
+    workspace_id: UUID
+    database_name: str
+
+    @property
+    def connection(self) -> Connection:
+        """The one source connection, inside the one read-only transaction."""
+        return self.uow.connection
+
+
+@contextmanager
+def collect_export_snapshot(
+    workspace_id: UUID, *, worker_connection: Connection
+) -> Iterator[ExportSnapshot]:
+    """Open A12's one export source snapshot, before any source query runs.
+
+    The order of the four steps is the contract, not an implementation detail:
+
+    1. **Refuse a pool that cannot hold the snapshot, before anything is opened.**
+       :data:`MINIMUM_SNAPSHOT_CONNECTIONS` against the pool's configured
+       ``pool_size`` (``storage.pool_max_connections``). Read off the pool rather than
+       re-resolving the setting, so the number checked is the number the engines were
+       actually built with.
+    2. **Route the workspace through the control plane** — ``active_workspace`` reads
+       the registry row on every call and refuses a workspace that is not ``active``,
+       exactly as ordinary routing does.
+    3. **Verify the caller's own routed database against it.** ``worker_connection``
+       is the worker's (or the dispatcher's) transaction, and a job payload naming a
+       workspace whose database is not the one the worker is visiting would otherwise
+       export one workspace's rows under another's envelope. That is the silent
+       cross-workspace failure ``DATABASE_MISMATCH`` exists for, so it is refused
+       loudly and before a second connection is taken.
+    4. **Open the snapshot on a fresh pooled connection**, never
+       ``worker_connection``: that transaction may already have queried, so its
+       snapshot — if it even had one — is older than this export, and changing its
+       isolation or committing it inside a handler is not this function's to do.
+
+    The first two statements on the new connection are ``current_database()`` and
+    ``statement_timestamp()``, in that order. The first is the cross-workspace probe
+    again on the connection that will actually be read (the inherited test-profile
+    probe covers it under ``profile = test`` only; this one is unconditional). Either
+    of them establishes the repeatable-read snapshot, so taking the instant from the
+    second means ``snapshot_at`` names a moment inside the view, never before it.
+
+    **``OperationRefused`` is imported inside this function, and the reason is
+    structural rather than stylistic.** ``rheo_core.operations.__init__`` imports
+    ``core_ops`` as its first statement, ``core_ops`` imports
+    ``rheo_core.exports.operations``, and that module imports this one — so a
+    module-level ``from rheo_core.operations.refusals import ...`` here closes that
+    cycle and ``import rheo_core.exports`` fails outright with half of this module's
+    names still unbound. ``exports/operations.py`` can import it at module level only
+    because it sits on the far side of the same chain. Deferred to call time, when
+    every module in it is loaded.
+    """
+    from rheo_core.operations.refusals import OperationRefused
+
+    pools = get_backend().pools
+    if pools.pool_size < MINIMUM_SNAPSHOT_CONNECTIONS:
+        raise OperationRefused(
+            EXPORT_RESOURCE_UNAVAILABLE,
+            f"an export holds {MINIMUM_SNAPSHOT_CONNECTIONS} connections to one "
+            f"workspace database at once (the worker's transaction, the source "
+            f"snapshot, and a heartbeat) but storage.pool_max_connections is "
+            f"{pools.pool_size}",
+        )
+    row = active_workspace(workspace_id)
+    routed = str(
+        worker_connection.execute(text("SELECT current_database()")).scalar_one()
+    )
+    if routed != row.database_name:
+        raise StorageRefusal(
+            DATABASE_MISMATCH,
+            f"the export names workspace {workspace_id}, whose database is "
+            f"{row.database_name!r}, but its caller is connected to {routed!r}",
+        )
+    with pools.acquire(row.database_name) as engine:
+        with ExportSnapshotUnitOfWork(engine, row.database_name) as uow:
+            source = str(
+                uow.connection.execute(text("SELECT current_database()")).scalar_one()
+            )
+            if source != row.database_name:
+                raise StorageRefusal(
+                    DATABASE_MISMATCH,
+                    f"the export source snapshot expected database "
+                    f"{row.database_name!r} but opened on {source!r}",
+                )
+            snapshot_at = uow.connection.execute(
+                text("SELECT statement_timestamp()")
+            ).scalar_one()
+            assert isinstance(snapshot_at, datetime), snapshot_at
+            yield ExportSnapshot(
+                uow=uow,
+                snapshot_at=snapshot_at,
+                overrides=TransactionBoundOverrideSource(
+                    uow.connection, workspace_id=workspace_id
+                ),
+                workspace_id=workspace_id,
+                database_name=row.database_name,
+            )
 
 
 class _BoundedReader(io.RawIOBase):
@@ -156,9 +303,19 @@ def _composition_bytes(connection: Connection) -> bytes:
 
 
 def serialised_categories(
-    connection: Connection, *, skip_operation_id: UUID | None = None
+    snapshot: ExportSnapshot, *, skip_operation_id: UUID | None = None
 ) -> dict[str, bytes]:
-    """The bytes both export and ``core.workspace.digest`` compare."""
+    """The bytes both export and ``core.workspace.digest`` compare.
+
+    Takes the established :class:`ExportSnapshot`, not a bare ``Connection``. Every
+    category below is a separate statement, so on an ordinary read-committed
+    connection each would see whatever had committed by the time it ran and the
+    category set as a whole would describe no single instant — a signature that is
+    invisible in the returned bytes and shows up only as an export that does not
+    restore as one valid source state. The parameter is what makes the guarantee
+    unavoidable rather than a caller's convention.
+    """
+    connection = snapshot.connection
     workspace_settings = _mapping_rows(
         connection,
         select(core_tables.workspace_setting).order_by(
@@ -226,7 +383,7 @@ def serialised_categories(
 
 
 def digest_categories(
-    connection: Connection, *, skip_operation_id: UUID | None = None
+    snapshot: ExportSnapshot, *, skip_operation_id: UUID | None = None
 ) -> dict[str, dict[str, object]]:
     return {
         name: {
@@ -234,7 +391,7 @@ def digest_categories(
             "digest": hashlib.sha256(body).hexdigest(),
         }
         for name, body in serialised_categories(
-            connection, skip_operation_id=skip_operation_id
+            snapshot, skip_operation_id=skip_operation_id
         ).items()
     }
 
@@ -333,24 +490,40 @@ def read_archive(path: Path) -> dict[str, bytes]:
 
 
 def create_artifact(
-    connection: Connection,
+    snapshot: ExportSnapshot,
     *,
-    workspace_id: UUID,
     slug: str,
     owner_account_id: UUID,
-    export_id: UUID,
     destination: Path,
     skip_operation_id: UUID | None,
-    created_at: datetime,
 ) -> int:
-    categories = serialised_categories(connection, skip_operation_id=skip_operation_id)
+    """Write the snapshot's bytes to ``destination`` and return their length.
+
+    **It writes no row.** The ``core.export_record`` completion ``UPDATE`` this
+    function used to make at its own tail is ``run_export_job``'s, on the worker's own
+    unit of work, so publication and status stay inside the ordinary
+    lease-conditional finish that commits the handler's effects and the job's
+    ``succeeded`` together. Here that write would have committed (or not) on a
+    connection with no lease predicate on it at all. The snapshot connection is
+    ``READ ONLY`` besides, so the old shape is no longer expressible from this side.
+
+    ``created_at`` is :attr:`ExportSnapshot.snapshot_at` rather than a parameter: the
+    artifact records the instant its contents describe, and a caller-supplied clock
+    reading taken around the collection would name a different one.
+
+    ``workspace_id`` likewise comes off the snapshot, which is the id the routing and
+    the ``current_database()`` check were performed against; taking it again from the
+    payload would be a second value that could disagree with the rows being read.
+    """
+    connection = snapshot.connection
+    categories = serialised_categories(snapshot, skip_operation_id=skip_operation_id)
     manifest = {
         "core_version": core_version(),
         "contract_version": CONTRACT_VERSION,
-        "workspace_id": str(workspace_id),
+        "workspace_id": str(snapshot.workspace_id),
         "workspace_slug": slug,
         "owner_account_id": str(owner_account_id),
-        "created_at": created_at.astimezone(UTC).isoformat(),
+        "created_at": snapshot.snapshot_at.astimezone(UTC).isoformat(),
         "modules": _module_manifest(connection),
         "settings_digest": hashlib.sha256(categories["settings"]).hexdigest(),
         "record_counts": {
@@ -371,17 +544,7 @@ def create_artifact(
         DELETIONS_NAME: categories["deletions"],
     }
     write_archive(entries, destination)
-    byte_length = destination.stat().st_size
-    connection.execute(
-        update(export_tables.export_record)
-        .where(export_tables.export_record.c.id == export_id)
-        .values(
-            artifact_path=str(destination),
-            state="complete",
-            byte_length=byte_length,
-        )
-    )
-    return byte_length
+    return destination.stat().st_size
 
 
 def _manifest(entries: Mapping[str, bytes]) -> dict[str, object]:
