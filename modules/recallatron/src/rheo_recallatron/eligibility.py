@@ -39,7 +39,7 @@ resolved (a linked record, a linked memory, a contact permission) happens in Pyt
 after the scan, per candidate, and before any content leaves the service.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -296,10 +296,24 @@ def expire_by_age_enabled(ctx: WorkspaceContext, uow: UnitOfWork) -> bool:
     the process-wide layered resolver, which would open a second connection and could
     disagree with the value this transaction sees.
     """
-    overrides = TransactionBoundOverrideSource(
-        uow, workspace_id=ctx.workspace_id
-    ).workspace_overrides(ctx.workspace_id)
-    stored = overrides.get(RETENTION_EXPIRE_BY_AGE_KEY)
+    return expire_by_age_in(
+        TransactionBoundOverrideSource(
+            uow, workspace_id=ctx.workspace_id
+        ).workspace_overrides(ctx.workspace_id)
+    )
+
+
+def expire_by_age_in(stored_rows: Mapping[str, str]) -> bool:
+    """§ A9's gate, decided from override rows somebody else already read.
+
+    The same rule as :func:`expire_by_age_enabled`, taking the rows rather than the
+    context and unit of work that produce them. The export collector is the caller
+    that needs this shape: A12 hands it a settings source already bound to the source
+    snapshot, so it holds the rows and has no ``WorkspaceContext`` to rebuild one
+    from — and reopening a source of its own is exactly the second view that
+    ``TransactionBoundOverrideSource`` exists to prevent.
+    """
+    stored = stored_rows.get(RETENTION_EXPIRE_BY_AGE_KEY)
     if stored is None:
         return False
     try:
@@ -309,6 +323,32 @@ def expire_by_age_enabled(ctx: WorkspaceContext, uow: UnitOfWork) -> bool:
     except SettingTypeMismatch:
         return False
     return value is True
+
+
+def retention_in(stored_rows: Mapping[str, str]) -> RetentionPolicy | None:
+    """:func:`effective_retention`'s three answers, from rows already read.
+
+    Same three answers, same asymmetry between the gate and the window, and the same
+    refusal to substitute the package default for a window row that should be there
+    and is not. See :func:`expire_by_age_in` for why the rows arrive rather than the
+    connection.
+    """
+    if not expire_by_age_in(stored_rows):
+        return RetentionPolicy.unbounded()
+    stored = stored_rows.get(RETENTION_DAYS_KEY)
+    if stored is None:
+        return None
+    try:
+        value = decode_text(
+            RETENTION_DAYS_SPEC, stored, source="the stored workspace override"
+        )
+    except SettingTypeMismatch:
+        # Both halves land here: a value that is not an integer, and an integer
+        # outside the declared range (``decode_text`` applies the bounds itself).
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return RetentionPolicy.of_days(value)
 
 
 def effective_retention(
@@ -338,25 +378,11 @@ def effective_retention(
     override source, so the values are the ones **this** transaction sees — the same
     read a write's acceptance recheck and the sweep's own locked read will make.
     """
-    if not expire_by_age_enabled(ctx, uow):
-        return RetentionPolicy.unbounded()
-    overrides = TransactionBoundOverrideSource(
-        uow, workspace_id=ctx.workspace_id
-    ).workspace_overrides(ctx.workspace_id)
-    stored = overrides.get(RETENTION_DAYS_KEY)
-    if stored is None:
-        return None
-    try:
-        value = decode_text(
-            RETENTION_DAYS_SPEC, stored, source="the stored workspace override"
-        )
-    except SettingTypeMismatch:
-        # Both halves land here: a value that is not an integer, and an integer
-        # outside the declared range (``decode_text`` applies the bounds itself).
-        return None
-    if not isinstance(value, int) or isinstance(value, bool):
-        return None
-    return RetentionPolicy.of_days(value)
+    return retention_in(
+        TransactionBoundOverrideSource(
+            uow, workspace_id=ctx.workspace_id
+        ).workspace_overrides(ctx.workspace_id)
+    )
 
 
 def begin_request(

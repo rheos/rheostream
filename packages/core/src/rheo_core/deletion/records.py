@@ -6,12 +6,15 @@ caller's transaction, and **nothing here commits**. The ledger row, the owning d
 the participants and the gated operation's audit row are one transaction by
 construction, so a commit in here would end that transaction underneath its owner.
 
-**There is exactly one writer, and it generates ``id`` and ``deleted_at`` itself.**
-The ratified rule is that a normal deletion generates both and only a validated import
-may supply them verbatim; that importer does not exist yet, so rather than add an
-optional pair of parameters nothing passes — a channel a caller could use to backdate a
-deletion — the columns are generated here and the import path is left to add its own
-writer when it ships.
+**There are exactly two writers, and only one of them chooses an identity.**
+:func:`insert_deletion_record` is the normal path and generates ``id`` and
+``deleted_at`` itself. The ratified rule is that only a validated import may supply
+them verbatim, and that import now exists — restore — so it has its own writer,
+:func:`insert_imported_deletion_record`, rather than an optional pair of parameters on
+the normal one. Two functions rather than two modes because the difference is not a
+default: a caller reaching the verbatim writer is declaring that it has already
+validated an entire artifact, and a backdating channel hidden behind a keyword on the
+ordinary insert is exactly what the original single-writer note refused.
 
 **The three phase-three counters are written as literal zeros and take no parameter.**
 ``cancelled_job_count``, ``cancelled_action_count`` and ``removed_export_count`` count
@@ -143,6 +146,41 @@ def insert_deletion_record(
     return deletion_id
 
 
+def insert_imported_deletion_record(conn: Connection, row: DeletionRecordRow) -> None:
+    """Write one validated artifact row back **verbatim**, identity and clock included.
+
+    The export's deletion-evidence category is part of what a restored workspace is
+    compared against, and the comparison is over the bytes: a re-minted ``id`` or a
+    ``deleted_at`` taken from this restore's clock would make a faithful restore
+    report a different digest from its own source, and would also re-date every
+    erasure the ledger is the proof of. Both columns therefore travel and neither is
+    regenerated.
+
+    Nothing else is relaxed. The columns are the same columns, the two check
+    constraints still apply, and the caller is expected to have validated the whole
+    artifact first — this function performs no validation of its own precisely so
+    that the validation lives in one place instead of being half here.
+    """
+    conn.execute(
+        insert(t.deletion_record).values(
+            id=row.id,
+            deleted_at=row.deleted_at,
+            record_type=row.record_type,
+            record_id=row.record_id,
+            actor_kind=row.actor_kind,
+            actor_id=row.actor_id,
+            approval_id=row.approval_id,
+            participants=list(row.participants),
+            cancelled_job_count=row.cancelled_job_count,
+            cancelled_action_count=row.cancelled_action_count,
+            removed_export_count=row.removed_export_count,
+            invalidated_memory_count=row.invalidated_memory_count,
+            cause=row.cause,
+            retained_successor_ref=row.retained_successor_ref,
+        )
+    )
+
+
 def get_deletion_record(
     conn: Connection, *, deletion_id: UUID
 ) -> DeletionRecordRow | None:
@@ -151,3 +189,27 @@ def get_deletion_record(
         select(t.deletion_record).where(t.deletion_record.c.id == deletion_id)
     ).first()
     return None if found is None else _row(found)
+
+
+def list_deletion_records(
+    conn: Connection, *, limit: int | None = None
+) -> tuple[DeletionRecordRow, ...]:
+    """Every ledger row, oldest first, or the ``limit`` most recent, newest first.
+
+    Two orderings out of one function because the two readers want opposite things
+    and neither should re-sort the other's answer. The export category wants the whole
+    ledger in a **stable ascending** order, because its bytes are compared against a
+    restored copy of themselves and any ordering that depends on how many rows exist
+    would make the digest depend on the page. The audit read wants the most recent
+    ``limit`` rows newest first, exactly as every other bounded collection on that
+    operation does.
+
+    ``id`` is a UUIDv7, so ascending id is ascending mint time and no second sort key
+    is needed to break a tie inside one ``deleted_at``.
+    """
+    statement = select(t.deletion_record)
+    if limit is None:
+        statement = statement.order_by(t.deletion_record.c.id)
+    else:
+        statement = statement.order_by(t.deletion_record.c.id.desc()).limit(limit)
+    return tuple(_row(found) for found in conn.execute(statement).all())

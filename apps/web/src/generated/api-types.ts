@@ -457,6 +457,11 @@ export interface components {
          *     that additive change.
          */
         AuditList: {
+            /**
+             * Deletions
+             * @default null
+             */
+            deletions: components["schemas"]["DeletionRecord"][] | null;
             /** Records */
             records: components["schemas"]["AuditRecord"][];
             /**
@@ -478,6 +483,11 @@ export interface components {
          *     would be a read that grows for the life of the deployment.
          */
         AuditListInput: {
+            /**
+             * Include Deletions
+             * @default false
+             */
+            include_deletions: boolean;
             /**
              * Include Tool Telemetry
              * @default false
@@ -536,6 +546,57 @@ export interface components {
          * @enum {string}
          */
         ContextPurpose: "respond" | "follow_up" | "share_with_referral" | "internal_analysis";
+        /**
+         * DeletionRecord
+         * @description One ``deletion_record`` row as this operation publishes it (§ A8).
+         *
+         *     :class:`~rheo_core.deletion.records.DeletionRecordRow` field for field, with that
+         *     row's ``id`` published as ``deletion_id`` — the renaming :class:`AuditRecord` and
+         *     :class:`ToolTelemetryRecord` already make — and the qualified ``record_type`` and
+         *     ``record_id`` republished as the canonical reference an operator actually reads,
+         *     which is how every other surface names a record.
+         *
+         *     **Every field here is content-free by construction**, which is the table's own
+         *     design rather than a filter applied at this boundary: there is no title, body,
+         *     payload or json column on the row to withhold. The four counters are the exact
+         *     closure sizes § A8 keeps off the deletion *result* — a caller of
+         *     ``core.record.delete`` receives only ``{deletion_ref}`` — and this collection is
+         *     the one place they are published, to an owner or an operator who asked for them.
+         */
+        DeletionRecord: {
+            /** Actor Id */
+            actor_id: string | null;
+            /** Actor Kind */
+            actor_kind: string;
+            /** Approval Id */
+            approval_id: string | null;
+            /** Cancelled Action Count */
+            cancelled_action_count: number;
+            /** Cancelled Job Count */
+            cancelled_job_count: number;
+            /** Cause */
+            cause: string;
+            /**
+             * Deleted At
+             * Format: date-time
+             */
+            deleted_at: string;
+            /**
+             * Deletion Id
+             * Format: uuid
+             */
+            deletion_id: string;
+            /** Invalidated Memory Count */
+            invalidated_memory_count: number;
+            /** Participants */
+            participants: string[];
+            /** Record Ref */
+            record_ref: string;
+            /** Removed Export Count */
+            removed_export_count: number;
+            /** Retained Successor Ref */
+            retained_successor_ref: string | null;
+        };
         /** DigestEntry */
         DigestEntry: {
             /** Count */

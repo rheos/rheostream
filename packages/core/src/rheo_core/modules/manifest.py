@@ -37,10 +37,10 @@ helped. The validator applies the same duck check ``install_sink`` already does,
 the manifest and the installer agree on what a sink is.
 """
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Final, Self, TypeVar
+from typing import TYPE_CHECKING, Annotated, Final, Protocol, Self, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import (
@@ -69,6 +69,9 @@ from rheo_core.refs.resolver import RecordResolver
 from rheo_core.settings.schema import KeySpec
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.work.kinds import JobHandler
+
+if TYPE_CHECKING:  # pragma: no cover - see ``Exporter`` on why this cannot be runtime
+    from rheo_core.exports.artifact import ExportSnapshot
 
 _SEGMENT_MESSAGE: Final = "a module id is a lowercase identifier"
 
@@ -135,9 +138,8 @@ alias stayed unnarrowed because no run read it and a *guessed* signature is wors
 none — that reasoning held exactly until a caller existed, and the signature is read
 off that caller rather than guessed.
 
-``Exporter`` and ``Importer`` below keep the old alias and the old reasoning, because
-nothing in this run calls either: narrowing them now would be the guess this one no
-longer is.
+``Exporter`` and ``Importer`` below were narrowed in the same run and for the same
+reason, one prompt later: the export collector became their caller.
 """
 
 
@@ -166,16 +168,65 @@ OwnedDeleter = Annotated[_OwnedDeleter | None, PlainValidator(_owned_delete_call
 """``(ctx, uow, authorization) -> RemovedMemories``: remove the record and the rows the
 owner holds because of it."""
 
-Exporter = Callable[..., object]
+
+def _export_callable(value: object) -> object:
+    """The duck check :class:`ExportDeclaration`'s pair applies.
+
+    A plain validator for the reason this module's docstring gives at ``audit_sink``:
+    both narrowed types below are ``typing.Protocol`` without ``@runtime_checkable``.
+    """
+    if callable(value):
+        return value
+    raise ValueError("an export callable must be callable")
+
+
+class _ModuleExporter(Protocol):
+    """``(snapshot) -> rows``: the module's own records, read through one snapshot."""
+
+    def __call__(
+        self, snapshot: "ExportSnapshot", /
+    ) -> Sequence[Mapping[str, object]]: ...
+
+
+class _ModuleImporter(Protocol):
+    """``(uow, rows) -> second pass``: insert, then hand back what finishes.
+
+    The return value is the reason this is not a plain ``(uow, rows) -> None``. A12's
+    restore is explicitly two passes with core's own deletion-evidence import
+    *between* them — parents go in with their self-references null, the ledger lands,
+    and only then are the self-references resolved and the ancestry validated against
+    that evidence. A module cannot schedule that itself without committing or
+    reaching into core's ordering, so it returns the continuation and core calls it at
+    the point A12 names.
+    """
+
+    def __call__(
+        self, uow: UnitOfWork, rows: Sequence[Mapping[str, object]], /
+    ) -> Callable[[], None]: ...
+
+
+Exporter = Annotated[_ModuleExporter, PlainValidator(_export_callable)]
 """What writes the module's records into an export.
 
-Unnarrowed on purpose: no run in the current plan reads it.
+Narrowed in 1a1 from ``Callable[..., object]`` for the reason ``DeletionHandler``
+above gives: the old note said an unnarrowed alias beat a guessed signature while no
+run read it, and that held exactly until ``exports/artifact.py`` began calling it.
+
+The exporter receives **only** ``rheo_core.exports.artifact.ExportSnapshot`` — A12's
+sealed view of the one source transaction, carrying the connection, the fixed
+``snapshot_at`` and the transaction-bound settings source — and never a bare
+connection, which is what would let a module read a second, later view and put it in
+the same artifact. That class is imported under ``TYPE_CHECKING`` only: the export
+package imports this one, so a runtime import here would close the cycle.
 """
 
-Importer = Callable[..., object]
+Importer = Annotated[_ModuleImporter, PlainValidator(_export_callable)]
 """What reads the module's records back out of an export.
 
-Unnarrowed on purpose: no run in the current plan reads it.
+Narrowed alongside :data:`Exporter`. It receives the restore transaction's sealed
+unit of work and the already-validated rows, and returns the second pass core runs
+after the deletion evidence is in. It never commits: the whole restore is one
+transaction and a module ending it would take the rollback guarantee with it.
 """
 
 

@@ -25,6 +25,7 @@ the scoping: a blocking lock on the one row would stall all of them behind a swe
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
@@ -121,6 +122,88 @@ def earliest_schedule_due_at(conn: Connection) -> datetime | None:
         )
     ).scalar_one_or_none()
     return value if isinstance(value, datetime) else None
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleOutcome:
+    """What one named schedule's row and its most recent job say about themselves.
+
+    A12's diagnostic half: a module refusing because a sweep has not caught up needs
+    to let an operator tell "it has not run yet" from "it is stuck", and those are two
+    different facts on two different rows. The schedule row carries when the next run
+    is due and when the last one started; the most recent job of its kind carries how
+    that run ended and how much of its attempt budget is left.
+
+    **Content-free, and deliberately short of ``last_error``.** Every field here is an
+    identifier, an instant, a state name or a count. A job's ``last_error`` is an
+    arbitrary exception message written by whichever handler failed, so it is not
+    structurally content-free and is not published through this shape; an operator who
+    needs it reads ``core.work.failures``, which is the owner/operator-only surface
+    that already owns it and the surface A12 points at by name.
+
+    Every field is nullable because a workspace may hold no such schedule at all — a
+    module enabled before the schedule existed, or a schedule an operator disabled and
+    removed — and "there is no row" is an answer an operator needs rather than an
+    error to raise inside a refusal that is already being raised.
+    """
+
+    schedule_id: UUID | None
+    enabled: bool | None
+    next_run_at: datetime | None
+    last_run_at: datetime | None
+    job_id: UUID | None
+    job_state: str | None
+    job_attempts: int | None
+    job_max_attempts: int | None
+    job_finished_at: datetime | None
+
+
+def schedule_outcome(
+    conn: Connection, *, module_id: str, name: str, job_kind: str
+) -> ScheduleOutcome:
+    """The named schedule's row and the newest job of its kind, on this connection.
+
+    Read on the caller's own connection, so a refusal raised inside an export's source
+    snapshot reports the schedule state **that snapshot sees**. That is the honest
+    pairing: the expired rows the refusal counted and the schedule state offered as the
+    remedy then describe one committed instant instead of two.
+
+    ``(module_id, name)`` identifies the schedule and ``job_kind`` the jobs, rather
+    than deriving the second from the first, because a schedule row may be absent while
+    its jobs are not — exactly the "somebody removed the schedule and the backlog
+    stayed" case this is meant to surface.
+    """
+    row = conn.execute(
+        select(
+            t.schedule.c.id,
+            t.schedule.c.enabled,
+            t.schedule.c.next_run_at,
+            t.schedule.c.last_run_at,
+        ).where(t.schedule.c.module_id == module_id, t.schedule.c.name == name)
+    ).first()
+    job = conn.execute(
+        select(
+            t.job.c.id,
+            t.job.c.state,
+            t.job.c.attempts,
+            t.job.c.max_attempts,
+            t.job.c.finished_at,
+        )
+        .where(t.job.c.kind == job_kind)
+        .order_by(t.job.c.created_at.desc(), t.job.c.id.desc())
+        .limit(1)
+    ).first()
+    return ScheduleOutcome(
+        schedule_id=None if row is None else row.id,
+        enabled=None if row is None else bool(row.enabled),
+        next_run_at=None if row is None else row.next_run_at,
+        last_run_at=None if row is None else row.last_run_at,
+        job_id=None if job is None else job.id,
+        job_state=None if job is None else str(job.state),
+        job_attempts=None if job is None else int(job.attempts),
+        job_max_attempts=None if job is None else int(job.max_attempts),
+        job_finished_at=None if job is None else job.finished_at,
+    )
 
 
 def _claim_catch_up_row(conn: Connection, schedule_id: UUID, now: datetime) -> bool:

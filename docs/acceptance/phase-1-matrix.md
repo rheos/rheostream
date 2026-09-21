@@ -1809,18 +1809,18 @@ recorded nothing in between. *(Scenario: Export and restore; FR 52.)*"
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/exports/artifact.py b/packages/core/src/rheo_core/exports/artifact.py
-index dbcd726..7d9ca79 100644
+index 4f58863..d7e92a7 100644
 --- a/packages/core/src/rheo_core/exports/artifact.py
 +++ b/packages/core/src/rheo_core/exports/artifact.py
-@@ -393,6 +393,7 @@ def digest_categories(
-         for name, body in serialised_categories(
+@@ -614,6 +614,7 @@ def digest_categories(
+         for name, body in all_categories(
              snapshot, skip_operation_id=skip_operation_id
          ).items()
 +        if name != "audit"
      }
  
  
-@@ -774,7 +775,6 @@ def _import_approvals(connection: Connection, body: bytes) -> set[UUID]:
+@@ -1067,7 +1068,6 @@ def _import_approvals(connection: Connection, body: bytes) -> set[UUID]:
      for row in _jsonl(body, APPROVALS_NAME):
          values = _decoded(row, approval_tables.approval.c.keys())
          values.update(
@@ -1830,14 +1830,23 @@ index dbcd726..7d9ca79 100644
              approved_at=None,
 ```
 
-**Cost:** The first mutation makes the full-sequence test report `approved` where
-`requires_reapproval` is required. The second makes the digest-comparison test report unequal
-category maps.
+**Cost:**
+- `pytest:tests/postgres/test_export_restore.py::test_restore_matches_source_by_workspace_digest`
+  — first observed failure line: `E       AssertionError: assert {'approvals',...', 'settings'} == {'approvals',...', 'settings'}`,
+  with `Extra items in the right set: 'audit'` two lines below it.
+- `pytest:tests/postgres/test_export_restore.py::test_approved_action_restore_requires_fresh_approval_and_executes_nothing`
+  — first observed failure line: `E           AssertionError: assert 'approved' == 'requires_reapproval'`.
 
-**Performed by:** C8 (2026-09-17), 1a1 P12 (2026-09-21)
+**Performed by:** C8 (2026-09-17), 1a1 P12 (2026-09-21), 1a1 P13 (2026-09-21)
 
 **Note:** 1a1 P12 recaptured the hunk, unchanged in substance. A12's source snapshot gave
 `digest_categories` an `ExportSnapshot` parameter in place of its `Connection`, which moved the
 first hunk's context lines; both mutations were reapplied to the new code, watched go red on both
 demonstrators (`assert 'approved' == 'requires_reapproval'`, and the digest maps unequal), and
-reverted.
+reverted. 1a1 P13 recaptured it a second time, again unchanged in substance: the module export
+bridge made `digest_categories` read `all_categories` rather than `serialised_categories`, moving
+the first hunk's context lines again. Both mutations were reapplied, watched go red on both
+demonstrators, and reverted from a byte copy verified with `cmp`. `Cost` now carries the two
+observed lines verbatim rather than a paraphrase, and the first one moved with the code: the digest
+test compares its category **set** before it compares digests, so a dropped category is now caught
+one assertion earlier than it was.

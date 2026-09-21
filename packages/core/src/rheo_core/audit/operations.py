@@ -22,7 +22,7 @@ rather than of a convention.
 """
 
 from datetime import UTC, datetime
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,6 +36,9 @@ from rheo_core.audit.tool_telemetry import (
 )
 from rheo_core.storage.backend import UnitOfWork
 
+if TYPE_CHECKING:  # pragma: no cover - see ``_deletions`` on why this is deferred
+    from rheo_core.deletion.records import DeletionRecordRow
+
 AUDIT_LIST: Final = "core.audit.list"
 
 TELEMETRY_ROLES: Final = frozenset({Role.OWNER, Role.OPERATOR})
@@ -48,6 +51,18 @@ the flag. This second gate is at the point of disclosure rather than at the door
 it is here on purpose: § A11 makes owner/operator-only access a property of the
 telemetry collection itself, and a later run widening the *operation's* roles (to let
 a member read their own audit trail, say) must not silently widen this with it."""
+
+DELETION_ROLES: Final = TELEMETRY_ROLES
+"""Who may read the deletion-evidence collection (§ A8).
+
+The same owner/operator pair, and it is an alias rather than a second literal so the
+two cannot drift into disagreement while both claim to be "the owner/operator-only
+collections". § A8 names this collection in the same breath as the ledger's exact
+counters — "exact counters remain on the content-free deletion ledger and in the
+owner/operator-only ``audit.list`` opt-in ``deletions`` collection" — and those counters
+are the closure size every other surface deliberately withholds, so the gate is at the
+point of disclosure here for the reason :data:`TELEMETRY_ROLES` gives: an operation
+whose own roles widen later must not widen this with them."""
 
 # See ``rheo_core.operations.core_ops`` for why ``ignore`` (the default) is stated.
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
@@ -78,6 +93,20 @@ class AuditListInput(BaseModel):
     one read is two things to reason about and two ways to get a page wrong, and the
     existing bound is already the right shape — "how many of the most recent rows",
     asked of both collections at once.
+    """
+
+    include_deletions: bool = False
+    """Opt in to § A8's owner/operator-only deletion-evidence collection.
+
+    The same shape as :attr:`include_tool_telemetry` above, down to sharing ``limit``,
+    and for the same reasons: an existing caller's response is unchanged, the extra
+    query does not run for a caller that did not ask, and one bound covers every
+    collection on the read.
+
+    The two flags are independent rather than one "everything" switch. They disclose
+    different things — what a tool did, and what a deletion removed — and § A11 and
+    § A8 make each its own owner/operator decision, so a caller that wants the ledger
+    should not have to ask for telemetry to get it.
     """
 
 
@@ -134,6 +163,40 @@ class ToolTelemetryRecord(BaseModel):
     argument_names: list[str]
 
 
+class DeletionRecord(BaseModel):
+    """One ``deletion_record`` row as this operation publishes it (§ A8).
+
+    :class:`~rheo_core.deletion.records.DeletionRecordRow` field for field, with that
+    row's ``id`` published as ``deletion_id`` — the renaming :class:`AuditRecord` and
+    :class:`ToolTelemetryRecord` already make — and the qualified ``record_type`` and
+    ``record_id`` republished as the canonical reference an operator actually reads,
+    which is how every other surface names a record.
+
+    **Every field here is content-free by construction**, which is the table's own
+    design rather than a filter applied at this boundary: there is no title, body,
+    payload or json column on the row to withhold. The four counters are the exact
+    closure sizes § A8 keeps off the deletion *result* — a caller of
+    ``core.record.delete`` receives only ``{deletion_ref}`` — and this collection is
+    the one place they are published, to an owner or an operator who asked for them.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    deletion_id: UUID
+    deleted_at: datetime
+    record_ref: str
+    actor_kind: str
+    actor_id: UUID | None
+    approval_id: UUID | None
+    participants: list[str]
+    cancelled_job_count: int
+    cancelled_action_count: int
+    removed_export_count: int
+    invalidated_memory_count: int
+    cause: str
+    retained_successor_ref: str | None
+
+
 class AuditList(BaseModel):
     """The workspace's most recent audit records, newest first.
 
@@ -155,6 +218,15 @@ class AuditList(BaseModel):
     ``None`` means this read did not collect telemetry — the caller did not opt in, or
     is not owner/operator — while ``[]`` means it did and there is none unexpired to
     show. A default of ``[]`` would tell a member their workspace has no tool activity.
+    """
+
+    deletions: list[DeletionRecord] | None = None
+    """§ A8's collection, present only when it was asked for and allowed.
+
+    The same ``None``-versus-``[]`` distinction :attr:`tool_telemetry` draws, and it
+    matters more here: ``[]`` from a read that was not allowed to collect would tell a
+    member that nothing in their workspace has ever been deleted, which is precisely
+    the fact the content-free ledger is careful not to publish.
     """
 
 
@@ -187,6 +259,52 @@ def _published_telemetry(row: ToolTelemetryRow) -> ToolTelemetryRecord:
         query_length=row.query_length,
         argument_names=list(row.argument_names),
     )
+
+
+def _published_deletion(row: "DeletionRecordRow") -> DeletionRecord:
+    return DeletionRecord(
+        deletion_id=row.id,
+        deleted_at=row.deleted_at,
+        record_ref=f"{row.record_type}:{row.record_id}",
+        actor_kind=row.actor_kind,
+        actor_id=row.actor_id,
+        approval_id=row.approval_id,
+        participants=list(row.participants),
+        cancelled_job_count=row.cancelled_job_count,
+        cancelled_action_count=row.cancelled_action_count,
+        removed_export_count=row.removed_export_count,
+        invalidated_memory_count=row.invalidated_memory_count,
+        cause=row.cause,
+        retained_successor_ref=row.retained_successor_ref,
+    )
+
+
+def _deletions(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: AuditListInput
+) -> list[DeletionRecord] | None:
+    """§ A8's collection, or ``None`` when this read does not collect it.
+
+    No age cut, unlike :func:`_telemetry`: the ledger is the durable proof that a
+    deletion happened and nothing expires it, so "the most recent ``limit``" is the
+    whole of the bound.
+
+    **The repository is imported here rather than at module level**, and the reason
+    is the structural one this module's own docstring states: nothing in this package
+    may import ``rheo_core.operations``. ``rheo_core.deletion``'s package ``__init__``
+    imports its registry, which imports that package's refusals, which runs
+    ``operations/__init__`` — and that imports ``core_ops``, which imports this module.
+    A module-level import here closes that loop and every name below is unbound by the
+    time ``core_ops`` wants one. Deferred to call time, when the chain has finished
+    loading.
+    """
+    from rheo_core.deletion.records import list_deletion_records
+
+    if not model_input.include_deletions or ctx.role not in DELETION_ROLES:
+        return None
+    return [
+        _published_deletion(row)
+        for row in list_deletion_records(uow.connection, limit=model_input.limit)
+    ]
 
 
 def _telemetry(
@@ -229,4 +347,5 @@ def audit_list_handler(
             for row in list_audit_records(uow.connection, limit=model_input.limit)
         ],
         tool_telemetry=_telemetry(ctx, uow, model_input),
+        deletions=_deletions(ctx, uow, model_input),
     )

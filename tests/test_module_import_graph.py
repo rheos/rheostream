@@ -10,6 +10,7 @@ _SCAN_DIRS = ("packages", "apps", "tests")
 _MODULE_TOKEN = "rheo_recallatron"
 _PATH_TOKEN = "modules/recallatron"
 _DECLARED_TEST_DEPENDENCIES = {
+    "tests/postgres/test_memory_export_restore.py",
     "tests/postgres/test_memory_lifecycle.py",
     "tests/postgres/test_memory_mcp.py",
     "tests/postgres/test_memory_records.py",
@@ -26,7 +27,10 @@ _DECLARED_TEST_DEPENDENCIES = {
 
 FR 14 is about ``packages`` and ``apps``; a *test* may reach for the one real module
 distribution in the checkout when that is its subject, and this set is the record of
-which ones do. ``test_memory_records.py`` is the memory schema's own census,
+which ones do. ``test_memory_export_restore.py`` drives the module export/import
+bridge — it is the only module in the checkout with a real export format and a
+migration chain a restore can rebuild — ``test_memory_records.py`` is the memory
+schema's own census,
 ``test_memory_lifecycle.py`` drives the deletion coordinator against the one real
 owned-deletable record type in the checkout, ``test_memory_mcp.py`` drives the MCP
 tool facade against the one module in the checkout that registers a tool naming a

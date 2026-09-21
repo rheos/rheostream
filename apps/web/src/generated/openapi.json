@@ -208,6 +208,21 @@
       "AuditList": {
         "description": "The workspace's most recent audit records, newest first.\n\n``records`` is a named collection field rather than a bare list, mirroring\n``FailureList`` and ``OperationList``: a later run adding a second collection\nbeside it is then an additive change a reader may ignore rather than a change to\nthe response's own type. ``tool_telemetry`` is that later run, and it is exactly\nthat additive change.",
         "properties": {
+          "deletions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DeletionRecord"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Deletions"
+          },
           "records": {
             "items": {
               "$ref": "#/components/schemas/AuditRecord"
@@ -240,6 +255,11 @@
       "AuditListInput": {
         "description": "How many of the most recent audit records to return.\n\n``limit`` is bounded rather than a bare ``int``, for the reason\n``work/operations.py``'s ``FailureListInput`` gives: a bare ``int`` lets ``-1``\nreach the ``SELECT``, where Postgres raises *LIMIT must not be negative* and\n``dispatch`` folds a driver class name into ``handler_failed``, when it is an\ninput defect that belongs in the ``input_invalid`` refusal pydantic already\nproduces. Nothing prunes this table in release one, so an unbounded ``limit``\nwould be a read that grows for the life of the deployment.",
         "properties": {
+          "include_deletions": {
+            "default": false,
+            "title": "Include Deletions",
+            "type": "boolean"
+          },
           "include_tool_telemetry": {
             "default": false,
             "title": "Include Tool Telemetry",
@@ -355,6 +375,108 @@
         ],
         "title": "ContextPurpose",
         "type": "string"
+      },
+      "DeletionRecord": {
+        "description": "One ``deletion_record`` row as this operation publishes it (\u00a7 A8).\n\n:class:`~rheo_core.deletion.records.DeletionRecordRow` field for field, with that\nrow's ``id`` published as ``deletion_id`` \u2014 the renaming :class:`AuditRecord` and\n:class:`ToolTelemetryRecord` already make \u2014 and the qualified ``record_type`` and\n``record_id`` republished as the canonical reference an operator actually reads,\nwhich is how every other surface names a record.\n\n**Every field here is content-free by construction**, which is the table's own\ndesign rather than a filter applied at this boundary: there is no title, body,\npayload or json column on the row to withhold. The four counters are the exact\nclosure sizes \u00a7 A8 keeps off the deletion *result* \u2014 a caller of\n``core.record.delete`` receives only ``{deletion_ref}`` \u2014 and this collection is\nthe one place they are published, to an owner or an operator who asked for them.",
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_kind": {
+            "title": "Actor Kind",
+            "type": "string"
+          },
+          "approval_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Id"
+          },
+          "cancelled_action_count": {
+            "title": "Cancelled Action Count",
+            "type": "integer"
+          },
+          "cancelled_job_count": {
+            "title": "Cancelled Job Count",
+            "type": "integer"
+          },
+          "cause": {
+            "title": "Cause",
+            "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "title": "Deleted At",
+            "type": "string"
+          },
+          "deletion_id": {
+            "format": "uuid",
+            "title": "Deletion Id",
+            "type": "string"
+          },
+          "invalidated_memory_count": {
+            "title": "Invalidated Memory Count",
+            "type": "integer"
+          },
+          "participants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "record_ref": {
+            "title": "Record Ref",
+            "type": "string"
+          },
+          "removed_export_count": {
+            "title": "Removed Export Count",
+            "type": "integer"
+          },
+          "retained_successor_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retained Successor Ref"
+          }
+        },
+        "required": [
+          "deletion_id",
+          "deleted_at",
+          "record_ref",
+          "actor_kind",
+          "actor_id",
+          "approval_id",
+          "participants",
+          "cancelled_job_count",
+          "cancelled_action_count",
+          "removed_export_count",
+          "invalidated_memory_count",
+          "cause",
+          "retained_successor_ref"
+        ],
+        "title": "DeletionRecord",
+        "type": "object"
       },
       "DigestEntry": {
         "properties": {

@@ -83,6 +83,16 @@ Two sweeps, two schedules, two job kinds: they retain different things on differ
 policies, and one row that enqueued both would make disabling either impossible.
 """
 
+SWEEP_SCHEDULE_NAME: Final = "memory_retention_sweep"
+"""The schedule row's name, as the manifest declares it.
+
+Named here rather than spelled in the manifest because a second reader appeared: the
+export refusal reads this schedule's own state so an operator can tell "the sweep has
+not run yet" from "the sweep is stuck" (§ A12). Two literals would be two things to
+keep in step, and a diagnostic that silently read no row would look exactly like a
+workspace with no schedule at all.
+"""
+
 MEMORY_RECORD_QUALIFIED: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}"
 """The qualified type the sweep declares it expires, assembled from its two parts.
 

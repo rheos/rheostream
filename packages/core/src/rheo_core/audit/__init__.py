@@ -21,10 +21,12 @@ under ``rheo_core/operations/`` and not here.
 from rheo_core.audit.core_sink import CORE_AUDIT_SINK, CoreAuditSink
 from rheo_core.audit.operations import (
     AUDIT_LIST,
+    DELETION_ROLES,
     TELEMETRY_ROLES,
     AuditList,
     AuditListInput,
     AuditRecord,
+    DeletionRecord,
     ToolTelemetryRecord,
     audit_list_handler,
 )
@@ -60,6 +62,7 @@ __all__ = [
     "AUDIT_REFUSED",
     "AUDIT_SUCCEEDED",
     "CORE_AUDIT_SINK",
+    "DELETION_ROLES",
     "TELEMETRY_LOCK_KEY",
     "TELEMETRY_ROLES",
     "TOOL_MAX_ROWS_KEY",
@@ -72,6 +75,7 @@ __all__ = [
     "AuditSink",
     "AuditSinkRefused",
     "CoreAuditSink",
+    "DeletionRecord",
     "ToolTelemetryRecord",
     "ToolTelemetryRow",
     "audit_list_handler",

@@ -15,10 +15,11 @@ because the first ``mutate`` operation now exists and neither is optional for on
 dispatch refuses every non-``READ`` call whose module has no sink.
 ``deletion_participants`` carries the other half of an erasure, ``jobs`` and
 ``schedules`` carry the retention sweep and the daily row that enqueues it, and
-``tools`` carries § A10's seven memory tools. ``subscriptions`` and ``export`` are
-still empty or unimplemented, and that is deliberate: a declaration whose
-implementation is a later prompt's would be a promise the loader registers and
-nothing keeps.
+``tools`` carries § A10's seven memory tools, and ``export`` now carries the real
+exporter/importer pair with the JSON Schema that describes what they move.
+``subscriptions`` stays empty, and that is deliberate: no consumer exists in 1a1, and
+a declaration whose implementation is a later prompt's would be a promise the loader
+registers and nothing keeps.
 
 **Why the settings key is not declared in this file.** This module now imports its own
 operations, which import the eligibility service, which has to read the retention key
@@ -28,7 +29,7 @@ manifest from there.
 """
 
 from importlib import metadata
-from typing import Final, NoReturn
+from typing import Final
 
 from rheo_contracts import CONTRACT_VERSION
 from rheo_core.audit.core_sink import CORE_AUDIT_SINK
@@ -51,6 +52,11 @@ from rheo_recallatron.configuration import (
 )
 from rheo_recallatron.eligibility import LIFECYCLE_ROLES
 from rheo_recallatron.events import EVENTS
+from rheo_recallatron.export import (
+    EXPORT_FORMAT_VERSION,
+    export_memory_records,
+    import_memory_records,
+)
 from rheo_recallatron.lifecycle import (
     DELETION_PARTICIPANT_TYPES,
     authorize_memory_delete,
@@ -63,33 +69,13 @@ from rheo_recallatron.retention import (
     MEMORY_RETENTION_SWEEP,
     SWEEP_CRON,
     SWEEP_MAX_ATTEMPTS,
+    SWEEP_SCHEDULE_NAME,
     MemoryRetentionSweepPayload,
     run_memory_retention_sweep,
 )
 from rheo_recallatron.tools import TOOLS
 
 DISTRIBUTION: Final = "rheo-recallatron"
-
-
-def _export_unavailable(*_args: object, **_kwargs: object) -> NoReturn:
-    """Stands in for the exporter until this module has an export format to write.
-
-    ``ExportDeclaration`` requires both callables, and ``export`` is a required
-    manifest field, so a manifest without an exporter has to supply a pair. The
-    record types below are now declared ``exportable``, so this pair is what a caller
-    reaching for the exporter hits — loudly, naming the gap — rather than a silent
-    empty archive. The real pair, and the JSON Schema beside it, are the export run's.
-    """
-    raise NotImplementedError(
-        f"{MODULE_ID} declares no export format yet, so it has nothing to export"
-    )
-
-
-def _import_unavailable(*_args: object, **_kwargs: object) -> NoReturn:
-    """The other half of the pair; see :func:`_export_unavailable`."""
-    raise NotImplementedError(
-        f"{MODULE_ID} declares no export format yet, so it has nothing to import"
-    )
 
 
 MANIFEST: Final = ModuleManifest(
@@ -210,7 +196,7 @@ MANIFEST: Final = ModuleManifest(
     ),
     schedules=(
         Schedule(
-            name="memory_retention_sweep",
+            name=SWEEP_SCHEDULE_NAME,
             job_kind=MEMORY_RETENTION_SWEEP,
             cron=SWEEP_CRON,
             enabled_by_default=True,
@@ -233,11 +219,14 @@ MANIFEST: Final = ModuleManifest(
             record_types=DELETION_PARTICIPANT_TYPES, handler=on_record_deleted
         ),
     ),
+    # The real pair, and the JSON Schema beside them in the same wheel. ``schema_path``
+    # is resolved as a package resource inside the installed distribution, so it is a
+    # path relative to this package rather than to any checkout.
     export=ExportDeclaration(
-        format_version=1,
+        format_version=EXPORT_FORMAT_VERSION,
         schema_path="export.schema.json",
-        exporter=_export_unavailable,
-        importer=_import_unavailable,
+        exporter=export_memory_records,
+        importer=import_memory_records,
     ),
     web=None,
     agent_guidance=None,

@@ -31,6 +31,7 @@ from sqlalchemy import (
     Connection,
     and_,
     delete,
+    func,
     insert,
     select,
     update,
@@ -295,6 +296,51 @@ def expired_memory_exists(conn: Connection, *, horizon: datetime) -> bool:
             )
         ).scalar_one()
     )
+
+
+def set_memory_successor(
+    conn: Connection, memory_id: UUID, successor_id: UUID | None
+) -> None:
+    """Point one predecessor at its successor, and nothing else.
+
+    Restore's second pass, and only restore's second pass. Parents go in with a null
+    self-reference because a successor may be written after its predecessor, and this
+    is the write that resolves them once every row is present. It touches no other
+    column deliberately: the invalidation state that *accompanies* a supersession is
+    already on the imported row and re-deriving it here would let a restore disagree
+    with the artifact it is restoring.
+    """
+    conn.execute(
+        update(t.memory)
+        .where(t.memory.c.id == memory_id)
+        .values(superseded_by_id=successor_id)
+    )
+
+
+def count_expired_memory_roots(
+    conn: Connection, *, horizon: datetime, limit: int
+) -> int:
+    """How many expirable roots remain, counted no further than ``limit``.
+
+    § A12's diagnostic half, and the bound is the whole reason it is a separate
+    function from :func:`expired_memory_exists`. An operator refused an export needs
+    to know whether one row is in the way or ten thousand, because those are
+    different remedies; what they must not receive is an unbounded scan of the whole
+    table inside a refusal path, or a number so exact it becomes a population count
+    of the workspace. Counting to ``limit`` and stopping answers the first and
+    withholds the second: a result equal to ``limit`` means "at least this many".
+
+    The same predicate the sweep selects with, so the count and the work it describes
+    cannot disagree — a count that included rows the sweep would never remove would
+    tell an operator to wait for a batch that is never coming.
+    """
+    bounded = (
+        select(t.memory.c.id)
+        .where(_expired_workspace_memory(horizon))
+        .limit(limit)
+        .subquery()
+    )
+    return int(conn.execute(select(func.count()).select_from(bounded)).scalar_one())
 
 
 @dataclass(frozen=True, slots=True)
@@ -718,4 +764,115 @@ def get_source_receipt(
         bound_purpose=mapping["bound_purpose"],
         source_recorded_at=mapping["source_recorded_at"],
         source_expires_at=mapping["source_expires_at"],
+    )
+
+
+def export_memory_rows(conn: Connection) -> tuple[MemoryRow, ...]:
+    """Every memory, ascending by id, ``search_tsv`` excluded by the row shape."""
+    return tuple(
+        _memory_row(mapping)
+        for mapping in conn.execute(select(t.memory).order_by(t.memory.c.id)).mappings()
+    )
+
+
+def export_memory_purpose_rows(conn: Connection) -> tuple[MemoryPurposeRow, ...]:
+    return tuple(
+        MemoryPurposeRow(memory_id=row.memory_id, purpose=str(row.purpose))
+        for row in conn.execute(
+            select(t.memory_purpose).order_by(
+                t.memory_purpose.c.memory_id, t.memory_purpose.c.purpose
+            )
+        ).all()
+    )
+
+
+def export_memory_entity_rows(conn: Connection) -> tuple[MemoryEntityRow, ...]:
+    return tuple(
+        MemoryEntityRow(
+            id=row.id,
+            kind=str(row.kind),
+            name=str(row.name),
+            normalized_name=str(row.normalized_name),
+            ref=None if row.ref is None else str(row.ref),
+            created_at=row.created_at,
+            source_namespace=(
+                None if row.source_namespace is None else str(row.source_namespace)
+            ),
+            external_source_key=(
+                None
+                if row.external_source_key is None
+                else str(row.external_source_key)
+            ),
+        )
+        for row in conn.execute(
+            select(t.memory_entity).order_by(t.memory_entity.c.id)
+        ).all()
+    )
+
+
+def export_memory_mention_rows(conn: Connection) -> tuple[MemoryMentionRow, ...]:
+    return tuple(
+        MemoryMentionRow(
+            memory_id=row.memory_id,
+            entity_id=row.entity_id,
+            role=None if row.role is None else str(row.role),
+        )
+        for row in conn.execute(
+            select(t.memory_mention).order_by(
+                t.memory_mention.c.memory_id, t.memory_mention.c.entity_id
+            )
+        ).all()
+    )
+
+
+def export_memory_link_rows(conn: Connection) -> tuple[MemoryLinkRow, ...]:
+    return tuple(
+        MemoryLinkRow(
+            memory_id=row.memory_id,
+            ref=str(row.ref),
+            relation=str(row.relation),
+            created_at=row.created_at,
+            supersession_lineage=bool(row.supersession_lineage),
+        )
+        for row in conn.execute(
+            select(t.memory_link).order_by(
+                t.memory_link.c.memory_id,
+                t.memory_link.c.ref,
+                t.memory_link.c.relation,
+            )
+        ).all()
+    )
+
+
+def export_source_receipt_rows(conn: Connection) -> tuple[SourceReceiptRow, ...]:
+    """Every receipt, in primary-key order, whatever its state.
+
+    Retained history travels: § A12 names active, noop, denied and terminal
+    identity-only receipts together, because a restored deployment that lost the
+    terminal ones could replay an accepted source unit into a second memory.
+    """
+    return tuple(
+        SourceReceiptRow(
+            representation_type=str(row.representation_type),
+            source_namespace=str(row.source_namespace),
+            external_source_key=str(row.external_source_key),
+            record_id=row.record_id,
+            payload_digest=bytes(row.payload_digest),
+            state=str(row.state),
+            producer_kind=str(row.producer_kind),
+            authority_id=row.authority_id,
+            principal_account_id=row.principal_account_id,
+            audience_kind=str(row.audience_kind),
+            audience_id=row.audience_id,
+            bound_purpose=None if row.bound_purpose is None else str(row.bound_purpose),
+            source_recorded_at=row.source_recorded_at,
+            source_expires_at=row.source_expires_at,
+        )
+        for row in conn.execute(
+            select(t.source_receipt).order_by(
+                t.source_receipt.c.representation_type,
+                t.source_receipt.c.source_namespace,
+                t.source_receipt.c.external_source_key,
+            )
+        ).all()
     )

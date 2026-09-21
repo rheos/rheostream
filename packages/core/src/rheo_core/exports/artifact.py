@@ -7,19 +7,38 @@ import io
 import json
 import tarfile
 import tempfile
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, Final
+from typing import TYPE_CHECKING, Any, BinaryIO, Final
 from uuid import UUID
 
 import zstandard as zstd
+
+# ``jsonschema`` ships no inline types and this tree installs no stub package for it,
+# so the import carries the same ignore ``runtimes/claude_cli.py`` already uses for
+# the same library. Adding ``types-jsonschema`` would make *that* file's ignores
+# unused, which is a change to a package outside this work's scope.
+from jsonschema import (  # type: ignore[import-untyped]
+    Draft202012Validator,
+    ValidationError,
+)
 from rheo_contracts import CONTRACT_VERSION
 from sqlalchemy import Connection, delete, insert, select, text
 
 from rheo_core.approvals import tables as approval_tables
+from rheo_core.deletion.records import DeletionRecordRow, list_deletion_records
+from rheo_core.deletion.records import (
+    insert_imported_deletion_record as _write_imported_deletion,
+)
+from rheo_core.deletion.tables import (
+    DELETION_CAUSES,
+    RETENTION_EXPIRY,
+    deletion_record,
+)
 from rheo_core.exports import tables as export_tables
 from rheo_core.refs import uuid7
 from rheo_core.settings import current_profile
@@ -37,6 +56,9 @@ from rheo_core.storage.postgres import get_backend
 from rheo_core.storage.provisioning import core_version, provision
 from rheo_core.storage.routing import active_workspace
 
+if TYPE_CHECKING:  # pragma: no cover - see ``_exportable`` on why this is deferred
+    from rheo_core.modules.manifest import ModuleManifest
+
 CONTRACT_VERSION_SUPPORTED: Final = CONTRACT_VERSION
 MANIFEST_NAME: Final = "manifest.json"
 SETTINGS_NAME: Final = "settings.jsonl"
@@ -44,6 +66,31 @@ APPROVALS_NAME: Final = "core/approvals.jsonl"
 OPERATIONS_NAME: Final = "core/operations.jsonl"
 AUDIT_NAME: Final = "core/audit.jsonl"
 DELETIONS_NAME: Final = "core/deletions.jsonl"
+MODULE_ENTRY_PREFIX: Final = "modules/"
+MODULE_ENTRY_SUFFIX: Final = ".jsonl"
+
+
+def module_entry_name(module_id: str) -> str:
+    """Where one module's exported rows live inside the archive.
+
+    ``modules/<module_id>.jsonl``, beside ``core/``'s own five. One file per module
+    rather than one per table: the table list is the module's private business and
+    the artifact should not have to change shape when a module adds one. Each line
+    carries a ``record`` discriminator instead, which is what the module's own JSON
+    Schema branches on.
+    """
+    return f"{MODULE_ENTRY_PREFIX}{module_id}{MODULE_ENTRY_SUFFIX}"
+
+
+def module_id_for_entry(name: str) -> str | None:
+    """The module id an archive member names, or ``None`` when it names none."""
+    if not name.startswith(MODULE_ENTRY_PREFIX) or not name.endswith(
+        MODULE_ENTRY_SUFFIX
+    ):
+        return None
+    return name[len(MODULE_ENTRY_PREFIX) : -len(MODULE_ENTRY_SUFFIX)]
+
+
 REQUIRED_ENTRIES: Final = frozenset(
     {
         MANIFEST_NAME,
@@ -255,10 +302,23 @@ def _json_value(value: object) -> object:
     return value
 
 
+def _encoded(row: Mapping[str, object]) -> dict[str, object]:
+    """One row as the JSON object the artifact carries.
+
+    Split out of :func:`_line` because a module's rows are validated against that
+    module's JSON Schema, and the schema describes **this** shape — the encoded one,
+    where a UUID is a string and a ``bytea`` is lowercase hex — rather than the
+    Python values the exporter handed over. Validating before encoding would check a
+    different document from the one the artifact stores and the importer reads back.
+    """
+    return {key: _json_value(value) for key, value in row.items()}
+
+
 def _line(row: Mapping[str, object]) -> bytes:
-    encoded = {key: _json_value(value) for key, value in row.items()}
     return (
-        json.dumps(encoded, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        json.dumps(
+            _encoded(row), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
         + "\n"
     ).encode()
 
@@ -300,6 +360,150 @@ def _composition_bytes(connection: Connection) -> bytes:
         for row in repositories.list_module_schema_versions(connection)
     )
     return _lines(rows)
+
+
+_DELETION_FIELDS: Final = tuple(deletion_record.c.keys())
+"""The ledger's column order, taken from the table rather than written out again.
+
+``_line`` sorts its keys, so the order does not reach the bytes; reading it off the
+table is what makes a column added by a later migration appear in the category
+without anybody remembering to add it here. A column that travels and a column that
+does not is exactly the asymmetry a restore compares byte-for-byte and fails on.
+"""
+
+
+def _deletion_bytes(connection: Connection) -> bytes:
+    """The content-free deletion ledger, every row, ascending by id.
+
+    **Determinism is the whole requirement here**, because these bytes are compared
+    against a restore of themselves. Ascending ``id`` is ascending mint time (UUIDv7)
+    and is total, so the ordering does not depend on how many rows exist, on when the
+    snapshot opened, or on the physical order Postgres happens to return.
+
+    ``id`` and ``deleted_at`` travel verbatim and are written back verbatim
+    (``deletion/records.py:insert_imported_deletion_record``); re-minting either on
+    import would make a faithful restore report a digest its own source never had.
+
+    This replaces the skeleton's unconditional ``b""``. It is core-owned metadata
+    under export's existing owner/operator authority, not telemetry: the row carries
+    no title, body, payload or json column, so there is nothing on it to withhold and
+    no filtering to get wrong.
+    """
+    return _lines(
+        {field: getattr(row, field) for field in _DELETION_FIELDS}
+        for row in list_deletion_records(connection)
+    )
+
+
+def _exportable(connection: Connection) -> tuple[ModuleManifest, ...]:
+    """The loaded manifests this workspace has installed, in dependency order.
+
+    Two conditions, and both are needed. *Loaded* comes from the process — a manifest
+    this interpreter cannot resolve has no exporter to call — and *installed* comes
+    from the workspace's own ``module_state`` rows read on the snapshot connection, so
+    an export describes the modules **that workspace** holds rather than the set this
+    particular process happens to have loaded. Dependency order is the loader's own,
+    because a dependant's rows may reference a dependency's and restoring them the
+    other way round would have to defer the reference.
+
+    ``loader`` is imported inside the function for the same structural reason
+    :func:`collect_export_snapshot` defers ``OperationRefused``: the loader's manifest
+    module carries this package's export protocols, so a module-level import here
+    would close the cycle.
+    """
+    from rheo_core.modules.loader import loaded_in_dependency_order
+
+    installed = {
+        row.module_id
+        for row in repositories.list_module_states(connection)
+        if row.state != "removed"
+    }
+    return tuple(
+        manifest
+        for manifest in loaded_in_dependency_order()
+        if manifest.module_id in installed
+        and any(record.exportable for record in manifest.record_types)
+    )
+
+
+def _module_validator(manifest: ModuleManifest) -> Draft202012Validator:
+    """The module's own JSON Schema, resolved inside its installed distribution.
+
+    A12: ``resolve its schema resource inside the installed distribution``. The
+    package is read off the exporter's own ``__module__`` rather than declared a
+    second time on the manifest — the callable and the schema that describes what it
+    writes ship in the same wheel by construction, and a second declaration is a
+    second thing to keep in step.
+    """
+    package = str(getattr(manifest.export.exporter, "__module__", "")).partition(".")[0]
+    if not package:
+        raise ArtifactRefused(
+            f"module {manifest.module_id!r} has no resolvable export package"
+        )
+    try:
+        body = (
+            resources.files(package)
+            .joinpath(manifest.export.schema_path)
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
+        raise ArtifactRefused(
+            f"module {manifest.module_id!r} has no export schema "
+            f"{manifest.export.schema_path!r}: {exc}"
+        ) from None
+    return Draft202012Validator(json.loads(body))
+
+
+def _validated_module_rows(
+    manifest: ModuleManifest, rows: Sequence[Mapping[str, object]], name: str
+) -> list[dict[str, object]]:
+    """Every line of one module's category, against that module's schema.
+
+    Every line, not a sample: the schema is the only thing standing between a
+    hand-edited artifact and a module importer, and a validator that checks the first
+    row is a validator that checks nothing.
+    """
+    validator = _module_validator(manifest)
+    validated: list[dict[str, object]] = []
+    for number, row in enumerate(rows, 1):
+        encoded = _encoded(row)
+        try:
+            validator.validate(encoded)
+        except ValidationError as exc:
+            raise ArtifactRefused(
+                f"{name}:{number} is invalid: {exc.message}"
+            ) from None
+        validated.append(encoded)
+    return validated
+
+
+def module_categories(snapshot: ExportSnapshot) -> dict[str, bytes]:
+    """Each installed exportable module's rows, keyed by their archive entry name.
+
+    Read through the same :class:`ExportSnapshot` every core category is, so a module
+    category and a core category describe one committed instant rather than two. The
+    exporter receives the snapshot itself — never its connection — which is what
+    keeps the fixed ``snapshot_at`` and the transaction-bound settings source in the
+    module's hands rather than tempting it to sample a second clock.
+
+    A module that refuses raises, and the refusal propagates: A12's
+    ``export_requires_retention_sweep`` must leave no successful artifact, so it is
+    not caught, downgraded or turned into an empty category here.
+    """
+    categories: dict[str, bytes] = {}
+    for manifest in _exportable(snapshot.connection):
+        name = module_entry_name(manifest.module_id)
+        rows = manifest.export.exporter(snapshot)
+        categories[name] = b"".join(
+            (
+                json.dumps(
+                    encoded, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
+                + "\n"
+            ).encode()
+            for encoded in _validated_module_rows(manifest, rows, name)
+        )
+    return categories
 
 
 def serialised_categories(
@@ -378,19 +582,40 @@ def serialised_categories(
         "approvals": _lines(approval_rows),
         "operations": _lines(operation_rows),
         "audit": _lines(audit_rows),
-        "deletions": b"",
+        "deletions": _deletion_bytes(connection),
+    }
+
+
+def all_categories(
+    snapshot: ExportSnapshot, *, skip_operation_id: UUID | None = None
+) -> dict[str, bytes]:
+    """The six core categories and every installed module's, in one mapping.
+
+    The core six keep their short names and the module categories keep their archive
+    entry names, so a key in this mapping is unambiguous about which half it came
+    from and a module id can never collide with ``settings`` or ``audit``.
+    """
+    return {
+        **serialised_categories(snapshot, skip_operation_id=skip_operation_id),
+        **module_categories(snapshot),
     }
 
 
 def digest_categories(
     snapshot: ExportSnapshot, *, skip_operation_id: UUID | None = None
 ) -> dict[str, dict[str, object]]:
+    """Every category the artifact would carry, counted and hashed.
+
+    Over :func:`all_categories` rather than the core six: the digest is what an
+    operator compares a restore against, and a comparison that silently omitted the
+    module rows would call two workspaces equal on the strength of their settings.
+    """
     return {
         name: {
             "count": 0 if not body else body.count(b"\n"),
             "digest": hashlib.sha256(body).hexdigest(),
         }
-        for name, body in serialised_categories(
+        for name, body in all_categories(
             snapshot, skip_operation_id=skip_operation_id
         ).items()
     }
@@ -516,7 +741,7 @@ def create_artifact(
     payload would be a second value that could disagree with the rows being read.
     """
     connection = snapshot.connection
-    categories = serialised_categories(snapshot, skip_operation_id=skip_operation_id)
+    categories = all_categories(snapshot, skip_operation_id=skip_operation_id)
     manifest = {
         "core_version": core_version(),
         "contract_version": CONTRACT_VERSION,
@@ -542,6 +767,11 @@ def create_artifact(
         OPERATIONS_NAME: categories["operations"],
         AUDIT_NAME: categories["audit"],
         DELETIONS_NAME: categories["deletions"],
+        **{
+            name: body
+            for name, body in categories.items()
+            if name.startswith(MODULE_ENTRY_PREFIX)
+        },
     }
     write_archive(entries, destination)
     return destination.stat().st_size
@@ -589,15 +819,26 @@ def _manifest(entries: Mapping[str, bytes]) -> dict[str, object]:
             raise ArtifactRefused(
                 f"manifest module {module_id!r} has invalid export_format_version"
             )
-    unsupported = [
-        module
-        for module in modules
-        if not (
-            isinstance(module, dict)
-            and module.get("module_id") == "harness"
-            and current_profile() == "test"
-        )
-    ]
+    from rheo_core.modules.loader import loaded_manifests
+
+    loadable = loaded_manifests()
+    unsupported = []
+    for module in modules:
+        assert isinstance(module, dict)
+        module_id = str(module.get("module_id"))
+        loaded = loadable.get(module_id)
+        if loaded is not None:
+            declared = module.get("export_format_version")
+            if declared != loaded.export.format_version:
+                raise ArtifactRefused(
+                    f"module {module_id!r} exported format version {declared!r} "
+                    f"but this host implements "
+                    f"{loaded.export.format_version}"
+                )
+            continue
+        if module_id == "harness" and current_profile() == "test":
+            continue
+        unsupported.append(module)
     if unsupported:
         names = [
             str(module.get("module_id", "<unnamed>"))
@@ -710,6 +951,51 @@ def _import_settings(connection: Connection, body: bytes) -> None:
         connection.execute(insert(table).values(**_decoded(row, table.c.keys())))
 
 
+def _install_module_schemas(
+    connection: Connection, manifest: Mapping[str, object], *, database_name: str
+) -> None:
+    """Build each loadable module's schema before a single one of its rows lands.
+
+    A restore into an empty deployment provisions the **core** schema and nothing
+    else, so without this a module category would be inserted into tables that do not
+    exist. The chain is the same one ``core.module.install`` runs — extensions first,
+    then every revision, on this transaction's connection — so a restored module
+    schema is the schema an installed one has, rather than a second definition kept in
+    step by hand.
+
+    It runs on the restore's own connection inside the restore's own transaction,
+    which is what keeps "any failure leaves no imported memory or deletion evidence"
+    true of the DDL as well as of the rows.
+
+    ``run_module_chain`` writes one ``module_schema_version`` row per applied
+    revision, which is why :func:`_install_modules` writes none for a module that
+    reaches here: the chain's rows *are* the source's rows, revision for revision and
+    in the same order, and the artifact's single latest-version row would be a third.
+    """
+    from rheo_core.migrations.module_chain import run_module_chain
+    from rheo_core.modules.loader import loaded_manifests
+
+    declared = manifest["modules"]
+    assert isinstance(declared, list)
+    loadable = loaded_manifests()
+    preparer = connection.dialect.identifier_preparer
+    for module in declared:
+        assert isinstance(module, dict)
+        loaded = loadable.get(str(module["module_id"]))
+        if loaded is None:
+            continue
+        for extension in loaded.storage.required_extensions:
+            connection.execute(
+                text(f"CREATE EXTENSION IF NOT EXISTS {preparer.quote(extension)}")
+            )
+        run_module_chain(
+            connection,
+            loaded,
+            expected_database=database_name,
+            core_version=core_version(),
+        )
+
+
 def _install_modules(connection: Connection, manifest: Mapping[str, object]) -> None:
     """Replay the artifact's module rows through the two repository writers.
 
@@ -724,9 +1010,20 @@ def _install_modules(connection: Connection, manifest: Mapping[str, object]) -> 
     recorded state, and the source's ``core_version`` for the schema-version row. Only
     ``installed_at``/``enabled_at``/``applied_at`` are this restore's own instant,
     exactly as before.
+
+    **The schema-version row is written only for a module whose chain did not run.**
+    :func:`_install_module_schemas` runs the real chain for every loadable module and
+    ``run_module_chain`` records a row per applied revision, so writing the
+    artifact's single latest-version row on top would add a third row to a two-step
+    chain and make a faithful restore disagree with its source's composition
+    category. What is left here is the module a host cannot load and therefore cannot
+    migrate — the test-profile harness — whose one recorded version is all there is.
     """
+    from rheo_core.modules.loader import loaded_manifests
+
     modules = manifest["modules"]
     assert isinstance(modules, list)
+    loadable = loaded_manifests()
     manifest_core_version = str(manifest["core_version"])
     for module in modules:
         assert isinstance(module, dict)
@@ -741,7 +1038,7 @@ def _install_modules(connection: Connection, manifest: Mapping[str, object]) -> 
             enabled_at=now,
         )
         schema_version = module["schema_version"]
-        if schema_version is not None:
+        if schema_version is not None and module_id not in loadable:
             repositories.insert_module_schema_version(
                 connection,
                 module_id=module_id,
@@ -805,6 +1102,145 @@ def _import_audit(connection: Connection, body: bytes) -> None:
                 **_decoded(row, work_tables.audit_record.c.keys())
             )
         )
+
+
+_DELETION_COUNTERS: Final = (
+    "cancelled_job_count",
+    "cancelled_action_count",
+    "removed_export_count",
+    "invalidated_memory_count",
+)
+
+
+def _deletion_row(row: Mapping[str, object], number: int) -> DeletionRecordRow:
+    """One validated ledger row, or :class:`ArtifactRefused`.
+
+    Validated **here** rather than left to the table's own check constraints, even
+    though both refuse. A constraint violation surfaces as a driver error with a
+    constraint name in it, which is a database fault to whoever reads it; a
+    hand-edited artifact is an invalid *artifact*, and an operator is owed that
+    answer with the line number on it. The constraints stay as the floor under this.
+    """
+
+    def fail(detail: str) -> ArtifactRefused:
+        return ArtifactRefused(f"{DELETIONS_NAME}:{number} {detail}")
+
+    try:
+        identity = UUID(str(row["id"]))
+        deleted_at = datetime.fromisoformat(str(row["deleted_at"]))
+        record_type = str(row["record_type"])
+        record_id = UUID(str(row["record_id"]))
+        actor_kind = str(row["actor_kind"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise fail(f"is not a deletion record: {exc}") from None
+    cause = str(row.get("cause"))
+    if cause not in DELETION_CAUSES:
+        raise fail(f"has unsupported cause {cause!r}")
+    successor = row.get("retained_successor_ref")
+    if successor is not None and cause != RETENTION_EXPIRY:
+        raise fail("names a retained successor on a row that is not an expiry")
+    participants = row.get("participants")
+    if not isinstance(participants, list) or not all(
+        isinstance(item, str) for item in participants
+    ):
+        raise fail("has invalid participants")
+    counters: dict[str, int] = {}
+    for field in _DELETION_COUNTERS:
+        value = row.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise fail(f"has invalid {field}")
+        counters[field] = value
+    if not record_type or "." not in record_type:
+        raise fail(f"names unqualified record type {record_type!r}")
+    optional: dict[str, UUID | None] = {}
+    for field in ("actor_id", "approval_id"):
+        value = row.get(field)
+        try:
+            optional[field] = None if value is None else UUID(str(value))
+        except (TypeError, ValueError):
+            raise fail(f"has invalid {field}") from None
+    return DeletionRecordRow(
+        id=identity,
+        deleted_at=deleted_at,
+        record_type=record_type,
+        record_id=record_id,
+        actor_kind=actor_kind,
+        actor_id=optional["actor_id"],
+        approval_id=optional["approval_id"],
+        participants=tuple(str(item) for item in participants),
+        cause=cause,
+        retained_successor_ref=None if successor is None else str(successor),
+        **counters,
+    )
+
+
+def _import_deletions(connection: Connection, body: bytes) -> None:
+    """A12 step 5's core half: the ledger, verbatim, in the restore transaction.
+
+    Identifiers and timestamps are preserved exactly as memory identifiers already
+    are, which is what makes the deletion-evidence digest compute identically over a
+    source workspace and a restore of it. Duplicates are refused rather than left to
+    the primary key, for the reason :func:`_deletion_row` gives.
+    """
+    seen: set[UUID] = set()
+    for number, row in enumerate(_jsonl(body, DELETIONS_NAME), 1):
+        record = _deletion_row(row, number)
+        if record.id in seen:
+            raise ArtifactRefused(
+                f"{DELETIONS_NAME}:{number} repeats deletion record {record.id}"
+            )
+        seen.add(record.id)
+        _write_imported_deletion(connection, record)
+
+
+def _import_modules(
+    uow: UnitOfWork, entries: Mapping[str, bytes], manifest: Mapping[str, object]
+) -> list[Callable[[], None]]:
+    """A12 steps 2-4, first pass, for every module the artifact carries.
+
+    Returns each module's second pass rather than running it, because A12 puts core's
+    deletion-evidence import **between** the two: a module's marked-ancestry
+    validation reads that evidence to tell a legitimately expired predecessor from a
+    missing one, so resolving self-references before the ledger lands would fail
+    every valid post-expiry chain.
+
+    An artifact naming a module this host has not loaded never reaches here —
+    :func:`_manifest` refuses it — and a module in the manifest with no category is
+    an empty one, not a missing one: a workspace may hold an installed module with no
+    rows in it.
+    """
+    from rheo_core.modules.loader import loaded_manifests
+
+    declared = manifest["modules"]
+    assert isinstance(declared, list)
+    loadable = loaded_manifests()
+    unexpected = sorted(
+        name
+        for name in entries
+        if (found := module_id_for_entry(name)) is not None
+        and found not in {str(module["module_id"]) for module in declared}
+    )
+    if unexpected:
+        raise ArtifactRefused(f"artifact carries undeclared module rows: {unexpected}")
+    continuations: list[Callable[[], None]] = []
+    for module in declared:
+        assert isinstance(module, dict)
+        module_id = str(module["module_id"])
+        loaded = loadable.get(module_id)
+        if loaded is None:
+            continue
+        name = module_entry_name(module_id)
+        rows = _jsonl(entries.get(name, b""), name)
+        validator = _module_validator(loaded)
+        for number, row in enumerate(rows, 1):
+            try:
+                validator.validate(row)
+            except ValidationError as exc:
+                raise ArtifactRefused(
+                    f"{name}:{number} is invalid: {exc.message}"
+                ) from None
+        continuations.append(loaded.export.importer(uow, rows))
+    return continuations
 
 
 def restore_artifact(
@@ -872,6 +1308,9 @@ def restore_artifact(
         raise RuntimeError(f"provisioned workspace {workspace_id} has no registry row")
     engine = backend.pools.engine_for(row.database_name, pin=True)
     with UnitOfWork(engine, row.database_name, pool=backend.pools) as uow:
+        _install_module_schemas(
+            uow.connection, manifest, database_name=row.database_name
+        )
         _install_modules(uow.connection, manifest)
         _import_settings(uow.connection, entries[SETTINGS_NAME])
         approval_ids = _import_approvals(uow.connection, entries[APPROVALS_NAME])
@@ -883,8 +1322,16 @@ def restore_artifact(
                 "an operation names an approval absent from the artifact"
             )
         _import_audit(uow.connection, entries[AUDIT_NAME])
-        # Module installation/upgrade is deliberately a no-op until a host-loadable
-        # module can appear in the manifest; validation above refuses one today.
+        # A12's ordering, and the three steps are not rearrangeable. Each module
+        # inserts its parents with self-references null and hands back what finishes;
+        # the core deletion evidence lands next, because a module's marked-ancestry
+        # check reads it; only then does the second pass resolve self-references and
+        # validate every chain. Any one of them raising leaves the whole transaction
+        # unwritten, which is what "no imported memory or deletion evidence" means.
+        continuations = _import_modules(uow, entries, manifest)
+        _import_deletions(uow.connection, entries[DELETIONS_NAME])
+        for finish in continuations:
+            finish()
         uow.connection.execute(
             insert(export_tables.export_record).values(
                 id=record_id,

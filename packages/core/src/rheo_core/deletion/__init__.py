@@ -19,6 +19,8 @@ from rheo_core.deletion.records import (
     deletion_ref,
     get_deletion_record,
     insert_deletion_record,
+    insert_imported_deletion_record,
+    list_deletion_records,
 )
 from rheo_core.deletion.registry import (
     NOTHING_REMOVED,
@@ -65,5 +67,7 @@ __all__ = [
     "deletion_ref",
     "get_deletion_record",
     "insert_deletion_record",
+    "insert_imported_deletion_record",
+    "list_deletion_records",
     "lock_workspace_lifecycle",
 ]
