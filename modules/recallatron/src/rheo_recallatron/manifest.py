@@ -5,15 +5,22 @@ whose consumers no run has built — they are present and empty rather than omit
 the run that builds a consumer reads a declaration somebody chose rather than a default
 nobody did.
 
-**What this revision fills in, and what stays empty.** The storage declaration now
-names the two Postgres extensions its tables need, ``configuration_schema`` carries the
-module's one settings key, and ``record_types`` declares the two addressable tables a
-resolver will answer for. ``operations``, ``tools``, ``events``, ``resolvers``,
-``deletion_participants``, ``export`` and ``audit_sink`` are still empty or
-unimplemented, and that is deliberate: this is the schema, and a declaration whose
-implementation is a later prompt's would be a promise the loader registers and nothing
-keeps. ``audit_sink`` in particular stays ``None`` until a ``mutate`` operation exists
-to need one — see the note at the field.
+**What this revision fills in, and what stays empty.** The storage declaration names
+the two Postgres extensions its tables need, ``configuration_schema`` carries the
+module's one settings key, ``record_types`` declares the two addressable tables, and
+``operations``/``resolvers`` now carry the read half: ``recall``, ``read`` and the
+memory record resolver. ``tools``, ``events``, ``deletion_participants``, ``export``
+and ``audit_sink`` are still empty or unimplemented, and that is deliberate: a
+declaration whose implementation is a later prompt's would be a promise the loader
+registers and nothing keeps. ``audit_sink`` in particular stays ``None`` until a
+``mutate`` operation exists to need one — the two operations below are ``READ``, which
+writes no audit row at all. See the note at the field.
+
+**Why the settings key is not declared in this file.** This module now imports its own
+operations, which import the eligibility service, which has to read the retention key
+to answer anything — so a key declared here would close an import loop. It lives in
+``configuration.py``, which imports nothing from this package, and is declared on the
+manifest from there.
 """
 
 from importlib import metadata
@@ -26,34 +33,16 @@ from rheo_core.modules.manifest import (
     RecordType,
     StorageDeclaration,
 )
-from rheo_core.settings import KeySpec, Scope, ValueType
 
-MODULE_ID: Final = "recallatron"
+from rheo_recallatron.configuration import (
+    MEMORY_RECORD_TYPE,
+    MODULE_ID,
+    RETENTION_DAYS_SPEC,
+)
+from rheo_recallatron.operations import OPERATIONS
+from rheo_recallatron.resolvers import resolve_memory
+
 DISTRIBUTION: Final = "rheo-recallatron"
-
-RETENTION_DAYS_KEY: Final = f"{MODULE_ID}.retention.days"
-"""How long a memory stays readable in a workspace, in days.
-
-``explicit_per_workspace`` because a workspace's retention is its own stated policy
-from the moment the module is enabled, not an inherited deployment value it happens to
-share: ``modules/operations.py:_write_enable_rows`` writes the row from the default
-below, and the core's own settings-write operation moves it from there. (Named in
-prose rather than spelled out, because the schema-ownership scan reads a
-``<core-schema>.<name>`` literal in this tree as a foreign table reference and is
-right to — this module must not name one, even in a docstring.)
-
-**Bounded rather than floored, and the two are different tools.** A floor combines a
-workspace's override with the deployment's value under a comparator — which is right
-for ``approvals.max_window_seconds``, where a workspace may only shorten its own
-window. Retention is not narrowable-only-downward: a workspace may legitimately choose
-a longer window than its neighbour. What must not be settable at *any* layer is zero
-days (every read empty the instant it commits) or a millennium, and that is what
-``minimum``/``maximum`` express and a floor cannot.
-"""
-
-RETENTION_DAYS_DEFAULT: Final = 365
-RETENTION_DAYS_MINIMUM: Final = 1
-RETENTION_DAYS_MAXIMUM: Final = 3650
 
 
 def _export_unavailable(*_args: object, **_kwargs: object) -> NoReturn:
@@ -112,8 +101,8 @@ MANIFEST: Final = ModuleManifest(
     # decision was made.
     record_types=(
         RecordType(
-            name="memory",
-            table=f"{MODULE_ID}.memory",
+            name=MEMORY_RECORD_TYPE,
+            table=f"{MODULE_ID}.{MEMORY_RECORD_TYPE}",
             deletable=True,
             delete_roles=frozenset({Role.OWNER, Role.MEMBER}),
             exportable=True,
@@ -140,25 +129,18 @@ MANIFEST: Final = ModuleManifest(
         # module owns must not put anything there.
         required_extensions=("vector", "pg_trgm"),
     ),
-    configuration_schema=(
-        KeySpec(
-            key=RETENTION_DAYS_KEY,
-            type=ValueType.INT,
-            scope=Scope.WORKSPACE,
-            floor=None,
-            explicit_per_workspace=True,
-            default=RETENTION_DAYS_DEFAULT,
-            minimum=RETENTION_DAYS_MINIMUM,
-            maximum=RETENTION_DAYS_MAXIMUM,
-        ),
-    ),
-    operations=(),
+    configuration_schema=(RETENTION_DAYS_SPEC,),
+    operations=OPERATIONS,
     tools=(),
     events=(),
     subscriptions=(),
     jobs=(),
     schedules=(),
-    resolvers=(),
+    # One resolver, for the one record type a reference can name. An entity is reached
+    # only through a mention on a memory the caller may already read, so it has no
+    # resolution of its own to declare. The resolver calls straight into the shared
+    # eligibility function — it is not a second permission check.
+    resolvers=((MEMORY_RECORD_TYPE, resolve_memory),),
     deletion_participants=(),
     export=ExportDeclaration(
         format_version=1,
@@ -173,11 +155,10 @@ MANIFEST: Final = ModuleManifest(
     health_checks=(),
     contract_tests="modules/recallatron/tests",
     sensitivity={},
-    # No sink, because this skeleton registers no operation for one to fire on: the
-    # dispatcher resolves a sink by the operation's owning module, and ``operations``
-    # is empty. Run 1a1's memory operations are ``mutate``, so 1a1 is the run that
-    # must supply a real one here — ``audit_sink=CORE_AUDIT_SINK``, or a writer of its
-    # own. Copying this file and leaving this line alone does not fail at load time;
-    # it fails later, as ``AUDIT_SINK_MISSING`` at the first dispatch.
+    # Still no sink, and now for a sharper reason than "nothing is registered": both
+    # operations above are ``READ``, and the dispatcher writes no audit row for a read
+    # at all. The first ``mutate`` operation is what needs one, and the run that adds
+    # it is the run that must set this field. Leaving it alone does not fail at load
+    # time; it fails later, as ``AUDIT_SINK_MISSING`` at that first mutating dispatch.
     audit_sink=None,
 )

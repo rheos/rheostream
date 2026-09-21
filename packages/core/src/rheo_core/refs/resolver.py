@@ -15,6 +15,19 @@ Imported by module path (``rheo_core.refs.resolver``), never re-exported from
 ``rheo_core.refs``: that package's ``__init__`` is imported by the storage layer for
 ``uuid7``, and this module imports the storage layer, so a re-export would close an
 import cycle.
+
+**``UnitOfWork`` is re-exported from here, explicitly, and that is a contract decision
+rather than a convenience.** ``RecordResolver`` below is the interface a domain module
+implements, and its signature names three types: ``WorkspaceContext``, ``RecordRef``
+and ``UnitOfWork``. A module distribution may not import the core's storage package —
+``tests/postgres/test_module_storage_ownership.py`` scans ``modules/`` for exactly that
+and refuses it, because a module reaching into core storage is how a module ends up
+holding another module's table handle. Without this line a module implementing the
+contract would have no way to *name* the transaction the contract hands it. So the
+module that declares the interface publishes the names in it, the same way
+``operations/refusals.py`` re-exports ``HANDLER_MAY_NOT_COMMIT`` for the callers that
+meet it as a dispatch state. Nothing else from the storage package is published here,
+and the scan that forbids the direct import stays exactly as strict as it was.
 """
 
 import re
@@ -32,7 +45,8 @@ from rheo_contracts import (
 from rheo_core.boundary.context import CONTEXT_REQUIRED
 from rheo_core.operations.refusals import MODULE_DISABLED, RegistrationRefused
 from rheo_core.operations.registry import check_origin
-from rheo_core.storage.backend import StorageRefusal, UnitOfWork
+from rheo_core.storage.backend import StorageRefusal
+from rheo_core.storage.backend import UnitOfWork as UnitOfWork  # see the docstring
 from rheo_core.storage.routing import open_unit_of_work
 
 LIVE: Final = "live"

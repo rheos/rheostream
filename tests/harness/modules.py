@@ -37,6 +37,7 @@ overrides it with :data:`PROBE_CONTRACT_TESTS`.
 import itertools
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import EntryPoint
 from typing import Final
@@ -402,10 +403,31 @@ time with an ``AttributeError`` rather than at the assertion the test came for.
 # --- the one loading recipe -----------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class LoadedSurfaces:
+    """The three local registries :func:`loaded_probe_modules` loaded into.
+
+    Yielded so a test can *drive* what it loaded: ``dispatch(ctx, name, payload,
+    registry=loaded.operations)`` reaches a module's own operation, and
+    ``resolve_in(ref, ctx, uow, registry=loaded.resolvers)`` reaches its resolver.
+    Without this the registries were unreachable and a test wanting to call a module
+    operation had to re-register it by hand — a second registration path beside the
+    loader's, which is exactly what ``loader.py:_register``'s docstring says does not
+    exist in this tree.
+
+    Every caller that only needs the module *loaded* keeps working unedited: a ``with``
+    that binds no name is unaffected by what the block yields.
+    """
+
+    operations: OperationRegistry
+    resolvers: ResolverRegistry
+    tools: ToolRegistry
+
+
 @contextmanager
 def loaded_probe_modules(
     monkeypatch: pytest.MonkeyPatch, *module_ids: str
-) -> Iterator[None]:
+) -> Iterator[LoadedSurfaces]:
     """Load exactly ``module_ids`` for the body of the ``with``, then forget them.
 
     A fabricated id is published from this file; any other id is taken from the real
@@ -445,15 +467,20 @@ def loaded_probe_modules(
         monkeypatch.setattr(loader_module, "SETTINGS_REGISTRY", SettingsRegistry())
         publish(monkeypatch, *_entry_points_for(module_ids))
         install(monkeypatch, *module_ids)
-        loaded = load_modules(
-            registry=OperationRegistry(),
+        surfaces = LoadedSurfaces(
+            operations=OperationRegistry(),
             resolvers=ResolverRegistry(),
             tools=ToolRegistry(),
+        )
+        loaded = load_modules(
+            registry=surfaces.operations,
+            resolvers=surfaces.resolvers,
+            tools=surfaces.tools,
             allow=frozenset(module_ids),
         )
         assert loaded == tuple(sorted(module_ids)), loaded
         assert set(loaded_manifests()) == set(module_ids), sorted(loaded_manifests())
-        yield
+        yield surfaces
     finally:
         reset_surfaces()
 

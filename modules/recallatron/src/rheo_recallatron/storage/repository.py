@@ -282,6 +282,31 @@ def get_memory_link(
     )
 
 
+def list_memory_links(conn: Connection, memory_id: UUID) -> tuple[MemoryLinkRow, ...]:
+    """Every link row owned by one memory, in composite-key order.
+
+    Ordered rather than left to the planner because the eligibility service walks
+    these in sequence and denies on the first one that fails: an unordered read would
+    make *which* link a refusal came from depend on the plan, and two runs of the same
+    request could then charge the shared reference budget differently.
+    """
+    rows = conn.execute(
+        select(t.memory_link)
+        .where(t.memory_link.c.memory_id == memory_id)
+        .order_by(t.memory_link.c.ref, t.memory_link.c.relation)
+    ).mappings()
+    return tuple(
+        MemoryLinkRow(
+            memory_id=row["memory_id"],
+            ref=row["ref"],
+            relation=row["relation"],
+            created_at=row["created_at"],
+            supersession_lineage=row["supersession_lineage"],
+        )
+        for row in rows
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryEmbeddingRow:
     memory_id: UUID
