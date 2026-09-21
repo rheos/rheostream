@@ -135,3 +135,11 @@ credential_ref = ""
 # to "every discovered module".
 [modules]
 installed = []
+
+# Bounded tool telemetry (run 1a1, A11). Each default is also the key's hard maximum,
+# and both keys are workspace scope with a min floor, so a workspace may only tighten
+# them. Age is purged by the daily core.retention_sweep; the row cap is enforced on the
+# insert path by a bounded probe that takes the eviction lock only at or over the cap.
+[telemetry]
+tool_retention_days = 7
+tool_max_rows = 10000

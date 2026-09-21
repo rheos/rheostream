@@ -38,13 +38,40 @@ distinguishes "no such tool" from "not available to you" — the non-disclosure
 principle ``rheo_core.tokens.presentation`` applies to a malformed token versus one
 that merely does not exist. Which of the four checks failed is exactly the
 deployment metadata a caller is not entitled to enumerate.
+
+**And it is where tool telemetry is emitted** (§ A11), because it is the one place
+that sees a call's whole shape: the declaration it resolved, the input it validated,
+the outcome ``dispatch`` returned, and the monotonic interval between. The scalars
+this module derives — and only scalars — go to
+``rheo_core.audit.tool_telemetry.record_tool_call``, which writes them in its own
+short transaction and swallows every failure of its own, so the outcome returned from
+here is the operation's own however the sink fares. ``apps/mcp`` therefore reaches
+telemetry through this façade and still imports no storage package.
 """
 
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from typing import Final
 
 from pydantic import BaseModel, ValidationError
-from rheo_contracts import ALL_OPERATIONS, ToolDeclaration, WorkspaceContext
+from rheo_contracts import (
+    ALL_OPERATIONS,
+    SafetyClass,
+    ToolDeclaration,
+    WorkspaceContext,
+)
+
+from rheo_core.audit.tool_telemetry import (
+    TELEMETRY_ERROR,
+    TELEMETRY_MODE_CURRENT,
+    TELEMETRY_MODE_HISTORY,
+    TELEMETRY_MODE_NONE,
+    TELEMETRY_REFUSED,
+    TELEMETRY_SUCCESS,
+    TelemetryMode,
+    TelemetryOutcome,
+    record_tool_call,
+)
 
 # Re-exported (``as`` rather than a bare import) so a caller outside ``rheo_core``
 # can spell this module's one keyword-only argument. ``apps/mcp``'s import allowlist
@@ -63,7 +90,8 @@ from rheo_core.operations.dispatch import (
     _describe_validation_error,
     dispatch,
 )
-from rheo_core.operations.refusals import INPUT_INVALID
+from rheo_core.operations.records import PENDING
+from rheo_core.operations.refusals import FAILED, INPUT_INVALID, SUCCEEDED
 from rheo_core.operations.registry import (
     CORE_MODULE_ID,
     REGISTRY,
@@ -90,6 +118,14 @@ tool that is not available is not a missing record. Two names for one word, held
 together by nothing, is the honest description — and cheaper than a shared import
 that would make the façade's disclosure rule depend on the resolver's.
 """
+
+_SUCCESS_STATES: Final = frozenset({SUCCEEDED, PENDING})
+_ERROR_STATES: Final = frozenset({FAILED})
+"""The two dispatch states that are not a refusal, split for
+:func:`_telemetry_outcome`. Everything else — the authorization states,
+``input_invalid``, ``approval_required``, a domain refusal a handler raised — is
+``refused``, which is why the third set is written as a fallthrough rather than as a
+literal that a new refusal state would silently fall out of."""
 
 
 def _delegate(
@@ -212,6 +248,110 @@ def _validated(
         return _refused(INPUT_INVALID, _describe_validation_error(exc))
 
 
+_LIFECYCLE_FIELD: Final = "include_invalidated"
+"""The declared field § A6's lifecycle mode is selected by.
+
+Named here, in the façade, because the *mode* is what § A11 asks a telemetry row to
+carry and this is the only layer that sees both the declaration and the validated
+input. It is the ratified public vocabulary (AC 5 names ``include_invalidated``
+directly), not one module's private spelling, and a tool that does not declare it
+simply has no mode — no core code branches on which module declared it.
+"""
+
+_QUERY_FIELD: Final = "query"
+"""The declared field a ``READ`` tool's query length is measured from.
+
+Measured, never read: only ``len()`` of it ever leaves this module, and only for a
+``READ``. § A11: "query length is optional for READ; query text is **not stored**."
+"""
+
+
+def _telemetry_mode(validated: BaseModel | None) -> TelemetryMode:
+    """``history``/``current`` for a tool that declares the lifecycle selector.
+
+    :data:`TELEMETRY_MODE_NONE` for every other tool, and for a call refused before
+    validation — there is no validated input to read a mode from, and reading one from
+    the raw arguments would put a caller-supplied value into the row.
+    """
+    if validated is None:
+        return TELEMETRY_MODE_NONE
+    selector = getattr(validated, _LIFECYCLE_FIELD, None)
+    if not isinstance(selector, bool):
+        return TELEMETRY_MODE_NONE
+    return TELEMETRY_MODE_HISTORY if selector else TELEMETRY_MODE_CURRENT
+
+
+def _telemetry_query_length(
+    declaration: ToolDeclaration, validated: BaseModel | None
+) -> int | None:
+    """The length of a ``READ`` tool's query, or ``None``.
+
+    ``None`` for every non-``READ`` class, for a ``READ`` tool that declares no query,
+    and for a call refused before validation.
+    """
+    if validated is None or declaration.safety_class is not SafetyClass.READ:
+        return None
+    query = getattr(validated, _QUERY_FIELD, None)
+    return len(query) if isinstance(query, str) else None
+
+
+def _telemetry_argument_names(
+    declaration: ToolDeclaration, arguments: Mapping[str, object]
+) -> tuple[str, ...]:
+    """The sorted **declared** argument names a write call supplied.
+
+    Empty for a ``READ``: § A11 gives argument names to writes only, and a read's
+    query length already says what there is to say about its input.
+
+    Intersected with the declaration's own names rather than taken from the mapping,
+    and that is a privacy boundary rather than tidiness: a refusal is emitted too, and
+    on the ``input_invalid`` path the mapping may still hold a key the model never
+    declared — a caller-chosen string, which is content this table may not carry.
+    Values are never read at all, at any class.
+    """
+    if declaration.safety_class is SafetyClass.READ:
+        return ()
+    return tuple(sorted(set(arguments) & _alias_names(declaration.input_model)))
+
+
+def _telemetry_outcome(state: str) -> TelemetryOutcome:
+    """§ A11's three-word vocabulary over ``dispatch``'s state.
+
+    ``succeeded`` and the ``pending`` of a ``long_running`` dispatch are both a call
+    the system accepted and is answering, so both are ``success``; ``failed`` (a
+    handler that raised, a transaction that would not commit) is ``error``; and every
+    refusal — an authorization state, ``input_invalid``, a domain refusal a handler
+    raised, ``approval_required`` — is ``refused``. ``approval_required`` belongs in
+    that third bucket rather than the first: nothing was done yet, which is exactly
+    what makes ``recallatron_forget``'s ``result_count`` zero on it.
+    """
+    if state in _SUCCESS_STATES:
+        return TELEMETRY_SUCCESS
+    if state in _ERROR_STATES:
+        return TELEMETRY_ERROR
+    return TELEMETRY_REFUSED
+
+
+def _telemetry_result_count(outcome: OperationOutcome) -> int:
+    """Returned items, never rows touched.
+
+    A result carrying an ``items`` collection contributes its length; any other
+    result is one; no result at all is zero. § A11's "forget count means one
+    acknowledgment or zero, not erased row count" falls straight out of that — the
+    deletion output is a single ``{deletion_ref}`` model, and an ``approval_required``
+    outcome has no result — so nothing here has to know what a deletion removed, which
+    is also what stops this row disclosing a closure size that § A8 keeps off the
+    caller's own output.
+    """
+    result = outcome.result
+    if result is None:
+        return 0
+    items = getattr(result, "items", None)
+    if isinstance(items, Sequence) and not isinstance(items, str | bytes):
+        return len(items)
+    return 1
+
+
 def call_registered_tool(
     ctx: WorkspaceContext,
     name: str,
@@ -233,17 +373,46 @@ def call_registered_tool(
     the four availability checks so that a tool this context cannot call answers
     ``not_found`` whatever it was handed — an ``input_invalid`` for an unavailable
     tool would confirm the tool exists and describe its schema.
+
+    **Telemetry is emitted once, after the outcome, for a tool that is available
+    here — and never for one that is not.** § A11 asks for a row on every outcome
+    "including input refusals", and the ``input_invalid`` refusal below gets one. The
+    ``not_found`` branch above deliberately does not: ``name`` on that path is an
+    unvalidated string a caller chose, so a row for it would write caller-supplied
+    text into ``tool_name`` — the one column this table trusts to be a registered
+    name — and would also answer, in an owner-readable table, the question the
+    ``not_found`` state exists to refuse. There is no tool call to instrument when no
+    tool was reached.
+
+    The clock is :func:`time.monotonic`, so a wall-clock adjustment mid-call cannot
+    produce a negative duration against the DDL's non-negative check.
     """
     registered = tools.lookup(name)
     if registered is None or not _available(ctx, registered, registry):
         return _refused(TOOL_NOT_FOUND, f"{name!r} is not a tool available here")
-    validated = _validated(registered.declaration, arguments)
+    declaration = registered.declaration
+    started = time.monotonic()
+    validated = _validated(declaration, arguments)
     if isinstance(validated, OperationOutcome):
-        return validated
-    return dispatch(
+        outcome, model = validated, None
+    else:
+        model = validated
+        outcome = dispatch(
+            ctx,
+            declaration.operation,
+            validated.model_dump(),
+            registry=registry,
+            consumers=consumers,
+        )
+    record_tool_call(
         ctx,
-        registered.declaration.operation,
-        validated.model_dump(),
-        registry=registry,
-        consumers=consumers,
+        tool_name=declaration.name,
+        safety_class=declaration.safety_class,
+        mode=_telemetry_mode(model),
+        result_count=_telemetry_result_count(outcome),
+        duration_ms=int((time.monotonic() - started) * 1000),
+        outcome=_telemetry_outcome(outcome.state),
+        query_length=_telemetry_query_length(declaration, model),
+        argument_names=_telemetry_argument_names(declaration, arguments),
     )
+    return outcome

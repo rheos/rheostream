@@ -206,7 +206,7 @@
         "type": "object"
       },
       "AuditList": {
-        "description": "The workspace's most recent audit records, newest first.\n\n``records`` is a named collection field rather than a bare list, mirroring\n``FailureList`` and ``OperationList``: a later run adding a second collection\nbeside it is then an additive change a reader may ignore rather than a change to\nthe response's own type.",
+        "description": "The workspace's most recent audit records, newest first.\n\n``records`` is a named collection field rather than a bare list, mirroring\n``FailureList`` and ``OperationList``: a later run adding a second collection\nbeside it is then an additive change a reader may ignore rather than a change to\nthe response's own type. ``tool_telemetry`` is that later run, and it is exactly\nthat additive change.",
         "properties": {
           "records": {
             "items": {
@@ -214,6 +214,21 @@
             },
             "title": "Records",
             "type": "array"
+          },
+          "tool_telemetry": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolTelemetryRecord"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Telemetry"
           }
         },
         "required": [
@@ -225,6 +240,11 @@
       "AuditListInput": {
         "description": "How many of the most recent audit records to return.\n\n``limit`` is bounded rather than a bare ``int``, for the reason\n``work/operations.py``'s ``FailureListInput`` gives: a bare ``int`` lets ``-1``\nreach the ``SELECT``, where Postgres raises *LIMIT must not be negative* and\n``dispatch`` folds a driver class name into ``handler_failed``, when it is an\ninput defect that belongs in the ``input_invalid`` refusal pydantic already\nproduces. Nothing prunes this table in release one, so an unbounded ``limit``\nwould be a read that grows for the life of the deployment.",
         "properties": {
+          "include_tool_telemetry": {
+            "default": false,
+            "title": "Include Tool Telemetry",
+            "type": "boolean"
+          },
           "limit": {
             "default": 50,
             "maximum": 500,
@@ -1411,6 +1431,77 @@
           "token_id"
         ],
         "title": "TokenRevoked",
+        "type": "object"
+      },
+      "ToolTelemetryRecord": {
+        "description": "One ``core.tool_telemetry`` row as this operation publishes it.\n\n:class:`~rheo_core.audit.tool_telemetry.ToolTelemetryRow` field for field, with\nthat row's ``id`` published as ``telemetry_id`` \u2014 the renaming ``AuditRecord``\nabove already makes, for the same reason.\n\nEvery field is metadata by construction (``audit/telemetry_tables.py``): there is\nno query text, no argument value, and no exception message in the table, so there\nis none to withhold here. ``query_length`` is a measurement of an input, never the\ninput.",
+        "properties": {
+          "argument_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Argument Names",
+            "type": "array"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "query_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Length"
+          },
+          "result_count": {
+            "title": "Result Count",
+            "type": "integer"
+          },
+          "safety_class": {
+            "title": "Safety Class",
+            "type": "string"
+          },
+          "telemetry_id": {
+            "format": "uuid",
+            "title": "Telemetry Id",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "telemetry_id",
+          "occurred_at",
+          "tool_name",
+          "safety_class",
+          "mode",
+          "result_count",
+          "duration_ms",
+          "outcome",
+          "query_length",
+          "argument_names"
+        ],
+        "title": "ToolTelemetryRecord",
         "type": "object"
       },
       "WorkspaceDigest": {

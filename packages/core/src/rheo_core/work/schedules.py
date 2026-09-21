@@ -33,6 +33,10 @@ from uuid import UUID
 from pydantic import BaseModel
 from sqlalchemy import Connection, delete, func, literal, or_, select, update
 
+from rheo_core.audit.tool_telemetry import (
+    TOOL_RETENTION_DAYS_KEY,
+    purge_expired_tool_telemetry,
+)
 from rheo_core.boundary.context import Refusal
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import PostgresOverrideSource
@@ -241,7 +245,16 @@ def run_retention_sweep(
     payload: BaseModel,
     token: CancellationToken,
 ) -> None:
-    """Delete expired transcripts and unlink expired session files for ``payload``."""
+    """Delete expired transcripts and telemetry, and unlink expired session files.
+
+    **The telemetry purge is this sweep's, and only this sweep's** (§ A11): the
+    telemetry insert path attempts no age pruning at all, so that an ordinary MCP call
+    never pays for a maintenance scan. Here it is one bounded ``DELETE`` on an indexed
+    range, during the idle window the daily schedule already owns. It runs before the
+    session-file walk below, which returns early on a workspace with no CLI config
+    directory — a purge placed after that return would silently never run for most
+    workspaces.
+    """
     assert isinstance(payload, RetentionSweepPayload)
     token.checkpoint()
     now = datetime.now(UTC)
@@ -250,6 +263,10 @@ def run_retention_sweep(
     )
     settings = resolve(
         workspace_id=payload.workspace_id, source=PostgresOverrideSource()
+    )
+    purge_expired_tool_telemetry(
+        uow.connection,
+        not_before=now - timedelta(days=settings.get_int(TOOL_RETENTION_DAYS_KEY)),
     )
     retention_days = settings.get_int("runtime.transcript_retention_days")
     horizon = now - timedelta(days=retention_days)

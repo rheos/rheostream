@@ -111,6 +111,8 @@ PRODUCTION_KEYS = {
     "runtime.allowed_runtimes": ("claude_cli",),
     "runtime.allowed_models": ("sonnet",),
     "modules.installed": (),
+    "telemetry.tool_retention_days": 7,
+    "telemetry.tool_max_rows": 10000,
 }
 
 FLOORED_KEYS = frozenset(
@@ -123,6 +125,8 @@ FLOORED_KEYS = frozenset(
         "runtime.transcript_retention_days",
         "runtime.allowed_runtimes",
         "runtime.allowed_models",
+        "telemetry.tool_retention_days",
+        "telemetry.tool_max_rows",
     }
 )
 """The production keys a workspace may override, each with a floor.

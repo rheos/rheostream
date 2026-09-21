@@ -18,6 +18,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_module_lifecycle.py",
     "tests/postgres/test_module_migrations.py",
     "tests/postgres/test_module_storage_ownership.py",
+    "tests/postgres/test_tool_telemetry.py",
     "tests/postgres/test_workspace_status.py",
     "tests/test_module_import_graph.py",
 }
@@ -29,8 +30,11 @@ which ones do. ``test_memory_records.py`` is the memory schema's own census,
 ``test_memory_lifecycle.py`` drives the deletion coordinator against the one real
 owned-deletable record type in the checkout, ``test_memory_mcp.py`` drives the MCP
 tool facade against the one module in the checkout that registers a tool naming a
-core operation, and ``test_workspace_status.py`` reads a real module's package and
-schema versions back through ``core.workspace.status`` — none has a substitute,
+core operation, ``test_tool_telemetry.py`` drives the telemetry sink through that same
+tool surface — it needs a ``READ`` tool that declares both a query and a lifecycle
+selector and a ``DESTRUCTIVE`` one that answers ``approval_required``, and no fixture
+module declares either — and ``test_workspace_status.py`` reads a real module's package
+and schema versions back through ``core.workspace.status``; none has a substitute,
 because a fixture module has no migration chain, no owned-delete declaration and no
 installed distribution metadata to report.
 

@@ -21,17 +21,33 @@ through a supported operation rather than a raw table read" a property of the sy
 rather than of a convention.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Final
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from rheo_contracts import WorkspaceContext
+from rheo_contracts import Role, WorkspaceContext
 
 from rheo_core.audit.records import AuditRow, list_audit_records
+from rheo_core.audit.tool_telemetry import (
+    ToolTelemetryRow,
+    list_tool_telemetry,
+    telemetry_horizon,
+)
 from rheo_core.storage.backend import UnitOfWork
 
 AUDIT_LIST: Final = "core.audit.list"
+
+TELEMETRY_ROLES: Final = frozenset({Role.OWNER, Role.OPERATOR})
+"""Who may read the tool-telemetry collection.
+
+The same pair ``AUDIT_LIST_DECLARATION`` already restricts the whole operation to
+(``operations/core_ops.py``), which ``dispatch`` enforces before this handler runs —
+so a member or a service token is refused ``role_not_permitted`` and never reaches
+the flag. This second gate is at the point of disclosure rather than at the door, and
+it is here on purpose: § A11 makes owner/operator-only access a property of the
+telemetry collection itself, and a later run widening the *operation's* roles (to let
+a member read their own audit trail, say) must not silently widen this with it."""
 
 # See ``rheo_core.operations.core_ops`` for why ``ignore`` (the default) is stated.
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
@@ -52,6 +68,17 @@ class AuditListInput(BaseModel):
     model_config = _IGNORE_EXTRA
 
     limit: int = Field(default=50, ge=1, le=500)
+
+    include_tool_telemetry: bool = False
+    """Opt in to § A11's bounded tool-telemetry collection.
+
+    Default ``False``, so the response shape every existing caller reads is unchanged
+    and the extra query is not run for a caller that did not ask for it. **It shares
+    ``limit`` above rather than declaring a second one**: two independent bounds on
+    one read is two things to reason about and two ways to get a page wrong, and the
+    existing bound is already the right shape — "how many of the most recent rows",
+    asked of both collections at once.
+    """
 
 
 class AuditRecord(BaseModel):
@@ -80,18 +107,55 @@ class AuditRecord(BaseModel):
     outcome: str
 
 
+class ToolTelemetryRecord(BaseModel):
+    """One ``core.tool_telemetry`` row as this operation publishes it.
+
+    :class:`~rheo_core.audit.tool_telemetry.ToolTelemetryRow` field for field, with
+    that row's ``id`` published as ``telemetry_id`` — the renaming ``AuditRecord``
+    above already makes, for the same reason.
+
+    Every field is metadata by construction (``audit/telemetry_tables.py``): there is
+    no query text, no argument value, and no exception message in the table, so there
+    is none to withhold here. ``query_length`` is a measurement of an input, never the
+    input.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    telemetry_id: UUID
+    occurred_at: datetime
+    tool_name: str
+    safety_class: str
+    mode: str
+    result_count: int
+    duration_ms: int
+    outcome: str
+    query_length: int | None
+    argument_names: list[str]
+
+
 class AuditList(BaseModel):
     """The workspace's most recent audit records, newest first.
 
     ``records`` is a named collection field rather than a bare list, mirroring
     ``FailureList`` and ``OperationList``: a later run adding a second collection
     beside it is then an additive change a reader may ignore rather than a change to
-    the response's own type.
+    the response's own type. ``tool_telemetry`` is that later run, and it is exactly
+    that additive change.
     """
 
     model_config = ConfigDict(frozen=True)
 
     records: list[AuditRecord]
+
+    tool_telemetry: list[ToolTelemetryRecord] | None = None
+    """§ A11's collection, present only when it was asked for and allowed.
+
+    ``None`` and ``[]`` are different answers and the distinction is deliberate:
+    ``None`` means this read did not collect telemetry — the caller did not opt in, or
+    is not owner/operator — while ``[]`` means it did and there is none unexpired to
+    show. A default of ``[]`` would tell a member their workspace has no tool activity.
+    """
 
 
 def _published(row: AuditRow) -> AuditRecord:
@@ -110,6 +174,43 @@ def _published(row: AuditRow) -> AuditRecord:
     )
 
 
+def _published_telemetry(row: ToolTelemetryRow) -> ToolTelemetryRecord:
+    return ToolTelemetryRecord(
+        telemetry_id=row.id,
+        occurred_at=row.occurred_at,
+        tool_name=row.tool_name,
+        safety_class=row.safety_class,
+        mode=row.mode,
+        result_count=row.result_count,
+        duration_ms=row.duration_ms,
+        outcome=row.outcome,
+        query_length=row.query_length,
+        argument_names=list(row.argument_names),
+    )
+
+
+def _telemetry(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: AuditListInput
+) -> list[ToolTelemetryRecord] | None:
+    """§ A11's collection, or ``None`` when this read does not collect it.
+
+    The age cut is computed here, from this workspace's own
+    ``telemetry.tool_retention_days`` read on this transaction's connection, so an
+    expired row is excluded the moment it expires rather than the next time the daily
+    sweep runs — § A11's "audit reads exclude expired telemetry immediately regardless
+    of when the daily sweep last ran".
+    """
+    if not model_input.include_tool_telemetry or ctx.role not in TELEMETRY_ROLES:
+        return None
+    not_before = telemetry_horizon(ctx, uow.connection, datetime.now(UTC))
+    return [
+        _published_telemetry(row)
+        for row in list_tool_telemetry(
+            uow.connection, limit=model_input.limit, not_before=not_before
+        )
+    ]
+
+
 def audit_list_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: AuditListInput
 ) -> AuditList:
@@ -126,5 +227,6 @@ def audit_list_handler(
         records=[
             _published(row)
             for row in list_audit_records(uow.connection, limit=model_input.limit)
-        ]
+        ],
+        tool_telemetry=_telemetry(ctx, uow, model_input),
     )

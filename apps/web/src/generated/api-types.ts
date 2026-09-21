@@ -453,11 +453,17 @@ export interface components {
          *     ``records`` is a named collection field rather than a bare list, mirroring
          *     ``FailureList`` and ``OperationList``: a later run adding a second collection
          *     beside it is then an additive change a reader may ignore rather than a change to
-         *     the response's own type.
+         *     the response's own type. ``tool_telemetry`` is that later run, and it is exactly
+         *     that additive change.
          */
         AuditList: {
             /** Records */
             records: components["schemas"]["AuditRecord"][];
+            /**
+             * Tool Telemetry
+             * @default null
+             */
+            tool_telemetry: components["schemas"]["ToolTelemetryRecord"][] | null;
         };
         /**
          * AuditListInput
@@ -472,6 +478,11 @@ export interface components {
          *     would be a read that grows for the life of the deployment.
          */
         AuditListInput: {
+            /**
+             * Include Tool Telemetry
+             * @default false
+             */
+            include_tool_telemetry: boolean;
             /**
              * Limit
              * @default 50
@@ -1126,6 +1137,47 @@ export interface components {
              * Format: uuid
              */
             token_id: string;
+        };
+        /**
+         * ToolTelemetryRecord
+         * @description One ``core.tool_telemetry`` row as this operation publishes it.
+         *
+         *     :class:`~rheo_core.audit.tool_telemetry.ToolTelemetryRow` field for field, with
+         *     that row's ``id`` published as ``telemetry_id`` — the renaming ``AuditRecord``
+         *     above already makes, for the same reason.
+         *
+         *     Every field is metadata by construction (``audit/telemetry_tables.py``): there is
+         *     no query text, no argument value, and no exception message in the table, so there
+         *     is none to withhold here. ``query_length`` is a measurement of an input, never the
+         *     input.
+         */
+        ToolTelemetryRecord: {
+            /** Argument Names */
+            argument_names: string[];
+            /** Duration Ms */
+            duration_ms: number;
+            /** Mode */
+            mode: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Outcome */
+            outcome: string;
+            /** Query Length */
+            query_length: number | null;
+            /** Result Count */
+            result_count: number;
+            /** Safety Class */
+            safety_class: string;
+            /**
+             * Telemetry Id
+             * Format: uuid
+             */
+            telemetry_id: string;
+            /** Tool Name */
+            tool_name: string;
         };
         /** WorkspaceDigest */
         WorkspaceDigest: {

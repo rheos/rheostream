@@ -956,6 +956,45 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         explicit_per_workspace=False,
         default=(),
     ),
+    # --- telemetry (run 1a1) ----------------------------------------------------------
+    # The two bounds on ``core.tool_telemetry`` (§ A11). Both are workspace scope with
+    # a ``min`` floor, and both carry a ``maximum`` equal to their default: the
+    # default *is* the hard maximum, so a workspace may only tighten. The floor and
+    # the maximum do different jobs and neither replaces the other — the maximum is
+    # fixed at declaration and binds every layer (the TOML, an environment variable,
+    # an operator's deployment row), while the floor is what stops a *workspace*
+    # override widening past whatever the deployment settled on.
+    # ``approvals.max_window_seconds`` is the same pairing one key over, minus the
+    # maximum.
+    #
+    # **Declared here rather than beside the sink**, unlike Recallatron's two
+    # retention keys, which its manifest declares. These are core keys, and
+    # ``settings/defaults.py`` asserts at import time that the ``core``-origin
+    # registry and ``config/defaults.toml`` hold exactly the same key set. A core key
+    # declared in a module the process may or may not have imported yet would make
+    # that identity check depend on import order.
+    # ``rheo_core.audit.tool_telemetry`` names them by key and reads them through the
+    # resolver.
+    KeySpec(
+        key="telemetry.tool_retention_days",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=7,
+        minimum=1,
+        maximum=7,
+    ),
+    KeySpec(
+        key="telemetry.tool_max_rows",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=10000,
+        minimum=1,
+        maximum=10000,
+    ),
 )
 
 REGISTRY: Final = SettingsRegistry()
