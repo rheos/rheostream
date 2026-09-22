@@ -36,18 +36,22 @@ computes the workspace's ``next_due_at`` and folds the soonest enabled schedule
 instant into that remaining write.
 """
 
+from rheo_core.work.scheduled_authority import CATCH_UP_JOB_KIND
 from rheo_core.work.schedules import (
     RETENTION_SWEEP,
     RetentionSweepPayload,
     earliest_schedule_due_at,
+    rearm_catch_up_schedule,
     run_due_schedules,
     run_retention_sweep,
 )
 
 __all__ = [
+    "CATCH_UP_JOB_KIND",
     "RETENTION_SWEEP",
     "RetentionSweepPayload",
     "earliest_schedule_due_at",
+    "rearm_catch_up_schedule",
     "run_due_schedules",
     "run_retention_sweep",
 ]

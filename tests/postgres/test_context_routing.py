@@ -146,9 +146,14 @@ def test_routing_accepts_exactly_one_parameter(function: object) -> None:
 
 
 def test_the_reserved_list_is_the_ratified_one() -> None:
+    """``principal`` joined the twelve in 1a1, when ``WorkspaceContext`` gained the
+    field it names. The set is spelled whole here, as it is in ``test_contracts.py``:
+    two copies of a closed list is the point, so a name added in one place and not the
+    other is a failure rather than a silent widening."""
     assert RESERVED_INPUT_FIELDS == {
         "workspace_id", "workspace", "actor_id", "actor", "tenant_id", "database",
         "schema", "connection_string", "dsn", "sql", "table_name", "statement",
+        "principal",
     }  # fmt: skip
 
 

@@ -10,12 +10,16 @@ exactly as ``OperationRegistry.register(decl, handler, *, origin)`` already does
 The doc now names this module as the type's real home.
 
 **Every field is required unless it carries ``= None``**, and only ``web``,
-``agent_guidance`` and ``audit_sink`` do. Eight required fields have no consumer in
-this plan yet (``record_types``, ``events``, ``subscriptions``, ``jobs``,
-``schedules``, ``deletion_participants``, ``connector_bindings``, ``sensitivity``).
-They stay required so a module author writes an empty ``()`` or ``{}`` on purpose
-rather than by omission, and the run that builds the consumer reads a declaration
-rather than a default nobody chose.
+``agent_guidance`` and ``audit_sink`` do. Five required fields still have no
+consumer (``subscriptions``, ``jobs``, ``schedules``, ``connector_bindings``,
+``sensitivity``); ``record_types``, ``events`` and ``deletion_participants`` have
+since gained one. They stay required so a module author writes an empty ``()`` or
+``{}`` on purpose rather than by omission, and the run that builds the consumer
+reads a declaration rather than a default nobody chose.
+
+**The owned-delete pair is the one addition since**, and it is a field of
+:class:`RecordType` rather than a twenty-fifth manifest field; that class's own
+docstring carries why.
 
 **``audit_sink`` is the twenty-fourth field and is not in the ratified table.** It
 is carried over from the 0c0 stub because it is the only channel by which a module
@@ -33,10 +37,10 @@ helped. The validator applies the same duck check ``install_sink`` already does,
 the manifest and the installer agree on what a sink is.
 """
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Final, Self, TypeVar
+from typing import TYPE_CHECKING, Annotated, Final, Protocol, Self, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import (
@@ -50,12 +54,24 @@ from rheo_contracts import OperationDeclaration, Role, ToolDeclaration
 from rheo_contracts.refs import is_reserved_module
 
 from rheo_core.audit.sink import AuditSink
+from rheo_core.deletion.registry import (
+    DeleteAuthorizer as _DeleteAuthorizer,
+)
+from rheo_core.deletion.registry import (
+    DeletionHandler as _DeletionHandler,
+)
+from rheo_core.deletion.registry import (
+    OwnedDeleter as _OwnedDeleter,
+)
 from rheo_core.events.consumers import ConsumerSubscription
 from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import RecordResolver
 from rheo_core.settings.schema import KeySpec
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.work.kinds import JobHandler
+
+if TYPE_CHECKING:  # pragma: no cover - see ``Exporter`` on why this cannot be runtime
+    from rheo_core.exports.artifact import ExportSnapshot
 
 _SEGMENT_MESSAGE: Final = "a module id is a lowercase identifier"
 
@@ -98,23 +114,120 @@ class WebSurface:
 HealthCheck = Callable[[UnitOfWork], None]
 """``(uow) -> None``: one check install step 6 calls directly, so it is typed."""
 
-DeletionHandler = Callable[..., object]
+
+def _deletion_handler(value: object) -> object:
+    """The duck check :class:`DeletionParticipant` applies to its handler.
+
+    A plain validator rather than an ``isinstance`` probe for the reason this module's
+    docstring gives at ``audit_sink``: the narrowed type is a ``typing.Protocol``
+    without ``@runtime_checkable``, so pydantic can build no schema for it and would
+    raise ``PydanticSchemaGenerationError`` at class-definition time.
+    """
+    if callable(value):
+        return value
+    raise ValueError("a deletion participant's handler must be callable")
+
+
+DeletionHandler = Annotated[_DeletionHandler, PlainValidator(_deletion_handler)]
 """What the deletion coordinator calls for a participant's record types.
 
-Unnarrowed on purpose: no run in the current plan reads it, and a guessed signature
-is a shape a later run would have to break rather than merely narrow.
+Narrowed in 1a1 from ``Callable[..., object]`` to
+:class:`rheo_core.deletion.registry.DeletionHandler`, the protocol the coordinator
+actually calls: ``(ctx, uow, ref, *, disposition) -> RemovedMemories``. The old comment
+here said the alias stayed unnarrowed because no run read it and a *guessed* signature
+is worse than none — that reasoning held exactly until a caller existed, and the
+signature is read off that caller rather than guessed.
+
+``Exporter`` and ``Importer`` below were narrowed in the same run and for the same
+reason, one prompt later: the export collector became their caller.
 """
 
-Exporter = Callable[..., object]
+
+def _owned_delete_callable(value: object) -> object:
+    """The duck check :class:`RecordType`'s owned-delete pair applies.
+
+    ``None`` passes, because the pair is absent on every record type whose module
+    does not own deleting it. Everything else must be callable, and the check is a
+    plain validator rather than an ``isinstance`` probe for the reason this module's
+    docstring gives at ``audit_sink``: both narrowed types are ``typing.Protocol``
+    without ``@runtime_checkable``.
+    """
+    if value is None or callable(value):
+        return value
+    raise ValueError("an owned-delete callable must be callable")
+
+
+DeleteAuthorizer = Annotated[
+    _DeleteAuthorizer | None, PlainValidator(_owned_delete_callable)
+]
+"""``(ctx, uow, ref, *, disposition) -> DeleteAuthorization | Refusal``: may this be
+deleted, and at which revision. Content-free by shape — see
+:class:`~rheo_core.deletion.registry.DeleteAuthorization`. ``disposition`` is
+keyword-only with no default; see :class:`~rheo_core.deletion.registry.Disposition`."""
+
+OwnedDeleter = Annotated[_OwnedDeleter | None, PlainValidator(_owned_delete_callable)]
+"""``(ctx, uow, authorization) -> RemovedMemories``: remove the record and the rows the
+owner holds because of it."""
+
+
+def _export_callable(value: object) -> object:
+    """The duck check :class:`ExportDeclaration`'s pair applies.
+
+    A plain validator for the reason this module's docstring gives at ``audit_sink``:
+    both narrowed types below are ``typing.Protocol`` without ``@runtime_checkable``.
+    """
+    if callable(value):
+        return value
+    raise ValueError("an export callable must be callable")
+
+
+class _ModuleExporter(Protocol):
+    """``(snapshot) -> rows``: the module's own records, read through one snapshot."""
+
+    def __call__(
+        self, snapshot: "ExportSnapshot", /
+    ) -> Sequence[Mapping[str, object]]: ...
+
+
+class _ModuleImporter(Protocol):
+    """``(uow, rows) -> second pass``: insert, then hand back what finishes.
+
+    The return value is the reason this is not a plain ``(uow, rows) -> None``. A12's
+    restore is explicitly two passes with core's own deletion-evidence import
+    *between* them — parents go in with their self-references null, the ledger lands,
+    and only then are the self-references resolved and the ancestry validated against
+    that evidence. A module cannot schedule that itself without committing or
+    reaching into core's ordering, so it returns the continuation and core calls it at
+    the point A12 names.
+    """
+
+    def __call__(
+        self, uow: UnitOfWork, rows: Sequence[Mapping[str, object]], /
+    ) -> Callable[[], None]: ...
+
+
+Exporter = Annotated[_ModuleExporter, PlainValidator(_export_callable)]
 """What writes the module's records into an export.
 
-Unnarrowed on purpose: no run in the current plan reads it.
+Narrowed in 1a1 from ``Callable[..., object]`` for the reason ``DeletionHandler``
+above gives: the old note said an unnarrowed alias beat a guessed signature while no
+run read it, and that held exactly until ``exports/artifact.py`` began calling it.
+
+The exporter receives **only** ``rheo_core.exports.artifact.ExportSnapshot`` — A12's
+sealed view of the one source transaction, carrying the connection, the fixed
+``snapshot_at`` and the transaction-bound settings source — and never a bare
+connection, which is what would let a module read a second, later view and put it in
+the same artifact. That class is imported under ``TYPE_CHECKING`` only: the export
+package imports this one, so a runtime import here would close the cycle.
 """
 
-Importer = Callable[..., object]
+Importer = Annotated[_ModuleImporter, PlainValidator(_export_callable)]
 """What reads the module's records back out of an export.
 
-Unnarrowed on purpose: no run in the current plan reads it.
+Narrowed alongside :data:`Exporter`. It receives the restore transaction's sealed
+unit of work and the already-validated rows, and returns the second pass core runs
+after the deletion evidence is in. It never commits: the whole restore is one
+transaction and a module ending it would take the rollback guarantee with it.
 """
 
 
@@ -222,7 +335,25 @@ class Dependency(BaseModel):
 
 class RecordType(BaseModel):
     """One record type the module owns (``module-contract.md`` § Owned record
-    types). A record type appears in exactly one manifest."""
+    types). A record type appears in exactly one manifest.
+
+    **``authorize_delete``/``delete_owned`` are the additive owned-delete
+    declaration**, and they live here rather than in a twenty-fifth manifest field
+    on purpose. "A record type appears in exactly one manifest" is already the
+    invariant :class:`~rheo_core.deletion.registry.OwnedDeletionRegistry` needs —
+    exactly one declaration owns a record type — so hanging the pair off the type
+    makes that structural: there is nowhere to write an owned-delete declaration for
+    a type this manifest does not own, and nowhere to write two for one type. A
+    parallel top-level tuple keyed by ``record_type`` would have made both
+    expressible and then had to refuse them.
+
+    Both default to ``None`` — the empty default every manifest written before an
+    owner existed keeps — and the pair is whole or absent: a type carrying one half
+    is a module that meant to own its deletion and stopped half way, which is worth
+    a validation error rather than a registration the coordinator silently never
+    makes. A pair is meaningful only on a ``deletable`` type, so one on a type that
+    is not deletable is refused too.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -232,6 +363,25 @@ class RecordType(BaseModel):
     delete_roles: frozenset[Role]
     exportable: bool
     audience_field: str | None
+    authorize_delete: DeleteAuthorizer = None
+    delete_owned: OwnedDeleter = None
+
+    @model_validator(mode="after")
+    def _the_owned_delete_pair_is_whole(self) -> Self:
+        halves = (self.authorize_delete, self.delete_owned)
+        if any(half is not None for half in halves) and not all(
+            half is not None for half in halves
+        ):
+            raise ValueError(
+                f"record type {self.name!r} declares one half of an owned-delete "
+                "pair; authorize_delete and delete_owned are declared together"
+            )
+        if self.authorize_delete is not None and not self.deletable:
+            raise ValueError(
+                f"record type {self.name!r} declares an owned-delete pair but is "
+                "not deletable"
+            )
+        return self
 
 
 class StorageDeclaration(BaseModel):

@@ -10,11 +10,13 @@ the shipped registries with ``origin = manifest.module_id``, so every registrati
 check a hand-written registration faces (name grammar, origin/prefix agreement,
 reserved input fields, ``extra = "allow"``) applies unchanged.
 
-**Six extension points, six shipped registries, and no registry of this module's
+**Seven extension points, seven shipped registries, and no registry of this module's
 own.** ``_register`` attaches a manifest's operations (``OperationRegistry``),
 resolvers (``ResolverRegistry``), tools (``ToolRegistry``), job kinds
-(``JobKindRegistry``), subscriptions (``ConsumerRegistry``) and
-``configuration_schema`` keys (``settings.schema.REGISTRY``) — each through the same
+(``JobKindRegistry``), subscriptions (``ConsumerRegistry``), deletion participants and
+each owned record type's own ``authorize_delete``/``delete_owned`` pair
+(``OwnedDeletionRegistry``) and ``configuration_schema`` keys
+(``settings.schema.REGISTRY``) — each through the same
 public ``register`` the core's own startup calls, never a loader-local table. Declared
 **events** are the exception and deliberately so: ``rheo_core.events`` indexes
 subscriptions, not declarations, so there is nothing to populate and a declared event
@@ -101,6 +103,11 @@ from packaging.specifiers import SpecifierSet
 from rheo_contracts import CONTRACT_VERSION
 
 from rheo_core.audit.sink import install_sink
+from rheo_core.deletion.registry import (
+    OWNED_DELETIONS,
+    OwnedDeletion,
+    OwnedDeletionRegistry,
+)
 from rheo_core.events.consumers import ConsumerRegistry
 from rheo_core.modules.manifest import ManifestInvalid, ModuleManifest, WebSurface
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
@@ -222,6 +229,7 @@ def load_modules(
     tools: ToolRegistry = TOOL_REGISTRY,
     kinds: JobKindRegistry | None = None,
     consumers: ConsumerRegistry | None = None,
+    deletions: OwnedDeletionRegistry | None = None,
     allow: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     """Register the allowed discovered modules; return their ids, sorted.
@@ -241,6 +249,43 @@ def load_modules(
     and ``CONSUMERS`` in ``apps/worker/src/rheo_app_worker/main.py`` — so ``None``
     means "do not register that category", and the ``core`` process, which runs
     neither a job handler nor a consumer, legitimately passes neither.
+
+    **``deletions`` defaults to ``None`` too, and it is the odd one of the three.**
+    :class:`~rheo_core.deletion.registry.OwnedDeletionRegistry` *does* publish a
+    process-global instance (``OWNED_DELETIONS``), because the deletion coordinator is
+    a core operation handler with no channel to be handed one — see that module's own
+    docstring. It is still an explicit parameter defaulting to ``None`` rather than to
+    that global, because running a module's deletion hooks is a *deployment* decision
+    of the same kind as running its job handlers: a process that passes none registers
+    none of them, and every deletion in it runs the owner's delete alone. A composition
+    root that wants a module's participants to run passes ``OWNED_DELETIONS``, which is
+    the instance the coordinator reads; passing any other instance registers hooks the
+    coordinator will not see.
+
+    **What ``deletions`` governs is ``deletion_participants``, and only that.** The
+    *owning* declaration a ``RecordType`` now carries
+    (``authorize_delete``/``delete_owned``) is registered on
+    :data:`~rheo_core.deletion.registry.OWNED_DELETIONS` unconditionally, beside the
+    settings keys and the audit sink :func:`_register` already installs into
+    process-global tables with no parameter to route them elsewhere. Three reasons,
+    and they are the run-1a1 resolution of the question this docstring used to leave
+    open:
+
+    - **The coordinator reads that one instance and no other.** A declaration
+      registered into any other ``OwnedDeletionRegistry`` is a declaration
+      ``core.record.delete`` will never find, so an owner routed through this
+      parameter would be silently inert in exactly the deployments that passed a
+      registry of their own.
+    - **Ownership is not a cascade choice.** A participant hooks a type it does not
+      own, so whether it runs is a deployment's decision about how far a deletion
+      reaches. An owner's pair is the record type's own definition of being
+      deletable at all — declared beside the ``deletable``/``delete_roles`` this
+      function already accepts unconditionally — and a loader that took those and
+      dropped the pair would leave a type that reports itself deletable and refuses
+      ``record_not_deletable`` to every caller.
+    - **A deployment still decides, one level up.** Nothing registers until
+      ``modules.installed`` names the module, which is the gate that already governs
+      every other unconditional registration here.
 
     **No manifest is registered until the whole loaded set has passed every check
     this module makes.** The permitted manifests are collected first, each gated on
@@ -300,6 +345,7 @@ def load_modules(
             tools=tools,
             kinds=kinds,
             consumers=consumers,
+            deletions=deletions,
         )
         loaded.append(manifest.module_id)
     return tuple(sorted(loaded))
@@ -471,8 +517,9 @@ def _register(
     tools: ToolRegistry,
     kinds: JobKindRegistry | None,
     consumers: ConsumerRegistry | None,
+    deletions: OwnedDeletionRegistry | None,
 ) -> None:
-    """One validated manifest's six extension points, its sink and its web surface.
+    """One validated manifest's extension points, its sink and its web surface.
 
     Every branch iterates the manifest's own tuples and calls a shipped ``register``,
     so "an item registered that the manifest did not declare" and "declared and not
@@ -502,6 +549,34 @@ def _register(
         # ``ManifestInvalid`` after an earlier module is already in the registries.
         for subscription in manifest.subscriptions:
             consumers.register(subscription)
+    for owned_type in manifest.record_types:
+        # Unconditional, and on the process-global instance: see
+        # ``load_modules``'s own docstring for the three reasons. ``register``
+        # applies the same origin/prefix gate every other registration here faces,
+        # and treats an identical re-registration as a no-op, so a process that
+        # loads its modules twice registers once. The pair is whole or absent —
+        # ``RecordType``'s own validator settles that — so one ``None`` test is
+        # enough and the other is what makes the narrowing readable to a checker.
+        if owned_type.authorize_delete is None or owned_type.delete_owned is None:
+            continue
+        OWNED_DELETIONS.register(
+            OwnedDeletion(
+                module_id=manifest.module_id,
+                record_type=owned_type.name,
+                authorize_delete=owned_type.authorize_delete,
+                delete_owned=owned_type.delete_owned,
+            ),
+            origin=manifest.module_id,
+        )
+    if deletions is not None:
+        for participant in manifest.deletion_participants:
+            # Under the declaring manifest's own id, which is what the coordinator's
+            # enabled-module gate reads. A participant hooks record types it does not
+            # own — that is the whole shape — so there is no origin/type agreement to
+            # check here the way there is for an owning declaration.
+            deletions.register_participant(
+                manifest.module_id, participant.record_types, participant.handler
+            )
     for spec in manifest.configuration_schema:
         # The process-global settings registry, which is also what provisioning
         # reads — see this module's docstring for what that means for every

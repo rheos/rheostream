@@ -20,10 +20,16 @@ connection, with ``commit``, ``rollback`` and ``__enter__`` refused. It lives he
 rather than in ``operations/`` because it needs the four private slots above, and it
 is a subclass rather than a flag on ``UnitOfWork`` because that class's public
 surface is a pinned 0c-boundary invariant. See its own docstring.
+
+``ExportSnapshotUnitOfWork`` is A12's source snapshot: the same transaction opened
+``READ ONLY`` at ``REPEATABLE READ``. A subclass for the same reason, and it fills
+one private class-level hook (``_connection_options``) rather than taking a
+constructor argument, because the options have to be applied to the connection
+*before* ``begin()``. See its own docstring.
 """
 
-from collections.abc import Callable, Sequence
-from types import TracebackType
+from collections.abc import Callable, Mapping, Sequence
+from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol, Self
 from uuid import UUID
 
@@ -32,8 +38,14 @@ from sqlalchemy import Connection, Engine, text
 from sqlalchemy.engine import Transaction
 
 if TYPE_CHECKING:
+    # ``events/consumers.py`` imports ``HandlerUnitOfWork`` from this module at
+    # runtime, to type ``ConsumerHandler``. A runtime import back the other way would
+    # close that cycle, so the registry's type is resolved here and the annotations
+    # that use it are strings — the same shape ``EnginePool`` already has.
+    from rheo_core.events.consumers import ConsumerRegistry
     from rheo_core.migrations.orchestrator import MigrationResult
     from rheo_core.storage.pools import EnginePool
+    from rheo_core.work.scheduled_authority import VerifiedScheduledExecution
 
 WORKSPACE_UNAVAILABLE: Final = "workspace_unavailable"
 WORKSPACE_MISSING: Final = "workspace_missing"
@@ -88,6 +100,23 @@ class UnitOfWork:
     transaction in production.
     """
 
+    _connection_options: ClassVar[Mapping[str, object]] = MappingProxyType({})
+    """Execution options applied to the connection **before** ``begin()``.
+
+    Empty here, so an ordinary unit of work opens exactly the transaction it always
+    did. :class:`ExportSnapshotUnitOfWork` is the one subclass that fills it, and the
+    hook lives on this class rather than in that subclass's own ``__enter__`` because
+    SQLAlchemy refuses ``isolation_level`` and ``postgresql_readonly`` on a connection
+    whose transaction has already begun — so the only place they can be set is between
+    ``connect()`` and ``begin()`` below, and a subclass that reimplemented the two
+    lines around them would also have to reimplement the ``verify_database`` probe and
+    the cleanup arm it shares with every other unit of work.
+
+    Private, so it is not on the public surface ``tests/postgres/test_isolation.py``
+    pins, and a class attribute rather than a fifth ``__slots__`` entry for the same
+    reason ``verify_database`` is one.
+    """
+
     def __init__(
         self,
         engine: Engine,
@@ -110,6 +139,8 @@ class UnitOfWork:
         transaction: Transaction | None = None
         try:
             connection = self._engine.connect()
+            if self._connection_options:
+                connection = connection.execution_options(**self._connection_options)
             transaction = connection.begin()
             if UnitOfWork.verify_database:
                 actual = str(
@@ -199,19 +230,45 @@ class HandlerUnitOfWork(UnitOfWork):
     nothing to ``dir(UnitOfWork)``, leaves every existing ``uow: UnitOfWork``
     annotation compiling (``core_ops.py``, ``tokens/issue.py``, ``resolve_in`` and
     the test harness need no edit), and reaches the four private slots only because
-    it lives in the module that declares them. ``__slots__ = ("_operation_id",)``:
-    it adds exactly one of its own, read through the :attr:`operation_id` property,
-    and that slot is **not** a change to ``UnitOfWork``'s pinned surface — the guard
-    reads ``dir(UnitOfWork)`` and ``UnitOfWork.__slots__``, neither of which a
-    subclass's own slot appears in.
+    it lives in the module that declares them.
+    ``__slots__ = ("_operation_id", "_consumers", "_scheduled_execution")``: it adds
+    exactly three of its own, read through the :attr:`operation_id`,
+    :attr:`consumers` and :attr:`scheduled_execution` properties, and none is a change
+    to ``UnitOfWork``'s pinned surface — the guard reads ``dir(UnitOfWork)`` and
+    ``UnitOfWork.__slots__``, neither of which a subclass's own slot appears in.
+    ``tests/test_handler_uow.py`` pins the tuple exactly, so every addition to it is a
+    deliberate, reviewed change.
 
-    **What the one slot is for.** ``dispatch()`` mints a ``core.operation`` record
-    before it opens the work transaction for a ``long_running`` declaration, and the
-    handler has to learn that id to stamp it on the job it enqueues. Carrying it on
-    the view the handler already receives is what keeps the ``(ctx, uow, input)``
-    handler signature unchanged — and therefore every registered handler, and every
-    test that builds one, unedited. It is ``None`` for every other dispatch and for
-    every view the worker loop constructs.
+    **What ``_operation_id`` is for.** ``dispatch()`` mints a ``core.operation``
+    record before it opens the work transaction for a ``long_running`` declaration,
+    and the handler has to learn that id to stamp it on the job it enqueues. Carrying
+    it on the view the handler already receives is what keeps the ``(ctx, uow,
+    input)`` handler signature unchanged — and therefore every registered handler,
+    and every test that builds one, unedited. It is ``None`` for every other dispatch
+    and for every view the worker loop constructs.
+
+    **What ``_consumers`` is for.** A handler that publishes an event needs the
+    process's one :class:`~rheo_core.events.consumers.ConsumerRegistry` —
+    ``events.publish.publish`` takes it as a required keyword — and neither that
+    package nor this one holds a process-wide instance, on purpose. The composition
+    root builds it (``apps/worker``'s ``main.py``, ``apps/core``'s ``startup.py``)
+    and hands it to ``dispatch()``, which carries it here on the same view, for the
+    same reason the minted id is carried here: the handler signature does not move.
+    It is ``None`` for a dispatch no composition root wired one into, and a handler
+    that needs one refuses ``consumers_missing`` rather than building a throwaway
+    registry whose fan-out would depend on which call built it.
+
+    **What ``_scheduled_execution`` is for, and why it is the one slot with no public
+    producer.** A scheduled retention expiry is release one's only deletion without a
+    per-action approval, so the thing that stands in for the approval is proof that
+    the call really is a leased, scheduled, single-matching-schedule worker visit —
+    :class:`~rheo_core.work.scheduled_authority.VerifiedScheduledExecution`, minted
+    only by ``work/loop.py``'s own leased-job path against the live row it just
+    leased. ``dispatch()`` takes no such parameter and never will: a keyword on the
+    public dispatcher would be precisely the channel a caller could hand itself an
+    approval bypass through. It is ``None`` for every view the dispatcher builds, and
+    ``approvals/gate.py`` carries through whatever the view it was given holds rather
+    than producing one, exactly as it does for ``consumers``.
 
     **The seal is over those three names and claims no more.** ``connection`` is
     inherited and still returns a live SQLAlchemy ``Connection``, so
@@ -224,20 +281,29 @@ class HandlerUnitOfWork(UnitOfWork):
     the connection.
     """
 
-    __slots__ = ("_operation_id",)
+    __slots__ = ("_operation_id", "_consumers", "_scheduled_execution")
 
-    def __init__(self, uow: UnitOfWork, *, operation_id: UUID | None = None) -> None:
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        *,
+        operation_id: UUID | None = None,
+        consumers: "ConsumerRegistry | None" = None,
+        scheduled_execution: "VerifiedScheduledExecution | None" = None,
+    ) -> None:
         """Share an already-entered unit of work's connection and transaction.
 
         Not ``(engine, expected_database)``: the view never opens anything, it
         borrows what the dispatcher already opened. The first four assignments are
         the parent's own slots, reachable here because this class sits in that
-        module; the fifth is this subclass's own, and is the minted
-        ``core.operation`` id or ``None``.
+        module; the last three are this subclass's own — the minted
+        ``core.operation`` id or ``None``, the process's consumer registry or
+        ``None``, and the worker's verified scheduled-execution capability or
+        ``None``.
 
-        ``operation_id`` is keyword-only with a ``None`` default, so every
-        construction site that does not have one — ``loop.py``'s two, and every test
-        that builds a view directly — needs no edit.
+        All three are keyword-only with a ``None`` default, so every construction
+        site that has none — the delivery drain, and every test that builds a view
+        directly — needs no edit.
         """
         if not isinstance(uow, UnitOfWork):
             raise TypeError("HandlerUnitOfWork wraps a UnitOfWork")
@@ -247,6 +313,8 @@ class HandlerUnitOfWork(UnitOfWork):
         self._transaction = uow._transaction
         self._pool = None
         self._operation_id = operation_id
+        self._consumers = consumers
+        self._scheduled_execution = scheduled_execution
 
     @property
     def operation_id(self) -> UUID | None:
@@ -258,6 +326,30 @@ class HandlerUnitOfWork(UnitOfWork):
         record when the job finishes.
         """
         return self._operation_id
+
+    @property
+    def consumers(self) -> "ConsumerRegistry | None":
+        """The process's one consumer registry, or ``None``.
+
+        Read-only, exactly like :attr:`operation_id`: a handler reads the registry
+        the composition root built, it does not choose or construct one. ``None``
+        when no composition root wired one into this dispatch — a deployment gap
+        that a publishing handler refuses ``consumers_missing`` for, never a licence
+        to build a per-call registry.
+        """
+        return self._consumers
+
+    @property
+    def scheduled_execution(self) -> "VerifiedScheduledExecution | None":
+        """The worker's verified scheduled-execution capability, or ``None``.
+
+        Read-only, like the two above, and ``None`` everywhere but inside a handler
+        the worker's leased-job path is running. A handler that wants to act on it
+        hands it straight back to
+        ``rheo_core.work.scheduled_authority.dispatch_verified_expiry_in``, which
+        refuses anything that is not the very object this property returned.
+        """
+        return self._scheduled_execution
 
     def __enter__(self) -> Self:
         raise StorageRefusal(
@@ -279,6 +371,50 @@ class HandlerUnitOfWork(UnitOfWork):
             "a handler may not roll back: raise OperationRefused and the dispatcher "
             "rolls back",
         )
+
+
+class ExportSnapshotUnitOfWork(UnitOfWork):
+    """A12's export source snapshot: one ``READ ONLY``, ``REPEATABLE READ``
+    transaction, opened fresh for one collection and used for nothing else.
+
+    **What the two options buy, and why both.** ``REPEATABLE READ`` fixes one
+    committed source view at the transaction's first query, so every category an
+    export serialises describes the same instant however long the collection runs —
+    the guarantee ``serialised_categories`` could not make while it read whatever
+    connection it was handed. ``READ ONLY`` is what makes "source collection" a
+    claim the database enforces rather than a convention: a write attempted on this
+    connection is refused by PostgreSQL, so the export-record completion really
+    cannot be written from inside collection, whatever a later edit tries.
+
+    **The options are set before ``begin()``, which is why this is a subclass with a
+    filled ``_connection_options`` rather than a flag or a wrapper that sets them
+    afterwards.** SQLAlchemy applies ``isolation_level`` and ``postgresql_readonly``
+    to the DBAPI connection when they are set, and refuses both once a transaction
+    has begun; PostgreSQL likewise takes the repeatable-read snapshot at the first
+    query. So by the time :meth:`UnitOfWork.__enter__` runs the test-profile
+    ``current_database()`` probe, that probe is already the snapshot's own first
+    statement, inside the snapshot, read-only — which is the ordering A12 asks for
+    and the reason the probe is inherited rather than skipped here.
+
+    **A subclass beside ``UnitOfWork``, not a change to it**, for the reason
+    :class:`HandlerUnitOfWork`'s docstring gives at length:
+    ``tests/postgres/test_isolation.py`` pins ``UnitOfWork``'s public surface to
+    exactly four names and its ``__slots__`` to exactly four slots. This class adds
+    no slot of its own and no public name — only the private class-level hook the
+    parent declares empty.
+
+    **Both characteristics are reset when the connection returns to the pool.**
+    SQLAlchemy registers a finalizer for every connection characteristic it sets
+    (``default.py:_set_connection_characteristics``), so the pooled connection this
+    transaction borrowed is writable again at its next checkout. Nothing here has to
+    unset them, and nothing else in the process has to know an export ran.
+    """
+
+    __slots__ = ()
+
+    _connection_options: ClassVar[Mapping[str, object]] = MappingProxyType(
+        {"isolation_level": "REPEATABLE READ", "postgresql_readonly": True}
+    )
 
 
 class StorageBackend(Protocol):

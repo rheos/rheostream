@@ -31,13 +31,24 @@ RESERVED_INPUT_FIELDS = frozenset(
         "sql",
         "table_name",
         "statement",
+        "principal",
     }
 )
 """Input-model field names registration refuses, verbatim from the module contract.
 
-The last three make criterion 20's "accepts no SQL, table name, or query fragment" a
-mechanical check over the registered input models. This is the single list the operation
-registry and criterion 6's test share; do not restate it anywhere else.
+``sql``, ``table_name`` and ``statement`` make criterion 20's "accepts no SQL, table
+name, or query fragment" a mechanical check over the registered input models. This is
+the single list the operation registry and criterion 6's test share; do not restate it
+anywhere else.
+
+``principal`` closes the one channel by which a caller could name the field
+:class:`~rheo_contracts.context.WorkspaceContext` carries its verified account and
+bound purpose on. Deliberately **not** joined by ``account_id`` or ``purpose``:
+``TokenIssueInput.account_id`` names an operator-issued token's *target* account and
+``RuntimeRunInput.purpose`` is that run's own typed argument, so both are legitimate
+request inputs today; reserving either would break a shipped operation to close
+nothing, since neither name reaches ``ctx.principal``, which only a boundary factory
+writes.
 """
 
 
@@ -138,12 +149,13 @@ class OperationDeclaration(BaseModel):
 class ToolDeclaration(BaseModel):
     """What a module tells the MCP facade about one callable tool (C8, run 0b2).
 
-    Four fields: the three the façade's ``list_tools``/``call_tool`` seam has always
-    read, and ``safety_class``, added by run 0c3 together with the streamable-HTTP
+    Five fields: the three the façade's ``list_tools``/``call_tool`` seam has always
+    read, ``safety_class``, added by run 0c3 together with the streamable-HTTP
     transport and the tool registration path that can refuse a declaration missing
-    it. Guards and streamed output shape are still not declared here; each is a
-    shape with no reader yet, which is the same reasoning that kept this whole type
-    out of C1.
+    it, and ``description``, added with the tool-origin facade that finally gives
+    ``input_model`` a reader. Guards and streamed output shape are still not
+    declared here; each is a shape with no reader yet, which is the same reasoning
+    that kept this whole type out of C1.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -172,7 +184,22 @@ class ToolDeclaration(BaseModel):
     absent from ``rheo_core.tokens.sets.agent_default``'s live intersection."""
 
     input_model: type[BaseModel]
-    """Not used to validate a call in this run: the operation's own declared
-    input model is what ``dispatch`` validates against. Carried here for the
-    façade's own tool-listing metadata, and for a future transport to describe
-    the tool's shape to a client."""
+    """The **narrower** shape a caller of this tool may send.
+
+    ``rheo_core.operations.tool_facade.call_registered_tool`` validates a tool
+    call against this model, rejecting every argument name it does not declare,
+    and dispatches the validated dump; the operation's own declared input model
+    is then validated a second time by ``dispatch``. Two models rather than one
+    because a tool may legitimately restrict its operation — ``recallatron_forget``
+    names a deletion operation that accepts any record reference and accepts only
+    its own module's — and a narrow schema advertised to a client has to restrict
+    the call as well as describe it."""
+
+    description: str = ""
+    """What this tool does and which refusal states it can answer with.
+
+    Defaulted rather than required so a declaration that has nothing to say does
+    not have to invent something; the transport falls back to naming the operation
+    when it is empty. A module's tools are expected to fill it: the ratified
+    contract asks each declaration to name its own material failure modes, so a
+    client can tell a refusal it should retry from one it should not."""

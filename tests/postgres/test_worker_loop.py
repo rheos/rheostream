@@ -44,20 +44,43 @@ import pytest
 from conftest import ClusterSession, MakeWorkspace
 from harness.consumers import EVENT_TYPE, ensure_consumer_tables
 from harness.consumers import registry as consumer_registry
+from harness.deletion import (
+    PROBE_RECORD_TYPE,
+    ProbeRow,
+    ensure_probe_tables,
+    probe_exists,
+    probe_ref,
+    register_deletion_harness,
+    surviving_memory_ids,
+    write_probe,
+)
 from harness.records import ensure_note_table, list_notes, write_note
 from harness.registry import NOTE_SCHEDULE, enable_harness_module, register_harness
+from harness.settings_keys import (
+    HARNESS_EXPIRE_BY_AGE,
+    HARNESS_RETENTION_DAYS,
+    HARNESS_RETENTION_DEFAULT,
+)
 from pydantic import BaseModel
 from rheo_app_worker.main import install_stop_signals
-from rheo_contracts import Role, WorkspaceContext
+from rheo_contracts import RecordRef, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
+from rheo_core.boundary.context import Refusal
+from rheo_core.deletion import RETENTION_EXPIRY, get_deletion_record
 from rheo_core.events import ConsumerRegistry, NewEvent, publish
-from rheo_core.operations import dispatch
+from rheo_core.operations import HARNESS_MODULE_ID, dispatch
 from rheo_core.operations.records import AUDIENCE_NONE, OperationRow, mint
 from rheo_core.operations.records import get as read_operation
+from rheo_core.refs import uuid7
+from rheo_core.settings import ValueType
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.control_tables import workspace as workspace_table
 from rheo_core.storage.postgres import PostgresBackend
+from rheo_core.storage.repositories import (
+    insert_schedule_if_absent,
+    upsert_workspace_setting,
+)
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace, workspaces_with_due_work
 from rheo_core.storage.work_index_tables import workspace_work_due
@@ -82,7 +105,15 @@ from rheo_core.work.loop import (
     visit_workspace,
     worker_loop,
 )
-from sqlalchemy import Engine, Row, select
+from rheo_core.work.scheduled_authority import (
+    EXPIRY_TYPE_MISMATCH,
+    RETENTION_SETTING_CHANGED,
+    SCHEDULED_AUTHORITY_INVALID,
+    ExpiredRecord,
+    VerifiedScheduledExecution,
+    dispatch_memory_expiry_in,
+)
+from sqlalchemy import Engine, Row, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 pytestmark = pytest.mark.postgres
@@ -1814,3 +1845,476 @@ def test_install_stop_signals_wires_sigterm_to_the_loops_stop_event() -> None:
     finally:
         signal.signal(signal.SIGTERM, previous_term)
         signal.signal(signal.SIGINT, previous_int)
+
+
+# --- the verified scheduled-execution capability --------------------------------------
+# 1a1. Scheduled retention expiry is release one's only deletion without a per-action
+# approval, so what stands where the approval stands is a
+# ``VerifiedScheduledExecution`` the worker mints against the row it has just leased.
+# The claims under test are the three that make that safe: the worker mints one only
+# for a kind that really is on exactly one enabled schedule; a handler cannot substitute
+# one of its own; and a capability whose facts the database does not agree with refuses
+# rather than deleting.
+
+EXPIRY_KIND = "harness.probe.expire"
+EXPIRY_SCHEDULE = "probe_expiry"
+PROBE_TYPE = f"{HARNESS_MODULE_ID}.{PROBE_RECORD_TYPE}"
+
+
+class ExpiryPayload(BaseModel):
+    """What a schedule-enqueued job carries.
+
+    ``run_due_schedules`` writes exactly this and nothing else.
+    """
+
+    workspace_id: UUID
+
+
+def _expiry_registry(handler: Callable[..., None]) -> JobKindRegistry:
+    """``EXPIRY_KIND`` on ``handler``, and the ordinary note kind beside it.
+
+    Both, because half of what the mint has to get right is *not* minting: a note job
+    is the control, and it runs in the same visit off the same registry.
+    """
+    kinds = JobKindRegistry()
+    kinds.register(EXPIRY_KIND, ExpiryPayload, handler)
+    kinds.register(KIND, NotePayload, _writes_its_note)
+    return kinds
+
+
+def _put_schedule(
+    engine: Engine,
+    *,
+    now: datetime,
+    kind: str = EXPIRY_KIND,
+    name: str = EXPIRY_SCHEDULE,
+) -> None:
+    """One enabled ``core.schedule`` row for ``kind``, due a day out.
+
+    Not due, deliberately: the capability attests that a schedule for this kind
+    *exists and is enabled*, never that it is due, and a due row would have the visit
+    enqueue a second job underneath the one the test put there itself.
+    """
+    with engine.begin() as conn:
+        insert_schedule_if_absent(
+            conn,
+            module_id=HARNESS_MODULE_ID,
+            name=name,
+            job_kind=kind,
+            cron="0 4 * * *",
+            enabled=True,
+            next_run_at=now + timedelta(days=1),
+        )
+
+
+@pytest.fixture
+def expiry_workspace(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    harness_keys: None,
+    now: datetime,
+) -> UUID:
+    """A workspace with the ``harness`` module enabled, probe tables, and a schedule.
+
+    ``enable_harness_module`` is what puts ``harness`` in the operator context's
+    ``enabled_modules``; without it the owned-delete authorizer refuses
+    ``record_not_deletable`` and every assertion below would pass for the wrong
+    reason.
+    """
+    register_harness()
+    register_deletion_harness()
+    with UnitOfWork(engine, database) as uow:
+        enable_harness_module(uow.connection)
+        ensure_probe_tables(uow.connection)
+        uow.commit()
+    _put_schedule(engine, now=now)
+    return workspace
+
+
+@pytest.fixture
+def probe(engine: Engine, expiry_workspace: UUID) -> ProbeRow:
+    """A probe with two memory rows of its own and two the participant owns."""
+    with engine.begin() as conn:
+        return write_probe(conn)
+
+
+def _expiring_handler(
+    seen: list[object],
+    *,
+    target: RecordRef,
+    record_type: str = PROBE_TYPE,
+    retention_days: int = HARNESS_RETENTION_DEFAULT,
+    substitute: Callable[[HandlerUnitOfWork], object] | None = None,
+) -> Callable[[HandlerUnitOfWork, BaseModel, CancellationToken], None]:
+    """A job handler that expires ``target`` and records what it was answered.
+
+    ``substitute`` is how a test hands the entry a capability other than the one the
+    worker minted onto the view — the whole forging surface, in one parameter.
+    """
+
+    def _run(
+        uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
+    ) -> None:
+        capability = uow.scheduled_execution if substitute is None else substitute(uow)
+        seen.append(
+            dispatch_memory_expiry_in(
+                uow,
+                capability,  # type: ignore[arg-type]
+                record_type=record_type,
+                target_ref=target,
+                gate_key=HARNESS_EXPIRE_BY_AGE,
+                retention_key=HARNESS_RETENTION_DAYS,
+                retention_days=retention_days,
+            )
+        )
+
+    return _run
+
+
+def _ledger_row(engine: Engine, database: str, answer: object) -> object:
+    """The ledger row an :class:`ExpiredRecord` names, read back."""
+    assert isinstance(answer, ExpiredRecord), answer
+    deletion_id = RecordRef.parse(answer.deletion_ref).id
+    with UnitOfWork(engine, database) as uow:
+        return get_deletion_record(uow.connection, deletion_id=deletion_id)
+
+
+def test_the_worker_mints_a_capability_only_for_a_kind_on_one_enabled_schedule(
+    cluster: ClusterSession, expiry_workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """The mint's whole gate, from both sides, in one visit.
+
+    The note job is the control and it matters: a mint that fired for every leased job
+    would still make every assertion about the expiry job below pass.
+    """
+    seen: list[object] = []
+
+    def _record(
+        uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
+    ) -> None:
+        seen.append(uow.scheduled_execution)
+
+    kinds = JobKindRegistry()
+    kinds.register(EXPIRY_KIND, ExpiryPayload, _record)
+    kinds.register(KIND, NotePayload, _record)
+    expiry_job = _put(
+        engine,
+        now=now,
+        kind=EXPIRY_KIND,
+        payload={"workspace_id": str(expiry_workspace)},
+    )
+    _put(engine, now=now, kind=KIND)
+
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+
+    minted = [entry for entry in seen if entry is not None]
+    assert len(seen) == 2
+    assert len(minted) == 1, seen
+    capability = minted[0]
+    assert isinstance(capability, VerifiedScheduledExecution)
+    assert capability.workspace_id == expiry_workspace
+    assert capability.job_id == expiry_job
+    assert capability.job_kind == EXPIRY_KIND
+    assert capability.module_id == HARNESS_MODULE_ID
+    assert capability.lease_owner == OWNER
+
+
+def test_a_second_or_disabled_schedule_of_the_same_kind_mints_nothing(
+    cluster: ClusterSession, expiry_workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """Duplicated first, then none enabled at all.
+
+    Two enabled schedules of one kind are two independent tickers enqueueing the same
+    work, and a capability naming one of them would assert a uniqueness
+    ``core.schedule`` does not have — it carries no unique index over
+    ``(module_id, name)``, which is exactly why this is read rather than assumed.
+    """
+    seen: list[object] = []
+
+    def _record(
+        uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
+    ) -> None:
+        seen.append(uow.scheduled_execution)
+
+    kinds = JobKindRegistry()
+    kinds.register(EXPIRY_KIND, ExpiryPayload, _record)
+    payload: dict[str, object] = {"workspace_id": str(expiry_workspace)}
+
+    _put_schedule(engine, now=now, name="probe_expiry_twice")
+    _put(engine, now=now, kind=EXPIRY_KIND, payload=payload)
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+    assert seen == [None]
+
+    with engine.begin() as conn:
+        conn.execute(
+            update(schedule)
+            .where(schedule.c.job_kind == EXPIRY_KIND)
+            .values(enabled=False)
+        )
+    _put(engine, now=now, kind=EXPIRY_KIND, payload=payload)
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+    assert seen == [None, None]
+
+
+def test_a_verified_expiry_deletes_the_record_and_leaves_a_retention_expiry_ledger_row(
+    cluster: ClusterSession,
+    expiry_workspace: UUID,
+    engine: Engine,
+    database: str,
+    probe: ProbeRow,
+    now: datetime,
+) -> None:
+    """The one deletion in the tree with no approval behind it, end to end.
+
+    The counters are read off the ledger and the surviving rows rather than off the
+    answer, for the reason ``test_record_deletion.py`` gives: the caller receives
+    ``{deletion_ref}`` and nothing else, so a returned count could only ever be a
+    claim about itself.
+    """
+    seen: list[object] = []
+    kinds = _expiry_registry(_expiring_handler(seen, target=probe_ref(probe.id)))
+    _put(
+        engine,
+        now=now,
+        kind=EXPIRY_KIND,
+        payload={"workspace_id": str(expiry_workspace)},
+    )
+
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+
+    row = _ledger_row(engine, database, seen[0])
+    assert row is not None
+    # Four distinct memory rows: two the owner removed and two the participant did,
+    # unioned by the coordinator rather than added up twice.
+    assert row.invalidated_memory_count == 4  # type: ignore[attr-defined]
+    assert row.cause == RETENTION_EXPIRY  # type: ignore[attr-defined]
+    # No approval, and a system actor with no account: § A9's expiry context, which
+    # is nobody — no person confirmed this and no account owns it.
+    assert row.approval_id is None  # type: ignore[attr-defined]
+    assert (row.actor_kind, row.actor_id) == ("system", None)  # type: ignore[attr-defined]
+    assert row.record_type == PROBE_TYPE  # type: ignore[attr-defined]
+    # The three phase-three counters stay zero, as they do on the approved path.
+    assert (
+        row.cancelled_job_count,  # type: ignore[attr-defined]
+        row.cancelled_action_count,  # type: ignore[attr-defined]
+        row.removed_export_count,  # type: ignore[attr-defined]
+    ) == (0, 0, 0)
+    with engine.connect() as conn:
+        assert not probe_exists(conn, probe.id)
+        assert surviving_memory_ids(conn, probe.id) == frozenset()
+
+
+def test_a_capability_the_view_does_not_carry_is_refused(
+    cluster: ClusterSession,
+    expiry_workspace: UUID,
+    engine: Engine,
+    probe: ProbeRow,
+    now: datetime,
+) -> None:
+    """An equal copy is still not the one the worker minted, and identity is the check.
+
+    The substitute below carries every field of the real capability and would pass any
+    comparison of facts; what it cannot be is the object on the view. A handler able to
+    assemble its own is a handler able to hand itself an approval bypass.
+    """
+
+    def _equal_copy(uow: HandlerUnitOfWork) -> object:
+        real = uow.scheduled_execution
+        assert isinstance(real, VerifiedScheduledExecution)
+        return VerifiedScheduledExecution(
+            workspace_id=real.workspace_id,
+            database=real.database,
+            job_id=real.job_id,
+            job_kind=real.job_kind,
+            lease_owner=real.lease_owner,
+            module_id=real.module_id,
+            schedule_id=real.schedule_id,
+        )
+
+    seen: list[object] = []
+    kinds = _expiry_registry(
+        _expiring_handler(seen, target=probe_ref(probe.id), substitute=_equal_copy)
+    )
+    _put(
+        engine,
+        now=now,
+        kind=EXPIRY_KIND,
+        payload={"workspace_id": str(expiry_workspace)},
+    )
+
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+
+    assert isinstance(seen[0], Refusal)
+    assert seen[0].state == SCHEDULED_AUTHORITY_INVALID
+    with engine.connect() as conn:
+        assert probe_exists(conn, probe.id)
+
+
+def test_a_forged_capability_for_another_job_kind_refuses_rather_than_deleting(
+    expiry_workspace: UUID, engine: Engine, database: str, probe: ProbeRow
+) -> None:
+    """The mutation the identity check alone would not catch.
+
+    Driven by building the view directly rather than through the loop, because the
+    loop cannot produce this state: the point is a capability that *is* the view's own
+    and whose facts are still wrong. ``_still_verified`` re-derives every one of them
+    against the live transaction, so the forged job kind — which no enabled schedule
+    names — refuses before anything is deleted.
+    """
+    forged = VerifiedScheduledExecution(
+        workspace_id=expiry_workspace,
+        database=database,
+        job_id=uuid7(),
+        job_kind="harness.no.such.kind",
+        lease_owner=OWNER,
+        module_id=HARNESS_MODULE_ID,
+        schedule_id=uuid7(),
+    )
+    with UnitOfWork(engine, database) as uow:
+        view = HandlerUnitOfWork(uow, scheduled_execution=forged)
+        answer = dispatch_memory_expiry_in(
+            view,
+            forged,
+            record_type=PROBE_TYPE,
+            target_ref=probe_ref(probe.id),
+            gate_key=HARNESS_EXPIRE_BY_AGE,
+            retention_key=HARNESS_RETENTION_DAYS,
+            retention_days=HARNESS_RETENTION_DEFAULT,
+        )
+        assert isinstance(answer, Refusal)
+        assert answer.state == SCHEDULED_AUTHORITY_INVALID
+        assert probe_exists(uow.connection, probe.id)
+        uow.rollback()
+
+
+def test_a_retention_value_that_moved_under_the_lock_refuses(
+    cluster: ClusterSession,
+    expiry_workspace: UUID,
+    engine: Engine,
+    probe: ProbeRow,
+    now: datetime,
+) -> None:
+    """The sweep's authority, rechecked on the caller's own connection under the lock.
+
+    A sweep picks its candidates against a retention window and then deletes them one
+    at a time; an operator who moves that window in between has changed which rows were
+    expired, and the ones already chosen are no longer the answer to the question now
+    being asked. The row below is committed before the visit, so the value the entry
+    reads back genuinely differs from the one the handler declares.
+    """
+    with engine.begin() as conn:
+        upsert_workspace_setting(
+            conn,
+            key=HARNESS_RETENTION_DAYS,
+            value="3",
+            value_type=ValueType.INT,
+            updated_by=None,
+        )
+    seen: list[object] = []
+    kinds = _expiry_registry(
+        _expiring_handler(
+            seen, target=probe_ref(probe.id), retention_days=HARNESS_RETENTION_DEFAULT
+        )
+    )
+    _put(
+        engine,
+        now=now,
+        kind=EXPIRY_KIND,
+        payload={"workspace_id": str(expiry_workspace)},
+    )
+
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+
+    assert isinstance(seen[0], Refusal)
+    assert seen[0].state == RETENTION_SETTING_CHANGED
+    with engine.connect() as conn:
+        assert probe_exists(conn, probe.id)
+
+    # And the same sweep, declaring the value the workspace actually holds, proceeds.
+    second: list[object] = []
+    kinds = _expiry_registry(
+        _expiring_handler(second, target=probe_ref(probe.id), retention_days=3)
+    )
+    _put(
+        engine,
+        now=now,
+        kind=EXPIRY_KIND,
+        payload={"workspace_id": str(expiry_workspace)},
+    )
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+    assert isinstance(second[0], ExpiredRecord), second[0]
+
+
+def test_a_gate_switched_off_under_the_lock_refuses_rather_than_expiring(
+    cluster: ClusterSession,
+    expiry_workspace: UUID,
+    engine: Engine,
+    probe: ProbeRow,
+    now: datetime,
+) -> None:
+    """The **other** row the entry rechecks under the lock, and the reason for it.
+
+    Age-based expiry is opt-in, so an operator who switches it off has withdrawn the
+    authority this whole path runs on — not merely narrowed which rows it reaches.
+    The withdrawal has to bite before the next deletion rather than at the end of the
+    batch, so the entry reads the gate in the same locked read as the window and
+    refuses on it first.
+
+    The window is left exactly where the handler declares it, so a build that checked
+    only the window would delete the probe and this case would be the one that
+    catches it.
+    """
+    with engine.begin() as conn:
+        upsert_workspace_setting(
+            conn,
+            key=HARNESS_EXPIRE_BY_AGE,
+            value="false",
+            value_type=ValueType.BOOL,
+            updated_by=None,
+        )
+    seen: list[object] = []
+    kinds = _expiry_registry(_expiring_handler(seen, target=probe_ref(probe.id)))
+    _put(
+        engine,
+        now=now,
+        kind=EXPIRY_KIND,
+        payload={"workspace_id": str(expiry_workspace)},
+    )
+
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+
+    assert isinstance(seen[0], Refusal)
+    assert seen[0].state == RETENTION_SETTING_CHANGED
+    with engine.connect() as conn:
+        assert probe_exists(conn, probe.id)
+
+
+def test_a_reference_of_another_type_than_the_sweep_declared_refuses(
+    cluster: ClusterSession,
+    expiry_workspace: UUID,
+    engine: Engine,
+    probe: ProbeRow,
+    now: datetime,
+) -> None:
+    """A sweep authorised for one owned type may not expire a record of another."""
+    seen: list[object] = []
+    kinds = _expiry_registry(
+        _expiring_handler(
+            seen, target=probe_ref(probe.id), record_type=f"{HARNESS_MODULE_ID}.note"
+        )
+    )
+    _put(
+        engine,
+        now=now,
+        kind=EXPIRY_KIND,
+        payload={"workspace_id": str(expiry_workspace)},
+    )
+
+    _visit(expiry_workspace, kinds=kinds, backend=cluster.backend, at=now)
+
+    assert isinstance(seen[0], Refusal)
+    assert seen[0].state == EXPIRY_TYPE_MISMATCH
+    with engine.connect() as conn:
+        assert probe_exists(conn, probe.id)

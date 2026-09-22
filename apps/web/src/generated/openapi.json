@@ -206,14 +206,44 @@
         "type": "object"
       },
       "AuditList": {
-        "description": "The workspace's most recent audit records, newest first.\n\n``records`` is a named collection field rather than a bare list, mirroring\n``FailureList`` and ``OperationList``: a later run adding a second collection\nbeside it is then an additive change a reader may ignore rather than a change to\nthe response's own type.",
+        "description": "The workspace's most recent audit records, newest first.\n\n``records`` is a named collection field rather than a bare list, mirroring\n``FailureList`` and ``OperationList``: a later run adding a second collection\nbeside it is then an additive change a reader may ignore rather than a change to\nthe response's own type. ``tool_telemetry`` is that later run, and it is exactly\nthat additive change.",
         "properties": {
+          "deletions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DeletionRecord"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Deletions"
+          },
           "records": {
             "items": {
               "$ref": "#/components/schemas/AuditRecord"
             },
             "title": "Records",
             "type": "array"
+          },
+          "tool_telemetry": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolTelemetryRecord"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Telemetry"
           }
         },
         "required": [
@@ -225,6 +255,16 @@
       "AuditListInput": {
         "description": "How many of the most recent audit records to return.\n\n``limit`` is bounded rather than a bare ``int``, for the reason\n``work/operations.py``'s ``FailureListInput`` gives: a bare ``int`` lets ``-1``\nreach the ``SELECT``, where Postgres raises *LIMIT must not be negative* and\n``dispatch`` folds a driver class name into ``handler_failed``, when it is an\ninput defect that belongs in the ``input_invalid`` refusal pydantic already\nproduces. Nothing prunes this table in release one, so an unbounded ``limit``\nwould be a read that grows for the life of the deployment.",
         "properties": {
+          "include_deletions": {
+            "default": false,
+            "title": "Include Deletions",
+            "type": "boolean"
+          },
+          "include_tool_telemetry": {
+            "default": false,
+            "title": "Include Tool Telemetry",
+            "type": "boolean"
+          },
           "limit": {
             "default": 50,
             "maximum": 500,
@@ -335,6 +375,108 @@
         ],
         "title": "ContextPurpose",
         "type": "string"
+      },
+      "DeletionRecord": {
+        "description": "One ``deletion_record`` row as this operation publishes it (\u00a7 A8).\n\n:class:`~rheo_core.deletion.records.DeletionRecordRow` field for field, with that\nrow's ``id`` published as ``deletion_id`` \u2014 the renaming :class:`AuditRecord` and\n:class:`ToolTelemetryRecord` already make \u2014 and the qualified ``record_type`` and\n``record_id`` republished as the canonical reference an operator actually reads,\nwhich is how every other surface names a record.\n\n**Every field here is content-free by construction**, which is the table's own\ndesign rather than a filter applied at this boundary: there is no title, body,\npayload or json column on the row to withhold. The four counters are the exact\nclosure sizes \u00a7 A8 keeps off the deletion *result* \u2014 a caller of\n``core.record.delete`` receives only ``{deletion_ref}`` \u2014 and this collection is\nthe one place they are published, to an owner or an operator who asked for them.",
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_kind": {
+            "title": "Actor Kind",
+            "type": "string"
+          },
+          "approval_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Id"
+          },
+          "cancelled_action_count": {
+            "title": "Cancelled Action Count",
+            "type": "integer"
+          },
+          "cancelled_job_count": {
+            "title": "Cancelled Job Count",
+            "type": "integer"
+          },
+          "cause": {
+            "title": "Cause",
+            "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "title": "Deleted At",
+            "type": "string"
+          },
+          "deletion_id": {
+            "format": "uuid",
+            "title": "Deletion Id",
+            "type": "string"
+          },
+          "invalidated_memory_count": {
+            "title": "Invalidated Memory Count",
+            "type": "integer"
+          },
+          "participants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "record_ref": {
+            "title": "Record Ref",
+            "type": "string"
+          },
+          "removed_export_count": {
+            "title": "Removed Export Count",
+            "type": "integer"
+          },
+          "retained_successor_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retained Successor Ref"
+          }
+        },
+        "required": [
+          "deletion_id",
+          "deleted_at",
+          "record_ref",
+          "actor_kind",
+          "actor_id",
+          "approval_id",
+          "participants",
+          "cancelled_job_count",
+          "cancelled_action_count",
+          "removed_export_count",
+          "invalidated_memory_count",
+          "cause",
+          "retained_successor_ref"
+        ],
+        "title": "DeletionRecord",
+        "type": "object"
       },
       "DigestEntry": {
         "properties": {
@@ -814,6 +956,60 @@
           "note"
         ],
         "title": "OperationResolveInput",
+        "type": "object"
+      },
+      "RecordDeleteInput": {
+        "description": "``core.record.delete(ref)``.\n\n**The wire form is the canonical ``<module>.<record_type>:<uuid>`` string, and\nthe validated field is a ``RecordRef``.** Both halves are load-bearing and the\nvalidator below is what makes them one field rather than two. The string is what\nthe contract gives a caller and what ``recallatron_forget`` will pass; the typed\nvalue is what ``AuditSpec(subject_field=\"ref\")`` needs, because\n``dispatch``'s ``_subject_ref`` records a subject only for a field that *is* a\n``RecordRef`` and would otherwise write a null ``subject_ref`` on every audit row\nof the one core operation that genuinely acts on a record \u2014 indistinguishable from\nthe ordinary null of an operation that acts on none. ``RecordStateGuard`` reads the\nsame field and would fail the same way.\n\nA malformed string raises ``RecordRefMalformed`` inside the validator, which\npydantic reports as a validation error and ``dispatch()`` answers ``input_invalid``\nfor \u2014 before authorization, before the hold, before anything is written.",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/RecordRef"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "title": "RecordDeleteInput",
+        "type": "object"
+      },
+      "RecordDeleted": {
+        "description": "The only thing any caller receives: the ledger row's own reference.\n\nOne field, and no second one is coming. See the module docstring on why a count\nhere would be a disclosure rather than a convenience.",
+        "properties": {
+          "deletion_ref": {
+            "title": "Deletion Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deletion_ref"
+        ],
+        "title": "RecordDeleted",
+        "type": "object"
+      },
+      "RecordRef": {
+        "description": "A reference to a record owned by ``module``, of type ``record_type``.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "module": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Module",
+            "type": "string"
+          },
+          "record_type": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Record Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "record_type",
+          "id"
+        ],
+        "title": "RecordRef",
         "type": "object"
       },
       "RuntimeRunInput": {
@@ -1357,6 +1553,77 @@
           "token_id"
         ],
         "title": "TokenRevoked",
+        "type": "object"
+      },
+      "ToolTelemetryRecord": {
+        "description": "One ``core.tool_telemetry`` row as this operation publishes it.\n\n:class:`~rheo_core.audit.tool_telemetry.ToolTelemetryRow` field for field, with\nthat row's ``id`` published as ``telemetry_id`` \u2014 the renaming ``AuditRecord``\nabove already makes, for the same reason.\n\nEvery field is metadata by construction (``audit/telemetry_tables.py``): there is\nno query text, no argument value, and no exception message in the table, so there\nis none to withhold here. ``query_length`` is a measurement of an input, never the\ninput.",
+        "properties": {
+          "argument_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Argument Names",
+            "type": "array"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "query_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Length"
+          },
+          "result_count": {
+            "title": "Result Count",
+            "type": "integer"
+          },
+          "safety_class": {
+            "title": "Safety Class",
+            "type": "string"
+          },
+          "telemetry_id": {
+            "format": "uuid",
+            "title": "Telemetry Id",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "telemetry_id",
+          "occurred_at",
+          "tool_name",
+          "safety_class",
+          "mode",
+          "result_count",
+          "duration_ms",
+          "outcome",
+          "query_length",
+          "argument_names"
+        ],
+        "title": "ToolTelemetryRecord",
         "type": "object"
       },
       "WorkspaceDigest": {
@@ -1941,6 +2208,69 @@
           }
         },
         "summary": "core.operation.resolve (mutate)"
+      }
+    },
+    "/api/v1/operations/core.record.delete": {
+      "post": {
+        "operationId": "core.record.delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordDeleteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/RecordDeleted"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.record.delete (destructive)"
       }
     },
     "/api/v1/operations/core.runtime.run": {

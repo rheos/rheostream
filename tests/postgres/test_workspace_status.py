@@ -8,6 +8,20 @@ workspace engine asserts the handler reads ``core.workspace_composition``,
 ``core.module_state`` and ``core.module_schema_version``, and no table named
 ``alembic_version%``. The session-context half (C7a, 0b2) is this file's own
 addition below: a third case, under a real ``context_from_session`` context.
+
+**Nothing in this file may name a module distribution.** ``make absence-proof``
+re-runs every phase-one demonstrator in a checkout with ``modules/recallatron``
+deleted, and four of this file's cases are demonstrators, so a module-level
+``import rheo_recallatron`` anywhere here fails *collection of the whole file* and
+takes those four down with it — reported as ``ModuleNotFoundError`` rather than as
+anything to do with the case that wanted the module. That is exactly what a
+real-module version case written here cost: it now lives at
+``tests/postgres/test_module_lifecycle.py::test_status_reports_the_latest_applied_schema_version_of_a_real_module``,
+in a file the proof does not collect, because its subject needs a migration chain
+with more than one revision and no fixture module has one.
+``tests/test_module_import_graph.py`` holds this file out of its declared
+Recallatron set and asserts the absence proof's import surface never names the
+module, so the import coming back reds in the fast suite instead of only in CI.
 """
 
 from importlib import metadata

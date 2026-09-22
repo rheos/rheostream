@@ -22,6 +22,8 @@ from harness.settings_keys import (
     HARNESS_FLOOR_MIN,
     HARNESS_FLOOR_UNION,
     HARNESS_MEMBER,
+    HARNESS_RETENTION_DAYS,
+    HARNESS_RETENTION_DEFAULT,
     register_harness_keys,
 )
 from rheo_core.settings import (
@@ -30,6 +32,7 @@ from rheo_core.settings import (
     REGISTRY,
     TEST_HARNESS_ORIGIN,
     Floor,
+    FrozenValue,
     KeySpec,
     Scope,
     SettingOriginRefused,
@@ -46,6 +49,7 @@ from rheo_core.settings import (
     resolve,
     spec_for,
 )
+from rheo_core.settings.schema import check_value, decode_text
 
 WORKSPACE = UUID("018f0000-0000-7000-8000-000000000001")
 ACCOUNT = UUID("018f0000-0000-7000-8000-000000000002")
@@ -107,6 +111,8 @@ PRODUCTION_KEYS = {
     "runtime.allowed_runtimes": ("claude_cli",),
     "runtime.allowed_models": ("sonnet",),
     "modules.installed": (),
+    "telemetry.tool_retention_days": 7,
+    "telemetry.tool_max_rows": 10000,
 }
 
 FLOORED_KEYS = frozenset(
@@ -119,6 +125,8 @@ FLOORED_KEYS = frozenset(
         "runtime.transcript_retention_days",
         "runtime.allowed_runtimes",
         "runtime.allowed_models",
+        "telemetry.tool_retention_days",
+        "telemetry.tool_max_rows",
     }
 )
 """The production keys a workspace may override, each with a floor.
@@ -344,6 +352,134 @@ def test_keyspec_rejects_a_floor_on_the_wrong_type() -> None:
             explicit_per_workspace=False,
             default="1",
         )
+
+
+# --- numeric bounds -------------------------------------------------------------------
+# 1a1 adds ``minimum``/``maximum`` to ``KeySpec``. The claim under test is that a
+# bounded key is held to its range at **every** layer, because a bound one layer skips
+# is not a bound: declaration (the spec and its own default), a natively typed value
+# (``check_value``: the TOML, a write), a text value (``decode_text``: an environment
+# variable, an override row), and — in ``test_settings_floor.py``, where the write path
+# lives — a caller's write.
+
+
+def _bounded(
+    *,
+    key: str = "harness.bounded_probe",
+    value_type: ValueType = ValueType.INT,
+    default: FrozenValue = 5,
+    minimum: int | None = 1,
+    maximum: int | None = 10,
+) -> KeySpec:
+    """A bounded spec, built but never registered.
+
+    ``check_value`` and ``decode_text`` take a spec rather than a key, so both parsing
+    entry points are provable without adding an eighth key to the process-wide
+    registry — and a spec that is never registered cannot leak into another test's
+    ``resolve()``.
+    """
+    return KeySpec(
+        key=key,
+        type=value_type,
+        scope=Scope.WORKSPACE,
+        floor=None,
+        explicit_per_workspace=False,
+        default=default,
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+
+def test_keyspec_rejects_bounds_on_a_key_that_is_not_an_int() -> None:
+    with pytest.raises(TypeError, match="minimum/maximum apply to int keys only"):
+        _bounded(value_type=ValueType.STR, default="x")
+
+
+def test_keyspec_rejects_an_inverted_range() -> None:
+    with pytest.raises(ValueError, match="minimum 10 is above maximum 1"):
+        _bounded(minimum=10, maximum=1)
+
+
+def test_keyspec_rejects_a_default_outside_its_own_bounds() -> None:
+    """Declaration is the first layer, and the package default is what it holds.
+
+    Without this, a key could ship a default its own range forbids and every layer
+    below would be enforcing a bound the key itself had already broken.
+    """
+    with pytest.raises(
+        ValueError, match="default 0 is outside the declared range 1-10"
+    ):
+        _bounded(default=0)
+    with pytest.raises(ValueError, match="default 11 is outside"):
+        _bounded(default=11)
+
+
+def test_check_value_accepts_the_endpoints_and_refuses_either_side() -> None:
+    """Inclusive both ends, and the refusal names the key, the value and the bound."""
+    spec = _bounded()
+    assert check_value(spec, 1, source="the TOML") == 1
+    assert check_value(spec, 10, source="the TOML") == 10
+    for value in (0, 11):
+        with pytest.raises(SettingTypeMismatch) as excinfo:
+            check_value(spec, value, source="the TOML")
+        assert excinfo.value.key == "harness.bounded_probe"
+        assert str(value) in str(excinfo.value)
+        assert "the declared range 1-10" in str(excinfo.value)
+
+
+def test_decode_text_refuses_an_out_of_range_text_value() -> None:
+    spec = _bounded()
+    assert decode_text(spec, " 3 ", source="workspace row") == 3
+    with pytest.raises(SettingTypeMismatch, match="the declared range 1-10"):
+        decode_text(spec, "0", source="workspace row")
+
+
+def test_a_one_sided_bound_names_only_the_bound_it_has() -> None:
+    lower = _bounded(minimum=1, maximum=None)
+    assert check_value(lower, 10_000, source="the TOML") == 10_000
+    with pytest.raises(SettingTypeMismatch, match="the declared minimum 1"):
+        check_value(lower, 0, source="the TOML")
+    upper = _bounded(minimum=None, maximum=10)
+    assert check_value(upper, -5, source="the TOML") == -5
+    with pytest.raises(SettingTypeMismatch, match="the declared maximum 10"):
+        check_value(upper, 11, source="the TOML")
+
+
+def test_an_unbounded_key_keeps_exactly_its_old_behaviour() -> None:
+    """Both bounds default to ``None``: every key declared before 1a1 is untouched."""
+    spec = spec_for("storage.pool_cache_size")
+    assert (spec.minimum, spec.maximum) == (None, None)
+    assert check_value(spec, 10_000, source="the TOML") == 10_000
+    assert decode_text(spec, "-1", source="an environment variable") == -1
+
+
+def test_an_out_of_range_row_is_ignored_and_logged_rather_than_raised(
+    data_root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The bound reaches the row layer, and the resolver's own rule is unchanged.
+
+    ``_apply_rows`` catches ``SettingTypeMismatch`` and drops the row — "a stale or
+    hostile row can neither crash a request nor take effect" — so the observable
+    effect of an out-of-range row is that the key keeps the value below it, with one
+    ``setting_type`` line in the log. A bound that raised out of ``resolve()`` would
+    hand any writer of one row a way to fail every request in the workspace.
+    """
+    caplog.set_level(logging.WARNING, logger="rheo_core.settings")
+    resolved = resolve(
+        workspace_id=WORKSPACE, source=Rows(workspace={HARNESS_RETENTION_DAYS: "0"})
+    )
+    assert resolved[HARNESS_RETENTION_DAYS] == HARNESS_RETENTION_DEFAULT
+    assert (HARNESS_RETENTION_DAYS, "setting_type") in {
+        (r.setting_key, r.state)  # type: ignore[attr-defined]
+        for r in ignored_records(caplog)
+    }
+    # An in-range row still applies, so the ignore above is the bound and not the key.
+    assert (
+        resolve(
+            workspace_id=WORKSPACE, source=Rows(workspace={HARNESS_RETENTION_DAYS: "2"})
+        )[HARNESS_RETENTION_DAYS]
+        == 2
+    )
 
 
 # --- precedence ----------------------------------------------------------------------

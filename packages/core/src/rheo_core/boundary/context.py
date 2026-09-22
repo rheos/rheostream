@@ -95,6 +95,28 @@ TOKEN_SCOPE_INVALID: Final = "token_scope_invalid"
 non-token-issuable operations -- reachable only from a row inserted outside
 ``core.token.issue``, checked anyway so the rule holds at both ends."""
 
+# --- 1a1 appends the purpose-binding state below, after 09's five token states -------
+# Raised by ``rheo_core.tokens.presentation.resolve_token`` when a presented token's
+# stored ``access_token.purpose`` cannot become the ``bound_purpose`` its context
+# would carry. Appended rather than inserted, per this file's ordering rule.
+
+OPERATION_PROVENANCE_MISSING: Final = "operation_provenance_missing"
+"""``context_for_approved_execution`` could not read the ``core.operation`` row its
+approval names, so the original caller's audience and entry are unknown.
+
+Unreachable by construction -- ``hold_for_approval`` mints the record and the approval
+in one transaction and nothing deletes a `core.operation` row -- and refused rather
+than defaulted anyway: an execution whose audience had to be guessed is how an output
+reaches somebody it was never resolved for."""
+
+TOKEN_PURPOSE_INVALID: Final = "token_purpose_invalid"
+"""The presented token's ``purpose`` column is not a usable binding: a ``runtime``
+token with no purpose at all (one is minted with it, always, so a null means the row
+was written outside ``issue_runtime_token``), or any token whose stored string is not
+a ``ContextPurpose`` member. Refused rather than downgraded to "unbound": a runtime
+token that lost its purpose would otherwise present as a token with no
+memory-purpose gate."""
+
 
 @dataclass(frozen=True, slots=True)
 class Refusal:

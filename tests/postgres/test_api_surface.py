@@ -21,6 +21,7 @@ documents over the matrix's silence, per ``00-index.md``'s own rule that a
 canonical document wins a disagreement.
 """
 
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -33,7 +34,9 @@ from harness.registry import (
     enable_harness_module,
     register_harness,
 )
+from rheo_app_core import api_routes
 from rheo_app_core.main import public_app
+from rheo_app_core.startup import CONSUMERS
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.operations import OPERATION_GET, dispatch, register_core_operations
@@ -125,6 +128,40 @@ async def test_valid_token_succeeds_200_with_null_operation_id(
     assert body["state"] == "succeeded"
     assert body["operation_id"] is None
     assert "modules" in body["result"]
+
+
+async def test_the_route_dispatches_with_the_process_consumer_registry(
+    monkeypatch: pytest.MonkeyPatch, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """This surface hands ``dispatch()`` the registry ``startup.py`` built, by
+    identity — so a handler that publishes reaches the subscriptions module loading
+    registered into that same object.
+
+    Spied on the dispatcher rather than inferred, the way
+    ``tests/postgres/test_internal_operations.py`` already spies on its own route's:
+    nothing in this run publishes, so there is no downstream effect to read the
+    wiring off, and the call is the observable. The spy wraps the real function, so
+    the 200 below is the positive control that keeps the identity assertion from
+    passing over a route that was never reached.
+    """
+    seen: list[object] = []
+    real = api_routes.dispatch
+
+    def _spy(ctx: object, name: str, payload: Any = None, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("consumers"))
+        return real(ctx, name, payload, **kwargs)
+
+    monkeypatch.setattr(api_routes, "dispatch", _spy)
+
+    value = _mint(_owner_ctx(workspace, owner_account_id))
+    resp = await _post(
+        "/api/v1/operations/core.workspace.status",
+        headers={"Authorization": f"Bearer {value}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert len(seen) == 1
+    assert seen[0] is CONSUMERS
 
 
 # --- role_not_permitted / operation_not_permitted: 403 -----------------------

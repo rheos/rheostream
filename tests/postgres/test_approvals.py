@@ -60,9 +60,11 @@ from harness.registry import (
     SINK_SEND,
     SINK_SEND_DECLARATION,
     act_payload,
+    acting_identity,
     add_member,
     enable_harness_module,
     note_ref,
+    recorded_act_callers,
     recorded_acts,
     register_harness,
     sent_messages,
@@ -927,6 +929,132 @@ def _member_context(
     ctx = context_for_harness(workspace, account_id, Role.MEMBER)
     assert isinstance(ctx, WorkspaceContext), ctx
     return account_id, ctx
+
+
+def _act_callers(engine: Engine, database: str) -> tuple[str, ...]:
+    """The acting identity each ``harness.fixture.act`` execution ran under."""
+    with UnitOfWork(engine, database) as uow:
+        return recorded_act_callers(uow.connection)
+
+
+def test_an_approved_handler_runs_as_the_held_caller_not_the_approver(
+    owner: WorkspaceContext,
+    owner_account_id: UUID,
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    note: str,
+) -> None:
+    """1a1: the gated handler runs under the **original held caller's** rebuilt
+    context, not the approving actor's.
+
+    A member holds the destructive call; the owner releases it. Before 1a1 the handler
+    received the approving owner's context — its actor, its ``owner`` role, its
+    ``ALL_OPERATIONS`` set — so a member's held call executed with an owner's
+    authority the moment an owner approved it. ``ActorPermissionGuard`` does not catch
+    that: it reads ``approval.actor_*`` off the row and never looks at the context the
+    handler is about to be handed.
+
+    **The two accounts are asserted to differ first**, because everything below is
+    about telling them apart and a fixture that handed back one account twice would
+    make all of it vacuous. The identity is compared whole — actor kind, actor id,
+    role and bound purpose — so a rebuild that got the account right and the role
+    wrong cannot pass.
+    """
+    member_id, member = _member_context(cluster, workspace, "held-caller")
+    assert member_id != owner_account_id
+    assert acting_identity(member) != acting_identity(owner)
+
+    approval_id, _ = _held(member, FIXTURE_ACT, act_payload(note))
+    _record(_approve(owner, approval_id))
+
+    # It ran, once, on the right record — and as the member who asked for it.
+    assert _acts(engine, database) == (note,)
+    assert _act_callers(engine, database) == (acting_identity(member),)
+
+
+def _audit_rows(ctx: WorkspaceContext, operation_name: str) -> tuple[Any, ...]:
+    """Every audit record for ``operation_name``, through the supported read.
+
+    ``core.audit.list`` rather than a ``SELECT``: the row's actor is what this file is
+    about to assert on, and reading it through the operation that publishes it proves
+    the value a person would actually see rather than a column a test went looking for.
+    """
+    outcome = dispatch(ctx, AUDIT_LIST, {"limit": 100})
+    assert outcome.ok, outcome
+    result: Any = outcome.result
+    return tuple(
+        record for record in result.records if record.operation_name == operation_name
+    )
+
+
+def test_a_gated_operations_success_audit_row_names_the_held_caller(
+    owner: WorkspaceContext,
+    owner_account_id: UUID,
+    cluster: ClusterSession,
+    workspace: UUID,
+    note: str,
+) -> None:
+    """1a1: the ``succeeded`` audit row for a gated operation names the caller whose
+    call was held, not the actor who released it.
+
+    The handler and the guards moved to the rebuilt held caller when
+    ``context_for_approved_execution`` landed; ``record_operation_audit`` was still
+    handed the approver's ``ctx``, so the one durable record of *who did this* named
+    the wrong principal for every gated operation in the tree — an owner appearing to
+    have performed a member's destructive call, with nothing else in the row to
+    contradict it.
+
+    **Three rows are asserted, not one**, because the fix has a way of being wrong in
+    both directions. The held call's ``refused`` row and the execution's ``succeeded``
+    row must both name the member — they are two records of one act — and
+    ``core.approval.approve``'s own row must still name the owner, or the change would
+    have swapped the defect for its mirror image and lost the record of who approved.
+    """
+    member_id, member = _member_context(cluster, workspace, "audited-held-caller")
+    assert member_id != owner_account_id
+
+    approval_id, _ = _held(member, FIXTURE_ACT, act_payload(note))
+    _record(_approve(owner, approval_id))
+
+    gated = {row.outcome: row for row in _audit_rows(owner, FIXTURE_ACT)}
+    assert set(gated) == {"refused", "succeeded"}, gated
+    assert gated["succeeded"].actor_id == member_id
+    assert gated["succeeded"].actor_kind == member.actor.kind.value
+    assert gated["succeeded"].entry == member.entry.value
+    assert gated["succeeded"].subject_ref == note
+    assert gated["refused"].actor_id == member_id
+    (approve_row,) = _audit_rows(owner, APPROVAL_APPROVE)
+    assert approve_row.outcome == "succeeded"
+    assert approve_row.actor_id == owner_account_id
+
+
+def test_the_held_tokens_own_authority_survives_into_the_approved_handler(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    note: str,
+) -> None:
+    """The same property for a token actor, where the rebuilt context differs from the
+    approver's in more than a role.
+
+    An MCP token's context carries the token as actor and its snapshot as the
+    operation set; the owner who approves carries an account actor and
+    ``ALL_OPERATIONS``. Rebuilding is what keeps the handler inside the token's own
+    authority instead of promoting it to the approver's — and it is the case that
+    matters, because a headless token call released by a person is the design's
+    central one.
+    """
+    mcp, token_id = _mcp_context(owner, FIXTURE_ACT)
+    approval_id, _ = _held(mcp, FIXTURE_ACT, act_payload(note))
+
+    _record(_approve(owner, approval_id))
+
+    (caller,) = _act_callers(engine, database)
+    assert caller == acting_identity(mcp)
+    assert str(token_id) in caller
+    assert str(owner.actor.id) not in caller
 
 
 def test_revoking_the_gated_actors_role_refuses_execution_and_records_it(

@@ -57,6 +57,7 @@ from rheo_core.approvals.binding import (
 from rheo_core.approvals.guards import GuardRefusal, core_guards_for, run_guards
 from rheo_core.audit import AUDIT_SUCCEEDED
 from rheo_core.boundary.context import Refusal
+from rheo_core.boundary.factories import context_for_approved_execution
 from rheo_core.operations.records import (
     AUDIENCE_NONE,
     HANDLER_RETURNED,
@@ -188,8 +189,25 @@ def hold_for_approval(
     so a row is owed), and a row written in a second transaction could survive a
     rollback of the hold or be lost by a crash that kept it.
 
-    A refusal — the payload snapshot exceeding ``approvals.max_payload_bytes`` — is
-    answered before anything is opened, so a refused hold writes nothing at all.
+    **Two refusals, and neither writes anything.** The payload snapshot exceeding
+    ``approvals.max_payload_bytes`` is answered before anything is opened. The
+    owned-delete pre-mint check is answered inside the unit of work but before the
+    mint, so the ``with`` exit rolls its read back and the call still leaves no
+    ``core.operation`` row and no ``core.approval`` row behind.
+
+    **Why a deletion check is reached from here at all**, when this function is
+    otherwise indifferent to which operation it is holding. ``core.record.delete`` is
+    ``DESTRUCTIVE``, so ``dispatch()`` never enters its handler on the hold path — the
+    class branch answers ``approval_required`` without running anything — and the
+    ratified contract requires the owned-delete authorizer to run *before approval work
+    is minted*, so that a reference core will not delete never creates an approval for
+    somebody to release. There is no earlier hook: ``authorize`` is per-role and
+    per-module, not per-reference, and input validation reaches no database. This
+    function is the one that mints, so it is where "before anything is minted" is a
+    place rather than a wish. The hook answers ``None`` for every other declaration in
+    the tree — it is one implementation behind one name, not a general pre-approval
+    mechanism — and is imported inside the function for the direction the module
+    docstring states.
     """
     body = executable_payload(model_input)
     byte_length = payload_bytes(body)
@@ -203,6 +221,16 @@ def hold_for_approval(
         )
     window_end = now + timedelta(seconds=window_seconds(ctx))
     with open_unit_of_work(ctx) as uow:
+        # Deferred: ``rheo_core.deletion.operations`` imports ``rheo_core.operations``,
+        # whose package ``__init__`` imports ``core_ops``, which reaches back into this
+        # package. The same deferral, for the same reason, as the audit writer below.
+        from rheo_core.deletion.operations import (  # deferred: see the docstring
+            pre_mint_refusal,
+        )
+
+        pre_mint = pre_mint_refusal(ctx, uow, declaration, model_input)
+        if pre_mint is not None:
+            return pre_mint
         operation_id = mint(
             uow.connection,
             name=declaration.name,
@@ -231,7 +259,16 @@ def hold_for_approval(
             payload_digest=payload_digest(body),
             body=body,
             byte_length=byte_length,
-            purpose=None,
+            # The purpose the *held caller* was bound to, which is what
+            # ``context_for_approved_execution`` rebuilds against. Null when the
+            # caller was unbound (a web session, an unbound token, an operator), and
+            # that null is load-bearing rather than a gap: it is the difference
+            # between "no purpose gate applied to this call" and "some purpose did".
+            purpose=(
+                None
+                if ctx.principal.bound_purpose is None
+                else ctx.principal.bound_purpose.value
+            ),
             window_start=now,
             window_end=window_end,
         )
@@ -314,6 +351,27 @@ def execute_approved(
     :func:`~rheo_core.approvals.records.mark_executed` is predicated on ``approved``
     for the same reason one layer in.
 
+    **The gated handler runs as the original held caller, never as the approver.**
+    ``ctx`` is the approving actor's context — this function is called from inside
+    ``core.approval.approve``'s handler — and
+    :func:`~rheo_core.boundary.factories.context_for_approved_execution` rebuilds the
+    context the held call was made under, from the approval's own actor fields and the
+    held ``core.operation`` row's audience and entry. The guards, the handler **and the
+    gated operation's own audit row** all take *that* context. Before 1a1 they received
+    ``ctx``, which meant a member's held call executed with an owner's role, operation
+    set and audience the moment an owner released it; the audit row stayed on ``ctx``
+    one revision longer, which meant a correctly-executed gated operation still
+    recorded the approver as its actor. A rebuild that *refuses* does not short-circuit
+    the guards — see the comment at its call site for why a durable guard refusal has
+    to win over the rollback a raise would cause.
+
+    **The approving actor is not lost by that change.** ``core.approval.approve`` is
+    itself a ``MUTATE`` operation dispatched by the approver, so ``dispatch()`` writes
+    its own ``core.audit_record`` row under the approver's context in this same
+    transaction, and ``core.approval.approved_by_kind``/``approved_by_id``/
+    ``approved_entry`` record the release on the approval row. Two rows, two actors,
+    each naming the act it belongs to.
+
     **The registry it resolves against is the process-wide one**, because a handler
     receives ``(ctx, uow, input)`` and has no way to learn which registry dispatched
     it. Every real caller uses ``REGISTRY``; a call held through a *private* registry
@@ -376,14 +434,31 @@ def execute_approved(
     )
     if detail is not None:
         raise OperationRefused(INVALID_APPROVAL, detail)
+    # The original held caller, rebuilt and re-verified, before the guards and before
+    # the effect. ``ctx`` is the *approver's* and from here on governs nothing.
+    held_caller = context_for_approved_execution(ctx, approval)
     # After the binding check, before the effect: the position the ratified document
     # fixes for the guards (R3 item 4). ``now`` is the same instant the binding was
     # just judged against, so a guard and the window cannot disagree about when this
     # execution happened. The set is derived from this declaration rather than taken
     # whole, because ``RecordStateGuard`` attaches only to an operation whose input
     # names a subject.
+    #
+    # **The guards run even when the rebuild refused**, under the approver's context
+    # as they did before 1a1, and that fallback is load-bearing rather than defensive.
+    # The commonest reason a rebuild refuses is ``membership_missing`` — the gated
+    # actor's ``control.membership`` row is gone — which is precisely the case
+    # ``ActorPermissionGuard`` exists to answer, and the ratified answer to it is
+    # *durable*: the approval ``refused`` and the held record ``failed``, committed, so
+    # the approval is spent rather than immediately re-approvable (R3 item 4, and
+    # ``GUARD_REFUSED``'s own docstring). Raising the rebuild's refusal straight out
+    # would roll both writes back and leave the approval ``pending``, which is the one
+    # outcome that requirement exists to prevent. So the guards get first refusal, and
+    # only a rebuild failure they did *not* catch — a tampered ``purpose`` column, a
+    # missing provenance row — reaches the raise below, where a rollback is the right
+    # answer because nothing was decided.
     refusal = run_guards(
-        ctx,
+        ctx if isinstance(held_caller, Refusal) else held_caller,
         uow,
         approval=approval,
         model_input=model_input,
@@ -392,9 +467,31 @@ def execute_approved(
     )
     if refusal is not None:
         return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)
+    if isinstance(held_caller, Refusal):
+        raise OperationRefused(held_caller.state, str(held_caller))
     output = operation.handler(
-        ctx,
-        HandlerUnitOfWork(uow, operation_id=approval.operation_id),
+        held_caller,
+        HandlerUnitOfWork(
+            uow,
+            operation_id=approval.operation_id,
+            # Carried through from the view ``core.approval.approve``'s own dispatch
+            # built, so a gated handler that publishes reaches the composition root's
+            # one registry rather than finding ``None`` and refusing
+            # ``consumers_missing``. ``dispatch()`` threads it into the approve
+            # operation's view; without this line the thread stops one frame short of
+            # the operation that actually has an event to publish.
+            consumers=uow.consumers if isinstance(uow, HandlerUnitOfWork) else None,
+            # Carried through for the same reason and in the same shape, and
+            # **carried through only**: this function never produces one. No approval
+            # reaches here from the worker's leased-job path today, so the value is
+            # ``None`` in every execution release one can run — but "a capability
+            # travels with the view rather than being rebuilt at each frame" is the
+            # rule that has to hold everywhere, because the frame that rebuilds one is
+            # the frame that could invent one.
+            scheduled_execution=(
+                uow.scheduled_execution if isinstance(uow, HandlerUnitOfWork) else None
+            ),
+        ),
         model_input,
     )
     if not isinstance(output, declaration.output):
@@ -429,7 +526,15 @@ def execute_approved(
     )
 
     written = record_operation_audit(
-        ctx,
+        # **The held caller, not ``ctx``.** The sink reads the workspace, the actor and
+        # the entry off the context it is given, so passing the approver's here wrote a
+        # ``succeeded`` row for the gated operation naming the person who *released*
+        # the call rather than the person who made it — and the audit row is the
+        # tree's record of who did what. Since 1a1 the guards and the handler both run
+        # as ``held_caller``; this is the third reader that was still on ``ctx``. It is
+        # narrowed to a ``WorkspaceContext`` by the raise a few lines up, so there is
+        # no refusal case to handle here.
+        held_caller,
         uow,
         operation,
         # The digest of the input as it executed, which the binding check has just

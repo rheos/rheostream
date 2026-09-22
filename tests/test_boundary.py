@@ -56,6 +56,7 @@ from rheo_contracts import (
     ALL_OPERATIONS,
     ActorKind,
     AudienceKind,
+    ContextPurpose,
     Entry,
     Role,
     WorkspaceContext,
@@ -501,6 +502,7 @@ def test_context_from_operation_rebuilds_an_account_context(
         audience_kind=AudienceKind.SESSION.value,
         audience_id=owner_account_id,
         entry=Entry.CLI.value,
+        purpose=ContextPurpose.FOLLOW_UP.value,
     )
     assert isinstance(ctx, WorkspaceContext)
     assert ctx.actor.kind is ActorKind.ACCOUNT
@@ -510,6 +512,10 @@ def test_context_from_operation_rebuilds_an_account_context(
     assert ctx.audience.id == owner_account_id
     assert ctx.entry is Entry.CLI
     assert ctx.operation_set is ALL_OPERATIONS
+    # The stored purpose round-trips onto the rebuilt principal, and the account is
+    # the one this factory resolved rather than one the caller named.
+    assert ctx.principal.account_id == owner_account_id
+    assert ctx.principal.bound_purpose is ContextPurpose.FOLLOW_UP
 
 
 def test_context_from_operation_refuses_operator_runtime_actor_required(
@@ -522,6 +528,9 @@ def test_context_from_operation_refuses_operator_runtime_actor_required(
         audience_kind=AudienceKind.JOB.value,
         audience_id=None,
         entry=Entry.JOB.value,
+        # Deliberately unparseable: the actor refusal must still win, so this keyword
+        # proves the order rather than weakening the case.
+        purpose="not-a-purpose",
     )
     assert isinstance(refusal, Refusal)
     assert refusal.state == "runtime_actor_required"

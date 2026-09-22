@@ -20,6 +20,11 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
+from harness.modules import (
+    chain_head,
+    create_required_extensions,
+    loaded_probe_modules,
+)
 from rheo_core.migrations.module_chain import newly_applied, run_module_chain
 from rheo_core.migrations.orchestrator import (
     CONTROL_CHAIN,
@@ -30,9 +35,7 @@ from rheo_core.migrations.orchestrator import (
     script_location,
     version_table_for,
 )
-from rheo_core.modules import load_modules, loaded_manifests, reset_surfaces
-from rheo_core.operations.registry import OperationRegistry
-from rheo_core.refs.resolver import ResolverRegistry
+from rheo_core.modules import loaded_manifests
 from rheo_core.storage.control_tables import (
     CONTROL_SCHEMA,
     CONTROL_VERSION_TABLE,
@@ -41,7 +44,6 @@ from rheo_core.storage.control_tables import (
 from rheo_core.storage.core_tables import CORE_SCHEMA, CORE_VERSION_TABLE
 from rheo_core.storage.provisioning import core_version
 from rheo_core.storage.repositories import list_module_schema_versions
-from rheo_core.tokens.sets import ToolRegistry
 from rheo_recallatron import MANIFEST
 from sqlalchemy import Engine, text
 
@@ -49,12 +51,11 @@ pytestmark = pytest.mark.postgres
 
 MODULE_ID = MANIFEST.module_id
 MODULE_VERSION_TABLE = f"alembic_version_{MODULE_ID}"
-MODULE_HEAD = "0001_schema"
-CORE_HEAD = "0006_runtime"
-# The `core` chain's six revisions, oldest first. Spelled out because this file uses
-# them as the multi-revision chain Recallatron is not: with one revision, "the
-# revisions newly applied" and "the recorded head" are the same answer, so nothing a
-# module chain alone can express distinguishes a history walk from a set difference.
+CORE_HEAD = "0008_tool_telemetry"
+# The `core` chain's revisions, oldest first. Spelled out because this file uses them
+# as the chain whose length is fixed and known: the module chain grows a revision
+# whenever a run adds one, and a literal list of its revisions here would be a second
+# place to remember. `module_revisions()` below reads the module's own instead.
 CORE_REVISIONS = (
     "0001_core_schema",
     "0002_durable_work",
@@ -62,31 +63,41 @@ CORE_REVISIONS = (
     "0004_standing_grants",
     "0005_export_records",
     "0006_runtime",
+    "0007_record_deletion",
+    "0008_tool_telemetry",
 )
 
 
 @pytest.fixture
-def recallatron_loaded() -> Iterator[None]:
+def recallatron_loaded(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Recallatron in ``loaded_manifests()`` for one test, then gone.
 
-    Through the real ``rheo.modules`` entry point, with ``allow`` naming it directly so
-    the deployment's ``modules.installed`` setting is not involved. The registries are
-    local because ``_LOADED`` is the only table this file reads; the skeleton declares
-    nothing to register into them either way.
+    Through the harness's one loading recipe, which resolves the real ``rheo.modules``
+    entry point for a real distribution and rebinds the loader's settings registry for
+    the duration. That second half matters from the revision that gave Recallatron an
+    ``explicit_per_workspace`` settings key: the process-global registry publishes no
+    unregister, so a bare ``load_modules`` here would leave the key declared and
+    provisioning would write its row into every workspace provisioned later in the
+    session.
     """
-    reset_surfaces()
-    load_modules(
-        registry=OperationRegistry(),
-        resolvers=ResolverRegistry(),
-        tools=ToolRegistry(),
-        allow=frozenset({MODULE_ID}),
+    with loaded_probe_modules(monkeypatch, MODULE_ID):
+        assert MODULE_ID in loaded_manifests(), (
+            "recallatron's rheo.modules entry point was not discovered; the "
+            "distribution is not installed in this environment"
+        )
+        yield
+
+
+def module_head() -> str:
+    """This chain's head revision, read off its script directory rather than pinned."""
+    return chain_head(MANIFEST)
+
+
+def module_revisions() -> tuple[str, ...]:
+    """Every revision a fresh install applies, oldest first."""
+    return newly_applied(
+        MODULE_ID, before=frozenset(), after=frozenset({module_head()})
     )
-    assert MODULE_ID in loaded_manifests(), (
-        "recallatron's rheo.modules entry point was not discovered; the "
-        "distribution is not installed in this environment"
-    )
-    yield
-    reset_surfaces()
 
 
 def workspace_engine(cluster: ClusterSession, workspace_id: UUID) -> tuple[str, Engine]:
@@ -143,9 +154,17 @@ def _env_configure_kwargs() -> dict[str, str]:
 
 
 def install(cluster: ClusterSession, workspace_id: UUID) -> None:
-    """One ``run_module_chain`` call, in its own committed transaction."""
+    """One ``run_module_chain`` call, in its own committed transaction.
+
+    The declared extensions go in first, because this file drives the chain directly
+    rather than through ``core.module.install``, whose step 6 is what normally
+    installs them. Without that step the chain fails inside the migration on a column
+    type the database does not have — a missing install step wearing a broken
+    migration's clothes.
+    """
     database_name, engine = workspace_engine(cluster, workspace_id)
     with engine.begin() as connection:
+        create_required_extensions(connection, MANIFEST)
         run_module_chain(
             connection,
             MANIFEST,
@@ -160,16 +179,14 @@ def install(cluster: ClusterSession, workspace_id: UUID) -> None:
 def test_newly_applied_walks_the_history_rather_than_differencing_the_heads() -> None:
     """The rule ``run_module_chain``'s row count rests on, pinned where it is visible.
 
-    **Recallatron cannot pin this and it is worth saying why.** Its chain has exactly
-    one revision, so ``after - before`` and a full history walk return the same single
-    id, and an implementation doing the wrong one passes every module-chain test in
-    this file. The idempotency case does not catch it either — that reds on the
-    composite primary key, which is the database doing the assertion's job.
-
-    The shipped ``core`` chain has six revisions and is the cheap pin: upgrading it
-    from base records **one** id in its version table while **six** revisions ran, so
-    the difference reports one applied step and the walk reports six. No second
-    migration has to be invented to prove it.
+    **The ``core`` chain is the pin, and it stays the pin as the module chain grows.**
+    Alembic's version table records only the current head, so upgrading a chain from
+    base records **one** id while every revision on the way ran: the difference reports
+    one applied step and the walk reports all of them. ``core`` has seven and is free —
+    no migration has to be invented to prove it — while the module chain's length is a
+    moving target that every later run changes. The idempotency case below does not
+    catch a set difference either: it reds on the composite primary key, which is the
+    database doing the assertion's job.
     """
     # Base to head: six steps ran, oldest first. `after - before` gives one.
     assert (
@@ -247,7 +264,7 @@ def test_every_version_table_call_site_resolves_a_module_chain(
     # module's own, and call site 2 now reads the module's head from it.
     assert MODULE_VERSION_TABLE in tables_in(engine, MODULE_ID)
     with engine.connect() as connection:
-        assert recorded_revisions(connection, MODULE_ID) == {MODULE_HEAD}
+        assert recorded_revisions(connection, MODULE_ID) == {module_head()}
     assert database_name == cluster.registry_row(workspace).database_name
 
 
@@ -267,7 +284,7 @@ def test_an_unloaded_module_id_is_not_a_chain_name(
 # --- AC 10 ----------------------------------------------------------------------------
 
 
-def test_run_module_chain_installs_into_its_own_schema_and_records_one_step(
+def test_run_module_chain_installs_into_its_own_schema_and_records_each_step(
     cluster: ClusterSession, workspace: UUID, recallatron_loaded: None
 ) -> None:
     _, engine = workspace_engine(cluster, workspace)
@@ -288,15 +305,17 @@ def test_run_module_chain_installs_into_its_own_schema_and_records_one_step(
     with engine.connect() as connection:
         assert recorded_revisions(connection, CORE_CHAIN) == {CORE_HEAD}
 
-    assert schema_versions(engine, MODULE_ID) == [MODULE_HEAD]
+    assert schema_versions(engine, MODULE_ID) == list(module_revisions())
     with engine.connect() as connection:
         rows = [
             row
             for row in list_module_schema_versions(connection)
             if row.module_id == MODULE_ID
         ]
-    assert len(rows) == 1
-    assert rows[0].core_version_at_apply == core_version()
+    # One row per applied revision, and every one stamped with the ``rheo-core`` that
+    # applied it — not one row per ``run_module_chain`` call.
+    assert len(rows) == len(module_revisions())
+    assert {row.core_version_at_apply for row in rows} == {core_version()}
 
 
 def test_a_second_run_module_chain_is_a_clean_no_op(
@@ -310,13 +329,13 @@ def test_a_second_run_module_chain_is_a_clean_no_op(
     """
     _, engine = workspace_engine(cluster, workspace)
     install(cluster, workspace)
-    assert schema_versions(engine, MODULE_ID) == [MODULE_HEAD]
+    assert schema_versions(engine, MODULE_ID) == list(module_revisions())
 
     install(cluster, workspace)  # no exception
 
     with engine.connect() as connection:
-        assert recorded_revisions(connection, MODULE_ID) == {MODULE_HEAD}
-    assert schema_versions(engine, MODULE_ID) == [MODULE_HEAD]
+        assert recorded_revisions(connection, MODULE_ID) == {module_head()}
+    assert schema_versions(engine, MODULE_ID) == list(module_revisions())
 
 
 # --- FR 11's positive control ---------------------------------------------------------

@@ -153,6 +153,34 @@ class OperationRow:
     terminal_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class OperationContextProvenance:
+    """The five context fields :func:`mint` copied onto a record, and nothing else.
+
+    A separate narrow read rather than five more fields on :class:`OperationRow`,
+    because that model's narrower-than-the-row shape is a documented boundary and
+    widening it would change what *every* caller of ``core.operation.get`` is handed.
+    What needs these is one function --
+    ``boundary/factories.py:context_for_approved_execution`` -- rebuilding the caller
+    an approval was held for, and it needs them as provenance, not as a published
+    record.
+    """
+
+    actor_kind: str
+    actor_id: UUID | None
+    audience_kind: str
+    audience_id: UUID | None
+    entry: str
+
+
+_PROVENANCE_COLUMNS: Final = (
+    t.operation.c.actor_kind,
+    t.operation.c.actor_id,
+    t.operation.c.audience_kind,
+    t.operation.c.audience_id,
+    t.operation.c.entry,
+)
+
 _COLUMNS: Final = (
     t.operation.c.id,
     t.operation.c.name,
@@ -513,6 +541,29 @@ def resolve(
         conn,
         (t.operation.c.id == operation_id) & (t.operation.c.state == UNRESOLVED),
         **values,
+    )
+
+
+def get_context_provenance(
+    conn: Connection, *, operation_id: UUID
+) -> OperationContextProvenance | None:
+    """The context fields this record was minted with, or ``None`` for no such row.
+
+    ``audience_kind`` comes back as the column holds it, :data:`AUDIENCE_NONE`
+    included: this accessor reports what was recorded and leaves the reader to decide
+    what "none" means, exactly as :func:`mint` left the decision to its caller.
+    """
+    row = conn.execute(
+        select(*_PROVENANCE_COLUMNS).where(t.operation.c.id == operation_id)
+    ).one_or_none()
+    if row is None:
+        return None
+    return OperationContextProvenance(
+        actor_kind=str(row.actor_kind),
+        actor_id=row.actor_id,
+        audience_kind=str(row.audience_kind),
+        audience_id=row.audience_id,
+        entry=str(row.entry),
     )
 
 

@@ -27,13 +27,14 @@ from uuid import UUID
 import pytest
 from conftest import ClusterSession
 from harness.registry import NOTE_GET, add_member, register_harness
-from rheo_contracts import Role, WorkspaceContext
+from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_core.approvals import APPROVAL_APPROVE, APPROVAL_REFUSE
 from rheo_core.boundary import context_for_operator
 from rheo_core.boundary.context import (
     MEMBERSHIP_MISSING,
     TOKEN_EXPIRED,
     TOKEN_MALFORMED,
+    TOKEN_PURPOSE_INVALID,
     TOKEN_REVOKED,
     TOKEN_SCOPE_INVALID,
     TOKEN_WRONG_KIND,
@@ -67,6 +68,7 @@ from rheo_core.tokens.issue import (
     ACCOUNT_REQUIRED,
     SET_NOT_ISSUABLE,
     SET_SELECTION_INVALID,
+    issue_runtime_token,
 )
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 from rheo_core.tokens.sets import agent_default, cli_full, register_core_tools
@@ -576,3 +578,113 @@ def test_context_from_token_refuses_membership_missing_at_presentation(
         )
     refusal = context_from_token(value, "api")
     assert isinstance(refusal, Refusal) and refusal.state == MEMBERSHIP_MISSING
+
+
+# --- 1a1: the presented token's purpose becomes the context's binding ---------
+
+
+def _set_purpose(cluster: ClusterSession, token_id: UUID, purpose: str | None) -> None:
+    """Write ``access_token.purpose`` directly.
+
+    A direct write because no operation sets it after issuance: ``core.token.issue``
+    takes it once and ``issue_runtime_token`` supplies it once. What these tests need
+    is a *row* in a given shape, including shapes neither issuer produces, which is
+    exactly the "written outside the issuer" case the refusal exists for.
+    """
+    with cluster.backend.control_engine.begin() as connection:
+        connection.execute(
+            update(t.access_token)
+            .where(t.access_token.c.id == token_id)
+            .values(purpose=purpose)
+        )
+
+
+def test_a_runtime_tokens_purpose_round_trips_onto_the_contexts_principal(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """The binding a runtime token was minted with reaches ``ctx.principal``.
+
+    ``issue_runtime_token`` has written ``access_token.purpose`` since 0c4 and nothing
+    read it: ``ResolvedToken`` had no purpose field and ``resolve_token`` never looked
+    at the column. This is the seam that closes that, and it is asserted on the
+    *context* rather than on ``ResolvedToken``, because a purpose parsed and then
+    dropped by ``context_from_token`` would satisfy the narrower assertion.
+
+    The account is asserted too: ``principal.account_id`` is the token's backing
+    account, which is not the same value as ``ctx.actor.id`` (the token) for this
+    actor kind, and a principal that copied the actor would pass a test that only
+    checked the purpose.
+    """
+    token_id, value = issue_runtime_token(
+        account_id=owner_account_id,
+        workspace_id=workspace,
+        purpose=ContextPurpose.SHARE_WITH_REFERRAL.value,
+        expires_at=_FAR_FUTURE,
+        operations=[],
+    )
+    ctx = context_from_token(value, "mcp")
+
+    assert isinstance(ctx, WorkspaceContext), ctx
+    assert ctx.principal.bound_purpose is ContextPurpose.SHARE_WITH_REFERRAL
+    assert ctx.principal.account_id == owner_account_id
+    assert ctx.actor.id == token_id
+    assert ctx.actor.id != ctx.principal.account_id
+
+
+def test_an_ordinary_token_presents_unbound(session_ctx: WorkspaceContext) -> None:
+    """The control: a ``cli`` token issued with no purpose is genuinely unbound.
+
+    Without it, every assertion above would also pass on an implementation that
+    invented a purpose for each token, and "browsing without a bound purpose has no
+    memory-purpose gate" would be untestable.
+    """
+    value, _, _ = _issue(session_ctx, kind="cli", set_name="read_only")
+
+    ctx = context_from_token(value, "api")
+
+    assert isinstance(ctx, WorkspaceContext), ctx
+    assert ctx.principal.bound_purpose is None
+    assert ctx.principal.account_id is not None
+
+
+def test_a_runtime_token_with_no_purpose_refuses(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """A runtime token whose purpose column is null cannot present.
+
+    Refused rather than treated as unbound: a runtime token is minted with a purpose
+    always, so a null one is a row written outside ``issue_runtime_token``, and
+    downgrading it to "unbound" would hand the run a context with no memory-purpose
+    gate at all — the one outcome the binding exists to prevent.
+    """
+    token_id, value = issue_runtime_token(
+        account_id=owner_account_id,
+        workspace_id=workspace,
+        purpose=ContextPurpose.RESPOND.value,
+        expires_at=_FAR_FUTURE,
+        operations=[],
+    )
+    _set_purpose(cluster, token_id, None)
+
+    refusal = context_from_token(value, "mcp")
+
+    assert isinstance(refusal, Refusal), refusal
+    assert refusal.state == TOKEN_PURPOSE_INVALID
+
+
+def test_an_unparseable_stored_purpose_refuses(
+    cluster: ClusterSession, session_ctx: WorkspaceContext
+) -> None:
+    """A stored purpose outside the closed four-member set refuses, for any kind.
+
+    ``ContextPurpose`` is closed, so a string outside it is a row written against a
+    vocabulary this process does not have. Dropping it would present a purpose-bound
+    token as an unbound one.
+    """
+    value, token_id, _ = _issue(session_ctx, kind="mcp", set_name="read_only")
+    _set_purpose(cluster, token_id, "whatever_the_caller_liked")
+
+    refusal = context_from_token(value, "mcp")
+
+    assert isinstance(refusal, Refusal), refusal
+    assert refusal.state == TOKEN_PURPOSE_INVALID

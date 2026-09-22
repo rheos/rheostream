@@ -19,15 +19,22 @@ from rheo_core.boundary.context import (
     WORKSPACE_UNAVAILABLE,
     Refusal,
 )
-from rheo_core.boundary.factories import context_for_harness, context_for_operator
+from rheo_core.boundary.factories import (
+    MEMORY_EXPIRY_OPERATIONS,
+    context_for_harness,
+    context_for_memory_expiry,
+    context_for_operator,
+)
 
 __all__ = [
     "CONTEXT_REQUIRED",
     "MEMBERSHIP_MISSING",
+    "MEMORY_EXPIRY_OPERATIONS",
     "PROFILE_REQUIRED",
     "WORKSPACE_MISSING_DETAIL",
     "WORKSPACE_UNAVAILABLE",
     "Refusal",
     "context_for_harness",
+    "context_for_memory_expiry",
     "context_for_operator",
 ]

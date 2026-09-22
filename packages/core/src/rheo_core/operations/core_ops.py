@@ -61,6 +61,14 @@ whose own row is the ``:105`` the cited range now reaches.
   import-direction constraint, since ``rheo_core.audit`` may not import this
   package.
 
+- ``core.record.delete`` — ``destructive``; roles ``owner, member``. The owned-deletion
+  coordinator (run 1a1). Its models and handler live in
+  ``rheo_core.deletion.operations``; only the registration is here, and it is built
+  **inside** :func:`register_core_operations` for the import-direction reason the
+  module pair above is — that package imports ``rheo_core.operations``, which imports
+  this module first. It is the one core declaration that names an ``AuditSpec`` subject
+  field, because it is the one core operation that acts on a record.
+
 Every mutate operation here declares ``AuditSpec(subject_field=None)``: C1 fixes
 ``AuditSpec`` at exactly that one field, and none of the mutate operations in
 this module acts on a *record type* — a ``RecordRef`` in an input model is what
@@ -574,6 +582,12 @@ def register_core_operations(
     """
     from rheo_core.approvals.grant_operations import GRANT_OPERATIONS
     from rheo_core.approvals.operations import APPROVAL_OPERATIONS
+    from rheo_core.deletion.operations import (
+        RECORD_DELETE,
+        RecordDeleted,
+        RecordDeleteInput,
+        delete_owned,
+    )
     from rheo_core.modules.operations import (
         MODULE_ENABLE,
         MODULE_INSTALL,
@@ -667,6 +681,42 @@ def register_core_operations(
             module_enable_handler,
         ),
     )
+    deletion_operations: tuple[tuple[OperationDeclaration, Handler], ...] = (
+        (
+            OperationDeclaration(
+                name=RECORD_DELETE,
+                # ``DESTRUCTIVE``, so ``dispatch()`` holds every call behind a
+                # per-action approval and never enters the handler on the request
+                # itself. ``deletion-export-migration.md``: "destructive class,
+                # per-action confirmation, no standing grant" — and the class is what
+                # makes the last clause true, since
+                # ``core.standing_grant.create`` refuses an upper-class operation at
+                # grant time.
+                safety_class=SafetyClass.DESTRUCTIVE,
+                # ``owner, member``. Who may delete a *particular* record type is the
+                # owning manifest's ``delete_roles``, checked by that type's own
+                # authorizer; this pair is the floor for reaching the coordinator at
+                # all, and deliberately excludes ``operator`` — an erasure is a
+                # member's act on their own workspace's records, not an operations
+                # task.
+                roles=frozenset({Role.OWNER, Role.MEMBER}),
+                input_model=RecordDeleteInput,
+                output=RecordDeleted,
+                # ``NONE``: a second delete of the same reference finds nothing to
+                # authorise and refuses, so there is no "same row" for a repeat to
+                # fold into.
+                idempotency=Idempotency.NONE,
+                # **The first core declaration that names a real subject field.** Every
+                # other one in this module is ``subject_field=None`` because none of
+                # them acts on a record type; this one's whole input is a record
+                # reference. ``RecordDeleteInput.ref`` is a ``RecordRef`` rather than
+                # its string form precisely so ``dispatch``'s ``_subject_ref`` and
+                # ``RecordStateGuard`` can both read it — see that model's docstring.
+                audit=AuditSpec(subject_field="ref"),
+            ),
+            delete_owned,
+        ),
+    )
     return tuple(
         registry.register(declaration, handler, origin=CORE_ORIGIN)
         for declaration, handler in CORE_OPERATIONS
@@ -674,4 +724,5 @@ def register_core_operations(
         + APPROVAL_OPERATIONS
         + GRANT_OPERATIONS
         + module_operations
+        + deletion_operations
     )

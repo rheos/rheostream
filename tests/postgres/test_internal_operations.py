@@ -51,6 +51,7 @@ from harness.registry import (
 )
 from rheo_app_core import internal_routes
 from rheo_app_core.main import internal_app
+from rheo_app_core.startup import CONSUMERS
 from rheo_contracts import Role
 from rheo_core.boundary.context import (
     CONTEXT_REQUIRED,
@@ -333,6 +334,34 @@ async def test_a_session_refusal_never_reaches_the_dispatcher(
     ok = await _post(NOTE_WRITE, owner_session, {"body": "the positive control"})
     assert ok.status_code == 200, ok.text
     assert len(seen) == 1
+
+
+async def test_the_route_dispatches_with_the_process_consumer_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    harness_workspace: UUID,
+    owner_session: str,
+) -> None:
+    """The same one registry ``api_routes`` passes: one process, one
+    ``ConsumerRegistry``, so a handler's publish fans out identically whichever of
+    the two HTTP surfaces reached it.
+
+    Identity, not "a registry": a per-call instance would satisfy any weaker
+    assertion while quietly giving each call its own fan-out. The 200 is the
+    positive control, exactly as in the spy test above.
+    """
+    seen: list[object] = []
+    real = internal_routes.dispatch
+
+    def _spy(ctx: object, name: str, payload: Any = None, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("consumers"))
+        return real(ctx, name, payload, **kwargs)
+
+    monkeypatch.setattr(internal_routes, "dispatch", _spy)
+
+    ok = await _post(NOTE_WRITE, owner_session, {"body": "the positive control"})
+    assert ok.status_code == 200, ok.text
+    assert len(seen) == 1
+    assert seen[0] is CONSUMERS
 
 
 # --- AC 13: server-derived routing ----------------------------------------------------

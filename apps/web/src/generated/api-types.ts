@@ -140,6 +140,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.record.delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.record.delete (destructive) */
+        post: operations["core.record.delete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.runtime.run": {
         parameters: {
             query?: never;
@@ -436,11 +453,22 @@ export interface components {
          *     ``records`` is a named collection field rather than a bare list, mirroring
          *     ``FailureList`` and ``OperationList``: a later run adding a second collection
          *     beside it is then an additive change a reader may ignore rather than a change to
-         *     the response's own type.
+         *     the response's own type. ``tool_telemetry`` is that later run, and it is exactly
+         *     that additive change.
          */
         AuditList: {
+            /**
+             * Deletions
+             * @default null
+             */
+            deletions: components["schemas"]["DeletionRecord"][] | null;
             /** Records */
             records: components["schemas"]["AuditRecord"][];
+            /**
+             * Tool Telemetry
+             * @default null
+             */
+            tool_telemetry: components["schemas"]["ToolTelemetryRecord"][] | null;
         };
         /**
          * AuditListInput
@@ -455,6 +483,16 @@ export interface components {
          *     would be a read that grows for the life of the deployment.
          */
         AuditListInput: {
+            /**
+             * Include Deletions
+             * @default false
+             */
+            include_deletions: boolean;
+            /**
+             * Include Tool Telemetry
+             * @default false
+             */
+            include_tool_telemetry: boolean;
             /**
              * Limit
              * @default 50
@@ -508,6 +546,57 @@ export interface components {
          * @enum {string}
          */
         ContextPurpose: "respond" | "follow_up" | "share_with_referral" | "internal_analysis";
+        /**
+         * DeletionRecord
+         * @description One ``deletion_record`` row as this operation publishes it (§ A8).
+         *
+         *     :class:`~rheo_core.deletion.records.DeletionRecordRow` field for field, with that
+         *     row's ``id`` published as ``deletion_id`` — the renaming :class:`AuditRecord` and
+         *     :class:`ToolTelemetryRecord` already make — and the qualified ``record_type`` and
+         *     ``record_id`` republished as the canonical reference an operator actually reads,
+         *     which is how every other surface names a record.
+         *
+         *     **Every field here is content-free by construction**, which is the table's own
+         *     design rather than a filter applied at this boundary: there is no title, body,
+         *     payload or json column on the row to withhold. The four counters are the exact
+         *     closure sizes § A8 keeps off the deletion *result* — a caller of
+         *     ``core.record.delete`` receives only ``{deletion_ref}`` — and this collection is
+         *     the one place they are published, to an owner or an operator who asked for them.
+         */
+        DeletionRecord: {
+            /** Actor Id */
+            actor_id: string | null;
+            /** Actor Kind */
+            actor_kind: string;
+            /** Approval Id */
+            approval_id: string | null;
+            /** Cancelled Action Count */
+            cancelled_action_count: number;
+            /** Cancelled Job Count */
+            cancelled_job_count: number;
+            /** Cause */
+            cause: string;
+            /**
+             * Deleted At
+             * Format: date-time
+             */
+            deleted_at: string;
+            /**
+             * Deletion Id
+             * Format: uuid
+             */
+            deletion_id: string;
+            /** Invalidated Memory Count */
+            invalidated_memory_count: number;
+            /** Participants */
+            participants: string[];
+            /** Record Ref */
+            record_ref: string;
+            /** Removed Export Count */
+            removed_export_count: number;
+            /** Retained Successor Ref */
+            retained_successor_ref: string | null;
+        };
         /** DigestEntry */
         DigestEntry: {
             /** Count */
@@ -780,6 +869,54 @@ export interface components {
              * @default null
              */
             terminal_check_kind: ("record_exists" | "provider_status" | "sink_recorded" | "handler_returned") | null;
+        };
+        /**
+         * RecordDeleteInput
+         * @description ``core.record.delete(ref)``.
+         *
+         *     **The wire form is the canonical ``<module>.<record_type>:<uuid>`` string, and
+         *     the validated field is a ``RecordRef``.** Both halves are load-bearing and the
+         *     validator below is what makes them one field rather than two. The string is what
+         *     the contract gives a caller and what ``recallatron_forget`` will pass; the typed
+         *     value is what ``AuditSpec(subject_field="ref")`` needs, because
+         *     ``dispatch``'s ``_subject_ref`` records a subject only for a field that *is* a
+         *     ``RecordRef`` and would otherwise write a null ``subject_ref`` on every audit row
+         *     of the one core operation that genuinely acts on a record — indistinguishable from
+         *     the ordinary null of an operation that acts on none. ``RecordStateGuard`` reads the
+         *     same field and would fail the same way.
+         *
+         *     A malformed string raises ``RecordRefMalformed`` inside the validator, which
+         *     pydantic reports as a validation error and ``dispatch()`` answers ``input_invalid``
+         *     for — before authorization, before the hold, before anything is written.
+         */
+        RecordDeleteInput: {
+            ref: components["schemas"]["RecordRef"];
+        };
+        /**
+         * RecordDeleted
+         * @description The only thing any caller receives: the ledger row's own reference.
+         *
+         *     One field, and no second one is coming. See the module docstring on why a count
+         *     here would be a disclosure rather than a convenience.
+         */
+        RecordDeleted: {
+            /** Deletion Ref */
+            deletion_ref: string;
+        };
+        /**
+         * RecordRef
+         * @description A reference to a record owned by ``module``, of type ``record_type``.
+         */
+        RecordRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Module */
+            module: string;
+            /** Record Type */
+            record_type: string;
         };
         /** RuntimeRunInput */
         RuntimeRunInput: {
@@ -1061,6 +1198,47 @@ export interface components {
              * Format: uuid
              */
             token_id: string;
+        };
+        /**
+         * ToolTelemetryRecord
+         * @description One ``core.tool_telemetry`` row as this operation publishes it.
+         *
+         *     :class:`~rheo_core.audit.tool_telemetry.ToolTelemetryRow` field for field, with
+         *     that row's ``id`` published as ``telemetry_id`` — the renaming ``AuditRecord``
+         *     above already makes, for the same reason.
+         *
+         *     Every field is metadata by construction (``audit/telemetry_tables.py``): there is
+         *     no query text, no argument value, and no exception message in the table, so there
+         *     is none to withhold here. ``query_length`` is a measurement of an input, never the
+         *     input.
+         */
+        ToolTelemetryRecord: {
+            /** Argument Names */
+            argument_names: string[];
+            /** Duration Ms */
+            duration_ms: number;
+            /** Mode */
+            mode: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Outcome */
+            outcome: string;
+            /** Query Length */
+            query_length: number | null;
+            /** Result Count */
+            result_count: number;
+            /** Safety Class */
+            safety_class: string;
+            /**
+             * Telemetry Id
+             * Format: uuid
+             */
+            telemetry_id: string;
+            /** Tool Name */
+            tool_name: string;
         };
         /** WorkspaceDigest */
         WorkspaceDigest: {
@@ -1362,6 +1540,39 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["OperationRecord"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.record.delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordDeleteInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["RecordDeleted"];
                         state: string;
                     };
                 };

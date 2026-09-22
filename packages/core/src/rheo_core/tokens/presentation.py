@@ -17,7 +17,9 @@ signal about which credential space they guessed into) -> kind accepted by the
 surface (``TOKEN_WRONG_KIND``) -> ``TOKEN_EXPIRED`` -> ``TOKEN_REVOKED`` ->
 snapshot loaded and checked against ``NON_TOKEN_ISSUABLE`` (``TOKEN_SCOPE_INVALID``
 -- reachable only from a row written outside ``core.token.issue``; checked anyway
-so the rule holds at both ends) -> ``control.membership`` read at presentation
+so the rule holds at both ends) -> ``access_token.purpose`` parsed into the
+``bound_purpose`` the context will carry (``TOKEN_PURPOSE_INVALID``) ->
+``control.membership`` read at presentation
 time, never cached (``MEMBERSHIP_MISSING``) -> ``last_used_at`` touched. Every
 refusal happens before any handler runs and inside no workspace transaction --
 that is what "no partial effect" means mechanically (B6).
@@ -29,12 +31,13 @@ from datetime import UTC, datetime
 from typing import Final
 from uuid import UUID
 
-from rheo_contracts import Role
+from rheo_contracts import ContextPurpose, Role
 
 from rheo_core.boundary.context import (
     MEMBERSHIP_MISSING,
     TOKEN_EXPIRED,
     TOKEN_MALFORMED,
+    TOKEN_PURPOSE_INVALID,
     TOKEN_REVOKED,
     TOKEN_SCOPE_INVALID,
     TOKEN_WRONG_KIND,
@@ -73,6 +76,51 @@ class ResolvedToken:
     workspace_id: UUID
     role: Role
     operation_set: frozenset[str]
+    bound_purpose: ContextPurpose | None
+    """The purpose this token is bound to, or ``None`` when it is unbound.
+
+    Read from ``access_token.purpose``, which ``core.token.issue`` has been writing
+    since 0b2 and which nothing read until now. ``None`` is the honest answer for a
+    ``cli`` or ``mcp`` token issued without one -- browsing with no bound purpose has
+    no memory-purpose gate -- and is not reachable for a ``runtime`` token, which is
+    always minted with one."""
+
+
+_RUNTIME_KIND: Final = "runtime"
+"""The one token kind whose ``purpose`` may not be null.
+
+``issue_runtime_token`` requires a ``purpose: str`` and always populates the column,
+because ``runtime_run_handler`` requires ``RuntimeRunInput.purpose``. So a null here
+means the row was written by something other than that function, which is exactly the
+case :data:`~rheo_core.boundary.context.TOKEN_PURPOSE_INVALID` refuses."""
+
+
+def _bound_purpose(kind: str, purpose: str | None) -> ContextPurpose | None | Refusal:
+    """Turn a stored ``access_token.purpose`` into the binding a context carries.
+
+    Three answers, and the middle one is why this is a function rather than a
+    one-liner: ``None`` for an unbound non-runtime token, a :class:`Refusal` for a
+    runtime token that has lost its purpose or for any unparseable string, and the
+    parsed member otherwise. ``ContextPurpose`` is a closed four-member enum, so a
+    string outside it is a row written against a vocabulary this process does not
+    have -- refused rather than dropped, because dropping it would present a
+    purpose-bound token as an unbound one.
+    """
+    if purpose is None:
+        if kind == _RUNTIME_KIND:
+            return Refusal(
+                TOKEN_PURPOSE_INVALID,
+                "a runtime token carries the purpose it was minted with; this row "
+                "has none",
+            )
+        return None
+    try:
+        return ContextPurpose(purpose)
+    except ValueError:
+        return Refusal(
+            TOKEN_PURPOSE_INVALID,
+            f"{purpose!r} is not a context purpose",
+        )
 
 
 def resolve_token(value: str, surface: str) -> ResolvedToken | Refusal:
@@ -99,6 +147,9 @@ def resolve_token(value: str, surface: str) -> ResolvedToken | Refusal:
         snapshot = list_access_token_operations(connection, row.id)
         if snapshot & NON_TOKEN_ISSUABLE:
             return Refusal(TOKEN_SCOPE_INVALID)
+        bound_purpose = _bound_purpose(row.kind, row.purpose)
+        if isinstance(bound_purpose, Refusal):
+            return bound_purpose
         membership = get_membership(
             connection, account_id=row.account_id, workspace_id=row.workspace_id
         )
@@ -115,4 +166,5 @@ def resolve_token(value: str, surface: str) -> ResolvedToken | Refusal:
         workspace_id=row.workspace_id,
         role=membership.role,
         operation_set=snapshot,
+        bound_purpose=bound_purpose,
     )

@@ -34,6 +34,7 @@ from rheo_core.approvals import (
     STANDING_GRANT_CREATE,
     STANDING_GRANT_REVOKE,
 )
+from rheo_core.deletion.operations import RECORD_DELETE
 from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.modules.operations import MODULE_ENABLE, MODULE_INSTALL
 from rheo_core.operations import (
@@ -155,6 +156,10 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             # registrar for the same import-direction reason the token pair is.
             MODULE_INSTALL,
             MODULE_ENABLE,
+            # Run 1a1's ``core.record.delete``, declared in
+            # ``rheo_core.deletion.operations`` and registered inside the registrar for
+            # the same import-direction reason the module pair is.
+            RECORD_DELETE,
         )
     )
 

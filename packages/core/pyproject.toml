@@ -14,6 +14,12 @@ dependencies = [
     "pydantic>=2,<3",
     "httpx>=0.27,<1",
     "zstandard>=0.23,<1",
+    # Architecture § A13: "JSON Schema validation uses the locked jsonschema package;
+    # declare it in the package that imports it." Core is that package — A12 puts the
+    # validation of a module's exported lines on the core collector, not on the module
+    # — and the bound matches `runtimes`, the tree's other declarer, so one version
+    # resolves for both.
+    "jsonschema>=4,<5",
 ]
 
 [tool.uv.sources]

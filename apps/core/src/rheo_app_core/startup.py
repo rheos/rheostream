@@ -28,7 +28,10 @@ earlier. See ``rheo_core.modules.loader`` and ``rheo_core.operations.audit_paths
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
+from rheo_core.deletion import OWNED_DELETIONS
+from rheo_core.events import ConsumerRegistry
 from rheo_core.identity import sync_providers
 from rheo_core.migrations.orchestrator import (
     MigrationResult,
@@ -50,6 +53,20 @@ from rheo_core.storage.postgres import get_backend
 from rheo_core.tokens.sets import register_core_tools
 
 logger = logging.getLogger("rheo_app_core.startup")
+
+CONSUMERS: Final = ConsumerRegistry()
+"""This process's one consumer registry, built at the composition root.
+
+The mirror of ``apps/worker``'s ``main.py:CONSUMERS`` and built here for the same
+reason: ``rheo_core.events`` publishes no module-level instance, so a test builds its
+own and there is no global to reset between cases, and a process-wide one belongs only
+where the process is composed. ``load_modules()`` registers a module's declared
+subscriptions into it, and ``api_routes``/``internal_routes`` pass it to every
+``dispatch()`` they make, so a handler reaching ``uow.consumers`` in the ``core``
+process reaches this object and no other.
+
+Empty of core subscriptions today: release one ships no consumer of its own.
+"""
 
 
 def _check_production_scheme(profile: str, scheme: str) -> None:
@@ -108,7 +125,13 @@ def run_startup() -> StartupReport:
     # call ran anywhere, ``TOOL_REGISTRY`` was empty in a deployed process and
     # ``agent_default`` named nothing, so the MCP facade had no tools to list.
     register_core_tools()
-    modules = load_modules()
+    # ``deletions`` is this process's half of a module's erasure cascade, and the
+    # value is the process-global registry because that is the one the deletion
+    # coordinator resolves against — passing any other instance would register hooks
+    # it never reads. Without it, every deletion in this process runs the owner's
+    # own delete alone: a memory would be erased and every memory derived from it
+    # would survive, which is not a narrower cascade but a wrong one.
+    modules = load_modules(consumers=CONSUMERS, deletions=OWNED_DELETIONS)
     # Criterion 14's wiring layer, and the reason it is here and not one line up: a
     # module supplies its sink through its manifest, so this is the first point at
     # which "every registered operation above the read class has somewhere to write

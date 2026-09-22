@@ -294,7 +294,16 @@ that the first module author inherits the rule instead of inventing it.
 ## Retrieval adapter (D9, FR 30)
 
 Owned by the memory module ([memory](memory.md), which owns the records this indexes) but shaped
-by the core's seam rules. One protocol:
+by the core's seam rules.
+
+**Phase ownership.** The contract below stands as written and is not narrowed by what has been
+built: run 1a1 supplies the memory records, `memory.search_tsv` and the `memory_embedding` table,
+primary key and foreign key only. Selecting a strategy, the dense fill and rebuild, reciprocal
+rank fusion and D9's bounded rerank by recency within ties are all run 1a2's, and criterion 31 is
+1a2's to close. Nothing 1a1 ships is a persisted model-dimension registry, and nothing here is
+deleted for arriving later than the records it ranks.
+
+One protocol:
 
 ```text
 RetrievalStrategy
@@ -370,8 +379,14 @@ every layer. The schema for a key states:
   security policy owns.
 - `explicit_per_workspace`: when set, a row is written from the package default at workspace
   provisioning (core keys) or at module enable (module keys), so the value is always an explicit
-  per-workspace fact rather than an inherited default. FR 29's `recallatron.retention.days`
-  (package default 365, floor `min`) is the first such key.
+  per-workspace fact rather than an inherited default. FR 29's pair,
+  `recallatron.retention.expire_by_age` (package default false) and
+  `recallatron.retention.days` (package default 365, no floor, bounded 1 to 3650), are the first
+  such keys ([retention](memory.md#retention-fr-29-criterion-30)).
+- `minimum` / `maximum`: hard bounds on a numeric key, rejected at every layer. Different from a
+  floor: a floor combines a workspace's override with the deployment's value under a comparator,
+  which is right where a workspace may only narrow the deployment's choice, and wrong where a
+  workspace may legitimately choose a larger value than its neighbour.
 
 **The floor rule.** For a key with a floor, the effective value is the deployment value combined
 with the override under the comparator, and the override is rejected at write time when it would

@@ -236,12 +236,23 @@ predecessor. This phase proves module contract v1 on the smallest domain that ca
 
 - The module manifest and the install and enable path, implementing the subset of the lifecycle
   contract that D5 places in release one.
-- Memory records with provenance, entities and relationships, decisions, time, confidence,
-  correction, and supersession.
+- Release-one phase two supplies typed memory records with immutable provenance, entity
+  identity, memory-to-entity mentions, memory-to-authoritative-record links,
+  correction/supersession, readable non-erasure history and conservative ambient automatic
+  creation from eligible explicit-statement evidence. It does not yet supply generic entity
+  attributes, entity-to-entity relations, traversal, confirmation, merge, profile synthesis
+  or a conversation archive. Those omissions are release-one scope boundaries; any permanent
+  retirement or later mapping decision is recorded in the decision ledger and the named
+  planning carrier before migration accepts data loss.
 - The retrieval adapter, with the release-one implementation on pgvector for dense retrieval and
   `tsvector` or `pg_trgm` for lexical retrieval, or a hybrid of the two (D9).
 - Permission-enforced retrieval, including inheritance of source access and purpose restrictions
   by derived memories.
+- Conservative ambient automatic memory from eligible explicitly stated Rheo runtime evidence
+  and an enrolled local Claude Code CLI/Desktop Code bridge, delivered after retrieval and
+  before migration/cutover, with trusted receipts and durable
+  sanitation/digestion/extraction; normal eligible units require neither a remember command
+  nor per-note review.
 - Retention policy per workspace.
 - Migration and cutover from the predecessor's memory store: extraction, re-embedding under the
   new retrieval layer, verification, and switchover. The migration runs against the maintainer's
@@ -263,8 +274,13 @@ predecessor. This phase proves module contract v1 on the smallest domain that ca
 - Module disable, remove, purge, and restore.
 - Cross-module memory links to Leads records beyond the reference type, since Leads does not
   exist yet. The link type is defined here and exercised in phase three.
-- Automatic memory extraction from conversations. Release one remembers what it is told to
-  remember.
+
+The architecture corrections these entries rest on are the accepted public ones in
+[memory](../architecture/memory.md), [deletion, export and
+migration](../architecture/deletion-export-migration.md) and [runtime and
+MCP](../architecture/runtime-and-mcp.md). Architecture decision A0's named advanced-feature
+deferrals are retained. Public criterion numbers are unchanged; ambient evidence is supplemental
+until a separately ratified append-only criterion amendment says otherwise.
 
 **Acceptance criteria**
 
@@ -290,9 +306,16 @@ predecessor. This phase proves module contract v1 on the smallest domain that ca
 29. Deleting or superseding a source record invalidates its derived summaries and its
     embeddings in the same operation, verified by querying the retrieval index afterward.
     *(Scenario: Permissions or contact purpose withdrawn; FR 28.)*
-30. Every workspace has an explicit memory retention setting, and a workspace created with no
-    explicit setting receives a bounded default rather than indefinite retention. *(Scenario:
-    Permissions or contact purpose withdrawn; FR 29.)*
+30. Every workspace has explicit memory retention settings rather than an inherited posture:
+    both are written as rows when the module is enabled, so what a workspace does about age is
+    always a stored, readable choice. The package default for the age-expiry gate is off, so
+    nothing is deleted for age alone unless a workspace states that it wants that, and the
+    retention window is a bounded positive number of days, read only while the gate is on. A
+    missing or out-of-range window is refused rather than replaced by a default, and the window
+    carries no indefinite sentinel value: unbounded retention is the gate's off state.
+    *(Scenario: Permissions or contact purpose withdrawn; FR 29. Amended 2026-09-21 — see the
+    recorded change of direction in
+    [memory](../architecture/memory.md#retention-fr-29-criterion-30).)*
 31. The retrieval strategy is selected through the adapter, and a test runs the module's full
     behavioural suite against both a dense-only and a lexical-only configuration, both passing.
     *(Scenario: Runtime choice, applied to retrieval rather than to a model runtime; FR 30.)*
@@ -711,7 +734,7 @@ tests part of a requirement, the row says which part and names what is left unte
 | FR 26 | 24, 33, 66 | Installable and enableable through the contract; the phase-one and phase-three paths both complete where it was never enabled. |
 | FR 27 | 27, 28, 61 | Permission-enforced retrieval, intersection of audiences, withdrawal honoured. |
 | FR 28 | 29, 61, 65 | Invalidation of derived summaries and embeddings with the source, on supersession and on deletion. |
-| FR 29 | 30 | Explicit retention, bounded default. |
+| FR 29 | 30 | Explicit retention, stored per workspace at enable. "Nothing is retained permanently by default" is read as forbidding an *inherited* retention posture, not an explicit permanent choice: both settings are written as rows, the age-expiry gate's package default is off, and the window is bounded 1 to 3650 days with no indefinite sentinel (amended 2026-09-21; the recorded change of direction is in [memory](../architecture/memory.md#retention-fr-29-criterion-30)). |
 | FR 30 | 31 | The behavioural suite passes on dense-only and lexical-only configurations. |
 | FR 31 | 41, 42 | Workspace resolved from the connection credential; claimed values never override it; a revoked signing secret fails closed for queued and for new deliveries. |
 | FR 32 | 38, 39, 40 | All three transports through one declarative versioned mapping. |

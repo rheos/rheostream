@@ -1,20 +1,39 @@
-"""AC 23 / AC 24: the mechanical guard over the finished phase-one matrix.
+"""AC 23 / AC 24: the mechanical guard over the finished acceptance matrices.
 
-``parse`` reads ``docs/acceptance/phase-1-matrix.md``. ``validate`` asserts exactly
-four things, and no more: completeness both ways over ``{1..23} ∪ {69}``; every
+``parse`` reads one matrix file. ``validate`` asserts exactly four things about
+it, and no more: completeness both ways over that file's own expected set; every
 non-``deferred`` demonstrator still resolves (``pytest:`` against
 ``pytest --collect-only``, ``ci:`` as a bound job/step pair); every
 non-``deferred`` mutation hunk still applies (``git apply --check``); every
 non-``deferred`` row names a performer.
 
+**Two files, validated independently, plus one check between them.**
+:data:`MATRICES` is an ordered list of ``(path, expected_criteria)`` pairs —
+``phase-1-matrix.md`` over ``{1..23} ∪ {69}`` and ``phase-2-matrix.md`` over
+``{24, 25, 26, 27, 28, 29, 30, 33, 36}``. Each is parsed and validated on its own,
+so a stale row in one cannot be masked by the other, and
+:func:`cross_file_errors` then asserts that **no criterion number appears in more
+than one matrix**. That last check is the only thing the two files share: they are
+not merged, not concatenated, and not reconciled into one set. A criterion has
+exactly one home and the pair is what proves it, because a number that drifted
+into both would otherwise satisfy both files' completeness checks at once.
+
+The list is deliberately a small tuple rather than a directory scan. A scan would
+make "which matrices exist" an incidental property of the filesystem; naming them
+is what makes adding a third a reviewed decision with an expected set attached.
+
 A ``deferred`` row is routed past checks 2 and 3 the moment ``State`` reads
 ``deferred``. Its ``Demonstrator`` and ``Mutation`` fields hold the literal
 ``none`` by grammar; they are never resolved and never passed to ``git apply``.
-Rows 15–17 are ``complete``; no live deferred set remains.
+Neither live matrix holds one today; phase one's rows 15-17 are ``complete``, and
+phase two's one held-back half — criterion 24's interface contributions, which are
+run 1a3's — is a ``partial`` row carrying real evidence for the half it does
+demonstrate. Criterion 30 was the second such row until the public retention
+amendment landed and its evidence covered the amended text.
 
 ``vitest:`` stays in the schema and is not resolved here: no matrix row uses it,
-so ``validate`` takes no ``known_vitest_ids``. The positive control and the three
-direct demonstrations mutate an in-memory copy; the committed matrix is never
+so ``validate`` takes no ``known_vitest_ids``. The positive control and the
+direct demonstrations mutate an in-memory copy; the committed matrices are never
 written wrong.
 """
 
@@ -22,16 +41,37 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Final
 
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
+_ACCEPTANCE = _REPO_ROOT / "docs" / "acceptance"
+_PHASE_ONE = _ACCEPTANCE / "phase-1-matrix.md"
+_PHASE_TWO = _ACCEPTANCE / "phase-2-matrix.md"
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "repository-checks.yml"
 
 EXPECTED_CRITERIA = frozenset(range(1, 24)) | {69}
+"""Phase one's set, unchanged: criteria 1-23 and criterion 69."""
+
+PHASE_TWO_CRITERIA = frozenset({24, 25, 26, 27, 28, 29, 30, 33, 36})
+"""Phase two's seeded set.
+
+Nine of phase two's fourteen criteria. 31, 32, 34, 35 and 37 are absent because no
+run has closed them, and the completeness check is what keeps them absent: a row
+for one of them fails here as ``unexpected`` rather than quietly widening what the
+repository claims.
+"""
+
+MATRICES: Final[tuple[tuple[Path, frozenset[int]], ...]] = (
+    (_PHASE_ONE, EXPECTED_CRITERIA),
+    (_PHASE_TWO, PHASE_TWO_CRITERIA),
+)
+
+_MATRIX_IDS: Final = tuple(path.name for path, _ in MATRICES)
 
 _HEADING = re.compile(r"^### Criterion (\d+)\s*$", re.MULTILINE)
 _FIELD = re.compile(r"^\*\*(.+?):\*\*\s*(.*)$")
@@ -93,20 +133,50 @@ def parse_ci_steps(path: Path) -> dict[str, set[str]]:
 
 
 def validate(
-    rows: list[Row],
+    rows: Sequence[Row],
     *,
+    expected: frozenset[int],
     known_pytest_ids: set[str],
     known_ci_steps: dict[str, set[str]],
 ) -> list[str]:
-    """Return errors; empty means the in-memory matrix is clean."""
+    """Return errors; empty means this in-memory matrix is clean.
+
+    ``expected`` is the file's own criterion set and is required rather than
+    defaulted: one matrix's set is never the right answer for another, and a
+    default here is how a second file would come to be checked against the first
+    file's numbers.
+    """
     errors: list[str] = []
-    errors.extend(_completeness_errors(rows))
+    errors.extend(_completeness_errors(rows, expected))
     for row in rows:
         if row.state == "deferred":
             continue
         errors.extend(_demonstrator_errors(row, known_pytest_ids, known_ci_steps))
         errors.extend(_mutation_errors(row))
         errors.extend(_performer_errors(row))
+    return errors
+
+
+def cross_file_errors(parsed: Sequence[tuple[Path, Sequence[Row]]]) -> list[str]:
+    """No criterion number may appear in more than one matrix.
+
+    The one check that spans files. Each file's own completeness check is blind to
+    the others by construction — it compares that file's rows against that file's
+    expected set — so a number written into two matrices satisfies both and is
+    reported by neither. The error names **both** files, because "criterion 24 is
+    duplicated" without saying where is not an actionable report when the whole
+    point is that it is in two places.
+    """
+    errors: list[str] = []
+    for index, (left_path, left_rows) in enumerate(parsed):
+        left = {row.number for row in left_rows}
+        for right_path, right_rows in parsed[index + 1 :]:
+            shared = sorted(left & {row.number for row in right_rows})
+            if shared:
+                errors.append(
+                    f"criteria {shared} appear in both "
+                    f"{left_path.name} and {right_path.name}"
+                )
     return errors
 
 
@@ -160,12 +230,12 @@ def _mutation(body: str) -> str:
     return hunk if hunk.endswith("\n") else hunk + "\n"
 
 
-def _completeness_errors(rows: list[Row]) -> list[str]:
+def _completeness_errors(rows: Sequence[Row], expected: frozenset[int]) -> list[str]:
     numbers = [row.number for row in rows]
     got = set(numbers)
     errors: list[str] = []
-    missing = sorted(EXPECTED_CRITERIA - got)
-    extra = sorted(got - EXPECTED_CRITERIA)
+    missing = sorted(expected - got)
+    extra = sorted(got - expected)
     if missing:
         errors.append(f"completeness: missing {missing}")
     if extra:
@@ -258,7 +328,7 @@ def _collect_pytest_ids() -> set[str]:
 
 
 def _broken_control_row() -> Row:
-    """One-row fixture whose hunk cannot apply. Never written to the matrix file."""
+    """One-row fixture whose hunk cannot apply. Never written to a matrix file."""
     return Row(
         number=1,
         state="complete",
@@ -278,19 +348,32 @@ def _broken_control_row() -> Row:
     )
 
 
-_KNOWN: tuple[list[Row], set[str], dict[str, set[str]]] | None = None
+_Known = tuple[tuple[tuple[Path, list[Row]], ...], set[str], dict[str, set[str]]]
+
+_KNOWN: _Known | None = None
 
 
-def _known() -> tuple[list[Row], set[str], dict[str, set[str]]]:
+def _known() -> _Known:
     global _KNOWN
     if _KNOWN is None:
-        _KNOWN = (parse(_MATRIX), _collect_pytest_ids(), parse_ci_steps(_WORKFLOW))
+        _KNOWN = (
+            tuple((path, parse(path)) for path, _ in MATRICES),
+            _collect_pytest_ids(),
+            parse_ci_steps(_WORKFLOW),
+        )
     return _KNOWN
 
 
-def test_the_live_matrix_is_clean() -> None:
-    rows, known_pytest_ids, known_ci_steps = _known()
-    assert {row.number for row in rows} == EXPECTED_CRITERIA
+def _rows_of(path: Path) -> list[Row]:
+    parsed, _, _ = _known()
+    return next(rows for candidate, rows in parsed if candidate == path)
+
+
+@pytest.mark.parametrize(("path", "expected"), MATRICES, ids=_MATRIX_IDS)
+def test_each_live_matrix_is_clean(path: Path, expected: frozenset[int]) -> None:
+    _, known_pytest_ids, known_ci_steps = _known()
+    rows = _rows_of(path)
+    assert {row.number for row in rows} == expected
     assert not any(
         demo.startswith("vitest:") for row in rows for demo in row.demonstrators
     )
@@ -300,9 +383,26 @@ def test_the_live_matrix_is_clean() -> None:
         row.demonstrators == () and row.mutation == "none" for row in deferred.values()
     )
     assert (
-        validate(rows, known_pytest_ids=known_pytest_ids, known_ci_steps=known_ci_steps)
+        validate(
+            rows,
+            expected=expected,
+            known_pytest_ids=known_pytest_ids,
+            known_ci_steps=known_ci_steps,
+        )
         == []
     )
+
+
+def test_every_state_is_one_of_the_three_the_grammar_defines() -> None:
+    """``complete | partial | deferred`` and nothing else, across both files.
+
+    Written when phase two seeded its second ``partial`` row: the temptation at
+    that point was a fourth token for "held pending a public amendment", and this
+    is what makes inventing one a test failure rather than a quiet precedent.
+    """
+    parsed, _, _ = _known()
+    states = {row.state for _, rows in parsed for row in rows}
+    assert states <= {"complete", "partial", "deferred"}, states
 
 
 def test_a_malformed_demonstrator_line_is_rejected() -> None:
@@ -315,7 +415,10 @@ def test_the_positive_control_is_live() -> None:
     _, known_pytest_ids, known_ci_steps = _known()
     control = _broken_control_row()
     errors = validate(
-        [control], known_pytest_ids=known_pytest_ids, known_ci_steps=known_ci_steps
+        [control],
+        expected=EXPECTED_CRITERIA,
+        known_pytest_ids=known_pytest_ids,
+        known_ci_steps=known_ci_steps,
     )
     assert errors
     assert any(
@@ -325,8 +428,12 @@ def test_the_positive_control_is_live() -> None:
     ), errors
 
 
-def test_a_renamed_demonstrator_is_rejected_naming_the_row() -> None:
-    rows, known_pytest_ids, known_ci_steps = _known()
+@pytest.mark.parametrize(("path", "expected"), MATRICES, ids=_MATRIX_IDS)
+def test_a_renamed_demonstrator_is_rejected_naming_the_row(
+    path: Path, expected: frozenset[int]
+) -> None:
+    _, known_pytest_ids, known_ci_steps = _known()
+    rows = _rows_of(path)
     target = next(row for row in rows if row.state != "deferred" and row.demonstrators)
     broken = replace(
         target,
@@ -334,17 +441,23 @@ def test_a_renamed_demonstrator_is_rejected_naming_the_row() -> None:
     )
     copied = [broken if row.number == target.number else row for row in rows]
     errors = validate(
-        copied, known_pytest_ids=known_pytest_ids, known_ci_steps=known_ci_steps
+        copied,
+        expected=expected,
+        known_pytest_ids=known_pytest_ids,
+        known_ci_steps=known_ci_steps,
     )
     assert errors
     assert any(f"criterion {target.number}" in error for error in errors), errors
 
 
-def test_a_deleted_row_fails_completeness() -> None:
-    rows, known_pytest_ids, known_ci_steps = _known()
+@pytest.mark.parametrize(("path", "expected"), MATRICES, ids=_MATRIX_IDS)
+def test_a_deleted_row_fails_completeness(path: Path, expected: frozenset[int]) -> None:
+    _, known_pytest_ids, known_ci_steps = _known()
+    rows = _rows_of(path)
     removed = rows[0]
     errors = validate(
         [row for row in rows if row.number != removed.number],
+        expected=expected,
         known_pytest_ids=known_pytest_ids,
         known_ci_steps=known_ci_steps,
     )
@@ -352,13 +465,58 @@ def test_a_deleted_row_fails_completeness() -> None:
     assert any("completeness: missing" in error for error in errors), errors
 
 
-def test_a_fabricated_25th_row_fails_completeness() -> None:
-    rows, known_pytest_ids, known_ci_steps = _known()
-    extra = replace(rows[0], number=25)
+@pytest.mark.parametrize(("path", "expected"), MATRICES, ids=_MATRIX_IDS)
+def test_a_fabricated_extra_row_fails_completeness(
+    path: Path, expected: frozenset[int]
+) -> None:
+    """The number is outside **both** sets, which phase two made load-bearing.
+
+    Phase one's own version of this fixture used 25, on the reasoning that a
+    twenty-fifth row could only be a fabrication. 25 is now criterion 25's real
+    home in ``phase-2-matrix.md``, so the same number would prove nothing against
+    that file's expected set.
+    """
+    _, known_pytest_ids, known_ci_steps = _known()
+    rows = _rows_of(path)
+    unclaimed = 9999
+    assert not any(unclaimed in members for _, members in MATRICES)
+    extra = replace(rows[0], number=unclaimed)
     errors = validate(
         [*rows, extra],
+        expected=expected,
         known_pytest_ids=known_pytest_ids,
         known_ci_steps=known_ci_steps,
     )
     assert errors
     assert any("completeness: unexpected" in error for error in errors), errors
+
+
+def test_no_criterion_number_appears_in_more_than_one_matrix() -> None:
+    parsed, _, _ = _known()
+    assert cross_file_errors(parsed) == []
+
+
+def test_a_number_written_into_both_matrices_is_reported_naming_both() -> None:
+    """The cross-file check's positive control.
+
+    Neither file's own completeness check can see this: phase two's set holds 24,
+    so a 24 row there is expected, and a 24 row copied into phase one is
+    ``unexpected`` only there. Duplicating a number each file **does** claim — the
+    case a copy-paste actually produces — is invisible to both, which is why this
+    check exists and why its control duplicates a legitimately-owned number rather
+    than an invented one.
+    """
+    parsed, _, _ = _known()
+    (phase_one_path, phase_one_rows), (phase_two_path, phase_two_rows) = parsed
+    intruder = replace(phase_one_rows[0], number=24)
+    errors = cross_file_errors(
+        [
+            (phase_one_path, [*phase_one_rows, intruder]),
+            (phase_two_path, phase_two_rows),
+        ]
+    )
+    assert errors
+    assert any(
+        "24" in error and phase_one_path.name in error and phase_two_path.name in error
+        for error in errors
+    ), errors

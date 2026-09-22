@@ -1439,10 +1439,10 @@ except the operation it names. Both are true; neither is a pytest node.
 **Mutation:**
 ```diff
 diff --git a/apps/core/src/rheo_app_core/startup.py b/apps/core/src/rheo_app_core/startup.py
-index 7cd8eb7..3ab710b 100644
+index af0ff97..2fe691c 100644
 --- a/apps/core/src/rheo_app_core/startup.py
 +++ b/apps/core/src/rheo_app_core/startup.py
-@@ -108,6 +108,26 @@ def run_startup() -> StartupReport:
+@@ -125,6 +125,26 @@ def run_startup() -> StartupReport:
      # call ran anywhere, ``TOOL_REGISTRY`` was empty in a deployed process and
      # ``agent_default`` named nothing, so the MCP facade had no tools to list.
      register_core_tools()
@@ -1466,11 +1466,11 @@ index 7cd8eb7..3ab710b 100644
 +        lambda ctx, uow, model_input: _ProbeInput(),
 +        origin=TEST_HARNESS_ORIGIN,
 +    )
-     modules = load_modules()
-     # Criterion 14's wiring layer, and the reason it is here and not one line up: a
-     # module supplies its sink through its manifest, so this is the first point at
+     # ``deletions`` is this process's half of a module's erasure cascade, and the
+     # value is the process-global registry because that is the one the deletion
+     # coordinator resolves against — passing any other instance would register hooks
 diff --git a/packages/core/src/rheo_core/operations/registry.py b/packages/core/src/rheo_core/operations/registry.py
-index 7d7dc1c..ec4fa0f 100644
+index e33bd79..dd1e27a 100644
 --- a/packages/core/src/rheo_core/operations/registry.py
 +++ b/packages/core/src/rheo_core/operations/registry.py
 @@ -91,14 +91,7 @@ def module_id_for_origin(origin: str) -> str:
@@ -1496,7 +1496,7 @@ index 7d7dc1c..ec4fa0f 100644
 
 1 failed.
 
-**Performed by:** C4 (2026-09-16), C5 (2026-09-16)
+**Performed by:** C4 (2026-09-16), C5 (2026-09-16), 1a1 P8 (2026-09-21)
 
 **Note on why the hunk is two-part.** Neither half alone bites. Dropping
 `check_origin_profile`'s gate changes nothing on its own, because no production composition
@@ -1680,15 +1680,14 @@ registry would not catch a harness consumer there either`. Reverted.
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/approvals/gate.py b/packages/core/src/rheo_core/approvals/gate.py
-index 4e29510..3ac6e8c 100644
 --- a/packages/core/src/rheo_core/approvals/gate.py
 +++ b/packages/core/src/rheo_core/approvals/gate.py
-@@ -382,16 +382,6 @@ def execute_approved(
-     # execution happened. The set is derived from this declaration rather than taken
-     # whole, because ``RecordStateGuard`` attaches only to an operation whose input
-     # names a subject.
+@@ -421,16 +421,6 @@ def execute_approved(
+     # only a rebuild failure they did *not* catch — a tampered ``purpose`` column, a
+     # missing provenance row — reaches the raise below, where a rollback is the right
+     # answer because nothing was decided.
 -    refusal = run_guards(
--        ctx,
+-        ctx if isinstance(held_caller, Refusal) else held_caller,
 -        uow,
 -        approval=approval,
 -        model_input=model_input,
@@ -1697,19 +1696,20 @@ index 4e29510..3ac6e8c 100644
 -    )
 -    if refusal is not None:
 -        return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)
+     if isinstance(held_caller, Refusal):
+         raise OperationRefused(held_caller.state, str(held_caller))
      output = operation.handler(
-         ctx,
-         HandlerUnitOfWork(uow, operation_id=approval.operation_id),
 ```
 
 **Cost:**
-- `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_actors_role_refuses_execution_and_records_it` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
+- `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_actors_role_refuses_execution_and_records_it` — first observed failure line: `E       AssertionError: OperationOutcome(state='membership_missing', result=None, error=OperationError(error_code='membership_missing', ...`.
 - `pytest:tests/postgres/test_approvals.py::test_revoking_the_approving_actors_role_refuses_execution_too` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
+- `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_token_refuses_approved_execution` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
 - `pytest:tests/postgres/test_approvals.py::test_a_refusing_guard_stops_the_effect_and_a_permitting_one_does_not` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
 
-3 failed, 37 passed across `tests/postgres/test_approvals.py` and `tests/postgres/test_standing_grants.py`.
+4 failed, 41 passed across `tests/postgres/test_approvals.py` and `tests/postgres/test_standing_grants.py`.
 
-**Performed by:** C6 (2026-09-16), C7 (2026-09-17)
+**Performed by:** C6 (2026-09-16), C7 (2026-09-17), 1a1 P1 (2026-09-20)
 
 **What the hunk attacks, and why this one.** It deletes the guard-check step from
 `execute_approved` — the `run_guards` call and the branch that records its refusal — leaving the
@@ -1723,7 +1723,7 @@ content and the failure a caller would never see — the effect lands, the recor
 and nothing anywhere reports that the permission was gone.
 
 **Note on which demonstrators the hunk does and does not redden, checked node by node rather than
-inferred.** Three of the twelve go red and each was re-run **individually** at capture, not read
+inferred.** Four of the thirteen go red and each was re-run **individually** at recapture, not read
 off the aggregate. The other nine stayed green and were read rather than assumed: the four C6
 demonstrators (`..._is_held_and_the_fixture_records_nothing`, `..._sink_sends_nothing`,
 `..._runs_the_fixture_once_and_the_record_carries_the_digest`,
@@ -1733,6 +1733,18 @@ no guard in it at all; `test_the_core_attaches_two_guards_always_and_the_third_o
 asserts `core_guards_for`, which the hunk leaves whole and merely stops calling; and
 `test_criterion_19_end_to_end_through_an_mcp_token_session` never revokes anything, so its
 execution is one the guards permit.
+
+**Recaptured in 1a1's P1, and two things about it changed rather than one.** P1 rewrote the region
+this hunk cuts — `execute_approved` now rebuilds the original held caller's context before the
+guards and runs both them and the handler under it — so the stored diff no longer applied and was
+regenerated against the new code. It still cuts exactly the guard step and nothing else. The
+recapture also corrected an undercount: the node counts here said three red of twelve while
+thirteen were listed, and `..._revoking_the_gated_token_refuses_approved_execution` belonged in the
+red column all along — the hunk removes the guard that catches a revoked token just as it removes
+the one that catches a revoked membership. The gated-actor node's first failure line changed with
+the code: with the guards gone, a revoked membership is now caught one layer earlier, by the
+context rebuild refusing `membership_missing`, so that node reddens on the refusal rather than on
+`'executed' == 'refused'`. It still reddens, and still for the reason the row is about.
 
 **That last one is the honest limit of this row's single hunk, and it is stated rather than
 smoothed over.** The criterion's own named test is green under the mutation that removes the
@@ -1797,18 +1809,18 @@ recorded nothing in between. *(Scenario: Export and restore; FR 52.)*"
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/exports/artifact.py b/packages/core/src/rheo_core/exports/artifact.py
-index 413dd70..19d38a0 100644
+index 4f58863..d7e92a7 100644
 --- a/packages/core/src/rheo_core/exports/artifact.py
 +++ b/packages/core/src/rheo_core/exports/artifact.py
-@@ -236,6 +236,7 @@ def digest_categories(
-         for name, body in serialised_categories(
-             connection, skip_operation_id=skip_operation_id
+@@ -614,6 +614,7 @@ def digest_categories(
+         for name, body in all_categories(
+             snapshot, skip_operation_id=skip_operation_id
          ).items()
 +        if name != "audit"
      }
  
  
-@@ -600,7 +601,6 @@ def _import_approvals(connection: Connection, body: bytes) -> set[UUID]:
+@@ -1067,7 +1068,6 @@ def _import_approvals(connection: Connection, body: bytes) -> set[UUID]:
      for row in _jsonl(body, APPROVALS_NAME):
          values = _decoded(row, approval_tables.approval.c.keys())
          values.update(
@@ -1818,8 +1830,23 @@ index 413dd70..19d38a0 100644
              approved_at=None,
 ```
 
-**Cost:** The first mutation makes the full-sequence test report `approved` where
-`requires_reapproval` is required. The second makes the digest-comparison test report unequal
-category maps.
+**Cost:**
+- `pytest:tests/postgres/test_export_restore.py::test_restore_matches_source_by_workspace_digest`
+  — first observed failure line: `E       AssertionError: assert {'approvals',...', 'settings'} == {'approvals',...', 'settings'}`,
+  with `Extra items in the right set: 'audit'` two lines below it.
+- `pytest:tests/postgres/test_export_restore.py::test_approved_action_restore_requires_fresh_approval_and_executes_nothing`
+  — first observed failure line: `E           AssertionError: assert 'approved' == 'requires_reapproval'`.
 
-**Performed by:** C8 (2026-09-17)
+**Performed by:** C8 (2026-09-17), 1a1 P12 (2026-09-21), 1a1 P13 (2026-09-21)
+
+**Note:** 1a1 P12 recaptured the hunk, unchanged in substance. A12's source snapshot gave
+`digest_categories` an `ExportSnapshot` parameter in place of its `Connection`, which moved the
+first hunk's context lines; both mutations were reapplied to the new code, watched go red on both
+demonstrators (`assert 'approved' == 'requires_reapproval'`, and the digest maps unequal), and
+reverted. 1a1 P13 recaptured it a second time, again unchanged in substance: the module export
+bridge made `digest_categories` read `all_categories` rather than `serialised_categories`, moving
+the first hunk's context lines again. Both mutations were reapplied, watched go red on both
+demonstrators, and reverted from a byte copy verified with `cmp`. `Cost` now carries the two
+observed lines verbatim rather than a paraphrase, and the first one moved with the code: the digest
+test compares its category **set** before it compares digests, so a dropped category is now caught
+one assertion earlier than it was.

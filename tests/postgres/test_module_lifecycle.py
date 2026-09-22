@@ -14,6 +14,16 @@ are where each operation's own refusals and steps are pinned, with fixture modul
 This file uses Recallatron — the one real ``rheo.modules`` distribution in the
 checkout — and asserts only what the two together produce.
 
+**The second case is here for a mechanical reason, not a thematic one.**
+``test_status_reports_the_latest_applied_schema_version_of_a_real_module`` is a
+``core.workspace.status`` case and was written beside the rest of criterion 10 in
+``tests/postgres/test_workspace_status.py``. It cannot live there: that file carries
+four phase-one acceptance demonstrators, ``make absence-proof`` re-runs every
+demonstrator in a checkout with ``modules/recallatron`` deleted, and one module-level
+``import rheo_recallatron`` fails collection of the whole file and takes the four down
+with it. What the case needs is a chain with more than one revision, which only a real
+module has, so it comes to the one file whose subject is already the real module.
+
 **AC 1's other clause is not proved here, and cannot be.** "No file under
 ``packages/core/`` or ``packages/contracts/`` is edited to make this pass" is a
 statement about the *import graph and the diff*, not about anything observable from
@@ -32,7 +42,7 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
-from harness.modules import loaded_probe_modules
+from harness.modules import chain_head, install_and_enable_module, loaded_probe_modules
 from rheo_contracts import WorkspaceContext
 from rheo_core.boundary import context_for_operator
 from rheo_core.events import ConsumerRegistry
@@ -50,6 +60,7 @@ from rheo_core.operations import (
     dispatch,
     register_core_operations,
 )
+from rheo_core.storage.repositories import list_module_schema_versions
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import HEARTBEAT_SECONDS, visit_workspace
@@ -59,7 +70,6 @@ pytestmark = pytest.mark.postgres
 
 OWNER = "module-lifecycle-under-test"
 RECALLATRON_ID = RECALLATRON_MANIFEST.module_id
-RECALLATRON_REVISION = "0001_schema"
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +171,9 @@ def test_install_then_enable_makes_workspace_status_report_recallatron(
     assert status_of(operator).modules == []
 
     with loaded_probe_modules(monkeypatch, RECALLATRON_ID):
+        # The head its chain applies, read off the scripts while the module is loaded
+        # rather than pinned as a literal that the next revision would quietly falsify.
+        revision = chain_head(RECALLATRON_MANIFEST)
         installing = dispatch(operator, MODULE_INSTALL, {"module_id": RECALLATRON_ID})
         assert installing.state == "pending", installing
         run_the_worker(cluster, workspace)
@@ -185,7 +198,67 @@ def test_install_then_enable_makes_workspace_status_report_recallatron(
             "module_id": RECALLATRON_ID,
             "package_version": RECALLATRON_MANIFEST.package_version,
             "state": ENABLED_STATE,
-            "schema_version": RECALLATRON_REVISION,
+            "schema_version": revision,
         }
     ]
     assert status.modules[0].package_version, "the reported version must not be empty"
+
+
+def test_status_reports_the_latest_applied_schema_version_of_a_real_module(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    operator: WorkspaceContext,
+) -> None:
+    """AC 1's version half, over a chain with more than one revision.
+
+    ``tests/postgres/test_workspace_status.py::test_status_lists_an_enabled_module_with_no_applied_schema_step``
+    pins the null case, and the case above pins the two operations that get a workspace
+    from ``absent`` to a reported module. What neither pins is ``_workspace_status``'s
+    **latest wins** rule: it folds every ``core.module_schema_version`` row for a module
+    into one reported value, and while Recallatron's chain had a single revision the
+    fold had nothing to choose between — first, last and only were the same string, so
+    an implementation reporting the *earliest* applied step passed.
+
+    With ``0002_memory_records`` the workspace records two steps and the two answers
+    differ, so this asserts the reported version is the chain's **head** while the
+    recorded history holds strictly more than that one row.
+
+    Both values are derived: the package version off the manifest (an installed
+    distribution's own metadata, so a status reporting a literal reds), the schema
+    version off the chain's scripts. A literal here would be right today and silently
+    wrong at the next revision.
+
+    The status reads go through :func:`status_of` rather than through
+    ``test_workspace_status.py``'s statement-capturing wrapper. That wrapper asserts
+    *which* tables the handler reads, which is criterion 10's claim and is pinned by
+    criterion 10's own four cases; copying it here would duplicate those assertions
+    without adding one, and the subject of this case is the fold, not the read pattern.
+    """
+    assert status_of(operator).modules == []
+
+    with loaded_probe_modules(monkeypatch, RECALLATRON_ID):
+        head = chain_head(RECALLATRON_MANIFEST)
+        install_and_enable_module(cluster.backend, operator, workspace, RECALLATRON_ID)
+
+    row = cluster.registry_row(workspace)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    with engine.connect() as connection:
+        applied = [
+            version.schema_version
+            for version in list_module_schema_versions(connection)
+            if version.module_id == RECALLATRON_ID
+        ]
+    assert len(applied) > 1, applied
+    assert applied[-1] == head
+
+    after = context_for_operator(workspace)
+    assert isinstance(after, WorkspaceContext), after
+    assert [module.model_dump() for module in status_of(after).modules] == [
+        {
+            "module_id": RECALLATRON_ID,
+            "package_version": RECALLATRON_MANIFEST.package_version,
+            "state": ENABLED_STATE,
+            "schema_version": head,
+        }
+    ]

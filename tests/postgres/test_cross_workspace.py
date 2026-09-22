@@ -118,7 +118,13 @@ async def test_cross_workspace_reference_refused_not_found_both_surfaces(
     # MCP call_tool seam
     resolved_b = mcp_session.resolve_context(b_value)
     assert isinstance(resolved_b, WorkspaceContext)
-    outcome = mcp_tools.call_tool(resolved_b, "harness_get_note", {"ref": ref})
+    # ``consumers=None``: the seam takes the composition root's one registry as a
+    # keyword with no default, and this tool's operation is a read that publishes
+    # nothing. A publishing handler reached with ``None`` refuses
+    # ``consumers_missing``, which is the loud answer that argument exists for.
+    outcome = mcp_tools.call_tool(
+        resolved_b, "harness_get_note", {"ref": ref}, consumers=None
+    )
     assert outcome.state == "not_found"
 
 
@@ -138,7 +144,9 @@ async def test_same_reference_under_an_a_token_succeeds_both_surfaces(
 
     resolved_a = mcp_session.resolve_context(a_value)
     assert isinstance(resolved_a, WorkspaceContext)
-    outcome = mcp_tools.call_tool(resolved_a, "harness_get_note", {"ref": ref})
+    outcome = mcp_tools.call_tool(
+        resolved_a, "harness_get_note", {"ref": ref}, consumers=None
+    )
     assert outcome.ok, outcome
     assert outcome.result is not None
     assert outcome.result.ref == ref  # type: ignore[attr-defined]
