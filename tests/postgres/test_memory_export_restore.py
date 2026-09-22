@@ -85,6 +85,7 @@ from rheo_core.work.loop import visit_workspace
 from rheo_recallatron import MANIFEST
 from rheo_recallatron.configuration import (
     AUTOMATIC_BOUND_PURPOSE,
+    MEMORY_RECORD_TYPE,
     RETENTION_DAYS_DEFAULT,
     RETENTION_DAYS_SPEC,
     RETENTION_EXPIRE_BY_AGE_KEY,
@@ -95,6 +96,9 @@ from rheo_recallatron.export import (
     ARTIFACT_INVALID,
     EXPORT_REQUIRES_RETENTION_SWEEP,
     ExportRequiresRetentionSweep,
+    _Parsed,
+    _successor_of,
+    _validate_ancestry,
     export_memory_records,
     import_memory_records,
 )
@@ -801,11 +805,14 @@ def _purpose_line(memory_id: UUID, purpose: str = _RESPOND) -> dict[str, Any]:
     return _line(record="memory_purpose", memory_id=memory_id, purpose=purpose)
 
 
-def _link_line(memory_id: UUID, predecessor: UUID) -> dict[str, Any]:
+def _link_line(
+    memory_id: UUID, predecessor: UUID, *, ref: str | None = None
+) -> dict[str, Any]:
+    """``ref`` overrides the canonical spelling of ``predecessor``, and only that."""
     return _line(
         record="memory_link",
         memory_id=memory_id,
-        ref=memory_reference(predecessor),
+        ref=memory_reference(predecessor) if ref is None else ref,
         relation=_DERIVED_FROM,
         created_at=datetime.now(UTC),
         supersession_lineage=True,
@@ -896,6 +903,151 @@ def test_a_retained_successor_that_resolves_to_nothing_is_legitimate_history(
     importing.run(
         (_memory_line(survivor), _purpose_line(survivor.id)),
         ledger=(_expiry(absent, departed),),
+    )
+
+
+# --- a malformed reference is the artifact's defect, not the caller's -----------------
+#
+# Every reference inside an artifact is the *artifact's* content, so a malformed one is
+# ``recallatron_artifact_invalid`` — what an operator restoring an archive has to see —
+# and never ``input_invalid``, which says the caller's own request was wrong. The
+# distinction is easy to lose: the module's ``canonical_ref`` helper exists to turn a
+# malformed reference into ``input_invalid`` for the read and write paths, and a
+# validation site that reached for it would silently report the caller's request as the
+# broken thing. These cases pin the state, which is the part that differs.
+
+
+def test_a_malformed_link_reference_is_an_artifact_defect(
+    importing: Importing,
+) -> None:
+    """A12 step 1, over a link whose ``ref`` is not canonical.
+
+    The undashed spelling of a real id: ``UUID`` accepts it, the reference grammar does
+    not, and an artifact that shipped it would restore a link nothing can resolve.
+    """
+    predecessor = uuid7()
+    replacement = _memory(title="the replacement", origin="derived")
+    with pytest.raises(OperationRefused) as refusal:
+        importing.run(
+            (
+                _memory_line(replacement),
+                _purpose_line(replacement.id),
+                _link_line(replacement.id, predecessor, ref=_undashed(predecessor)),
+            )
+        )
+    assert refusal.value.state == ARTIFACT_INVALID
+    assert "not a canonical record reference" in str(refusal.value)
+
+
+def test_a_malformed_retained_successor_is_an_artifact_defect(
+    importing: Importing,
+) -> None:
+    """The ledger's own w2 check, against a reference that is not one at all.
+
+    The case above it — a successor that resolves to nothing — is legitimate history.
+    This one is a chain that was never walkable, and the two answers differ.
+    """
+    absent = uuid7()
+    survivor = _memory(title="an unrelated survivor")
+    broken = {**_expiry(absent, None), "retained_successor_ref": "not a reference"}
+    with pytest.raises(OperationRefused) as refusal:
+        importing.run(
+            (_memory_line(survivor), _purpose_line(survivor.id)), ledger=(broken,)
+        )
+    assert refusal.value.state == ARTIFACT_INVALID
+    assert "not a record reference" in str(refusal.value)
+    assert str(absent) in str(refusal.value)
+
+
+def test_a_malformed_successor_further_along_the_ledger_chain_is_refused(
+    importing: Importing,
+) -> None:
+    """The same rule one hop in, where the walk rather than the row reads the reference.
+
+    A expires naming B, and B's own evidence names something that is not a reference.
+    The ledger is read oldest first, so the walk out of A reaches B's broken reference
+    before the loop ever arrives at B's own row: a second reader of the same column,
+    and the one a first-row-only check would leave unguarded.
+    """
+    first = uuid7()
+    second = uuid7()
+    survivor = _memory(title="an unrelated survivor")
+    broken = {**_expiry(second, None), "retained_successor_ref": "not a reference"}
+    with pytest.raises(OperationRefused) as refusal:
+        importing.run(
+            (_memory_line(survivor), _purpose_line(survivor.id)),
+            ledger=(_expiry(first, second), broken),
+        )
+    assert refusal.value.state == ARTIFACT_INVALID
+    assert "not a record reference" in str(refusal.value)
+    assert str(second) in str(refusal.value)
+
+
+# The last two references an artifact can carry are guarded in depth rather than at the
+# seam: ``_validate_structure`` parses every link before ancestry sees one, and
+# ``_validate_ledger`` parses every retained successor before the expiry hop reads one,
+# so no artifact can deliver a malformed reference to either. They are still wrong to
+# answer ``input_invalid``, and a later reordering of those checks would make them
+# reachable, so each is driven directly.
+
+
+def test_the_expiry_hop_refuses_a_malformed_successor_as_an_artifact_defect() -> None:
+    """``_successor_of``'s absent branch, which reads the ledger rather than a row."""
+    absent = uuid7()
+    evidence = _deletion_evidence(absent, "not a reference")
+    with pytest.raises(OperationRefused) as refusal:
+        _successor_of(absent, {}, {absent: evidence})
+    assert refusal.value.state == ARTIFACT_INVALID
+    assert "malformed successor" in str(refusal.value)
+
+
+def test_the_ancestry_check_refuses_a_malformed_link_as_an_artifact_defect() -> None:
+    """``_validate_ancestry``'s own read of what ``_validate_structure`` parsed."""
+    predecessor = uuid7()
+    replacement = _memory(title="the replacement", origin="derived")
+    link = MemoryLinkRow(
+        memory_id=replacement.id,
+        ref=_undashed(predecessor),
+        relation=_DERIVED_FROM,
+        created_at=datetime.now(UTC),
+        supersession_lineage=True,
+    )
+    parsed = _Parsed(
+        memories=(replacement,),
+        purposes=(),
+        entities=(),
+        mentions=(),
+        links=(link,),
+        receipts=(),
+    )
+    with pytest.raises(OperationRefused) as refusal:
+        _validate_ancestry(parsed, {replacement.id: {_RESPOND}}, ())
+    assert refusal.value.state == ARTIFACT_INVALID
+    assert "not a canonical record reference" in str(refusal.value)
+
+
+def _undashed(record_id: UUID) -> str:
+    """A real memory reference in the one spelling ``RecordRef.parse`` refuses."""
+    return memory_reference(record_id).replace("-", "")
+
+
+def _deletion_evidence(memory_id: UUID, successor_ref: str) -> DeletionRecordRow:
+    """One expiry row as the ledger hands it back, built without a database."""
+    return DeletionRecordRow(
+        id=uuid7(),
+        deleted_at=datetime.now(UTC),
+        record_type=f"{_MODULE}.{MEMORY_RECORD_TYPE}",
+        record_id=memory_id,
+        actor_kind="system",
+        actor_id=None,
+        approval_id=None,
+        participants=(_MODULE,),
+        cancelled_job_count=0,
+        cancelled_action_count=0,
+        removed_export_count=0,
+        invalidated_memory_count=1,
+        cause=RETENTION_EXPIRY,
+        retained_successor_ref=successor_ref,
     )
 
 

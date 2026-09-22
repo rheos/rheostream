@@ -39,7 +39,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
-from rheo_contracts import RecordRefMalformed
+from rheo_contracts import RecordRef, RecordRefMalformed
 from rheo_core.deletion import RETENTION_EXPIRY
 from rheo_core.deletion.records import DeletionRecordRow, list_deletion_records
 from rheo_core.operations.refusals import OperationRefused
@@ -53,7 +53,6 @@ from rheo_recallatron.configuration import (
     MODULE_ID,
 )
 from rheo_recallatron.eligibility import retention_in
-from rheo_recallatron.references import canonical_ref
 from rheo_recallatron.refusals import RETENTION_UNAVAILABLE
 from rheo_recallatron.retention import (
     MEMORY_RETENTION_SWEEP,
@@ -633,8 +632,8 @@ def _validate_structure(parsed: _Parsed) -> dict[UUID, set[str]]:
         if link.memory_id not in memories:
             raise ArtifactRowInvalid(f"a link names absent memory {link.memory_id}")
         try:
-            reference = canonical_ref(link.ref)
-        except RecordRefMalformed:
+            reference = RecordRef.parse(link.ref)
+        except (RecordRefMalformed, TypeError):
             raise ArtifactRowInvalid(
                 f"link reference {link.ref!r} is not a canonical record reference"
             ) from None
@@ -767,8 +766,8 @@ def _successor_of(
     if record is None or record.retained_successor_ref is None:
         return None
     try:
-        return canonical_ref(record.retained_successor_ref).id
-    except RecordRefMalformed:
+        return RecordRef.parse(record.retained_successor_ref).id
+    except (RecordRefMalformed, TypeError):
         raise ArtifactRowInvalid(
             f"expiry evidence for {identity} names a malformed successor"
         ) from None
@@ -845,7 +844,12 @@ def _validate_ancestry(
     for link in parsed.links:
         if not link.supersession_lineage:
             continue
-        predecessor = canonical_ref(link.ref).id
+        try:
+            predecessor = RecordRef.parse(link.ref).id
+        except (RecordRefMalformed, TypeError):
+            raise ArtifactRowInvalid(
+                f"marked ancestry on {link.ref!r} is not a canonical record reference"
+            ) from None
         replacement = memories[link.memory_id]
         if predecessor in erased:
             raise ArtifactRowInvalid(
@@ -903,8 +907,8 @@ def _validate_ledger(records: Sequence[DeletionRecordRow]) -> None:
         if record.retained_successor_ref is None:
             continue
         try:
-            successor = canonical_ref(record.retained_successor_ref)
-        except RecordRefMalformed:
+            successor = RecordRef.parse(record.retained_successor_ref)
+        except (RecordRefMalformed, TypeError):
             raise ArtifactRowInvalid(
                 f"deletion evidence for {record.record_id} names "
                 f"{record.retained_successor_ref!r}, which is not a record reference"
@@ -916,7 +920,16 @@ def _validate_ledger(records: Sequence[DeletionRecordRow]) -> None:
                 raise ArtifactRowInvalid(f"deletion evidence through {walk} cycles")
             seen.add(walk)
             reference = by_record[walk].retained_successor_ref
-            walk = None if reference is None else canonical_ref(reference).id
+            if reference is None:
+                walk = None
+                continue
+            try:
+                walk = RecordRef.parse(reference).id
+            except (RecordRefMalformed, TypeError):
+                raise ArtifactRowInvalid(
+                    f"deletion evidence for {walk} names {reference!r}, "
+                    "which is not a record reference"
+                ) from None
 
 
 def import_memory_records(
