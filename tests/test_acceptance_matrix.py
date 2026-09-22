@@ -26,8 +26,10 @@ A ``deferred`` row is routed past checks 2 and 3 the moment ``State`` reads
 ``deferred``. Its ``Demonstrator`` and ``Mutation`` fields hold the literal
 ``none`` by grammar; they are never resolved and never passed to ``git apply``.
 Neither live matrix holds one today; phase one's rows 15-17 are ``complete``, and
-phase two's two held-back halves are ``partial`` rows carrying real evidence for
-the half they do demonstrate.
+phase two's one held-back half — criterion 24's interface contributions, which are
+run 1a3's — is a ``partial`` row carrying real evidence for the half it does
+demonstrate. Criterion 30 was the second such row until the public retention
+amendment landed and its evidence covered the amended text.
 
 ``vitest:`` stays in the schema and is not resolved here: no matrix row uses it,
 so ``validate`` takes no ``known_vitest_ids``. The positive control and the

@@ -467,6 +467,15 @@ acceptance criteria.
 - **FR 30.** Retrieval runs behind an adapter so that the ranking strategy (dense, lexical, or
   hybrid) is a replaceable choice rather than a schema commitment (see D9).
 
+Release-one memory also creates conservative memories automatically from eligible explicitly
+stated transcript evidence, without a remember command or mandatory review per note. The
+automatic-memory carrier delivers both Rheo-owned runtime evidence and local Claude Code
+CLI/Desktop Code capture enrolled by machine and project/workspace, after retrieval and before
+migration/cutover. It uses durable sanitation/digestion/extraction and trusted source receipts;
+arbitrary cloud chats and blind promotion of tool/file material are excluded. FR27–29 continue to
+bind every automatic result, and cutover must prove ambient non-regression. D9 remains the
+retrieval-layer rework and is not the authority for extraction.
+
 ### Intake and evidence
 
 - **FR 31.** A documented, authenticated ingestion API accepts deliveries and resolves the
@@ -561,6 +570,14 @@ These three are appended after FR 50 so that the numbering above stays stable.
 - One agent runtime adapter (`ClaudeCliRuntime`), against a contract designed for more.
 - The memory module, ported with its retrieval layer reworked, plus migration and cutover from
   the predecessor.
+- Release-one memory also creates conservative memories automatically from eligible explicitly
+  stated transcript evidence, without a remember command or mandatory review per note. The
+  automatic-memory carrier delivers both Rheo-owned runtime evidence and local Claude Code
+  CLI/Desktop Code capture enrolled by machine and project/workspace, after retrieval and before
+  migration/cutover. It uses durable sanitation/digestion/extraction and trusted source receipts;
+  arbitrary cloud chats and blind promotion of tool/file material are excluded. FR27–29 continue
+  to bind every automatic result, and cutover must prove ambient non-regression. D9 remains the
+  retrieval-layer rework and is not the authority for extraction.
 - The relationships module at the R4 contract.
 - Generic intake with three transports, the opportunity core, and the first real funnel.
 - Exactly one configurable pipeline preset, inbound services. Both release-one funnels, the real

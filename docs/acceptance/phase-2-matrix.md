@@ -15,11 +15,12 @@ does not exist yet. Do not add a row for one of those on the strength of a test 
 happens to pass; the guard's per-file completeness check is what keeps the set exact, and
 widening the set is a decision, not a fix.
 
-**Two rows are `partial`, each for its own reason,** and neither becomes `complete` by
-anything this run can do. Criterion 24's interface half belongs to run 1a3. Criterion 30's
-second clause describes behaviour the 2026-09-21 retention correction reverses, so it waits
-on a public amendment Robin has yet to ratify. Both rows carry a `Note:` saying which half
-is held back.
+**One row is `partial`.** Criterion 24's interface half belongs to run 1a3 and nothing this
+run can do closes it; the row carries a `Note:` saying which half is held back. Criterion 30
+was seeded `partial` earlier in this run, because its second clause then described behaviour
+the 2026-09-21 retention correction reverses; that amendment has since been ratified and
+applied to `build-plan.md`, so the row now quotes the amended text, its evidence covers every
+clause of it, and it is `complete`. Its second `Note:` records the promotion.
 
 Every mutation below was applied to this working tree on 2026-09-21, run, watched go red,
 and reverted; each fenced block is the `git diff` that was captured while it was applied,
@@ -32,7 +33,7 @@ are new captures. Each of those three rows says so in its own `Note:`.
 
 ### Criterion 24
 
-**Text:** "The memory module is installed and enabled entirely through the registration contract: no core file changes to add it, verified by a test that enables it in a fresh workspace and asserts its records, tools, migrations, and interface contributions all appear, and that the workspace row now records the module's version and its schema version through the operation criterion 10 names." (`build-plan.md:271-275`)
+**Text:** "The memory module is installed and enabled entirely through the registration contract: no core file changes to add it, verified by a test that enables it in a fresh workspace and asserts its records, tools, migrations, and interface contributions all appear, and that the workspace row now records the module's version and its schema version through the operation criterion 10 names." (`build-plan.md:287-291`)
 
 **State:** partial
 
@@ -82,7 +83,7 @@ migrations and versions, and they say nothing about interface contributions.
 
 ### Criterion 25
 
-**Text:** "The module's manifest declares its owned record types, its storage destination, its migrations, its configuration schema, its provided tools with their safety classes, and its export format. A manifest missing any of these fails validation at install with a named missing field." (`build-plan.md:276-279`)
+**Text:** "The module's manifest declares its owned record types, its storage destination, its migrations, its configuration schema, its provided tools with their safety classes, and its export format. A manifest missing any of these fails validation at install with a named missing field." (`build-plan.md:292-295`)
 
 **State:** complete
 
@@ -133,7 +134,7 @@ transcribed from the archived run.
 
 ### Criterion 26
 
-**Text:** "The module writes only to its own storage. A test asserts that no memory-module code path holds a handle to another module's tables, that the core's storage API is the only route to a connection, and that a cross-module change is effected only through a public operation or event." (`build-plan.md:280-283`)
+**Text:** "The module writes only to its own storage. A test asserts that no memory-module code path holds a handle to another module's tables, that the core's storage API is the only route to a connection, and that a cross-module change is effected only through a public operation or event." (`build-plan.md:296-299`)
 
 **State:** complete
 
@@ -182,7 +183,7 @@ read off the current file rather than transcribed, and the mutation is a fresh c
 
 ### Criterion 27
 
-**Text:** "A retrieval call by an actor without permission on a source record returns no content derived from that record, verified by a test that stores a memory under one permission scope and queries it under another." (`build-plan.md:284-286`)
+**Text:** "A retrieval call by an actor without permission on a source record returns no content derived from that record, verified by a test that stores a memory under one permission scope and queries it under another." (`build-plan.md:300-302`)
 
 **State:** complete
 
@@ -228,7 +229,7 @@ rule expressly allows.
 
 ### Criterion 28
 
-**Text:** "A memory derived from two sources carries the intersection of their audiences, not the union. A test combines a broadly readable source with a restricted one and asserts the result is restricted." (`build-plan.md:287-289`)
+**Text:** "A memory derived from two sources carries the intersection of their audiences, not the union. A test combines a broadly readable source with a restricted one and asserts the result is restricted." (`build-plan.md:303-305`)
 
 **State:** complete
 
@@ -273,7 +274,7 @@ second, and a purpose bug would not widen who can read the derived row.
 
 ### Criterion 29
 
-**Text:** "Deleting or superseding a source record invalidates its derived summaries and its embeddings in the same operation, verified by querying the retrieval index afterward." (`build-plan.md:290-292`)
+**Text:** "Deleting or superseding a source record invalidates its derived summaries and its embeddings in the same operation, verified by querying the retrieval index afterward." (`build-plan.md:306-308`)
 
 **State:** complete
 
@@ -319,12 +320,13 @@ index query.
 
 ### Criterion 30
 
-**Text:** "Every workspace has an explicit memory retention setting, and a workspace created with no explicit setting receives a bounded default rather than indefinite retention." (`build-plan.md:293-295`)
+**Text:** "Every workspace has explicit memory retention settings rather than an inherited posture: both are written as rows when the module is enabled, so what a workspace does about age is always a stored, readable choice. The package default for the age-expiry gate is off, so nothing is deleted for age alone unless a workspace states that it wants that, and the retention window is a bounded positive number of days, read only while the gate is on. A missing or out-of-range window is refused rather than replaced by a default, and the window carries no indefinite sentinel value: unbounded retention is the gate's off state." (`build-plan.md:309-318`)
 
-**State:** partial
+**State:** complete
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_memory_retention.py::test_enabling_the_module_writes_both_retention_rows_and_a_daily_schedule`
+- `pytest:tests/postgres/test_memory_retention.py::test_a_gate_off_sweep_deletes_nothing_and_finishes_an_ordinary_success`
 - `pytest:tests/postgres/test_memory_retention.py::test_turning_the_gate_on_needs_one_settings_write_and_no_new_schedule`
 - `pytest:tests/postgres/test_memory_retention.py::test_a_retention_row_outside_the_declared_range_expires_nothing`
 - `pytest:tests/postgres/test_memory_retention.py::test_the_boundary_instant_is_retained_and_anything_older_is_not`
@@ -350,30 +352,35 @@ index 856698f..ccb1adb 100644
 
 **Performed by:** P7 (2026-09-21)
 
-**Note:** the demonstrated half is the criterion's first clause. Enabling Recallatron
-writes both retention rows explicitly — `recallatron.retention.expire_by_age` and a
-positive bounded `recallatron.retention.days` — so no workspace is left with retention
-implied by a package default nobody chose; the window is range-checked at every layer, and
-the scheduled sweep enforces it once a workspace turns the gate on. The mutation drops
-exactly one of the two rows from enable and the read fails closed rather than substituting
-a default, which is the property that clause is worth having.
+**Note:** the five demonstrators split the amended criterion's clauses. Enabling Recallatron
+writes both retention rows explicitly — `recallatron.retention.expire_by_age` stored as
+`false` and a positive bounded `recallatron.retention.days` — so no workspace is left with
+retention implied by a package default nobody chose. The second demonstrator is the
+off-by-default clause itself: three consecutive daily sweeps against a workspace that
+configured nothing delete nothing, select no root, write no deletion record and finish an
+ordinary success rather than a failure. The third is that turning the gate on is one
+settings write against a schedule that already exists; the fourth is that a window row
+outside the declared range expires nothing rather than falling back to a default; the fifth
+is the boundary instant, where equality is retained and anything older is not. The mutation
+drops exactly one of the two rows from enable and the read fails closed rather than
+substituting a default, which is the property the first clause is worth having.
 
-**Note:** this row is `partial` and the held-back half is the criterion's second clause, "a
-workspace created with no explicit setting receives a bounded default rather than indefinite
-retention". That is the rule Robin's 2026-09-21 correction reverses: age-based expiry is
-opt-in, a workspace that turns nothing on keeps its memories, and member-audience memories
-stay outside the mechanism in both gate states. The criterion's replacement wording is
-drafted and awaits Robin's ratification through the ordinary public docs review; until it
-lands, no row here may claim the clause as written, and seeding the row against the amended
-text would claim a criterion this repository does not carry. Promote this row to `complete`
-only once the amendment is ratified — the evidence above is already the evidence for the
-replacement's first sentence.
+**Note:** this row was seeded `partial` earlier in this run and is promoted to `complete`
+here. The held-back half was the criterion's old second clause, "a workspace created with no
+explicit setting receives a bounded default rather than indefinite retention" — the rule
+Robin's 2026-09-21 correction reverses: age-based expiry is opt-in, a workspace that turns
+nothing on keeps its memories, and member-audience memories stay outside the mechanism in
+both gate states. That correction was ratified at this run's checkpoint 16 and the public
+amendment landed with this prompt: `build-plan.md`'s criterion 30, its FR 29 trace row, and
+the recorded change of direction in `docs/architecture/memory.md` § Retention and decision
+ledger entry 13. The `Text` above is the amended criterion, quoted from the file, and every
+clause of it has a demonstrator, which is what the earlier `Note:` said promotion required.
 
 ---
 
 ### Criterion 33
 
-**Text:** "Every phase-one path completes correctly in a workspace where the memory module was never installed and never enabled, verified by running the phase-one acceptance suite in such a workspace. Workspace-level disable is phase-seven work under D5, so release one proves the module boundary by absence rather than by disable." (`build-plan.md:305-310`)
+**Text:** "Every phase-one path completes correctly in a workspace where the memory module was never installed and never enabled, verified by running the phase-one acceptance suite in such a workspace. Workspace-level disable is phase-seven work under D5, so release one proves the module boundary by absence rather than by disable." (`build-plan.md:328-333`)
 
 **State:** complete
 
@@ -429,7 +436,7 @@ runs agreed" from quietly meaning "both runs ran nothing".
 
 ### Criterion 36
 
-**Text:** "Criterion 21 is re-asserted at the end of this phase against a workspace that has the memory module installed, enabled, and populated. The export carries the module's records through the export format its manifest declares (criterion 25), and after a restore into an empty deployment the restored workspace's composition, configuration versions, module schema versions, and memory records match the original by comparison." (`build-plan.md:322-327`)
+**Text:** "Criterion 21 is re-asserted at the end of this phase against a workspace that has the memory module installed, enabled, and populated. The export carries the module's records through the export format its manifest declares (criterion 25), and after a restore into an empty deployment the restored workspace's composition, configuration versions, module schema versions, and memory records match the original by comparison." (`build-plan.md:345-350`)
 
 **State:** complete
 

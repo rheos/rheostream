@@ -133,10 +133,10 @@ DeletionHandler = Annotated[_DeletionHandler, PlainValidator(_deletion_handler)]
 
 Narrowed in 1a1 from ``Callable[..., object]`` to
 :class:`rheo_core.deletion.registry.DeletionHandler`, the protocol the coordinator
-actually calls: ``(ctx, uow, ref) -> RemovedMemories``. The old comment here said the
-alias stayed unnarrowed because no run read it and a *guessed* signature is worse than
-none — that reasoning held exactly until a caller existed, and the signature is read
-off that caller rather than guessed.
+actually calls: ``(ctx, uow, ref, *, disposition) -> RemovedMemories``. The old comment
+here said the alias stayed unnarrowed because no run read it and a *guessed* signature
+is worse than none — that reasoning held exactly until a caller existed, and the
+signature is read off that caller rather than guessed.
 
 ``Exporter`` and ``Importer`` below were narrowed in the same run and for the same
 reason, one prompt later: the export collector became their caller.
@@ -160,9 +160,10 @@ def _owned_delete_callable(value: object) -> object:
 DeleteAuthorizer = Annotated[
     _DeleteAuthorizer | None, PlainValidator(_owned_delete_callable)
 ]
-"""``(ctx, uow, ref) -> DeleteAuthorization | Refusal``: may this be deleted, and at
-which revision. Content-free by shape — see
-:class:`~rheo_core.deletion.registry.DeleteAuthorization`."""
+"""``(ctx, uow, ref, *, disposition) -> DeleteAuthorization | Refusal``: may this be
+deleted, and at which revision. Content-free by shape — see
+:class:`~rheo_core.deletion.registry.DeleteAuthorization`. ``disposition`` is
+keyword-only with no default; see :class:`~rheo_core.deletion.registry.Disposition`."""
 
 OwnedDeleter = Annotated[_OwnedDeleter | None, PlainValidator(_owned_delete_callable)]
 """``(ctx, uow, authorization) -> RemovedMemories``: remove the record and the rows the

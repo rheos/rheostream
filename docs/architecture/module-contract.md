@@ -59,8 +59,8 @@ that argument in full.
 | `jobs` | list of `JobKind(name, input_model, handler, max_attempts, cancellable)` | Background work kinds. **Named deviation:** this row once omitted `input_model`. `JobKindRegistry.register(kind, input_model, handler)` (`packages/core/src/rheo_core/work/kinds.py`) takes exactly those three positional arguments, so a `JobKind` carrying no input model could not be registered at all; the row gained the field rather than the registry losing it. **`max_attempts` and `cancellable` are carried on the declaration and read by nothing in release one:** the loader passes the registry only the three arguments it takes, and widening a shipped signature for a caller that does not exist is what this deliberately does not do. Each has a named future reader — an enqueue call site for `max_attempts` (today `work.max_attempts` supplies the budget and the job row's own column is the authority from then on), and Disable for `cancellable`, whose contract below already says each job kind's flag decides which queued jobs are cancelled and which drain. |
 | `schedules` | list of `Schedule(name, job_kind, cron, enabled_by_default)` | Per-workspace schedules created at enable. |
 | `resolvers` | mapping of record type to resolver | One per owned record type ([identifiers](identifiers.md#resolution-under-permission)). |
-| `deletion_participants` | list of `DeletionParticipant(record_types, handler)` | Hooks the [deletion coordinator](deletion-export-migration.md#the-cascade) calls. |
-| `export` | `ExportDeclaration(format_version, schema_path, exporter, importer)` | The module's versioned export format. |
+| `deletion_participants` | list of `DeletionParticipant(record_types, handler)` | Hooks the [deletion coordinator](deletion-export-migration.md#the-cascade) calls. `handler` was narrowed in run 1a1 from an untyped callable to `(ctx, uow, ref, *, disposition) -> RemovedMemories`, read off its first real caller rather than guessed. A participant that raises aborts the whole deletion, so a handler has no refusal channel of its own and needs none; `disposition` is keyword-only, so a handler that ignores it still reads as one that was offered it. |
+| `export` | `ExportDeclaration(format_version, schema_path, exporter, importer)` | The module's versioned export format. **Both callables were narrowed in run 1a1, when the export collector became their first caller.** `exporter` receives only `rheo_core.exports.artifact.ExportSnapshot` — the sealed view of one source transaction, carrying the connection, a fixed `snapshot_at` and the transaction-bound settings source — and never a bare connection, which is what would let a module read a second, later view into the same artifact. `importer` receives the restore transaction's unit of work and the already-validated rows, and returns the **second pass** the core calls after core's own deletion evidence has landed: restore is two passes with the ledger between them, so parents go in with their self-references null and only then are those references resolved and marked ancestry validated against that evidence. A module cannot schedule that itself without committing or reaching into the core's ordering, and an importer never commits, because the whole restore is one transaction and a module ending it would take the rollback guarantee with it. |
 | `web` | optional `WebContribution(package_name, navigation, routes, record_views, forms, search_providers)` | The TypeScript contribution composed into `apps/web`. **Release one ships `WebSurface \| None` instead** (`packages/core/src/rheo_core/modules/manifest.py`): the surface name, host label and path prefix, and nothing else, because its one consumer is the internal listener's `routing_config()` (`apps/core/src/rheo_app_core/internal_routes.py`). The interface contribution above is run 1a3's, and widening or replacing this field is that run's to do. |
 | `agent_guidance` | optional path | Text a runtime may include as tool guidance. It describes use; it grants nothing (idea document). |
 | `secret_scopes` | list of scope prefixes | Empty for domain modules in release one. Only components that present secrets declare any. |
@@ -85,7 +85,7 @@ RecordType
   delete_roles: set[Role]         # who may call core.record.delete for it; required when deletable
   exportable: bool
   audience_field: str | None      # column holding the record's audience, when records carry one
-  authorize_delete: DeleteAuthorizer | None   # (ctx, uow, ref) -> DeleteAuthorization | Refusal
+  authorize_delete: DeleteAuthorizer | None   # (ctx, uow, ref, *, disposition) -> DeleteAuthorization | Refusal
   delete_owned: OwnedDeleter | None           # (ctx, uow, authorization) -> RemovedMemories
 ```
 
@@ -93,7 +93,11 @@ A record type appears in exactly one manifest. Two modules declaring the same
 `<module_id>.<name>` cannot happen because the module id is the prefix; two modules declaring a
 table outside their schema fail install.
 
-**Named deviation: the owned-delete pair is a field of `RecordType`, added in run 1a1.** The
+**Named deviation: the owned-delete pair is a field of `RecordType`, added in run 1a1.**
+**Ratified by the maintainer on 2026-09-21, reviewed at run 1a1's checkpoint 13**, and recorded here and
+in the [decision ledger](../ideas/rheo-stream-idea.md#recorded-changes-of-direction) rather than
+resting on a build-stage commit message: it changes the module contract version 1 that PR #7
+settled, so it gets the same explicitness that ratification did. The
 [deletion coordinator](deletion-export-migration.md#the-cascade) reaches a module's own delete
 through two callables, and the manifest carried no field for them — so until a real owner
 existed, only a test harness registered a declaration, by hand. The pair lives here rather than
@@ -113,6 +117,49 @@ The coordinator resolves against that one instance, so a declaration routed anyw
 it never finds; and ownership is not a cascade choice the way a participant hook is — it is the
 record type's own statement that it is deletable at all, declared beside the `deletable` and
 `delete_roles` the loader already accepts without a parameter.
+
+The registry keys declarations on `(module_id, record_type)` and admits exactly one owner per
+type. A module may claim record types under its own id only, `core` and `harness` are reserved
+to their origins, a `test_harness` origin is accepted under the test profile alone, and
+re-registering an identical declaration is a no-op so a process that loads its modules twice
+registers once. A reference no declaration owns, a reference whose owning module is not enabled
+in this workspace, and a reference naming a core-owned record all refuse with the same generic
+`record_not_deletable`: distinguishing them would turn `core.record.delete` into a probe for
+which record types a deployment carries and which modules a workspace runs. An owner's own
+authorizer refusal passes through unchanged, because that one is the owner's to phrase.
+
+**Named deviation: `Disposition` is a required keyword-only argument, with no default, on both
+`DeleteAuthorizer` and `DeletionHandler`. Ratified by the maintainer on 2026-09-21, reviewed at
+run 1a1's checkpoint 14**, and recorded here and in the decision ledger for the same reason as the pair
+above: it is a change to a core interface every module implements, not a build detail. Its two
+values, `user_erasure` and `retention_expiry`, are the same vocabulary the deletion ledger's
+`cause` column records, so "which disposition ran" and "what the ledger says happened" cannot
+drift apart. The coordinator passes it because an owner cannot work it out: the two dispositions
+traverse different edges — an erasure follows marked supersession-lineage hops so a replacement
+stays reachable from an ancestor nobody can read any more, an expiry skips every one of them so
+a fresh replacement survives its predecessor's sweep on its own clock — and they carry different
+authority, a person's role and the record's audience in one case and the workspace's own
+retention policy, sealed into a verified scheduled execution, in the other. Neither callable can
+read that capability. It has no default deliberately: a caller that did not say which
+disposition is running has not decided, and a default would pick one for it silently.
+
+The authorizer is **content-free by shape**: it answers a `DeleteAuthorization` of a reference
+and a revision, or a refusal, and there is nowhere on that object to put a title, a body or a
+payload. The revision is what the coordinator captures before the effect and rechecks under the
+lifecycle lock, so an approver cannot have the record move underneath an approval. `delete_owned`
+takes that authorization rather than the bare reference, so the revision authorized is the
+revision deleted at, and answers a `RemovedMemories` of identifiers only — distinct memory rows
+physically removed, never a child row, a vector, an already-absent row, a retained replacement,
+or a row merely marked invalidated. The coordinator unions those sets across the owner and every
+participant and stores the size, which is why overlapping reports collapse instead of
+double-counting.
+
+**What 1a1 implements here is narrow, and the full [§ A14 cascade](deletion-export-migration.md#the-cascade)
+is not it.** This run builds the owned delete for `recallatron.memory`, the module's own
+invalidation participant, content-free deletion evidence and the transactional audit row. The
+job, external-action, transcript and held-export legs of the cascade — and criterion 65 with
+them — are phase three's, and until they land the deletion record's first three counters are
+zero by construction rather than by coincidence.
 
 ### Operations, tools, events
 

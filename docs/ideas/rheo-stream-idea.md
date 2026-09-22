@@ -1655,7 +1655,7 @@ review and merge of the pull request that carried them (PR #7, 2026-09-09):
 ### Recorded changes of direction
 
 Later documents should not reverse settled direction without recording the reason.
-Three reversals are recorded here.
+The following changes are recorded here.
 
 1. **Runtime rollout order.** This document states that Claude CLI and OpenRouter
    execution "are explicit requirements." That is softened to a rollout order:
@@ -1697,6 +1697,106 @@ Three reversals are recorded here.
    for. Nothing else changes: the shell host is still one host among the several a
    single application serves through host-based routing, and in single-host path mode
    it does not exist at all. The name is configuration like every other host here.
+4. **Ambient automatic memory, and what "entities and relationships" means.**
+   Release-one Recallatron includes both manual memory and ambient automatic creation
+   from explicitly stated eligible transcript evidence, without a remember command or
+   per-note administered review. The previous manual-only restriction is superseded to
+   preserve the intended across-session memory behavior. "Entities and relationships"
+   means global UUID entity identity plus memory-to-entity mentions and
+   memory-to-authoritative-record provenance/about links. It does not ratify generic
+   entity attributes, entity-to-entity edges/traversal, confirmation or merge. Readable
+   retained non-erasure history remains part of A17; erased content remains absent.
+5. **Entity identity and creation.** Entity creation is independent and non-probing.
+   Same-name entities are allowed; no global normalized-name uniqueness constraint
+   exists. Existing entity selection requires an authorized canonical reference. A
+   no-backing-reference entity is removed when its last mention is deleted; referenced
+   domain entities are retained under their own access rules.
+6. **Erasure, scheduled expiry, and marked ancestry.** User erasure follows dependent
+   lineage. Scheduled expiry of a superseded predecessor preserves a fresh replacement
+   reached only by marked ancestry, with its own retention clock. Server-owned immutable
+   ancestry and separately copied actual access restrictions preserve this behavior
+   after physical removal and export/restore. The core deletion record adds cause and
+   retained_successor_ref as content-free validation metadata; its outcome still has
+   only the four counters, and caller output does not disclose cross-audience counts. No
+   successor removal revives a predecessor.
+7. **The retention baseline, and what stays unapproved.** Criterion 30's explicit
+   bounded positive memory retention and scheduled sweep are release-one baseline
+   behavior; no keep-forever sentinel is authorized. Advanced retention strategies
+   remain unapproved. Migration preserves original clocks and forecasts expiry rather
+   than refreshing dates. (Narrowed the same day by entry 13 below: the sweep and the
+   bounded window stay as baseline mechanism, and whether a workspace expires by age at
+   all became its own explicit off-by-default setting. "No keep-forever sentinel" is
+   unchanged — unboundedness is that gate's state, never a magic number on the window.)
+8. **Bound purpose, compare-and-set, and trusted source identity.** Bound runtime/job
+   purpose is authoritative and cannot be overridden or written wider. Unbound
+   authenticated humans/services have no purpose gate. Correct and supersede use
+   expected_revision compare-and-set. Namespaced opaque external source identity and
+   payload-free receipts provide idempotent ingest without name probing, canonical-ref
+   misuse or replay resurrection.
+9. **The automatic-memory carrier, and what it does not activate.** A dedicated
+   automatic-memory carrier follows retrieval and precedes migration/cutover. It
+   delivers both a Rheo runtime typed evidence handoff and a
+   machine-and-project-enrolled local Claude Code CLI/Desktop Code bridge, with bounded
+   Stop capture and SessionEnd finalization, durable sanitation/digestion/extraction,
+   immutable authority/provenance and replay suppression. M.O.T. is a behavior
+   reference, not schema or threshold authority. Internal digestion does not activate a
+   conversation ledger/archive, generic sessionization, profiles,
+   candidate-confirmation UI, no-query bundles or proactive memory surfacing.
+   Topic-thread and procedural-note handling keep their original explicit deferrals; the
+   proposed discovery carriers remain unapproved.
+10. **None of this waives migration criterion 32.** These boundaries do not waive
+    migration criterion 32. Unsupported or lossy source mappings hold cutover until
+    every source record has a valid destination, an exact public criterion change is
+    ratified, or the maintainer declines cutover. The supported-client manifest is a
+    separate operational gate and never a data-parity waiver.
+11. **The owned-delete pair is a field of `RecordType`.** Module contract version 1, as
+    PR #7 settled it, gave the deletion coordinator no typed way to reach a module's own
+    delete: until a real owner existed, only a test harness registered a declaration, by
+    hand. `RecordType` now carries `authorize_delete` and `delete_owned`, whole or
+    absent, valid only on a `deletable` type, and the loader registers the pair on the
+    process-global owned-delete registry unconditionally. Reason: "a record type appears
+    in exactly one manifest" is already the invariant an owned-delete registry needs, so
+    hanging the pair off the type makes "exactly one declaration owns a record type"
+    structural rather than checked. Ratified by the maintainer on 2026-09-21, reviewed
+    at run 1a1's checkpoint 13, and written into the
+    [module contract](../architecture/module-contract.md#owned-record-types) rather than
+    left to a build-stage commit message. Constraint: this is the narrow owned delete
+    and its evidence, not the full A14 cascade, whose job, action, transcript and
+    held-export legs remain phase three's along with criterion 65.
+12. **`Disposition` is a required keyword on the delete authorizer and the participant
+    handler.** Both callables now take a keyword-only `disposition` with no default,
+    valued `user_erasure` or `retention_expiry` — the same vocabulary the deletion
+    ledger's `cause` column records. Reason: the two dispositions traverse different
+    edges and carry different authority, both differences live inside the owner's own
+    callables, and neither can read the sealed capability the core verified, so an owner
+    cannot infer which one is running and has to be told. No default, because a caller
+    that did not say has not decided. Ratified by the maintainer on 2026-09-21, reviewed
+    at run 1a1's checkpoint 14. Constraint: it is one axis with two values carried on
+    the existing pair, not a second registration an owner could forget half of.
+13. **Memory retention is opt-in, and age-based expiry is off by default.** The
+    architecture specification settled by PR #7 made `recallatron.retention.days`
+    mandatory for every workspace, with a package default of 365 days and the explicit
+    statement that none inherits indefinite retention — so every memory was deleted by a
+    daily sweep once older than the setting, with no opt-out. That is superseded for
+    retention alone. A second setting, `recallatron.retention.expire_by_age`, is written
+    at enable with a package default of false, and the window is read only while it is
+    on. Reason: the authority being restored is FR 29's own text, "Memory retention is
+    explicit per workspace. Nothing is retained permanently by default" — a requirement
+    against an inherited retention posture, which making both settings explicit stored
+    rows satisfies, and which does not forbid a workspace choosing to keep its memories.
+    Recallatron's premise is that a memory is corrected or superseded, not expired for
+    having got old, and permanent durable memory is the product's differentiator; the
+    mandatory reading was an architecture-stage over-tightening that travelled through
+    one pull request carrying seventeen unrelated lettered decisions. Ratified by the
+    maintainer on 2026-09-21, reviewed at run 1a1's checkpoint 16. Constraints: the
+    sweep mechanism stays, as opt-in infrastructure rather than default behavior; the
+    window keeps its hard bounds of 1 to 3650 days and gains no indefinite sentinel;
+    `member`-audience memories stay outside the age mechanism in either gate state; and
+    category-scoped retention — expiring one class of subject matter and not another —
+    is explicitly deferred, because the schema carries no taxonomy to scope such a
+    policy against. Criterion 30 and its FR 29 trace row are amended to match, and the
+    recorded change of direction is repeated in
+    [memory](../architecture/memory.md#retention-fr-29-criterion-30).
 
 ### Preferred but still to validate
 

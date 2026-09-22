@@ -114,6 +114,24 @@ reach.
 No secret value or reference, no tool argument, and no raw context text is in any of the three
 tables (criterion 17).
 
+### Automatic memory's two producers
+
+Automatic memory has two producers: a permission-bound Rheo runtime evidence handoff and a
+separately enrolled local Claude Code CLI/Desktop Code bridge. Existing
+model-output/tool-summary/progress rows do not by themselves prove attributable explicit
+statements; the automatic-memory carrier adds a typed speaker/evidence boundary before
+extraction. Local capture requires both machine and project/workspace enrollment and excludes
+arbitrary claude.ai/cloud chats. Stop checkpoints and SessionEnd finalization hand off locators
+quickly; durable workers parse, sanitize, digest and extract. Raw tool results/file contents are
+not blindly promoted. Acknowledged ranges recover while sources remain readable; pre-handoff
+crashes, tails, failed hooks and expired/missing sources remain explicit gaps. No hook-finality
+or spawned-process durability guarantee is claimed.
+
+This amendment fixes the later carrier's bounds and what it may ask of the core. It adds no
+public transcript path, no credential, and no local-settings example carrying user data; the
+tables above are unchanged by it, and run 1a1 ships no transcript reader, extractor or hook
+([memory](memory.md#provenance-and-links)).
+
 ## `ClaudeCliRuntime`
 
 The first adapter, in `runtimes/claude_cli`. It spawns the local `claude` executable in print mode
@@ -239,10 +257,11 @@ operation tables in the module documents are authoritative.
 | Phase | Tool | Class | Roles |
 | --- | --- | --- | --- |
 | One (core) | `workspace_status`, `operations_get`, `operations_list` | read | owner, member |
-| One (core) | `audit_list` | read | owner |
-| Two (memory) | `recallatron_recall` | read | owner, member |
-| Two (memory) | `recallatron_remember`, `recallatron_derive`, `recallatron_correct`, `recallatron_supersede` | mutate | owner, member |
-| Two (memory) | `recallatron_forget` | destructive | owner, member |
+| One (core) | `audit_list` | read | owner, operator |
+| Two (memory) | recallatron_recall, recallatron_read | read | owner, member, service |
+| Two (memory) | recallatron_remember, recallatron_derive | mutate | owner, member, service |
+| Two (memory) | recallatron_correct, recallatron_supersede | mutate | owner, member |
+| Two (memory) | recallatron_forget | destructive | owner, member |
 | Three (relationships) | `relationships_find_party`, `relationships_get_party`, `relationships_list_review` | read | owner, member |
 | Three (relationships) | `relationships_merge_parties`, `relationships_unmerge`, `relationships_resolve_review` | mutate | owner, member |
 | Three (relationships) | `relationships_delete_party` | destructive | owner |
@@ -253,9 +272,20 @@ operation tables in the module documents are authoritative.
 | Three (leads) | `leads_prepare_followup` | draft | owner, member |
 | Three (leads) | `leads_delete` | destructive | owner |
 
+Entity list/get are service-only in release one. Tool origin and delegated operation availability
+are checked on every discovery/call; a cached listing grants no authority. READ query text is not
+persisted in release-one tool telemetry. Metadata telemetry is workspace-scoped,
+owner/operator-readable and bounded to seven days and ten thousand rows or a tighter workspace
+setting; failure cannot change a tool result.
+
 No tool in the production set is external or financial class. The recording sink and the
 destructive fixture are test-harness registrations, never in the production set (criterion 18);
 the sink is release one's only external-class operation anywhere.
+
+Release one ships **no no-query context bundle**: every memory a run is shown arrives through
+`recallatron.memory.recall` or `recallatron.memory.read` with a query the caller supplied, and a
+tool that handed a model a bundle of memories it never asked for is out of scope for this
+release.
 
 ## The redaction contract
 
@@ -288,6 +318,16 @@ allowed tier, and cap total bytes at `runtime.max_context_bytes` (package defaul
 are masked by pattern before sending unless the `respond` allowance is on. Derived memories carry
 the intersection of their sources' audiences and purposes, so the filter on a memory is never
 looser than on what it was made from (criterion 28).
+
+**Purpose comes from the context's principal, not from the argument.** When
+[`ctx.principal`](overview.md#the-workspace-context) carries a bound purpose — a runtime token's,
+or a job's or approval's stored purpose on a rebuild — that purpose is the one applied: an
+omitted argument uses it, and an argument naming a different purpose refuses rather than
+narrowing or widening silently. A run therefore cannot reach memory outside the purpose its
+token was issued for by passing a different value here. An unbound authenticated person or
+service browsing without a bound purpose has no memory-purpose gate at all, which is the
+ordinary interface case and not a bypass: the audience, link and contact-permission filters
+still run in full.
 
 ### Retention and control
 

@@ -83,11 +83,20 @@ shared credentials, or to unrelated records (idea document).
 | `record_type text`, `record_id uuid` | What, by identifier only. |
 | `actor_kind`, `actor_id`, `approval_id uuid null` | Who, and the confirmation. `approval_id` is null only when `actor_kind = system` and the deletion is the memory retention sweep, which is R5's one permitted scheduled expiry ([memory](memory.md#retention-fr-29-criterion-30)). |
 | `participants text[]` | Which participants ran. |
-| `cancelled_job_count integer`, `cancelled_action_count integer`, `removed_export_count integer`, `invalidated_memory_count integer` | Counts only. |
+| `cancelled_job_count integer`, `cancelled_action_count integer`, `removed_export_count integer`, `invalidated_memory_count integer` | Counts only, and restricted audit data rather than caller output: a count of what a deletion reached can describe records across audiences the caller may not read, so the four are readable through the owner/operator audit surface and are never part of the operation's own result. |
+| `cause text` | user_erasure or retention_expiry; never a caller-selectable approval bypass. |
+| `retained_successor_ref text null` | Canonical successor captured only for scheduled expiry of a superseded memory, so restore can validate content-free ancestry after physical predecessor removal. Never source content. |
 
 No column can hold content from the deleted record; the model has no field for it, and the test
 in criterion 65 asserts no field value from the deleted record appears anywhere in the row. The
 record resolver returns `state = deleted` for the reference from this table.
+
+The persisted outcome still has exactly four counters. 1a1 implements the owning memory delete,
+Recallatron invalidation, deletion evidence and transactional audit only; its first three
+counters are zero. The caller receives deletion_ref only. Exact counts are restricted
+owner/operator audit data. Phase-three 2c owns the remaining job/action/transcript/held-export
+cascade and criterion 65. Deletion cause/successor metadata is exported and validated with the
+ledger; it is not an erasure bypass for restoration.
 
 ### Deletion is not withdrawal
 
