@@ -10,7 +10,7 @@ non-``deferred`` row names a performer.
 **Two files, validated independently, plus one check between them.**
 :data:`MATRICES` is an ordered list of ``(path, expected_criteria)`` pairs —
 ``phase-1-matrix.md`` over ``{1..23} ∪ {69}`` and ``phase-2-matrix.md`` over
-``{24, 25, 26, 27, 28, 29, 30, 33, 36}``. Each is parsed and validated on its own,
+``{24, 25, 26, 27, 28, 29, 30, 31, 33, 36}``. Each is parsed and validated on its own,
 so a stale row in one cannot be masked by the other, and
 :func:`cross_file_errors` then asserts that **no criterion number appears in more
 than one matrix**. That last check is the only thing the two files share: they are
@@ -57,13 +57,13 @@ _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "repository-checks.yml"
 EXPECTED_CRITERIA = frozenset(range(1, 24)) | {69}
 """Phase one's set, unchanged: criteria 1-23 and criterion 69."""
 
-PHASE_TWO_CRITERIA = frozenset({24, 25, 26, 27, 28, 29, 30, 33, 36})
+PHASE_TWO_CRITERIA = frozenset({24, 25, 26, 27, 28, 29, 30, 31, 33, 36})
 """Phase two's seeded set.
 
-Nine of phase two's fourteen criteria. 31, 32, 34, 35 and 37 are absent because no
-run has closed them, and the completeness check is what keeps them absent: a row
-for one of them fails here as ``unexpected`` rather than quietly widening what the
-repository claims.
+Ten of phase two's fourteen criteria. 31 joined at run 1a2's close-out, in the same
+change as its row. 32, 34, 35 and 37 are absent because no run has closed them, and
+the completeness check is what keeps them absent: a row for one of them fails here
+as ``unexpected`` rather than quietly widening what the repository claims.
 """
 
 MATRICES: Final[tuple[tuple[Path, frozenset[int]], ...]] = (

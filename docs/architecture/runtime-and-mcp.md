@@ -203,9 +203,32 @@ module, which is the point of the second adapter (D4).
 
 Embeddings are model-provider calls and sit behind the same kind of seam:
 `EmbeddingProvider.embed(texts) -> vectors` with `model_id` and `dimensions` reported. The memory
-module's dense strategy depends on the protocol; release one ships one implementation over an
-HTTP embeddings API selected by `recallatron.embedding.provider`, with the credential in a slot.
-Inputs pass through the redaction contract with purpose `internal_analysis`.
+module's dense strategy depends on the protocol. Release one ships one implementation, and it
+runs in process: `LocalEmbeddingProvider`, fastembed's ONNX build of
+`sentence-transformers/all-MiniLM-L6-v2` at 384 dimensions, selected by
+`recallatron.embedding.provider = "local"` (deployment scope, default `none`). It reads no
+credential and makes no HTTP call to embed anything, so no memory text leaves the deployment.
+The one network access is the first fetch of the model artifact into
+`<data_root>/models/fastembed/` ([data root](storage-and-workspaces.md#the-data-root-fr-10));
+later loads read it from disk. It ships as Recallatron's `local-embeddings` extra, and the
+module registers it only when that extra is installed. The model loads on first use in every
+process that embeds: the worker, for memories, and whichever process serves a `dense` or
+`hybrid` recall, for the query. One `embed()` call serves memories and queries alike, and a
+returned vector that is not unit length fails the call.
+
+What release one's provider receives is the memory's stored title and body, composed as
+`embed_input(title, body)` (the title, one newline, the body), or a recall's bare query.
+Recallatron's manifest declares an empty `sensitivity`, so no memory field carries the
+`internal` or `restricted` tier and nothing is redacted from that input today. The redaction
+contract applies to the embed input the day a memory field is tiered.
+
+**Known limit, issue #108.** A real deployment cannot set `recallatron.embedding.provider` yet.
+The module loader resolves deployment settings, to read `modules.installed`, before any
+module's keys are registered, so the key fails startup with `SettingUndeclared` whether it comes
+from `RHEO__recallatron__embedding__provider` or from `deployment.toml`. The container image
+also installs without the `local-embeddings` extra. Both are deferred to run 0d, and until they
+land a deployment runs with no provider: no embed job is enqueued, the `hybrid` default answers
+lexical results with `dense_available = false`, and `recallatron.embedding.rebuild` refuses.
 
 ## The MCP facade
 

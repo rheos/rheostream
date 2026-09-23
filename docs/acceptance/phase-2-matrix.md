@@ -1,17 +1,17 @@
 # Phase two acceptance matrix
 
-This is phase two's acceptance record so far: one row for each of criteria 24-30, 33 and
+This is phase two's acceptance record so far: one row for each of criteria 24-31, 33 and
 36. Read [README.md](README.md) first. Its per-row grammar, its three parser rules, and
 above all its "what this is not" section govern every row here: the matrix records which
 test demonstrates a criterion and which mutation proves that test bites, and it never
 claims a criterion is demonstrated merely because a row exists.
 
-**Nine rows, not fourteen.** Phase two's criteria run 24 to 37. Criteria 31, 32, 34, 35
-and 37 have no row because no run has closed them, and an absent row is the honest record
-of that. Retrieval-strategy selection (31) is run 1a2's, the predecessor migration (32) is
-run 1b's, and the naming gate, fixture-provenance gate and re-asserted CI gates (34, 35,
-37) are run 1a3's, because each of them names this phase's ported interface surface, which
-does not exist yet. Do not add a row for one of those on the strength of a test that
+**Ten rows, not fourteen.** Phase two's criteria run 24 to 37. Criteria 32, 34, 35 and 37
+have no row because no run has closed them, and an absent row is the honest record of that.
+Retrieval-strategy selection (31) was run 1a2's and its row was added at that run's
+close-out. The predecessor migration (32) is run 1b's, and the naming gate,
+fixture-provenance gate and re-asserted CI gates (34, 35, 37) are run 1a3's, because each
+of them names this phase's ported interface surface, which does not exist yet. Do not add a row for one of those on the strength of a test that
 happens to pass; the guard's per-file completeness check is what keeps the set exact, and
 widening the set is a decision, not a fix.
 
@@ -23,8 +23,9 @@ applied to `build-plan.md`, so the row now quotes the amended text, its evidence
 clause of it, and it is `complete`. Its second `Note:` records the promotion.
 
 Every mutation below was applied to this working tree on 2026-09-21, run, watched go red,
-and reverted; each fenced block is the `git diff` that was captured while it was applied,
-never a hand-typed hunk. Criteria 25, 26 and 33 take their demonstrators from run 1a0b's
+and reverted, except criterion 31's, which run 1a2 captured the same way on 2026-09-23;
+each fenced block is the `git diff` that was captured while it was applied, never a
+hand-typed hunk. Criteria 25, 26 and 33 take their demonstrators from run 1a0b's
 close-out evidence, but 1a0b recorded test paths rather than node ids and captured no
 applicable hunk, so the node ids below were re-derived against this tree and the mutations
 are new captures. Each of those three rows says so in its own `Note:`.
@@ -381,6 +382,61 @@ amendment landed with this prompt: `build-plan.md`'s criterion 30, its FR 29 tra
 the recorded change of direction in `docs/architecture/memory.md` § Retention and decision
 ledger entry 13. The `Text` above is the amended criterion, quoted from the file, and every
 clause of it has a demonstrator, which is what the earlier `Note:` said promotion required.
+
+---
+
+### Criterion 31
+
+**Text:** "The retrieval strategy is selected through the adapter, and a test runs the module's full behavioural suite against both a dense-only and a lexical-only configuration, both passing." (`build-plan.md:319-321`)
+
+**State:** complete
+
+**Demonstrator:**
+- `ci:python / Criterion 31 (lexical and dense passes)`
+
+**Mutation:**
+```diff
+diff --git a/modules/recallatron/src/rheo_recallatron/retrieval/dispatch.py b/modules/recallatron/src/rheo_recallatron/retrieval/dispatch.py
+index f7fc8f0..2b65c0f 100644
+--- a/modules/recallatron/src/rheo_recallatron/retrieval/dispatch.py
++++ b/modules/recallatron/src/rheo_recallatron/retrieval/dispatch.py
+@@ -81,4 +81,4 @@ def resolve_strategy(ctx: WorkspaceContext, uow: UnitOfWork) -> RetrievalStrateg
+             uow, workspace_id=ctx.workspace_id
+         ).workspace_overrides(ctx.workspace_id)
+     )
+-    return STRATEGY_REGISTRY[name]
++    return STRATEGY_REGISTRY[str(RETRIEVAL_STRATEGY_SPEC.default)]
+```
+
+**Cost:** `ci:python / Criterion 31 (lexical and dense passes)` — first observed failure line: `E       AssertionError: assert 'hybrid' == 'lexical'`, at `tests/postgres/test_memory_records.py:1073` in `test_the_pass_recalls_with_the_strategy_its_environment_names`, the lexical pass's first red of nine; `make` stopped there, before the dense pass
+
+**Performed by:** run 1a2 Prompt 8 (2026-09-23)
+
+**Note:** the demonstrator is the workflow step that runs `make criterion-31`, not a node id,
+because the two passes are one file run twice under two environments, `lexical` and then
+`dense`, and a node id cannot say which. The mutation breaks the adapter's selection step and
+nothing else: `resolve_strategy` still reads the workspace's `recallatron.retrieval.strategy`
+row, then dispatches the package default, `hybrid`, whatever the row says. Every recall still
+answers and nothing raises. The first red is the pass sentinel, which exists for this failure:
+without it an override that silently did nothing would leave the dense pass running the
+default, and `make criterion-31` would go green twice on one code path. The dense pass's own
+command, run by hand against the same mutation, failed at the same sentinel with
+`assert 'hybrid' == 'dense'`.
+
+**Note:** what the dense claim is (spec § Technical Risks 8). The module's behavioural suite,
+`tests/postgres/test_memory_records.py`, passes under `dense` at the shipped floor (30, cosine
+0.30) against the real model, fastembed's MiniLM-L6-v2 through the `local` provider, and the
+pass refuses any other provider. A test that pins its own workspace's strategy runs that
+strategy in both passes; the rest run under the pass's. One assertion holds only when the
+answer is lexical-only: the exact list `["apples"]` in
+`test_recall_returns_eligible_rows_marked_with_the_resolved_strategy`
+(`test_memory_records.py:1513`). That form encodes lexical `@@` semantics. On the shipped
+provider `pears / a note about pears` scores cosine 0.471 against `apples`, clears the floor,
+and dense returns it, so under `dense` the test asserts instead that `apples` comes first, the
+expired row is absent and every score clears the floor. The dense equivalent is proven beside
+it, in `tests/postgres/test_memory_retrieval.py::test_dense_recall_of_apples_returns_the_nearest_rows_apples_then_pears`,
+which asserts `["apples", "pears"]` and checks `pears`'s margin over the floor in the test. The
+first dense pass (Prompt 6) reported no red among the other measured sites, and none is open.
 
 ---
 
