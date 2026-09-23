@@ -16,8 +16,13 @@ memory is re-embedded on the same terms as a new one.
 **The job commits with the memory; the provider runs after.** The row is written in the
 writer's own transaction, so it exists exactly when the memory does, and the provider is
 called by the worker once that transaction has committed.
+
+**One more caller, ungated: the rebuild's leftovers.** A rebuild skips rows another
+writer holds, and queues an embed job for each live memory its walk left unembedded
+(:func:`enqueue_embed_jobs`), so a skipped row whose writer rolled back is still filled.
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
@@ -57,14 +62,30 @@ def enqueue_embed_job(
     provider = resolve_provider()
     if not should_enqueue_embed(strategy_name, provider):
         return False
-    enqueue_job(
-        uow.connection,
-        kind=EMBED_JOB_KIND,
-        payload={"memory_id": str(memory_id)},
-        now=now,
-        max_attempts=EMBED_MAX_ATTEMPTS,
-    )
+    enqueue_embed_jobs(uow, [memory_id], now=now)
     return True
+
+
+def enqueue_embed_jobs(
+    uow: UnitOfWork, memory_ids: Sequence[UUID], *, now: datetime
+) -> int:
+    """Queue one embed job per memory, with no strategy gate; answer how many.
+
+    The one place an embed job row is written. :func:`enqueue_embed_job` reaches it
+    through the gate above. The rebuild reaches it directly, for the live memories its
+    walk could not embed because another writer held them at the time: the owner asked
+    for this workspace's index to be filled, a provider resolved for that, and these
+    rows are the part of the fill the walk had to leave to a job.
+    """
+    for memory_id in memory_ids:
+        enqueue_job(
+            uow.connection,
+            kind=EMBED_JOB_KIND,
+            payload={"memory_id": str(memory_id)},
+            now=now,
+            max_attempts=EMBED_MAX_ATTEMPTS,
+        )
+    return len(memory_ids)
 
 
 def enqueue_rebuild_job(

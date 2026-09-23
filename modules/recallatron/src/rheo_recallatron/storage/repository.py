@@ -659,10 +659,9 @@ class MemoryEmbeddingRow:
     embedded_at: datetime
 
 
-def insert_memory_embedding(
-    conn: Connection, row: MemoryEmbeddingRow
-) -> MemoryEmbeddingRow:
-    """Write one embedding row.
+def insert_memory_embedding(conn: Connection, row: MemoryEmbeddingRow) -> bool:
+    """Write one embedding row, unless the memory already has one for this model;
+    answer whether this call wrote it.
 
     The module's one writer of these rows is
     :meth:`~rheo_recallatron.retrieval.dense.DenseStrategy.index_many`, which the embed
@@ -671,17 +670,36 @@ def insert_memory_embedding(
     which the column accepts without a client-side type; since revision
     ``0003_dense_retrieval`` the column is ``vector(384)``, so a row of any other width
     is refused by the database itself.
+
+    **``ON CONFLICT (memory_id, model_id) DO NOTHING``, and that is safe only because of
+    the vector-write handshake.** An embed job and a rebuild can both hold one memory
+    ``FOR SHARE`` — the locks are compatible — and both embed it. Whichever writes
+    second finds the other's row. Both read the same locked text, and a text change
+    deletes a memory's vectors only after taking the row lock neither has released, so
+    the row already there is the row this call would have written. Without this the
+    second writer failed on the duplicate key, and for a rebuild that was the whole
+    walk rolled back and requeued.
     """
-    conn.execute(
-        insert(t.memory_embedding).values(
+    result = conn.execute(
+        pg_insert(t.memory_embedding)
+        .values(
             memory_id=row.memory_id,
             model_id=row.model_id,
             dimensions=row.dimensions,
             vector=_vector_literal(row.vector),
             embedded_at=row.embedded_at,
         )
+        .on_conflict_do_nothing(
+            index_elements=[
+                t.memory_embedding.c.memory_id,
+                t.memory_embedding.c.model_id,
+            ]
+        )
+        # ``RETURNING`` rather than ``rowcount``: this driver reports ``-1`` for an
+        # ``INSERT``'s rowcount, and a skipped conflict returns no row at all.
+        .returning(t.memory_embedding.c.memory_id)
     )
-    return row
+    return result.first() is not None
 
 
 def get_memory_embedding(
@@ -834,8 +852,9 @@ def list_memories_missing_embedding(
     that waited for a locked row could be holding that correction's next dependant,
     and the two would deadlock. Skipping means the rebuild never waits on a writer, so
     no cycle can close through it. A skipped row is one whose text or liveness is
-    changing right now: it stays unembedded, and the change's own embed job, or the
-    next rebuild, fills it.
+    changing right now: the walk leaves it unembedded, and the rebuild queues an embed
+    job for it before it commits (:func:`list_memory_ids_missing_embedding`), which
+    covers a change that rolls back as well as one that commits.
     """
     statement = select(t.memory).where(_live_memory(), ~_has_embedding(model_id))
     if after is not None:
@@ -846,6 +865,23 @@ def list_memories_missing_embedding(
         .with_for_update(read=True, skip_locked=True)
     ).mappings()
     return tuple(_memory_row(mapping) for mapping in rows)
+
+
+def list_memory_ids_missing_embedding(
+    conn: Connection, *, model_id: str
+) -> tuple[UUID, ...]:
+    """Every live memory with no row for ``model_id``, by id — a plain read.
+
+    The rebuild's last look, after its walk. No lock and no skip, on purpose: what it
+    is for is exactly the rows the walk skipped because another writer held them, and a
+    plain read sees each one's committed version without waiting for that writer.
+    """
+    rows = conn.execute(
+        select(t.memory.c.id)
+        .where(_live_memory(), ~_has_embedding(model_id))
+        .order_by(t.memory.c.id)
+    ).all()
+    return tuple(row[0] for row in rows)
 
 
 @dataclass(frozen=True, slots=True)

@@ -27,7 +27,9 @@ stated here: a correction, invalidation or deletion of a memory the walk has alr
 embedded waits for the whole rebuild to commit, and it waits holding the workspace
 lifecycle lock, so the workspace's other writes queue behind it for the rest of the
 walk. The fill skips a row another writer holds rather than waiting for it, so the
-rebuild itself never waits on a writer and the two cannot deadlock.
+rebuild itself never waits on a writer and the two cannot deadlock; before it commits,
+the rebuild queues an embed job for every live memory still without a vector, so a
+skipped row is filled even when the writer holding it rolls back.
 
 **The operation id comes from the payload.** The worker builds a job's unit of work
 with no operation id, so inside this handler ``uow.operation_id`` is ``None`` and a
@@ -41,6 +43,7 @@ shipped ``provider = none``, which is exactly the state that concern is about, a
 migration ``0003_dense_retrieval``'s autovacuum setting is what addresses it.
 """
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,6 +58,7 @@ from rheo_recallatron.configuration import (
     EMBEDDING_BATCH_SIZE_MAXIMUM,
     EMBEDDING_BATCH_SIZE_MINIMUM,
 )
+from rheo_recallatron.embedding.enqueue import enqueue_embed_jobs
 from rheo_recallatron.embedding.protocol import EmbeddingProvider
 from rheo_recallatron.embedding.registry import resolve_provider
 from rheo_recallatron.refusals import EMBEDDING_PROVIDER_UNAVAILABLE
@@ -68,6 +72,7 @@ from rheo_recallatron.storage.repository import (
     embedding_coverage,
     get_embedding_state,
     list_memories_missing_embedding,
+    list_memory_ids_missing_embedding,
     set_embedding_state,
 )
 
@@ -111,8 +116,8 @@ def fill_batch(
     The batch is read ``FOR SHARE`` with any row another writer holds skipped, and the
     locks stay until the caller's transaction ends, so every vector written here is of
     text its row still holds when the vector commits (the repository's vector-write
-    handshake). A skipped row is being changed right now and is left for that change's
-    own embed job.
+    handshake). A skipped row is being changed right now; the fill leaves it, and the
+    rebuild queues it an embed job at the end of its walk.
     """
     if limit < 1:
         raise ValueError("a fill batch holds at least one memory")
@@ -172,21 +177,16 @@ def run_embedding_rebuild_job(
 
     start = embedding_coverage(conn, model_id=provider.model_id)
     missing_at_start = start.live - start.embedded
-    if missing_at_start == 0:
-        _report(uow, payload, provider, coverage=start, fraction=1.0)
-        token.checkpoint()
-    else:
-        written = 0
-        after: UUID | None = None
+    written = 0
+    after: UUID | None = None
+    if missing_at_start > 0:
         while True:
             batch, after = fill_batch(
                 uow, provider=provider, after=after, limit=payload.batch_size
             )
             written += batch
-            # Complete is 1.0 whatever the arithmetic says: a memory invalidated
-            # mid-walk is one fewer to embed, and one written after the walk began is
-            # one more, and neither makes a finished walk less than finished.
-            fraction = 1.0 if after is None else min(written / missing_at_start, 1.0)
+            if after is None:
+                break
             # The start count plus what this walk wrote, not a recount: a coverage
             # query per batch is a full scan of the table each time, and the walk
             # already knows what it has added.
@@ -197,11 +197,34 @@ def run_embedding_rebuild_job(
                 coverage=EmbeddingCoverage(
                     live=start.live, embedded=start.embedded + written
                 ),
-                fraction=fraction,
+                fraction=min(written / missing_at_start, 1.0),
             )
             token.checkpoint()
-            if after is None:
-                break
+
+    # The rows the walk left: those it skipped because another writer held them. A
+    # writer that commits a text change queues its own embed job, but one that rolls
+    # back queues nothing and leaves its row live, unchanged and unembedded — so every
+    # live memory still lacking a vector here gets a job of its own, in this same
+    # transaction. They are embed jobs, not a continuation of this one: this record
+    # still closes when this job does.
+    handed_off = enqueue_embed_jobs(
+        uow,
+        list_memory_ids_missing_embedding(conn, model_id=provider.model_id),
+        now=datetime.now(UTC),
+    )
+    # Complete is 1.0 whatever the arithmetic says: the walk is finished, and what it
+    # could not reach is named in the text as handed to jobs. The coverage is counted
+    # once here rather than summed, because another writer's row (found already there
+    # by an insert) is coverage this walk did not write.
+    _report(
+        uow,
+        payload,
+        provider,
+        coverage=embedding_coverage(conn, model_id=provider.model_id),
+        fraction=1.0,
+        handed_off=handed_off,
+    )
+    token.checkpoint()
     analyze_memory(conn)
 
 
@@ -212,19 +235,24 @@ def _report(
     *,
     coverage: EmbeddingCoverage,
     fraction: float,
+    handed_off: int | None = None,
 ) -> None:
     """Write progress onto the operation record the payload names.
 
     The text carries this workspace's own coverage for the model — how many of its live
-    memories have a vector — which is where that figure is surfaced.
+    memories have a vector — which is where that figure is surfaced, and, once the walk
+    is done, how many memories it handed to embed jobs.
     """
+    text = (
+        f"{coverage.embedded} of {coverage.live} live memories embedded "
+        f"with {provider.model_id}"
+    )
+    if handed_off is not None:
+        text += f"; {handed_off} handed to embed jobs"
     recorded = set_progress(
         uow.connection,
         operation_id=payload.operation_id,
-        progress_text=(
-            f"{coverage.embedded} of {coverage.live} live memories embedded "
-            f"with {provider.model_id}"
-        ),
+        progress_text=text,
         progress_fraction=fraction,
     )
     if not recorded:

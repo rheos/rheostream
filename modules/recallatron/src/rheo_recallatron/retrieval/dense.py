@@ -50,13 +50,15 @@ class DenseStrategy:
         *,
         provider: EmbeddingProvider,
     ) -> int:
-        """Embed every item in one provider call, write one row each, answer how many.
+        """Embed the items in one provider call, write their rows, count the new ones.
 
         Each item embeds :func:`~rheo_recallatron.embedding.embed_input` of its title
         and body, under the provider's ``model_id`` and width. There is no clock in the
         signature, so the rows are stamped here, as a handler stamps its own writes. A
         provider that raises, or answers the wrong number of vectors, raises out of this
-        call before a single row is written.
+        call before a single row is written. An item whose memory already has a row for
+        this model — another writer holding the same share lock got there first — is
+        left as it is and not counted (see ``insert_memory_embedding``).
 
         **The caller's precondition: every item's memory row is held ``FOR SHARE`` by
         this transaction, and the item carries the text that row holds** — the
@@ -73,8 +75,9 @@ class DenseStrategy:
                 f"vectors for {len(items)} texts"
             )
         embedded_at = datetime.now(UTC)
+        written = 0
         for item, vector in zip(items, vectors, strict=True):
-            insert_memory_embedding(
+            if insert_memory_embedding(
                 uow.connection,
                 MemoryEmbeddingRow(
                     memory_id=item.memory_id,
@@ -83,8 +86,9 @@ class DenseStrategy:
                     vector=vector,
                     embedded_at=embedded_at,
                 ),
-            )
-        return len(items)
+            ):
+                written += 1
+        return written
 
     def index(self, ctx: WorkspaceContext, uow: UnitOfWork, item: IndexItem) -> None:
         """Embed one memory with the configured provider; nothing when none resolves.

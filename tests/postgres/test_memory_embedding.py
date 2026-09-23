@@ -54,7 +54,7 @@ from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import register_resolver
 from rheo_core.settings import ValueType
 from rheo_core.storage import work_tables
-from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.work.jobs import enqueue_job, list_failed_jobs
@@ -77,6 +77,7 @@ from rheo_recallatron.eligibility import memory_reference
 from rheo_recallatron.embedding import embed_input, registry
 from rheo_recallatron.embedding import rebuild as rebuild_module
 from rheo_recallatron.embedding.fake import FakeEmbeddingProvider
+from rheo_recallatron.embedding.job import EmbedJobPayload, run_embed_job
 from rheo_recallatron.embedding.local import (
     MODEL_ID,
     UNIT_NORM_TOLERANCE,
@@ -1267,3 +1268,132 @@ def test_a_rebuild_and_a_closure_correction_neither_deadlock_nor_leave_a_vector(
     assert invalidated is not None and invalidated.invalidated_at is not None
     assert _embedded_text(embedding, dependant, fake) is None
     assert _embedded_text(embedding, target, fake) in (None, "pears")
+
+
+# --- two writers of one vector, and the rows a rebuild could not reach ----------------
+
+
+class _NoCancellation:
+    """A token for running the embed job's handler outside a worker visit."""
+
+    def checkpoint(self) -> None:
+        return None
+
+
+def _embed_job_on_its_own_connection(ws: EmbeddingWorkspace, memory_id: UUID) -> None:
+    """The real embed-job handler in a transaction of its own, committed — what a second
+    worker does while the first is mid-rebuild."""
+    with UnitOfWork(ws.engine, ws.database_name) as uow:
+        run_embed_job(
+            HandlerUnitOfWork(uow),
+            EmbedJobPayload(memory_id=memory_id),
+            _NoCancellation(),  # type: ignore[arg-type]
+        )
+        uow.commit()
+
+
+def test_an_embed_job_committing_inside_a_rebuild_batch_does_not_fail_the_walk(
+    embedding: EmbeddingWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rebuild holds the memory ``FOR SHARE`` and is mid-provider-call; an embed job
+    for the same memory takes a compatible share lock, embeds and commits first. When
+    the rebuild then writes the same ``(memory, model)`` row it must find it already
+    there and carry on — both read the same locked text, so the stored row is the one it
+    would have written — rather than fail the whole walk on a duplicate key."""
+    fake = _fake()
+    (memory_id,) = _seed_texts(embedding, ("apples", _APPLES_BODY))
+    gated = _gate(monkeypatch, fake)
+    operation_id = _rebuild(embedding)
+
+    worker = _start(
+        lambda: embedding.visit(at=datetime.now(UTC) + timedelta(seconds=1))
+    )
+    assert gated.entered.wait(timeout=30)  # the rebuild holds the row, unwritten
+    _embed_job_on_its_own_connection(embedding, memory_id)
+    assert _embedded_text(embedding, memory_id, fake) == "apples"
+    gated.release.set()
+    worker.join()
+
+    assert embedding.operation(operation_id).state == "succeeded"
+    (job,) = embedding.jobs_of(REBUILD_JOB_KIND)
+    assert (job.state, job.attempts) == ("succeeded", 1), job
+    assert set(embedding.vectors()) == {(memory_id, fake.model_id)}
+    assert _embedded_text(embedding, memory_id, fake) == "apples"
+
+
+def test_a_row_the_rebuild_skipped_for_a_writer_that_rolled_back_gets_a_job(
+    embedding: EmbeddingWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fill skips a row another writer holds. Here that writer — a correction —
+    rolls back after the rebuild has walked past, so the row is live, unchanged and
+    unembedded, and no job of the correction's will ever arrive. The rebuild must hand
+    it to an embed job of its own before it commits, and say so in its progress."""
+    fake = _fake()
+    first, skipped, last = sorted(uuid7() for _ in range(3))
+    _seed_texts(
+        embedding,
+        ("figs", "a note about figs"),
+        ("apples", _APPLES_BODY),
+        ("plums", "a note about plums"),
+        ids=(first, skipped, last),
+    )
+    with embedding.unit() as uow:
+        upsert_workspace_setting(
+            uow.connection,
+            key=EMBEDDING_BATCH_SIZE_KEY,
+            value="1",
+            value_type=ValueType.INT,
+            updated_by=None,
+        )
+    gated = _gate(monkeypatch, fake)
+    rewritten = threading.Event()
+    fail = threading.Event()
+
+    def rewrite_then_fail(ctx: WorkspaceContext, uow: UnitOfWork, **_: Any) -> bool:
+        # Past the rewrite, holding the row; then the correction fails and rolls back.
+        rewritten.set()
+        assert fail.wait(timeout=60)
+        raise RuntimeError("the correction fails after its rewrite")
+
+    monkeypatch.setattr(lifecycle_module, "enqueue_embed_job", rewrite_then_fail)
+    operation_id = _rebuild(embedding)
+    worker = _start(
+        lambda: embedding.visit(at=datetime.now(UTC) + timedelta(seconds=1))
+    )
+    assert gated.entered.wait(timeout=30)  # the rebuild holds the first row
+    corrector = _start(
+        lambda: embedding.call(
+            MEMORY_CORRECT,
+            {
+                "ref": memory_reference(skipped),
+                "expected_revision": 1,
+                "title": "pears",
+                "body": _PEARS_BODY,
+            },
+        )
+    )
+    assert rewritten.wait(timeout=30)  # the correction holds the middle row
+    gated.release.set()
+    # The walk skips the held row, finishes and commits while the correction waits.
+    assert _until(lambda: embedding.operation(operation_id).state == "succeeded")
+    fail.set()
+    outcome = corrector.join()
+    assert isinstance(outcome, OperationOutcome) and not outcome.ok, outcome
+    worker.join()
+
+    with embedding.reading() as uow:
+        row = get_memory(uow.connection, skipped)
+    assert row is not None and row.title == "apples" and row.invalidated_at is None
+    assert [job.input for job in embedding.jobs_of(EMBED_JOB_KIND)] == [
+        {"memory_id": str(skipped)}
+    ]
+    record = embedding.operation(operation_id)
+    assert record.progress_fraction == 1.0
+    assert "1 handed to embed jobs" in str(record.progress_text), record.progress_text
+
+    # Whether or not the same visit already ran it, one more visit leaves the skipped
+    # memory embedded from the text it still holds.
+    _select(monkeypatch, registry.FAKE_PROVIDER)
+    embedding.visit(at=datetime.now(UTC) + timedelta(seconds=5))
+    assert _embedded_text(embedding, skipped, fake) == "apples"
+    assert embedding.live_lacking(fake.model_id) == 0
