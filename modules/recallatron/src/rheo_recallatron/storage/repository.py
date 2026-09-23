@@ -30,12 +30,16 @@ from uuid import UUID
 from sqlalchemy import (
     ColumnElement,
     Connection,
+    Float,
     and_,
+    bindparam,
     delete,
     func,
     insert,
+    literal_column,
     select,
     text,
+    true,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -926,6 +930,108 @@ def embedding_exists_for_model(conn: Connection, *, model_id: str) -> bool:
                 .exists()
             )
         ).scalar_one()
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingPair:
+    """Two memories whose vectors for one model clear a similarity floor.
+
+    ``first`` sorts before ``second``, so a pair has exactly one spelling, and ``score``
+    is their cosine similarity, ``1 - (a.vector <=> b.vector)``.
+    """
+
+    first: UUID
+    second: UUID
+    score: float
+
+
+def nearest_embedding_pairs(
+    conn: Connection,
+    *,
+    conditions: Sequence[ColumnElement[bool]],
+    model_id: str,
+    floor: float,
+    scan_limit: int,
+) -> tuple[EmbeddingPair, ...]:
+    """Each bounded candidate's nearest other candidate, where the two clear ``floor``.
+
+    ``conditions`` are the caller's row-local predicates over ``memory``, taken as a
+    parameter because the service module that builds them imports this one. They
+    narrow; they decide nothing, and every pair still has to pass the caller's full
+    eligibility check on both sides before it reaches anyone. One statement, three
+    steps:
+
+    1. **The bounded candidate set:** the memories ``conditions`` admit that hold a row
+       for ``model_id``, ``recorded_at DESC, id``, at most ``scan_limit``. Materialized,
+       so both sides of the join below read the same set.
+    2. **One ``CROSS JOIN LATERAL``** (rendered ``JOIN LATERAL ... ON true``): for each
+       candidate, its single nearest *other* candidate by ``vector <=> vector``, ties
+       broken by id, kept only where ``1 - (a.vector <=> b.vector) >= floor``.
+    3. **Folded and sorted:** a pair both members found from their own side is one
+       pair, spelled ``(least, greatest)``; the answer runs by score descending, then
+       ``(first, second)``. A canonical memory reference is a fixed prefix and the
+       UUID's hex, so that order is the order of the references too.
+
+    **This is a quadratic scan over the bounded set, and it is meant to be.** pgvector's
+    HNSW index answers "nearest in the table" and then filters; it cannot answer
+    "nearest within this arbitrary filtered subset", so the candidate set is
+    materialized and every distance is computed directly. 500 candidates make 124,750
+    distinct pairs, and the lateral measures each one from both ends: 249,500 cosine
+    distances at 384 dimensions, of the order of 10^8 float operations per call.
+    ``scan_limit`` holding that at a constant is the *entire* argument for
+    ``dedup_candidates`` being a ``READ`` operation rather than a ``long_running`` one,
+    so nobody raises it without revisiting that class.
+
+    **The bound is also a recall boundary, not only a cost bound.** The set is the
+    newest ``scan_limit`` by ``recorded_at``: at 500, the 501st-newest memory is never
+    compared with anything and a duplicate pair straddling that position is never
+    proposed. That is the insertion-order blind spot binding constraint 6 chose vector
+    neighbourhoods to close, moved to recency rather than removed. It is carried open,
+    not fixed here.
+    """
+    candidate = (
+        select(
+            t.memory.c.id.label("memory_id"),
+            t.memory_embedding.c.vector.label("vector"),
+        )
+        .select_from(
+            t.memory.join(
+                t.memory_embedding, t.memory_embedding.c.memory_id == t.memory.c.id
+            )
+        )
+        .where(_of_model(model_id), *conditions)
+        .order_by(t.memory.c.recorded_at.desc(), t.memory.c.id)
+        .limit(scan_limit)
+        .cte("dedup_candidate")
+        .prefix_with("MATERIALIZED")
+    )
+    a = candidate.alias("a")
+    b = candidate.alias("b")
+    distance = a.c.vector.op("<=>", return_type=Float)(b.c.vector)
+    nearest = (
+        select(b.c.memory_id.label("memory_id"), distance.label("distance"))
+        .where(b.c.memory_id != a.c.memory_id)
+        .order_by(distance, b.c.memory_id)
+        .limit(1)
+        .lateral("nearest")
+    )
+    # The dense arm's expression, over two stored vectors instead of one and a query:
+    # a similarity, compared ``>=``, never the distance against the floor.
+    similarity = literal_column("1", Float) - nearest.c.distance
+    first = func.least(a.c.memory_id, nearest.c.memory_id, type_=a.c.memory_id.type)
+    second = func.greatest(a.c.memory_id, nearest.c.memory_id, type_=a.c.memory_id.type)
+    score = func.max(similarity).label("score")
+    rows = conn.execute(
+        select(first.label("first"), second.label("second"), score)
+        .select_from(a.join(nearest, true()))
+        .where(similarity >= bindparam("dedup_pair_floor", floor, type_=Float))
+        .group_by(first, second)
+        .order_by(score.desc(), first, second)
+    ).all()
+    return tuple(
+        EmbeddingPair(first=row.first, second=row.second, score=float(row.score))
+        for row in rows
     )
 
 

@@ -477,6 +477,40 @@ ENTITY_LIST_LIMIT_MIN: Final = 1
 ENTITY_LIST_LIMIT_MAX: Final = 50
 ENTITY_LIST_LIMIT_DEFAULT: Final = 10
 
+# --- dedup candidates -----------------------------------------------------------------
+
+DEDUP_PAIR_FLOOR: Final = 0.80
+"""The lowest cosine similarity at which two memories are proposed as a duplicate pair.
+
+**A cosine similarity, not a percent,** in the same space as the dense relevance floor:
+``1 - (a.vector <=> b.vector)`` on the shipped provider. A package constant rather than
+a settings key, because no caller exists to tune it; run 1b's measurement pass over the
+migrated corpus is where it moves.
+
+**Where 0.80 came from** (spec evidence E2 § 4, fastembed's MiniLM-L6-v2): paraphrase
+duplicates land 0.78-0.91 (the ``rent due`` / ``rent`` pair 0.829, the dentist
+paraphrase 0.781, one body under two titles 0.908); distinct notes on one template land
+about 0.71 (``apples`` / ``pears`` 0.707); and among real predecessor turns the nearest
+*other* turn sits at p50 0.618, p90 0.802. So 0.80 admits every measured paraphrase but
+one and excludes the template pairs by 0.09. It sits at the foot of the paraphrase band
+on purpose: the operation only *proposes* pairs for a person to decide on, so a floor
+set low costs review noise and never a wrong merge. The pairs are authored fixtures,
+not a corpus study, which is why 1b confirms the number.
+"""
+
+DEDUP_SCAN_LIMIT: Final = CANDIDATE_SCAN_LIMIT
+"""How many of the newest eligible embedded memories one dedup call compares.
+
+The same bound every other scan here uses, not a second number to keep in step. It is
+also the whole cost argument for ``dedup_candidates`` being a ``READ`` operation: see
+:func:`rheo_recallatron.storage.repository.nearest_embedding_pairs` before raising it.
+"""
+
+DEDUP_LIMIT_MIN: Final = 1
+DEDUP_LIMIT_MAX: Final = 50
+DEDUP_LIMIT_DEFAULT: Final = 10
+"""How many pairs one call returns, mirroring ``RECALL_K``."""
+
 AUTOMATIC_BOUND_PURPOSE: Final = "internal_analysis"
 """§ A5: automatic acceptance binds exactly one purpose, for both producer kinds.
 

@@ -1,4 +1,4 @@
-"""AC 3 and AC 14's mechanical halves: two scans over this distribution's own tree.
+"""AC 3, AC 14 and AC 19's mechanical halves: scans over this distribution's own tree.
 
 Both claims in this file are *absences*, and an absence is the one kind of claim a
 behavioural test cannot make. "1a1 performs no automatic transcript extraction" is not
@@ -30,6 +30,14 @@ so a scan that silently stopped matching reds instead of passing vacuously.
 3. **The recall tool's description (AC 24)**, read off the declaration: it still says
    what it said before, plus the three sentences that tell an agent to distrust a
    ranked list.
+
+4. **The dedup scan (AC 19).** ``dedup.py`` imports nothing from the lifecycle module
+   and names nothing that merges, confirms or supersedes, so no path out of a
+   ``dedup_candidates`` result can act on it. An AST walk this time, like the import
+   scan, because the claim is about imports and calls rather than text: the module's
+   own docstring has to be free to say what it does not do. Beside it, the output
+   types are pinned to their fields, with no member of their own a caller could act
+   on.
 
 **This file is deliberately the one place the two deferred names are written down.** It
 scans ``src/``; it does not scan itself, and there is no third copy of either word in
@@ -69,6 +77,16 @@ acceptance claim, and a content-free source-unit key is neither of them.
 RATIFIED_KINDS = ("note", "fact", "decision", "summary")
 """§ A3's four, written out here rather than imported, so this assertion compares two
 independently written lists instead of one list with itself."""
+
+_DEDUP_SOURCE = _MODULE_SRC / "rheo_recallatron" / "dedup.py"
+_LIFECYCLE_MODULE = "rheo_recallatron.lifecycle"
+"""Where correction and supersession live: importing it is a route to acting on a pair,
+whatever the imported name is called."""
+
+ACTING_WORDS = ("merge", "confirm", "supersede")
+"""What a dedup result must never lead to (AC 19): merging two memories, confirming a
+pair, or superseding one memory with the other. Matched case-insensitively inside an
+identifier, so ``merge_memories`` and ``MEMORY_SUPERSEDE`` both count."""
 
 
 def _source_files(root: Path) -> list[Path]:
@@ -120,6 +138,59 @@ def _scan_imports(root: Path) -> tuple[int, dict[str, list[str]]]:
         if sites:
             violations[str(path.relative_to(root))] = sites
     return scanned, violations
+
+
+def _names_lifecycle(module: str) -> bool:
+    return module == _LIFECYCLE_MODULE or module.startswith(f"{_LIFECYCLE_MODULE}.")
+
+
+def _acts(name: str) -> bool:
+    folded = name.casefold()
+    return any(word in folded for word in ACTING_WORDS)
+
+
+def _scan_acting_sites(path: Path) -> list[str]:
+    """AC 19's two halves over one module's AST, as ``<kind> <name>@<line>``.
+
+    (i) an import of the lifecycle module, or of any name that merges, confirms or
+    supersedes; (ii) a called name, or an attribute anywhere (called or passed along),
+    that does. A relative import is resolved against the package root, where
+    ``dedup.py`` sits, so ``from .lifecycle import ...`` is not a way round (i).
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if _names_lifecycle(alias.name) or _acts(alias.name):
+                    found.append(f"import {alias.name}@{node.lineno}")
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                module = ".".join(part for part in ("rheo_recallatron", module) if part)
+            if _names_lifecycle(module):
+                found.append(f"import {module}@{node.lineno}")
+                continue
+            for alias in node.names:
+                full = f"{module}.{alias.name}"
+                if _names_lifecycle(full) or _acts(alias.name):
+                    found.append(f"import {full}@{node.lineno}")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if _acts(node.func.id):
+                found.append(f"call {node.func.id}@{node.lineno}")
+        elif isinstance(node, ast.Attribute) and _acts(node.attr):
+            found.append(f"attribute {node.attr}@{node.lineno}")
+    return sorted(found)
+
+
+def _own_members(model: type) -> set[str]:
+    """Public names a class declares itself, beyond its pydantic configuration: a
+    method, property or class attribute a caller could reach through the type."""
+    return {
+        name
+        for name in vars(model)
+        if not name.startswith("_") and name != "model_config"
+    }
 
 
 def _scan_deferred_names(root: Path) -> tuple[int, dict[str, list[str]]]:
@@ -202,6 +273,60 @@ def test_the_declared_kinds_are_the_four_ratified_ones() -> None:
     for name in DEFERRED_FEATURE_NAMES:
         assert name not in tables.MEMORY_KINDS
         assert name not in tables.ENTITY_KINDS
+
+
+def test_dedup_imports_and_calls_nothing_that_acts_on_a_pair() -> None:
+    """AC 19: no code path out of a ``dedup_candidates`` result merges, confirms or
+    supersedes. The scan is over the real module, and the handler's presence in the
+    tree it parsed is what shows the scan read that module rather than an empty file.
+    """
+    assert _DEDUP_SOURCE.is_file(), _DEDUP_SOURCE
+    tree = ast.parse(_DEDUP_SOURCE.read_text(encoding="utf-8"))
+    functions = {
+        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+    assert "dedup_candidates" in functions, sorted(functions)
+    assert _scan_acting_sites(_DEDUP_SOURCE) == []
+
+
+def test_the_dedup_scan_flags_a_lifecycle_import_and_a_merge_call(
+    tmp_path: Path,
+) -> None:
+    """The positive control: every route the scan claims to close, in one probe."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import rheo_recallatron.lifecycle\n"
+        "from rheo_recallatron.operations import MEMORY_SUPERSEDE\n"
+        "from .lifecycle import correct\n"
+        "merge_memories(first, second)\n"
+        "store.confirm_pair(first, second)\n",
+        encoding="utf-8",
+    )
+    assert _scan_acting_sites(probe) == [
+        "attribute confirm_pair@5",
+        "call merge_memories@4",
+        "import rheo_recallatron.lifecycle@1",
+        "import rheo_recallatron.lifecycle@3",
+        "import rheo_recallatron.operations.MEMORY_SUPERSEDE@2",
+    ]
+
+
+def test_the_dedup_output_types_carry_nothing_to_act_on() -> None:
+    """AC 19's type half: the three fields a pair is, the one field a result is, and no
+    member either class declares for itself. The subclass is the positive control for
+    the member check."""
+    from rheo_recallatron.dedup import DedupCandidates, DedupPair
+
+    assert set(DedupPair.model_fields) == {"ref_a", "ref_b", "score"}
+    assert set(DedupCandidates.model_fields) == {"pairs"}
+    assert _own_members(DedupPair) == set()
+    assert _own_members(DedupCandidates) == set()
+
+    class _Actionable(DedupPair):
+        def merge(self) -> None:
+            raise AssertionError("never called")
+
+    assert _own_members(_Actionable) == {"merge"}
 
 
 def test_the_recall_tool_teaches_distrust_of_a_ranked_list() -> None:

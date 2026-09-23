@@ -56,7 +56,6 @@ from uuid import UUID
 from pydantic import Field, field_validator
 from rheo_contracts import (
     AuditSpec,
-    ContextPurpose,
     Idempotency,
     OperationDeclaration,
     Role,
@@ -94,6 +93,7 @@ from rheo_recallatron.contracts import (
     Strict,
     SupersedeInput,
 )
+from rheo_recallatron.dedup import DEDUP_DECLARATION, dedup_candidates
 from rheo_recallatron.eligibility import (
     LIFECYCLE_ROLES,
     READ_ROLES,
@@ -114,9 +114,7 @@ from rheo_recallatron.lifecycle import correct, supersede
 from rheo_recallatron.references import canonical_ref, memory_target
 from rheo_recallatron.refusals import (
     CONTAINER_MEMBERSHIP_REQUIRED,
-    INPUT_INVALID,
     NOT_FOUND,
-    PURPOSE_MISMATCH,
     REFERENCE_SCAN_LIMIT,
     WINDOW_SCAN_LIMIT,
 )
@@ -125,6 +123,7 @@ from rheo_recallatron.retrieval.protocol import SearchRequest
 from rheo_recallatron.writes import (
     ORIGIN_DERIVED,
     ORIGIN_TOLD,
+    checked_purpose,
     opened,
     resolve_audience,
     resolve_purposes,
@@ -275,28 +274,11 @@ their own words. The names stay because the read precedence above cites them.
 """
 
 
-def _checked_purpose(ctx: WorkspaceContext, stated: str | None) -> None:
-    """The authoritative binding is the context's, and a stated purpose is checked
-    against it rather than replacing it.
-
-    Omission resolves to the binding, which is what a bound caller normally does. A
-    value outside the closed vocabulary is ``input_invalid``; a well-formed one that
-    disagrees with the binding is ``purpose_mismatch`` — including the case where the
-    context carries no binding at all, because a caller cannot narrow to a purpose this
-    boundary never verified it holds. Neither refusal echoes the value.
-    """
-    if stated is None:
-        return
-    try:
-        wanted = ContextPurpose(stated)
-    except ValueError:
-        raise OperationRefused(
-            INPUT_INVALID, "purpose is not one of the declared context purposes"
-        ) from None
-    if wanted is not ctx.principal.bound_purpose:
-        raise OperationRefused(
-            PURPOSE_MISMATCH, "the stated purpose is not this context's binding"
-        )
+_checked_purpose = checked_purpose
+"""The authoritative binding is the context's, and a stated purpose is checked against
+it rather than replacing it. Moved to ``writes.py`` beside :func:`opened` when
+``dedup_candidates`` needed it too: that module is registered below, so it cannot
+import this one."""
 
 
 _opened = opened
@@ -728,11 +710,12 @@ OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (CORRECT_DECLARATION, correct),
     (SUPERSEDE_DECLARATION, supersede),
     *ENTITY_OPERATIONS,
+    (DEDUP_DECLARATION, dedup_candidates),
     *EMBEDDING_OPERATIONS,
 )
 """What the manifest declares: two reads, two writes, the two lifecycle changes, the
-two service-only entity reads and the owner's embedding rebuild. The record resolver is
-declared beside this tuple
+two service-only entity reads, the service-only dedup-candidate read and the owner's
+embedding rebuild. The record resolver is declared beside this tuple
 on the manifest and shares the same eligibility function; erasure is not here at all,
 because a memory is erased through the core's own record-delete operation against the
 owned-delete pair this module declares on its record type."""

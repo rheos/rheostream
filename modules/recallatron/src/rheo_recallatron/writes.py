@@ -245,6 +245,34 @@ def resolve_purposes(
     return tuple(sorted(purpose.value for purpose in chosen))
 
 
+def checked_purpose(ctx: WorkspaceContext, stated: str | None) -> None:
+    """The read rule: a stated purpose is checked against the binding, never adopted.
+
+    Here beside the write rule, and shared the way :func:`opened` is, because every
+    read operation runs it and ``dedup_candidates`` cannot import the operations
+    module that registers it. One function, so ``input_invalid`` and
+    ``purpose_mismatch`` cannot come to mean different things on different reads.
+
+    Omission resolves to the binding, which is what a bound caller normally does. A
+    value outside the closed vocabulary is ``input_invalid``; a well-formed one that
+    disagrees with the binding is ``purpose_mismatch`` — including the case where the
+    context carries no binding at all, because a caller cannot narrow to a purpose this
+    boundary never verified it holds. Neither refusal echoes the value.
+    """
+    if stated is None:
+        return
+    try:
+        wanted = ContextPurpose(stated)
+    except ValueError:
+        raise OperationRefused(
+            INPUT_INVALID, "purpose is not one of the declared context purposes"
+        ) from None
+    if wanted is not ctx.principal.bound_purpose:
+        raise OperationRefused(
+            PURPOSE_MISMATCH, "the stated purpose is not this context's binding"
+        )
+
+
 # --- references -----------------------------------------------------------------------
 
 
