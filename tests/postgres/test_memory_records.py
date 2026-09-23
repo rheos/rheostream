@@ -37,6 +37,7 @@ line in this file, and an object § A3 names that the migration forgets should r
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -107,6 +108,7 @@ from rheo_recallatron import eligibility as memory_eligibility
 from rheo_recallatron.configuration import (
     CANDIDATE_SCAN_LIMIT,
     DENSE_FLOOR_PERCENT_SPEC,
+    EMBEDDING_BATCH_SIZE_DEFAULT,
     LEXICAL_DF_THRESHOLD,
     LEXICAL_RAREST_KEPT,
     MEMORY_RECORD_TYPE,
@@ -139,6 +141,9 @@ from rheo_recallatron.eligibility import (
     memory_reference,
     row_local_conditions,
 )
+from rheo_recallatron.embedding import registry as embedding_registry
+from rheo_recallatron.embedding.protocol import EmbeddingProvider
+from rheo_recallatron.embedding.rebuild import fill_missing_embeddings
 from rheo_recallatron.entities import ENTITY_GET, ENTITY_LIST, remove_mention
 from rheo_recallatron.events import MEMORY_INVALIDATED, MEMORY_RECORDED
 from rheo_recallatron.operations import (
@@ -655,6 +660,9 @@ class MemoryWorkspace:
     database_name: str
     engine: Engine
     consumers: ConsumerRegistry
+    provider: EmbeddingProvider | None = None
+    """The embedding provider criterion 31's dense pass selected, or ``None``, which is
+    the no-fill switch: outside that pass :meth:`_fill` does nothing."""
 
     def context(
         self, *, account_id: UUID | None = None, role: Role = Role.OWNER
@@ -694,11 +702,42 @@ class MemoryWorkspace:
         with UnitOfWork(self.engine, self.database_name) as uow:
             yield uow
             uow.commit()
+        # After the unit has committed and closed, never inside it: a body that raises
+        # never commits, never reaches this line, and owes no fill.
+        self._fill()
 
     @contextmanager
     def reading(self) -> Iterator[UnitOfWork]:
         with UnitOfWork(self.engine, self.database_name) as uow:
             yield uow
+
+    def _fill(self) -> None:
+        """Criterion 31's dense pass: give every live memory lacking one a vector.
+
+        Runs after each of this file's two kinds of commit point, the end of
+        :meth:`unit` and the end of :meth:`call`. Most rows here are written by
+        :func:`_write` and :func:`_write_many`, which insert directly and never reach
+        ``write_memory``, so no embed job exists for them and draining the queue would
+        embed nothing. The harness runs the rebuild's own fill step instead,
+        synchronously, in a fresh unit of work that it commits. It opens that unit
+        itself rather than through :meth:`unit`, which would call back into this
+        method. Jobs that ``remember`` queued stay queued: the embed job no-ops on a
+        memory already embedded, and the queue dies with the test database.
+
+        **What that makes criterion 31 prove:** the suite passes under ``dense`` in the
+        steady state, with the embed job's lag (up to ``work.due_reconcile_seconds``,
+        900 s by default) collapsed to zero by the harness. It does not prove that a
+        memory written a moment ago is findable by a ``dense``-only workspace before its
+        job runs; until then it is reachable by the lexical index only
+        (``docs/architecture/memory.md``).
+        """
+        if self.provider is None:
+            return
+        with UnitOfWork(self.engine, self.database_name) as uow:
+            fill_missing_embeddings(
+                uow, provider=self.provider, batch_size=EMBEDDING_BATCH_SIZE_DEFAULT
+            )
+            uow.commit()
 
     def call(
         self, ctx: WorkspaceContext, name: str, payload: dict[str, object]
@@ -710,13 +749,17 @@ class MemoryWorkspace:
         without a registry — so a helper that dropped it would make every write test
         a test of the missing-wiring refusal.
         """
-        return dispatch(
+        outcome = dispatch(
             ctx,
             name,
             payload,
             registry=self.surfaces.operations,
             consumers=self.consumers,
         )
+        # ``dispatch`` has committed its own transaction by now. After a read or a
+        # refusal the fill finds nothing missing; after a mutate it is the one owed.
+        self._fill()
+        return outcome
 
     def unwired(
         self, ctx: WorkspaceContext, name: str, payload: dict[str, object]
@@ -882,12 +925,78 @@ def _core_setting_table() -> str:
     return "core" + ".workspace_setting"
 
 
+# --- project criterion 31: the two passes ---------------------------------------------
+#
+# ``make criterion-31`` runs this file twice: every workspace pinned to ``lexical``,
+# then every workspace pinned to ``dense`` with the real local embedding model at the
+# shipped floor. Two plain environment variables select the pass. They are not
+# ``RHEO__*`` variables, which ``tests/conftest.py`` refuses at import. Nothing is
+# parametrized, so every node id in this file stays what the acceptance matrices cite.
+# A test that pins its own strategy runs that strategy in both passes.
+
+_STRATEGY_VARIABLE = "RHEO_TEST_RETRIEVAL_STRATEGY"
+_PROVIDER_VARIABLE = "RHEO_TEST_EMBEDDING_PROVIDER"
+_EXTRA_REMEDY = "uv sync --frozen --extra local-embeddings"
+
+
+@dataclass(frozen=True)
+class Criterion31Pass:
+    """The strategy and embedding provider this session's pass names, ``None`` for
+    unset. An empty value reads as unset, so a target can clear an ambient one."""
+
+    strategy: str | None
+    provider: str | None
+
+    @property
+    def expected_strategy(self) -> str:
+        """What every unpinned recall in this pass must report it ran."""
+        if self.strategy is None:
+            return str(RETRIEVAL_STRATEGY_SPEC.default)
+        return self.strategy
+
+
+@pytest.fixture(scope="session")
+def criterion_31_pass() -> Criterion31Pass:
+    """Read the two variables once, refusing a strategy the key does not offer."""
+    selected = Criterion31Pass(
+        strategy=os.environ.get(_STRATEGY_VARIABLE, "").strip() or None,
+        provider=os.environ.get(_PROVIDER_VARIABLE, "").strip() or None,
+    )
+    offered = RETRIEVAL_STRATEGY_SPEC.choices or ()
+    assert selected.strategy is None or selected.strategy in offered, (
+        f"{_STRATEGY_VARIABLE}={selected.strategy!r} is not one of {offered}"
+    )
+    return selected
+
+
+def _select_provider(
+    monkeypatch: pytest.MonkeyPatch, name: str | None
+) -> EmbeddingProvider | None:
+    """Select ``name`` through the one mechanism, undone by ``monkeypatch``, and answer
+    the provider it resolves. A named provider that does not resolve fails the test:
+    a real-provider pass never skips and never falls back."""
+    if name is None:
+        return None
+    selected: str = name
+    monkeypatch.setattr(
+        embedding_registry, "configured_provider_name", lambda: selected
+    )
+    provider = embedding_registry.resolve_provider()
+    assert provider is not None, (
+        f"{_PROVIDER_VARIABLE}={selected!r} resolves no registered embedding provider; "
+        f"for {embedding_registry.LOCAL_PROVIDER!r}, the local-embeddings extra is not "
+        f"installed: run `{_EXTRA_REMEDY}`"
+    )
+    return provider
+
+
 @pytest.fixture
 def memory(
     monkeypatch: pytest.MonkeyPatch,
     cluster: ClusterSession,
     workspace: UUID,
     owner_account_id: UUID,
+    criterion_31_pass: Criterion31Pass,
 ) -> Iterator[MemoryWorkspace]:
     register_core_operations()
     # The memory resolver goes on the **process-wide** table too, which is where
@@ -911,7 +1020,7 @@ def memory(
         assert isinstance(bootstrap, WorkspaceContext), bootstrap
         install_and_enable_module(cluster.backend, bootstrap, workspace, _MEMORY_MODULE)
         database_name, engine = _workspace_engine(cluster, workspace)
-        yield MemoryWorkspace(
+        enabled = MemoryWorkspace(
             cluster=cluster,
             workspace=workspace,
             owner_account_id=owner_account_id,
@@ -923,7 +1032,31 @@ def memory(
             # subscribes to a Recallatron event in 1a1, and a publish that reaches
             # none is a success with zero deliveries.
             consumers=ConsumerRegistry(),
+            provider=_select_provider(monkeypatch, criterion_31_pass.provider),
         )
+        # Unset stores nothing: the key is ``explicit_per_workspace``, so enable has
+        # already written the package default.
+        if criterion_31_pass.strategy is not None:
+            enabled.set_strategy(criterion_31_pass.strategy)
+        yield enabled
+
+
+def test_the_pass_recalls_with_the_strategy_its_environment_names(
+    memory: MemoryWorkspace, criterion_31_pass: Criterion31Pass
+) -> None:
+    """Criterion 31's sentinel, run in both passes and in every plain run.
+
+    Without it an override write that silently did nothing would leave the "dense"
+    pass running the package default, and ``make criterion-31`` would go green twice
+    on one code path.
+    """
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples", body="a note about apples"))
+
+    outcome = memory.recall(memory.context(), query="apples")
+    assert outcome.ok, outcome
+    assert isinstance(outcome.result, RecallResult), outcome
+    assert outcome.result.provenance.strategy == criterion_31_pass.expected_strategy
 
 
 def _window(outcome: OperationOutcome) -> ReadWindow:

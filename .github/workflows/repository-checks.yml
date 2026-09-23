@@ -95,6 +95,12 @@ jobs:
           key: test-models-sentence-transformers/all-MiniLM-L6-v2
       - name: Pytest
         run: uv run pytest
+      # Project criterion 31: Recallatron's behavioural suite under `lexical`, then
+      # under `dense` against the real local model. The dense pass reads the artifact
+      # the cache step above restores, so a cold runner that cannot fetch it reds a
+      # project criterion here, not a convenience test.
+      - name: Criterion 31 (lexical and dense passes)
+        run: make criterion-31
 
   absence-proof:
     name: Recallatron absence proof
