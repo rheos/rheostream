@@ -247,18 +247,22 @@ returns at most `limit` pairs (1 to 50, default 10), each `{ref_a, ref_b, score}
 (`DEDUP_PAIR_FLOOR`). It only proposes. Nothing merges, confirms or supersedes on a pair's
 strength, and the output carries no field a caller could act on.
 
-Eligibility runs before any distance is computed. The call takes at most 500 of the newest
-memories (`recorded_at` descending) that pass the candidate SQL above and hold a vector for the
-provider's model, runs the full eligibility check, links included, on each of them, and pairs
-only the ones the caller may read. A memory the caller cannot see therefore never takes a
-readable memory's nearest-neighbour place, which would otherwise hide the real pair and hint at
-the hidden one. Both sides of every pair are checked again before it is returned, and a denial
+Eligibility runs after the bound and before any distance is computed. The call takes at most
+500 of the newest memories (`recorded_at` descending) that pass the candidate SQL above and hold
+a vector for the provider's model, runs the full eligibility check, links included, on each of
+those, and pairs only the ones the caller may read. So a memory the caller cannot read never
+takes a pair slot: it cannot become a readable memory's nearest neighbour, which would hide the
+real pair and hint at the hidden one. It can still take one of the 500 places. A memory the
+candidate SQL admits and eligibility then denies, such as one with a link the caller cannot
+resolve, counts toward the bound, and each such memory can push one readable memory past the
+500th place, where it is not compared. That residual is accepted; recall's scan bound behaves
+the same way. Both sides of every pair are checked again before it is returned, and a denial
 on either side drops the whole pair. The call reads no retrieval-strategy setting: with a
 provider and stored vectors it answers under `lexical` too, and with no provider or no vectors
 for the model it answers no pairs rather than refusing. A call at the full bound measured about
 1.1 to 1.25 seconds on the test cluster, nearly all of it the 500 eligibility checks, and it
-grows with the links each candidate carries. The 501st-newest memory is never compared, so a
-duplicate pair straddling that position is not proposed.
+grows with the links each candidate carries. The 501st-newest memory that qualifies for the
+bound is never compared, so a duplicate pair straddling that position is not proposed.
 
 ## Correction and supersession (FR 28, criterion 29)
 
