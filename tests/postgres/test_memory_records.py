@@ -155,6 +155,7 @@ from rheo_recallatron.retrieval import (
     SearchResult,
 )
 from rheo_recallatron.retrieval import dispatch as retrieval_dispatch
+from rheo_recallatron.retrieval.lexical_query import lexical_tsquery
 from rheo_recallatron.source_units import (
     LIVE_REPRESENTATION,
     AcceptOutcome,
@@ -1670,8 +1671,12 @@ def test_a_query_missing_one_content_word_still_recalls_its_memory(
 _COMMON_TIERS = ("amber", "birch", "cedar", "delta", "ember")
 """Five lexemes, each above the threshold at a distinct frequency (7..11 rows of 40)."""
 
-_MOST_COMMON = "flint"
-"""The sixth, commonest of all (14 of 40), in rows carrying none of the five above."""
+_MOST_COMMON = "acorn"
+"""The sixth, commonest of all (14 of 40), in rows carrying none of the five above.
+
+It also sorts **first**, so frequency order and lexeme order disagree: a fallback
+that kept the first five lexemes instead of the five rarest would keep this one and
+lose ``ember``, and the rarest-kept assertion would see it."""
 
 
 def _frequency_fixture_rows() -> list[MemoryRow]:
@@ -1680,7 +1685,7 @@ def _frequency_fixture_rows() -> list[MemoryRow]:
     ======  ===================================  ====================================
     rows    body                                 so that
     ======  ===================================  ====================================
-    1-14    ``flint``                            ``flint`` = 14/40, the commonest
+    1-14    ``acorn``                            ``acorn`` = 14/40, the commonest
     15-25   ``amber``..``ember``, tiered         7, 8, 9, 10, 11 of 40
     26      ``widget``                           ``widget`` = 10/40
     27      ``widget zinc``                      the only adjacent ``widget zinc``
@@ -1775,6 +1780,7 @@ def test_the_frequency_filter_drops_common_lexemes_only_once_analyzed(
     for rare in ("kappa", "lambda"):
         assert frequencies.get(rare, 0.0) < LEXICAL_DF_THRESHOLD, (rare, frequencies)
     assert frequencies[_MOST_COMMON] > max(frequencies[w] for w in _COMMON_TIERS)
+    assert _MOST_COMMON < min(_COMMON_TIERS)
     assert len(_COMMON_TIERS) == LEXICAL_RAREST_KEPT
 
     # 1. Three lexemes: the common one is dropped, the rare ones kept — the same
@@ -1785,7 +1791,9 @@ def test_the_frequency_filter_drops_common_lexemes_only_once_analyzed(
     assert _recalled_titles(memory, "widget kappa") == _fixtures(range(26, 37))
 
     # 4. All six above the threshold: the five rarest are kept rather than an empty
-    #    query, so ``flint``'s rows (and only they) are missing.
+    #    query, so ``acorn``'s rows (and only they) are missing. ``acorn`` sorts
+    #    first and row 25 carries only ``ember``, so keeping the first five by
+    #    lexeme order instead of by frequency fails here.
     assert _recalled_titles(
         memory, " ".join((*_COMMON_TIERS, _MOST_COMMON))
     ) == _fixtures(range(15, 26))
@@ -1806,6 +1814,26 @@ def test_the_frequency_filter_drops_common_lexemes_only_once_analyzed(
         )
         assert "novel" not in lexeme_document_frequencies(uow.connection, ["novel"])
     assert _recalled_titles(memory, "widget kappa novel") == _fixtures(36, 41)
+
+
+def test_a_compound_lexeme_stays_one_lexeme_in_the_built_query(
+    memory: MemoryWorkspace,
+) -> None:
+    """Step 4 casts the joined survivors to ``tsquery``; it does not re-parse them.
+
+    ``to_tsquery`` would turn the compound ``mot-intak`` into a phrase over its parts
+    (``'mot-intak' <-> 'mot' <-> 'intak'``, nine nodes where the cast has five), so a
+    part the frequency filter had dropped would come back inside the compound. Read
+    off the built expression directly, because recall's result set cannot see the
+    difference: the phrase branch matches the same rows its compound does.
+    """
+    with memory.reading() as uow:
+        built = lexical_tsquery(uow.connection, "mot-intake")
+        rendered, nodes = uow.connection.execute(
+            select(built, func.numnode(built))
+        ).one()
+    assert rendered == "'intak' | 'mot' | 'mot-intak'"
+    assert nodes == 5
 
 
 # --- the centered read window ---------------------------------------------------------
