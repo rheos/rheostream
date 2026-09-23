@@ -122,6 +122,18 @@ def test_the_local_provider_refuses_a_batch_that_is_not_unit_length(
     assert provider.embed(["apples"]) == [_one_hot(1.0)]
 
 
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_the_local_provider_refuses_a_vector_that_is_not_finite(
+    monkeypatch: pytest.MonkeyPatch, bad: float
+) -> None:
+    """A NaN makes every comparison false, so a "too far from 1" check passes it; an
+    infinity is never close to anything. Both are provider failures."""
+    provider = LocalEmbeddingProvider()
+    monkeypatch.setattr(provider, "_load", lambda: _StandInModel(_one_hot(bad)))
+    with pytest.raises(EmbeddingNotNormalised):
+        provider.embed(["apples"])
+
+
 def test_the_local_provider_loads_nothing_for_an_empty_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

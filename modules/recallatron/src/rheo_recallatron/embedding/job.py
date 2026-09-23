@@ -27,9 +27,9 @@ from rheo_recallatron.embedding.registry import resolve_provider
 from rheo_recallatron.retrieval.dense import DenseStrategy
 from rheo_recallatron.retrieval.protocol import IndexItem
 from rheo_recallatron.storage.repository import (
-    get_memory,
     get_memory_embedding,
     is_live_memory,
+    lock_memory_for_embedding,
 )
 
 
@@ -48,11 +48,25 @@ class EmbedJobPayload(BaseModel):
 def run_embed_job(
     uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
 ) -> None:
-    """Embed one live memory with the provider configured *now*, or do nothing."""
+    """Embed one live memory with the provider configured *now*, or do nothing.
+
+    **The row is read ``FOR SHARE`` and held until this job commits** (the
+    repository's vector-write handshake). A correction or invalidation of this memory
+    takes the row's lock before it deletes the row's vectors, so either it waits for
+    this job and then deletes what the job wrote, or it went first and this read waits
+    for it and sees the new text. Either way the vector that commits here was made from
+    the text the row holds when it commits.
+
+    **The row-exists no-op is safe under that lock, and only under it.** Every stored
+    vector was written by a writer holding this same lock on the text it embedded, and
+    any text change since deleted it after taking the lock. With the lock held here no
+    text change is in flight, so a vector that exists for the resolved model was made
+    from the text the row holds now.
+    """
     if not isinstance(payload, EmbedJobPayload):
         raise TypeError(f"expected an EmbedJobPayload, got {type(payload).__name__}")
     token.checkpoint()
-    row = get_memory(uow.connection, payload.memory_id)
+    row = lock_memory_for_embedding(uow.connection, payload.memory_id)
     if row is None or not is_live_memory(row):
         return
     provider = resolve_provider()

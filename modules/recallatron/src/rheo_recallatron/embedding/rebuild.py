@@ -20,6 +20,15 @@ than incremental, because the fill selects only memories lacking a row — a ret
 starts from whatever last committed, which after a rollback is nothing. Between batches
 the job checkpoints, which is what keeps a long walk from being taken for a dead one.
 
+**The same one transaction holds every row the walk has read, ``FOR SHARE``, until it
+commits** — the repository's vector-write handshake, which is what stops a correction
+landing mid-walk from leaving the old text's vector behind. The cost is real and it is
+stated here: a correction, invalidation or deletion of a memory the walk has already
+embedded waits for the whole rebuild to commit, and it waits holding the workspace
+lifecycle lock, so the workspace's other writes queue behind it for the rest of the
+walk. The fill skips a row another writer holds rather than waiting for it, so the
+rebuild itself never waits on a writer and the two cannot deadlock.
+
 **The operation id comes from the payload.** The worker builds a job's unit of work
 with no operation id, so inside this handler ``uow.operation_id`` is ``None`` and a
 progress write against it would match no record. The dispatch handler, which does hold
@@ -98,6 +107,12 @@ def fill_batch(
 
     Answers ``(rows written, next cursor)``: the cursor is the batch's last id, or
     ``None`` when the batch came back short and there is nothing after it.
+
+    The batch is read ``FOR SHARE`` with any row another writer holds skipped, and the
+    locks stay until the caller's transaction ends, so every vector written here is of
+    text its row still holds when the vector commits (the repository's vector-write
+    handshake). A skipped row is being changed right now and is left for that change's
+    own embed job.
     """
     if limit < 1:
         raise ValueError("a fill batch holds at least one memory")
@@ -117,7 +132,9 @@ def fill_missing_embeddings(
 ) -> int:
     """Give every live memory a row for ``provider.model_id``; answer how many it wrote.
 
-    In the caller's unit of work, which it neither commits nor rolls back.
+    In the caller's unit of work, which it neither commits nor rolls back. A memory
+    another writer holds at the moment its batch is read is skipped (see
+    :func:`fill_batch`); with no concurrent writer, none is.
     """
     written = 0
     after: UUID | None = None
@@ -170,11 +187,16 @@ def run_embedding_rebuild_job(
             # mid-walk is one fewer to embed, and one written after the walk began is
             # one more, and neither makes a finished walk less than finished.
             fraction = 1.0 if after is None else min(written / missing_at_start, 1.0)
+            # The start count plus what this walk wrote, not a recount: a coverage
+            # query per batch is a full scan of the table each time, and the walk
+            # already knows what it has added.
             _report(
                 uow,
                 payload,
                 provider,
-                coverage=embedding_coverage(conn, model_id=provider.model_id),
+                coverage=EmbeddingCoverage(
+                    live=start.live, embedded=start.embedded + written
+                ),
                 fraction=fraction,
             )
             token.checkpoint()

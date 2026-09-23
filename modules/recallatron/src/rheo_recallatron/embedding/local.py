@@ -67,10 +67,15 @@ def require_unit_norm(vectors: Sequence[Sequence[float]]) -> None:
     A real ``raise`` rather than an ``assert``: ``python -O`` strips assertions, and
     this check is the only thing between a changed library default and a silently
     invalid relevance floor.
+
+    **A NaN or an infinity is refused too.** Every comparison with NaN is false, so a
+    check written as "raise when too far from 1" lets a NaN norm through. This one
+    requires a finite norm and then asks the positive question — within tolerance —
+    and raises when that is not true, which a NaN cannot satisfy.
     """
     for position, vector in enumerate(vectors):
         norm = math.sqrt(math.fsum(value * value for value in vector))
-        if abs(norm - 1.0) > UNIT_NORM_TOLERANCE:
+        if not math.isfinite(norm) or not abs(norm - 1.0) <= UNIT_NORM_TOLERANCE:
             raise EmbeddingNotNormalised(
                 f"{MODEL_ID} returned a vector of norm {norm:.6f} at batch position "
                 f"{position}; the dense relevance floor holds only over unit vectors"

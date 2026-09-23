@@ -789,21 +789,62 @@ def is_live_memory(row: MemoryRow) -> bool:
     return row.invalidated_at is None and row.superseded_by_id is None
 
 
+# **The vector-write handshake.** A vector is only ever written for a memory row this
+# transaction holds ``FOR SHARE``, from the read that supplied its text until the
+# vector commits; and every writer that changes a row's text or liveness takes that
+# row's lock (its ``UPDATE``) *before* it deletes the row's vectors. ``FOR SHARE``
+# conflicts with that ``UPDATE``, so the two cannot interleave: an embed that got there
+# first commits and the text change then deletes what it wrote, and an embed that came
+# second waits and reads the new text. The two readers below are the only places a
+# vector's source text is read.
+
+
+def lock_memory_for_embedding(conn: Connection, memory_id: UUID) -> MemoryRow | None:
+    """One memory, read ``FOR SHARE``, waiting out any writer that holds it.
+
+    The embed job's read. Waiting is right for one row: a job holds no other row
+    lock, so it cannot be one half of a deadlock, and a correction in flight is then
+    read as corrected.
+    """
+    mapping = (
+        conn.execute(
+            select(t.memory)
+            .where(t.memory.c.id == memory_id)
+            .with_for_update(read=True)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return None if mapping is None else _memory_row(mapping)
+
+
 def list_memories_missing_embedding(
     conn: Connection, *, model_id: str, after: UUID | None, limit: int
 ) -> tuple[MemoryRow, ...]:
     """At most ``limit`` live memories with no row for ``model_id``, by id, after
-    ``after``.
+    ``after`` — each read ``FOR SHARE``, and any row another writer holds skipped.
 
     Id-ordered so the caller's cursor is simply the last id it saw. The selection is
     "lacking a row", never "all", which is what makes a rerun of an interrupted fill
     safe and what keeps an ordinary embed job and a rebuild from both writing one
     memory's row.
+
+    **Skipped, not waited for, because the rebuild holds every row it has read until
+    its one commit.** A correction locks its target and then each dependant; a rebuild
+    that waited for a locked row could be holding that correction's next dependant,
+    and the two would deadlock. Skipping means the rebuild never waits on a writer, so
+    no cycle can close through it. A skipped row is one whose text or liveness is
+    changing right now: it stays unembedded, and the change's own embed job, or the
+    next rebuild, fills it.
     """
     statement = select(t.memory).where(_live_memory(), ~_has_embedding(model_id))
     if after is not None:
         statement = statement.where(t.memory.c.id > after)
-    rows = conn.execute(statement.order_by(t.memory.c.id).limit(limit)).mappings()
+    rows = conn.execute(
+        statement.order_by(t.memory.c.id)
+        .limit(limit)
+        .with_for_update(read=True, skip_locked=True)
+    ).mappings()
     return tuple(_memory_row(mapping) for mapping in rows)
 
 

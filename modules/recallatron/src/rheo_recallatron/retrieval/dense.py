@@ -33,6 +33,8 @@ from rheo_recallatron.storage.repository import (
     MemoryEmbeddingRow,
     delete_memory_embeddings,
     insert_memory_embedding,
+    is_live_memory,
+    lock_memory_for_embedding,
 )
 
 
@@ -55,6 +57,12 @@ class DenseStrategy:
         signature, so the rows are stamped here, as a handler stamps its own writes. A
         provider that raises, or answers the wrong number of vectors, raises out of this
         call before a single row is written.
+
+        **The caller's precondition: every item's memory row is held ``FOR SHARE`` by
+        this transaction, and the item carries the text that row holds** — the
+        repository's vector-write handshake. The embed job, the rebuild's fill and
+        :meth:`index` each read their rows that way before calling this; a test that
+        seeds rows single-threaded has nothing to race and may call it directly.
         """
         if not items:
             return 0
@@ -79,9 +87,21 @@ class DenseStrategy:
         return len(items)
 
     def index(self, ctx: WorkspaceContext, uow: UnitOfWork, item: IndexItem) -> None:
-        """Embed one memory with the configured provider; nothing when none resolves."""
+        """Embed one memory with the configured provider; nothing when none resolves.
+
+        The item's text is the caller's, so it is checked against the row this call
+        locks ``FOR SHARE``: a row that is gone, no longer live, or holding other text
+        gets no vector, because one written from that text would be stale on commit.
+        """
         provider = resolve_provider()
         if provider is None:
+            return
+        row = lock_memory_for_embedding(uow.connection, item.memory_id)
+        if (
+            row is None
+            or not is_live_memory(row)
+            or (row.title, row.body) != (item.title, item.body)
+        ):
             return
         self.index_many(uow, [item], provider=provider)
 

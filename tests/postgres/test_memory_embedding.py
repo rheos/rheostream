@@ -29,7 +29,9 @@ from __future__ import annotations
 import math
 import socket
 import sys
-from collections.abc import Iterator, Sequence
+import threading
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -50,17 +52,21 @@ from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import register_resolver
+from rheo_core.settings import ValueType
 from rheo_core.storage import work_tables
 from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.work.jobs import enqueue_job, list_failed_jobs
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
 from rheo_recallatron import MANIFEST
+from rheo_recallatron import lifecycle as lifecycle_module
 from rheo_recallatron.configuration import (
     EMBED_INPUT_VERSION,
     EMBED_JOB_KIND,
     EMBED_MAX_ATTEMPTS,
+    EMBEDDING_BATCH_SIZE_KEY,
     EMBEDDING_DIMENSIONS,
     MEMORY_RECORD_TYPE,
     REBUILD_JOB_KIND,
@@ -98,6 +104,7 @@ from rheo_recallatron.storage import tables as memory_tables
 from rheo_recallatron.storage.repository import (
     EmbeddingCoverage,
     MemoryEmbeddingRow,
+    MemoryLinkRow,
     MemoryPurposeRow,
     MemoryRow,
     delete_memory,
@@ -106,11 +113,12 @@ from rheo_recallatron.storage.repository import (
     get_memory,
     insert_memory,
     insert_memory_embedding,
+    insert_memory_link,
     insert_memory_purpose,
     invalidate_memory,
     set_embedding_state,
 )
-from sqlalchemy import ColumnElement, Engine, Row, and_, func, select
+from sqlalchemy import ColumnElement, Engine, Row, and_, func, select, text
 
 pytestmark = pytest.mark.postgres
 
@@ -352,13 +360,19 @@ def _fake() -> FakeEmbeddingProvider:
     return provider
 
 
-def _row(title: str, *, invalidated: bool = False) -> MemoryRow:
+def _row(
+    title: str,
+    *,
+    invalidated: bool = False,
+    body: str | None = None,
+    memory_id: UUID | None = None,
+) -> MemoryRow:
     now = datetime.now(UTC) - timedelta(hours=1)
     return MemoryRow(
-        id=uuid7(),
+        id=uuid7() if memory_id is None else memory_id,
         kind="note",
         title=title,
-        body=f"the body of a note about {title}",
+        body=f"the body of a note about {title}" if body is None else body,
         audience_kind="workspace",
         audience_id=None,
         confidence=None,
@@ -391,6 +405,23 @@ def _seed(
             )
             ids.append(row.id)
     return ids
+
+
+def _seed_texts(
+    ws: EmbeddingWorkspace,
+    *texts: tuple[str, str],
+    ids: Sequence[UUID] | None = None,
+) -> list[UUID]:
+    """Live memories with exactly these ``(title, body)`` pairs, and these ids when
+    the order of their ids matters."""
+    chosen = [uuid7() for _ in texts] if ids is None else list(ids)
+    with ws.unit() as uow:
+        for (title, body), memory_id in zip(texts, chosen, strict=True):
+            insert_memory(uow.connection, _row(title, body=body, memory_id=memory_id))
+            insert_memory_purpose(
+                uow.connection, MemoryPurposeRow(memory_id=memory_id, purpose=_RESPOND)
+            )
+    return chosen
 
 
 def _item(ws: EmbeddingWorkspace, memory_id: UUID) -> IndexItem:
@@ -910,3 +941,329 @@ def test_dense_invalidate_removes_every_vector_the_memory_holds(
         )
         DenseStrategy().invalidate(embedding.context(), uow, memory_reference(dropped))
     assert set(embedding.vectors()) == {(kept, fake.model_id)}
+
+
+def test_dense_index_writes_nothing_for_text_the_row_no_longer_holds(
+    embedding: EmbeddingWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``index`` is handed its text by the caller, so it checks that text against the
+    row it locks and writes only when they agree and the row is live."""
+    fake = _fake()
+    _select(monkeypatch, registry.FAKE_PROVIDER)
+    current, retired = _seed(embedding, "apples", "pears")
+    stale = IndexItem(current, "plums", "a note about plums")
+    with embedding.unit() as uow:
+        invalidate_memory(
+            uow.connection,
+            retired,
+            reason="source_corrected",
+            invalidated_at=datetime.now(UTC),
+            revision=2,
+        )
+    with embedding.unit() as uow:
+        DenseStrategy().index(embedding.context(), uow, stale)
+        DenseStrategy().index(embedding.context(), uow, _item(embedding, retired))
+    assert embedding.vectors() == {}
+
+    with embedding.unit() as uow:
+        DenseStrategy().index(embedding.context(), uow, _item(embedding, current))
+    assert set(embedding.vectors()) == {(current, fake.model_id)}
+
+
+# --- a text change racing a vector write ----------------------------------------------
+#
+# Every vector is written under a share lock on its memory row, taken when the row is
+# read and held until the vector commits, and every change to a row's text or liveness
+# takes that row's lock *before* it deletes the row's vectors. So one side always waits
+# for the other: a correction landing mid-embed waits and then deletes the vector the
+# embed committed, and an embed arriving mid-correction waits and then reads the new
+# text. Neither order can leave the old text's vector behind.
+#
+# These cases drive both orders for real, on two connections in two threads, and wait
+# for the database to report the second party blocked on a lock before letting the
+# first finish. Against code without the handshake nobody blocks, the wait ends when
+# the second party has simply finished, and the old vector is what is left.
+
+
+def _similarity(stored: Stored, expected: Sequence[float]) -> float:
+    values = [float(part) for part in stored.vector.strip("[]").split(",")]
+    return math.fsum(a * b for a, b in zip(values, expected, strict=True))
+
+
+def _embedded_text(
+    ws: EmbeddingWorkspace, memory_id: UUID, fake: FakeEmbeddingProvider
+) -> str | None:
+    """Which text the memory's stored vector was made from: ``apples``, ``pears``,
+    ``None`` for no vector, or ``other``."""
+    stored = ws.vectors().get((memory_id, fake.model_id))
+    if stored is None:
+        return None
+    for name, body in (("apples", _APPLES_BODY), ("pears", _PEARS_BODY)):
+        expected = fake.embed([embed_input(name, body)])[0]
+        if _similarity(stored, expected) > 0.9999:
+            return name
+    return "other"
+
+
+_APPLES_BODY = "a note about apples"
+_PEARS_BODY = "it was pears all along"
+
+
+def _lock_waiters(ws: EmbeddingWorkspace) -> int:
+    """Backends in this workspace's database currently waiting on a lock."""
+    with ws.engine.connect() as connection:
+        return int(
+            connection.execute(
+                text(
+                    "SELECT count(*) FROM pg_catalog.pg_stat_activity "
+                    "WHERE datname = :database AND wait_event_type = 'Lock'"
+                ),
+                {"database": ws.database_name},
+            ).scalar_one()
+        )
+
+
+def _until(condition: Callable[[], bool], *, timeout: float = 15.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return condition()
+
+
+@dataclass
+class _Background:
+    thread: threading.Thread
+    results: list[object]
+    errors: list[BaseException]
+
+    def join(self) -> object:
+        self.thread.join(timeout=60)
+        assert not self.thread.is_alive(), "a background call never finished"
+        assert not self.errors, self.errors
+        return self.results[0]
+
+
+def _start(call: Callable[[], object]) -> _Background:
+    background = _Background(
+        thread=threading.Thread(target=lambda: None), results=[], errors=[]
+    )
+
+    def run() -> None:
+        try:
+            background.results.append(call())
+        except BaseException as exc:  # handed back to the test thread by join()
+            background.errors.append(exc)
+
+    background.thread = threading.Thread(target=run, daemon=True)
+    background.thread.start()
+    return background
+
+
+class _GatedProvider:
+    """The fake space, but the ``gate_on``-th ``embed`` call parks until released —
+    the moment a writer holds its rows and has not written yet."""
+
+    def __init__(self, inner: FakeEmbeddingProvider, *, gate_on: int = 1) -> None:
+        self.model_id = inner.model_id
+        self.dimensions = inner.dimensions
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self._inner = inner
+        self._gate_on = gate_on
+        self._calls = 0
+
+    def embed(self, texts: Sequence[str]) -> list[tuple[float, ...]]:
+        self._calls += 1
+        if self._calls == self._gate_on:
+            self.entered.set()
+            if not self.release.wait(timeout=60):
+                raise RuntimeError("the gated embed was never released")
+        return self._inner.embed(texts)
+
+
+def _correct_to_pears(ws: EmbeddingWorkspace, memory_id: UUID) -> object:
+    outcome = ws.call(
+        MEMORY_CORRECT,
+        {
+            "ref": memory_reference(memory_id),
+            "expected_revision": 1,
+            "title": "pears",
+            "body": _PEARS_BODY,
+        },
+    )
+    assert outcome.ok, outcome
+    return outcome
+
+
+def _gate(
+    monkeypatch: pytest.MonkeyPatch, fake: FakeEmbeddingProvider
+) -> _GatedProvider:
+    gated = _GatedProvider(fake)
+    _install(monkeypatch, "gated", gated)
+    _select(monkeypatch, "gated")
+    return gated
+
+
+def _then_blocked_or_done(ws: EmbeddingWorkspace, other: _Background) -> None:
+    """Wait for ``other`` to block on a row lock — or, on code without the handshake,
+    to finish without ever blocking."""
+    assert _until(lambda: not other.thread.is_alive() or _lock_waiters(ws) > 0)
+
+
+def test_a_correction_landing_mid_embed_never_leaves_the_old_text_s_vector(
+    embedding: EmbeddingWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe's order: the embed job has read "apples" and is mid-provider-call
+    when the correction to "pears" runs. The correction must wait for the job, then
+    delete the vector it committed; the next embed then writes "pears"."""
+    fake = _fake()
+    (memory_id,) = _seed_texts(embedding, ("apples", _APPLES_BODY))
+    gated = _gate(monkeypatch, fake)
+    now = datetime.now(UTC)
+    _enqueue_embed(embedding, memory_id, now=now)
+
+    worker = _start(lambda: embedding.visit(at=now + timedelta(seconds=1)))
+    assert gated.entered.wait(timeout=30)
+    corrector = _start(lambda: _correct_to_pears(embedding, memory_id))
+    _then_blocked_or_done(embedding, corrector)
+    gated.release.set()
+    worker.join()
+    corrector.join()
+
+    (job,) = embedding.jobs_of(EMBED_JOB_KIND)
+    assert job.state == "succeeded", job
+    assert _embedded_text(embedding, memory_id, fake) is None
+
+    # What the correction's own job does once a dense strategy is configured, run by
+    # hand in this lexical phase: the memory is re-embedded from its new text.
+    _select(monkeypatch, registry.FAKE_PROVIDER)
+    later = now + timedelta(seconds=2)
+    _enqueue_embed(embedding, memory_id, now=later)
+    embedding.visit(at=later + timedelta(seconds=1))
+    assert _embedded_text(embedding, memory_id, fake) == "pears"
+
+
+def test_an_embed_landing_mid_correction_waits_and_embeds_the_new_text(
+    embedding: EmbeddingWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other order: the correction has rewritten the row and not yet committed
+    when the embed job reads it. The job must wait and read "pears"."""
+    fake = _fake()
+    (memory_id,) = _seed_texts(embedding, ("apples", _APPLES_BODY))
+    _select(monkeypatch, registry.FAKE_PROVIDER)
+    entered = threading.Event()
+    release = threading.Event()
+    enqueue = lifecycle_module.enqueue_embed_job
+
+    def held(ctx: WorkspaceContext, uow: UnitOfWork, **kwargs: Any) -> bool:
+        # Past the rewrite and the vector delete, before the commit.
+        entered.set()
+        assert release.wait(timeout=60)
+        return enqueue(ctx, uow, **kwargs)
+
+    monkeypatch.setattr(lifecycle_module, "enqueue_embed_job", held)
+    corrector = _start(lambda: _correct_to_pears(embedding, memory_id))
+    assert entered.wait(timeout=30)
+    now = datetime.now(UTC)
+    _enqueue_embed(embedding, memory_id, now=now)
+    worker = _start(lambda: embedding.visit(at=now + timedelta(seconds=1)))
+    _then_blocked_or_done(embedding, worker)
+    release.set()
+    corrector.join()
+    worker.join()
+
+    (job,) = embedding.jobs_of(EMBED_JOB_KIND)
+    assert job.state == "succeeded", job
+    assert _embedded_text(embedding, memory_id, fake) == "pears"
+
+
+def test_a_correction_landing_mid_rebuild_never_leaves_the_old_text_s_vector(
+    embedding: EmbeddingWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rebuild's fill holds the rows of its batch the same way the job does, and
+    a later rebuild then fills the corrected memory from its new text."""
+    fake = _fake()
+    (memory_id,) = _seed_texts(embedding, ("apples", _APPLES_BODY))
+    gated = _gate(monkeypatch, fake)
+    operation_id = _rebuild(embedding)
+
+    worker = _start(
+        lambda: embedding.visit(at=datetime.now(UTC) + timedelta(seconds=1))
+    )
+    assert gated.entered.wait(timeout=30)
+    corrector = _start(lambda: _correct_to_pears(embedding, memory_id))
+    _then_blocked_or_done(embedding, corrector)
+    gated.release.set()
+    worker.join()
+    corrector.join()
+
+    assert embedding.operation(operation_id).state == "succeeded"
+    assert _embedded_text(embedding, memory_id, fake) is None
+
+    _select(monkeypatch, registry.FAKE_PROVIDER)
+    second = _rebuild(embedding)
+    embedding.visit(at=datetime.now(UTC) + timedelta(seconds=2))
+    assert embedding.operation(second).state == "succeeded"
+    assert _embedded_text(embedding, memory_id, fake) == "pears"
+
+
+def test_a_rebuild_and_a_closure_correction_neither_deadlock_nor_leave_a_vector(
+    embedding: EmbeddingWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A correction locks its target and then each dependant; the rebuild locks rows in
+    id order, batch by batch, and holds them to its one commit. With a dependant ahead
+    of its target in id order, the rebuild holds the dependant the correction is about
+    to invalidate while the correction holds the target the rebuild reaches next.
+
+    The rebuild skips a row another writer holds instead of waiting for it, so the
+    correction waits for the rebuild and the rebuild never waits for the correction:
+    both finish, the invalidated dependant's vector goes with its invalidation, and the
+    skipped target is left for its own embed job."""
+    fake = _fake()
+    first, second = sorted(uuid7() for _ in range(2))
+    dependant, target = first, second
+    _seed_texts(
+        embedding,
+        ("apples", _APPLES_BODY),
+        ("a summary", "of apples"),
+        ids=(target, dependant),
+    )
+    with embedding.unit() as uow:
+        insert_memory_link(
+            uow.connection,
+            MemoryLinkRow(
+                memory_id=dependant,
+                ref=memory_reference(target),
+                relation="derived_from",
+                created_at=datetime.now(UTC) - timedelta(hours=1),
+                supersession_lineage=False,
+            ),
+        )
+        upsert_workspace_setting(
+            uow.connection,
+            key=EMBEDDING_BATCH_SIZE_KEY,
+            value="1",
+            value_type=ValueType.INT,
+            updated_by=None,
+        )
+    gated = _gate(monkeypatch, fake)
+    operation_id = _rebuild(embedding)
+
+    worker = _start(
+        lambda: embedding.visit(at=datetime.now(UTC) + timedelta(seconds=1))
+    )
+    assert gated.entered.wait(timeout=30)  # the dependant's batch, rows held
+    corrector = _start(lambda: _correct_to_pears(embedding, target))
+    _then_blocked_or_done(embedding, corrector)
+    gated.release.set()
+    worker.join()
+    corrector.join()
+
+    assert embedding.operation(operation_id).state == "succeeded"
+    with embedding.reading() as uow:
+        invalidated = get_memory(uow.connection, dependant)
+    assert invalidated is not None and invalidated.invalidated_at is not None
+    assert _embedded_text(embedding, dependant, fake) is None
+    assert _embedded_text(embedding, target, fake) in (None, "pears")
