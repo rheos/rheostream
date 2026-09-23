@@ -106,13 +106,16 @@ from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
 from rheo_recallatron.configuration import (
     CANDIDATE_SCAN_LIMIT,
+    DENSE_FLOOR_PERCENT_SPEC,
     LEXICAL_DF_THRESHOLD,
     LEXICAL_RAREST_KEPT,
     MEMORY_RECORD_TYPE,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
     RETRIEVAL_STRATEGY_KEY,
+    RETRIEVAL_STRATEGY_SPEC,
     STRATEGY_DENSE,
+    STRATEGY_HYBRID,
     STRATEGY_LEXICAL,
     RetentionPolicy,
 )
@@ -1316,7 +1319,9 @@ def test_eligibility_contact_seam_is_absent_permitted_or_denied(
 # --- recall -------------------------------------------------------------------------
 
 
-def test_recall_returns_eligible_rows_marked_lexical(memory: MemoryWorkspace) -> None:
+def test_recall_returns_eligible_rows_marked_with_the_resolved_strategy(
+    memory: MemoryWorkspace,
+) -> None:
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples", body="a note about apples"))
         _write(
@@ -1341,8 +1346,32 @@ def test_recall_returns_eligible_rows_marked_lexical(memory: MemoryWorkspace) ->
     result = outcome.result
     assert result is not None
     items = result.items
-    assert [item.title for item in items] == ["apples"]
-    assert items[0].strategy == "lexical"
+    resolved = memory.stored_setting(RETRIEVAL_STRATEGY_KEY)
+    assert result.provenance.strategy == resolved
+    assert all(item.strategy == resolved for item in items)
+    titles = [item.title for item in items]
+    if resolved == STRATEGY_LEXICAL or (
+        resolved == STRATEGY_HYBRID and not result.provenance.dense_available
+    ):
+        # A lexical-only answer: ``lexical`` itself, or ``hybrid`` with no dense arm,
+        # which by requirement 12 answers the lexical arm's rows.
+        assert [item.title for item in items] == ["apples"]
+    elif resolved == STRATEGY_DENSE:
+        # ``pears`` / ``a note about pears`` scores cosine 0.471 against ``apples`` on
+        # the shipped provider, clearing the 0.30 floor by 0.171, so dense returns it
+        # (spec § Technical Risks 8, evidence E9). Its exclusion under ``lexical`` is
+        # the ``@@`` predicate's, not an eligibility rule.
+        assert titles[0] == "apples"
+        assert "expired apples" not in titles
+        assert all(
+            item.score >= DENSE_FLOOR_PERCENT_SPEC.default / 100 for item in items
+        )
+    else:
+        # ``hybrid`` with a dense arm: RRF puts ``apples`` (both arms, 2/61) above
+        # ``pears`` (dense only, 1/62). No score bound: an RRF sum is not a cosine.
+        assert resolved == STRATEGY_HYBRID
+        assert titles[0] == "apples"
+        assert "expired apples" not in titles
     assert items[0].score > 0
     assert items[0].body == "a note about apples"
 
@@ -1420,9 +1449,10 @@ def test_recall_runs_the_strategy_the_registry_resolves(
 ) -> None:
     """AC 1, first half: the resolved registry entry decides what runs.
 
-    This phase's key offers only ``lexical``, so the proof swaps that entry for a spy
-    rather than writing a setting. The spy answers ``apples`` with the ``pears`` row,
-    which shares no lexeme with the query, and with arm counts lexical never reports.
+    The workspace pins ``lexical`` and the proof swaps that entry for a spy. Pinned,
+    because the default resolves ``hybrid`` and would never reach the spy. The spy
+    answers ``apples`` with the ``pears`` row, which shares no lexeme with the query,
+    and with arm counts lexical never reports.
     """
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples", body="a note about apples"))
@@ -1438,6 +1468,7 @@ def test_recall_runs_the_strategy_the_registry_resolves(
         )
     )
     monkeypatch.setitem(STRATEGY_REGISTRY, STRATEGY_LEXICAL, spy)
+    memory.set_strategy(STRATEGY_LEXICAL)
 
     result = _recalled(memory.recall(memory.context(), query="apples"))
 
@@ -1458,9 +1489,9 @@ def test_recall_runs_the_strategy_the_stored_setting_names(
 ) -> None:
     """AC 1, the settings half: the stored workspace value picks the registry entry.
 
-    The shipped key offers ``lexical`` alone, so this test widens a stand-in spec to
-    offer a ``spy`` choice and registers a spy under it. The lexical entry stays in
-    place, so a resolver that ignored the setting would run lexical and fail here.
+    A stand-in spec offers a ``spy`` choice, with a spy registered under it. The
+    lexical entry stays in place, so a resolver that ignored the setting would run the
+    stand-in's default, lexical, and fail here.
     """
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples", body="a note about apples"))
@@ -1607,7 +1638,7 @@ def test_lexical_recall_returns_what_the_inline_statement_returned(
 def test_every_recall_carries_lexical_provenance(memory: MemoryWorkspace) -> None:
     """AC 8's ``false`` half: provenance on every response, counting the ranked list
     before the permission walk, with no dense arm to report."""
-    assert memory.stored_setting(RETRIEVAL_STRATEGY_KEY) == STRATEGY_LEXICAL
+    memory.set_strategy(STRATEGY_LEXICAL)
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples one", body="apples, readable"))
         _write(
@@ -1635,8 +1666,8 @@ def test_every_recall_carries_lexical_provenance(memory: MemoryWorkspace) -> Non
     )
 
 
-@pytest.mark.parametrize("stored", [None, "not-a-strategy", STRATEGY_DENSE])
-def test_an_absent_or_unusable_strategy_row_recalls_lexically_without_refusing(
+@pytest.mark.parametrize("stored", [None, "not-a-strategy", "semantic"])
+def test_an_absent_strategy_row_takes_the_default_and_an_unusable_one_is_lexical(
     memory: MemoryWorkspace, stored: str | None
 ) -> None:
     """An absent row takes the package default; a present row outside the offered
@@ -1647,7 +1678,9 @@ def test_an_absent_or_unusable_strategy_row_recalls_lexically_without_refusing(
 
     result = _recalled(memory.recall(memory.context(), query="apples"))
     assert [item.title for item in result.items] == ["apples"]
-    assert result.provenance.strategy == STRATEGY_LEXICAL
+    assert result.provenance.strategy == (
+        RETRIEVAL_STRATEGY_SPEC.default if stored is None else STRATEGY_LEXICAL
+    )
 
 
 # --- the lexical query builder --------------------------------------------------------

@@ -123,10 +123,9 @@ STRATEGY_DENSE: Final = "dense"
 STRATEGY_HYBRID: Final = "hybrid"
 """The three retrieval strategy names, and what every recall hit is marked with.
 
-A name here is a vocabulary member, not a promise that an implementation exists:
-``dense`` and ``hybrid`` are declared so every later reader spells them one way, and
-neither is offered by :data:`RETRIEVAL_STRATEGY_SPEC` or registered in the strategy
-registry until an implementation ships beside it.
+All three are offered by :data:`RETRIEVAL_STRATEGY_SPEC` and registered in the strategy
+registry. The two move together: the registry refuses at import to start with a name
+offered here that nothing serves.
 """
 
 RETRIEVAL_STRATEGIES: Final = (STRATEGY_LEXICAL, STRATEGY_DENSE, STRATEGY_HYBRID)
@@ -136,9 +135,14 @@ RETRIEVAL_STRATEGY_KEY: Final = f"{MODULE_ID}.retrieval.strategy"
 workspace's recall.
 
 ``explicit_per_workspace``, so enable writes the row and a workspace's retrieval
-posture is a stored readable value. **Only ``lexical`` is offered today**: a value in
-``choices`` is a value a workspace may configure, and offering one no implementation
-serves would let a workspace choose something the release cannot answer with.
+posture is a stored readable value. A value in ``choices`` is a value a workspace may
+configure, so every one of the three has an implementation behind it.
+
+**The default is ``hybrid``, and on a deployment with no embedding provider it reads
+exactly like ``lexical``.** With nothing dense configured the dense arm contributes
+nothing, and hybrid then answers the lexical arm's rows in the lexical arm's order,
+labelled ``hybrid`` with ``dense_available=false``, never a refusal. What moves is
+``score``, which is on the fused scale.
 
 Read through the transaction-bound override source, like the retention keys. An
 absent row resolves to this spec's default; a present row that will not parse
@@ -152,8 +156,8 @@ RETRIEVAL_STRATEGY_SPEC: Final = KeySpec(
     scope=Scope.WORKSPACE,
     floor=None,
     explicit_per_workspace=True,
-    default=STRATEGY_LEXICAL,
-    choices=(STRATEGY_LEXICAL,),
+    default=STRATEGY_HYBRID,
+    choices=(STRATEGY_LEXICAL, STRATEGY_DENSE, STRATEGY_HYBRID),
 )
 
 DENSE_FLOOR_PERCENT_KEY: Final = f"{MODULE_ID}.retrieval.dense_floor_percent"
@@ -190,6 +194,39 @@ DENSE_FLOOR_PERCENT_SPEC: Final = KeySpec(
     default=DENSE_FLOOR_PERCENT_DEFAULT,
     minimum=DENSE_FLOOR_PERCENT_MINIMUM,
     maximum=DENSE_FLOOR_PERCENT_MAXIMUM,
+)
+
+OVERFETCH_MULTIPLIER_KEY: Final = f"{MODULE_ID}.retrieval.overfetch_multiplier"
+"""How much wider than ``k`` the **dense arm** of a ``hybrid`` recall is.
+
+The dense arm asks for ``min(k * this, CANDIDATE_SCAN_LIMIT)`` rows. Fusion needs more
+than ``k`` from an arm, or it loses exactly the row that ranks ``k + 1`` in one arm and
+first in the other, which is the row hybrid exists to find.
+
+**The dense arm only.** The lexical arm already fetches ``CANDIDATE_SCAN_LIMIT``, so a
+multiplier there could only narrow it, and would cut how deep the permission walk can
+look for ``k`` readable rows on the default path. ``dense``-only recall does not read
+it either: its one arm fetches the scan bound.
+
+The maximum is what keeps the ``min`` a belt rather than a live bound:
+``RECALL_K_MAX * 10 = 50 * 10 = 500 = CANDIDATE_SCAN_LIMIT``, so no legal ``k`` and
+multiplier ask for more than the scan bound. Not ``explicit_per_workspace``: an absent
+row, one that will not decode and one outside the range all read as the default.
+"""
+
+OVERFETCH_MULTIPLIER_DEFAULT: Final = 3
+OVERFETCH_MULTIPLIER_MINIMUM: Final = 1
+OVERFETCH_MULTIPLIER_MAXIMUM: Final = 10
+
+OVERFETCH_MULTIPLIER_SPEC: Final = KeySpec(
+    key=OVERFETCH_MULTIPLIER_KEY,
+    type=ValueType.INT,
+    scope=Scope.WORKSPACE,
+    floor=None,
+    explicit_per_workspace=False,
+    default=OVERFETCH_MULTIPLIER_DEFAULT,
+    minimum=OVERFETCH_MULTIPLIER_MINIMUM,
+    maximum=OVERFETCH_MULTIPLIER_MAXIMUM,
 )
 
 

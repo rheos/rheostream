@@ -22,9 +22,8 @@ back to the savepoint. Caught inside, the block exits normally, ``RELEASE SAVEPO
 runs against a failed savepoint, and ``InFailedSqlTransaction`` takes the outer
 transaction down (both spellings were run against the cluster).
 
-Not registered in the strategy registry yet, and it cannot be: registering it is the
-same change that offers ``dense`` in the strategy key's ``choices``, and the registry's
-import-time check refuses the other order.
+Registered as ``dense``; ``HybridStrategy`` holds an instance of its own as its dense
+arm and asks it for a narrower ``limit``.
 
 **The lifecycle closure does not call** :meth:`DenseStrategy.invalidate`. Correction,
 supersession and deletion delete a memory's vectors through the repository directly and

@@ -17,13 +17,19 @@ from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from rheo_recallatron.configuration import (
     RETRIEVAL_STRATEGY_KEY,
     RETRIEVAL_STRATEGY_SPEC,
+    STRATEGY_DENSE,
+    STRATEGY_HYBRID,
     STRATEGY_LEXICAL,
 )
+from rheo_recallatron.retrieval.dense import DenseStrategy
+from rheo_recallatron.retrieval.hybrid import HybridStrategy
 from rheo_recallatron.retrieval.lexical import LexicalStrategy
 from rheo_recallatron.retrieval.protocol import RetrievalStrategy
 
 STRATEGY_REGISTRY: Final[dict[str, RetrievalStrategy]] = {
     STRATEGY_LEXICAL: LexicalStrategy(),
+    STRATEGY_DENSE: DenseStrategy(),
+    STRATEGY_HYBRID: HybridStrategy(),
 }
 """Strategy name to implementation. A name joins the key's ``choices`` in the same
 change that registers it here; the import-time check below refuses the other order."""

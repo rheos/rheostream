@@ -189,7 +189,25 @@ class MemoryItem(Strict):
 
 
 class RecallItem(MemoryItem):
-    """A recall hit: a memory plus the score and strategy that found it."""
+    """A recall hit: a memory plus the score and strategy that found it.
+
+    **``score`` is a different quantity under each strategy**, comparable only among
+    the items of one response, and ``provenance.strategy`` says which one applies:
+
+    - ``lexical``: ``ts_rank_cd`` cover density over the memory's text. Unbounded above,
+      and its scale depends on the document's length and how densely it matches.
+    - ``dense``: cosine similarity, ``1 - (vector <=> query)``, at or above the
+      workspace's dense floor, because anything below it is withheld.
+    - ``hybrid``: the reciprocal-rank-fusion sum, ``Σ 1 / (60 + rank)`` over the arms
+      that found the memory. At most ``2/61`` with two arms, and on neither arm's scale.
+
+    Since ``hybrid`` is the default, the default path's score is the fused sum, two
+    orders of magnitude below a typical ``ts_rank_cd``. A score compared across
+    strategies, or stored and compared later, compares nothing.
+
+    ``strategy`` is the strategy that answered, and always equals
+    ``provenance.strategy``.
+    """
 
     score: float
     strategy: str
@@ -395,6 +413,7 @@ def recall(
             mode=mode,
             memory=request,
             limit=CANDIDATE_SCAN_LIMIT,
+            k=model_input.k,
         ),
     )
 

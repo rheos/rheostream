@@ -127,7 +127,12 @@ RECALL_TOOL: Final = ToolDeclaration(
         "unparseable argument, purpose_mismatch when the stated purpose is not "
         "the one this context is bound to, and reference_scan_limit when the "
         "search exhausts its shared reference budget. A search that matches "
-        "nothing you may read returns no items; it is not a refusal."
+        "nothing you may read returns no items; it is not a refusal. "
+        "Dense retrieval returns its nearest rows, not its relevant ones, so judge "
+        "relevance yourself. A memory is a dated claim, not current truth: "
+        "supersession corrects it, so prefer the most recent and check live state. "
+        "Read `provenance` before `items` — it says which arms ran and whether "
+        "dense was available at all."
     ),
 )
 

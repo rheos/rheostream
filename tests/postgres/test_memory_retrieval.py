@@ -1,27 +1,33 @@
-"""Recallatron's dense arm against real workspaces: ``DenseStrategy.search()``.
+"""Recallatron's dense and hybrid arms against real workspaces.
 
 Seams under test: ``DenseStrategy.search()`` (its hits, its relevance floor, its arm
-counts and its savepoint-guarded degrade), called directly and through ``recall()``.
+counts and its savepoint-guarded degrade), called directly and through ``recall()``;
+``HybridStrategy.search()`` (its fusion, its dense arm's over-fetch width and its
+degrade to the lexical rows) and ``resolve_strategy``'s dispatch across the three
+offered names, both observed through ``recall()``'s items, order and ``provenance``.
 
-**How a test reaches the dense arm.** The strategy key still offers ``lexical`` alone:
-``decode_text`` refuses any other stored value and ``resolve_strategy`` reads a refused
-one as ``lexical``, so a test that stored ``dense`` would run lexical and pass for the
-wrong reason. No test here writes the key. Each dense test names one of two mechanisms:
+**How a test reaches an arm.** Each test names one of three mechanisms:
 
-- **(a)** ``DenseStrategy().search(ctx, uow, request)``, called directly, asserting on
-  its ``SearchResult``;
-- **(b)** ``recall()`` end to end with ``STRATEGY_REGISTRY["lexical"]`` swapped for
-  ``DenseStrategy()``, so the configured name dispatches the dense implementation and
-  the response reports ``strategy="dense"``, the dispatched strategy's own name.
+- **(a)** ``DenseStrategy().search(ctx, uow, request)``, or a registered strategy's
+  ``search``, called directly, asserting on its ``SearchResult``;
+- **(b)** ``recall()`` end to end with the workspace pinned to ``lexical`` and
+  ``STRATEGY_REGISTRY["lexical"]`` swapped for ``DenseStrategy()``, so the configured
+  name dispatches the dense implementation and the response reports
+  ``strategy="dense"``, the dispatched strategy's own name. The dense tests written
+  before the key offered ``dense`` use it. The pin matters: an unconfigured workspace
+  resolves ``hybrid``, which never reaches the swapped entry;
+- **(c)** ``recall()`` with the strategy stored as the workspace override, the
+  ordinary way, now that the key offers all three.
 
 **One way to select a provider.** A test rebinds ``registry.configured_provider_name``
 (``monkeypatch`` undoes it), never an ``RHEO__`` variable. **The real-provider tests
 fail, never skip,** without the ``local-embeddings`` extra; the failure names the
 command that installs it.
 
-**Fixture rows go through the repository**, and vectors through ``index_many`` or
-``fill_missing_embeddings``. The one exception is the short-arm guard's population:
-five thousand synthetic vectors written in one statement by spec evidence E4's recipe.
+**Fixture rows go through the repository**, and vectors through ``index_many``,
+``index`` or ``fill_missing_embeddings``. The one exception is the short-arm guard's
+population: five thousand synthetic vectors written in one statement by spec evidence
+E4's recipe.
 """
 
 from __future__ import annotations
@@ -64,11 +70,21 @@ from rheo_recallatron.configuration import (
     HNSW_EF_SEARCH_MIN,
     HNSW_MAX_SCAN_TUPLES,
     MEMORY_RECORD_TYPE,
+    OVERFETCH_MULTIPLIER_DEFAULT,
+    OVERFETCH_MULTIPLIER_KEY,
+    RECALL_K_DEFAULT,
     RETENTION_EXPIRE_BY_AGE_KEY,
+    RETRIEVAL_STRATEGY_KEY,
     STRATEGY_DENSE,
+    STRATEGY_HYBRID,
     STRATEGY_LEXICAL,
 )
-from rheo_recallatron.contracts import ArmCounts, RecallProvenance
+from rheo_recallatron.contracts import (
+    ArmCounts,
+    MemoryCorrected,
+    MemorySuperseded,
+    RecallProvenance,
+)
 from rheo_recallatron.eligibility import (
     MemoryRequest,
     ReadMode,
@@ -81,7 +97,12 @@ from rheo_recallatron.embedding.fake import FAKE_MODEL_ID, FakeEmbeddingProvider
 from rheo_recallatron.embedding.local import LocalEmbeddingProvider
 from rheo_recallatron.embedding.protocol import EmbeddingProvider
 from rheo_recallatron.embedding.rebuild import fill_missing_embeddings
-from rheo_recallatron.operations import MEMORY_RECALL, RecallResult
+from rheo_recallatron.operations import (
+    MEMORY_CORRECT,
+    MEMORY_RECALL,
+    MEMORY_SUPERSEDE,
+    RecallResult,
+)
 from rheo_recallatron.resolvers import resolve_memory
 from rheo_recallatron.retrieval.dense import (
     NO_EMBEDDINGS,
@@ -98,19 +119,23 @@ from rheo_recallatron.retrieval.dense import (
     hnsw_scan_settings,
 )
 from rheo_recallatron.retrieval.dispatch import STRATEGY_REGISTRY
+from rheo_recallatron.retrieval.lexical import LexicalStrategy
 from rheo_recallatron.retrieval.protocol import (
     ArmProvenance,
     IndexItem,
+    RetrievalStrategy,
     SearchRequest,
     SearchResult,
 )
 from rheo_recallatron.storage import tables as memory_tables
 from rheo_recallatron.storage.repository import (
+    MemoryLinkRow,
     MemoryPurposeRow,
     MemoryRow,
     analyze_memory,
     get_memory,
     insert_memory,
+    insert_memory_link,
     insert_memory_purpose,
     vector_literal,
 )
@@ -186,14 +211,21 @@ class RetrievalWorkspace:
         with UnitOfWork(self.engine, self.database_name) as uow:
             yield uow
 
-    def recall(self, **payload: object) -> OperationOutcome:
+    def call(self, name: str, payload: dict[str, object]) -> OperationOutcome:
         return dispatch(
             self.context(),
-            MEMORY_RECALL,
+            name,
             payload,
             registry=self.surfaces.operations,
             consumers=self.consumers,
         )
+
+    def recall(self, **payload: object) -> OperationOutcome:
+        return self.call(MEMORY_RECALL, payload)
+
+    def set_strategy(self, name: str) -> None:
+        """Mechanism (c): the retrieval strategy as this workspace's stored override."""
+        self.setting(RETRIEVAL_STRATEGY_KEY, name, ValueType.STR)
 
     def setting(self, key: str, value: str, value_type: ValueType) -> None:
         """One workspace override row, written around the settings operation."""
@@ -400,6 +432,7 @@ def _search(ws: RetrievalWorkspace, query: str) -> SearchResult:
                 mode=ReadMode.CURRENT,
                 memory=_request(ctx, uow),
                 limit=CANDIDATE_SCAN_LIMIT,
+                k=RECALL_K_DEFAULT,
             ),
         )
         assert uow.connection.execute(select(literal_column("1"))).scalar_one() == 1
@@ -416,6 +449,7 @@ def _dense_recall(
     ws: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch, query: str
 ) -> RecallResult:
     """Mechanism (b): the configured name, ``lexical``, dispatches ``DenseStrategy``."""
+    ws.set_strategy(STRATEGY_LEXICAL)
     monkeypatch.setitem(STRATEGY_REGISTRY, STRATEGY_LEXICAL, DenseStrategy())
     return _recalled(ws.recall(query=query))
 
@@ -523,6 +557,7 @@ def test_dense_recall_finds_a_memory_that_shares_no_term_with_its_query(
     # model and runtime, not bit-identical across runtime versions or instruction sets.
     assert similarity >= floor / 100.0 + _AC3_MARGIN, similarity
 
+    retrieval.set_strategy(STRATEGY_LEXICAL)
     lexical = _recalled(retrieval.recall(query=_AC3_QUERY))
     assert lexical.provenance.strategy == STRATEGY_LEXICAL
     assert memory_reference(shopping) not in [item.ref for item in lexical.items]
@@ -649,6 +684,7 @@ def test_a_wrong_width_query_vector_fails_in_sql_and_the_transaction_survives(
                 mode=ReadMode.CURRENT,
                 memory=_request(ctx, uow),
                 limit=CANDIDATE_SCAN_LIMIT,
+                k=RECALL_K_DEFAULT,
             ),
         )
         # The outer transaction survived the failed statement: after an abort, every
@@ -680,6 +716,7 @@ def test_a_dense_recall_with_no_provider_is_empty_and_never_lexical(
     """
     _seed(retrieval, ("apples", "a note about apples"))
     _select(monkeypatch, EMBEDDING_PROVIDER_NONE)
+    retrieval.set_strategy(STRATEGY_LEXICAL)
     lexical = _recalled(retrieval.recall(query="apples"))
     assert [item.title for item in lexical.items] == ["apples"]
 
@@ -817,6 +854,7 @@ def test_the_arm_is_bounded_by_the_request_limit_in_its_statement_and_its_scan(
                 mode=ReadMode.CURRENT,
                 memory=_request(ctx, uow),
                 limit=1,
+                k=RECALL_K_DEFAULT,
             ),
         )
         # ``SET LOCAL`` outlives the released savepoint, so this is what the arm set.
@@ -1098,6 +1136,7 @@ def test_the_dense_arm_on_the_hnsw_plan_reaches_every_row_the_predicate_admits(
             mode=ReadMode.CURRENT,
             memory=_request(ctx, uow),
             limit=CANDIDATE_SCAN_LIMIT,
+            k=RECALL_K_DEFAULT,
         )
 
     with retrieval.reading() as uow:
@@ -1165,3 +1204,518 @@ def test_the_dense_arm_on_the_hnsw_plan_reaches_every_row_the_predicate_admits(
         "the guarded mechanism is not load-bearing on this fixture: "
         f"iterative_scan off returned {len(unguarded)} of {len(truth)}",
     )
+
+
+# --- hybrid, and the setting that picks a strategy ------------------------------------
+
+
+def _recall_under(
+    ws: RetrievalWorkspace, strategy: str, **payload: object
+) -> RecallResult:
+    """Mechanism (c): store the strategy as the workspace override, then recall."""
+    ws.set_strategy(strategy)
+    return _recalled(ws.recall(**payload))
+
+
+def _seed_ordered(ws: RetrievalWorkspace, *texts: tuple[str, str]) -> list[UUID]:
+    """Like ``_seed``, with each row a second newer than the one before it."""
+    with ws.unit() as uow:
+        return [
+            _write(uow, _row(title, body, recorded_at=_recent(offset)))
+            for offset, (title, body) in enumerate(texts)
+        ]
+
+
+def _unreadable_source() -> str:
+    """A reference nothing in this harness resolves, so the permission walk denies
+    every memory linked to it."""
+    return f"harness.note:{uuid7()}"
+
+
+def _write_linked(uow: UnitOfWork, row: MemoryRow, ref: str) -> UUID:
+    memory_id = _write(uow, row)
+    insert_memory_link(
+        uow.connection,
+        MemoryLinkRow(
+            memory_id=memory_id,
+            ref=ref,
+            relation="about",
+            created_at=row.recorded_at,
+            supersession_lineage=False,
+        ),
+    )
+    return memory_id
+
+
+def _above_floor(
+    ws: RetrievalWorkspace, *, model_id: str, query_vector: Sequence[float]
+) -> set[UUID]:
+    """The memories the dense arm's predicate admits, floor included, by a non-index
+    pass (no ``ORDER BY`` on the distance): the arm's ground truth before its limit."""
+    ctx = ws.context()
+    embedding = memory_tables.memory_embedding
+    similarity = dense_similarity(dense_distance(query_vector))
+    with ws.reading() as uow:
+        return set(
+            uow.connection.execute(
+                select(memory_tables.memory.c.id)
+                .select_from(
+                    memory_tables.memory.join(
+                        embedding, embedding.c.memory_id == memory_tables.memory.c.id
+                    )
+                )
+                .where(
+                    embedding.c.model_id == model_id,
+                    dense_floor(similarity, dense_floor_percent(ctx, uow)),
+                    *row_local_conditions(_request(ctx, uow), ReadMode.CURRENT),
+                )
+            ).scalars()
+        )
+
+
+def _vectors(ws: RetrievalWorkspace, model_id: str) -> set[UUID]:
+    """The memories holding a row for ``model_id``."""
+    embedding = memory_tables.memory_embedding
+    with ws.reading() as uow:
+        return set(
+            uow.connection.execute(
+                select(embedding.c.memory_id).where(embedding.c.model_id == model_id)
+            ).scalars()
+        )
+
+
+@dataclass
+class _Counting:
+    """A registered strategy, unchanged, counting its ``search`` calls."""
+
+    inner: RetrievalStrategy
+    calls: int = 0
+
+    @property
+    def name(self) -> str:
+        return self.inner.name
+
+    def index(self, ctx: WorkspaceContext, uow: Any, item: IndexItem) -> None:
+        self.inner.index(ctx, uow, item)
+
+    def invalidate(self, ctx: WorkspaceContext, uow: Any, ref: str) -> None:
+        self.inner.invalidate(ctx, uow, ref)
+
+    def search(
+        self, ctx: WorkspaceContext, uow: Any, request: SearchRequest
+    ) -> SearchResult:
+        self.calls += 1
+        return self.inner.search(ctx, uow, request)
+
+
+def test_the_stored_setting_picks_which_registered_strategy_runs(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 1, second half. Mechanism (c).
+
+    Every registered strategy is wrapped in a counting spy and each name is stored in
+    turn: only the chosen one's ``search`` runs. Under ``hybrid`` the lexical and dense
+    spies stay at zero as well, because hybrid runs arms of its own rather than the
+    registry's, so a test that swaps a registry entry sees only what the setting chose.
+    """
+    _seed(retrieval, ("apples", "a note about apples"))
+    spies = {
+        name: _Counting(STRATEGY_REGISTRY[name])
+        for name in (STRATEGY_LEXICAL, STRATEGY_DENSE, STRATEGY_HYBRID)
+    }
+    for name, spy in spies.items():
+        monkeypatch.setitem(STRATEGY_REGISTRY, name, spy)
+
+    for chosen in spies:
+        for spy in spies.values():
+            spy.calls = 0
+        result = _recall_under(retrieval, chosen, query="apples")
+        assert result.provenance.strategy == chosen
+        assert {name: spy.calls for name, spy in spies.items()} == {
+            name: int(name == chosen) for name in spies
+        }, chosen
+
+
+# --- AC 6, the hybrid half: no usable dense arm is the lexical answer, never a refusal
+
+_AC6_ROWS = (
+    ("apples", "apples apples apples, and a body"),
+    ("one apple", "a single apples mention"),
+    ("tie a", "apples in the body"),
+    ("tie b", "apples in the body"),
+    ("pears", "a body about pears"),
+)
+"""Four lexical matches at three densities, two of them tied on text so ``lexical``
+orders them oldest first, and one row that does not match at all."""
+
+_AC6_CASES = ("no provider", "provider raises", "no rows for its model", "wrong width")
+
+
+def _dense_arm_unusable(
+    ws: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch, case: str
+) -> str:
+    """Leave the dense arm unable to contribute, the way ``case`` names; answer the
+    cause its warning must give."""
+    if case == "no provider":
+        _select(monkeypatch, EMBEDDING_PROVIDER_NONE)
+        return NO_PROVIDER
+    if case == "provider raises":
+        _install(monkeypatch, "raising", _RaisingProvider())
+        _select(monkeypatch, "raising")
+        return PROVIDER_RAISED
+    fake = _fake(monkeypatch)
+    if case == "no rows for its model":
+        retired = _RenamedProvider(model_id="rheo-test/retired-model", inner=fake)
+        _fill(ws, retired)
+        _gate(
+            _vectors(ws, fake.model_id) == set()
+            and bool(_vectors(ws, retired.model_id)),
+            "expected rows by another model only",
+        )
+        return NO_EMBEDDINGS
+    assert case == "wrong width", case
+    _fill(ws, fake)
+    _install(monkeypatch, "wrong-width", _WrongWidthProvider())
+    _select(monkeypatch, "wrong-width")
+    return STATEMENT_RAISED
+
+
+@pytest.mark.parametrize("case", _AC6_CASES)
+def test_hybrid_with_no_usable_dense_arm_answers_the_lexical_rows_in_order(
+    retrieval: RetrievalWorkspace,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    case: str,
+) -> None:
+    """AC 6, the hybrid half. Mechanism (c).
+
+    Whatever stops the dense arm, ``hybrid`` answers what ``lexical`` answers over the
+    same rows, in the same order, labelled ``hybrid``, with ``dense_available`` false,
+    and ``ok``. The ``wrong width`` case is the one that fails in SQL: the query vector
+    reaches the database, the dense statement raises inside its savepoint, and the
+    lexical arm's rows still come back in the same transaction.
+    """
+    _seed_ordered(retrieval, *_AC6_ROWS)
+    cause = _dense_arm_unusable(retrieval, monkeypatch, case)
+    lexical = _recall_under(retrieval, STRATEGY_LEXICAL, query="apples", k=50)
+    _gate(
+        len(lexical.items) == 4,
+        f"{len(lexical.items)} lexical matches, not the fixture's four",
+    )
+    retrieval.set_strategy(STRATEGY_HYBRID)
+    caplog.clear()
+
+    with caplog.at_level(logging.WARNING, logger=_DENSE_LOGGER):
+        outcome = retrieval.recall(query="apples", k=50)
+
+    assert outcome.ok, outcome
+    result = _recalled(outcome)
+    assert [item.ref for item in result.items] == [item.ref for item in lexical.items]
+    assert {item.strategy for item in result.items} == {STRATEGY_HYBRID}
+    assert result.provenance == RecallProvenance(
+        strategy=STRATEGY_HYBRID,
+        arms=ArmCounts(lexical=lexical.provenance.arms.lexical, dense=0),
+        dense_available=False,
+    )
+    assert result.provenance.arms.lexical > 0
+    record = _one_warning(caplog, "apples")
+    assert record.dense_cause == cause
+    if case == "wrong width":
+        assert record.error_class == pg_errors.DataException.__name__
+        assert record.error_class != ValueError.__name__
+        assert record.provider_model_id == FAKE_MODEL_ID
+        assert record.provider_dimensions == EMBEDDING_DIMENSIONS
+
+
+def test_hybrid_over_partial_coverage_reports_the_dense_arm_available(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 6's companion under ``hybrid``, through ``recall()``. Mechanism (c).
+
+    One memory is embedded and one is not yet: the normal steady state, so the dense
+    arm is available. The memory it cannot see is still answered, by the lexical arm.
+    """
+    fake = _fake(monkeypatch)
+    covered, pending = _seed(
+        retrieval,
+        ("apples", "a note about apples"),
+        ("apple pie", "a note about apple pie"),
+    )
+    covered_item = _item(retrieval, covered)
+    with retrieval.unit() as uow:
+        DenseStrategy().index_many(uow, [covered_item], provider=fake)
+    vectors = _vectors(retrieval, fake.model_id)
+    _gate(pending not in vectors, "the pending memory already has its row")
+    _gate(bool(vectors), "the workspace holds no row for the resolved model")
+
+    result = _recall_under(retrieval, STRATEGY_HYBRID, query="apple pie")
+
+    assert result.provenance.strategy == STRATEGY_HYBRID
+    assert result.provenance.dense_available is True
+    assert memory_reference(pending) in [item.ref for item in result.items]
+
+
+def test_hybrid_on_the_real_provider_reports_the_dense_arm_available(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 7 under ``hybrid``, on the real provider over AC 3's pair. Mechanism (c).
+
+    With AC 6's hybrid half, both values of ``dense_available`` are exercised through
+    ``recall()`` under ``hybrid`` (AC 8). The pair shares no term, so what came back
+    came from the dense arm alone.
+    """
+    provider = _local(monkeypatch)
+    (shopping,) = _seed(retrieval, _AC3_MEMORY)
+    _fill(retrieval, provider)
+
+    result = _recall_under(retrieval, STRATEGY_HYBRID, query=_AC3_QUERY)
+
+    assert result.provenance.strategy == STRATEGY_HYBRID
+    assert result.provenance.dense_available is True
+    assert result.provenance.arms.dense > 0
+    assert result.provenance.arms.lexical == 0
+    assert [item.ref for item in result.items] == [memory_reference(shopping)]
+
+
+# --- AC 9 and the walk depth: the multiplier widens the dense arm and nothing else ----
+
+_AC9_K = 2
+_AC9_MEMORIES = 12
+
+
+@pytest.mark.parametrize("stored_multiplier", [None, 4])
+def test_the_dense_arm_is_k_times_the_multiplier_wide_and_the_lexical_arm_is_not(
+    retrieval: RetrievalWorkspace,
+    monkeypatch: pytest.MonkeyPatch,
+    stored_multiplier: int | None,
+) -> None:
+    """AC 9. Mechanism (c), at the default multiplier and at a stored one.
+
+    Gated first: more rows clear the floor than ``k * multiplier``, so the arm's
+    length measures the multiplier and not how many rows were available; and lexical
+    matches more than that, so a multiplied lexical arm would show.
+    """
+    fake = _fake(monkeypatch)
+    _seed(
+        retrieval,
+        *[
+            (f"apples {n}", f"a note about apples, number {n}")
+            for n in range(1, _AC9_MEMORIES + 1)
+        ],
+    )
+    _fill(retrieval, fake)
+    multiplier = OVERFETCH_MULTIPLIER_DEFAULT
+    if stored_multiplier is not None:
+        retrieval.setting(
+            OVERFETCH_MULTIPLIER_KEY, str(stored_multiplier), ValueType.INT
+        )
+        multiplier = stored_multiplier
+    width = _AC9_K * multiplier
+    (query_vector,) = fake.embed(["apples"])
+    above_floor = _above_floor(
+        retrieval, model_id=fake.model_id, query_vector=query_vector
+    )
+    _gate(
+        len(above_floor) > width,
+        f"{len(above_floor)} rows clear the floor: availability, not the "
+        f"multiplier, would decide an arm of {width}",
+    )
+    lexical = _recall_under(retrieval, STRATEGY_LEXICAL, query="apples", k=_AC9_K)
+    _gate(
+        lexical.provenance.arms.lexical > width,
+        f"lexical matches {lexical.provenance.arms.lexical}, too few to show a "
+        f"multiplied arm of {width}",
+    )
+
+    result = _recall_under(retrieval, STRATEGY_HYBRID, query="apples", k=_AC9_K)
+
+    assert result.provenance.dense_available is True
+    assert result.provenance.arms.dense == width
+    assert result.provenance.arms.lexical == lexical.provenance.arms.lexical
+    assert len(result.items) == _AC9_K
+
+
+_WALK_K = 2
+_WALK_DENIED = 8
+_WALK_FILLER = (
+    "ledger invoice quarter harbour violin granite meadow lantern orbit saddle "
+    "thimble walnut canyon marble pepper tunnel velvet anchor bishop cobalt"
+)
+"""Twenty words: a readable row's body. It puts ``apples`` low in the lexical order
+and, under the fake provider, below the dense floor."""
+
+
+def test_hybrid_walks_as_far_as_lexical_when_the_top_of_the_order_is_denied(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The walk-depth invariant. Mechanism (c), with the arms read directly to gate.
+
+    Eight lexical matches at the top of the order are linked to a source this caller
+    cannot read; the two readable matches sit below them and below the dense floor,
+    so only the lexical arm carries them. ``lexical`` walks down to both. ``hybrid``
+    must as well: with its lexical arm cut to ``k * multiplier`` the walk would get
+    only denied rows, and the caller fewer than ``k``.
+    """
+    fake = _fake(monkeypatch)
+    width = _WALK_K * OVERFETCH_MULTIPLIER_DEFAULT
+    with retrieval.unit() as uow:
+        denied = {
+            _write_linked(
+                uow,
+                _row("apples", "apples apples apples", recorded_at=_recent(n)),
+                _unreadable_source(),
+            )
+            for n in range(_WALK_DENIED)
+        }
+        readable = {
+            _write(
+                uow,
+                _row("apples", f"{_WALK_FILLER} {n}", recorded_at=_recent(100 + n)),
+            )
+            for n in range(_WALK_K)
+        }
+    _fill(retrieval, fake)
+    (query_vector,) = fake.embed(["apples"])
+    above_floor = _above_floor(
+        retrieval, model_id=fake.model_id, query_vector=query_vector
+    )
+    _gate(not above_floor & readable, "a readable row clears the dense floor")
+    _gate(len(above_floor) > width, f"{len(above_floor)} rows clear the dense floor")
+    ctx = retrieval.context()
+    with retrieval.reading() as uow:
+        lexical_arm = LexicalStrategy().search(
+            ctx,
+            uow,
+            SearchRequest(
+                query="apples",
+                mode=ReadMode.CURRENT,
+                memory=_request(ctx, uow),
+                limit=CANDIDATE_SCAN_LIMIT,
+                k=_WALK_K,
+            ),
+        )
+    lexical_order = [hit.ref for hit in lexical_arm.hits]
+    _gate(
+        set(lexical_order[:_WALK_DENIED]) == denied
+        and set(lexical_order[_WALK_DENIED:]) == readable,
+        "the denied rows are not the top of the lexical order",
+    )
+    lexical = _recall_under(retrieval, STRATEGY_LEXICAL, query="apples", k=_WALK_K)
+    _gate(
+        {item.ref for item in lexical.items} == {memory_reference(r) for r in readable},
+        "lexical did not walk down to both readable rows",
+    )
+
+    hybrid = _recall_under(retrieval, STRATEGY_HYBRID, query="apples", k=_WALK_K)
+
+    assert hybrid.provenance.dense_available is True
+    assert hybrid.provenance.arms.dense == width
+    assert len(hybrid.items) == len(lexical.items)
+    assert {item.ref for item in hybrid.items} == {item.ref for item in lexical.items}
+
+
+# --- AC 15 and AC 16: the permission walk and the closure, with a live dense arm ------
+
+
+@pytest.mark.parametrize("strategy", [STRATEGY_DENSE, STRATEGY_HYBRID])
+def test_a_memory_whose_source_is_unreadable_is_reached_and_dropped(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch, strategy: str
+) -> None:
+    """AC 15: project criterion 27 under ``dense`` and under ``hybrid``. Mechanism (a)
+    to show the walk reaches it, (c) to show it is dropped.
+
+    The denied memory's text is the query's one word, twice, so under the fake
+    provider its vector is the query's own: the dense arm's top candidate by
+    construction. It is in the strategy's ranked list before the walk, so the walk is
+    shown to have reached it and dropped it, not to have stopped short of it.
+    """
+    fake = _fake(monkeypatch)
+    with retrieval.unit() as uow:
+        readable = _write(uow, _row("apples one", "apples, readable"))
+        denied = _write_linked(
+            uow, _row("apples", "apples", recorded_at=_recent(1)), _unreadable_source()
+        )
+    _fill(retrieval, fake)
+    ctx = retrieval.context()
+    with retrieval.reading() as uow:
+        request = SearchRequest(
+            query="apples",
+            mode=ReadMode.CURRENT,
+            memory=_request(ctx, uow),
+            limit=CANDIDATE_SCAN_LIMIT,
+            k=RECALL_K_DEFAULT,
+        )
+        dense_arm = DenseStrategy().search(ctx, uow, request)
+        ranked = STRATEGY_REGISTRY[strategy].search(ctx, uow, request)
+    assert dense_arm.hits[0].ref == denied
+    assert denied in [hit.ref for hit in ranked.hits]
+
+    result = _recall_under(retrieval, strategy, query="apples")
+
+    assert result.provenance.strategy == strategy
+    assert result.provenance.dense_available is True
+    assert [item.ref for item in result.items] == [memory_reference(readable)]
+
+
+@pytest.mark.parametrize("change", ["correct", "supersede"])
+def test_a_vector_written_by_index_goes_with_the_closure(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """AC 16: project criterion 29's closure, over vectors ``DenseStrategy.index()``
+    wrote. ``target`` changes, ``dependant`` derives from it, ``bystander`` does not:
+    all three hold a real vector before, and only the bystander's survives."""
+    fake = _fake(monkeypatch)
+    with retrieval.unit() as uow:
+        target = _write(uow, _row("apples", "a note about apples"))
+        dependant = _write(
+            uow, _row("apple summary", "a summary of apples", recorded_at=_recent(1))
+        )
+        bystander = _write(
+            uow, _row("pears", "a note about pears", recorded_at=_recent(2))
+        )
+        insert_memory_link(
+            uow.connection,
+            MemoryLinkRow(
+                memory_id=dependant,
+                ref=memory_reference(target),
+                relation="derived_from",
+                created_at=_recent(1),
+                supersession_lineage=False,
+            ),
+        )
+    items = [
+        _item(retrieval, memory_id) for memory_id in (target, dependant, bystander)
+    ]
+    ctx = retrieval.context()
+    with retrieval.unit() as uow:
+        for item in items:
+            DenseStrategy().index(ctx, uow, item)
+    assert _vectors(retrieval, fake.model_id) == {target, dependant, bystander}
+
+    if change == "correct":
+        outcome = retrieval.call(
+            MEMORY_CORRECT,
+            {
+                "ref": memory_reference(target),
+                "expected_revision": 1,
+                "title": "pears",
+                "body": "it was pears all along",
+            },
+        )
+        assert outcome.ok, outcome
+        assert isinstance(outcome.result, MemoryCorrected), outcome
+    else:
+        outcome = retrieval.call(
+            MEMORY_SUPERSEDE,
+            {
+                "ref": memory_reference(target),
+                "expected_revision": 1,
+                "kind": "note",
+                "title": "pears",
+                "body": "what the record says now",
+            },
+        )
+        assert outcome.ok, outcome
+        assert isinstance(outcome.result, MemorySuperseded), outcome
+
+    assert _vectors(retrieval, fake.model_id) == {bystander}

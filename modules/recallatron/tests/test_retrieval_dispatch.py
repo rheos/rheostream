@@ -1,11 +1,9 @@
 """The strategy key's two fallbacks, decided from stored rows alone.
 
 An absent row takes the package default; a present row that will not decode takes
-``lexical`` whatever the default is. Today both answers are ``lexical``, which is
-exactly why a test against the shipped spec could not tell the two branches apart.
-So each case runs against a stand-in spec whose default is *not* ``lexical`` — the
-shape the key takes once a second strategy ships — and the two branches must give
-two different answers.
+``lexical`` whatever the default is. The cases run against a stand-in spec whose
+default is *not* ``lexical``, written when the shipped default still was, so the two
+branches must give two different answers whatever the shipped key says.
 """
 
 import pytest
@@ -13,6 +11,7 @@ from rheo_core.settings import KeySpec, Scope, ValueType
 from rheo_recallatron.configuration import (
     RETRIEVAL_STRATEGY_KEY,
     RETRIEVAL_STRATEGY_SPEC,
+    STRATEGY_DENSE,
     STRATEGY_HYBRID,
     STRATEGY_LEXICAL,
 )
@@ -56,8 +55,13 @@ def test_a_valid_row_resolves_to_itself(stored: str) -> None:
 
 
 def test_the_shipped_key_offers_only_what_the_registry_serves() -> None:
-    """This phase offers ``lexical`` alone, and every offered name is registered."""
-    assert RETRIEVAL_STRATEGY_SPEC.choices == (STRATEGY_LEXICAL,)
-    assert RETRIEVAL_STRATEGY_SPEC.default == STRATEGY_LEXICAL
+    """All three strategies are offered, ``hybrid`` is the default, and every offered
+    name is registered."""
+    assert RETRIEVAL_STRATEGY_SPEC.choices == (
+        STRATEGY_LEXICAL,
+        STRATEGY_DENSE,
+        STRATEGY_HYBRID,
+    )
+    assert RETRIEVAL_STRATEGY_SPEC.default == STRATEGY_HYBRID
     assert set(RETRIEVAL_STRATEGY_SPEC.choices) <= set(dispatch.STRATEGY_REGISTRY)
-    assert dispatch.strategy_name_in({}) == STRATEGY_LEXICAL
+    assert dispatch.strategy_name_in({}) == STRATEGY_HYBRID

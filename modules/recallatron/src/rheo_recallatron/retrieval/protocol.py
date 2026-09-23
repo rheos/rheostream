@@ -24,12 +24,17 @@ class SearchRequest:
     ``limit`` is the arm's own bound, explicit rather than read from
     :data:`~rheo_recallatron.configuration.CANDIDATE_SCAN_LIMIT` inside the strategy,
     so a caller can ask one arm for fewer rows than another.
+
+    ``k`` is how many items the caller asked ``recall()`` for, which ``limit`` does not
+    say: the hybrid dense arm is ``k`` times the over-fetch multiplier wide, while every
+    arm's ``limit`` on the way in is the scan bound.
     """
 
     query: str
     mode: ReadMode
     memory: MemoryRequest
     limit: int
+    k: int
 
 
 @dataclass(frozen=True, slots=True)

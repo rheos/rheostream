@@ -27,6 +27,10 @@ so a scan that silently stopped matching reds instead of passing vacuously.
    would catch a widened tuple, the other a migration that altered the constraint
    directly.
 
+3. **The recall tool's description (AC 24)**, read off the declaration: it still says
+   what it said before, plus the three sentences that tell an agent to distrust a
+   ranked list.
+
 **This file is deliberately the one place the two deferred names are written down.** It
 scans ``src/``; it does not scan itself, and there is no third copy of either word in
 the distribution for the scan to have to exclude.
@@ -198,3 +202,24 @@ def test_the_declared_kinds_are_the_four_ratified_ones() -> None:
     for name in DEFERRED_FEATURE_NAMES:
         assert name not in tables.MEMORY_KINDS
         assert name not in tables.ENTITY_KINDS
+
+
+def test_the_recall_tool_teaches_distrust_of_a_ranked_list() -> None:
+    """AC 24: the recall description's three epistemics sentences, and the refusal
+    states it named before them.
+
+    Substrings rather than the whole string: dropping a sentence reds this test, while
+    rewording one keeps it green.
+    """
+    from rheo_recallatron.tools import RECALL_TOOL
+
+    description = RECALL_TOOL.description
+    # Dense answers are nearest, not relevant. ("relevant" alone proves nothing: the
+    # first sentence already says "most relevant first".)
+    assert "nearest" in description
+    # A memory is a dated claim.
+    assert "dated claim" in description
+    # Read the provenance first.
+    assert "provenance" in description
+    for state in ("input_invalid", "purpose_mismatch", "reference_scan_limit"):
+        assert state in description, state

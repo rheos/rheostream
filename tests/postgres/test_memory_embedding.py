@@ -5,7 +5,8 @@ Seams under test: ``LocalEmbeddingProvider.embed`` on the real model (AC 4 — 3
 unit length, no socket once loaded); the provider registry's two distinct failures (a
 missing extra degrades, a wrong width raises); ``enqueue_embed_job`` at both of its call
 sites under the shipped default (no job for ``remember``, ``derive``, ``correct`` or
-``supersede``); the embed job's skip, no-op and raise outcomes, driven through a real
+``supersede``) and with a dense-reading strategy and a provider (one job each, AC 13);
+the embed job's skip, no-op and raise outcomes, driven through a real
 worker visit; ``recallatron.embedding.rebuild``'s prune, fill and committed progress
 (AC 12), its version prune and its refusal; ``fill_missing_embeddings`` called on its
 own; and per-workspace coverage (AC 14).
@@ -18,10 +19,12 @@ settings registry would leave it declared for every later test.
 **The real-provider tests fail, never skip, without the ``local-embeddings`` extra.**
 Their failure message names the command that installs it.
 
-**Queued jobs are enqueued directly.** The strategy key offers ``lexical`` alone in
-this phase, so the enqueue helper cannot fire yet; these tests write the job row the
-helper would have written and drive it through ``visit_workspace``, exactly as the
-worker would.
+**The job-outcome tests enqueue their rows directly.** They write the row the enqueue
+helper writes and drive it through ``visit_workspace``, exactly as the worker would,
+so each controls which rows exist. AC 13's test drives the helper itself, through the
+four writers. A test that selects a provider and then writes a memory pins its
+workspace to ``lexical`` when it needs the writer's own job not to exist: the default
+strategy, ``hybrid``, would queue one.
 """
 
 from __future__ import annotations
@@ -70,6 +73,10 @@ from rheo_recallatron.configuration import (
     EMBEDDING_DIMENSIONS,
     MEMORY_RECORD_TYPE,
     REBUILD_JOB_KIND,
+    RETRIEVAL_STRATEGY_KEY,
+    RETRIEVAL_STRATEGY_SPEC,
+    STRATEGY_DENSE,
+    STRATEGY_HYBRID,
     STRATEGY_LEXICAL,
 )
 from rheo_recallatron.contracts import MemoryCorrected, MemorySuperseded, MemoryWritten
@@ -92,8 +99,10 @@ from rheo_recallatron.embedding.rebuild import fill_batch, fill_missing_embeddin
 from rheo_recallatron.operations import (
     MEMORY_CORRECT,
     MEMORY_DERIVE,
+    MEMORY_RECALL,
     MEMORY_REMEMBER,
     MEMORY_SUPERSEDE,
+    RecallResult,
 )
 from rheo_recallatron.references import canonical_ref
 from rheo_recallatron.refusals import EMBEDDING_PROVIDER_UNAVAILABLE
@@ -639,16 +648,20 @@ def test_the_shipped_default_enqueues_no_embed_job(
 ) -> None:
     """No provider resolves under the harness, so no writer queues an embed job.
 
-    ``correct`` is its own case because it has its own call site: it rewrites a row in
-    place and never reaches the insert the other three share. The memory the write
-    produced is asserted present in the same test, so an absent job row is evidence of
-    the gate and not of a write that never happened. The positive control — a job row
-    when a provider and a dense-reading strategy are configured — is the next phase's,
-    once ``dense`` and ``hybrid`` are offered.
+    The shipped default strategy is ``hybrid``, which reads the dense index, so the
+    provider half of the gate is the half holding here. ``correct`` is its own case
+    because it has its own call site: it rewrites a row in place and never reaches the
+    insert the other three share. The memory the write produced is asserted present in
+    the same test, so an absent job row is evidence of the gate and not of a write
+    that never happened. The positive control, a job row once a provider resolves, is
+    the next test.
     """
     assert registry.configured_provider_name() == "none"
     with embedding.reading() as uow:
-        assert resolve_strategy(embedding.context(), uow).name == STRATEGY_LEXICAL
+        assert resolve_strategy(embedding.context(), uow).name == (
+            RETRIEVAL_STRATEGY_SPEC.default
+        )
+        assert RETRIEVAL_STRATEGY_SPEC.default == STRATEGY_HYBRID
 
     memory_id, title = _write_with(embedding, writer)
 
@@ -658,6 +671,98 @@ def test_the_shipped_default_enqueues_no_embed_job(
     if writer == "correct":
         assert row.revision == 2
     assert embedding.jobs_of(EMBED_JOB_KIND) == []
+
+
+# --- AC 13, the positive half: every writer queues its memory's embed job -------------
+
+
+def _store_strategy(ws: EmbeddingWorkspace, name: str) -> None:
+    """The retrieval strategy as the workspace's stored override."""
+    with ws.unit() as uow:
+        upsert_workspace_setting(
+            uow.connection,
+            key=RETRIEVAL_STRATEGY_KEY,
+            value=name,
+            value_type=ValueType.STR,
+            updated_by=None,
+        )
+
+
+def _written_by(ws: EmbeddingWorkspace, writer: str) -> tuple[UUID, str, datetime]:
+    """Drive one writer; answer the memory it wrote, the title it now holds, and the
+    writer's own clock as the row records it.
+
+    ``correct``'s target is seeded through the repository, so no job names it before
+    the correction, and it is given a vector first: the one the correction must
+    delete.
+    """
+    if writer != "correct":
+        memory_id, title = _write_with(ws, writer)
+        with ws.reading() as uow:
+            row = get_memory(uow.connection, memory_id)
+        assert row is not None
+        return memory_id, title, row.recorded_at
+    (memory_id,) = _seed_texts(ws, ("apples", _APPLES_BODY))
+    with ws.unit() as uow:
+        DenseStrategy().index_many(uow, [_item(ws, memory_id)], provider=_fake())
+    assert (memory_id, _fake().model_id) in ws.vectors()
+    _correct_to_pears(ws, memory_id)
+    with ws.reading() as uow:
+        row = get_memory(uow.connection, memory_id)
+    assert row is not None and row.corrected_at is not None
+    return memory_id, "pears", row.corrected_at
+
+
+@pytest.mark.parametrize(
+    ("writer", "strategy"),
+    [
+        ("remember", STRATEGY_HYBRID),
+        ("derive", STRATEGY_HYBRID),
+        ("correct", STRATEGY_HYBRID),
+        ("supersede", STRATEGY_HYBRID),
+        ("remember", STRATEGY_DENSE),
+    ],
+)
+def test_every_writer_queues_an_embed_job_and_its_memory_is_recallable_meanwhile(
+    embedding: EmbeddingWorkspace,
+    monkeypatch: pytest.MonkeyPatch,
+    writer: str,
+    strategy: str,
+) -> None:
+    """AC 13's positive half, and the positive control for the shipped default above.
+
+    With a dense-reading strategy stored and the fake provider selected, each writer
+    queues exactly one embed job for the memory it wrote, stamped with the writer's
+    own clock: the job is written in the writer's transaction. At that moment, the
+    job still queued and no vector written, a ``lexical`` recall already finds the
+    memory. Once under ``dense`` as well, so both names the gate admits are exercised.
+
+    ``correct`` rewrites in place through its own call site, so its job names the
+    corrected memory itself, and the vector that memory held before is gone.
+    ``supersede``'s job names the replacement.
+    """
+    _store_strategy(embedding, strategy)
+    _select(monkeypatch, registry.FAKE_PROVIDER)
+
+    memory_id, title, written_at = _written_by(embedding, writer)
+
+    (job,) = [
+        job
+        for job in embedding.jobs_of(EMBED_JOB_KIND)
+        if job.input == {"memory_id": str(memory_id)}
+    ]
+    assert job.state == "queued", job
+    assert job.created_at == written_at
+    assert not [key for key in embedding.vectors() if key[0] == memory_id]
+
+    _store_strategy(embedding, STRATEGY_LEXICAL)
+    outcome = embedding.call(MEMORY_RECALL, {"query": title})
+
+    assert outcome.ok, outcome
+    assert isinstance(outcome.result, RecallResult), outcome
+    assert memory_reference(memory_id) in [item.ref for item in outcome.result.items]
+    (still,) = [row for row in embedding.jobs_of(EMBED_JOB_KIND) if row.id == job.id]
+    assert still.state == "queued", still
 
 
 # --- the embed job's outcomes ---------------------------------------------------------
@@ -1121,6 +1226,9 @@ def test_a_correction_landing_mid_embed_never_leaves_the_old_text_s_vector(
     delete the vector it committed; the next embed then writes "pears"."""
     fake = _fake()
     (memory_id,) = _seed_texts(embedding, ("apples", _APPLES_BODY))
+    # Pinned so the correction queues no job of its own: the one embed job this test
+    # watches is the only one.
+    _store_strategy(embedding, STRATEGY_LEXICAL)
     gated = _gate(monkeypatch, fake)
     now = datetime.now(UTC)
     _enqueue_embed(embedding, memory_id, now=now)
@@ -1137,8 +1245,8 @@ def test_a_correction_landing_mid_embed_never_leaves_the_old_text_s_vector(
     assert job.state == "succeeded", job
     assert _embedded_text(embedding, memory_id, fake) is None
 
-    # What the correction's own job does once a dense strategy is configured, run by
-    # hand in this lexical phase: the memory is re-embedded from its new text.
+    # What the correction's own job does under a dense-reading strategy, run by hand
+    # in this lexical workspace: the memory is re-embedded from its new text.
     _select(monkeypatch, registry.FAKE_PROVIDER)
     later = now + timedelta(seconds=2)
     _enqueue_embed(embedding, memory_id, now=later)
@@ -1153,6 +1261,9 @@ def test_an_embed_landing_mid_correction_waits_and_embeds_the_new_text(
     when the embed job reads it. The job must wait and read "pears"."""
     fake = _fake()
     (memory_id,) = _seed_texts(embedding, ("apples", _APPLES_BODY))
+    # Pinned so the correction queues no job of its own: the one embed job this test
+    # watches is the only one.
+    _store_strategy(embedding, STRATEGY_LEXICAL)
     _select(monkeypatch, registry.FAKE_PROVIDER)
     entered = threading.Event()
     release = threading.Event()

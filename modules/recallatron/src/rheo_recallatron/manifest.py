@@ -53,6 +53,7 @@ from rheo_recallatron.configuration import (
     ENTITY_RECORD_TYPE,
     MEMORY_RECORD_TYPE,
     MODULE_ID,
+    OVERFETCH_MULTIPLIER_SPEC,
     REBUILD_JOB_KIND,
     REBUILD_MAX_ATTEMPTS,
     RETENTION_DAYS_SPEC,
@@ -171,15 +172,16 @@ MANIFEST: Final = ModuleManifest(
     # The retrieval strategy is the third explicit row, for the same reason: which
     # strategy ranks a workspace's recall is its own stated value from enable onward.
     #
-    # The embedding provider, the rebuild's batch size and the dense relevance floor
-    # are declared and not explicit: which model runs is the deployment's choice, not
-    # a per-workspace row, and a batch size or floor nobody set is correctly the
-    # package default.
+    # The embedding provider, the rebuild's batch size, the dense relevance floor and
+    # the dense arm's over-fetch multiplier are declared and not explicit: which model
+    # runs is the deployment's choice, not a per-workspace row, and a batch size,
+    # floor or multiplier nobody set is correctly the package default.
     configuration_schema=(
         RETENTION_EXPIRE_BY_AGE_SPEC,
         RETENTION_DAYS_SPEC,
         RETRIEVAL_STRATEGY_SPEC,
         DENSE_FLOOR_PERCENT_SPEC,
+        OVERFETCH_MULTIPLIER_SPEC,
         EMBEDDING_PROVIDER_SPEC,
         EMBEDDING_BATCH_SIZE_SPEC,
     ),
