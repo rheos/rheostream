@@ -287,22 +287,28 @@ second, and a purpose bug would not widen who can read the derived row.
 **Mutation:**
 ```diff
 diff --git a/modules/recallatron/src/rheo_recallatron/lifecycle.py b/modules/recallatron/src/rheo_recallatron/lifecycle.py
-index ddef731..663247e 100644
+index fa43b78..fe7e17b 100644
 --- a/modules/recallatron/src/rheo_recallatron/lifecycle.py
 +++ b/modules/recallatron/src/rheo_recallatron/lifecycle.py
-@@ -267,7 +267,6 @@ def _mark_invalidated(
-     if row is None or row.invalidation_reason is not None:
-         return None
-     revision = row.revision + 1
+@@ -282,7 +282,6 @@ def _mark_invalidated(
+         revision=revision,
+         superseded_by_id=successor,
+     )
 -    delete_memory_embeddings(uow.connection, memory_id)
-     invalidate_memory(
-         uow.connection,
-         memory_id,
+     publish_memory_event(
+         ctx,
+         uow,
 ```
 
 **Cost:** `pytest:tests/postgres/test_memory_lifecycle.py::test_correction_removes_the_embeddings_of_every_row_it_touches` — first observed failure line: `E       AssertionError: assert not True`, at the assertion that the *derivative* `b` no longer has an embedding; the target row `a`'s own assertion one line above still passes
 
-**Performed by:** P7 (2026-09-21)
+**Performed by:** P7 (2026-09-21); re-performed by run 1a2 Prompt 3 (2026-09-23) after the
+delete moved below the mark, with the same first failure line
+
+**Why the hunk moved:** run 1a2 made `_mark_invalidated` mark the row *before* deleting its
+embeddings, so the mark's row lock waits out an embed writer holding that row `FOR SHARE`
+and the delete then removes the vector it committed. The mutation is the same line, removed
+from its new place.
 
 **Note:** the mutation is deliberately the narrow one. Correction drops the target's own
 embeddings at its own call site and the closure drops each affected derivative's inside
