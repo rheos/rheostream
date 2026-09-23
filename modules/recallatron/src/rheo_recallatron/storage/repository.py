@@ -24,6 +24,7 @@ handed over) and runs inside its transaction; none commits, and none opens anyth
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import (
@@ -34,6 +35,7 @@ from sqlalchemy import (
     func,
     insert,
     select,
+    text,
     update,
 )
 from sqlalchemy.engine import RowMapping
@@ -205,6 +207,59 @@ def delete_memory_embeddings(conn: Connection, memory_id: UUID) -> None:
     conn.execute(
         delete(t.memory_embedding).where(t.memory_embedding.c.memory_id == memory_id)
     )
+
+
+_LEXEME_FREQUENCIES: Final = text(
+    """
+    WITH stats AS MATERIALIZED (
+        SELECT most_common_elems::text::text[] AS elems,
+               most_common_elem_freqs AS freqs
+        FROM pg_stats
+        WHERE schemaname = :schema
+          AND tablename = :table
+          AND attname = :column
+          AND NOT inherited
+    )
+    SELECT e.lexeme, (s.freqs[1:array_length(s.elems, 1)])[e.position] AS frequency
+    FROM stats AS s
+    CROSS JOIN LATERAL unnest(s.elems) WITH ORDINALITY AS e(lexeme, position)
+    WHERE e.lexeme = ANY(:lexemes)
+    """
+)
+"""The MCELEM lookup, with its three traps handled.
+
+``most_common_elems`` is ``anyarray`` and only reaches ``text[]`` through ``text``; a
+direct ``::text[]`` raises. ``most_common_elem_freqs`` carries two trailing entries
+past the lexemes (the minimum and maximum frequency), so it is sliced to the lexeme
+count rather than zipped to its end. And the cast runs once, in a materialized CTE:
+the ``generate_subscripts`` shape re-evaluates it per subscript and costs 226 ms
+against 1.4 ms at a full 1,000-entry list, with identical results.
+"""
+
+
+def lexeme_document_frequencies(
+    conn: Connection, lexemes: Sequence[str]
+) -> dict[str, float]:
+    """The sampled fraction of memories whose ``search_tsv`` holds each lexeme.
+
+    Read from ``pg_stats`` for the ``search_tsv`` column, which ``ANALYZE`` and
+    autovacuum maintain. A lexeme **absent from the result** is below the statistics'
+    tracking floor, or the table has never been analyzed: the caller treats it as rare.
+    The values are sample estimates, so one near a threshold may land either side of it
+    between analyses.
+    """
+    if not lexemes:
+        return {}
+    rows = conn.execute(
+        _LEXEME_FREQUENCIES,
+        {
+            "schema": t.memory.schema,
+            "table": t.memory.name,
+            "column": t.memory.c.search_tsv.name,
+            "lexemes": list(lexemes),
+        },
+    ).all()
+    return {str(lexeme): float(frequency) for lexeme, frequency in rows}
 
 
 @dataclass(frozen=True, slots=True)

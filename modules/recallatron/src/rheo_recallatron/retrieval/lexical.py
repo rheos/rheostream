@@ -1,18 +1,21 @@
 """``LexicalStrategy``: full-text ranking over the stored ``search_tsv`` column.
 
-The statement is the one first-cut recall ran inline, relocated and not changed:
-``plainto_tsquery``, ``ts_rank_cd`` over ``search_tsv``, the row-local candidate
-filter, ``ORDER BY score DESC, recorded_at, id`` and the request's limit.
+The statement is the one first-cut recall ran inline — ``ts_rank_cd`` over
+``search_tsv``, the row-local candidate filter, ``ORDER BY score DESC, recorded_at,
+id`` and the request's limit — with one deliberate change: the query is built by
+:mod:`rheo_recallatron.retrieval.lexical_query` (an OR over the discriminating lexemes)
+rather than by ``plainto_tsquery`` (an AND over all of them).
 """
 
-from typing import Any, Final
+from typing import Final
 
 from rheo_contracts import WorkspaceContext
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import ColumnElement, func, literal_column, select
+from sqlalchemy import func, select
 
 from rheo_recallatron.configuration import STRATEGY_LEXICAL
 from rheo_recallatron.eligibility import row_local_conditions
+from rheo_recallatron.retrieval.lexical_query import lexical_tsquery
 from rheo_recallatron.retrieval.protocol import (
     ArmProvenance,
     Hit,
@@ -21,16 +24,6 @@ from rheo_recallatron.retrieval.protocol import (
     SearchResult,
 )
 from rheo_recallatron.storage import tables as t
-
-_SEARCH_CONFIG: Final[ColumnElement[Any]] = literal_column("'english'::regconfig")
-"""The text-search configuration the query must use.
-
-It has to be the one the stored generated column was built with — see the
-``search_tsv`` column in this package's tables module — or the query would be matched
-against lexemes produced by a different dictionary. Cast explicitly for the same
-reason the generated column casts: the one-argument form reads a session setting and
-is only ``STABLE``.
-"""
 
 
 class LexicalStrategy:
@@ -48,7 +41,7 @@ class LexicalStrategy:
     def search(
         self, ctx: WorkspaceContext, uow: UnitOfWork, request: SearchRequest
     ) -> SearchResult:
-        query = func.plainto_tsquery(_SEARCH_CONFIG, request.query)
+        query = lexical_tsquery(uow.connection, request.query)
         score = func.ts_rank_cd(t.memory.c.search_tsv, query)
         statement = (
             select(t.memory.c.id, score.label("score"))

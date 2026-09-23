@@ -104,6 +104,8 @@ from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
 from rheo_recallatron.configuration import (
     CANDIDATE_SCAN_LIMIT,
+    LEXICAL_DF_THRESHOLD,
+    LEXICAL_RAREST_KEPT,
     MEMORY_RECORD_TYPE,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
@@ -167,6 +169,7 @@ from rheo_recallatron.storage.repository import (
     insert_memory,
     insert_memory_link,
     insert_memory_purpose,
+    lexeme_document_frequencies,
     list_memory_purposes,
     set_source_receipt_state,
 )
@@ -1605,6 +1608,204 @@ def test_an_absent_or_unusable_strategy_row_recalls_lexically_without_refusing(
     result = _recalled(memory.recall(memory.context(), query="apples"))
     assert [item.title for item in result.items] == ["apples"]
     assert result.provenance.strategy == STRATEGY_LEXICAL
+
+
+# --- the lexical query builder --------------------------------------------------------
+
+
+def _recalled_titles(memory: MemoryWorkspace, query_text: str) -> set[str]:
+    result = _recalled(memory.recall(memory.context(), query=query_text, k=50))
+    assert {item.strategy for item in result.items} <= {STRATEGY_LEXICAL}
+    return {item.title for item in result.items}
+
+
+def test_a_query_missing_one_content_word_still_recalls_its_memory(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 23, the regression guard for the predecessor's issue #37.
+
+    ``plainto_tsquery`` AND-joins every lexeme, so a natural-language question that
+    carries one content word its memory does not returns nothing at all. The query
+    below normalises to ``{box, lightsail, migrat}``; the target holds the first two
+    and not the third. If lexical recall ever goes back to an AND-join, this test is
+    where it goes red.
+
+    Twenty filler rows keep ``lightsail`` and ``box`` far under the frequency
+    threshold, so whether or not the table has been analyzed when this runs, the
+    frequency filter keeps all three lexemes and the test stays about the join.
+    """
+    query_text = "why did we migrate from the lightsail boxes"
+    with memory.unit() as uow:
+        _write(
+            uow.connection,
+            _row(title="hosting", body="we moved off the lightsail boxes"),
+        )
+        for offset in range(1, 21):
+            _write(
+                uow.connection,
+                _row(
+                    title=f"pears {offset}",
+                    body="a note about pears",
+                    recorded_at=_recent(offset),
+                ),
+            )
+    memory.set_strategy(STRATEGY_LEXICAL)
+    ctx = memory.context()
+
+    # The negative control, live: the same query through the pre-1B statement — the
+    # AND-join, over the same rows — finds nothing. This is also the before half of
+    # the before/after evidence: 1A's recall ran exactly this statement.
+    with memory.reading() as uow:
+        request = begin_request(ctx, uow)
+        assert request is not None
+        assert _inline_recall_refs(uow, request, query_text) == []
+
+    # Returned — and alone: the OR still discriminates, so none of the twenty
+    # ``pears`` memories, which share no content lexeme with the query, comes back.
+    result = _recalled(memory.recall(ctx, query=query_text, k=50))
+    assert [item.title for item in result.items] == ["hosting"]
+    assert result.provenance.arms.lexical == 1
+
+
+_COMMON_TIERS = ("amber", "birch", "cedar", "delta", "ember")
+"""Five lexemes, each above the threshold at a distinct frequency (7..11 rows of 40)."""
+
+_MOST_COMMON = "flint"
+"""The sixth, commonest of all (14 of 40), in rows carrying none of the five above."""
+
+
+def _frequency_fixture_rows() -> list[MemoryRow]:
+    """Forty memories whose ``search_tsv`` frequencies are known by construction.
+
+    ======  ===================================  ====================================
+    rows    body                                 so that
+    ======  ===================================  ====================================
+    1-14    ``flint``                            ``flint`` = 14/40, the commonest
+    15-25   ``amber``..``ember``, tiered         7, 8, 9, 10, 11 of 40
+    26      ``widget``                           ``widget`` = 10/40
+    27      ``widget zinc``                      the only adjacent ``widget zinc``
+    28-35   ``zinc then widget``                 ``zinc`` = 9/40, never as the phrase
+    36      ``kappa``                            1/40
+    37      ``lambda``                           1/40
+    38-40   ``filler``
+    ======  ===================================  ====================================
+    """
+    bodies: list[str] = []
+    for number in range(1, 41):
+        if number <= 14:
+            body = _MOST_COMMON
+        elif number <= 25:
+            body = " ".join(
+                word for tier, word in enumerate(_COMMON_TIERS) if number <= 21 + tier
+            )
+        elif number == 26:
+            body = "widget"
+        elif number == 27:
+            body = "widget zinc"
+        elif number <= 35:
+            body = "zinc then widget"
+        elif number == 36:
+            body = "kappa"
+        elif number == 37:
+            body = "lambda"
+        else:
+            body = "filler"
+        bodies.append(body)
+    return [
+        _row(title=f"fixture {number}", body=body, recorded_at=_recent(number))
+        for number, body in enumerate(bodies, start=1)
+    ]
+
+
+def _fixtures(*numbers: int | range) -> set[str]:
+    titles: set[str] = set()
+    for item in numbers:
+        for number in item if isinstance(item, range) else (item,):
+            titles.add(f"fixture {number}")
+    return titles
+
+
+def test_the_frequency_filter_drops_common_lexemes_only_once_analyzed(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 25: the four-step pipeline's five behaviours, against real statistics."""
+    table = memory_tables.memory.fullname
+    # Autovacuum off for this table, before a row exists and on the connection path
+    # that later runs ANALYZE (both need ownership). Prompt 3's migration lowers the
+    # table's autovacuum analyze thresholds to 50 rows / 2%, so without this an
+    # autovacuum ANALYZE could land between the seed commit and the "kept before
+    # ANALYZE" assertion below and flip it for a reason unrelated to the filter.
+    with memory.unit() as uow:
+        uow.connection.execute(
+            text(f"ALTER TABLE {table} SET (autovacuum_enabled = false)")
+        )
+    with memory.unit() as uow:
+        for row in _frequency_fixture_rows():
+            _write(uow.connection, row)
+    memory.set_strategy(STRATEGY_LEXICAL)
+
+    fixture_lexemes = [
+        *_COMMON_TIERS,
+        _MOST_COMMON,
+        "widget",
+        "zinc",
+        "kappa",
+        "lambda",
+    ]
+
+    # Before ANALYZE there are no statistics, so every lexeme is unknown and kept:
+    # ``widget``'s ten rows come back alongside ``kappa`` and ``lambda``.
+    with memory.reading() as uow:
+        assert lexeme_document_frequencies(uow.connection, fixture_lexemes) == {}
+    assert _recalled_titles(memory, "widget kappa lambda") == _fixtures(range(26, 38))
+
+    with memory.unit() as uow:
+        uow.connection.execute(text(f"ANALYZE {table}"))
+
+    # The gate: the statistics hold what the fixture was built to produce. Without
+    # it, a fixture that lands on the wrong side of the threshold makes every
+    # assertion below test the fixture rather than the filter.
+    with memory.reading() as uow:
+        frequencies = lexeme_document_frequencies(uow.connection, fixture_lexemes)
+    for common in (*_COMMON_TIERS, _MOST_COMMON, "widget", "zinc"):
+        assert frequencies.get(common, 0.0) >= LEXICAL_DF_THRESHOLD, (
+            common,
+            frequencies,
+        )
+    for rare in ("kappa", "lambda"):
+        assert frequencies.get(rare, 0.0) < LEXICAL_DF_THRESHOLD, (rare, frequencies)
+    assert frequencies[_MOST_COMMON] > max(frequencies[w] for w in _COMMON_TIERS)
+    assert len(_COMMON_TIERS) == LEXICAL_RAREST_KEPT
+
+    # 1. Three lexemes: the common one is dropped, the rare ones kept — the same
+    #    query that returned ``widget``'s rows before ANALYZE no longer does.
+    assert _recalled_titles(memory, "widget kappa lambda") == _fixtures(36, 37)
+
+    # 2. Two lexemes: under the gate, so nothing is filtered.
+    assert _recalled_titles(memory, "widget kappa") == _fixtures(range(26, 37))
+
+    # 4. All six above the threshold: the five rarest are kept rather than an empty
+    #    query, so ``flint``'s rows (and only they) are missing.
+    assert _recalled_titles(
+        memory, " ".join((*_COMMON_TIERS, _MOST_COMMON))
+    ) == _fixtures(range(15, 26))
+
+    # 5. A quoted phrase survives the filter though both its words are common;
+    #    bare ``zinc`` beside it is dropped, so rows 28-35 stay out.
+    assert _recalled_titles(memory, 'kappa lambda zinc "widget zinc"') == _fixtures(
+        27, 36, 37
+    )
+
+    # 3. A lexeme the statistics have never seen is rare, and kept. Row 41 arrives
+    #    after the ANALYZE, so ``novel`` is in the data and not in ``pg_stats``;
+    #    ``widget`` beside it is still dropped.
+    with memory.unit() as uow:
+        _write(
+            uow.connection,
+            _row(title="fixture 41", body="widget novel", recorded_at=_recent(41)),
+        )
+        assert "novel" not in lexeme_document_frequencies(uow.connection, ["novel"])
+    assert _recalled_titles(memory, "widget kappa novel") == _fixtures(36, 41)
 
 
 # --- the centered read window ---------------------------------------------------------

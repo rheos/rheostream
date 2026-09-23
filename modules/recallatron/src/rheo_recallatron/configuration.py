@@ -157,6 +157,26 @@ RETRIEVAL_STRATEGY_SPEC: Final = KeySpec(
 )
 
 
+# --- the lexical query builder --------------------------------------------------------
+
+LEXICAL_DF_THRESHOLD: Final = 0.15
+"""A **document-frequency proportion**: the fraction of memories whose ``search_tsv``
+contains a lexeme, at or above which a lexeme is dropped from a multi-lexeme query.
+
+It has no relationship to any other threshold in this module — not to the dense
+relevance floor, which is a cosine-similarity bound, and not to any score-gap ratio.
+The ``LEXICAL_`` prefix is there so nobody reads it as either.
+"""
+
+LEXICAL_MIN_TERMS_FOR_DF: Final = 3
+"""A query with fewer content lexemes than this is not frequency-filtered at all: it is
+already specific. Counted after Postgres has stemmed and stopword-stripped it."""
+
+LEXICAL_RAREST_KEPT: Final = 5
+"""When every lexeme is at or above :data:`LEXICAL_DF_THRESHOLD`, keep this many of the
+rarest rather than run an empty query."""
+
+
 @dataclass(frozen=True, slots=True)
 class RetentionPolicy:
     """What the two rows together say: a window, or no window at all (§ A9).
