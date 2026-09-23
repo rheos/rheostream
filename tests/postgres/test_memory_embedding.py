@@ -1298,6 +1298,9 @@ def test_a_correction_landing_mid_rebuild_never_leaves_the_old_text_s_vector(
     a later rebuild then fills the corrected memory from its new text."""
     fake = _fake()
     (memory_id,) = _seed_texts(embedding, ("apples", _APPLES_BODY))
+    # Pinned so the correction queues no job of its own, which the same worker visit
+    # could drain and so write the new text's vector before the assertion below.
+    _store_strategy(embedding, STRATEGY_LEXICAL)
     gated = _gate(monkeypatch, fake)
     operation_id = _rebuild(embedding)
 

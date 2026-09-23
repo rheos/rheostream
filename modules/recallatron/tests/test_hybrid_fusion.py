@@ -4,17 +4,38 @@ Every expected score is written out as ``1 / (60 + rank)`` by hand, never comput
 from the module's constant, so a changed constant reds these tests instead of moving
 the expectation with it. The sums are written in the order the arms are fused,
 lexical first, so float equality is exact.
+
+``HybridStrategy.search`` itself runs here over stub arms, with its two database
+reads (the multiplier and ``recorded_at``) stubbed, to pin the cut it hands on.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 import pytest
+from rheo_contracts import WorkspaceContext
+from rheo_core.refs.resolver import UnitOfWork
 from rheo_recallatron.configuration import (
+    CANDIDATE_SCAN_LIMIT,
     OVERFETCH_MULTIPLIER_DEFAULT,
     OVERFETCH_MULTIPLIER_KEY,
 )
-from rheo_recallatron.retrieval.hybrid import fuse, overfetch_multiplier_in
+from rheo_recallatron.eligibility import MemoryRequest, ReadMode
+from rheo_recallatron.retrieval import hybrid
+from rheo_recallatron.retrieval.hybrid import (
+    HybridStrategy,
+    fuse,
+    overfetch_multiplier_in,
+)
+from rheo_recallatron.retrieval.protocol import (
+    ArmProvenance,
+    Hit,
+    IndexItem,
+    SearchRequest,
+    SearchResult,
+)
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
@@ -80,6 +101,74 @@ def test_a_ranked_id_whose_row_was_not_read_sorts_oldest_within_its_tie() -> Non
     fused = fuse(([gone], [kept]), {kept: _NOW})
 
     assert fused == [(kept, 1 / 61), (gone, 1 / 61)]
+
+
+@dataclass
+class _StubArm:
+    """An arm that answers the same ranked ids whatever it is asked, and keeps every
+    request it was asked."""
+
+    refs: tuple[UUID, ...]
+    name: str = "stub"
+    requests: list[SearchRequest] = field(default_factory=list)
+
+    def index(self, ctx: WorkspaceContext, uow: UnitOfWork, item: IndexItem) -> None:
+        raise AssertionError("search must not index")
+
+    def invalidate(self, ctx: WorkspaceContext, uow: UnitOfWork, ref: str) -> None:
+        raise AssertionError("search must not invalidate")
+
+    def search(
+        self, ctx: WorkspaceContext, uow: UnitOfWork, request: SearchRequest
+    ) -> SearchResult:
+        self.requests.append(request)
+        return SearchResult(
+            hits=tuple(
+                Hit(ref=ref, score=1.0, strategy=self.name) for ref in self.refs
+            ),
+            arms=ArmProvenance(lexical=0, dense=0),
+            dense_available=True,
+        )
+
+
+def test_the_fused_list_handed_on_is_cut_to_the_scan_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stub arms answer 500 lexical and 30 dense ids, 530 in all: more than the scan
+    bound ``recall()`` asks for. ``search`` hands on exactly the bound, and what it
+    drops is lexical's deepest 30, since every dense rank outscores them."""
+    monkeypatch.setattr(
+        hybrid, "overfetch_multiplier", lambda ctx, uow: OVERFETCH_MULTIPLIER_DEFAULT
+    )
+    monkeypatch.setattr(hybrid, "_recorded_at", lambda uow, ids: {})
+    k = 10
+    lexical = _StubArm(tuple(_id(n) for n in range(1, CANDIDATE_SCAN_LIMIT + 1)))
+    dense = _StubArm(
+        tuple(_id(10_000 + n) for n in range(1, k * OVERFETCH_MULTIPLIER_DEFAULT + 1))
+    )
+    request = SearchRequest(
+        query="apples",
+        mode=ReadMode.CURRENT,
+        memory=cast(MemoryRequest, None),
+        limit=CANDIDATE_SCAN_LIMIT,
+        k=k,
+    )
+
+    result = HybridStrategy(lexical=lexical, dense=dense).search(
+        cast(WorkspaceContext, None), cast(UnitOfWork, None), request
+    )
+
+    assert len(lexical.refs) + len(dense.refs) > CANDIDATE_SCAN_LIMIT
+    assert len(result.hits) == CANDIDATE_SCAN_LIMIT
+    assert result.arms == ArmProvenance(
+        lexical=len(lexical.refs), dense=len(dense.refs)
+    )
+    dropped = set(lexical.refs + dense.refs) - {hit.ref for hit in result.hits}
+    assert dropped == set(lexical.refs[-len(dense.refs) :])
+    assert [asked.limit for asked in lexical.requests] == [CANDIDATE_SCAN_LIMIT]
+    assert [asked.limit for asked in dense.requests] == [
+        k * OVERFETCH_MULTIPLIER_DEFAULT
+    ]
 
 
 @pytest.mark.parametrize(

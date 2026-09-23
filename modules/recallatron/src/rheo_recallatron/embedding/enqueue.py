@@ -2,10 +2,9 @@
 
 **A provider, not only a strategy.** An embed job is written only when the workspace's
 resolved strategy reads the dense index (``dense`` or ``hybrid``) **and** a provider
-resolves. Strategy alone never enqueues: under the shipped defaults — ``provider =
-none`` always, ``hybrid`` once it is offered — nothing is written at all, so no job row,
-no worker wake, no attempt and no failure entry exists for a dense posture nobody
-configured.
+resolves. Strategy alone never enqueues: under the shipped defaults, ``hybrid`` with
+``provider = none``, nothing is written at all, so no job row, no worker wake, no
+attempt and no failure entry exists for a dense posture nobody configured.
 
 **Two callers, one helper.** A memory's text is written in two places: the one insert
 ``remember``, ``derive``, ``supersede`` and trusted acceptance all share

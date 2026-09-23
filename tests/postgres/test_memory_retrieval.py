@@ -119,6 +119,7 @@ from rheo_recallatron.retrieval.dense import (
     hnsw_scan_settings,
 )
 from rheo_recallatron.retrieval.dispatch import STRATEGY_REGISTRY
+from rheo_recallatron.retrieval.hybrid import HybridStrategy
 from rheo_recallatron.retrieval.lexical import LexicalStrategy
 from rheo_recallatron.retrieval.protocol import (
     ArmProvenance,
@@ -469,17 +470,27 @@ def _similarity(
     )
 
 
-def _one_warning(caplog: pytest.LogCaptureFixture, query: str) -> logging.LogRecord:
-    """The dense arm's one warning, which never carries the query's text."""
-    records = [
-        record
-        for record in caplog.records
-        if record.name == _DENSE_LOGGER and record.levelno == logging.WARNING
-    ]
-    assert len(records) == 1, [record.getMessage() for record in records]
+def _one_dense_line(
+    caplog: pytest.LogCaptureFixture, level: int, query: str, *memory_texts: str
+) -> logging.LogRecord:
+    """The dense arm's one log line, which must be at ``level`` and never carries the
+    query's text or a memory's.
+
+    Exactly one line at any level: so when ``level`` is debug, no warning was written.
+    """
+    records = [record for record in caplog.records if record.name == _DENSE_LOGGER]
+    assert len(records) == 1, [(r.levelname, r.getMessage()) for r in records]
     (record,) = records
-    assert query not in record.getMessage()
+    assert record.levelno == level, record.levelname
+    message = record.getMessage()
+    for withheld in (query, *memory_texts):
+        assert withheld not in message, withheld
     return record
+
+
+def _one_warning(caplog: pytest.LogCaptureFixture, query: str) -> logging.LogRecord:
+    """A failure that is a fault: one warning, which never carries the query's text."""
+    return _one_dense_line(caplog, logging.WARNING, query)
 
 
 # --- the floor's stored value ---------------------------------------------------------
@@ -580,14 +591,24 @@ def test_dense_with_no_provider_answers_nothing(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """AC 6 (a), no provider configured. Mechanism (a)."""
+    """AC 6 (a), no provider configured. Mechanism (a).
+
+    No provider is the shipped default, which every recall under ``hybrid`` passes
+    through, so it is logged at debug and never as a warning. The line still names
+    the cause.
+    """
     _seed(retrieval, ("apples", "a note about apples"))
     _select(monkeypatch, EMBEDDING_PROVIDER_NONE)
 
-    with caplog.at_level(logging.WARNING, logger=_DENSE_LOGGER):
+    with caplog.at_level(logging.DEBUG, logger=_DENSE_LOGGER):
         assert _search(retrieval, "apples") == _UNAVAILABLE
 
-    record = _one_warning(caplog, "apples")
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == _DENSE_LOGGER and record.levelno >= logging.WARNING
+    ]
+    record = _one_dense_line(caplog, logging.DEBUG, "apples", "a note about apples")
     assert record.dense_cause == NO_PROVIDER
     assert record.provider_model_id is None
     assert record.provider_dimensions is None
@@ -948,7 +969,8 @@ _PEARS_CLEARANCE = 0.10
 def test_dense_recall_of_apples_returns_the_nearest_rows_apples_then_pears(
     retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The dense counterpart of ``test_recall_returns_eligible_rows_marked_lexical``:
+    """The dense counterpart of
+    ``test_recall_returns_eligible_rows_marked_with_the_resolved_strategy``:
     the same three rows and the same age gate, on the real provider at the shipped
     floor with no override. Mechanism (b).
 
@@ -1391,9 +1413,11 @@ def test_hybrid_with_no_usable_dense_arm_answers_the_lexical_rows_in_order(
 
     Whatever stops the dense arm, ``hybrid`` answers what ``lexical`` answers over the
     same rows, in the same order, labelled ``hybrid``, with ``dense_available`` false,
-    and ``ok``. The ``wrong width`` case is the one that fails in SQL: the query vector
-    reaches the database, the dense statement raises inside its savepoint, and the
-    lexical arm's rows still come back in the same transaction.
+    and ``ok``. The scores are the one-armed fusion's, ``1 / (60 + rank)``, never the
+    lexical arm's own. The ``wrong width`` case is the one that fails in SQL: the query
+    vector reaches the database, the dense statement raises inside its savepoint, and
+    the lexical arm's rows still come back in the same transaction. No provider is
+    logged at debug, being the shipped default; the other three causes are warnings.
     """
     _seed_ordered(retrieval, *_AC6_ROWS)
     cause = _dense_arm_unusable(retrieval, monkeypatch, case)
@@ -1405,12 +1429,13 @@ def test_hybrid_with_no_usable_dense_arm_answers_the_lexical_rows_in_order(
     retrieval.set_strategy(STRATEGY_HYBRID)
     caplog.clear()
 
-    with caplog.at_level(logging.WARNING, logger=_DENSE_LOGGER):
+    with caplog.at_level(logging.DEBUG, logger=_DENSE_LOGGER):
         outcome = retrieval.recall(query="apples", k=50)
 
     assert outcome.ok, outcome
     result = _recalled(outcome)
     assert [item.ref for item in result.items] == [item.ref for item in lexical.items]
+    assert [item.score for item in result.items] == [1 / 61, 1 / 62, 1 / 63, 1 / 64]
     assert {item.strategy for item in result.items} == {STRATEGY_HYBRID}
     assert result.provenance == RecallProvenance(
         strategy=STRATEGY_HYBRID,
@@ -1418,7 +1443,12 @@ def test_hybrid_with_no_usable_dense_arm_answers_the_lexical_rows_in_order(
         dense_available=False,
     )
     assert result.provenance.arms.lexical > 0
-    record = _one_warning(caplog, "apples")
+    record = _one_dense_line(
+        caplog,
+        logging.DEBUG if cause == NO_PROVIDER else logging.WARNING,
+        "apples",
+        *(part for row in _AC6_ROWS for part in row),
+    )
     assert record.dense_cause == cause
     if case == "wrong width":
         assert record.error_class == pg_errors.DataException.__name__
@@ -1612,6 +1642,69 @@ def test_hybrid_walks_as_far_as_lexical_when_the_top_of_the_order_is_denied(
     assert hybrid.provenance.arms.dense == width
     assert len(hybrid.items) == len(lexical.items)
     assert {item.ref for item in hybrid.items} == {item.ref for item in lexical.items}
+
+
+_NARROW_LIMIT = 3
+_WORDY_BODY = "apples apples apples apples zebra yak xenon walrus"
+"""Five ``apples`` with the title, so lexical ranks it above a two-``apples`` row; four
+other words, so under the fake provider it sits further from the query than one."""
+
+
+def test_hybrid_is_bounded_by_the_request_limit_in_its_dense_arm_and_its_answer(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mechanism (a), the only way to ask for fewer than the scan bound: ``recall()``
+    always asks for it. Asked for three with ``k`` of ten, the dense arm is three wide,
+    not ``k * multiplier``, and three positions are handed on, not the union.
+
+    Gated so neither bound holds by accident: more rows clear the dense floor than the
+    limit, and the two arms' top three are different memories, so their union is
+    longer than the limit.
+    """
+    fake = _fake(monkeypatch)
+    with retrieval.unit() as uow:
+        # The query's own text, so the query's own vector: the dense arm's top three.
+        near = {
+            _write(uow, _row("apples", "apples", recorded_at=_recent(n)))
+            for n in range(_NARROW_LIMIT)
+        }
+        wordy = {
+            _write(uow, _row("apples", _WORDY_BODY, recorded_at=_recent(10 + n)))
+            for n in range(_NARROW_LIMIT)
+        }
+    _fill(retrieval, fake)
+    (query_vector,) = fake.embed(["apples"])
+    above_floor = _above_floor(
+        retrieval, model_id=fake.model_id, query_vector=query_vector
+    )
+    _gate(
+        len(above_floor) > _NARROW_LIMIT,
+        f"{len(above_floor)} rows clear the floor",
+    )
+    _gate(
+        RECALL_K_DEFAULT * OVERFETCH_MULTIPLIER_DEFAULT > _NARROW_LIMIT,
+        "the over-fetch width would not exceed the limit",
+    )
+    ctx = retrieval.context()
+    with retrieval.reading() as uow:
+        request = SearchRequest(
+            query="apples",
+            mode=ReadMode.CURRENT,
+            memory=_request(ctx, uow),
+            limit=_NARROW_LIMIT,
+            k=RECALL_K_DEFAULT,
+        )
+        dense_top = {hit.ref for hit in DenseStrategy().search(ctx, uow, request).hits}
+        lexical_top = {
+            hit.ref for hit in LexicalStrategy().search(ctx, uow, request).hits
+        }
+        result = HybridStrategy().search(ctx, uow, request)
+    _gate(dense_top == near, "the near rows are not the dense arm's top three")
+    _gate(lexical_top == wordy, "the wordy rows are not the lexical arm's top three")
+
+    assert result.dense_available is True
+    assert result.arms == ArmProvenance(lexical=_NARROW_LIMIT, dense=_NARROW_LIMIT)
+    assert len(result.hits) == _NARROW_LIMIT
 
 
 # --- AC 15 and AC 16: the permission walk and the closure, with a live dense arm ------

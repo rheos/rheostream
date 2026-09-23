@@ -1,12 +1,13 @@
 """``HybridStrategy``: the lexical and dense arms, fused by reciprocal rank.
 
 **Two arms at two widths, on purpose.** The lexical arm runs the ``lexical`` path's own
-statement with the request unchanged, so its ``LIMIT`` is the scan bound exactly as it
-is under ``lexical``. The dense arm is ``min(k * overfetch_multiplier,
-CANDIDATE_SCAN_LIMIT)`` wide. The multiplier is the dense arm's alone: on the lexical
-arm it could only narrow a list already at the scan bound, and the permission walk
-would then have fewer positions to find ``k`` readable rows in than a ``lexical`` call
-gets.
+statement with the request unchanged, so its ``LIMIT`` is the request's, which
+``recall()`` sets to the scan bound exactly as under ``lexical``. The dense arm is
+``min(k * overfetch_multiplier, request.limit)`` wide. The multiplier is the dense
+arm's alone: on the lexical arm it could only narrow a list already at the scan bound,
+and the permission walk would then have fewer positions to find ``k`` readable rows in
+than a ``lexical`` call gets. The fused list is cut to ``request.limit`` as well, so no
+caller is handed more positions than it asked for.
 
 **Fusion always runs, and hybrid never refuses.** A dense arm that cannot contribute
 (no provider, a provider that raises, a dense statement that fails inside its
@@ -16,7 +17,8 @@ a response has the ``lexical`` rows in the ``lexical`` order, labelled ``hybrid`
 ``dense_available=false``. Every ``hybrid`` score is on the fused scale.
 
 **The arms are this strategy's own instances.** It never looks them up in the strategy
-registry, so what a workspace's setting chooses is the only thing that runs.
+registry, so what a workspace's setting chooses is the only thing that runs. A test may
+hand it stand-in arms; the registered one builds its own.
 
 Fusion and rerank are written here by hand, a few lines each, and borrow from nothing.
 """
@@ -34,7 +36,6 @@ from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from sqlalchemy import select
 
 from rheo_recallatron.configuration import (
-    CANDIDATE_SCAN_LIMIT,
     OVERFETCH_MULTIPLIER_DEFAULT,
     OVERFETCH_MULTIPLIER_KEY,
     OVERFETCH_MULTIPLIER_SPEC,
@@ -46,6 +47,7 @@ from rheo_recallatron.retrieval.protocol import (
     ArmProvenance,
     Hit,
     IndexItem,
+    RetrievalStrategy,
     SearchRequest,
     SearchResult,
 )
@@ -139,9 +141,16 @@ class HybridStrategy:
 
     name: Final = STRATEGY_HYBRID
 
-    def __init__(self) -> None:
-        self._lexical = LexicalStrategy()
-        self._dense = DenseStrategy()
+    def __init__(
+        self,
+        *,
+        lexical: RetrievalStrategy | None = None,
+        dense: RetrievalStrategy | None = None,
+    ) -> None:
+        self._lexical: RetrievalStrategy = (
+            LexicalStrategy() if lexical is None else lexical
+        )
+        self._dense: RetrievalStrategy = DenseStrategy() if dense is None else dense
 
     def index(self, ctx: WorkspaceContext, uow: UnitOfWork, item: IndexItem) -> None:
         """Both arms' indexes. The lexical one lives on the row and needs nothing."""
@@ -156,7 +165,7 @@ class HybridStrategy:
     def search(
         self, ctx: WorkspaceContext, uow: UnitOfWork, request: SearchRequest
     ) -> SearchResult:
-        """Both arms, fused, reranked, at most ``CANDIDATE_SCAN_LIMIT`` positions.
+        """Both arms, fused, reranked, at most ``request.limit`` positions.
 
         The dense arm runs first. Its statement runs inside the dense strategy's own
         savepoint, so when it fails the lexical arm, the ``recorded_at`` read and the
@@ -165,7 +174,7 @@ class HybridStrategy:
         ``arms`` counts each arm's list as it entered fusion; ``dense_available`` is
         the dense arm's own answer.
         """
-        width = min(request.k * overfetch_multiplier(ctx, uow), CANDIDATE_SCAN_LIMIT)
+        width = min(request.k * overfetch_multiplier(ctx, uow), request.limit)
         dense = self._dense.search(ctx, uow, dataclasses.replace(request, limit=width))
         lexical = self._lexical.search(ctx, uow, request)
 
@@ -177,7 +186,7 @@ class HybridStrategy:
         return SearchResult(
             hits=tuple(
                 Hit(ref=ref, score=score, strategy=self.name)
-                for ref, score in fused[:CANDIDATE_SCAN_LIMIT]
+                for ref, score in fused[: request.limit]
             ),
             arms=ArmProvenance(lexical=len(lexical.hits), dense=len(dense.hits)),
             dense_available=dense.dense_available,

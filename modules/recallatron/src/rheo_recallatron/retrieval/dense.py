@@ -10,7 +10,9 @@ job handler is ``(HandlerUnitOfWork, payload, CancellationToken)``, holds no
 **The read side degrades; it never refuses and never falls back.** :meth:`search`
 answers no hits and ``dense_available=False`` for four causes: no provider resolves,
 the provider raises, the dense statement raises, or the workspace holds no row for the
-provider's model. Each one logs a warning naming the provider and the failure class.
+provider's model. Each one logs a line naming the provider and the failure class: a
+warning for the last three, and a debug line for no provider, which is the shipped
+default and so no fault.
 None of them hands back lexical results under the ``dense`` label: a caller who chose
 ``dense`` would have no way to tell.
 
@@ -263,11 +265,17 @@ def _unavailable(
     Provider identity and failure class only: never memory text, never the query.
     Without the provider's identity a provider registered at the wrong width looks
     exactly like no provider at all, one silent zero on every call.
+
+    **No provider is a debug line; the other three causes are warnings.** No provider
+    is the shipped default, so under ``hybrid`` every recall of every workspace that
+    configured nothing passes through here, and a warning each time would bury the
+    ones that mean something is broken.
     """
     model_id = None if provider is None else provider.model_id
     dimensions = None if provider is None else provider.dimensions
     error_class = None if error is None else _error_class(error)
-    _log.warning(
+    _log.log(
+        logging.DEBUG if cause == NO_PROVIDER else logging.WARNING,
         "dense retrieval unavailable (%s): provider %s, %s dimensions, error %s",
         cause,
         model_id or "none resolved",
