@@ -1,4 +1,4 @@
-"""Row mapping over the seven tables in :mod:`rheo_recallatron.storage.tables`.
+"""Row mapping over the tables in :mod:`rheo_recallatron.storage.tables`.
 
 One frozen row dataclass per table and the statements the service needs over it —
 ``insert``/``get``, the ordered ``list`` reads, and the lifecycle's own narrow
@@ -38,6 +38,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 
 from rheo_recallatron.storage import tables as t
@@ -663,11 +664,13 @@ def insert_memory_embedding(
 ) -> MemoryEmbeddingRow:
     """Write one embedding row.
 
-    No writer in 1a1 calls this: there is no embedding provider and no dense index
-    (§ A3). It exists because § A3's own note says synthetic index-invalidation tests
-    may seed rows directly through this repository, and a later run's writer needs the
-    same mapping. ``vector`` is passed to Postgres in pgvector's text form, which is
-    what an unbounded ``vector`` column accepts without a client-side type.
+    The module's one writer of these rows is
+    :meth:`~rheo_recallatron.retrieval.dense.DenseStrategy.index_many`, which the embed
+    job and the rebuild both go through; synthetic fixtures still seed rows directly,
+    as § A3's note allows. ``vector`` is passed to Postgres in pgvector's text form,
+    which the column accepts without a client-side type; since revision
+    ``0003_dense_retrieval`` the column is ``vector(384)``, so a row of any other width
+    is refused by the database itself.
     """
     conn.execute(
         insert(t.memory_embedding).values(
@@ -703,6 +706,138 @@ def get_memory_embedding(
         vector=_vector_values(mapping["vector"]),
         embedded_at=mapping["embedded_at"],
     )
+
+
+def delete_embeddings_for_other_models(conn: Connection, *, model_id: str) -> int:
+    """Remove every embedding row written by a model other than ``model_id``.
+
+    The rebuild's first prune: after the configured provider changes, the old model's
+    vectors are not merely stale, they are in a different space, and a dense read must
+    never compare against them. Answers how many rows went.
+    """
+    result = conn.execute(
+        delete(t.memory_embedding).where(t.memory_embedding.c.model_id != model_id)
+    )
+    return int(result.rowcount)
+
+
+def delete_all_memory_embeddings(conn: Connection) -> int:
+    """Remove every embedding row in this workspace, whatever model wrote it.
+
+    The rebuild's second prune, taken when the workspace's stamped embed input version
+    is not the package's: a vector of the old composition is stale whichever model
+    produced it.
+    """
+    return int(conn.execute(delete(t.memory_embedding)).rowcount)
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingStateRow:
+    """The workspace's one ``embedding_state`` row."""
+
+    embed_input_version: int
+
+
+def get_embedding_state(conn: Connection) -> EmbeddingStateRow | None:
+    """The stamped embed input version, or ``None`` before the first rebuild."""
+    version = conn.execute(
+        select(t.embedding_state.c.embed_input_version).where(
+            t.embedding_state.c.id.is_(True)
+        )
+    ).scalar_one_or_none()
+    return None if version is None else EmbeddingStateRow(int(version))
+
+
+def set_embedding_state(conn: Connection, *, embed_input_version: int) -> None:
+    """Stamp the workspace's embed input version: create the one row, or update it."""
+    statement = pg_insert(t.embedding_state).values(
+        id=True, embed_input_version=embed_input_version
+    )
+    conn.execute(
+        statement.on_conflict_do_update(
+            index_elements=[t.embedding_state.c.id],
+            set_={"embed_input_version": statement.excluded.embed_input_version},
+        )
+    )
+
+
+def _live_memory() -> ColumnElement[bool]:
+    """A memory an embedding is kept for: neither invalidated nor superseded.
+
+    The one liveness the fill selects by, the coverage counts by and the embed job
+    checks a row against, so the three cannot disagree about which rows ought to carry
+    a vector.
+    """
+    return and_(
+        t.memory.c.invalidated_at.is_(None), t.memory.c.superseded_by_id.is_(None)
+    )
+
+
+def _has_embedding(model_id: str) -> ColumnElement[bool]:
+    return (
+        select(t.memory_embedding.c.memory_id)
+        .where(
+            t.memory_embedding.c.memory_id == t.memory.c.id,
+            t.memory_embedding.c.model_id == model_id,
+        )
+        .exists()
+    )
+
+
+def is_live_memory(row: MemoryRow) -> bool:
+    """:func:`_live_memory`, asked of a row already read."""
+    return row.invalidated_at is None and row.superseded_by_id is None
+
+
+def list_memories_missing_embedding(
+    conn: Connection, *, model_id: str, after: UUID | None, limit: int
+) -> tuple[MemoryRow, ...]:
+    """At most ``limit`` live memories with no row for ``model_id``, by id, after
+    ``after``.
+
+    Id-ordered so the caller's cursor is simply the last id it saw. The selection is
+    "lacking a row", never "all", which is what makes a rerun of an interrupted fill
+    safe and what keeps an ordinary embed job and a rebuild from both writing one
+    memory's row.
+    """
+    statement = select(t.memory).where(_live_memory(), ~_has_embedding(model_id))
+    if after is not None:
+        statement = statement.where(t.memory.c.id > after)
+    rows = conn.execute(statement.order_by(t.memory.c.id).limit(limit)).mappings()
+    return tuple(_memory_row(mapping) for mapping in rows)
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingCoverage:
+    """How many live memories this workspace holds, and how many carry a vector from
+    one model.
+
+    Per workspace by construction: a workspace is a database, so there is no
+    deployment-wide figure to compute and none is.
+    """
+
+    live: int
+    embedded: int
+
+
+def embedding_coverage(conn: Connection, *, model_id: str) -> EmbeddingCoverage:
+    """Live memories, and those with a row for ``model_id``, in one statement."""
+    live, embedded = conn.execute(
+        select(func.count(), func.count().filter(_has_embedding(model_id)))
+        .select_from(t.memory)
+        .where(_live_memory())
+    ).one()
+    return EmbeddingCoverage(live=int(live), embedded=int(embedded))
+
+
+def analyze_memory(conn: Connection) -> None:
+    """``ANALYZE`` the memory table, in the caller's transaction.
+
+    The rebuild's success path. Useful for the dense path's planner after a walk that
+    touched every row; it is not what keeps the lexical builder's statistics present,
+    which is migration ``0003_dense_retrieval``'s autovacuum setting.
+    """
+    conn.execute(text(f"ANALYZE {t.memory.schema}.{t.memory.name}"))
 
 
 def _vector_literal(values: Sequence[float]) -> str:

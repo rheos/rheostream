@@ -28,8 +28,9 @@ say the record is gone and give it nothing to retry against.
 verbatim):
 
 - *Correct* rewrites the target's title, body and confidence in place, bumps its
-  revision, stamps ``corrected_at``, drops its embeddings, and marks the affected
-  closure ``source_corrected``.
+  revision, stamps ``corrected_at``, drops its embeddings (and queues a fresh embed
+  job when the workspace can use one), and marks the affected closure
+  ``source_corrected``.
 - *Supersede* captures the predecessor's audience, purposes, links and the affected
   closure **before** creating the replacement — so the replacement, which carries a
   marked ``derived_from`` edge back to the predecessor, can never appear in its own
@@ -103,6 +104,7 @@ from rheo_recallatron.eligibility import (
     expiry_admits,
     memory_reference,
 )
+from rheo_recallatron.embedding.enqueue import enqueue_embed_job
 from rheo_recallatron.entities import remove_mention
 from rheo_recallatron.events import (
     MEMORY_INVALIDATED,
@@ -355,6 +357,10 @@ def correct(
         revision=revision,
         corrected_at=request.now,
     )
+    # The old vector went two statements up, unconditionally; the new text gets one on
+    # the same terms a new memory does. ``write_memory``'s own call never runs here,
+    # because a correction rewrites the row in place.
+    enqueue_embed_job(ctx, uow, memory_id=row.id, now=request.now)
     _invalidate_closure(
         ctx,
         uow,

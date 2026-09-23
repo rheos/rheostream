@@ -85,6 +85,7 @@ from rheo_core.work.loop import visit_workspace
 from rheo_recallatron import MANIFEST
 from rheo_recallatron.configuration import (
     AUTOMATIC_BOUND_PURPOSE,
+    EMBEDDING_DIMENSIONS,
     MEMORY_RECORD_TYPE,
     RETENTION_DAYS_DEFAULT,
     RETENTION_DAYS_SPEC,
@@ -365,6 +366,11 @@ def _seed_memory(
     return row
 
 
+def _one_hot_vector() -> tuple[float, ...]:
+    """A unit vector as wide as the stored column. Nothing here reads it back."""
+    return (1.0,) + (0.0,) * (EMBEDDING_DIMENSIONS - 1)
+
+
 def _populate(deployment: Deployment, owner_account_id: UUID) -> dict[str, Any]:
     """One workspace holding every shape the export format has to carry.
 
@@ -448,8 +454,8 @@ def _populate(deployment: Deployment, owner_account_id: UUID) -> dict[str, Any]:
             MemoryEmbeddingRow(
                 memory_id=replacement.id,
                 model_id="probe-model",
-                dimensions=3,
-                vector=(0.1, 0.2, 0.3),
+                dimensions=EMBEDDING_DIMENSIONS,
+                vector=_one_hot_vector(),
                 embedded_at=datetime.now(UTC),
             ),
         )

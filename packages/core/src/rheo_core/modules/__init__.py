@@ -45,6 +45,15 @@ from rheo_core.modules.manifest import (
     WebSurface,
 )
 
+# Re-exported explicitly (``X as X``), for the contract reason ``events/consumers.py``
+# re-exports ``HandlerUnitOfWork``: a module distribution may not import the core's
+# storage package — ``tests/postgres/test_module_storage_ownership.py`` scans
+# ``modules/`` for exactly that — and a module whose provider caches a model artifact
+# has to *reach* the data root to put it there. So the package that declares the
+# module contract publishes the one storage name a module needs, and nothing else from
+# the storage package is published here.
+from rheo_core.storage.data_root import model_cache_dir as model_cache_dir
+
 __all__ = [
     "ENTRY_POINT_GROUP",
     "ConnectorBinding",
@@ -71,6 +80,7 @@ __all__ = [
     "load_modules",
     "loaded_in_dependency_order",
     "loaded_manifests",
+    "model_cache_dir",
     "module_surfaces",
     "reset_surfaces",
 ]

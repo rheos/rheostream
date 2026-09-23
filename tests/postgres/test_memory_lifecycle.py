@@ -74,7 +74,7 @@ from rheo_core.refs.resolver import Unavailable, register_resolver
 from rheo_core.storage import work_tables
 from rheo_core.storage.backend import UnitOfWork
 from rheo_recallatron import MANIFEST
-from rheo_recallatron.configuration import MEMORY_RECORD_TYPE
+from rheo_recallatron.configuration import EMBEDDING_DIMENSIONS, MEMORY_RECORD_TYPE
 from rheo_recallatron.contracts import (
     MemoryCorrected,
     MemorySuperseded,
@@ -351,6 +351,11 @@ Link = tuple[str, str, bool]
 """``(ref, relation, supersession_lineage)``, as a fixture spells one."""
 
 
+def _one_hot_vector() -> tuple[float, ...]:
+    """A unit vector as wide as the stored column. Nothing here reads it back."""
+    return (1.0,) + (0.0,) * (EMBEDDING_DIMENSIONS - 1)
+
+
 def _seed(
     memory: LifecycleWorkspace,
     row: MemoryRow,
@@ -363,7 +368,7 @@ def _seed(
 
     Through the module's own repository, which is what § A3 says a synthetic fixture
     does: there is no writer for an already-invalidated or already-expired row, and
-    no embedding provider at all in this run.
+    no embedding provider is configured under the harness.
     """
     with memory.unit() as uow:
         insert_memory(uow.connection, row)
@@ -388,8 +393,8 @@ def _seed(
                 MemoryEmbeddingRow(
                     memory_id=row.id,
                     model_id=_MODEL,
-                    dimensions=3,
-                    vector=(0.1, 0.2, 0.3),
+                    dimensions=EMBEDDING_DIMENSIONS,
+                    vector=_one_hot_vector(),
                     embedded_at=row.recorded_at,
                 ),
             )

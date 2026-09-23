@@ -177,6 +177,96 @@ LEXICAL_RAREST_KEPT: Final = 5
 rarest rather than run an empty query."""
 
 
+# --- the embedding pipeline -----------------------------------------------------------
+
+EMBEDDING_PROVIDER_KEY: Final = f"{MODULE_ID}.embedding.provider"
+"""Which registered :class:`~rheo_recallatron.embedding.protocol.EmbeddingProvider`
+embeds this deployment's memories, by registry name.
+
+**Deployment scope, and no ``choices``.** Which model runs on the box is the
+deployment's decision, and the name is looked up in the module's provider registry
+rather than validated against a list: an absent, unregistered or ``none`` name
+resolves to no provider, which is the degraded path, never a refusal. The cost is that
+a typo degrades silently; ``dense_available=false`` on every recall and a coverage
+figure that stays at zero are the two things that report it.
+
+There is deliberately no model key beside it. The model is the resolved provider's
+property — its ``model_id`` is the one authority for which rows are current — and the
+width is pinned into the column type, so a settable model would have exactly one
+workable value. Nor is there a credential key: no shipped provider reads a secret.
+"""
+
+EMBEDDING_PROVIDER_NONE: Final = "none"
+
+EMBEDDING_PROVIDER_SPEC: Final = KeySpec(
+    key=EMBEDDING_PROVIDER_KEY,
+    type=ValueType.STR,
+    scope=Scope.DEPLOYMENT,
+    floor=None,
+    explicit_per_workspace=False,
+    default=EMBEDDING_PROVIDER_NONE,
+)
+
+EMBEDDING_BATCH_SIZE_KEY: Final = f"{MODULE_ID}.embedding.batch_size"
+"""How many memories ``recallatron.embedding.rebuild`` embeds per provider call.
+
+Workspace scope, read by the rebuild's dispatch handler — which holds the context —
+and carried to the job in its payload, because a worker job holds none. A stored
+value that will not decode, or sits outside the declared range, reads as the default:
+a read degrades, it never raises on a bad stored value.
+"""
+
+EMBEDDING_BATCH_SIZE_DEFAULT: Final = 32
+EMBEDDING_BATCH_SIZE_MINIMUM: Final = 1
+EMBEDDING_BATCH_SIZE_MAXIMUM: Final = 256
+
+EMBEDDING_BATCH_SIZE_SPEC: Final = KeySpec(
+    key=EMBEDDING_BATCH_SIZE_KEY,
+    type=ValueType.INT,
+    scope=Scope.WORKSPACE,
+    floor=None,
+    explicit_per_workspace=False,
+    default=EMBEDDING_BATCH_SIZE_DEFAULT,
+    minimum=EMBEDDING_BATCH_SIZE_MINIMUM,
+    maximum=EMBEDDING_BATCH_SIZE_MAXIMUM,
+)
+
+EMBEDDING_DIMENSIONS: Final = 384
+"""The one vector width this release stores, and the dimension authority.
+
+Migration ``0003_dense_retrieval`` pins it into the column type, ``vector(384)``, so
+Postgres refuses a row of any other width; the provider registry refuses to register a
+provider declaring another. Changing it is delete, alter, rebuild — a new migration
+and a new provider together — never a setting.
+"""
+
+EMBED_INPUT_VERSION: Final = 1
+"""Which composition of a memory's text the stored vectors were produced from.
+
+Version 1 is :func:`rheo_recallatron.embedding.embed_input`: the title, one newline,
+the body. Any change to what that function returns bumps this number, and the rebuild
+then deletes every stored vector in a workspace stamped with an older one, because a
+vector of the old composition is stale whatever model wrote it.
+"""
+
+EMBED_JOB_KIND: Final = f"{MODULE_ID}.embed"
+REBUILD_JOB_KIND: Final = f"{MODULE_ID}.embedding_rebuild"
+
+EMBED_MAX_ATTEMPTS: Final = 5
+"""Attempts one memory's embed job gets before it lands in the core failure list.
+
+A provider that raises is a real failure, retried under the ordinary backoff: five
+attempts span about seven minutes of it, long enough to ride out a transient fault and
+short enough that a provider that is simply broken is reported rather than retried for
+an afternoon.
+"""
+
+REBUILD_MAX_ATTEMPTS: Final = 3
+"""Attempts one rebuild job gets. Fewer than an embed job's, because each attempt is
+the whole walk: a rebuild that failed three times is a provider or a corpus problem an
+owner has to look at, not a blip."""
+
+
 @dataclass(frozen=True, slots=True)
 class RetentionPolicy:
     """What the two rows together say: a window, or no window at all (§ A9).
@@ -245,6 +335,29 @@ CANDIDATE_SENTINEL_LIMIT: Final = CANDIDATE_SCAN_LIMIT + 1
 """``LIMIT 501``. The 501st identifier is an existence test and never a content read:
 its presence is the whole of the ``window_scan_limit`` signal, and no part of it is
 resolved, counted or described."""
+
+# --- the dense index -----------------------------------------------------------------
+
+HNSW_M: Final = 16
+HNSW_EF_CONSTRUCTION: Final = 64
+"""The HNSW build parameters migration ``0003_dense_retrieval`` writes into the index.
+
+pgvector's own defaults, written down so a later change to either is a diff and a new
+revision rather than a silent difference between two deployments' builds.
+"""
+
+HNSW_EF_SEARCH_MULTIPLIER: Final = 4
+HNSW_EF_SEARCH_MIN: Final = 64
+HNSW_EF_SEARCH_MAX: Final = 1000
+"""``hnsw.ef_search`` for a dense statement: the arm's ``LIMIT`` times the multiplier,
+never below the minimum. The maximum is a hard clamp, not a tuning value: it is the
+setting's own range ceiling, and asking for more is an error from Postgres rather than
+a wider search."""
+
+HNSW_MAX_SCAN_TUPLES: Final = CANDIDATE_SCAN_LIMIT * 40
+"""``hnsw.max_scan_tuples`` for an iterative scan: 20,000, pgvector's default written
+down. It bounds the work a filtered dense statement does when too few rows clear the
+relevance floor to fill its ``LIMIT``."""
 
 MAX_DISTINCT_REFERENCES: Final = 4096
 MAX_REFERENCE_DEPTH: Final = 64

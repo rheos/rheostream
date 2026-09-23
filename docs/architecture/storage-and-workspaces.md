@@ -343,6 +343,8 @@ that is not in Postgres:
     exports/<export_id>/        export artifacts (FR 52)
     runs/<operation_id>/        scoped working directories for CLI runtime runs, removed on completion
   logs/
+  models/<component>/           model artifacts a local provider caches; the embedding
+                                provider uses models/fastembed/
 ```
 
 Resolution order for the root: `RHEO_DATA_ROOT` if set; otherwise the platform application-data
@@ -353,8 +355,10 @@ startup the host validates the root: it exists or can be created, it is not insi
 checkout unless it is the explicit opt-in, it is not a symlink escaping its parent, and its
 permissions are owner-only (a warning, not a refusal, on filesystems that cannot express that).
 Modules receive paths only through `storage.workspace_dir(ctx, purpose)`, which returns a path
-under the workspace's directory for a purpose from a closed set (`uploads`, `exports`, `scratch`);
-a module cannot name a path.
+under the workspace's directory for a purpose from a closed set (`uploads`, `exports`, `scratch`),
+and through `model_cache_dir(component)`, the one deployment-level accessor, which returns
+`<data_root>/models/<component>` for a single lowercase segment and is published to modules as
+`rheo_core.modules.model_cache_dir`; a module cannot name a path.
 
 Workspace files are referenced from workspace tables by a `file_ref` (`uuid` plus a relative path
 under the workspace directory); no URL is ever stored, and the web tier streams a file only after

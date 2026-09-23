@@ -54,6 +54,7 @@ from rheo_recallatron.eligibility import (
     eligible_memory,
     memory_reference,
 )
+from rheo_recallatron.embedding.enqueue import enqueue_embed_job
 from rheo_recallatron.entities import ResolvedMention, readable_ref, write_mentions
 from rheo_recallatron.events import MEMORY_RECORDED, publish_memory_event
 from rheo_recallatron.references import canonical_ref, entity_reference, is_memory_ref
@@ -480,6 +481,10 @@ def write_memory(
             external_source_key=external_source_key,
         ),
     )
+    # The embed job, when the workspace can use one: it commits with this row, and the
+    # provider runs in the worker afterwards. ``correct`` calls the same helper itself,
+    # because it rewrites a row in place and never reaches this insert.
+    enqueue_embed_job(ctx, uow, memory_id=memory_id, now=recorded_at)
     for purpose in purposes:
         insert_memory_purpose(
             uow.connection, MemoryPurposeRow(memory_id=memory_id, purpose=purpose)

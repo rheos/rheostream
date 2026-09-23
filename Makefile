@@ -18,7 +18,7 @@ ABSENCE_PROOF_CONFIG := $(shell git rev-parse --git-path rheo-absence-config.jso
 ABSENCE_PROOF_CHECKOUT := $(shell git rev-parse --git-path rheo-absence-checkout.json)
 
 install:
-	uv sync --frozen
+	uv sync --frozen --extra local-embeddings
 	pnpm install --frozen-lockfile
 
 test:

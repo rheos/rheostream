@@ -14,7 +14,8 @@ reads. ``events`` declares both ratified event types and ``audit_sink`` is insta
 because the first ``mutate`` operation now exists and neither is optional for one:
 dispatch refuses every non-``READ`` call whose module has no sink.
 ``deletion_participants`` carries the other half of an erasure, ``jobs`` and
-``schedules`` carry the retention sweep and the daily row that enqueues it, and
+``schedules`` carry the retention sweep and the daily row that enqueues it (``jobs``
+also carries the embed job and the embedding rebuild, which nothing schedules), and
 ``tools`` carries § A10's seven memory tools, and ``export`` now carries the real
 exporter/importer pair with the JSON Schema that describes what they move.
 ``subscriptions`` stays empty, and that is deliberate: no consumer exists in 1a1, and
@@ -44,14 +45,25 @@ from rheo_core.modules.manifest import (
 )
 
 from rheo_recallatron.configuration import (
+    EMBED_JOB_KIND,
+    EMBED_MAX_ATTEMPTS,
+    EMBEDDING_BATCH_SIZE_SPEC,
+    EMBEDDING_PROVIDER_SPEC,
     ENTITY_RECORD_TYPE,
     MEMORY_RECORD_TYPE,
     MODULE_ID,
+    REBUILD_JOB_KIND,
+    REBUILD_MAX_ATTEMPTS,
     RETENTION_DAYS_SPEC,
     RETENTION_EXPIRE_BY_AGE_SPEC,
     RETRIEVAL_STRATEGY_SPEC,
 )
 from rheo_recallatron.eligibility import LIFECYCLE_ROLES
+from rheo_recallatron.embedding.job import EmbedJobPayload, run_embed_job
+from rheo_recallatron.embedding.rebuild import (
+    EmbeddingRebuildPayload,
+    run_embedding_rebuild_job,
+)
 from rheo_recallatron.events import EVENTS
 from rheo_recallatron.export import (
     EXPORT_FORMAT_VERSION,
@@ -157,10 +169,16 @@ MANIFEST: Final = ModuleManifest(
     #
     # The retrieval strategy is the third explicit row, for the same reason: which
     # strategy ranks a workspace's recall is its own stated value from enable onward.
+    #
+    # The embedding provider and the rebuild's batch size are declared and not
+    # explicit: which model runs is the deployment's choice, not a per-workspace row,
+    # and a batch size nobody set is correctly the package default.
     configuration_schema=(
         RETENTION_EXPIRE_BY_AGE_SPEC,
         RETENTION_DAYS_SPEC,
         RETRIEVAL_STRATEGY_SPEC,
+        EMBEDDING_PROVIDER_SPEC,
+        EMBEDDING_BATCH_SIZE_SPEC,
     ),
     operations=OPERATIONS,
     # § A10's seven, and no eighth. Six name this module's own operations; the
@@ -199,6 +217,24 @@ MANIFEST: Final = ModuleManifest(
             input_model=MemoryRetentionSweepPayload,
             handler=run_memory_retention_sweep,
             max_attempts=SWEEP_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
+        # The embed job and the rebuild. Neither is cancellable, on the sweep's
+        # precedent: an embed is one short provider call, and a rebuild's whole walk is
+        # one transaction, so a cancellation could only discard the walk, never keep
+        # the batches before it.
+        JobKind(
+            name=EMBED_JOB_KIND,
+            input_model=EmbedJobPayload,
+            handler=run_embed_job,
+            max_attempts=EMBED_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
+        JobKind(
+            name=REBUILD_JOB_KIND,
+            input_model=EmbeddingRebuildPayload,
+            handler=run_embedding_rebuild_job,
+            max_attempts=REBUILD_MAX_ATTEMPTS,
             cancellable=False,
         ),
     ),

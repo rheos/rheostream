@@ -62,6 +62,23 @@ os.environ["RHEO_CLUSTER_DSN"] = _test_cluster_dsn
 os.environ["RHEO__storage__control_database"] = _control_db
 os.environ["RHEO_DATA_ROOT"] = str(_session_tmp_data_root)
 
+# Model artifacts persist across sessions. The data root above is fresh every session,
+# so without this ``<data_root>/models/`` would start empty each time and every test of
+# a local model provider would download its artifact again. A symlink rather than a
+# second location: the provider still asks core for ``<data_root>/models/<component>``
+# and gets exactly that path, and the ``atexit`` ``rmtree`` above unlinks a symlink
+# without following it, so the cache survives the session. Made before any
+# ``rheo_core`` import, and ``models`` is not a directory the data-root layout creates,
+# so nothing races it.
+_test_model_cache = Path(
+    os.environ.get("RHEO_TEST_MODEL_CACHE", "").strip()
+    or Path.home() / ".cache" / "rheo-stream" / "test-models"
+).expanduser()
+_test_model_cache.mkdir(parents=True, exist_ok=True)
+(_session_tmp_data_root / "models").symlink_to(
+    _test_model_cache, target_is_directory=True
+)
+
 from harness.settings_keys import register_harness_keys  # noqa: E402
 from rheo_core.audit import CORE_AUDIT_SINK, install_sink  # noqa: E402
 from rheo_core.migrations.orchestrator import migrate_control  # noqa: E402

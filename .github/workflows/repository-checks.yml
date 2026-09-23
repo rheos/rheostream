@@ -62,6 +62,10 @@ jobs:
       # production settings->secret-scope path, not an injected DSN.
       RHEO_TEST_CLUSTER_DSN: postgresql://rheo:rheo_dev_only@localhost:5432/postgres
       RHEO_PROFILE: test
+      # Where tests/conftest.py keeps local model artifacts across sessions. The cache
+      # step below restores it, so the real embedding model is not downloaded on every
+      # run and a third party's availability does not decide whether CI is green.
+      RHEO_TEST_MODEL_CACHE: /home/runner/.cache/rheo-stream/test-models
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,14 +75,24 @@ jobs:
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.29"
+      # With the extra: Recallatron's real-provider tests fail, never skip, when the
+      # local embedding runtime is missing, and mypy type-checks against it.
       - name: Sync (frozen)
-        run: uv sync --frozen
+        run: uv sync --frozen --extra local-embeddings
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format check
         run: uv run ruff format --check .
       - name: Mypy
         run: uv run mypy
+      # Keyed on the model identifier, so a model change misses the cache instead of
+      # restoring the old artifact under the new name. The identifier is
+      # rheo_recallatron/embedding/local.py's MODEL_ID; change the two together.
+      - name: Restore the test model cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.RHEO_TEST_MODEL_CACHE }}
+          key: test-models-sentence-transformers/all-MiniLM-L6-v2
       - name: Pytest
         run: uv run pytest
 

@@ -15,11 +15,13 @@ model is the thing under test — a census that enumerated
 with itself no matter what either one said:
 
 1. Applying Recallatron's chain to a fresh workspace creates exactly the seven tables
-   Architecture § A3 names, their declared indexes and constraints, and the chain's own
-   version table — all inside the ``recallatron`` schema, nothing outside it.
-2. ``memory_embedding`` carries no index beyond its composite primary key. No HNSW, no
-   IVFFlat, no expression index: dense retrieval is run 1a2's, and 1a1 must not have
-   decided it early by leaving an index behind.
+   Architecture § A3 names, run 1a2's one-row ``embedding_state``, their declared
+   indexes and constraints, and the chain's own version table — all inside the
+   ``recallatron`` schema, nothing outside it.
+2. ``memory_embedding`` carries exactly one index beyond its composite primary key:
+   revision ``0003_dense_retrieval``'s cosine HNSW index, over a column narrowed to
+   ``vector(384)``. Nothing else — no IVFFlat, no expression index — and it is read off
+   the catalog, because that DDL lives in the migration and not in the ``Table``.
 
 **The census technique is copied from
 ``tests/postgres/test_module_storage_ownership.py`` rather than imported.** That file's
@@ -198,12 +200,19 @@ _TABLES = (
     "memory_link",
     "memory_embedding",
     "source_receipt",
+    "embedding_state",
     _VERSION_TABLE,
 )
-"""§ A3's six-table memory spine, the ``source_receipt`` seam, and the chain's own
-version table. No session table, no conversation library, no hook-configuration table,
-no per-model embedding registry, no dimension-authority table — AC 2's absence claims,
-as an inventory a stray ``CREATE TABLE`` reds rather than as prose."""
+"""§ A3's six-table memory spine, the ``source_receipt`` seam, ``embedding_state``, and
+the chain's own version table. No session table, no conversation library, no
+hook-configuration table, no per-model embedding registry, no dimension-authority table
+— AC 2's absence claims, as an inventory a stray ``CREATE TABLE`` reds rather than as
+prose.
+
+``embedding_state`` is neither of the last two. It holds one row per workspace, the
+embed input version the stored vectors were produced under, and carries no model id and
+no width: the model is the resolved provider's own ``model_id``, compared row by row
+against ``memory_embedding``, and the width is pinned into that table's column type."""
 
 _INDEXES = (
     "memory_pkey",
@@ -222,13 +231,16 @@ _INDEXES = (
     "memory_link_pkey",
     "memory_link_ref_relation_memory",
     "memory_embedding_pkey",
+    "memory_embedding_vector_hnsw",
     "source_receipt_pkey",
+    "embedding_state_pkey",
     f"{_VERSION_TABLE}_pkc",
 )
-"""Every index, primary keys included. § A3's closing paragraph names the non-key ones;
-``memory_embedding_pkey`` is the only entry for that table, which is
-:func:`test_memory_embedding_has_no_index_beyond_its_primary_key`'s claim read a second
-way, from the whole-schema side."""
+"""Every index, primary keys included. § A3's closing paragraph names the non-key ones,
+and revision ``0003_dense_retrieval`` adds ``memory_embedding_vector_hnsw`` beside
+``memory_embedding_pkey``. That pair is
+:func:`test_memory_embedding_carries_the_hnsw_index_and_a_384_wide_column`'s claim read
+a second way, from the whole-schema side."""
 
 _CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("memory", "memory_pkey"),
@@ -267,6 +279,8 @@ _CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("source_receipt", "source_receipt_bound_purpose"),
     ("source_receipt", "source_receipt_source_window_pairing"),
     ("source_receipt", "source_receipt_digest_length"),
+    ("embedding_state", "embedding_state_pkey"),
+    ("embedding_state", "embedding_state_one_row"),
     (_VERSION_TABLE, f"{_VERSION_TABLE}_pkc"),
 )
 """Every primary key, foreign key and check, by the table that owns it.
@@ -439,24 +453,41 @@ def test_the_migration_is_a_no_op_when_re_run_within_its_own_chain(
         assert _objects(connection) == before
 
 
-def test_memory_embedding_has_no_index_beyond_its_primary_key(
+def test_memory_embedding_carries_the_hnsw_index_and_a_384_wide_column(
     cluster: ClusterSession, workspace: UUID, recallatron_loaded: None
 ) -> None:
-    """AC 2: no HNSW, no IVFFlat, no expression index, in 1a1.
+    """Revision ``0003_dense_retrieval``'s two changes to ``memory_embedding``, present.
 
-    Asked of ``pg_catalog`` rather than of the ``Table`` object, because a dense index
-    can arrive from raw DDL in a migration that the Python model never mentions — which
-    is precisely the shape this claim has to exclude. ``indisprimary`` is read, so the
-    one surviving index has to be the primary key rather than merely the only one.
+    Asked of ``pg_catalog`` rather than of the ``Table`` object, because both arrive
+    from raw DDL in the migration that the Python model deliberately never mentions.
+    The index list is exact: the primary key (``indisprimary`` read, so it has to *be*
+    the key) and one cosine ``hnsw`` index by its pinned name — no IVFFlat, no
+    expression index, nothing else. The column type is read with ``format_type``, so a
+    dimensionless ``vector`` — which pgvector cannot index at all — reds here too.
     """
     _migrate(cluster, workspace)
 
     _, engine = _workspace_engine(cluster, workspace)
     with engine.connect() as connection:
+        column_type = connection.execute(
+            text(
+                "SELECT format_type(attribute.atttypid, attribute.atttypmod) "
+                "FROM pg_catalog.pg_attribute AS attribute "
+                "JOIN pg_catalog.pg_class AS table_class "
+                "ON table_class.oid = attribute.attrelid "
+                "JOIN pg_catalog.pg_namespace AS namespace "
+                "ON namespace.oid = table_class.relnamespace "
+                "WHERE namespace.nspname = :schema "
+                "AND table_class.relname = 'memory_embedding' "
+                "AND attribute.attname = 'vector'"
+            ),
+            {"schema": _OWNED_SCHEMA},
+        ).scalar_one()
         rows = connection.execute(
             text(
                 "SELECT index_class.relname::text, index_def.indisprimary, "
-                "access_method.amname::text "
+                "access_method.amname::text, "
+                "pg_catalog.pg_get_indexdef(index_def.indexrelid) "
                 "FROM pg_catalog.pg_index AS index_def "
                 "JOIN pg_catalog.pg_class AS index_class "
                 "ON index_class.oid = index_def.indexrelid "
@@ -472,9 +503,17 @@ def test_memory_embedding_has_no_index_beyond_its_primary_key(
             {"schema": _OWNED_SCHEMA},
         ).all()
 
-    assert [
-        (str(name), bool(primary), str(method)) for name, primary, method in rows
-    ] == [("memory_embedding_pkey", True, "btree")]
+    assert str(column_type) == "vector(384)"
+    assert sorted(
+        (str(name), bool(primary), str(method)) for name, primary, method, _ in rows
+    ) == [
+        ("memory_embedding_pkey", True, "btree"),
+        ("memory_embedding_vector_hnsw", False, "hnsw"),
+    ]
+    (definition,) = [
+        str(row[3]) for row in rows if row[0] == "memory_embedding_vector_hnsw"
+    ]
+    assert "vector_cosine_ops" in definition, definition
 
 
 # --- the read surface -----------------------------------------------------------------

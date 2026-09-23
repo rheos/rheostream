@@ -113,6 +113,16 @@ has moved". A caller that got ``not_found`` for a revision mismatch would retry
 nothing; one that gets this rereads and retries.
 """
 
+EMBEDDING_PROVIDER_UNAVAILABLE: Final = "embedding_provider_unavailable"
+"""``recallatron.embedding.rebuild`` was asked for with no embedding provider resolving.
+
+With nothing configured there is no model to prune against or fill for, and an owner
+asking to rebuild in that state has made a mistake worth hearing about. The opposite
+disposition from the ordinary write path, deliberately: a write with no provider
+enqueues nothing and succeeds, because every write in the workspace takes that path,
+while this is one explicit request.
+"""
+
 PURPOSE_MISMATCH: Final = "purpose_mismatch"
 """A well-formed purpose that is not the one this context is bound to.
 

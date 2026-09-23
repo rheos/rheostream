@@ -107,6 +107,7 @@ from rheo_recallatron.eligibility import (
     is_container_member,
     memory_reference,
 )
+from rheo_recallatron.embedding.operations import EMBEDDING_OPERATIONS
 from rheo_recallatron.entities import ENTITY_OPERATIONS, resolve_mentions
 from rheo_recallatron.events import consumers_for_dispatch
 from rheo_recallatron.lifecycle import correct, supersede
@@ -708,9 +709,11 @@ OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (CORRECT_DECLARATION, correct),
     (SUPERSEDE_DECLARATION, supersede),
     *ENTITY_OPERATIONS,
+    *EMBEDDING_OPERATIONS,
 )
-"""What the manifest declares: two reads, two writes, the two lifecycle changes and
-the two service-only entity reads. The record resolver is declared beside this tuple
+"""What the manifest declares: two reads, two writes, the two lifecycle changes, the
+two service-only entity reads and the owner's embedding rebuild. The record resolver is
+declared beside this tuple
 on the manifest and shares the same eligibility function; erasure is not here at all,
 because a memory is erased through the core's own record-delete operation against the
 owned-delete pair this module declares on its record type."""
