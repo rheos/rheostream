@@ -20,7 +20,7 @@ routing inquiries from its own websites and forms. Job search is one optional
 workflow; a workspace can feed Leads from its own funnels and referral partners
 and never touch a job board.
 
-**Status: phase 0, the walking skeleton, is built.** A Python core (FastAPI)
+**Status: the walking skeleton is built.** A Python core (FastAPI)
 and a Next.js web shell run against Postgres, one database per workspace.
 Identity sign-in is GitHub OAuth behind a pluggable provider boundary;
 sessions are host-only cookies with a one-time identity-host grant; the
@@ -43,8 +43,11 @@ Enqueueing is still not atomic end to end: the job row lands in the workspace
 database and its due mark in the control database, with no transaction
 spanning the two, so a crash between them leaves a job undue until
 reconciliation. The reference compose topology runs that worker as its own
-service. **No product module has a line of code yet** — Leads, Current, and
-Recallatron are still empty stubs — and the durable layer is still not
+service. **Recallatron is the first product module underway.** Memory records exist
+with `remember`, `derive`, `correct`, and `supersede`, plus retention and
+eligibility rules, lexical search, and export/restore. Its retrieval layer
+(dense and hybrid search alongside lexical) is under active development.
+Leads and Current are still empty stubs, and the durable layer is still not
 finished: there are no scheduled jobs. The module-manifest design is settled;
 disable, remove, purge, and restore are not built. The license is AGPL-3.0.
 Directory names under `modules/`, `connectors/`, `channels/`, `runtimes/`,
