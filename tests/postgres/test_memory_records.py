@@ -92,7 +92,7 @@ from rheo_core.refs.resolver import (
     register_resolver,
     resolve_in,
 )
-from rheo_core.settings import ValueType
+from rheo_core.settings import KeySpec, Scope, ValueType
 from rheo_core.storage import work_tables
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.provisioning import core_version
@@ -152,6 +152,7 @@ from rheo_recallatron.retrieval import (
     SearchRequest,
     SearchResult,
 )
+from rheo_recallatron.retrieval import dispatch as retrieval_dispatch
 from rheo_recallatron.source_units import (
     LIVE_REPRESENTATION,
     AcceptOutcome,
@@ -1409,6 +1410,56 @@ def test_recall_runs_the_strategy_the_registry_resolves(
     )
 
 
+def test_recall_runs_the_strategy_the_stored_setting_names(
+    memory: MemoryWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 1, the settings half: the stored workspace value picks the registry entry.
+
+    The shipped key offers ``lexical`` alone, so this test widens a stand-in spec to
+    offer a ``spy`` choice and registers a spy under it. The lexical entry stays in
+    place, so a resolver that ignored the setting would run lexical and fail here.
+    """
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples", body="a note about apples"))
+        pears = _write(
+            uow.connection,
+            _row(title="pears", body="a note about pears", recorded_at=_recent(1)),
+        )
+    monkeypatch.setattr(
+        retrieval_dispatch,
+        "RETRIEVAL_STRATEGY_SPEC",
+        KeySpec(
+            key=RETRIEVAL_STRATEGY_KEY,
+            type=ValueType.STR,
+            scope=Scope.WORKSPACE,
+            floor=None,
+            explicit_per_workspace=True,
+            default=STRATEGY_LEXICAL,
+            choices=(STRATEGY_LEXICAL, "spy"),
+        ),
+    )
+    spy = _SpyStrategy(
+        answer=SearchResult(
+            hits=(Hit(ref=pears.id, score=0.25, strategy="spy"),),
+            arms=ArmProvenance(lexical=0, dense=1),
+            dense_available=True,
+        )
+    )
+    monkeypatch.setitem(STRATEGY_REGISTRY, "spy", spy)
+    memory.set_strategy("spy")
+
+    result = _recalled(memory.recall(memory.context(), query="apples"))
+
+    assert [request.query for request in spy.requests] == ["apples"]
+    assert [item.title for item in result.items] == ["pears"]
+    assert [item.strategy for item in result.items] == ["spy"]
+    assert result.provenance == RecallProvenance(
+        strategy="spy",
+        arms=ArmCounts(lexical=0, dense=1),
+        dense_available=True,
+    )
+
+
 _INLINE_RECALL_CONFIG: Any = literal_column("'english'::regconfig")
 
 
@@ -1501,6 +1552,11 @@ def test_lexical_recall_returns_what_the_inline_statement_returned(
 
         result = _recalled(memory.recall(ctx, query=query_text, k=50))
         assert [item.ref for item in result.items] == baseline, query_text
+        # The arm's own count, taken before the permission walk, matches the
+        # baseline too. The walk would drop the private and corrected rows anyway,
+        # so without this a strategy that lost the row-local filter would still
+        # return the same items.
+        assert result.provenance.arms.lexical == len(baseline), query_text
         assert {item.strategy for item in result.items} == {STRATEGY_LEXICAL}
         assert all(item.score > 0 for item in result.items)
 

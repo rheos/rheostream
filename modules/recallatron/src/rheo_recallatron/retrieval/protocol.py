@@ -35,7 +35,13 @@ class SearchRequest:
 @dataclass(frozen=True, slots=True)
 class Hit:
     """One ranked candidate. ``ref`` is the memory's id; the canonical reference is
-    minted when an eligible hit is rendered, never for one the walk drops."""
+    minted when an eligible hit is rendered, never for one the walk drops.
+
+    ``strategy`` is informational: the name of whatever ranked this hit, which a
+    fusing strategy may set per arm. ``recall()`` does **not** label its items from
+    it. Every item, and the response's provenance, carry the dispatched strategy's
+    ``name``, so the two can never disagree within one response.
+    """
 
     ref: UUID
     score: float
