@@ -61,6 +61,7 @@ from rheo_recallatron.configuration import (
     EMBEDDING_BATCH_SIZE_DEFAULT,
     EMBEDDING_DIMENSIONS,
     EMBEDDING_PROVIDER_NONE,
+    HNSW_EF_SEARCH_MIN,
     HNSW_MAX_SCAN_TUPLES,
     MEMORY_RECORD_TYPE,
     RETENTION_EXPIRE_BY_AGE_KEY,
@@ -90,6 +91,7 @@ from rheo_recallatron.retrieval.dense import (
     DenseStrategy,
     build_dense_statement,
     dense_distance,
+    dense_floor,
     dense_floor_percent,
     dense_floor_percent_in,
     dense_similarity,
@@ -751,6 +753,91 @@ def test_an_embedded_workspace_reports_the_dense_arm_available(
     assert result.hits[0].ref == apples
     assert {hit.strategy for hit in result.hits} == {STRATEGY_DENSE}
     assert all(hit.score >= DENSE_FLOOR_PERCENT_DEFAULT / 100.0 for hit in result.hits)
+
+
+# --- the arm's own limit --------------------------------------------------------------
+
+
+def test_the_arm_is_bounded_by_the_request_limit_in_its_statement_and_its_scan(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``request.limit`` bounds the arm, and no constant does. Mechanism (a).
+
+    ``recall()`` always asks for ``CANDIDATE_SCAN_LIMIT``, so no test that goes through
+    it can tell ``request.limit`` from a hard-coded 500. The hybrid over-fetch asks for
+    fewer. Here three memories clear the floor and the arm is asked for one: it returns
+    the nearest, counts one, and leaves this transaction's ``ef_search`` at a one-row
+    arm's value, not a 500-row arm's.
+    """
+    fake = _fake(monkeypatch)
+    _seed(
+        retrieval,
+        ("apples", "apples are red"),
+        ("apples", "a note about apples"),
+        ("apples and pears", "a note about apples and pears"),
+    )
+    _fill(retrieval, fake)
+    ctx = retrieval.context()
+    (query_vector,) = fake.embed(["apples"])
+    embedding = memory_tables.memory_embedding
+
+    with retrieval.reading() as uow:
+        # The arm's own expressions, floor included, by a non-index pass: no ORDER BY.
+        similarity = dense_similarity(dense_distance(query_vector))
+        above_floor: dict[UUID, float] = {
+            memory_id: float(score)
+            for memory_id, score in uow.connection.execute(
+                select(memory_tables.memory.c.id, similarity)
+                .select_from(
+                    memory_tables.memory.join(
+                        embedding, embedding.c.memory_id == memory_tables.memory.c.id
+                    )
+                )
+                .where(
+                    embedding.c.model_id == fake.model_id,
+                    dense_floor(similarity, dense_floor_percent(ctx, uow)),
+                    *row_local_conditions(_request(ctx, uow), ReadMode.CURRENT),
+                )
+            )
+        }
+    ranked = sorted(above_floor.values(), reverse=True)
+    _gate(
+        len(ranked) > 1,
+        f"{len(ranked)} rows clear the floor, so a limit of one would bind nothing",
+    )
+    _gate(ranked[0] > ranked[1], f"the two nearest rows tie: {ranked[:2]}")
+    nearest = max(above_floor, key=above_floor.__getitem__)
+
+    with retrieval.reading() as uow:
+        result = DenseStrategy().search(
+            ctx,
+            uow,
+            SearchRequest(
+                query="apples",
+                mode=ReadMode.CURRENT,
+                memory=_request(ctx, uow),
+                limit=1,
+            ),
+        )
+        # ``SET LOCAL`` outlives the released savepoint, so this is what the arm set.
+        scan_settings = tuple(
+            uow.connection.execute(
+                select(
+                    func.current_setting("hnsw.ef_search"),
+                    func.current_setting("hnsw.iterative_scan"),
+                    func.current_setting("hnsw.max_scan_tuples"),
+                )
+            ).one()
+        )
+
+    assert result.dense_available is True
+    assert len(result.hits) == result.arms.dense == 1
+    assert result.hits[0].ref == nearest
+    assert scan_settings == (
+        str(HNSW_EF_SEARCH_MIN),
+        "strict_order",
+        str(HNSW_MAX_SCAN_TUPLES),
+    )
 
 
 # --- AC 11: below the floor is nothing, not a weak answer -----------------------------
