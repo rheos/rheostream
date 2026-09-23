@@ -142,6 +142,7 @@ from rheo_recallatron.eligibility import (
     row_local_conditions,
 )
 from rheo_recallatron.embedding import registry as embedding_registry
+from rheo_recallatron.embedding.local import MODEL_ID as LOCAL_MODEL_ID
 from rheo_recallatron.embedding.protocol import EmbeddingProvider
 from rheo_recallatron.embedding.rebuild import fill_missing_embeddings
 from rheo_recallatron.entities import ENTITY_GET, ENTITY_LIST, remove_mention
@@ -932,7 +933,8 @@ def _core_setting_table() -> str:
 # shipped floor. Two plain environment variables select the pass. They are not
 # ``RHEO__*`` variables, which ``tests/conftest.py`` refuses at import. Nothing is
 # parametrized, so every node id in this file stays what the acceptance matrices cite.
-# A test that pins its own strategy runs that strategy in both passes.
+# A test that pins its own strategy runs that strategy in both passes. The only
+# provider a pass may name is the real ``local`` one.
 
 _STRATEGY_VARIABLE = "RHEO_TEST_RETRIEVAL_STRATEGY"
 _PROVIDER_VARIABLE = "RHEO_TEST_EMBEDDING_PROVIDER"
@@ -957,7 +959,8 @@ class Criterion31Pass:
 
 @pytest.fixture(scope="session")
 def criterion_31_pass() -> Criterion31Pass:
-    """Read the two variables once, refusing a strategy the key does not offer."""
+    """Read the two variables once, refusing a strategy the key does not offer and
+    any provider but the real ``local`` one."""
     selected = Criterion31Pass(
         strategy=os.environ.get(_STRATEGY_VARIABLE, "").strip() or None,
         provider=os.environ.get(_PROVIDER_VARIABLE, "").strip() or None,
@@ -965,6 +968,15 @@ def criterion_31_pass() -> Criterion31Pass:
     offered = RETRIEVAL_STRATEGY_SPEC.choices or ()
     assert selected.strategy is None or selected.strategy in offered, (
         f"{_STRATEGY_VARIABLE}={selected.strategy!r} is not one of {offered}"
+    )
+    # The fake provider would pass this whole file too, and a green dense pass on it
+    # would claim criterion 31 against a synthetic space.
+    assert selected.provider in (None, embedding_registry.LOCAL_PROVIDER), (
+        f"{_PROVIDER_VARIABLE}={selected.provider!r}: criterion 31's dense pass runs "
+        f"only against the real {embedding_registry.LOCAL_PROVIDER!r} provider. The "
+        "one sanctioned route to relax this is spec § Technical Risks 10's last "
+        "resort, for a CI runner that cannot hold the model artifact, made as an "
+        "explicit edit to this check. It is never a remedy for a red assertion."
     )
     return selected
 
@@ -1048,7 +1060,9 @@ def test_the_pass_recalls_with_the_strategy_its_environment_names(
 
     Without it an override write that silently did nothing would leave the "dense"
     pass running the package default, and ``make criterion-31`` would go green twice
-    on one code path.
+    on one code path. When the pass names a provider, it also pins that the recall's
+    provider is the real model and that the dense arm answered, so a pass on another
+    provider or with the dense arm degraded cannot pass for the real one.
     """
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples", body="a note about apples"))
@@ -1057,6 +1071,14 @@ def test_the_pass_recalls_with_the_strategy_its_environment_names(
     assert outcome.ok, outcome
     assert isinstance(outcome.result, RecallResult), outcome
     assert outcome.result.provenance.strategy == criterion_31_pass.expected_strategy
+
+    if criterion_31_pass.provider is not None:
+        # What the recall itself resolved: the selection is still in force here.
+        resolved = embedding_registry.resolve_provider()
+        assert resolved is not None and resolved.model_id == LOCAL_MODEL_ID, resolved
+        # ``lexical`` reads no dense index and always reports ``false``.
+        if criterion_31_pass.expected_strategy != STRATEGY_LEXICAL:
+            assert outcome.result.provenance.dense_available, outcome.result.provenance
 
 
 def _window(outcome: OperationOutcome) -> ReadWindow:
