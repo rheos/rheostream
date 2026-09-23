@@ -1,4 +1,4 @@
-"""The module's identity, its two settings keys, and Architecture § A13's fixed limits.
+"""The module's identity, its settings keys, and Architecture § A13's fixed limits.
 
 **A leaf module, and that is the whole reason it exists.** ``manifest.py`` declares the
 operations, so it imports ``operations.py``, which imports ``eligibility.py`` — and
@@ -115,6 +115,46 @@ Readers validate against **this spec**, not against whatever the process-wide se
 registry happens to hold: the registry's contents depend on which modules a process
 loaded, and a retention bound must not.
 """
+
+# --- the retrieval strategy -----------------------------------------------------------
+
+STRATEGY_LEXICAL: Final = "lexical"
+STRATEGY_DENSE: Final = "dense"
+STRATEGY_HYBRID: Final = "hybrid"
+"""The three retrieval strategy names, and what every recall hit is marked with.
+
+A name here is a vocabulary member, not a promise that an implementation exists:
+``dense`` and ``hybrid`` are declared so every later reader spells them one way, and
+neither is offered by :data:`RETRIEVAL_STRATEGY_SPEC` or registered in the strategy
+registry until an implementation ships beside it.
+"""
+
+RETRIEVAL_STRATEGIES: Final = (STRATEGY_LEXICAL, STRATEGY_DENSE, STRATEGY_HYBRID)
+
+RETRIEVAL_STRATEGY_KEY: Final = f"{MODULE_ID}.retrieval.strategy"
+"""Which :class:`~rheo_recallatron.retrieval.protocol.RetrievalStrategy` ranks this
+workspace's recall.
+
+``explicit_per_workspace``, so enable writes the row and a workspace's retrieval
+posture is a stored readable value. **Only ``lexical`` is offered today**: a value in
+``choices`` is a value a workspace may configure, and offering one no implementation
+serves would let a workspace choose something the release cannot answer with.
+
+Read through the transaction-bound override source, like the retention keys. An
+absent row resolves to this spec's default; a present row that will not parse
+resolves to ``lexical`` whatever the default is, because ``lexical`` is the strategy
+that cannot start answering from an index the workspace never filled.
+"""
+
+RETRIEVAL_STRATEGY_SPEC: Final = KeySpec(
+    key=RETRIEVAL_STRATEGY_KEY,
+    type=ValueType.STR,
+    scope=Scope.WORKSPACE,
+    floor=None,
+    explicit_per_workspace=True,
+    default=STRATEGY_LEXICAL,
+    choices=(STRATEGY_LEXICAL,),
+)
 
 
 @dataclass(frozen=True, slots=True)

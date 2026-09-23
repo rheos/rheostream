@@ -7,7 +7,7 @@ nobody did.
 
 **What this revision fills in, and what stays empty.** The storage declaration names
 the two Postgres extensions its tables need, ``configuration_schema`` carries the
-module's one settings key, ``record_types`` declares the two addressable tables and
+module's settings keys, ``record_types`` declares the two addressable tables and
 carries the memory's own owned-delete pair, and ``operations``/``resolvers`` carry the
 read half, the write half, the two lifecycle changes and the two service-only entity
 reads. ``events`` declares both ratified event types and ``audit_sink`` is installed,
@@ -49,6 +49,7 @@ from rheo_recallatron.configuration import (
     MODULE_ID,
     RETENTION_DAYS_SPEC,
     RETENTION_EXPIRE_BY_AGE_SPEC,
+    RETRIEVAL_STRATEGY_SPEC,
 )
 from rheo_recallatron.eligibility import LIFECYCLE_ROLES
 from rheo_recallatron.events import EVENTS
@@ -153,7 +154,14 @@ MANIFEST: Final = ModuleManifest(
     # workspace's retention posture a stored readable value rather than an inference
     # from an absent row — and what makes turning expiry on one settings write against
     # a schedule that already exists, with no backfill path to invent.
-    configuration_schema=(RETENTION_EXPIRE_BY_AGE_SPEC, RETENTION_DAYS_SPEC),
+    #
+    # The retrieval strategy is the third explicit row, for the same reason: which
+    # strategy ranks a workspace's recall is its own stated value from enable onward.
+    configuration_schema=(
+        RETENTION_EXPIRE_BY_AGE_SPEC,
+        RETENTION_DAYS_SPEC,
+        RETRIEVAL_STRATEGY_SPEC,
+    ),
     operations=OPERATIONS,
     # § A10's seven, and no eighth. Six name this module's own operations; the
     # seventh names the owned-deletion coordinator, which the ratified module

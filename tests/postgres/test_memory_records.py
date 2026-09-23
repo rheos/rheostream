@@ -38,6 +38,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -102,12 +103,22 @@ from rheo_core.storage.repositories import (
 from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
 from rheo_recallatron.configuration import (
+    CANDIDATE_SCAN_LIMIT,
     MEMORY_RECORD_TYPE,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
+    RETRIEVAL_STRATEGY_KEY,
+    STRATEGY_DENSE,
+    STRATEGY_LEXICAL,
     RetentionPolicy,
 )
-from rheo_recallatron.contracts import EntityItem, EntityList, MemoryWritten
+from rheo_recallatron.contracts import (
+    ArmCounts,
+    EntityItem,
+    EntityList,
+    MemoryWritten,
+    RecallProvenance,
+)
 from rheo_recallatron.eligibility import (
     Denied,
     MemoryRequest,
@@ -119,6 +130,7 @@ from rheo_recallatron.eligibility import (
     eligible_memory,
     expire_by_age_enabled,
     memory_reference,
+    row_local_conditions,
 )
 from rheo_recallatron.entities import ENTITY_GET, ENTITY_LIST, remove_mention
 from rheo_recallatron.events import MEMORY_INVALIDATED, MEMORY_RECORDED
@@ -128,9 +140,18 @@ from rheo_recallatron.operations import (
     MEMORY_RECALL,
     MEMORY_REMEMBER,
     ReadWindow,
+    RecallResult,
 )
 from rheo_recallatron.references import entity_reference
 from rheo_recallatron.resolvers import resolve_memory
+from rheo_recallatron.retrieval import (
+    STRATEGY_REGISTRY,
+    ArmProvenance,
+    Hit,
+    IndexItem,
+    SearchRequest,
+    SearchResult,
+)
 from rheo_recallatron.source_units import (
     LIVE_REPRESENTATION,
     AcceptOutcome,
@@ -148,7 +169,16 @@ from rheo_recallatron.storage.repository import (
     list_memory_purposes,
     set_source_receipt_state,
 )
-from sqlalchemy import Connection, Engine, Row, func, insert, select, text
+from sqlalchemy import (
+    Connection,
+    Engine,
+    Row,
+    func,
+    insert,
+    literal_column,
+    select,
+    text,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -772,6 +802,27 @@ class MemoryWorkspace:
                     updated_by=None,
                 )
 
+    def set_strategy(self, value: str | None) -> None:
+        """Store or delete this workspace's retrieval-strategy row, verbatim.
+
+        The same escape hatch as :meth:`set_retention`: around the validating settings
+        operation, so an absent row and an unparseable one are both reachable.
+        """
+        with self.unit() as uow:
+            if value is None:
+                uow.connection.execute(
+                    text("DELETE FROM " + _core_setting_table() + " WHERE key = :key"),
+                    {"key": RETRIEVAL_STRATEGY_KEY},
+                )
+            else:
+                upsert_workspace_setting(
+                    uow.connection,
+                    key=RETRIEVAL_STRATEGY_KEY,
+                    value=value,
+                    value_type=ValueType.STR,
+                    updated_by=None,
+                )
+
 
 def _core_setting_table() -> str:
     """The workspace-setting table's qualified name, assembled rather than written.
@@ -1287,6 +1338,217 @@ def test_recall_refuses_a_blank_or_oversized_query_as_input_invalid(
         {"query": "apples", "unknown": True},
     ):
         _refused(memory.recall(owner, **payload), "input_invalid")
+
+
+# --- the retrieval seam ---------------------------------------------------------------
+
+
+def _recalled(outcome: OperationOutcome) -> RecallResult:
+    assert outcome.ok, outcome
+    assert isinstance(outcome.result, RecallResult), outcome
+    return outcome.result
+
+
+@dataclass
+class _SpyStrategy:
+    """A strategy whose answer no lexical ranking could produce, so seeing it come
+    back through ``recall()`` proves the registry entry — not a constant — ran."""
+
+    answer: SearchResult
+    name: str = "spy"
+    requests: list[SearchRequest] = dataclass_field(default_factory=list)
+
+    def index(self, ctx: WorkspaceContext, uow: Any, item: IndexItem) -> None:
+        raise AssertionError("recall must not index")
+
+    def invalidate(self, ctx: WorkspaceContext, uow: Any, ref: str) -> None:
+        raise AssertionError("recall must not invalidate")
+
+    def search(
+        self, ctx: WorkspaceContext, uow: Any, request: SearchRequest
+    ) -> SearchResult:
+        self.requests.append(request)
+        return self.answer
+
+
+def test_recall_runs_the_strategy_the_registry_resolves(
+    memory: MemoryWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 1, first half: the resolved registry entry decides what runs.
+
+    This phase's key offers only ``lexical``, so the proof swaps that entry for a spy
+    rather than writing a setting. The spy answers ``apples`` with the ``pears`` row,
+    which shares no lexeme with the query, and with arm counts lexical never reports.
+    """
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples", body="a note about apples"))
+        pears = _write(
+            uow.connection,
+            _row(title="pears", body="a note about pears", recorded_at=_recent(1)),
+        )
+    spy = _SpyStrategy(
+        answer=SearchResult(
+            hits=(Hit(ref=pears.id, score=0.5, strategy="spy"),),
+            arms=ArmProvenance(lexical=7, dense=3),
+            dense_available=True,
+        )
+    )
+    monkeypatch.setitem(STRATEGY_REGISTRY, STRATEGY_LEXICAL, spy)
+
+    result = _recalled(memory.recall(memory.context(), query="apples"))
+
+    assert [request.query for request in spy.requests] == ["apples"]
+    assert spy.requests[0].limit == CANDIDATE_SCAN_LIMIT
+    assert [item.title for item in result.items] == ["pears"]
+    assert [item.strategy for item in result.items] == ["spy"]
+    assert result.items[0].score == 0.5
+    assert result.provenance == RecallProvenance(
+        strategy="spy",
+        arms=ArmCounts(lexical=7, dense=3),
+        dense_available=True,
+    )
+
+
+_INLINE_RECALL_CONFIG: Any = literal_column("'english'::regconfig")
+
+
+def _inline_recall_refs(
+    uow: UnitOfWork, request: MemoryRequest, query_text: str
+) -> list[str]:
+    """The statement ``recall()`` ran inline before the seam, held verbatim.
+
+    Deliberately a copy, not an import: the parity claim is that the seam returns what
+    *this* statement returned, and a baseline built from the code under test would
+    agree with it whatever it did.
+    """
+    query = func.plainto_tsquery(_INLINE_RECALL_CONFIG, query_text)
+    score = func.ts_rank_cd(memory_tables.memory.c.search_tsv, query)
+    statement = (
+        select(memory_tables.memory.c.id, score.label("score"))
+        .where(
+            memory_tables.memory.c.search_tsv.bool_op("@@")(query),
+            *row_local_conditions(request, ReadMode.CURRENT),
+        )
+        .order_by(
+            score.desc(),
+            memory_tables.memory.c.recorded_at,
+            memory_tables.memory.c.id,
+        )
+        .limit(CANDIDATE_SCAN_LIMIT)
+    )
+    return [
+        memory_reference(candidate)
+        for candidate, _ in uow.connection.execute(statement).all()
+    ]
+
+
+def test_lexical_recall_returns_what_the_inline_statement_returned(
+    memory: MemoryWorkspace,
+) -> None:
+    """1A's zero-delta claim: same rows, same order, same label.
+
+    Single-lexeme queries only, so the baseline stays exact once the query builder
+    changes; the multi-word divergence is AC 23's to assert. Scores are not compared.
+    The workspace pins ``lexical`` itself, so this stays a test of the lexical arm
+    whatever the package default becomes.
+    """
+    other_account = uuid7()
+    with memory.unit() as uow:
+        # Different densities and ties, so the order is decided by score first and
+        # then by ``recorded_at`` and ``id``.
+        for offset, (title, body) in enumerate(
+            (
+                ("apples", "apples apples apples, and a body"),
+                ("one apple", "a single apples mention"),
+                ("tie a", "apples in the body"),
+                ("tie b", "apples in the body"),
+                ("pears", "a body about pears"),
+                ("long", "apples " + "filler words " * 40 + "apples body"),
+            )
+        ):
+            _write(
+                uow.connection,
+                _row(title=title, body=body, recorded_at=_recent(offset)),
+            )
+        # Excluded row-locally by both statements: another member's private memory
+        # and an invalidated one.
+        _write(
+            uow.connection,
+            _row(
+                title="private apples",
+                body="apples body",
+                audience_kind="member",
+                audience_id=other_account,
+            ),
+        )
+        _write(
+            uow.connection,
+            _row(
+                title="corrected apples",
+                body="apples body",
+                invalidation_reason="source_corrected",
+            ),
+        )
+    memory.set_strategy(STRATEGY_LEXICAL)
+    ctx = memory.context()
+
+    for query_text in ("apples", "body"):
+        with memory.reading() as uow:
+            request = begin_request(ctx, uow)
+            assert request is not None
+            baseline = _inline_recall_refs(uow, request, query_text)
+        assert len(baseline) >= 4, (query_text, baseline)
+
+        result = _recalled(memory.recall(ctx, query=query_text, k=50))
+        assert [item.ref for item in result.items] == baseline, query_text
+        assert {item.strategy for item in result.items} == {STRATEGY_LEXICAL}
+        assert all(item.score > 0 for item in result.items)
+
+
+def test_every_recall_carries_lexical_provenance(memory: MemoryWorkspace) -> None:
+    """AC 8's ``false`` half: provenance on every response, counting the ranked list
+    before the permission walk, with no dense arm to report."""
+    assert memory.stored_setting(RETRIEVAL_STRATEGY_KEY) == STRATEGY_LEXICAL
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples one", body="apples, readable"))
+        _write(
+            uow.connection,
+            _row(title="apples two", body="apples, blocked", recorded_at=_recent(1)),
+            links=((f"harness.note:{uuid7()}", "about", False),),
+        )
+
+    ranked = _recalled(memory.recall(memory.context(), query="apples"))
+    assert [item.title for item in ranked.items] == ["apples one"]
+    # Two ranked, one shown: the walk removed the other after the count was taken.
+    assert ranked.provenance == RecallProvenance(
+        strategy=STRATEGY_LEXICAL,
+        arms=ArmCounts(lexical=2, dense=0),
+        dense_available=False,
+    )
+    assert all(item.strategy == ranked.provenance.strategy for item in ranked.items)
+
+    empty = _recalled(memory.recall(memory.context(), query="quinces"))
+    assert empty.items == ()
+    assert empty.provenance == RecallProvenance(
+        strategy=STRATEGY_LEXICAL,
+        arms=ArmCounts(lexical=0, dense=0),
+        dense_available=False,
+    )
+
+
+@pytest.mark.parametrize("stored", [None, "not-a-strategy", STRATEGY_DENSE])
+def test_an_absent_or_unusable_strategy_row_recalls_lexically_without_refusing(
+    memory: MemoryWorkspace, stored: str | None
+) -> None:
+    """An absent row takes the package default; a present row outside the offered
+    vocabulary degrades to ``lexical``. Neither refuses a read."""
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples", body="a note about apples"))
+    memory.set_strategy(stored)
+
+    result = _recalled(memory.recall(memory.context(), query="apples"))
+    assert [item.title for item in result.items] == ["apples"]
+    assert result.provenance.strategy == STRATEGY_LEXICAL
 
 
 # --- the centered read window ---------------------------------------------------------

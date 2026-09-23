@@ -1,6 +1,6 @@
-"""Recallatron's declared operations: first-cut lexical ``recall``, the centered
-``read`` window, the two writes — ``remember`` and ``derive`` — and the two lifecycle
-changes, ``correct`` and ``supersede``.
+"""Recallatron's declared operations: ``recall`` through the retrieval seam, the
+centered ``read`` window, the two writes — ``remember`` and ``derive`` — and the two
+lifecycle changes, ``correct`` and ``supersede``.
 
 The reads are ``READ`` and carry no audit spec, because the read class needs none. The
 four writers are ``MUTATE`` and publish inside the same transaction as their row
@@ -10,12 +10,13 @@ writes and the dispatcher's success audit row. ``remember``/``derive`` carry
 record that already exists — and are owner/member alone (§ A10). Every permission
 decision any of them makes is
 :func:`~rheo_recallatron.eligibility.eligible_memory`'s; what lives here is input
-validation, the lexical query, the five-step read precedence, the write ordering, and
-the shape of the answer. The write *machinery* — audience ceiling, purpose rule,
-reference resolution, the row insert — is ``writes.py``'s, because the trusted source
-seam has to write a memory exactly the way these two do, and the lifecycle closure
-itself is ``lifecycle.py``'s, because erasure reaches it through the core's deletion
-coordinator rather than through an operation of this module's.
+validation, the dispatch to the configured retrieval strategy, the five-step read
+precedence, the write ordering, and the shape of the answer. The write *machinery* —
+audience ceiling, purpose rule, reference resolution, the row insert — is
+``writes.py``'s, because the trusted source seam has to write a memory exactly the way
+these two do, and the lifecycle closure itself is ``lifecycle.py``'s, because erasure
+reaches it through the core's deletion coordinator rather than through an operation of
+this module's.
 
 **The read precedence is the security core of this module, and its order is the
 guarantee.** § A6:
@@ -49,7 +50,7 @@ field.
 """
 
 from datetime import datetime
-from typing import Any, Final
+from typing import Final
 from uuid import UUID
 
 from pydantic import Field, field_validator
@@ -66,7 +67,6 @@ from rheo_core.deletion import lock_workspace_lifecycle
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import ColumnElement, func, literal_column, select
 
 from rheo_recallatron.configuration import (
     CANDIDATE_SCAN_LIMIT,
@@ -83,11 +83,13 @@ from rheo_recallatron.configuration import (
     RECALL_QUERY_MIN_LENGTH,
 )
 from rheo_recallatron.contracts import (
+    ArmCounts,
     CorrectInput,
     DeriveInput,
     MemoryCorrected,
     MemorySuperseded,
     MemoryWritten,
+    RecallProvenance,
     RememberInput,
     Strict,
     SupersedeInput,
@@ -104,7 +106,6 @@ from rheo_recallatron.eligibility import (
     evaluate_all,
     is_container_member,
     memory_reference,
-    row_local_conditions,
 )
 from rheo_recallatron.entities import ENTITY_OPERATIONS, resolve_mentions
 from rheo_recallatron.events import consumers_for_dispatch
@@ -118,7 +119,8 @@ from rheo_recallatron.refusals import (
     REFERENCE_SCAN_LIMIT,
     WINDOW_SCAN_LIMIT,
 )
-from rheo_recallatron.storage import tables as t
+from rheo_recallatron.retrieval.dispatch import resolve_strategy
+from rheo_recallatron.retrieval.protocol import SearchRequest
 from rheo_recallatron.writes import (
     ORIGIN_DERIVED,
     ORIGIN_TOLD,
@@ -145,24 +147,6 @@ declared separately anyway: § A10's table gives ``correct``/``supersede`` only
 owner/member — :data:`~rheo_recallatron.eligibility.LIFECYCLE_ROLES`, which they and
 the memory's own delete share — so the write roles are not one set that happens to
 equal the read set.
-"""
-
-STRATEGY_LEXICAL: Final = "lexical"
-"""What every item this run returns is marked with.
-
-Not the configurable retrieval adapter, and not a claim on the ranked-retrieval
-criterion: first-cut recall is lexical search over the eligible candidate set, and
-saying so on every row is what stops a later reader mistaking it for tuned retrieval.
-"""
-
-_SEARCH_CONFIG: Final[ColumnElement[Any]] = literal_column("'english'::regconfig")
-"""The text-search configuration the query must use.
-
-It has to be the one the stored generated column was built with — see the
-``search_tsv`` column in this package's tables module — or the query would be matched
-against lexemes produced by a different dictionary. Cast explicitly for the same
-reason the generated column casts: the one-argument form reads a session setting and
-is only ``STABLE``.
 """
 
 
@@ -230,6 +214,7 @@ class RecallInput(Strict):
 
 class RecallResult(Strict):
     items: tuple[RecallItem, ...]
+    provenance: RecallProvenance
 
 
 class ReadInput(Strict):
@@ -384,38 +369,39 @@ def _item(
 def recall(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: RecallInput
 ) -> RecallResult:
-    """Non-empty-query lexical search over the eligible candidate set.
+    """Non-empty-query search over the eligible candidate set, ranked by this
+    workspace's configured retrieval strategy.
 
-    The SQL narrows row-locally and scores; eligibility decides. Candidates are walked
-    in score order and each is fully evaluated — links included — before any of its
-    content is put in the answer, so a row whose source the caller may not read never
-    contributes a title. The walk stops at ``k`` eligible rows or at the bounded
+    The strategy narrows row-locally and ranks; eligibility decides. Candidates are
+    walked in rank order and each is fully evaluated — links included — before any of
+    its content is put in the answer, so a row whose source the caller may not read
+    never contributes a title. The walk stops at ``k`` eligible rows or at the bounded
     candidate scan, whichever comes first.
 
-    No no-query recency bundle, no implicit session expansion, no dense fallback: the
-    strategy is ``lexical`` and says so on every row.
+    No no-query recency bundle and no implicit session expansion. Every item and the
+    response's ``provenance`` name the strategy that answered.
     """
     _checked_purpose(ctx, model_input.purpose)
     request = _opened(ctx, uow)
     mode = _mode(model_input.include_invalidated)
 
-    query = func.plainto_tsquery(_SEARCH_CONFIG, model_input.query)
-    score = func.ts_rank_cd(t.memory.c.search_tsv, query)
-    statement = (
-        select(t.memory.c.id, score.label("score"))
-        .where(
-            t.memory.c.search_tsv.bool_op("@@")(query),
-            *row_local_conditions(request, mode),
-        )
-        .order_by(score.desc(), t.memory.c.recorded_at, t.memory.c.id)
-        .limit(CANDIDATE_SCAN_LIMIT)
+    strategy = resolve_strategy(ctx, uow)
+    ranked = strategy.search(
+        ctx,
+        uow,
+        SearchRequest(
+            query=model_input.query,
+            mode=mode,
+            memory=request,
+            limit=CANDIDATE_SCAN_LIMIT,
+        ),
     )
 
     items: list[RecallItem] = []
-    for candidate, candidate_score in uow.connection.execute(statement).all():
+    for hit in ranked.hits:
         if len(items) == model_input.k:
             break
-        decision = eligible_memory(ctx, uow, candidate, mode=mode, request=request)
+        decision = eligible_memory(ctx, uow, hit.ref, mode=mode, request=request)
         if isinstance(decision, Denied):
             if decision.state == REFERENCE_SCAN_LIMIT:
                 raise _refuse(decision)
@@ -427,11 +413,18 @@ def recall(
                 # built twice, so a field added to ``MemoryItem`` cannot land on a
                 # window and be forgotten on a hit.
                 **_item(ctx, uow, decision, request=request).model_dump(),
-                score=float(candidate_score),
-                strategy=STRATEGY_LEXICAL,
+                score=hit.score,
+                strategy=strategy.name,
             )
         )
-    return RecallResult(items=tuple(items))
+    return RecallResult(
+        items=tuple(items),
+        provenance=RecallProvenance(
+            strategy=strategy.name,
+            arms=ArmCounts(lexical=ranked.arms.lexical, dense=ranked.arms.dense),
+            dense_available=ranked.dense_available,
+        ),
+    )
 
 
 def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> ReadWindow:
