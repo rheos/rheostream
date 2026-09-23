@@ -45,6 +45,7 @@ from rheo_core.modules.manifest import (
 )
 
 from rheo_recallatron.configuration import (
+    DENSE_FLOOR_PERCENT_SPEC,
     EMBED_JOB_KIND,
     EMBED_MAX_ATTEMPTS,
     EMBEDDING_BATCH_SIZE_SPEC,
@@ -170,13 +171,15 @@ MANIFEST: Final = ModuleManifest(
     # The retrieval strategy is the third explicit row, for the same reason: which
     # strategy ranks a workspace's recall is its own stated value from enable onward.
     #
-    # The embedding provider and the rebuild's batch size are declared and not
-    # explicit: which model runs is the deployment's choice, not a per-workspace row,
-    # and a batch size nobody set is correctly the package default.
+    # The embedding provider, the rebuild's batch size and the dense relevance floor
+    # are declared and not explicit: which model runs is the deployment's choice, not
+    # a per-workspace row, and a batch size or floor nobody set is correctly the
+    # package default.
     configuration_schema=(
         RETENTION_EXPIRE_BY_AGE_SPEC,
         RETENTION_DAYS_SPEC,
         RETRIEVAL_STRATEGY_SPEC,
+        DENSE_FLOOR_PERCENT_SPEC,
         EMBEDDING_PROVIDER_SPEC,
         EMBEDDING_BATCH_SIZE_SPEC,
     ),

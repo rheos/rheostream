@@ -686,7 +686,7 @@ def insert_memory_embedding(conn: Connection, row: MemoryEmbeddingRow) -> bool:
             memory_id=row.memory_id,
             model_id=row.model_id,
             dimensions=row.dimensions,
-            vector=_vector_literal(row.vector),
+            vector=vector_literal(row.vector),
             embedded_at=row.embedded_at,
         )
         .on_conflict_do_nothing(
@@ -791,13 +791,17 @@ def _live_memory() -> ColumnElement[bool]:
     )
 
 
+def _of_model(model_id: str) -> ColumnElement[bool]:
+    """An embedding row ``model_id`` wrote: the one model filter the coverage, the fill
+    and the dense arm's availability check all apply, so they cannot count different
+    rows as "this model's"."""
+    return t.memory_embedding.c.model_id == model_id
+
+
 def _has_embedding(model_id: str) -> ColumnElement[bool]:
     return (
         select(t.memory_embedding.c.memory_id)
-        .where(
-            t.memory_embedding.c.memory_id == t.memory.c.id,
-            t.memory_embedding.c.model_id == model_id,
-        )
+        .where(t.memory_embedding.c.memory_id == t.memory.c.id, _of_model(model_id))
         .exists()
     )
 
@@ -907,6 +911,24 @@ def embedding_coverage(conn: Connection, *, model_id: str) -> EmbeddingCoverage:
     return EmbeddingCoverage(live=int(live), embedded=int(embedded))
 
 
+def embedding_exists_for_model(conn: Connection, *, model_id: str) -> bool:
+    """Whether this workspace holds any embedding row ``model_id`` wrote.
+
+    The last condition of ``dense_available``. It separates a workspace no embed job
+    has ever filled for this model (the dense arm cannot contribute) from partial
+    coverage, where one memory lacks its row while others have theirs (it can).
+    """
+    return bool(
+        conn.execute(
+            select(
+                select(t.memory_embedding.c.memory_id)
+                .where(_of_model(model_id))
+                .exists()
+            )
+        ).scalar_one()
+    )
+
+
 def analyze_memory(conn: Connection) -> None:
     """``ANALYZE`` the memory table, in the caller's transaction.
 
@@ -917,13 +939,14 @@ def analyze_memory(conn: Connection) -> None:
     conn.execute(text(f"ANALYZE {t.memory.schema}.{t.memory.name}"))
 
 
-def _vector_literal(values: Sequence[float]) -> str:
-    """pgvector's own text form, ``[1,2,3]``."""
+def vector_literal(values: Sequence[float]) -> str:
+    """pgvector's own text form, ``[1,2,3]``: how a stored vector is written and how the
+    dense arm binds its query vector, so the two cannot be spelled differently."""
     return "[" + ",".join(repr(float(value)) for value in values) + "]"
 
 
 def _vector_values(literal: object) -> tuple[float, ...]:
-    """The inverse of :func:`_vector_literal` for the text Postgres hands back."""
+    """The inverse of :func:`vector_literal` for the text Postgres hands back."""
     stripped = str(literal).strip().removeprefix("[").removesuffix("]")
     if not stripped:
         return ()

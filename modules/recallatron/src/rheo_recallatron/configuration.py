@@ -156,6 +156,42 @@ RETRIEVAL_STRATEGY_SPEC: Final = KeySpec(
     choices=(STRATEGY_LEXICAL,),
 )
 
+DENSE_FLOOR_PERCENT_KEY: Final = f"{MODULE_ID}.retrieval.dense_floor_percent"
+"""The dense relevance floor: the lowest cosine similarity a dense hit may have.
+
+**A cosine similarity stored as an integer percent,** because the settings system has
+no float type and only an ``INT`` key carries bounds (spec decision 2). ``30`` here is
+cosine ``0.30``; the dense statement divides by 100 itself. A hit below the floor never
+surfaces, and when every candidate sits below it the dense arm answers nothing rather
+than its least-bad row.
+
+**30 was measured on the shipped provider, not on a memory corpus.** It is requirement
+9's stated rule (the lowest integer floor that blocks at least 95% of an off-topic query
+population while keeping every measured memory-shaped relevant pair by at least 0.09)
+applied to fastembed's mean-pooled MiniLM-L6-v2 in spec evidence E2. No memory corpus
+exists here to measure it on; run 1b migrates one and confirms the number. A green
+floor test proves the mechanism, never the value.
+
+It has no relationship to :data:`LEXICAL_DF_THRESHOLD`, which is a document-frequency
+proportion. Not ``explicit_per_workspace``: an absent row, one that will not decode and
+one outside the declared range all read as the default, as the batch size does.
+"""
+
+DENSE_FLOOR_PERCENT_DEFAULT: Final = 30
+DENSE_FLOOR_PERCENT_MINIMUM: Final = 0
+DENSE_FLOOR_PERCENT_MAXIMUM: Final = 100
+
+DENSE_FLOOR_PERCENT_SPEC: Final = KeySpec(
+    key=DENSE_FLOOR_PERCENT_KEY,
+    type=ValueType.INT,
+    scope=Scope.WORKSPACE,
+    floor=None,
+    explicit_per_workspace=False,
+    default=DENSE_FLOOR_PERCENT_DEFAULT,
+    minimum=DENSE_FLOOR_PERCENT_MINIMUM,
+    maximum=DENSE_FLOOR_PERCENT_MAXIMUM,
+)
+
 
 # --- the lexical query builder --------------------------------------------------------
 
