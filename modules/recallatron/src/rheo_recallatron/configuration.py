@@ -499,7 +499,8 @@ not a corpus study, which is why 1b confirms the number.
 """
 
 DEDUP_SCAN_LIMIT: Final = CANDIDATE_SCAN_LIMIT
-"""How many of the newest eligible embedded memories one dedup call compares.
+"""How many of the newest embedded memories one dedup call looks at: each is checked
+for eligibility, and the ones the caller may read are compared with each other.
 
 The same bound every other scan here uses, not a second number to keep in step. It is
 also the whole cost argument for ``dedup_candidates`` being a ``READ`` operation: see

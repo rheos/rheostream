@@ -10,13 +10,18 @@ carry no field and no method a caller could act on, and
 ``modules/recallatron/tests/test_memory_contracts.py`` scans this file's source to keep
 it that way.
 
-**The pairs pass the same two gates** ``recall()`` **applies, and both sides of every
-pair pass them.** The row-local SQL conditions narrow the candidate set before any
-distance is computed; then each side of each surviving pair goes through
-:func:`~rheo_recallatron.eligibility.eligible_memory`, links included. A denial on
-either side drops the **whole pair**. Returning the readable side alone would still
-tell the caller that something they cannot see resembles it, so there is no redacted
-or blank half, ever.
+**Eligibility runs before any distance is computed.** The row-local SQL conditions
+select the bounded candidate set, at most ``DEDUP_SCAN_LIMIT`` of the newest; every
+one of those goes through :func:`~rheo_recallatron.eligibility.eligible_memory`, links
+included; and pairs are formed only among the ones the caller may read. Pairing first
+and filtering after would leak: a memory the caller cannot read would take a readable
+memory's nearest-neighbour place, the real pair beside it would never form, and the
+missing pair would tell the caller that a hidden near-copy exists.
+
+**Both sides of every pair are checked again before it is returned**, as defence in
+depth, and a denial on either side drops the **whole pair**. Returning the readable
+side alone would still tell the caller that something they cannot see resembles it,
+so there is no redacted or blank half, ever.
 
 **Empty, never refused, when there is nothing dense to compare.** With no provider
 configured, or no rows for its model (a workspace that only ever ran ``lexical``), the
@@ -52,12 +57,17 @@ from rheo_recallatron.eligibility import (
     MemoryRequest,
     ReadMode,
     eligible_memory,
+    evaluate_all,
     memory_reference,
     row_local_conditions,
 )
 from rheo_recallatron.embedding.registry import resolve_provider
 from rheo_recallatron.refusals import REFERENCE_SCAN_LIMIT
-from rheo_recallatron.storage.repository import EmbeddingPair, nearest_embedding_pairs
+from rheo_recallatron.storage.repository import (
+    EmbeddingPair,
+    dedup_candidate_ids,
+    nearest_embedding_pairs,
+)
 from rheo_recallatron.writes import checked_purpose, opened
 
 MEMORY_DEDUP_CANDIDATES: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.dedup_candidates"
@@ -97,9 +107,9 @@ def _both_eligible(
 ) -> bool:
     """Both sides through the one eligibility function in ``current`` mode, or no pair.
 
-    A spent reference budget refuses the whole call, as it does in ``recall()``:
-    quietly skipping the pair would return a shorter list the caller cannot tell was
-    cut.
+    Defence in depth: the scan only pairs memories already found eligible, and the
+    request caches each decision, so this costs no query and denies nothing unless the
+    scan returned a memory it was not given.
     """
     for memory_id in (pair.first, pair.second):
         decision = eligible_memory(
@@ -107,11 +117,18 @@ def _both_eligible(
         )
         if isinstance(decision, Denied):
             if decision.state == REFERENCE_SCAN_LIMIT:
-                raise OperationRefused(
-                    REFERENCE_SCAN_LIMIT, "this read exceeded its reference budget"
-                )
+                raise _budget_spent()
             return False
     return True
+
+
+def _budget_spent() -> OperationRefused:
+    """A spent reference budget refuses the whole call, as it does in ``recall()``:
+    quietly skipping the rest would return a shorter list the caller cannot tell was
+    cut."""
+    return OperationRefused(
+        REFERENCE_SCAN_LIMIT, "this read exceeded its reference budget"
+    )
 
 
 def dedup_candidates(
@@ -120,10 +137,11 @@ def dedup_candidates(
     """At most ``limit`` near-duplicate pairs this caller may read both sides of.
 
     Purpose binding and the one retention read first, as ``recall()`` does. Then the
-    bounded pair scan over the configured provider's vectors, in the scan's order
-    (score descending, then references), and the walk: each pair is kept only when
-    both of its memories are eligible, until ``limit`` pairs are kept or the scan's
-    pairs run out.
+    bounded candidate set, full eligibility over each of its members, and the pair scan
+    over the configured provider's vectors for the readable ones only. Last the walk,
+    in the scan's order (score descending, then references): each pair is kept only
+    when both of its memories are eligible, until ``limit`` pairs are kept or the
+    scan's pairs run out.
     """
     checked_purpose(ctx, model_input.purpose)
     request = opened(ctx, uow)
@@ -131,15 +149,25 @@ def dedup_candidates(
     if provider is None:
         return DedupCandidates(pairs=())
 
-    candidates = nearest_embedding_pairs(
+    bounded = dedup_candidate_ids(
         uow.connection,
         conditions=row_local_conditions(request, ReadMode.CURRENT),
         model_id=provider.model_id,
-        floor=DEDUP_PAIR_FLOOR,
         scan_limit=DEDUP_SCAN_LIMIT,
     )
+    readable, overflowed = evaluate_all(
+        ctx, uow, bounded, mode=ReadMode.CURRENT, request=request
+    )
+    if overflowed is not None:
+        raise _budget_spent()
+    scanned = nearest_embedding_pairs(
+        uow.connection,
+        memory_ids=[memory_id for memory_id, _ in readable],
+        model_id=provider.model_id,
+        floor=DEDUP_PAIR_FLOOR,
+    )
     pairs: list[DedupPair] = []
-    for candidate in candidates:
+    for candidate in scanned:
         if len(pairs) == model_input.limit:
             break
         if not _both_eligible(ctx, uow, candidate, request=request):

@@ -946,25 +946,54 @@ class EmbeddingPair:
     score: float
 
 
-def nearest_embedding_pairs(
+def dedup_candidate_ids(
     conn: Connection,
     *,
     conditions: Sequence[ColumnElement[bool]],
     model_id: str,
-    floor: float,
     scan_limit: int,
-) -> tuple[EmbeddingPair, ...]:
-    """Each bounded candidate's nearest other candidate, where the two clear ``floor``.
+) -> tuple[UUID, ...]:
+    """The bounded candidate set a dedup call starts from: at most ``scan_limit``
+    memories that ``conditions`` admit and that hold a row for ``model_id``, newest
+    first, ``recorded_at DESC, id``.
 
     ``conditions`` are the caller's row-local predicates over ``memory``, taken as a
     parameter because the service module that builds them imports this one. They
-    narrow; they decide nothing, and every pair still has to pass the caller's full
-    eligibility check on both sides before it reaches anyone. One statement, three
-    steps:
+    narrow; they decide nothing. The caller runs full eligibility over what comes back
+    and hands :func:`nearest_embedding_pairs` only the memories it may read.
 
-    1. **The bounded candidate set:** the memories ``conditions`` admit that hold a row
-       for ``model_id``, ``recorded_at DESC, id``, at most ``scan_limit``. Materialized,
-       so both sides of the join below read the same set.
+    **This is where the bound is applied, before eligibility,** so a memory the SQL
+    admits and eligibility then denies (one with a link the caller cannot resolve)
+    still holds one of the places. That keeps both the eligibility walk and the scan
+    at a constant, the way recall's own scan bound does.
+    """
+    return tuple(
+        conn.execute(
+            select(t.memory.c.id)
+            .where(_has_embedding(model_id), *conditions)
+            .order_by(t.memory.c.recorded_at.desc(), t.memory.c.id)
+            .limit(scan_limit)
+        ).scalars()
+    )
+
+
+def nearest_embedding_pairs(
+    conn: Connection,
+    *,
+    memory_ids: Sequence[UUID],
+    model_id: str,
+    floor: float,
+) -> tuple[EmbeddingPair, ...]:
+    """Among exactly ``memory_ids``, each one's nearest other, where the two clear
+    ``floor``.
+
+    The caller chooses the set: ``dedup_candidates`` passes the memories of its bounded
+    candidate set (:func:`dedup_candidate_ids`) that it has already found the caller
+    may read, so a memory the caller cannot read never takes a readable one's
+    nearest-neighbour place. One statement, three steps:
+
+    1. **The candidate vectors:** ``model_id``'s row for each of ``memory_ids``,
+       materialized, so both sides of the join below read the same set.
     2. **One ``CROSS JOIN LATERAL``** (rendered ``JOIN LATERAL ... ON true``): for each
        candidate, its single nearest *other* candidate by ``vector <=> vector``, ties
        broken by id, kept only where ``1 - (a.vector <=> b.vector) >= floor``.
@@ -973,36 +1002,31 @@ def nearest_embedding_pairs(
        ``(first, second)``. A canonical memory reference is a fixed prefix and the
        UUID's hex, so that order is the order of the references too.
 
-    **This is a quadratic scan over the bounded set, and it is meant to be.** pgvector's
-    HNSW index answers "nearest in the table" and then filters; it cannot answer
-    "nearest within this arbitrary filtered subset", so the candidate set is
-    materialized and every distance is computed directly. 500 candidates make 124,750
-    distinct pairs, and the lateral measures each one from both ends: 249,500 cosine
-    distances at 384 dimensions, of the order of 10^8 float operations per call.
-    ``scan_limit`` holding that at a constant is the *entire* argument for
-    ``dedup_candidates`` being a ``READ`` operation rather than a ``long_running`` one,
-    so nobody raises it without revisiting that class.
+    **This is a quadratic scan over the set, and it is meant to be.** pgvector's HNSW
+    index answers "nearest in the table" and then filters; it cannot answer "nearest
+    within this arbitrary filtered subset", so the set is materialized and every
+    distance is computed directly. 500 candidates make 124,750 distinct pairs, and the
+    lateral measures each one from both ends: 249,500 cosine distances at 384
+    dimensions, of the order of 10^8 float operations per call. ``DEDUP_SCAN_LIMIT``
+    holding the set at 500, and the eligibility walk before it at 500 evaluations, is
+    the *entire* argument for ``dedup_candidates`` being a ``READ`` operation rather
+    than a ``long_running`` one, so nobody raises it without revisiting that class.
 
-    **The bound is also a recall boundary, not only a cost bound.** The set is the
-    newest ``scan_limit`` by ``recorded_at``: at 500, the 501st-newest memory is never
-    compared with anything and a duplicate pair straddling that position is never
-    proposed. That is the insertion-order blind spot binding constraint 6 chose vector
-    neighbourhoods to close, moved to recency rather than removed. It is carried open,
-    not fixed here.
+    **The bound is also a recall boundary, not only a cost bound.** The set comes from
+    the newest ``DEDUP_SCAN_LIMIT`` by ``recorded_at``: at 500, the 501st-newest memory
+    is never compared with anything and a duplicate pair straddling that position is
+    never proposed. That is the insertion-order blind spot binding constraint 6 chose
+    vector neighbourhoods to close, moved to recency rather than removed. It is carried
+    open, not fixed here.
     """
+    if len(memory_ids) < 2:
+        return ()
     candidate = (
         select(
-            t.memory.c.id.label("memory_id"),
+            t.memory_embedding.c.memory_id.label("memory_id"),
             t.memory_embedding.c.vector.label("vector"),
         )
-        .select_from(
-            t.memory.join(
-                t.memory_embedding, t.memory_embedding.c.memory_id == t.memory.c.id
-            )
-        )
-        .where(_of_model(model_id), *conditions)
-        .order_by(t.memory.c.recorded_at.desc(), t.memory.c.id)
-        .limit(scan_limit)
+        .where(_of_model(model_id), t.memory_embedding.c.memory_id.in_(memory_ids))
         .cte("dedup_candidate")
         .prefix_with("MATERIALIZED")
     )

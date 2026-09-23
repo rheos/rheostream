@@ -1,9 +1,12 @@
 """``recallatron.memory.dedup_candidates`` against real workspaces and the real model.
 
 Seams under test: the operation's answer through ``dispatch``, for a given fixture and
-caller. Three properties, one test each or more: the pairs are bounded and ordered;
-a pair either side of which the caller cannot read is dropped **whole**; and with no
-provider, or no rows for its model, the answer is empty rather than refused.
+caller, and the repository's two statements for the bound itself. The properties: the
+pairs are bounded and ordered; a pair either side of which the caller cannot read is
+dropped **whole**; a memory the caller cannot read never changes which readable pairs
+form, neither by taking a nearest-neighbour place nor by taking a place in the bound;
+and with no provider, or no rows for its model, the answer is empty rather than
+refused.
 
 **The real provider, for the pairs spec evidence E2 § 4 measured.** A floor-gated
 fixture that trips reports a real change in the space, not a synthetic coincidence,
@@ -45,6 +48,7 @@ from rheo_core.settings import ValueType
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_recallatron import MANIFEST
+from rheo_recallatron import dedup as dedup_module
 from rheo_recallatron.configuration import (
     DEDUP_LIMIT_MAX,
     DEDUP_LIMIT_MIN,
@@ -61,15 +65,22 @@ from rheo_recallatron.dedup import (
     DedupCandidates,
     DedupPair,
 )
-from rheo_recallatron.eligibility import memory_reference
+from rheo_recallatron.eligibility import (
+    ReadMode,
+    begin_request,
+    memory_reference,
+    row_local_conditions,
+)
 from rheo_recallatron.embedding import registry
 from rheo_recallatron.embedding.fake import FakeEmbeddingProvider
 from rheo_recallatron.embedding.local import LocalEmbeddingProvider
 from rheo_recallatron.embedding.protocol import EmbeddingProvider
 from rheo_recallatron.embedding.rebuild import fill_missing_embeddings
 from rheo_recallatron.resolvers import resolve_memory
+from rheo_recallatron.storage import repository as memory_repository
 from rheo_recallatron.storage import tables as memory_tables
 from rheo_recallatron.storage.repository import (
+    EmbeddingPair,
     MemoryLinkRow,
     MemoryPurposeRow,
     MemoryRow,
@@ -77,7 +88,15 @@ from rheo_recallatron.storage.repository import (
     insert_memory_link,
     insert_memory_purpose,
 )
-from sqlalchemy import Engine, Float, literal_column, select, true
+from sqlalchemy import (
+    ColumnElement,
+    Connection,
+    Engine,
+    Float,
+    literal_column,
+    select,
+    true,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -234,12 +253,19 @@ def _fake(monkeypatch: pytest.MonkeyPatch) -> FakeEmbeddingProvider:
 # --- seeding and reading --------------------------------------------------------------
 
 
+def _recent(offset_seconds: int = 0) -> datetime:
+    """Comfortably inside any retention window, ordered by offset: the bounded set is
+    the newest first, so tests that care about the bound give each row its own."""
+    return datetime.now(UTC) - timedelta(days=1) + timedelta(seconds=offset_seconds)
+
+
 def _row(
     title: str,
     body: str,
     *,
     audience_kind: str = "workspace",
     audience_id: UUID | None = None,
+    recorded_at: datetime | None = None,
 ) -> MemoryRow:
     return MemoryRow(
         id=uuid7(),
@@ -250,7 +276,7 @@ def _row(
         audience_id=audience_id,
         confidence=None,
         occurred_at=None,
-        recorded_at=datetime.now(UTC) - timedelta(days=1),
+        recorded_at=_recent() if recorded_at is None else recorded_at,
         recorded_by_kind="account",
         recorded_by_id=None,
         origin="told",
@@ -354,6 +380,29 @@ def _pairs(outcome: OperationOutcome) -> tuple[DedupPair, ...]:
     return outcome.result.pairs
 
 
+def _spelled(pairs: Sequence[DedupPair]) -> list[tuple[str, str]]:
+    return [(pair.ref_a, pair.ref_b) for pair in pairs]
+
+
+def _owner_conditions(ws: DedupWorkspace, uow: UnitOfWork) -> list[ColumnElement[bool]]:
+    """The owner's row-local conditions in ``current`` mode, as the handler's."""
+    request = begin_request(ws.context(), uow)
+    assert request is not None
+    return row_local_conditions(request, ReadMode.CURRENT)
+
+
+def _row_locally_admitted(ws: DedupWorkspace, memory_id: UUID) -> bool:
+    """Whether the owner's row-local SQL admits the memory: when it does, only the
+    eligibility check can keep it out of pairing."""
+    with ws.reading() as uow:
+        found = uow.connection.execute(
+            select(memory_tables.memory.c.id).where(
+                memory_tables.memory.c.id == memory_id, *_owner_conditions(ws, uow)
+            )
+        ).first()
+    return found is not None
+
+
 def _named(pairs: Sequence[DedupPair]) -> set[str]:
     return {pair.ref_a for pair in pairs} | {pair.ref_b for pair in pairs}
 
@@ -381,14 +430,15 @@ def test_dedup_candidates_is_declared_a_read_for_the_three_read_roles() -> None:
 def test_a_pair_whose_one_side_has_an_unresolvable_link_is_dropped_whole(
     dedup: DedupWorkspace, monkeypatch: pytest.MonkeyPatch, unreadable: str
 ) -> None:
-    """AC 17 and edge case 9, through the permission walk.
+    """AC 17 and edge case 9, through the eligibility check.
 
     The same two rows answer as a pair first, which is the positive control: without
     it, "excluded" would be indistinguishable from "never a candidate". Then one side
     gains a link the caller cannot resolve. The row-local SQL cannot see a link, so
-    the pair still reaches the walk, and the walk must drop all of it: the readable
-    side is not returned alone, and nothing is returned blank. Parametrized over which
-    side sorts first, because the walk checks the two in order and must check both.
+    that memory still reaches the bounded set, and eligibility must keep it out: the
+    readable side is not returned alone, and nothing is returned blank. Parametrized
+    over which side sorts first. The walk's own both-sides check, which this prefilter
+    leaves nothing to deny, is pinned separately below.
     """
     provider = _local(monkeypatch)
     first, second = sorted(_seed(dedup, *_TWO_TITLES))
@@ -443,6 +493,201 @@ def test_a_pair_with_another_members_memory_is_dropped_whole(
     owners = _pairs(dedup.dedup())
     assert owners == ()
     assert _named(owners).isdisjoint(_refs(shared, private))
+
+
+def test_a_hidden_copy_does_not_take_a_readable_pairs_place(
+    dedup: DedupWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No shadow: a memory the caller cannot read never changes which readable pairs
+    form, so the answer cannot tell the caller that one exists.
+
+    ``hidden`` is an exact copy of ``x`` behind a link nobody can resolve, minted first
+    so its id sorts first. ``x`` and ``z`` are the two-title pair. ``hidden`` sits at
+    least as near ``z`` as ``x`` does and wins the id tie, so pairing every row-local
+    candidate first and filtering after gives ``(x, hidden)`` and ``(hidden, z)``, both
+    dropped whole, and the owner hears nothing: that is what ac430e1 answered. With
+    eligibility applied before pairing, the owner gets ``(x, z)``, as if ``hidden``
+    did not exist.
+    """
+    provider = _local(monkeypatch)
+    x_text, z_text = _TWO_TITLES
+    with dedup.unit() as uow:
+        hidden = _write(uow, _row(*x_text))
+    _unresolvable_link(dedup, hidden)
+    x, z = _seed(dedup, x_text, z_text)
+    _fill(dedup, provider)
+    _gate(hidden < x and hidden < z, "the hidden copy's id does not sort first")
+    _gate(
+        _row_locally_admitted(dedup, hidden),
+        "the row-local SQL already excludes the hidden copy, so only a link test runs",
+    )
+    readable = _pair_similarity(dedup, x, z, model_id=provider.model_id)
+    shadow = _pair_similarity(dedup, hidden, z, model_id=provider.model_id)
+    _gate(readable >= DEDUP_PAIR_FLOOR, f"x / z scores {readable:.4f}, under the floor")
+    _gate(
+        shadow >= readable,
+        f"the copy sits farther from z ({shadow:.6f}) than x does ({readable:.6f})",
+    )
+
+    pairs = _pairs(dedup.dedup())
+
+    assert _spelled(pairs) == [_refs(x, z)]
+    assert pairs[0].score == pytest.approx(readable, abs=1e-9)
+    assert memory_reference(hidden) not in _named(pairs)
+
+
+@pytest.mark.parametrize("unreadable", ["first", "second"])
+def test_a_pair_the_scan_returns_with_an_unreadable_side_is_still_dropped_whole(
+    dedup: DedupWorkspace, monkeypatch: pytest.MonkeyPatch, unreadable: str
+) -> None:
+    """The walk's both-sides check, as defence in depth behind the prefilter.
+
+    Eligibility before pairing leaves the walk nothing to deny, so this test takes the
+    prefilter away: the scan the handler calls is replaced by one that ignores the
+    readable ids it is given and pairs both memories anyway, as a regressed scan
+    would. The walk must still drop the pair whole, on whichever side the unreadable
+    memory sorts. The replacement records what it returned, so the walk is shown to
+    have been handed the pair and to have dropped it.
+    """
+    provider = _local(monkeypatch)
+    first, second = sorted(_seed(dedup, *_TWO_TITLES))
+    _fill(dedup, provider)
+    _unresolvable_link(dedup, first if unreadable == "first" else second)
+
+    scanned: list[tuple[EmbeddingPair, ...]] = []
+    genuine = memory_repository.nearest_embedding_pairs
+
+    def ignoring_the_readable_ids(
+        conn: Connection, *, memory_ids: Sequence[UUID], model_id: str, floor: float
+    ) -> tuple[EmbeddingPair, ...]:
+        found = genuine(
+            conn, memory_ids=(first, second), model_id=model_id, floor=floor
+        )
+        scanned.append(found)
+        return found
+
+    monkeypatch.setattr(
+        dedup_module, "nearest_embedding_pairs", ignoring_the_readable_ids
+    )
+
+    dropped = _pairs(dedup.dedup())
+
+    assert [[(p.first, p.second) for p in found] for found in scanned] == [
+        [(first, second)]
+    ]
+    assert dropped == ()
+
+
+# --- the bound, and what the row-local SQL decides inside it --------------------------
+
+
+def test_the_bounded_set_is_the_newest_and_pairs_form_only_inside_it(
+    dedup: DedupWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repository's two statements, driven directly with small bounds.
+
+    Oldest to newest: the paraphrase pair, then the two-title pair. At a bound of 2
+    the set is the two-title pair, newest first, and that is the only pair. At 3 the
+    set reaches one side of the paraphrase pair, whose other side is outside it: a
+    pair straddling the bound is never proposed. At 4 both pairs form, which is the
+    positive control that the paraphrase pair was ever a pair at all.
+    """
+    provider = _local(monkeypatch)
+    ordered = [
+        *_PARAPHRASE,
+        *_TWO_TITLES,
+    ]
+    with dedup.unit() as uow:
+        older, old, new, newest = (
+            _write(uow, _row(title, body, recorded_at=_recent(offset)))
+            for offset, (title, body) in enumerate(ordered)
+        )
+    _fill(dedup, provider)
+    clearing = _clearing(dedup, (older, old, new, newest), model_id=provider.model_id)
+    _gate(
+        set(clearing) == {frozenset((older, old)), frozenset((new, newest))},
+        f"expected exactly the two duplicate pairs to clear the floor, got {clearing}",
+    )
+
+    def bounded(scan_limit: int) -> tuple[tuple[UUID, ...], list[tuple[UUID, UUID]]]:
+        with dedup.reading() as uow:
+            ids = memory_repository.dedup_candidate_ids(
+                uow.connection,
+                conditions=_owner_conditions(dedup, uow),
+                model_id=provider.model_id,
+                scan_limit=scan_limit,
+            )
+            pairs = memory_repository.nearest_embedding_pairs(
+                uow.connection,
+                memory_ids=ids,
+                model_id=provider.model_id,
+                floor=DEDUP_PAIR_FLOOR,
+            )
+        return ids, [(pair.first, pair.second) for pair in pairs]
+
+    two_titles = tuple(sorted((new, newest)))
+    paraphrase = tuple(sorted((older, old)))
+    assert bounded(2) == ((newest, new), [two_titles])
+    assert bounded(3) == ((newest, new, old), [two_titles])
+    ids, pairs = bounded(4)
+    assert ids == (newest, new, old, older)
+    assert pairs == [two_titles, paraphrase]
+
+
+def test_another_members_newer_copy_takes_no_place_in_the_owners_bound(
+    dedup: DedupWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row-local SQL decides which memories fill the bounded set, so a memory the
+    caller cannot read by audience never displaces one it can.
+
+    With eligibility before pairing, the SQL conditions no longer decide what may be
+    paired; what they still decide is who takes the bounded set's places. So the bound
+    is cut to 2 here, and ``private``, another member's exact copy of ``x``, is the
+    newest memory in the workspace, first in the set's order. The owner's two places
+    go to ``x`` and ``z``, and the owner gets ``(x, z)``. The older paraphrase pair is
+    outside the bound and is not proposed. The member, who can read ``private``, gets
+    it paired with ``z``: the positive control that it is real, near, and first.
+    """
+    provider = _local(monkeypatch)
+    monkeypatch.setattr(dedup_module, "DEDUP_SCAN_LIMIT", 2)
+    member = add_member(
+        dedup.cluster.backend, dedup.workspace, Role.MEMBER, display_name="member-two"
+    )
+    x_text, z_text = _TWO_TITLES
+    with dedup.unit() as uow:
+        older, old = (
+            _write(uow, _row(title, body, recorded_at=_recent(offset)))
+            for offset, (title, body) in enumerate(_PARAPHRASE)
+        )
+        x = _write(uow, _row(*x_text, recorded_at=_recent(2)))
+        z = _write(uow, _row(*z_text, recorded_at=_recent(3)))
+        private = _write(
+            uow,
+            _row(
+                *x_text,
+                audience_kind="member",
+                audience_id=member,
+                recorded_at=_recent(4),
+            ),
+        )
+    _fill(dedup, provider)
+    clearing = _clearing(dedup, (older, old, x, z, private), model_id=provider.model_id)
+    _gate(
+        set(clearing)
+        == {
+            frozenset((older, old)),
+            frozenset((x, z)),
+            frozenset((x, private)),
+            frozenset((z, private)),
+        },
+        f"expected the paraphrase pair and the three-way copy set, got {clearing}",
+    )
+
+    theirs = _pairs(dedup.dedup(dedup.context(account_id=member, role=Role.MEMBER)))
+    assert _spelled(theirs) == [_refs(z, private)]
+
+    owners = _pairs(dedup.dedup())
+    assert _spelled(owners) == [_refs(x, z)]
 
 
 # --- empty, never refused -------------------------------------------------------------
