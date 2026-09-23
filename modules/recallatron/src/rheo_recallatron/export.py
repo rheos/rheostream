@@ -1,9 +1,12 @@
 """Recallatron export format v1: the writer, the reader, and the two-pass restore.
 
-Architecture § A12's module-bridge half. Six of the module's seven tables travel —
-memory, purposes, entities, mentions, links and receipts — and the seventh,
-``memory_embedding``, deliberately does not: a vector is rebuildable and run 1a2 owns
-rebuilding it, so shipping one would be shipping a cache. ``search_tsv`` is likewise
+Architecture § A12's module-bridge half. Six of the module's eight tables travel:
+memory, purposes, entities, mentions, links and receipts. The other two deliberately do
+not. ``memory_embedding`` holds vectors, which ``recallatron.embedding.rebuild``
+recreates from the titles and bodies that do travel, so shipping one would be shipping
+a cache. ``embedding_state`` only stamps which embed-input version those vectors were
+made under: a restored workspace has no vectors and no stamp, and its first rebuild
+writes both. ``search_tsv`` is likewise
 absent because it is a generated column: the DDL recomputes it from the title and body
 that do travel, and a transported copy could only ever disagree with the expression
 that owns it.

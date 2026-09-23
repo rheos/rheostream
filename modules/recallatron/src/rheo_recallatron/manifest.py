@@ -9,15 +9,18 @@ nobody did.
 the two Postgres extensions its tables need, ``configuration_schema`` carries the
 module's settings keys, ``record_types`` declares the two addressable tables and
 carries the memory's own owned-delete pair, and ``operations``/``resolvers`` carry the
-read half, the write half, the two lifecycle changes and the two service-only entity
-reads. ``events`` declares both ratified event types and ``audit_sink`` is installed,
-because the first ``mutate`` operation now exists and neither is optional for one:
-dispatch refuses every non-``READ`` call whose module has no sink.
-``deletion_participants`` carries the other half of an erasure, ``jobs`` and
-``schedules`` carry the retention sweep and the daily row that enqueues it (``jobs``
-also carries the embed job and the embedding rebuild, which nothing schedules), and
-``tools`` carries § A10's seven memory tools, and ``export`` now carries the real
-exporter/importer pair with the JSON Schema that describes what they move.
+read half, the write half, the two lifecycle changes, the two service-only entity
+reads, the service-only ``recallatron.memory.dedup_candidates`` read and the owner's
+long-running ``recallatron.embedding.rebuild``. ``events`` declares both ratified event
+types and ``audit_sink`` is installed, because the first ``mutate`` operation now
+exists and neither is optional for one: dispatch refuses every non-``READ`` call whose
+module has no sink. ``deletion_participants`` carries the other half of an erasure,
+``jobs`` and ``schedules`` carry the retention sweep and the daily row that enqueues it
+(``jobs`` also carries ``recallatron.embed``, the after-commit embed job a memory write
+enqueues, and ``recallatron.embedding_rebuild``, the one job the rebuild operation
+enqueues; nothing schedules either), and ``tools`` carries § A10's seven memory tools,
+and ``export`` now carries the real exporter/importer pair with the JSON Schema that
+describes what they move.
 ``subscriptions`` stays empty, and that is deliberate: no consumer exists in 1a1, and
 a declaration whose implementation is a later prompt's would be a promise the loader
 registers and nothing keeps.
@@ -108,10 +111,11 @@ MANIFEST: Final = ModuleManifest(
     package_version=metadata.version(DISTRIBUTION),
     core_contract_versions=(CONTRACT_VERSION,),
     dependencies=(),
-    # Two record types, because two of the seven tables are addressable by canonical
+    # Two record types, because two of the eight tables are addressable by canonical
     # reference: a ``recallatron.memory:<uuid>`` and a ``recallatron.memory_entity:
-    # <uuid>``. The other five are associations keyed by a composite primary key, with
-    # no independent identity to reference, so none of them is a record type and none
+    # <uuid>``. Five of the other six are keyed by a composite primary key and the
+    # sixth, ``embedding_state``, is a single row keyed by a boolean. None has an
+    # independent identity to reference, so none of them is a record type and none
     # gains a synthetic id to make it one.
     #
     # ``deletable=True`` on ``memory`` alone: a memory is the thing a person asks to
