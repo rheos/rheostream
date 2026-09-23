@@ -11,9 +11,10 @@ have no row because no run has closed them, and an absent row is the honest reco
 Retrieval-strategy selection (31) was run 1a2's and its row was added at that run's
 close-out. The predecessor migration (32) is run 1b's, and the naming gate,
 fixture-provenance gate and re-asserted CI gates (34, 35, 37) are run 1a3's, because each
-of them names this phase's ported interface surface, which does not exist yet. Do not add a row for one of those on the strength of a test that
-happens to pass; the guard's per-file completeness check is what keeps the set exact, and
-widening the set is a decision, not a fix.
+of them names this phase's ported interface surface, which does not exist yet. Do not add a
+row for one of those on the strength of a test that happens to pass; the guard's per-file
+completeness check is what keeps the set exact, and widening the set is a decision, not a
+fix.
 
 **One row is `partial`.** Criterion 24's interface half belongs to run 1a3 and nothing this
 run can do closes it; the row carries a `Note:` saying which half is held back. Criterion 30
@@ -417,9 +418,14 @@ because the two passes are one file run twice under two environments, `lexical` 
 `dense`, and a node id cannot say which. The mutation breaks the adapter's selection step and
 nothing else: `resolve_strategy` still reads the workspace's `recallatron.retrieval.strategy`
 row, then dispatches the package default, `hybrid`, whatever the row says. Every recall still
-answers and nothing raises. The first red is the pass sentinel, which exists for this failure:
-without it an override that silently did nothing would leave the dense pass running the
-default, and `make criterion-31` would go green twice on one code path. The dense pass's own
+answers and nothing raises. The first red is the pass sentinel,
+`test_the_pass_recalls_with_the_strategy_its_environment_names`, the direct guard for this
+failure: it checks that each pass's recall reports the strategy the pass named, so an
+override that silently did nothing cannot leave the dense pass running the default while
+`make criterion-31` goes green twice on one code path. It is not the only test this
+particular mutation reddens. Eight other cases in the lexical pass also failed, seven test
+functions with one of them parametrised twice, each pinning its workspace's strategy or
+reading it back and asserting on what answered: nine failures of 79. The dense pass's own
 command, run by hand against the same mutation, failed at the same sentinel with
 `assert 'hybrid' == 'dense'`.
 
@@ -427,7 +433,13 @@ command, run by hand against the same mutation, failed at the same sentinel with
 `tests/postgres/test_memory_records.py`, passes under `dense` at the shipped floor (30, cosine
 0.30) against the real model, fastembed's MiniLM-L6-v2 through the `local` provider, and the
 pass refuses any other provider. A test that pins its own workspace's strategy runs that
-strategy in both passes; the rest run under the pass's. One assertion holds only when the
+strategy in both passes; the rest run under the pass's. The dense pass is a harness claim with
+two stated limits: it selects the provider by rebinding
+`embedding_registry.configured_provider_name`, not through the
+`recallatron.embedding.provider` setting a real deployment cannot set yet (issue #108), and
+it fills every live memory synchronously with the rebuild's own fill step after each commit
+point, so it proves the steady state and not a memory written moments before its embed job
+runs. One assertion holds only when the
 answer is lexical-only: the exact list `["apples"]` in
 `test_recall_returns_eligible_rows_marked_with_the_resolved_strategy`
 (`test_memory_records.py:1513`). That form encodes lexical `@@` semantics. On the shipped

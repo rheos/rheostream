@@ -151,7 +151,7 @@ workspace's `recallatron.retrieval.strategy` row, one of `lexical`, `dense` or `
 default `hybrid`, written at enable), read on the caller's own transaction. A row that will not
 parse, or names a value outside those three, resolves to `lexical`, the one strategy that cannot
 answer from an index the workspace never filled. Criterion 31 runs the module's behavioural
-suite under `lexical` and under `dense`:
+suite under `lexical` and under `dense`. The two stages, in order:
 
 1. **Candidate set in SQL, before ranking.** Live memories only: `audience_kind = workspace`, or
    `audience_kind = member` with `audience_id` equal to the caller's account (an `account` actor's
@@ -431,8 +431,12 @@ from the text the row then holds. A memory invalidated, superseded or deleted be
 runs is skipped, as is one that already has a row for the model. A provider gone by the time
 the job runs is a success that writes nothing; a provider that raises is a real failure,
 retried under the core's backoff, and after five attempts the job lands in the core failure
-list. Until the job has run, a just-written memory is reachable by the lexical index only, and
-the module says so rather than blocking the write on the provider.
+list. Until the job has run, a just-written memory has no vector, and the module accepts that
+rather than blocking the write on the provider. Under `hybrid` the lexical arm can still find it;
+under `dense` recall does not return it at all. That gap can last up to
+`work.due_reconcile_seconds` (900 s by default). An ordinary write marks no workspace due; only
+a long-running dispatch does. So the job waits until the worker next visits the workspace, and
+the reconcile floor bounds that wait at the interval.
 
 `recallatron.embedding.rebuild`, mutate class, roles `owner`, long-running, is the whole-index
 form and the only backfill: turning a provider on embeds nothing that already exists. It refuses
@@ -458,10 +462,13 @@ long-running: creates a `recallatron.migration_batch(id, source_label text, stat
 verification_id uuid null, created_at)` row (`state` in `importing`, `verified`, `live`,
 `failed`; a declared record type whose resolver returns a label and nothing else), writes each
 predecessor record as a memory with `origin = migrated`,
-`audience = workspace`, the default purposes, and a `derived_from` link to the batch, then runs
-the [embedding rebuild](#the-embedding-job) for the batch under the configured strategy and
+`audience = workspace`, the default purposes, and a `derived_from` link to the batch, then
 writes the `core.migration_verification` row
 ([migration verification](deletion-export-migration.md#migration-verification-fr-53)).
+Migrated memories get their vectors from the [embedding rebuild](#the-embedding-job) as it
+ships: it covers the whole workspace rather than one batch, runs only when a provider resolves,
+and refuses without one. Whether and when the import runs it, like the rest of the import's
+shape, is run 1b's to decide.
 Memories of a batch in state `verified` are excluded from the candidate SQL until
 `recallatron.migration.switch_over(batch_ref)` (mutate, roles `owner`) sets the batch `live`.
 The extract file and the report are workspace files under the data root, never in the
