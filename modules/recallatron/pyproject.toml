@@ -4,6 +4,16 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = ["rheo-core", "rheo-contracts"]
 
+# The one real embedding provider (MiniLM-L6-v2 through ONNX, in-process), as an
+# extra rather than a base dependency: a deployment that runs `lexical` retrieval
+# must be able to install this module without an ONNX runtime it never calls. With
+# the extra absent the provider registry registers nothing for `local`, and a
+# configuration naming it degrades exactly like one naming no provider at all.
+# The floor is the version the model identifier and the vector space were measured
+# on; `uv.lock` pins the exact build.
+[project.optional-dependencies]
+local-embeddings = ["fastembed>=0.8.1,<0.9"]
+
 # The manifest is typed against `rheo_core.modules.manifest` and reads
 # `rheo_contracts.CONTRACT_VERSION`, so both are real runtime dependencies, not test
 # extras. Both are local workspace members with no index to resolve from — the same
