@@ -73,6 +73,8 @@ built-in theme, with `overlay` layered over every non-chrome token when one is g
 ## Validation rules
 
 - `contract` must be `1`, or validation stops with `contract-version`.
+- `id` and `name` must be non-empty strings, and `description`, when present, a string. Each
+  failure is refused `invalid-value`, with `field` naming the key.
 - Every non-reserved token must be present, or it is refused `missing`, naming the token.
 - Unknown keys are refused `unknown`, both at the top level and inside `tokens`. A typo is caught,
   and nothing outside the contract can be carried in.
@@ -110,8 +112,10 @@ font loader sets for the vendored brand font, and it is the only `var(…)` a th
 ## How the chrome is protected
 
 `compileTheme` emits two `:root` rules: the six chrome declarations first, in a rule of their own,
-then every other token followed by `color-scheme`. There are exactly two defences behind the
-chrome, and neither depends on the caller having run `validateTheme` first.
+then every other token followed by `color-scheme`.
+
+At import, `validateTheme`'s grammars and its `reserved` refusal are the first line; behind them
+`compileTheme` holds two defences of its own that do not depend on validation having run.
 
 1. **Grammar re-check.** `compileTheme` re-checks every value it emits, from `base` and
    `overlay`, chrome tokens and non-chrome tokens alike, plus the resolved `scheme`, against the
@@ -132,7 +136,7 @@ never protective by itself.
 
 ### Residual: a theme can still choose the page's `color-scheme`
 
-The two defences protect the chrome token **values**. They do not cover everything about how the
+Validation and `compileTheme`'s two defences protect the chrome token **values**. They do not cover everything about how the
 chrome looks.
 
 A theme's `scheme` compiles to the CSS `color-scheme` property in the second, non-chrome rule,

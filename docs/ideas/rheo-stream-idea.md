@@ -1814,7 +1814,8 @@ The following changes are recorded here.
     with its own built-ins, including a deep-water dark default and an authored light sibling;
     theme selection and user-theme import are that later phase's work. Specified in
     [theme contract](../architecture/theme-contract.md) as architecture decision A18; D8, the
-    phase-two scope bullet and criteria 34 and 37 carry an amendment note pointing here.
+    phase-two scope bullet and criteria 34 and 37 carry an amendment note pointing to the theme
+    contract, and D8's note also points here.
 
 ### Preferred but still to validate
 

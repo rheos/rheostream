@@ -22,9 +22,11 @@ export interface ShellAccount {
 }
 
 /**
- * The frame every shell page renders inside: a header with the product name, the
- * navigation slot and (signed in only) the compact workspace switcher and logout,
- * then the page, then the core-status line.
+ * The frame the shell's signed-in-capable pages render inside, today the home page:
+ * a header with the product name, the navigation slot and (signed in only) the
+ * compact workspace switcher and logout, then the page, then the core-status line.
+ * Sign-in, not-found and the error boundary do not use it; they render a bare
+ * panel with no account or health context.
  *
  * The status line keeps the literal text `contract v`: `make demo`'s health check
  * greps the rendered home page for exactly that substring.
