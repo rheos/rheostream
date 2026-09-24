@@ -326,6 +326,29 @@ class EntityHead(Strict):
     role: str | None
 
 
+class ArmCounts(Strict):
+    """How many ranked candidates each retrieval arm contributed — the length of its
+    list as it entered fusion, after its own limit and before the permission walk.
+    An arm that did not run contributes zero."""
+
+    lexical: int
+    dense: int
+
+
+class RecallProvenance(Strict):
+    """Which strategy answered a recall, and what its arms contributed.
+
+    ``strategy`` is the dispatched strategy's name and equals every item's
+    ``strategy``. Read it before comparing scores: ``score`` is on the answering
+    strategy's own scale and is comparable only among items in one response.
+    ``dense_available`` is whether a dense arm could contribute to this answer at all.
+    """
+
+    strategy: str
+    arms: ArmCounts
+    dense_available: bool
+
+
 class MemoryWritten(Strict):
     """What a successful write returns: the reference, and what was actually stored.
 

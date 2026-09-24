@@ -299,7 +299,7 @@ by the core's seam rules.
 **Phase ownership.** The contract below stands as written and is not narrowed by what has been
 built: run 1a1 supplies the memory records, `memory.search_tsv` and the `memory_embedding` table,
 primary key and foreign key only. Selecting a strategy, the dense fill and rebuild, reciprocal
-rank fusion and D9's bounded rerank by recency within ties are all run 1a2's, and criterion 31 is
+rank fusion and the bounded rerank by recency within ties are all run 1a2's, and criterion 31 is
 1a2's to close. Nothing 1a1 ships is a persisted model-dimension registry, and nothing here is
 deleted for arriving later than the records it ranks.
 
@@ -320,14 +320,28 @@ Three implementations ship, selected by `recallatron.retrieval.strategy`:
 | `dense` | `recallatron.memory_embedding(memory_id, model_id text, dimensions integer, vector vector)` with an HNSW index, cosine distance | Requires the pgvector extension and an embedding provider. |
 | `hybrid` | both | Reciprocal rank fusion of the two lists (constant 60), then a bounded rerank by recency within ties. |
 
+Under `hybrid` the dense arm is `min(k × multiplier, CANDIDATE_SCAN_LIMIT)` rows wide and under
+`dense` it is `CANDIDATE_SCAN_LIMIT` (500), while the lexical arm keeps `LIMIT 500` under
+`lexical` and `hybrid` alike; [memory](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31)
+reconciles that multiplier with the 500-position permission walk.
+
+The lexical arm as shipped matches `search_tsv` only. It keeps a query's content lexemes, drops
+any lexeme that 15% or more of the workspace's memories contain once the query has at least
+three lexemes (`LEXICAL_MIN_TERMS_FOR_DF`), keeps the five rarest when that filter would drop
+them all, matches a double-quoted phrase as a phrase, and joins what survives with OR, not AND.
+It ranks by `ts_rank_cd`, which has no inverse-document-frequency term; IDF-aware lexical
+ranking is run 1b's. [Memory](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31) has the
+detail.
+
 Filtering by audience, purpose, and state happens in SQL **before** ranking, inside `search`:
 only memories the caller's audience covers, that carry the request's purpose, and that are live
 are scored (FR 27). The per-link record permission and contact-permission checks then run on the
 ranked slice before anything is returned, and can only remove hits
 ([memory retrieval](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31)). Criterion 31 runs the
 module's behavioural suite against `lexical` and `dense` in turn. The embedding provider sits
-behind the same provider seam the runtime uses ([runtime](runtime-and-mcp.md#the-embedding-provider))
-and its inputs go through the [redaction contract](runtime-and-mcp.md#the-redaction-contract).
+behind the same provider seam the runtime uses; what it receives, and when the
+[redaction contract](runtime-and-mcp.md#the-redaction-contract) applies to that input, is stated
+with the provider ([runtime](runtime-and-mcp.md#the-embedding-provider)).
 
 ## The data root (FR 10)
 
@@ -343,6 +357,8 @@ that is not in Postgres:
     exports/<export_id>/        export artifacts (FR 52)
     runs/<operation_id>/        scoped working directories for CLI runtime runs, removed on completion
   logs/
+  models/<component>/           model artifacts a local provider caches; the embedding
+                                provider uses models/fastembed/
 ```
 
 Resolution order for the root: `RHEO_DATA_ROOT` if set; otherwise the platform application-data
@@ -353,8 +369,10 @@ startup the host validates the root: it exists or can be created, it is not insi
 checkout unless it is the explicit opt-in, it is not a symlink escaping its parent, and its
 permissions are owner-only (a warning, not a refusal, on filesystems that cannot express that).
 Modules receive paths only through `storage.workspace_dir(ctx, purpose)`, which returns a path
-under the workspace's directory for a purpose from a closed set (`uploads`, `exports`, `scratch`);
-a module cannot name a path.
+under the workspace's directory for a purpose from a closed set (`uploads`, `exports`, `scratch`),
+and through `model_cache_dir(component)`, the one deployment-level accessor, which returns
+`<data_root>/models/<component>` for a single lowercase segment and is published to modules as
+`rheo_core.modules.model_cache_dir`; a module cannot name a path.
 
 Workspace files are referenced from workspace tables by a `file_ref` (`uuid` plus a relative path
 under the workspace directory); no URL is ever stored, and the web tier streams a file only after

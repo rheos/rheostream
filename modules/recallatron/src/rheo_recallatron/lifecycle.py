@@ -28,8 +28,9 @@ say the record is gone and give it nothing to retry against.
 verbatim):
 
 - *Correct* rewrites the target's title, body and confidence in place, bumps its
-  revision, stamps ``corrected_at``, drops its embeddings, and marks the affected
-  closure ``source_corrected``.
+  revision, stamps ``corrected_at``, drops its embeddings (and queues a fresh embed
+  job when the workspace can use one), and marks the affected closure
+  ``source_corrected``.
 - *Supersede* captures the predecessor's audience, purposes, links and the affected
   closure **before** creating the replacement — so the replacement, which carries a
   marked ``derived_from`` edge back to the predecessor, can never appear in its own
@@ -103,6 +104,7 @@ from rheo_recallatron.eligibility import (
     expiry_admits,
     memory_reference,
 )
+from rheo_recallatron.embedding.enqueue import enqueue_embed_job
 from rheo_recallatron.entities import remove_mention
 from rheo_recallatron.events import (
     MEMORY_INVALIDATED,
@@ -260,14 +262,18 @@ def _mark_invalidated(
 ) -> int | None:
     """Mark one row non-erasure invalidated and publish it; ``None`` if it already was.
 
-    Embeddings go first and in the same transaction as the mark, so there is no
-    instant at which a vector outlives the row's claim to be current.
+    The mark and the embedding delete are one transaction, so no committed state has a
+    vector outliving the row's claim to be current. **The mark goes first**, and that
+    order is the vector-write handshake's half on this side (see the repository): the
+    ``UPDATE`` takes the row lock an in-flight embed holds ``FOR SHARE``, so it waits
+    for that embed to commit, and the delete that follows removes the vector it wrote.
+    Deleting first would find nothing, and the embed's vector would then commit onto a
+    row that is no longer current.
     """
     row = get_memory(uow.connection, memory_id)
     if row is None or row.invalidation_reason is not None:
         return None
     revision = row.revision + 1
-    delete_memory_embeddings(uow.connection, memory_id)
     invalidate_memory(
         uow.connection,
         memory_id,
@@ -276,6 +282,7 @@ def _mark_invalidated(
         revision=revision,
         superseded_by_id=successor,
     )
+    delete_memory_embeddings(uow.connection, memory_id)
     publish_memory_event(
         ctx,
         uow,
@@ -345,7 +352,14 @@ def correct(
     )
     affected = dependent_closure(uow.connection, row.id, include_marked=True)
     revision = row.revision + 1
-    delete_memory_embeddings(uow.connection, row.id)
+    # **Rewrite first, then delete the old text's vectors — the order is the fix.** The
+    # rewrite takes the row lock an in-flight embed holds ``FOR SHARE`` from reading
+    # the old text until its vector commits, so it waits for that embed, and the delete
+    # below (a fresh statement, after the wait) then removes the vector it committed.
+    # An embed that arrives after the rewrite waits for this transaction and reads the
+    # new text. Deleting first would find nothing to delete while an embed of the old
+    # text was still to commit, and that stale vector would stay for good: every later
+    # fill skips a memory that already has one.
     correct_memory(
         uow.connection,
         row.id,
@@ -355,6 +369,10 @@ def correct(
         revision=revision,
         corrected_at=request.now,
     )
+    delete_memory_embeddings(uow.connection, row.id)
+    # The new text gets a vector on the same terms a new memory does. ``write_memory``'s
+    # own call never runs here, because a correction rewrites the row in place.
+    enqueue_embed_job(ctx, uow, memory_id=row.id, now=request.now)
     _invalidate_closure(
         ctx,
         uow,

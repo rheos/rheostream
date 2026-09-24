@@ -7,11 +7,13 @@ work_tables.py``: one ``MetaData`` per owning schema, a ``_timestamptz()`` helpe
 an ``_in()`` helper rendering each closed vocabulary as a ``CheckConstraint`` so the
 database refuses a value the service never should have written.
 
-**One ``MetaData`` for this revision, for the reason ``work_tables.py`` gives.**
+**One ``MetaData`` per revision, for the reason ``work_tables.py`` gives.**
 ``0002_memory_records`` calls ``memory_metadata.create_all(checkfirst=False)``, so a
 later revision adding a table must carry its own ``MetaData`` rather than attaching to
 this one — otherwise revision 0002 would create it too, editing a frozen revision by
-side effect.
+side effect. ``embedding_state``, declared after ``memory_embedding`` below, is the
+first such table: it sits on ``embedding_state_metadata`` and ``0003_dense_retrieval``
+creates it.
 
 **Schema only, deliberately.** Nothing here reads or writes: eligibility, permission,
 retention and the lifecycle closure are Prompts 6-9's, and a table with no reader is
@@ -346,11 +348,14 @@ memory_link = Table(
     Index("memory_link_ref_relation_memory", "ref", "relation", "memory_id"),
 )
 
-# **The composite primary key is the only index this table gets, and that is the
-# claim.** No HNSW, no IVFFlat, no expression index, no per-model registry table and no
-# persisted dimension authority: dense retrieval is run 1a2's, and 1a1 builds none of
-# the machinery that would decide it early. ``tests/postgres/test_memory_records.py``
-# proves the absence against ``pg_catalog`` rather than against this comment.
+# **This declaration is not the whole of the table, and must not be edited to make it
+# so.** Revision ``0002_memory_records`` creates it from ``memory_metadata`` exactly as
+# written here, with a dimensionless ``vector`` and its composite primary key alone.
+# Revision ``0003_dense_retrieval`` owns the rest in its own DDL: the column narrowed
+# to ``vector(EMBEDDING_DIMENSIONS)`` and the ``memory_embedding_vector_hnsw`` cosine
+# index. An edit here would change what the frozen 0002 creates, and 0003 would then
+# double-apply on a fresh database. ``tests/postgres/test_memory_records.py`` reads
+# both back off ``pg_catalog``.
 memory_embedding = Table(
     "memory_embedding",
     memory_metadata,
@@ -365,6 +370,26 @@ memory_embedding = Table(
     Column("vector", Vector, nullable=False),
     Column("embedded_at", _timestamptz(), nullable=False),
     PrimaryKeyConstraint("memory_id", "model_id", name="memory_embedding_pkey"),
+)
+
+embedding_state_metadata = MetaData(schema=MEMORY_SCHEMA)
+"""Revision ``0003_dense_retrieval``'s own ``MetaData``, for the rule this module's
+docstring states: a later revision's table never attaches to ``memory_metadata``, or
+revision 0002's ``create_all`` would create it too."""
+
+# **One row per workspace, because a workspace is a database.** It records the embed
+# input version the workspace's stored vectors were produced under, and nothing else:
+# no model id (the rebuild compares ``memory_embedding.model_id`` row by row, so a
+# per-store copy could only drift) and no timestamp (nothing reads one). The
+# ``CHECK (id)`` on a boolean key is what makes a second row unrepresentable. The
+# migration writes no row; the first rebuild stamps it.
+embedding_state = Table(
+    "embedding_state",
+    embedding_state_metadata,
+    Column("id", Boolean, nullable=False),
+    Column("embed_input_version", Integer, nullable=False),
+    PrimaryKeyConstraint("id", name="embedding_state_pkey"),
+    CheckConstraint("id", name="embedding_state_one_row"),
 )
 
 # Internal and exportable: no operation reaches it and no MCP tool names it, but its

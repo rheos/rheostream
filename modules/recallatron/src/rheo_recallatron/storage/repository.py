@@ -1,4 +1,4 @@
-"""Row mapping over the seven tables in :mod:`rheo_recallatron.storage.tables`.
+"""Row mapping over the tables in :mod:`rheo_recallatron.storage.tables`.
 
 One frozen row dataclass per table and the statements the service needs over it —
 ``insert``/``get``, the ordered ``list`` reads, and the lifecycle's own narrow
@@ -24,18 +24,25 @@ handed over) and runs inside its transaction; none commits, and none opens anyth
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import (
     ColumnElement,
     Connection,
+    Float,
     and_,
+    bindparam,
     delete,
     func,
     insert,
+    literal_column,
     select,
+    text,
+    true,
     update,
 )
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 
 from rheo_recallatron.storage import tables as t
@@ -205,6 +212,59 @@ def delete_memory_embeddings(conn: Connection, memory_id: UUID) -> None:
     conn.execute(
         delete(t.memory_embedding).where(t.memory_embedding.c.memory_id == memory_id)
     )
+
+
+_LEXEME_FREQUENCIES: Final = text(
+    """
+    WITH stats AS MATERIALIZED (
+        SELECT most_common_elems::text::text[] AS elems,
+               most_common_elem_freqs AS freqs
+        FROM pg_stats
+        WHERE schemaname = :schema
+          AND tablename = :table
+          AND attname = :column
+          AND NOT inherited
+    )
+    SELECT e.lexeme, (s.freqs[1:array_length(s.elems, 1)])[e.position] AS frequency
+    FROM stats AS s
+    CROSS JOIN LATERAL unnest(s.elems) WITH ORDINALITY AS e(lexeme, position)
+    WHERE e.lexeme = ANY(:lexemes)
+    """
+)
+"""The MCELEM lookup, with its three traps handled.
+
+``most_common_elems`` is ``anyarray`` and only reaches ``text[]`` through ``text``; a
+direct ``::text[]`` raises. ``most_common_elem_freqs`` carries two trailing entries
+past the lexemes (the minimum and maximum frequency), so it is sliced to the lexeme
+count rather than zipped to its end. And the cast runs once, in a materialized CTE:
+the ``generate_subscripts`` shape re-evaluates it per subscript and costs 226 ms
+against 1.4 ms at a full 1,000-entry list, with identical results.
+"""
+
+
+def lexeme_document_frequencies(
+    conn: Connection, lexemes: Sequence[str]
+) -> dict[str, float]:
+    """The sampled fraction of memories whose ``search_tsv`` holds each lexeme.
+
+    Read from ``pg_stats`` for the ``search_tsv`` column, which ``ANALYZE`` and
+    autovacuum maintain. A lexeme **absent from the result** is below the statistics'
+    tracking floor, or the table has never been analyzed: the caller treats it as rare.
+    The values are sample estimates, so one near a threshold may land either side of it
+    between analyses.
+    """
+    if not lexemes:
+        return {}
+    rows = conn.execute(
+        _LEXEME_FREQUENCIES,
+        {
+            "schema": t.memory.schema,
+            "table": t.memory.name,
+            "column": t.memory.c.search_tsv.name,
+            "lexemes": list(lexemes),
+        },
+    ).all()
+    return {str(lexeme): float(frequency) for lexeme, frequency in rows}
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,27 +663,47 @@ class MemoryEmbeddingRow:
     embedded_at: datetime
 
 
-def insert_memory_embedding(
-    conn: Connection, row: MemoryEmbeddingRow
-) -> MemoryEmbeddingRow:
-    """Write one embedding row.
+def insert_memory_embedding(conn: Connection, row: MemoryEmbeddingRow) -> bool:
+    """Write one embedding row, unless the memory already has one for this model;
+    answer whether this call wrote it.
 
-    No writer in 1a1 calls this: there is no embedding provider and no dense index
-    (§ A3). It exists because § A3's own note says synthetic index-invalidation tests
-    may seed rows directly through this repository, and a later run's writer needs the
-    same mapping. ``vector`` is passed to Postgres in pgvector's text form, which is
-    what an unbounded ``vector`` column accepts without a client-side type.
+    The module's one writer of these rows is
+    :meth:`~rheo_recallatron.retrieval.dense.DenseStrategy.index_many`, which the embed
+    job and the rebuild both go through; synthetic fixtures still seed rows directly,
+    as § A3's note allows. ``vector`` is passed to Postgres in pgvector's text form,
+    which the column accepts without a client-side type; since revision
+    ``0003_dense_retrieval`` the column is ``vector(384)``, so a row of any other width
+    is refused by the database itself.
+
+    **``ON CONFLICT (memory_id, model_id) DO NOTHING``, and that is safe only because of
+    the vector-write handshake.** An embed job and a rebuild can both hold one memory
+    ``FOR SHARE`` — the locks are compatible — and both embed it. Whichever writes
+    second finds the other's row. Both read the same locked text, and a text change
+    deletes a memory's vectors only after taking the row lock neither has released, so
+    the row already there is the row this call would have written. Without this the
+    second writer failed on the duplicate key, and for a rebuild that was the whole
+    walk rolled back and requeued.
     """
-    conn.execute(
-        insert(t.memory_embedding).values(
+    result = conn.execute(
+        pg_insert(t.memory_embedding)
+        .values(
             memory_id=row.memory_id,
             model_id=row.model_id,
             dimensions=row.dimensions,
-            vector=_vector_literal(row.vector),
+            vector=vector_literal(row.vector),
             embedded_at=row.embedded_at,
         )
+        .on_conflict_do_nothing(
+            index_elements=[
+                t.memory_embedding.c.memory_id,
+                t.memory_embedding.c.model_id,
+            ]
+        )
+        # ``RETURNING`` rather than ``rowcount``: this driver reports ``-1`` for an
+        # ``INSERT``'s rowcount, and a skipped conflict returns no row at all.
+        .returning(t.memory_embedding.c.memory_id)
     )
-    return row
+    return result.first() is not None
 
 
 def get_memory_embedding(
@@ -650,13 +730,353 @@ def get_memory_embedding(
     )
 
 
-def _vector_literal(values: Sequence[float]) -> str:
-    """pgvector's own text form, ``[1,2,3]``."""
+def delete_embeddings_for_other_models(conn: Connection, *, model_id: str) -> int:
+    """Remove every embedding row written by a model other than ``model_id``.
+
+    The rebuild's first prune: after the configured provider changes, the old model's
+    vectors are not merely stale, they are in a different space, and a dense read must
+    never compare against them. Answers how many rows went.
+    """
+    result = conn.execute(
+        delete(t.memory_embedding).where(t.memory_embedding.c.model_id != model_id)
+    )
+    return int(result.rowcount)
+
+
+def delete_all_memory_embeddings(conn: Connection) -> int:
+    """Remove every embedding row in this workspace, whatever model wrote it.
+
+    The rebuild's second prune, taken when the workspace's stamped embed input version
+    is not the package's: a vector of the old composition is stale whichever model
+    produced it.
+    """
+    return int(conn.execute(delete(t.memory_embedding)).rowcount)
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingStateRow:
+    """The workspace's one ``embedding_state`` row."""
+
+    embed_input_version: int
+
+
+def get_embedding_state(conn: Connection) -> EmbeddingStateRow | None:
+    """The stamped embed input version, or ``None`` before the first rebuild."""
+    version = conn.execute(
+        select(t.embedding_state.c.embed_input_version).where(
+            t.embedding_state.c.id.is_(True)
+        )
+    ).scalar_one_or_none()
+    return None if version is None else EmbeddingStateRow(int(version))
+
+
+def set_embedding_state(conn: Connection, *, embed_input_version: int) -> None:
+    """Stamp the workspace's embed input version: create the one row, or update it."""
+    statement = pg_insert(t.embedding_state).values(
+        id=True, embed_input_version=embed_input_version
+    )
+    conn.execute(
+        statement.on_conflict_do_update(
+            index_elements=[t.embedding_state.c.id],
+            set_={"embed_input_version": statement.excluded.embed_input_version},
+        )
+    )
+
+
+def _live_memory() -> ColumnElement[bool]:
+    """A memory an embedding is kept for: neither invalidated nor superseded.
+
+    The one liveness the fill selects by, the coverage counts by and the embed job
+    checks a row against, so the three cannot disagree about which rows ought to carry
+    a vector.
+    """
+    return and_(
+        t.memory.c.invalidated_at.is_(None), t.memory.c.superseded_by_id.is_(None)
+    )
+
+
+def _of_model(model_id: str) -> ColumnElement[bool]:
+    """An embedding row ``model_id`` wrote: the one model filter the coverage, the fill
+    and the dense arm's availability check all apply, so they cannot count different
+    rows as "this model's"."""
+    return t.memory_embedding.c.model_id == model_id
+
+
+def _has_embedding(model_id: str) -> ColumnElement[bool]:
+    return (
+        select(t.memory_embedding.c.memory_id)
+        .where(t.memory_embedding.c.memory_id == t.memory.c.id, _of_model(model_id))
+        .exists()
+    )
+
+
+def is_live_memory(row: MemoryRow) -> bool:
+    """:func:`_live_memory`, asked of a row already read."""
+    return row.invalidated_at is None and row.superseded_by_id is None
+
+
+# **The vector-write handshake.** A vector is only ever written for a memory row this
+# transaction holds ``FOR SHARE``, from the read that supplied its text until the
+# vector commits; and every writer that changes a row's text or liveness takes that
+# row's lock (its ``UPDATE``) *before* it deletes the row's vectors. ``FOR SHARE``
+# conflicts with that ``UPDATE``, so the two cannot interleave: an embed that got there
+# first commits and the text change then deletes what it wrote, and an embed that came
+# second waits and reads the new text. The two readers below are the only places a
+# vector's source text is read.
+
+
+def lock_memory_for_embedding(conn: Connection, memory_id: UUID) -> MemoryRow | None:
+    """One memory, read ``FOR SHARE``, waiting out any writer that holds it.
+
+    The embed job's read. Waiting is right for one row: a job holds no other row
+    lock, so it cannot be one half of a deadlock, and a correction in flight is then
+    read as corrected.
+    """
+    mapping = (
+        conn.execute(
+            select(t.memory)
+            .where(t.memory.c.id == memory_id)
+            .with_for_update(read=True)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return None if mapping is None else _memory_row(mapping)
+
+
+def list_memories_missing_embedding(
+    conn: Connection, *, model_id: str, after: UUID | None, limit: int
+) -> tuple[MemoryRow, ...]:
+    """At most ``limit`` live memories with no row for ``model_id``, by id, after
+    ``after`` — each read ``FOR SHARE``, and any row another writer holds skipped.
+
+    Id-ordered so the caller's cursor is simply the last id it saw. The selection is
+    "lacking a row", never "all", which is what makes a rerun of an interrupted fill
+    safe and what keeps an ordinary embed job and a rebuild from both writing one
+    memory's row.
+
+    **Skipped, not waited for, because the rebuild holds every row it has read until
+    its one commit.** A correction locks its target and then each dependant; a rebuild
+    that waited for a locked row could be holding that correction's next dependant,
+    and the two would deadlock. Skipping means the rebuild never waits on a writer, so
+    no cycle can close through it. A skipped row is one whose text or liveness is
+    changing right now: the walk leaves it unembedded, and the rebuild queues an embed
+    job for it before it commits (:func:`list_memory_ids_missing_embedding`), which
+    covers a change that rolls back as well as one that commits.
+    """
+    statement = select(t.memory).where(_live_memory(), ~_has_embedding(model_id))
+    if after is not None:
+        statement = statement.where(t.memory.c.id > after)
+    rows = conn.execute(
+        statement.order_by(t.memory.c.id)
+        .limit(limit)
+        .with_for_update(read=True, skip_locked=True)
+    ).mappings()
+    return tuple(_memory_row(mapping) for mapping in rows)
+
+
+def list_memory_ids_missing_embedding(
+    conn: Connection, *, model_id: str
+) -> tuple[UUID, ...]:
+    """Every live memory with no row for ``model_id``, by id — a plain read.
+
+    The rebuild's last look, after its walk. No lock and no skip, on purpose: what it
+    is for is exactly the rows the walk skipped because another writer held them, and a
+    plain read sees each one's committed version without waiting for that writer.
+    """
+    rows = conn.execute(
+        select(t.memory.c.id)
+        .where(_live_memory(), ~_has_embedding(model_id))
+        .order_by(t.memory.c.id)
+    ).all()
+    return tuple(row[0] for row in rows)
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingCoverage:
+    """How many live memories this workspace holds, and how many carry a vector from
+    one model.
+
+    Per workspace by construction: a workspace is a database, so there is no
+    deployment-wide figure to compute and none is.
+    """
+
+    live: int
+    embedded: int
+
+
+def embedding_coverage(conn: Connection, *, model_id: str) -> EmbeddingCoverage:
+    """Live memories, and those with a row for ``model_id``, in one statement."""
+    live, embedded = conn.execute(
+        select(func.count(), func.count().filter(_has_embedding(model_id)))
+        .select_from(t.memory)
+        .where(_live_memory())
+    ).one()
+    return EmbeddingCoverage(live=int(live), embedded=int(embedded))
+
+
+def embedding_exists_for_model(conn: Connection, *, model_id: str) -> bool:
+    """Whether this workspace holds any embedding row ``model_id`` wrote.
+
+    The last condition of ``dense_available``. It separates a workspace no embed job
+    has ever filled for this model (the dense arm cannot contribute) from partial
+    coverage, where one memory lacks its row while others have theirs (it can).
+    """
+    return bool(
+        conn.execute(
+            select(
+                select(t.memory_embedding.c.memory_id)
+                .where(_of_model(model_id))
+                .exists()
+            )
+        ).scalar_one()
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingPair:
+    """Two memories whose vectors for one model clear a similarity floor.
+
+    ``first`` sorts before ``second``, so a pair has exactly one spelling, and ``score``
+    is their cosine similarity, ``1 - (a.vector <=> b.vector)``.
+    """
+
+    first: UUID
+    second: UUID
+    score: float
+
+
+def dedup_candidate_ids(
+    conn: Connection,
+    *,
+    conditions: Sequence[ColumnElement[bool]],
+    model_id: str,
+    scan_limit: int,
+) -> tuple[UUID, ...]:
+    """The bounded candidate set a dedup call starts from: at most ``scan_limit``
+    memories that ``conditions`` admit and that hold a row for ``model_id``, newest
+    first, ``recorded_at DESC, id``.
+
+    ``conditions`` are the caller's row-local predicates over ``memory``, taken as a
+    parameter because the service module that builds them imports this one. They
+    narrow; they decide nothing. The caller runs full eligibility over what comes back
+    and hands :func:`nearest_embedding_pairs` only the memories it may read.
+
+    **This is where the bound is applied, before eligibility,** so a memory the SQL
+    admits and eligibility then denies (one with a link the caller cannot resolve)
+    still holds one of the places. That keeps both the eligibility walk and the scan
+    at a constant, the way recall's own scan bound does.
+    """
+    return tuple(
+        conn.execute(
+            select(t.memory.c.id)
+            .where(_has_embedding(model_id), *conditions)
+            .order_by(t.memory.c.recorded_at.desc(), t.memory.c.id)
+            .limit(scan_limit)
+        ).scalars()
+    )
+
+
+def nearest_embedding_pairs(
+    conn: Connection,
+    *,
+    memory_ids: Sequence[UUID],
+    model_id: str,
+    floor: float,
+) -> tuple[EmbeddingPair, ...]:
+    """Among exactly ``memory_ids``, each one's nearest other, where the two clear
+    ``floor``.
+
+    The caller chooses the set: ``dedup_candidates`` passes the memories of its bounded
+    candidate set (:func:`dedup_candidate_ids`) that it has already found the caller
+    may read, so a memory the caller cannot read never takes a readable one's
+    nearest-neighbour place. One statement, three steps:
+
+    1. **The candidate vectors:** ``model_id``'s row for each of ``memory_ids``,
+       materialized, so both sides of the join below read the same set.
+    2. **One ``CROSS JOIN LATERAL``** (rendered ``JOIN LATERAL ... ON true``): for each
+       candidate, its single nearest *other* candidate by ``vector <=> vector``, ties
+       broken by id, kept only where ``1 - (a.vector <=> b.vector) >= floor``.
+    3. **Folded and sorted:** a pair both members found from their own side is one
+       pair, spelled ``(least, greatest)``; the answer runs by score descending, then
+       ``(first, second)``. A canonical memory reference is a fixed prefix and the
+       UUID's hex, so that order is the order of the references too.
+
+    **This is a quadratic scan over the set, and it is meant to be.** pgvector's HNSW
+    index answers "nearest in the table" and then filters; it cannot answer "nearest
+    within this arbitrary filtered subset", so the set is materialized and every
+    distance is computed directly. 500 candidates make 124,750 distinct pairs, and the
+    lateral measures each one from both ends: 249,500 cosine distances at 384
+    dimensions, of the order of 10^8 float operations per call. ``DEDUP_SCAN_LIMIT``
+    holding the set at 500, and the eligibility walk before it at 500 evaluations, is
+    the *entire* argument for ``dedup_candidates`` being a ``READ`` operation rather
+    than a ``long_running`` one, so nobody raises it without revisiting that class.
+
+    **The bound is also a recall boundary, not only a cost bound.** The set comes from
+    the newest ``DEDUP_SCAN_LIMIT`` by ``recorded_at``: at 500, the 501st-newest memory
+    is never compared with anything and a duplicate pair straddling that position is
+    never proposed. That is the insertion-order blind spot binding constraint 6 chose
+    vector neighbourhoods to close, moved to recency rather than removed. It is carried
+    open, not fixed here.
+    """
+    if len(memory_ids) < 2:
+        return ()
+    candidate = (
+        select(
+            t.memory_embedding.c.memory_id.label("memory_id"),
+            t.memory_embedding.c.vector.label("vector"),
+        )
+        .where(_of_model(model_id), t.memory_embedding.c.memory_id.in_(memory_ids))
+        .cte("dedup_candidate")
+        .prefix_with("MATERIALIZED")
+    )
+    a = candidate.alias("a")
+    b = candidate.alias("b")
+    distance = a.c.vector.op("<=>", return_type=Float)(b.c.vector)
+    nearest = (
+        select(b.c.memory_id.label("memory_id"), distance.label("distance"))
+        .where(b.c.memory_id != a.c.memory_id)
+        .order_by(distance, b.c.memory_id)
+        .limit(1)
+        .lateral("nearest")
+    )
+    # The dense arm's expression, over two stored vectors instead of one and a query:
+    # a similarity, compared ``>=``, never the distance against the floor.
+    similarity = literal_column("1", Float) - nearest.c.distance
+    first = func.least(a.c.memory_id, nearest.c.memory_id, type_=a.c.memory_id.type)
+    second = func.greatest(a.c.memory_id, nearest.c.memory_id, type_=a.c.memory_id.type)
+    score = func.max(similarity).label("score")
+    rows = conn.execute(
+        select(first.label("first"), second.label("second"), score)
+        .select_from(a.join(nearest, true()))
+        .where(similarity >= bindparam("dedup_pair_floor", floor, type_=Float))
+        .group_by(first, second)
+        .order_by(score.desc(), first, second)
+    ).all()
+    return tuple(
+        EmbeddingPair(first=row.first, second=row.second, score=float(row.score))
+        for row in rows
+    )
+
+
+def analyze_memory(conn: Connection) -> None:
+    """``ANALYZE`` the memory table, in the caller's transaction.
+
+    The rebuild's success path. Useful for the dense path's planner after a walk that
+    touched every row; it is not what keeps the lexical builder's statistics present,
+    which is migration ``0003_dense_retrieval``'s autovacuum setting.
+    """
+    conn.execute(text(f"ANALYZE {t.memory.schema}.{t.memory.name}"))
+
+
+def vector_literal(values: Sequence[float]) -> str:
+    """pgvector's own text form, ``[1,2,3]``: how a stored vector is written and how the
+    dense arm binds its query vector, so the two cannot be spelled differently."""
     return "[" + ",".join(repr(float(value)) for value in values) + "]"
 
 
 def _vector_values(literal: object) -> tuple[float, ...]:
-    """The inverse of :func:`_vector_literal` for the text Postgres hands back."""
+    """The inverse of :func:`vector_literal` for the text Postgres hands back."""
     stripped = str(literal).strip().removeprefix("[").removesuffix("]")
     if not stripped:
         return ()

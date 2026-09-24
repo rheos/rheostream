@@ -15,11 +15,13 @@ model is the thing under test — a census that enumerated
 with itself no matter what either one said:
 
 1. Applying Recallatron's chain to a fresh workspace creates exactly the seven tables
-   Architecture § A3 names, their declared indexes and constraints, and the chain's own
-   version table — all inside the ``recallatron`` schema, nothing outside it.
-2. ``memory_embedding`` carries no index beyond its composite primary key. No HNSW, no
-   IVFFlat, no expression index: dense retrieval is run 1a2's, and 1a1 must not have
-   decided it early by leaving an index behind.
+   Architecture § A3 names, run 1a2's one-row ``embedding_state``, their declared
+   indexes and constraints, and the chain's own version table — all inside the
+   ``recallatron`` schema, nothing outside it.
+2. ``memory_embedding`` carries exactly one index beyond its composite primary key:
+   revision ``0003_dense_retrieval``'s cosine HNSW index, over a column narrowed to
+   ``vector(384)``. Nothing else — no IVFFlat, no expression index — and it is read off
+   the catalog, because that DDL lives in the migration and not in the ``Table``.
 
 **The census technique is copied from
 ``tests/postgres/test_module_storage_ownership.py`` rather than imported.** That file's
@@ -35,9 +37,11 @@ line in this file, and an object § A3 names that the migration forgets should r
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -91,7 +95,7 @@ from rheo_core.refs.resolver import (
     register_resolver,
     resolve_in,
 )
-from rheo_core.settings import ValueType
+from rheo_core.settings import KeySpec, Scope, ValueType
 from rheo_core.storage import work_tables
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.provisioning import core_version
@@ -102,12 +106,28 @@ from rheo_core.storage.repositories import (
 from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
 from rheo_recallatron.configuration import (
+    CANDIDATE_SCAN_LIMIT,
+    DENSE_FLOOR_PERCENT_SPEC,
+    EMBEDDING_BATCH_SIZE_DEFAULT,
+    LEXICAL_DF_THRESHOLD,
+    LEXICAL_RAREST_KEPT,
     MEMORY_RECORD_TYPE,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
+    RETRIEVAL_STRATEGY_KEY,
+    RETRIEVAL_STRATEGY_SPEC,
+    STRATEGY_DENSE,
+    STRATEGY_HYBRID,
+    STRATEGY_LEXICAL,
     RetentionPolicy,
 )
-from rheo_recallatron.contracts import EntityItem, EntityList, MemoryWritten
+from rheo_recallatron.contracts import (
+    ArmCounts,
+    EntityItem,
+    EntityList,
+    MemoryWritten,
+    RecallProvenance,
+)
 from rheo_recallatron.eligibility import (
     Denied,
     MemoryRequest,
@@ -119,7 +139,12 @@ from rheo_recallatron.eligibility import (
     eligible_memory,
     expire_by_age_enabled,
     memory_reference,
+    row_local_conditions,
 )
+from rheo_recallatron.embedding import registry as embedding_registry
+from rheo_recallatron.embedding.local import MODEL_ID as LOCAL_MODEL_ID
+from rheo_recallatron.embedding.protocol import EmbeddingProvider
+from rheo_recallatron.embedding.rebuild import fill_missing_embeddings
 from rheo_recallatron.entities import ENTITY_GET, ENTITY_LIST, remove_mention
 from rheo_recallatron.events import MEMORY_INVALIDATED, MEMORY_RECORDED
 from rheo_recallatron.operations import (
@@ -128,9 +153,20 @@ from rheo_recallatron.operations import (
     MEMORY_RECALL,
     MEMORY_REMEMBER,
     ReadWindow,
+    RecallResult,
 )
 from rheo_recallatron.references import entity_reference
 from rheo_recallatron.resolvers import resolve_memory
+from rheo_recallatron.retrieval import (
+    STRATEGY_REGISTRY,
+    ArmProvenance,
+    Hit,
+    IndexItem,
+    SearchRequest,
+    SearchResult,
+)
+from rheo_recallatron.retrieval import dispatch as retrieval_dispatch
+from rheo_recallatron.retrieval.lexical_query import lexical_tsquery
 from rheo_recallatron.source_units import (
     LIVE_REPRESENTATION,
     AcceptOutcome,
@@ -145,10 +181,20 @@ from rheo_recallatron.storage.repository import (
     insert_memory,
     insert_memory_link,
     insert_memory_purpose,
+    lexeme_document_frequencies,
     list_memory_purposes,
     set_source_receipt_state,
 )
-from sqlalchemy import Connection, Engine, Row, func, insert, select, text
+from sqlalchemy import (
+    Connection,
+    Engine,
+    Row,
+    func,
+    insert,
+    literal_column,
+    select,
+    text,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -163,12 +209,19 @@ _TABLES = (
     "memory_link",
     "memory_embedding",
     "source_receipt",
+    "embedding_state",
     _VERSION_TABLE,
 )
-"""§ A3's six-table memory spine, the ``source_receipt`` seam, and the chain's own
-version table. No session table, no conversation library, no hook-configuration table,
-no per-model embedding registry, no dimension-authority table — AC 2's absence claims,
-as an inventory a stray ``CREATE TABLE`` reds rather than as prose."""
+"""§ A3's six-table memory spine, the ``source_receipt`` seam, ``embedding_state``, and
+the chain's own version table. No session table, no conversation library, no
+hook-configuration table, no per-model embedding registry, no dimension-authority table
+— AC 2's absence claims, as an inventory a stray ``CREATE TABLE`` reds rather than as
+prose.
+
+``embedding_state`` is neither of the last two. It holds one row per workspace, the
+embed input version the stored vectors were produced under, and carries no model id and
+no width: the model is the resolved provider's own ``model_id``, compared row by row
+against ``memory_embedding``, and the width is pinned into that table's column type."""
 
 _INDEXES = (
     "memory_pkey",
@@ -187,13 +240,16 @@ _INDEXES = (
     "memory_link_pkey",
     "memory_link_ref_relation_memory",
     "memory_embedding_pkey",
+    "memory_embedding_vector_hnsw",
     "source_receipt_pkey",
+    "embedding_state_pkey",
     f"{_VERSION_TABLE}_pkc",
 )
-"""Every index, primary keys included. § A3's closing paragraph names the non-key ones;
-``memory_embedding_pkey`` is the only entry for that table, which is
-:func:`test_memory_embedding_has_no_index_beyond_its_primary_key`'s claim read a second
-way, from the whole-schema side."""
+"""Every index, primary keys included. § A3's closing paragraph names the non-key ones,
+and revision ``0003_dense_retrieval`` adds ``memory_embedding_vector_hnsw`` beside
+``memory_embedding_pkey``. That pair is
+:func:`test_memory_embedding_carries_the_hnsw_index_and_a_384_wide_column`'s claim read
+a second way, from the whole-schema side."""
 
 _CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("memory", "memory_pkey"),
@@ -232,6 +288,8 @@ _CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("source_receipt", "source_receipt_bound_purpose"),
     ("source_receipt", "source_receipt_source_window_pairing"),
     ("source_receipt", "source_receipt_digest_length"),
+    ("embedding_state", "embedding_state_pkey"),
+    ("embedding_state", "embedding_state_one_row"),
     (_VERSION_TABLE, f"{_VERSION_TABLE}_pkc"),
 )
 """Every primary key, foreign key and check, by the table that owns it.
@@ -404,24 +462,41 @@ def test_the_migration_is_a_no_op_when_re_run_within_its_own_chain(
         assert _objects(connection) == before
 
 
-def test_memory_embedding_has_no_index_beyond_its_primary_key(
+def test_memory_embedding_carries_the_hnsw_index_and_a_384_wide_column(
     cluster: ClusterSession, workspace: UUID, recallatron_loaded: None
 ) -> None:
-    """AC 2: no HNSW, no IVFFlat, no expression index, in 1a1.
+    """Revision ``0003_dense_retrieval``'s two changes to ``memory_embedding``, present.
 
-    Asked of ``pg_catalog`` rather than of the ``Table`` object, because a dense index
-    can arrive from raw DDL in a migration that the Python model never mentions — which
-    is precisely the shape this claim has to exclude. ``indisprimary`` is read, so the
-    one surviving index has to be the primary key rather than merely the only one.
+    Asked of ``pg_catalog`` rather than of the ``Table`` object, because both arrive
+    from raw DDL in the migration that the Python model deliberately never mentions.
+    The index list is exact: the primary key (``indisprimary`` read, so it has to *be*
+    the key) and one cosine ``hnsw`` index by its pinned name — no IVFFlat, no
+    expression index, nothing else. The column type is read with ``format_type``, so a
+    dimensionless ``vector`` — which pgvector cannot index at all — reds here too.
     """
     _migrate(cluster, workspace)
 
     _, engine = _workspace_engine(cluster, workspace)
     with engine.connect() as connection:
+        column_type = connection.execute(
+            text(
+                "SELECT format_type(attribute.atttypid, attribute.atttypmod) "
+                "FROM pg_catalog.pg_attribute AS attribute "
+                "JOIN pg_catalog.pg_class AS table_class "
+                "ON table_class.oid = attribute.attrelid "
+                "JOIN pg_catalog.pg_namespace AS namespace "
+                "ON namespace.oid = table_class.relnamespace "
+                "WHERE namespace.nspname = :schema "
+                "AND table_class.relname = 'memory_embedding' "
+                "AND attribute.attname = 'vector'"
+            ),
+            {"schema": _OWNED_SCHEMA},
+        ).scalar_one()
         rows = connection.execute(
             text(
                 "SELECT index_class.relname::text, index_def.indisprimary, "
-                "access_method.amname::text "
+                "access_method.amname::text, "
+                "pg_catalog.pg_get_indexdef(index_def.indexrelid) "
                 "FROM pg_catalog.pg_index AS index_def "
                 "JOIN pg_catalog.pg_class AS index_class "
                 "ON index_class.oid = index_def.indexrelid "
@@ -437,9 +512,17 @@ def test_memory_embedding_has_no_index_beyond_its_primary_key(
             {"schema": _OWNED_SCHEMA},
         ).all()
 
-    assert [
-        (str(name), bool(primary), str(method)) for name, primary, method in rows
-    ] == [("memory_embedding_pkey", True, "btree")]
+    assert str(column_type) == "vector(384)"
+    assert sorted(
+        (str(name), bool(primary), str(method)) for name, primary, method, _ in rows
+    ) == [
+        ("memory_embedding_pkey", True, "btree"),
+        ("memory_embedding_vector_hnsw", False, "hnsw"),
+    ]
+    (definition,) = [
+        str(row[3]) for row in rows if row[0] == "memory_embedding_vector_hnsw"
+    ]
+    assert "vector_cosine_ops" in definition, definition
 
 
 # --- the read surface -----------------------------------------------------------------
@@ -578,6 +661,9 @@ class MemoryWorkspace:
     database_name: str
     engine: Engine
     consumers: ConsumerRegistry
+    provider: EmbeddingProvider | None = None
+    """The embedding provider criterion 31's dense pass selected, or ``None``, which is
+    the no-fill switch: outside that pass :meth:`_fill` does nothing."""
 
     def context(
         self, *, account_id: UUID | None = None, role: Role = Role.OWNER
@@ -617,11 +703,42 @@ class MemoryWorkspace:
         with UnitOfWork(self.engine, self.database_name) as uow:
             yield uow
             uow.commit()
+        # After the unit has committed and closed, never inside it: a body that raises
+        # never commits, never reaches this line, and owes no fill.
+        self._fill()
 
     @contextmanager
     def reading(self) -> Iterator[UnitOfWork]:
         with UnitOfWork(self.engine, self.database_name) as uow:
             yield uow
+
+    def _fill(self) -> None:
+        """Criterion 31's dense pass: give every live memory lacking one a vector.
+
+        Runs after each of this file's two kinds of commit point, the end of
+        :meth:`unit` and the end of :meth:`call`. Most rows here are written by
+        :func:`_write` and :func:`_write_many`, which insert directly and never reach
+        ``write_memory``, so no embed job exists for them and draining the queue would
+        embed nothing. The harness runs the rebuild's own fill step instead,
+        synchronously, in a fresh unit of work that it commits. It opens that unit
+        itself rather than through :meth:`unit`, which would call back into this
+        method. Jobs that ``remember`` queued stay queued: the embed job no-ops on a
+        memory already embedded, and the queue dies with the test database.
+
+        **What that makes criterion 31 prove:** the suite passes under ``dense`` in the
+        steady state, with the embed job's lag (up to ``work.due_reconcile_seconds``,
+        900 s by default) collapsed to zero by the harness. It does not prove that a
+        memory written a moment ago is findable by a ``dense``-only workspace before its
+        job runs; until then it is reachable by the lexical index only
+        (``docs/architecture/memory.md``).
+        """
+        if self.provider is None:
+            return
+        with UnitOfWork(self.engine, self.database_name) as uow:
+            fill_missing_embeddings(
+                uow, provider=self.provider, batch_size=EMBEDDING_BATCH_SIZE_DEFAULT
+            )
+            uow.commit()
 
     def call(
         self, ctx: WorkspaceContext, name: str, payload: dict[str, object]
@@ -633,13 +750,17 @@ class MemoryWorkspace:
         without a registry — so a helper that dropped it would make every write test
         a test of the missing-wiring refusal.
         """
-        return dispatch(
+        outcome = dispatch(
             ctx,
             name,
             payload,
             registry=self.surfaces.operations,
             consumers=self.consumers,
         )
+        # ``dispatch`` has committed its own transaction by now. After a read or a
+        # refusal the fill finds nothing missing; after a mutate it is the one owed.
+        self._fill()
+        return outcome
 
     def unwired(
         self, ctx: WorkspaceContext, name: str, payload: dict[str, object]
@@ -772,6 +893,27 @@ class MemoryWorkspace:
                     updated_by=None,
                 )
 
+    def set_strategy(self, value: str | None) -> None:
+        """Store or delete this workspace's retrieval-strategy row, verbatim.
+
+        The same escape hatch as :meth:`set_retention`: around the validating settings
+        operation, so an absent row and an unparseable one are both reachable.
+        """
+        with self.unit() as uow:
+            if value is None:
+                uow.connection.execute(
+                    text("DELETE FROM " + _core_setting_table() + " WHERE key = :key"),
+                    {"key": RETRIEVAL_STRATEGY_KEY},
+                )
+            else:
+                upsert_workspace_setting(
+                    uow.connection,
+                    key=RETRIEVAL_STRATEGY_KEY,
+                    value=value,
+                    value_type=ValueType.STR,
+                    updated_by=None,
+                )
+
 
 def _core_setting_table() -> str:
     """The workspace-setting table's qualified name, assembled rather than written.
@@ -784,12 +926,89 @@ def _core_setting_table() -> str:
     return "core" + ".workspace_setting"
 
 
+# --- project criterion 31: the two passes ---------------------------------------------
+#
+# ``make criterion-31`` runs this file twice: every workspace pinned to ``lexical``,
+# then every workspace pinned to ``dense`` with the real local embedding model at the
+# shipped floor. Two plain environment variables select the pass. They are not
+# ``RHEO__*`` variables, which ``tests/conftest.py`` refuses at import. Nothing is
+# parametrized, so every node id in this file stays what the acceptance matrices cite.
+# A test that pins its own strategy runs that strategy in both passes. The only
+# provider a pass may name is the real ``local`` one.
+
+_STRATEGY_VARIABLE = "RHEO_TEST_RETRIEVAL_STRATEGY"
+_PROVIDER_VARIABLE = "RHEO_TEST_EMBEDDING_PROVIDER"
+_EXTRA_REMEDY = "uv sync --frozen --extra local-embeddings"
+
+
+@dataclass(frozen=True)
+class Criterion31Pass:
+    """The strategy and embedding provider this session's pass names, ``None`` for
+    unset. An empty value reads as unset, so a target can clear an ambient one."""
+
+    strategy: str | None
+    provider: str | None
+
+    @property
+    def expected_strategy(self) -> str:
+        """What every unpinned recall in this pass must report it ran."""
+        if self.strategy is None:
+            return str(RETRIEVAL_STRATEGY_SPEC.default)
+        return self.strategy
+
+
+@pytest.fixture(scope="session")
+def criterion_31_pass() -> Criterion31Pass:
+    """Read the two variables once, refusing a strategy the key does not offer and
+    any provider but the real ``local`` one."""
+    selected = Criterion31Pass(
+        strategy=os.environ.get(_STRATEGY_VARIABLE, "").strip() or None,
+        provider=os.environ.get(_PROVIDER_VARIABLE, "").strip() or None,
+    )
+    offered = RETRIEVAL_STRATEGY_SPEC.choices or ()
+    assert selected.strategy is None or selected.strategy in offered, (
+        f"{_STRATEGY_VARIABLE}={selected.strategy!r} is not one of {offered}"
+    )
+    # The fake provider would pass this whole file too, and a green dense pass on it
+    # would claim criterion 31 against a synthetic space.
+    assert selected.provider in (None, embedding_registry.LOCAL_PROVIDER), (
+        f"{_PROVIDER_VARIABLE}={selected.provider!r}: criterion 31's dense pass runs "
+        f"only against the real {embedding_registry.LOCAL_PROVIDER!r} provider. The "
+        "one sanctioned route to relax this is spec § Technical Risks 10's last "
+        "resort, for a CI runner that cannot hold the model artifact, made as an "
+        "explicit edit to this check. It is never a remedy for a red assertion."
+    )
+    return selected
+
+
+def _select_provider(
+    monkeypatch: pytest.MonkeyPatch, name: str | None
+) -> EmbeddingProvider | None:
+    """Select ``name`` through the one mechanism, undone by ``monkeypatch``, and answer
+    the provider it resolves. A named provider that does not resolve fails the test:
+    a real-provider pass never skips and never falls back."""
+    if name is None:
+        return None
+    selected: str = name
+    monkeypatch.setattr(
+        embedding_registry, "configured_provider_name", lambda: selected
+    )
+    provider = embedding_registry.resolve_provider()
+    assert provider is not None, (
+        f"{_PROVIDER_VARIABLE}={selected!r} resolves no registered embedding provider; "
+        f"for {embedding_registry.LOCAL_PROVIDER!r}, the local-embeddings extra is not "
+        f"installed: run `{_EXTRA_REMEDY}`"
+    )
+    return provider
+
+
 @pytest.fixture
 def memory(
     monkeypatch: pytest.MonkeyPatch,
     cluster: ClusterSession,
     workspace: UUID,
     owner_account_id: UUID,
+    criterion_31_pass: Criterion31Pass,
 ) -> Iterator[MemoryWorkspace]:
     register_core_operations()
     # The memory resolver goes on the **process-wide** table too, which is where
@@ -813,7 +1032,7 @@ def memory(
         assert isinstance(bootstrap, WorkspaceContext), bootstrap
         install_and_enable_module(cluster.backend, bootstrap, workspace, _MEMORY_MODULE)
         database_name, engine = _workspace_engine(cluster, workspace)
-        yield MemoryWorkspace(
+        enabled = MemoryWorkspace(
             cluster=cluster,
             workspace=workspace,
             owner_account_id=owner_account_id,
@@ -825,7 +1044,41 @@ def memory(
             # subscribes to a Recallatron event in 1a1, and a publish that reaches
             # none is a success with zero deliveries.
             consumers=ConsumerRegistry(),
+            provider=_select_provider(monkeypatch, criterion_31_pass.provider),
         )
+        # Unset stores nothing: the key is ``explicit_per_workspace``, so enable has
+        # already written the package default.
+        if criterion_31_pass.strategy is not None:
+            enabled.set_strategy(criterion_31_pass.strategy)
+        yield enabled
+
+
+def test_the_pass_recalls_with_the_strategy_its_environment_names(
+    memory: MemoryWorkspace, criterion_31_pass: Criterion31Pass
+) -> None:
+    """Criterion 31's sentinel, run in both passes and in every plain run.
+
+    Without it an override write that silently did nothing would leave the "dense"
+    pass running the package default, and ``make criterion-31`` would go green twice
+    on one code path. When the pass names a provider, it also pins that the recall's
+    provider is the real model and that the dense arm answered, so a pass on another
+    provider or with the dense arm degraded cannot pass for the real one.
+    """
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples", body="a note about apples"))
+
+    outcome = memory.recall(memory.context(), query="apples")
+    assert outcome.ok, outcome
+    assert isinstance(outcome.result, RecallResult), outcome
+    assert outcome.result.provenance.strategy == criterion_31_pass.expected_strategy
+
+    if criterion_31_pass.provider is not None:
+        # What the recall itself resolved: the selection is still in force here.
+        resolved = embedding_registry.resolve_provider()
+        assert resolved is not None and resolved.model_id == LOCAL_MODEL_ID, resolved
+        # ``lexical`` reads no dense index and always reports ``false``.
+        if criterion_31_pass.expected_strategy != STRATEGY_LEXICAL:
+            assert outcome.result.provenance.dense_available, outcome.result.provenance
 
 
 def _window(outcome: OperationOutcome) -> ReadWindow:
@@ -1221,7 +1474,9 @@ def test_eligibility_contact_seam_is_absent_permitted_or_denied(
 # --- recall -------------------------------------------------------------------------
 
 
-def test_recall_returns_eligible_rows_marked_lexical(memory: MemoryWorkspace) -> None:
+def test_recall_returns_eligible_rows_marked_with_the_resolved_strategy(
+    memory: MemoryWorkspace,
+) -> None:
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples", body="a note about apples"))
         _write(
@@ -1246,8 +1501,32 @@ def test_recall_returns_eligible_rows_marked_lexical(memory: MemoryWorkspace) ->
     result = outcome.result
     assert result is not None
     items = result.items
-    assert [item.title for item in items] == ["apples"]
-    assert items[0].strategy == "lexical"
+    resolved = memory.stored_setting(RETRIEVAL_STRATEGY_KEY)
+    assert result.provenance.strategy == resolved
+    assert all(item.strategy == resolved for item in items)
+    titles = [item.title for item in items]
+    if resolved == STRATEGY_LEXICAL or (
+        resolved == STRATEGY_HYBRID and not result.provenance.dense_available
+    ):
+        # A lexical-only answer: ``lexical`` itself, or ``hybrid`` with no dense arm,
+        # which by requirement 12 answers the lexical arm's rows.
+        assert [item.title for item in items] == ["apples"]
+    elif resolved == STRATEGY_DENSE:
+        # ``pears`` / ``a note about pears`` scores cosine 0.471 against ``apples`` on
+        # the shipped provider, clearing the 0.30 floor by 0.171, so dense returns it
+        # (spec § Technical Risks 8, evidence E9). Its exclusion under ``lexical`` is
+        # the ``@@`` predicate's, not an eligibility rule.
+        assert titles[0] == "apples"
+        assert "expired apples" not in titles
+        assert all(
+            item.score >= DENSE_FLOOR_PERCENT_SPEC.default / 100 for item in items
+        )
+    else:
+        # ``hybrid`` with a dense arm: RRF puts ``apples`` (both arms, 2/61) above
+        # ``pears`` (dense only, 1/62). No score bound: an RRF sum is not a cosine.
+        assert resolved == STRATEGY_HYBRID
+        assert titles[0] == "apples"
+        assert "expired apples" not in titles
     assert items[0].score > 0
     assert items[0].body == "a note about apples"
 
@@ -1287,6 +1566,501 @@ def test_recall_refuses_a_blank_or_oversized_query_as_input_invalid(
         {"query": "apples", "unknown": True},
     ):
         _refused(memory.recall(owner, **payload), "input_invalid")
+
+
+# --- the retrieval seam ---------------------------------------------------------------
+
+
+def _recalled(outcome: OperationOutcome) -> RecallResult:
+    assert outcome.ok, outcome
+    assert isinstance(outcome.result, RecallResult), outcome
+    return outcome.result
+
+
+@dataclass
+class _SpyStrategy:
+    """A strategy whose answer no lexical ranking could produce, so seeing it come
+    back through ``recall()`` proves the registry entry — not a constant — ran."""
+
+    answer: SearchResult
+    name: str = "spy"
+    requests: list[SearchRequest] = dataclass_field(default_factory=list)
+
+    def index(self, ctx: WorkspaceContext, uow: Any, item: IndexItem) -> None:
+        raise AssertionError("recall must not index")
+
+    def invalidate(self, ctx: WorkspaceContext, uow: Any, ref: str) -> None:
+        raise AssertionError("recall must not invalidate")
+
+    def search(
+        self, ctx: WorkspaceContext, uow: Any, request: SearchRequest
+    ) -> SearchResult:
+        self.requests.append(request)
+        return self.answer
+
+
+def test_recall_runs_the_strategy_the_registry_resolves(
+    memory: MemoryWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 1, first half: the resolved registry entry decides what runs.
+
+    The workspace pins ``lexical`` and the proof swaps that entry for a spy. Pinned,
+    because the default resolves ``hybrid`` and would never reach the spy. The spy
+    answers ``apples`` with the ``pears`` row, which shares no lexeme with the query,
+    and with arm counts lexical never reports.
+    """
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples", body="a note about apples"))
+        pears = _write(
+            uow.connection,
+            _row(title="pears", body="a note about pears", recorded_at=_recent(1)),
+        )
+    spy = _SpyStrategy(
+        answer=SearchResult(
+            hits=(Hit(ref=pears.id, score=0.5, strategy="spy"),),
+            arms=ArmProvenance(lexical=7, dense=3),
+            dense_available=True,
+        )
+    )
+    monkeypatch.setitem(STRATEGY_REGISTRY, STRATEGY_LEXICAL, spy)
+    memory.set_strategy(STRATEGY_LEXICAL)
+
+    result = _recalled(memory.recall(memory.context(), query="apples"))
+
+    assert [request.query for request in spy.requests] == ["apples"]
+    assert spy.requests[0].limit == CANDIDATE_SCAN_LIMIT
+    assert [item.title for item in result.items] == ["pears"]
+    assert [item.strategy for item in result.items] == ["spy"]
+    assert result.items[0].score == 0.5
+    assert result.provenance == RecallProvenance(
+        strategy="spy",
+        arms=ArmCounts(lexical=7, dense=3),
+        dense_available=True,
+    )
+
+
+def test_recall_runs_the_strategy_the_stored_setting_names(
+    memory: MemoryWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC 1, the settings half: the stored workspace value picks the registry entry.
+
+    A stand-in spec offers a ``spy`` choice, with a spy registered under it. The
+    lexical entry stays in place, so a resolver that ignored the setting would run the
+    stand-in's default, lexical, and fail here.
+    """
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples", body="a note about apples"))
+        pears = _write(
+            uow.connection,
+            _row(title="pears", body="a note about pears", recorded_at=_recent(1)),
+        )
+    monkeypatch.setattr(
+        retrieval_dispatch,
+        "RETRIEVAL_STRATEGY_SPEC",
+        KeySpec(
+            key=RETRIEVAL_STRATEGY_KEY,
+            type=ValueType.STR,
+            scope=Scope.WORKSPACE,
+            floor=None,
+            explicit_per_workspace=True,
+            default=STRATEGY_LEXICAL,
+            choices=(STRATEGY_LEXICAL, "spy"),
+        ),
+    )
+    spy = _SpyStrategy(
+        answer=SearchResult(
+            hits=(Hit(ref=pears.id, score=0.25, strategy="spy"),),
+            arms=ArmProvenance(lexical=0, dense=1),
+            dense_available=True,
+        )
+    )
+    monkeypatch.setitem(STRATEGY_REGISTRY, "spy", spy)
+    memory.set_strategy("spy")
+
+    result = _recalled(memory.recall(memory.context(), query="apples"))
+
+    assert [request.query for request in spy.requests] == ["apples"]
+    assert [item.title for item in result.items] == ["pears"]
+    assert [item.strategy for item in result.items] == ["spy"]
+    assert result.provenance == RecallProvenance(
+        strategy="spy",
+        arms=ArmCounts(lexical=0, dense=1),
+        dense_available=True,
+    )
+
+
+_INLINE_RECALL_CONFIG: Any = literal_column("'english'::regconfig")
+
+
+def _inline_recall_refs(
+    uow: UnitOfWork, request: MemoryRequest, query_text: str
+) -> list[str]:
+    """The statement ``recall()`` ran inline before the seam, held verbatim.
+
+    Deliberately a copy, not an import: the parity claim is that the seam returns what
+    *this* statement returned, and a baseline built from the code under test would
+    agree with it whatever it did.
+    """
+    query = func.plainto_tsquery(_INLINE_RECALL_CONFIG, query_text)
+    score = func.ts_rank_cd(memory_tables.memory.c.search_tsv, query)
+    statement = (
+        select(memory_tables.memory.c.id, score.label("score"))
+        .where(
+            memory_tables.memory.c.search_tsv.bool_op("@@")(query),
+            *row_local_conditions(request, ReadMode.CURRENT),
+        )
+        .order_by(
+            score.desc(),
+            memory_tables.memory.c.recorded_at,
+            memory_tables.memory.c.id,
+        )
+        .limit(CANDIDATE_SCAN_LIMIT)
+    )
+    return [
+        memory_reference(candidate)
+        for candidate, _ in uow.connection.execute(statement).all()
+    ]
+
+
+def test_lexical_recall_returns_what_the_inline_statement_returned(
+    memory: MemoryWorkspace,
+) -> None:
+    """1A's zero-delta claim: same rows, same order, same label.
+
+    Single-lexeme queries only, so the baseline stays exact once the query builder
+    changes; the multi-word divergence is AC 23's to assert. Scores are not compared.
+    The workspace pins ``lexical`` itself, so this stays a test of the lexical arm
+    whatever the package default becomes.
+    """
+    other_account = uuid7()
+    with memory.unit() as uow:
+        # Different densities and ties, so the order is decided by score first and
+        # then by ``recorded_at`` and ``id``.
+        for offset, (title, body) in enumerate(
+            (
+                ("apples", "apples apples apples, and a body"),
+                ("one apple", "a single apples mention"),
+                ("tie a", "apples in the body"),
+                ("tie b", "apples in the body"),
+                ("pears", "a body about pears"),
+                ("long", "apples " + "filler words " * 40 + "apples body"),
+            )
+        ):
+            _write(
+                uow.connection,
+                _row(title=title, body=body, recorded_at=_recent(offset)),
+            )
+        # Excluded row-locally by both statements: another member's private memory
+        # and an invalidated one.
+        _write(
+            uow.connection,
+            _row(
+                title="private apples",
+                body="apples body",
+                audience_kind="member",
+                audience_id=other_account,
+            ),
+        )
+        _write(
+            uow.connection,
+            _row(
+                title="corrected apples",
+                body="apples body",
+                invalidation_reason="source_corrected",
+            ),
+        )
+    memory.set_strategy(STRATEGY_LEXICAL)
+    ctx = memory.context()
+
+    for query_text in ("apples", "body"):
+        with memory.reading() as uow:
+            request = begin_request(ctx, uow)
+            assert request is not None
+            baseline = _inline_recall_refs(uow, request, query_text)
+        assert len(baseline) >= 4, (query_text, baseline)
+
+        result = _recalled(memory.recall(ctx, query=query_text, k=50))
+        assert [item.ref for item in result.items] == baseline, query_text
+        # The arm's own count, taken before the permission walk, matches the
+        # baseline too. The walk would drop the private and corrected rows anyway,
+        # so without this a strategy that lost the row-local filter would still
+        # return the same items.
+        assert result.provenance.arms.lexical == len(baseline), query_text
+        assert {item.strategy for item in result.items} == {STRATEGY_LEXICAL}
+        assert all(item.score > 0 for item in result.items)
+
+
+def test_every_recall_carries_lexical_provenance(memory: MemoryWorkspace) -> None:
+    """AC 8's ``false`` half: provenance on every response, counting the ranked list
+    before the permission walk, with no dense arm to report."""
+    memory.set_strategy(STRATEGY_LEXICAL)
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples one", body="apples, readable"))
+        _write(
+            uow.connection,
+            _row(title="apples two", body="apples, blocked", recorded_at=_recent(1)),
+            links=((f"harness.note:{uuid7()}", "about", False),),
+        )
+
+    ranked = _recalled(memory.recall(memory.context(), query="apples"))
+    assert [item.title for item in ranked.items] == ["apples one"]
+    # Two ranked, one shown: the walk removed the other after the count was taken.
+    assert ranked.provenance == RecallProvenance(
+        strategy=STRATEGY_LEXICAL,
+        arms=ArmCounts(lexical=2, dense=0),
+        dense_available=False,
+    )
+    assert all(item.strategy == ranked.provenance.strategy for item in ranked.items)
+
+    empty = _recalled(memory.recall(memory.context(), query="quinces"))
+    assert empty.items == ()
+    assert empty.provenance == RecallProvenance(
+        strategy=STRATEGY_LEXICAL,
+        arms=ArmCounts(lexical=0, dense=0),
+        dense_available=False,
+    )
+
+
+@pytest.mark.parametrize("stored", [None, "not-a-strategy", "semantic"])
+def test_an_absent_strategy_row_takes_the_default_and_an_unusable_one_is_lexical(
+    memory: MemoryWorkspace, stored: str | None
+) -> None:
+    """An absent row takes the package default; a present row outside the offered
+    vocabulary degrades to ``lexical``. Neither refuses a read."""
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples", body="a note about apples"))
+    memory.set_strategy(stored)
+
+    result = _recalled(memory.recall(memory.context(), query="apples"))
+    assert [item.title for item in result.items] == ["apples"]
+    assert result.provenance.strategy == (
+        RETRIEVAL_STRATEGY_SPEC.default if stored is None else STRATEGY_LEXICAL
+    )
+
+
+# --- the lexical query builder --------------------------------------------------------
+
+
+def _recalled_titles(memory: MemoryWorkspace, query_text: str) -> set[str]:
+    result = _recalled(memory.recall(memory.context(), query=query_text, k=50))
+    assert {item.strategy for item in result.items} <= {STRATEGY_LEXICAL}
+    return {item.title for item in result.items}
+
+
+def test_a_query_missing_one_content_word_still_recalls_its_memory(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 23, the regression guard for the predecessor's issue #37.
+
+    ``plainto_tsquery`` AND-joins every lexeme, so a natural-language question that
+    carries one content word its memory does not returns nothing at all. The query
+    below normalises to ``{box, lightsail, migrat}``; the target holds the first two
+    and not the third. If lexical recall ever goes back to an AND-join, this test is
+    where it goes red.
+
+    Twenty filler rows keep ``lightsail`` and ``box`` far under the frequency
+    threshold, so whether or not the table has been analyzed when this runs, the
+    frequency filter keeps all three lexemes and the test stays about the join.
+    """
+    query_text = "why did we migrate from the lightsail boxes"
+    with memory.unit() as uow:
+        _write(
+            uow.connection,
+            _row(title="hosting", body="we moved off the lightsail boxes"),
+        )
+        for offset in range(1, 21):
+            _write(
+                uow.connection,
+                _row(
+                    title=f"pears {offset}",
+                    body="a note about pears",
+                    recorded_at=_recent(offset),
+                ),
+            )
+    memory.set_strategy(STRATEGY_LEXICAL)
+    ctx = memory.context()
+
+    # The negative control, live: the same query through the pre-1B statement — the
+    # AND-join, over the same rows — finds nothing. This is also the before half of
+    # the before/after evidence: 1A's recall ran exactly this statement.
+    with memory.reading() as uow:
+        request = begin_request(ctx, uow)
+        assert request is not None
+        assert _inline_recall_refs(uow, request, query_text) == []
+
+    # Returned — and alone: the OR still discriminates, so none of the twenty
+    # ``pears`` memories, which share no content lexeme with the query, comes back.
+    result = _recalled(memory.recall(ctx, query=query_text, k=50))
+    assert [item.title for item in result.items] == ["hosting"]
+    assert result.provenance.arms.lexical == 1
+
+
+_COMMON_TIERS = ("amber", "birch", "cedar", "delta", "ember")
+"""Five lexemes, each above the threshold at a distinct frequency (7..11 rows of 40)."""
+
+_MOST_COMMON = "acorn"
+"""The sixth, commonest of all (14 of 40), in rows carrying none of the five above.
+
+It also sorts **first**, so frequency order and lexeme order disagree: a fallback
+that kept the first five lexemes instead of the five rarest would keep this one and
+lose ``ember``, and the rarest-kept assertion would see it."""
+
+
+def _frequency_fixture_rows() -> list[MemoryRow]:
+    """Forty memories whose ``search_tsv`` frequencies are known by construction.
+
+    ======  ===================================  ====================================
+    rows    body                                 so that
+    ======  ===================================  ====================================
+    1-14    ``acorn``                            ``acorn`` = 14/40, the commonest
+    15-25   ``amber``..``ember``, tiered         7, 8, 9, 10, 11 of 40
+    26      ``widget``                           ``widget`` = 10/40
+    27      ``widget zinc``                      the only adjacent ``widget zinc``
+    28-35   ``zinc then widget``                 ``zinc`` = 9/40, never as the phrase
+    36      ``kappa``                            1/40
+    37      ``lambda``                           1/40
+    38-40   ``filler``
+    ======  ===================================  ====================================
+    """
+    bodies: list[str] = []
+    for number in range(1, 41):
+        if number <= 14:
+            body = _MOST_COMMON
+        elif number <= 25:
+            body = " ".join(
+                word for tier, word in enumerate(_COMMON_TIERS) if number <= 21 + tier
+            )
+        elif number == 26:
+            body = "widget"
+        elif number == 27:
+            body = "widget zinc"
+        elif number <= 35:
+            body = "zinc then widget"
+        elif number == 36:
+            body = "kappa"
+        elif number == 37:
+            body = "lambda"
+        else:
+            body = "filler"
+        bodies.append(body)
+    return [
+        _row(title=f"fixture {number}", body=body, recorded_at=_recent(number))
+        for number, body in enumerate(bodies, start=1)
+    ]
+
+
+def _fixtures(*numbers: int | range) -> set[str]:
+    titles: set[str] = set()
+    for item in numbers:
+        for number in item if isinstance(item, range) else (item,):
+            titles.add(f"fixture {number}")
+    return titles
+
+
+def test_the_frequency_filter_drops_common_lexemes_only_once_analyzed(
+    memory: MemoryWorkspace,
+) -> None:
+    """AC 25: the four-step pipeline's five behaviours, against real statistics."""
+    table = memory_tables.memory.fullname
+    # Autovacuum off for this table, before a row exists and on the connection path
+    # that later runs ANALYZE (both need ownership). Prompt 3's migration lowers the
+    # table's autovacuum analyze thresholds to 50 rows / 2%, so without this an
+    # autovacuum ANALYZE could land between the seed commit and the "kept before
+    # ANALYZE" assertion below and flip it for a reason unrelated to the filter.
+    with memory.unit() as uow:
+        uow.connection.execute(
+            text(f"ALTER TABLE {table} SET (autovacuum_enabled = false)")
+        )
+    with memory.unit() as uow:
+        for row in _frequency_fixture_rows():
+            _write(uow.connection, row)
+    memory.set_strategy(STRATEGY_LEXICAL)
+
+    fixture_lexemes = [
+        *_COMMON_TIERS,
+        _MOST_COMMON,
+        "widget",
+        "zinc",
+        "kappa",
+        "lambda",
+    ]
+
+    # Before ANALYZE there are no statistics, so every lexeme is unknown and kept:
+    # ``widget``'s ten rows come back alongside ``kappa`` and ``lambda``.
+    with memory.reading() as uow:
+        assert lexeme_document_frequencies(uow.connection, fixture_lexemes) == {}
+    assert _recalled_titles(memory, "widget kappa lambda") == _fixtures(range(26, 38))
+
+    with memory.unit() as uow:
+        uow.connection.execute(text(f"ANALYZE {table}"))
+
+    # The gate: the statistics hold what the fixture was built to produce. Without
+    # it, a fixture that lands on the wrong side of the threshold makes every
+    # assertion below test the fixture rather than the filter.
+    with memory.reading() as uow:
+        frequencies = lexeme_document_frequencies(uow.connection, fixture_lexemes)
+    for common in (*_COMMON_TIERS, _MOST_COMMON, "widget", "zinc"):
+        assert frequencies.get(common, 0.0) >= LEXICAL_DF_THRESHOLD, (
+            common,
+            frequencies,
+        )
+    for rare in ("kappa", "lambda"):
+        assert frequencies.get(rare, 0.0) < LEXICAL_DF_THRESHOLD, (rare, frequencies)
+    assert frequencies[_MOST_COMMON] > max(frequencies[w] for w in _COMMON_TIERS)
+    assert _MOST_COMMON < min(_COMMON_TIERS)
+    assert len(_COMMON_TIERS) == LEXICAL_RAREST_KEPT
+
+    # 1. Three lexemes: the common one is dropped, the rare ones kept — the same
+    #    query that returned ``widget``'s rows before ANALYZE no longer does.
+    assert _recalled_titles(memory, "widget kappa lambda") == _fixtures(36, 37)
+
+    # 2. Two lexemes: under the gate, so nothing is filtered.
+    assert _recalled_titles(memory, "widget kappa") == _fixtures(range(26, 37))
+
+    # 4. All six above the threshold: the five rarest are kept rather than an empty
+    #    query, so ``acorn``'s rows (and only they) are missing. ``acorn`` sorts
+    #    first and row 25 carries only ``ember``, so keeping the first five by
+    #    lexeme order instead of by frequency fails here.
+    assert _recalled_titles(
+        memory, " ".join((*_COMMON_TIERS, _MOST_COMMON))
+    ) == _fixtures(range(15, 26))
+
+    # 5. A quoted phrase survives the filter though both its words are common;
+    #    bare ``zinc`` beside it is dropped, so rows 28-35 stay out.
+    assert _recalled_titles(memory, 'kappa lambda zinc "widget zinc"') == _fixtures(
+        27, 36, 37
+    )
+
+    # 3. A lexeme the statistics have never seen is rare, and kept. Row 41 arrives
+    #    after the ANALYZE, so ``novel`` is in the data and not in ``pg_stats``;
+    #    ``widget`` beside it is still dropped.
+    with memory.unit() as uow:
+        _write(
+            uow.connection,
+            _row(title="fixture 41", body="widget novel", recorded_at=_recent(41)),
+        )
+        assert "novel" not in lexeme_document_frequencies(uow.connection, ["novel"])
+    assert _recalled_titles(memory, "widget kappa novel") == _fixtures(36, 41)
+
+
+def test_a_compound_lexeme_stays_one_lexeme_in_the_built_query(
+    memory: MemoryWorkspace,
+) -> None:
+    """Step 4 casts the joined survivors to ``tsquery``; it does not re-parse them.
+
+    ``to_tsquery`` would turn the compound ``mot-intak`` into a phrase over its parts
+    (``'mot-intak' <-> 'mot' <-> 'intak'``, nine nodes where the cast has five), so a
+    part the frequency filter had dropped would come back inside the compound. Read
+    off the built expression directly, because recall's result set cannot see the
+    difference: the phrase branch matches the same rows its compound does.
+    """
+    with memory.reading() as uow:
+        built = lexical_tsquery(uow.connection, "mot-intake")
+        rendered, nodes = uow.connection.execute(
+            select(built, func.numnode(built))
+        ).one()
+    assert rendered == "'intak' | 'mot' | 'mot-intak'"
+    assert nodes == 5
 
 
 # --- the centered read window ---------------------------------------------------------

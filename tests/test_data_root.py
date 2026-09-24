@@ -5,10 +5,12 @@ Seams: ``resolve_data_root()`` (``RHEO_DATA_ROOT`` wins; with it unset and
 that fails outright if the platform directory is checked first; with both unset the
 platform directory), ``validate_data_root()`` (``<checkout>/.rheo-local`` only when
 named explicitly, any other in-checkout path refused, a symlink escaping its parent
-refused, wide permissions warned), and ``workspace_dir_for()`` over the closed
-``Purpose`` enum. The ``workspace_dir(ctx, purpose)`` wrapper is not driven: no test
-may hand-build a ``WorkspaceContext``, and its two lines read ``ctx.workspace_id`` and
-call the function under test.
+refused, wide permissions warned), ``workspace_dir_for()`` over the closed
+``Purpose`` enum, and ``model_cache_dir()`` (one segment under ``models/``, and the
+same object ``rheo_core.modules`` publishes to modules). The
+``workspace_dir(ctx, purpose)`` wrapper is not driven: no test may hand-build a
+``WorkspaceContext``, and its two lines read ``ctx.workspace_id`` and call the function
+under test.
 """
 
 import inspect
@@ -24,6 +26,7 @@ from rheo_core.storage.data_root import (
     DataRootRefusal,
     DataRootSource,
     Purpose,
+    model_cache_dir,
     platform_data_dir,
     resolve_data_root,
     run_dir_for,
@@ -271,6 +274,33 @@ def test_workspace_id_must_be_a_uuid(
         workspace_dir_for("../../etc", Purpose.UPLOADS)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         workspace_dir_for(str(WORKSPACE), Purpose.UPLOADS)  # type: ignore[arg-type]
+
+
+def test_model_cache_dir_is_deployment_level_and_one_segment_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``<data_root>/models/<component>``, outside ``workspaces/``, and pure.
+
+    The refusals are the point: a component carrying a separator or a parent hop
+    would let a module name a path the data root does not own.
+    """
+    monkeypatch.setenv("RHEO_DATA_ROOT", str(tmp_path / "data"))
+    expected = tmp_path / "data" / "models" / "fastembed"
+    assert model_cache_dir("fastembed") == expected
+    assert not expected.exists()  # pure: nothing is created
+    for component in ("../x", "a/b", ""):
+        with pytest.raises(ValueError):
+            model_cache_dir(component)
+
+
+def test_the_module_contract_package_publishes_the_model_cache_accessor() -> None:
+    """The name a module reaches it by is the storage function itself, not a copy."""
+    import rheo_core.modules
+    import rheo_core.storage.data_root
+
+    assert (
+        rheo_core.modules.model_cache_dir is rheo_core.storage.data_root.model_cache_dir
+    )
 
 
 def test_workspace_dir_wrapper_takes_a_context_and_a_purpose_only() -> None:

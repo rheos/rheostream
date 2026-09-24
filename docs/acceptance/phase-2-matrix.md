@@ -1,19 +1,20 @@
 # Phase two acceptance matrix
 
-This is phase two's acceptance record so far: one row for each of criteria 24-30, 33 and
+This is phase two's acceptance record so far: one row for each of criteria 24-31, 33 and
 36. Read [README.md](README.md) first. Its per-row grammar, its three parser rules, and
 above all its "what this is not" section govern every row here: the matrix records which
 test demonstrates a criterion and which mutation proves that test bites, and it never
 claims a criterion is demonstrated merely because a row exists.
 
-**Nine rows, not fourteen.** Phase two's criteria run 24 to 37. Criteria 31, 32, 34, 35
-and 37 have no row because no run has closed them, and an absent row is the honest record
-of that. Retrieval-strategy selection (31) is run 1a2's, the predecessor migration (32) is
-run 1b's, and the naming gate, fixture-provenance gate and re-asserted CI gates (34, 35,
-37) are run 1a3's, because each of them names this phase's ported interface surface, which
-does not exist yet. Do not add a row for one of those on the strength of a test that
-happens to pass; the guard's per-file completeness check is what keeps the set exact, and
-widening the set is a decision, not a fix.
+**Ten rows, not fourteen.** Phase two's criteria run 24 to 37. Criteria 32, 34, 35 and 37
+have no row because no run has closed them, and an absent row is the honest record of that.
+Retrieval-strategy selection (31) was run 1a2's and its row was added at that run's
+close-out. The predecessor migration (32) is run 1b's, and the naming gate,
+fixture-provenance gate and re-asserted CI gates (34, 35, 37) are run 1a3's, because each
+of them names this phase's ported interface surface, which does not exist yet. Do not add a
+row for one of those on the strength of a test that happens to pass; the guard's per-file
+completeness check is what keeps the set exact, and widening the set is a decision, not a
+fix.
 
 **One row is `partial`.** Criterion 24's interface half belongs to run 1a3 and nothing this
 run can do closes it; the row carries a `Note:` saying which half is held back. Criterion 30
@@ -23,8 +24,9 @@ applied to `build-plan.md`, so the row now quotes the amended text, its evidence
 clause of it, and it is `complete`. Its second `Note:` records the promotion.
 
 Every mutation below was applied to this working tree on 2026-09-21, run, watched go red,
-and reverted; each fenced block is the `git diff` that was captured while it was applied,
-never a hand-typed hunk. Criteria 25, 26 and 33 take their demonstrators from run 1a0b's
+and reverted, except criterion 31's, which run 1a2 captured the same way on 2026-09-23;
+each fenced block is the `git diff` that was captured while it was applied, never a
+hand-typed hunk. Criteria 25, 26 and 33 take their demonstrators from run 1a0b's
 close-out evidence, but 1a0b recorded test paths rather than node ids and captured no
 applicable hunk, so the node ids below were re-derived against this tree and the mutations
 are new captures. Each of those three rows says so in its own `Note:`.
@@ -287,22 +289,28 @@ second, and a purpose bug would not widen who can read the derived row.
 **Mutation:**
 ```diff
 diff --git a/modules/recallatron/src/rheo_recallatron/lifecycle.py b/modules/recallatron/src/rheo_recallatron/lifecycle.py
-index ddef731..663247e 100644
+index fa43b78..fe7e17b 100644
 --- a/modules/recallatron/src/rheo_recallatron/lifecycle.py
 +++ b/modules/recallatron/src/rheo_recallatron/lifecycle.py
-@@ -267,7 +267,6 @@ def _mark_invalidated(
-     if row is None or row.invalidation_reason is not None:
-         return None
-     revision = row.revision + 1
+@@ -282,7 +282,6 @@ def _mark_invalidated(
+         revision=revision,
+         superseded_by_id=successor,
+     )
 -    delete_memory_embeddings(uow.connection, memory_id)
-     invalidate_memory(
-         uow.connection,
-         memory_id,
+     publish_memory_event(
+         ctx,
+         uow,
 ```
 
 **Cost:** `pytest:tests/postgres/test_memory_lifecycle.py::test_correction_removes_the_embeddings_of_every_row_it_touches` — first observed failure line: `E       AssertionError: assert not True`, at the assertion that the *derivative* `b` no longer has an embedding; the target row `a`'s own assertion one line above still passes
 
-**Performed by:** P7 (2026-09-21)
+**Performed by:** P7 (2026-09-21); re-performed by run 1a2 Prompt 3 (2026-09-23) after the
+delete moved below the mark, with the same first failure line
+
+**Why the hunk moved:** run 1a2 made `_mark_invalidated` mark the row *before* deleting its
+embeddings, so the mark's row lock waits out an embed writer holding that row `FOR SHARE`
+and the delete then removes the vector it committed. The mutation is the same line, removed
+from its new place.
 
 **Note:** the mutation is deliberately the narrow one. Correction drops the target's own
 embeddings at its own call site and the closure drops each affected derivative's inside
@@ -375,6 +383,72 @@ amendment landed with this prompt: `build-plan.md`'s criterion 30, its FR 29 tra
 the recorded change of direction in `docs/architecture/memory.md` § Retention and decision
 ledger entry 13. The `Text` above is the amended criterion, quoted from the file, and every
 clause of it has a demonstrator, which is what the earlier `Note:` said promotion required.
+
+---
+
+### Criterion 31
+
+**Text:** "The retrieval strategy is selected through the adapter, and a test runs the module's full behavioural suite against both a dense-only and a lexical-only configuration, both passing." (`build-plan.md:319-321`)
+
+**State:** complete
+
+**Demonstrator:**
+- `ci:python / Criterion 31 (lexical and dense passes)`
+
+**Mutation:**
+```diff
+diff --git a/modules/recallatron/src/rheo_recallatron/retrieval/dispatch.py b/modules/recallatron/src/rheo_recallatron/retrieval/dispatch.py
+index f7fc8f0..2b65c0f 100644
+--- a/modules/recallatron/src/rheo_recallatron/retrieval/dispatch.py
++++ b/modules/recallatron/src/rheo_recallatron/retrieval/dispatch.py
+@@ -81,4 +81,4 @@ def resolve_strategy(ctx: WorkspaceContext, uow: UnitOfWork) -> RetrievalStrateg
+             uow, workspace_id=ctx.workspace_id
+         ).workspace_overrides(ctx.workspace_id)
+     )
+-    return STRATEGY_REGISTRY[name]
++    return STRATEGY_REGISTRY[str(RETRIEVAL_STRATEGY_SPEC.default)]
+```
+
+**Cost:** `ci:python / Criterion 31 (lexical and dense passes)` — first observed failure line: `E       AssertionError: assert 'hybrid' == 'lexical'`, at `tests/postgres/test_memory_records.py:1073` in `test_the_pass_recalls_with_the_strategy_its_environment_names`, the lexical pass's first red of nine; `make` stopped there, before the dense pass
+
+**Performed by:** run 1a2 Prompt 8 (2026-09-23)
+
+**Note:** the demonstrator is the workflow step that runs `make criterion-31`, not a node id,
+because the two passes are one file run twice under two environments, `lexical` and then
+`dense`, and a node id cannot say which. The mutation breaks the adapter's selection step and
+nothing else: `resolve_strategy` still reads the workspace's `recallatron.retrieval.strategy`
+row, then dispatches the package default, `hybrid`, whatever the row says. Every recall still
+answers and nothing raises. The first red is the pass sentinel,
+`test_the_pass_recalls_with_the_strategy_its_environment_names`, the direct guard for this
+failure: it checks that each pass's recall reports the strategy the pass named, so an
+override that silently did nothing cannot leave the dense pass running the default while
+`make criterion-31` goes green twice on one code path. It is not the only test this
+particular mutation reddens. Eight other cases in the lexical pass also failed, seven test
+functions with one of them parametrised twice, each pinning its workspace's strategy or
+reading it back and asserting on what answered: nine failures of 79. The dense pass's own
+command, run by hand against the same mutation, failed at the same sentinel with
+`assert 'hybrid' == 'dense'`.
+
+**Note:** what the dense claim is (spec § Technical Risks 8). The module's behavioural suite,
+`tests/postgres/test_memory_records.py`, passes under `dense` at the shipped floor (30, cosine
+0.30) against the real model, fastembed's MiniLM-L6-v2 through the `local` provider, and the
+pass refuses any other provider. A test that pins its own workspace's strategy runs that
+strategy in both passes; the rest run under the pass's. The dense pass is a harness claim with
+two stated limits: it selects the provider by rebinding
+`embedding_registry.configured_provider_name`, not through the
+`recallatron.embedding.provider` setting a real deployment cannot set yet (issue #108), and
+it fills every live memory synchronously with the rebuild's own fill step after each commit
+point, so it proves the steady state and not a memory written moments before its embed job
+runs. One assertion holds only when the
+answer is lexical-only: the exact list `["apples"]` in
+`test_recall_returns_eligible_rows_marked_with_the_resolved_strategy`
+(`test_memory_records.py:1513`). That form encodes lexical `@@` semantics. On the shipped
+provider `pears / a note about pears` scores cosine 0.471 against `apples`, clears the floor,
+and dense returns it, so under `dense` the test asserts instead that `apples` comes first, the
+expired row is absent and every score clears the floor. The dense equivalent is proven beside
+it, in `tests/postgres/test_memory_retrieval.py::test_dense_recall_of_apples_returns_the_nearest_rows_apples_then_pears`,
+which asserts `["apples", "pears"]` and checks `pears`'s margin over the floor in the test. The
+first dense pass (Prompt 6) reported no red among the other measured sites, and none is open.
 
 ---
 

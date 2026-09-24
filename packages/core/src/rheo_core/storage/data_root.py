@@ -7,14 +7,17 @@ Fixed layout under it::
     secrets/                      the file secret backend, mode 0700
     workspaces/<workspace_id>/{uploads,exports,runs,runtime}
     logs/
+    models/<component>/           model artifacts a local provider caches
 
 Modules receive paths only through ``workspace_dir(ctx, purpose)`` for a purpose from
-the closed :class:`Purpose` set; a module cannot name a path. The path arithmetic is
-the pure :func:`workspace_dir_for`, which tests drive directly because no test may
-hand-build a ``WorkspaceContext``.
+the closed :class:`Purpose` set, and through :func:`model_cache_dir`, the one
+deployment-level accessor (published as ``rheo_core.modules.model_cache_dir``); a
+module cannot name a path. The path arithmetic is the pure :func:`workspace_dir_for`,
+which tests drive directly because no test may hand-build a ``WorkspaceContext``.
 """
 
 import logging
+import re
 import stat
 import sys
 from collections.abc import Mapping
@@ -81,6 +84,10 @@ _PURPOSE_SUBDIRS: Final[Mapping[Purpose, str]] = {
     Purpose.SCRATCH: "runtime",
 }
 ROOT_SUBDIRS: Final = ("config", "secrets", "workspaces", "logs")
+
+_MODEL_COMPONENT: Final = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+"""One lowercase path segment. No separator can match, and neither can a leading dot,
+so ``..`` and a hidden name are refused along with ``a/b``."""
 
 
 def platform_data_dir(
@@ -223,6 +230,23 @@ def workspace_dir_for(workspace_id: UUID, purpose: Purpose) -> Path:
     subdir = _PURPOSE_SUBDIRS[Purpose(purpose)]
     root = resolve_data_root().path
     return root / "workspaces" / str(workspace_id) / subdir
+
+
+def model_cache_dir(component: str) -> Path:
+    """``<data_root>/models/<component>``. Pure: touches nothing; the caller creates it.
+
+    Deployment-level rather than under ``workspaces/``, because one model artifact
+    serves every workspace. ``component`` must be a single lowercase segment
+    (``[a-z0-9][a-z0-9._-]{0,63}``) or this is a ``ValueError``, so no caller can
+    smuggle a path segment, the discipline :func:`workspace_dir_for` applies to its
+    ``UUID``.
+
+    ``models`` is deliberately not in :data:`ROOT_SUBDIRS`: nothing creates it until a
+    provider needs it.
+    """
+    if not isinstance(component, str) or not _MODEL_COMPONENT.fullmatch(component):
+        raise ValueError("a model cache component is one lowercase path segment")
+    return resolve_data_root().path / "models" / component
 
 
 def workspace_dir(ctx: WorkspaceContext, purpose: Purpose) -> Path:

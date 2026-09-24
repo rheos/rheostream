@@ -5,6 +5,17 @@
 # is excluded here so `uv sync`/`uv lock` do not treat it as a Python member once it
 # lands. `packs/` is data-only and is deliberately not a member.
 
+# Intel macOS is a development host for this repository, and `onnxruntime` (pulled in
+# by Recallatron's `local-embeddings` extra) stopped publishing macOS x86_64 wheels
+# after 1.23.2. Without this line the universal lock takes the newest release, and
+# `uv sync --frozen --extra local-embeddings` then refuses on that host for want of a
+# wheel. Naming the environment makes the resolver keep a version that installs there;
+# every other platform resolves as it would anyway.
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
+
 [tool.uv.workspace]
 members = ["packages/*", "apps/*", "modules/*", "connectors", "runtimes", "channels"]
 exclude = ["apps/web"]

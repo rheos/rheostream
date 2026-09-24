@@ -7,16 +7,20 @@ nobody did.
 
 **What this revision fills in, and what stays empty.** The storage declaration names
 the two Postgres extensions its tables need, ``configuration_schema`` carries the
-module's one settings key, ``record_types`` declares the two addressable tables and
+module's settings keys, ``record_types`` declares the two addressable tables and
 carries the memory's own owned-delete pair, and ``operations``/``resolvers`` carry the
-read half, the write half, the two lifecycle changes and the two service-only entity
-reads. ``events`` declares both ratified event types and ``audit_sink`` is installed,
-because the first ``mutate`` operation now exists and neither is optional for one:
-dispatch refuses every non-``READ`` call whose module has no sink.
-``deletion_participants`` carries the other half of an erasure, ``jobs`` and
-``schedules`` carry the retention sweep and the daily row that enqueues it, and
-``tools`` carries § A10's seven memory tools, and ``export`` now carries the real
-exporter/importer pair with the JSON Schema that describes what they move.
+read half, the write half, the two lifecycle changes, the two service-only entity
+reads, the service-only ``recallatron.memory.dedup_candidates`` read and the owner's
+long-running ``recallatron.embedding.rebuild``. ``events`` declares both ratified event
+types and ``audit_sink`` is installed, because the first ``mutate`` operation now
+exists and neither is optional for one: dispatch refuses every non-``READ`` call whose
+module has no sink. ``deletion_participants`` carries the other half of an erasure,
+``jobs`` and ``schedules`` carry the retention sweep and the daily row that enqueues it
+(``jobs`` also carries ``recallatron.embed``, the after-commit embed job a memory write
+enqueues, and ``recallatron.embedding_rebuild``, the one job the rebuild operation
+enqueues; nothing schedules either), and ``tools`` carries § A10's seven memory tools,
+and ``export`` now carries the real exporter/importer pair with the JSON Schema that
+describes what they move.
 ``subscriptions`` stays empty, and that is deliberate: no consumer exists in 1a1, and
 a declaration whose implementation is a later prompt's would be a promise the loader
 registers and nothing keeps.
@@ -44,13 +48,27 @@ from rheo_core.modules.manifest import (
 )
 
 from rheo_recallatron.configuration import (
+    DENSE_FLOOR_PERCENT_SPEC,
+    EMBED_JOB_KIND,
+    EMBED_MAX_ATTEMPTS,
+    EMBEDDING_BATCH_SIZE_SPEC,
+    EMBEDDING_PROVIDER_SPEC,
     ENTITY_RECORD_TYPE,
     MEMORY_RECORD_TYPE,
     MODULE_ID,
+    OVERFETCH_MULTIPLIER_SPEC,
+    REBUILD_JOB_KIND,
+    REBUILD_MAX_ATTEMPTS,
     RETENTION_DAYS_SPEC,
     RETENTION_EXPIRE_BY_AGE_SPEC,
+    RETRIEVAL_STRATEGY_SPEC,
 )
 from rheo_recallatron.eligibility import LIFECYCLE_ROLES
+from rheo_recallatron.embedding.job import EmbedJobPayload, run_embed_job
+from rheo_recallatron.embedding.rebuild import (
+    EmbeddingRebuildPayload,
+    run_embedding_rebuild_job,
+)
 from rheo_recallatron.events import EVENTS
 from rheo_recallatron.export import (
     EXPORT_FORMAT_VERSION,
@@ -93,10 +111,11 @@ MANIFEST: Final = ModuleManifest(
     package_version=metadata.version(DISTRIBUTION),
     core_contract_versions=(CONTRACT_VERSION,),
     dependencies=(),
-    # Two record types, because two of the seven tables are addressable by canonical
+    # Two record types, because two of the eight tables are addressable by canonical
     # reference: a ``recallatron.memory:<uuid>`` and a ``recallatron.memory_entity:
-    # <uuid>``. The other five are associations keyed by a composite primary key, with
-    # no independent identity to reference, so none of them is a record type and none
+    # <uuid>``. Five of the other six are keyed by a composite primary key and the
+    # sixth, ``embedding_state``, is a single row keyed by a boolean. None has an
+    # independent identity to reference, so none of them is a record type and none
     # gains a synthetic id to make it one.
     #
     # ``deletable=True`` on ``memory`` alone: a memory is the thing a person asks to
@@ -153,7 +172,23 @@ MANIFEST: Final = ModuleManifest(
     # workspace's retention posture a stored readable value rather than an inference
     # from an absent row — and what makes turning expiry on one settings write against
     # a schedule that already exists, with no backfill path to invent.
-    configuration_schema=(RETENTION_EXPIRE_BY_AGE_SPEC, RETENTION_DAYS_SPEC),
+    #
+    # The retrieval strategy is the third explicit row, for the same reason: which
+    # strategy ranks a workspace's recall is its own stated value from enable onward.
+    #
+    # The embedding provider, the rebuild's batch size, the dense relevance floor and
+    # the dense arm's over-fetch multiplier are declared and not explicit: which model
+    # runs is the deployment's choice, not a per-workspace row, and a batch size,
+    # floor or multiplier nobody set is correctly the package default.
+    configuration_schema=(
+        RETENTION_EXPIRE_BY_AGE_SPEC,
+        RETENTION_DAYS_SPEC,
+        RETRIEVAL_STRATEGY_SPEC,
+        DENSE_FLOOR_PERCENT_SPEC,
+        OVERFETCH_MULTIPLIER_SPEC,
+        EMBEDDING_PROVIDER_SPEC,
+        EMBEDDING_BATCH_SIZE_SPEC,
+    ),
     operations=OPERATIONS,
     # § A10's seven, and no eighth. Six name this module's own operations; the
     # seventh names the owned-deletion coordinator, which the ratified module
@@ -191,6 +226,24 @@ MANIFEST: Final = ModuleManifest(
             input_model=MemoryRetentionSweepPayload,
             handler=run_memory_retention_sweep,
             max_attempts=SWEEP_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
+        # The embed job and the rebuild. Neither is cancellable, on the sweep's
+        # precedent: an embed is one short provider call, and a rebuild's whole walk is
+        # one transaction, so a cancellation could only discard the walk, never keep
+        # the batches before it.
+        JobKind(
+            name=EMBED_JOB_KIND,
+            input_model=EmbedJobPayload,
+            handler=run_embed_job,
+            max_attempts=EMBED_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
+        JobKind(
+            name=REBUILD_JOB_KIND,
+            input_model=EmbeddingRebuildPayload,
+            handler=run_embedding_rebuild_job,
+            max_attempts=REBUILD_MAX_ATTEMPTS,
             cancellable=False,
         ),
     ),

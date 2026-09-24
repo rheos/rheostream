@@ -1,6 +1,6 @@
-"""Recallatron's declared operations: first-cut lexical ``recall``, the centered
-``read`` window, the two writes — ``remember`` and ``derive`` — and the two lifecycle
-changes, ``correct`` and ``supersede``.
+"""Recallatron's declared operations: ``recall`` through the retrieval seam, the
+centered ``read`` window, the two writes — ``remember`` and ``derive`` — and the two
+lifecycle changes, ``correct`` and ``supersede``.
 
 The reads are ``READ`` and carry no audit spec, because the read class needs none. The
 four writers are ``MUTATE`` and publish inside the same transaction as their row
@@ -10,12 +10,13 @@ writes and the dispatcher's success audit row. ``remember``/``derive`` carry
 record that already exists — and are owner/member alone (§ A10). Every permission
 decision any of them makes is
 :func:`~rheo_recallatron.eligibility.eligible_memory`'s; what lives here is input
-validation, the lexical query, the five-step read precedence, the write ordering, and
-the shape of the answer. The write *machinery* — audience ceiling, purpose rule,
-reference resolution, the row insert — is ``writes.py``'s, because the trusted source
-seam has to write a memory exactly the way these two do, and the lifecycle closure
-itself is ``lifecycle.py``'s, because erasure reaches it through the core's deletion
-coordinator rather than through an operation of this module's.
+validation, the dispatch to the configured retrieval strategy, the five-step read
+precedence, the write ordering, and the shape of the answer. The write *machinery* —
+audience ceiling, purpose rule, reference resolution, the row insert — is
+``writes.py``'s, because the trusted source seam has to write a memory exactly the way
+these two do, and the lifecycle closure itself is ``lifecycle.py``'s, because erasure
+reaches it through the core's deletion coordinator rather than through an operation of
+this module's.
 
 **The read precedence is the security core of this module, and its order is the
 guarantee.** § A6:
@@ -49,13 +50,12 @@ field.
 """
 
 from datetime import datetime
-from typing import Any, Final
+from typing import Final
 from uuid import UUID
 
 from pydantic import Field, field_validator
 from rheo_contracts import (
     AuditSpec,
-    ContextPurpose,
     Idempotency,
     OperationDeclaration,
     Role,
@@ -66,7 +66,6 @@ from rheo_core.deletion import lock_workspace_lifecycle
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import ColumnElement, func, literal_column, select
 
 from rheo_recallatron.configuration import (
     CANDIDATE_SCAN_LIMIT,
@@ -83,15 +82,18 @@ from rheo_recallatron.configuration import (
     RECALL_QUERY_MIN_LENGTH,
 )
 from rheo_recallatron.contracts import (
+    ArmCounts,
     CorrectInput,
     DeriveInput,
     MemoryCorrected,
     MemorySuperseded,
     MemoryWritten,
+    RecallProvenance,
     RememberInput,
     Strict,
     SupersedeInput,
 )
+from rheo_recallatron.dedup import DEDUP_DECLARATION, dedup_candidates
 from rheo_recallatron.eligibility import (
     LIFECYCLE_ROLES,
     READ_ROLES,
@@ -104,24 +106,24 @@ from rheo_recallatron.eligibility import (
     evaluate_all,
     is_container_member,
     memory_reference,
-    row_local_conditions,
 )
+from rheo_recallatron.embedding.operations import EMBEDDING_OPERATIONS
 from rheo_recallatron.entities import ENTITY_OPERATIONS, resolve_mentions
 from rheo_recallatron.events import consumers_for_dispatch
 from rheo_recallatron.lifecycle import correct, supersede
 from rheo_recallatron.references import canonical_ref, memory_target
 from rheo_recallatron.refusals import (
     CONTAINER_MEMBERSHIP_REQUIRED,
-    INPUT_INVALID,
     NOT_FOUND,
-    PURPOSE_MISMATCH,
     REFERENCE_SCAN_LIMIT,
     WINDOW_SCAN_LIMIT,
 )
-from rheo_recallatron.storage import tables as t
+from rheo_recallatron.retrieval.dispatch import resolve_strategy
+from rheo_recallatron.retrieval.protocol import SearchRequest
 from rheo_recallatron.writes import (
     ORIGIN_DERIVED,
     ORIGIN_TOLD,
+    checked_purpose,
     opened,
     resolve_audience,
     resolve_purposes,
@@ -145,24 +147,6 @@ declared separately anyway: § A10's table gives ``correct``/``supersede`` only
 owner/member — :data:`~rheo_recallatron.eligibility.LIFECYCLE_ROLES`, which they and
 the memory's own delete share — so the write roles are not one set that happens to
 equal the read set.
-"""
-
-STRATEGY_LEXICAL: Final = "lexical"
-"""What every item this run returns is marked with.
-
-Not the configurable retrieval adapter, and not a claim on the ranked-retrieval
-criterion: first-cut recall is lexical search over the eligible candidate set, and
-saying so on every row is what stops a later reader mistaking it for tuned retrieval.
-"""
-
-_SEARCH_CONFIG: Final[ColumnElement[Any]] = literal_column("'english'::regconfig")
-"""The text-search configuration the query must use.
-
-It has to be the one the stored generated column was built with — see the
-``search_tsv`` column in this package's tables module — or the query would be matched
-against lexemes produced by a different dictionary. Cast explicitly for the same
-reason the generated column casts: the one-argument form reads a session setting and
-is only ``STABLE``.
 """
 
 
@@ -204,7 +188,25 @@ class MemoryItem(Strict):
 
 
 class RecallItem(MemoryItem):
-    """A recall hit: a memory plus the score and strategy that found it."""
+    """A recall hit: a memory plus the score and strategy that found it.
+
+    **``score`` is a different quantity under each strategy**, comparable only among
+    the items of one response, and ``provenance.strategy`` says which one applies:
+
+    - ``lexical``: ``ts_rank_cd`` cover density over the memory's text. Unbounded above,
+      and its scale depends on the document's length and how densely it matches.
+    - ``dense``: cosine similarity, ``1 - (vector <=> query)``, at or above the
+      workspace's dense floor, because anything below it is withheld.
+    - ``hybrid``: the reciprocal-rank-fusion sum, ``Σ 1 / (60 + rank)`` over the arms
+      that found the memory. At most ``2/61`` with two arms, and on neither arm's scale.
+
+    Since ``hybrid`` is the default, the default path's score is the fused sum, two
+    orders of magnitude below a typical ``ts_rank_cd``. A score compared across
+    strategies, or stored and compared later, compares nothing.
+
+    ``strategy`` is the strategy that answered, and always equals
+    ``provenance.strategy``.
+    """
 
     score: float
     strategy: str
@@ -230,6 +232,7 @@ class RecallInput(Strict):
 
 class RecallResult(Strict):
     items: tuple[RecallItem, ...]
+    provenance: RecallProvenance
 
 
 class ReadInput(Strict):
@@ -271,28 +274,11 @@ their own words. The names stay because the read precedence above cites them.
 """
 
 
-def _checked_purpose(ctx: WorkspaceContext, stated: str | None) -> None:
-    """The authoritative binding is the context's, and a stated purpose is checked
-    against it rather than replacing it.
-
-    Omission resolves to the binding, which is what a bound caller normally does. A
-    value outside the closed vocabulary is ``input_invalid``; a well-formed one that
-    disagrees with the binding is ``purpose_mismatch`` — including the case where the
-    context carries no binding at all, because a caller cannot narrow to a purpose this
-    boundary never verified it holds. Neither refusal echoes the value.
-    """
-    if stated is None:
-        return
-    try:
-        wanted = ContextPurpose(stated)
-    except ValueError:
-        raise OperationRefused(
-            INPUT_INVALID, "purpose is not one of the declared context purposes"
-        ) from None
-    if wanted is not ctx.principal.bound_purpose:
-        raise OperationRefused(
-            PURPOSE_MISMATCH, "the stated purpose is not this context's binding"
-        )
+_checked_purpose = checked_purpose
+"""The authoritative binding is the context's, and a stated purpose is checked against
+it rather than replacing it. Moved to ``writes.py`` beside :func:`opened` when
+``dedup_candidates`` needed it too: that module is registered below, so it cannot
+import this one."""
 
 
 _opened = opened
@@ -384,38 +370,40 @@ def _item(
 def recall(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: RecallInput
 ) -> RecallResult:
-    """Non-empty-query lexical search over the eligible candidate set.
+    """Non-empty-query search over the eligible candidate set, ranked by this
+    workspace's configured retrieval strategy.
 
-    The SQL narrows row-locally and scores; eligibility decides. Candidates are walked
-    in score order and each is fully evaluated — links included — before any of its
-    content is put in the answer, so a row whose source the caller may not read never
-    contributes a title. The walk stops at ``k`` eligible rows or at the bounded
+    The strategy narrows row-locally and ranks; eligibility decides. Candidates are
+    walked in rank order and each is fully evaluated — links included — before any of
+    its content is put in the answer, so a row whose source the caller may not read
+    never contributes a title. The walk stops at ``k`` eligible rows or at the bounded
     candidate scan, whichever comes first.
 
-    No no-query recency bundle, no implicit session expansion, no dense fallback: the
-    strategy is ``lexical`` and says so on every row.
+    No no-query recency bundle and no implicit session expansion. Every item and the
+    response's ``provenance`` name the strategy that answered.
     """
     _checked_purpose(ctx, model_input.purpose)
     request = _opened(ctx, uow)
     mode = _mode(model_input.include_invalidated)
 
-    query = func.plainto_tsquery(_SEARCH_CONFIG, model_input.query)
-    score = func.ts_rank_cd(t.memory.c.search_tsv, query)
-    statement = (
-        select(t.memory.c.id, score.label("score"))
-        .where(
-            t.memory.c.search_tsv.bool_op("@@")(query),
-            *row_local_conditions(request, mode),
-        )
-        .order_by(score.desc(), t.memory.c.recorded_at, t.memory.c.id)
-        .limit(CANDIDATE_SCAN_LIMIT)
+    strategy = resolve_strategy(ctx, uow)
+    ranked = strategy.search(
+        ctx,
+        uow,
+        SearchRequest(
+            query=model_input.query,
+            mode=mode,
+            memory=request,
+            limit=CANDIDATE_SCAN_LIMIT,
+            k=model_input.k,
+        ),
     )
 
     items: list[RecallItem] = []
-    for candidate, candidate_score in uow.connection.execute(statement).all():
+    for hit in ranked.hits:
         if len(items) == model_input.k:
             break
-        decision = eligible_memory(ctx, uow, candidate, mode=mode, request=request)
+        decision = eligible_memory(ctx, uow, hit.ref, mode=mode, request=request)
         if isinstance(decision, Denied):
             if decision.state == REFERENCE_SCAN_LIMIT:
                 raise _refuse(decision)
@@ -427,11 +415,18 @@ def recall(
                 # built twice, so a field added to ``MemoryItem`` cannot land on a
                 # window and be forgotten on a hit.
                 **_item(ctx, uow, decision, request=request).model_dump(),
-                score=float(candidate_score),
-                strategy=STRATEGY_LEXICAL,
+                score=hit.score,
+                strategy=strategy.name,
             )
         )
-    return RecallResult(items=tuple(items))
+    return RecallResult(
+        items=tuple(items),
+        provenance=RecallProvenance(
+            strategy=strategy.name,
+            arms=ArmCounts(lexical=ranked.arms.lexical, dense=ranked.arms.dense),
+            dense_available=ranked.dense_available,
+        ),
+    )
 
 
 def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> ReadWindow:
@@ -715,9 +710,12 @@ OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (CORRECT_DECLARATION, correct),
     (SUPERSEDE_DECLARATION, supersede),
     *ENTITY_OPERATIONS,
+    (DEDUP_DECLARATION, dedup_candidates),
+    *EMBEDDING_OPERATIONS,
 )
-"""What the manifest declares: two reads, two writes, the two lifecycle changes and
-the two service-only entity reads. The record resolver is declared beside this tuple
+"""What the manifest declares: two reads, two writes, the two lifecycle changes, the
+two service-only entity reads, the service-only dedup-candidate read and the owner's
+embedding rebuild. The record resolver is declared beside this tuple
 on the manifest and shares the same eligibility function; erasure is not here at all,
 because a memory is erased through the core's own record-delete operation against the
 owned-delete pair this module declares on its record type."""

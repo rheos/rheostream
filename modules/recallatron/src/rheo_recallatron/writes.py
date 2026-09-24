@@ -54,6 +54,7 @@ from rheo_recallatron.eligibility import (
     eligible_memory,
     memory_reference,
 )
+from rheo_recallatron.embedding.enqueue import enqueue_embed_job
 from rheo_recallatron.entities import ResolvedMention, readable_ref, write_mentions
 from rheo_recallatron.events import MEMORY_RECORDED, publish_memory_event
 from rheo_recallatron.references import canonical_ref, entity_reference, is_memory_ref
@@ -242,6 +243,34 @@ def resolve_purposes(
     if not chosen:
         raise OperationRefused(PURPOSES_EMPTY, "these sources share no purpose")
     return tuple(sorted(purpose.value for purpose in chosen))
+
+
+def checked_purpose(ctx: WorkspaceContext, stated: str | None) -> None:
+    """The read rule: a stated purpose is checked against the binding, never adopted.
+
+    Here beside the write rule, and shared the way :func:`opened` is, because every
+    read operation runs it and ``dedup_candidates`` cannot import the operations
+    module that registers it. One function, so ``input_invalid`` and
+    ``purpose_mismatch`` cannot come to mean different things on different reads.
+
+    Omission resolves to the binding, which is what a bound caller normally does. A
+    value outside the closed vocabulary is ``input_invalid``; a well-formed one that
+    disagrees with the binding is ``purpose_mismatch`` — including the case where the
+    context carries no binding at all, because a caller cannot narrow to a purpose this
+    boundary never verified it holds. Neither refusal echoes the value.
+    """
+    if stated is None:
+        return
+    try:
+        wanted = ContextPurpose(stated)
+    except ValueError:
+        raise OperationRefused(
+            INPUT_INVALID, "purpose is not one of the declared context purposes"
+        ) from None
+    if wanted is not ctx.principal.bound_purpose:
+        raise OperationRefused(
+            PURPOSE_MISMATCH, "the stated purpose is not this context's binding"
+        )
 
 
 # --- references -----------------------------------------------------------------------
@@ -480,6 +509,10 @@ def write_memory(
             external_source_key=external_source_key,
         ),
     )
+    # The embed job, when the workspace can use one: it commits with this row, and the
+    # provider runs in the worker afterwards. ``correct`` calls the same helper itself,
+    # because it rewrites a row in place and never reaches this insert.
+    enqueue_embed_job(ctx, uow, memory_id=memory_id, now=recorded_at)
     for purpose in purposes:
         insert_memory_purpose(
             uow.connection, MemoryPurposeRow(memory_id=memory_id, purpose=purpose)

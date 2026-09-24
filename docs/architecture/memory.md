@@ -25,7 +25,7 @@ link back is a reference resolved under the caller's permission (idea document).
 All in the `recallatron` schema. Every independently addressable table has `id uuid` (UUIDv7);
 the four association tables (`memory_purpose`, `memory_mention`, `memory_link`,
 `memory_embedding`) and `source_receipt` carry only their listed composite primary keys, with no
-surrogate id column on any of them.
+surrogate id column on any of them, and `embedding_state` is a single row keyed by a boolean.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
@@ -34,18 +34,20 @@ surrogate id column on any of them.
 | `memory_entity` | `kind text`, `name text`, `normalized_name text`, `ref text null`, `created_at`, `source_namespace text null`, `external_source_key text null` | `kind` in `person`, `organization`, `project`, `topic`, `place`, `thing`. `name` is required and `normalized_name` is derived from it deterministically. `ref` is an immutable optional canonical backing reference, set when the entity is created and resolved under permission on read. The nullable pair `source_namespace`/`external_source_key` is trusted-ingest provenance; **the columns and their export path exist and nothing in release one writes them** — every entity insert leaves both null, so an entity-keyed `source_receipt` is a shape the schema admits and no code path produces yet. Entity identity is its globally safe UUIDv7, not its name. Equal normalized names are permitted. Creation always creates an independent entity; selecting an existing entity requires an authorized canonical ref. Entity reads expose a label only through an eligible mention or readable backing ref. Deleting the final mention also deletes an entity with no backing ref. There is no uniqueness constraint on name or normalized name and no global name probe; the nonunique `(kind, normalized_name, id)` index only filters an entity set the caller is already eligible for. |
 | `memory_mention` | `memory_id`, `entity_id`, `role text null` | Primary key `(memory_id, entity_id)`, with owning foreign keys to both sides. Which entities a memory is about; `role` is bounded. A mention of an entity that carries a `ref` is always accompanied by an `about` link to that ref in the same transaction ([provenance](#provenance-and-links)). |
 | `memory_link` | `memory_id`, `ref text`, `relation text`, `created_at`, `supersession_lineage boolean` | Primary key `(memory_id, ref, relation)`; the memory foreign key is `ON DELETE CASCADE`. `relation` in `derived_from` (a source this memory was made from: another memory, or a record) and `about` (a record this memory concerns, including every party a source involves and every mentioned entity's record, written at write time). `supersession_lineage` defaults false, is **server-owned and immutable** — no caller sets or clears it — and is allowed only on a `derived_from` link to a memory reference. A marked row retains ancestry, not content, and does not require the source it names to still be live. No link is a foreign key into another schema. Provenance, the permission check, and the contact-permission filter all read this table and nothing else. |
-| `memory_embedding` | `memory_id`, `model_id text`, `dimensions integer`, `vector vector`, `embedded_at` | Primary key `(memory_id, model_id)` and a memory foreign key `ON DELETE CASCADE`; no surrogate id. The dense index. Rows exist only for live, non-invalidated memories and are written by the [embedding job](#the-embedding-job), never inside the writing transaction. |
+| `memory_embedding` | `memory_id`, `model_id text`, `dimensions integer`, `vector vector(384)`, `embedded_at` | Primary key `(memory_id, model_id)` and a memory foreign key `ON DELETE CASCADE`; no surrogate id. The dense index: migration `0003_dense_retrieval` narrows the column to `vector(384)` and adds the HNSW cosine index `memory_embedding_vector_hnsw`. Rows exist only for live, non-invalidated memories and are written by the [embedding job](#the-embedding-job) and the rebuild, never inside the writing transaction. |
+| `embedding_state` | `id boolean`, `embed_input_version integer` | One row per workspace (`CHECK (id)`), added by migration `0003_dense_retrieval` and written by the first [rebuild](#the-embedding-job), not by the migration. It records which composition of a memory's text the stored vectors were made from; a rebuild that finds it missing or different deletes every vector first. Internal and not exported. |
 | `source_receipt` | `representation_type text`, `source_namespace text`, `external_source_key text`, `record_id uuid null`, `payload_digest bytea`, `state text`, `producer_kind text`, `authority_id uuid`, `principal_account_id uuid null`, `audience_kind text`, `audience_id uuid null`, `bound_purpose text null`, `source_recorded_at`, `source_expires_at` | Internal and `exportable`. Primary key `(representation_type, source_namespace, external_source_key)`; `representation_type` in `memory`, `entity`. `record_id` is the nullable original UUIDv7 of the representation the unit created. `payload_digest` is a 32-byte SHA-256. `state` in `active`, `noop`, `denied`, `erased`, `expired`, `orphaned`. The authority columns are immutable and normalized: `producer_kind` in `migration`, `rheo_runtime`, `claude_code_local`; `authority_id` a UUIDv7; `audience_kind` in `workspace`, `member` paired with `audience_id`; `bound_purpose` a nullable member of the closed vocabulary; `source_recorded_at` and `source_expires_at` paired. The table holds no source body, label, filename, transcript or session id, model prompt or output, raw payload, or prior value. |
 
-1a1 provides memory_embedding's table, composite primary key and memory foreign key only. 1a2 owns
-dimension/provider/index strategy, dense fill/rebuild and retrieval behavior. No 1a1 HNSW/index
-definition acts as a persisted model-dimension registry.
+1a1 provided memory_embedding's table, composite primary key and memory foreign key only. 1a2
+owns dimension/provider/index strategy, dense fill/rebuild and retrieval behavior, and its
+migration `0003_dense_retrieval` adds the width and the HNSW index. The width lives in the
+column type and in the module's `EMBEDDING_DIMENSIONS` constant; no index definition and no
+table acts as a persisted model-dimension registry.
 
-Those two are the retrieval index criterion 29 queries: `search_tsv` carries its GIN index in
-this run, and `memory_embedding` carries none — the table, its composite key and its foreign key
-only, with the index strategy 1a2's along with everything that fills it. A memory holds no
-secret and no contact point value; a party's contact points live in the relationships module and
-are `restricted` in the redaction tiers.
+Those two are the retrieval index criterion 29 queries: `search_tsv` carries its GIN index and
+`memory_embedding` its HNSW index. A memory holds no secret and no contact point value; a
+party's contact points live in the relationships module and are `restricted` in the redaction
+tiers.
 
 ## Audience and purposes (FR 27, criteria 27 and 28)
 
@@ -143,9 +145,13 @@ an identity it merely claimed.
 ## Retrieval (FR 27, FR 30, criteria 27 and 31)
 
 `recallatron.memory.recall(query, k, include_invalidated, purpose)`, read class, roles `owner`,
-`member`, `service`. Two stages. Release one runs both in the operation's own handler over
-`plainto_tsquery`/`ts_rank_cd`; moving them behind the module's `RetrievalStrategy.search`, so
-the ranking half becomes a replaceable choice, is run 1a2's and is what criterion 31 tests:
+`member`, `service`. Two stages: the workspace's configured `RetrievalStrategy.search` ranks,
+and the operation's own handler then decides what may be returned. Which strategy ranks is the
+workspace's `recallatron.retrieval.strategy` row, one of `lexical`, `dense` or `hybrid` (package
+default `hybrid`, written at enable), read on the caller's own transaction. A row that will not
+parse, or names a value outside those three, resolves to `lexical`, the one strategy that cannot
+answer from an index the workspace never filled. Criterion 31 runs the module's behavioural
+suite under `lexical` and under `dense`. The two stages, in order:
 
 1. **Candidate set in SQL, before ranking.** Live memories only: `audience_kind = workspace`, or
    `audience_kind = member` with `audience_id` equal to the caller's account (an `account` actor's
@@ -154,25 +160,66 @@ the ranking half becomes a replaceable choice, is run 1a2's and is what criterio
    `invalidated_at is null`, `superseded_by_id is null`, the row is inside the workspace's age
    horizon when one applies at all ([retention](#retention-fr-29-criterion-30)), plus the
    caller's kind and time filters. Nothing outside this set is scored.
-2. **Ranking, then the per-link permission check.** The ranker orders the candidate set
-   (lexical here; dense or hybrid once 1a2 lands the adapter,
-   [storage](storage-and-workspaces.md#retrieval-adapter-d9-fr-30)), and the call walks that
-   order until it has `k` eligible hits or reaches the scan bound of 500 — there is no separate
-   overfetch multiplier setting. For each hit, every
-   `memory_link.ref` is resolved under `ctx`: a reference that is unreadable or `deleted` drops
-   the hit. When Leads is enabled, every `about` link to a party runs
-   `leads.contact_permission.check(party_ref, purpose)`; a result of `withdrawn` or `suppressed`
-   drops the hit (criterion 61); `absent` does not, because no permission record is the normal
-   state of every party (criterion 62) and a memory is the workspace's own note about its work,
-   while a withdrawal or suppression is a person's expressed refusal and must bite. The first
-   `k` survivors are returned; if the scan bound is reached first, the call returns what it has.
+2. **Ranking, then the per-link permission check.** The strategy hands back one ranked list of
+   at most 500 positions ([storage](storage-and-workspaces.md#retrieval-adapter-d9-fr-30)), and
+   the call walks that list in order until it has `k` eligible hits or reaches its end, which is
+   the scan bound of 500. This permission walk has no over-fetch multiplier: no setting widens
+   or narrows how far it looks. The one over-fetch setting,
+   `recallatron.retrieval.overfetch_multiplier` (default 3, bounds 1 to 10), acts at an earlier
+   stage and on the dense arm alone: inside `search`, before fusion, the `hybrid` dense arm
+   fetches `min(k × multiplier, 500)` rows. The lexical arm fetches 500 under `lexical` and
+   `hybrid` alike, and `dense`'s single arm fetches 500 too. Fusion needs more than `k` rows
+   from the dense arm: cut at `k`, a memory the dense arm ranks just below that gets nothing
+   from it, however high the lexical arm ranks it. On the lexical arm a multiplier could only
+   shorten the list the walk gets. For each hit, every `memory_link.ref` is resolved under
+   `ctx`: a reference that is unreadable or `deleted` drops the hit. When Leads is enabled,
+   every `about` link to a party runs `leads.contact_permission.check(party_ref, purpose)`; a
+   result of `withdrawn` or `suppressed` drops the hit (criterion 61); `absent` does not,
+   because no permission record is the normal state of every party (criterion 62) and a memory
+   is the workspace's own note about its work, while a withdrawal or suppression is a person's
+   expressed refusal and must bite. The first `k` survivors are returned; if the scan bound is
+   reached first, the call returns what it has.
 
-The result carries `ref`, `kind`, `title`, `body`, `score`, `strategy`, `occurred_at`, and the
-resolved heads of its links. Criterion 31 runs this and the write path under `lexical` and
-`dense` in turn; the candidate SQL and the link check are strategy-independent. Selecting the
-strategy, filling the dense index, and the ranking behaviour of each are run 1a2's
-([storage](storage-and-workspaces.md#retrieval-adapter-d9-fr-30)); 1a1 owns the records, the
-eligibility rules both stages apply, and the bounds below.
+Each item carries `ref`, `kind`, `title`, `body`, `score`, `strategy`, `occurred_at`, and the
+resolved heads of its links. The response carries `provenance`: `strategy`, the strategy that
+answered, which every item's `strategy` equals; `arms.lexical` and `arms.dense`, the length of
+each arm's ranked list as it entered fusion, after the arm's own limit and before the walk,
+zero for an arm that did not run; and `dense_available`, whether a dense arm could contribute
+to this answer at all. `score` is on the answering strategy's own scale and is comparable only
+among the items of one response: `ts_rank_cd` under `lexical`, cosine similarity under `dense`,
+and the fused sum `Σ 1 / (60 + rank)` under `hybrid`, at most `2/61`. A score compared across
+strategies, or stored and compared later, compares nothing. The candidate SQL and the link
+check are strategy-independent; 1a1 owns the records, the eligibility rules both stages apply,
+and the bounds below.
+
+**How each strategy ranks.** The lexical arm matches the query against `search_tsv` with an
+**OR** join, not an AND: a memory needs one of the query's surviving terms, not all of them.
+The query is reduced to its content lexemes by the `english` configuration that built the
+column, so stopwords go and words are stemmed. From `LEXICAL_MIN_TERMS_FOR_DF` (three) lexemes
+up, a lexeme at least 15% of the workspace's memories contain (`LEXICAL_DF_THRESHOLD`) is
+dropped, read from the column's `pg_stats` sample; a lexeme the statistics do not know counts
+as rare and is kept, and if every lexeme would be dropped the five rarest are kept instead. A
+double-quoted phrase in the query is matched as a phrase, OR-ed in, and never filtered.
+Ranking is `ts_rank_cd` cover density, which carries no inverse-document-frequency term, so a
+match on a rare word and a match on a common one can score alike; IDF-aware lexical ranking is
+run 1b's. The `pg_trgm`
+title index exists, and no recall statement reads it. The dense arm embeds the bare query with
+the configured provider and ranks by cosine similarity, keeping only rows at or above
+`recallatron.retrieval.dense_floor_percent` (an integer percent, default 30, so cosine 0.30).
+That default was measured on the shipped provider. The predecessor's floor, M.O.T.'s L2 bound
+of 0.76 (cosine 0.71), came from a different embedding space and does not transfer; run 1b
+confirms the number on a migrated corpus. `hybrid` runs both arms, fuses them by reciprocal
+rank (constant 60), and within an equal fused score puts the newer memory first.
+
+**When the dense arm cannot contribute** (no provider resolves, the provider raises, the dense
+statement fails, or the workspace holds no vector for the provider's model), it answers no rows
+and `dense_available` is false. It never refuses and never hands back lexical rows under its
+own name, so `dense` then answers no items, and `hybrid` answers the lexical arm's rows in the
+lexical order, labelled `hybrid`. The dense statement runs inside a savepoint, so a failure
+there leaves the recall's transaction usable. Each cause logs one line naming the provider and
+the failure class, never memory text or the query: no provider logs at DEBUG, because it is the
+shipped default and would otherwise log on every `hybrid` recall, and the other three log at
+WARNING.
 
 `recallatron.memory.read(container_ref, target_ref, context, include_invalidated, purpose)`,
 read class, roles `owner`, `member`, `service`, is the second read: one authorized target and a
@@ -190,6 +237,32 @@ neighbours either side (default 2); `recall` takes a query of 1 to 1000 characte
 1 to 50 (default 10), and entity listing a limit of 1 to 50 (default 10). Every read path refuses
 `retention_unavailable` before any container scan or content resolution when the workspace states
 a retention window it cannot read.
+
+### Near-duplicate candidates
+
+`recallatron.memory.dedup_candidates(limit, purpose)`, read class, roles `owner`, `member`,
+`service`, and no MCP tool: like the two entity reads it is service-only in release one. It
+returns at most `limit` pairs (1 to 50, default 10), each `{ref_a, ref_b, score}`, where
+`score` is the cosine similarity of the two stored vectors and is at least 0.80
+(`DEDUP_PAIR_FLOOR`). It only proposes. Nothing merges, confirms or supersedes on a pair's
+strength, and the output carries no field a caller could act on.
+
+Eligibility runs after the bound and before any distance is computed. The call takes at most
+500 of the newest memories (`recorded_at` descending) that pass the candidate SQL above and hold
+a vector for the provider's model, runs the full eligibility check, links included, on each of
+those, and pairs only the ones the caller may read. So a memory the caller cannot read never
+takes a pair slot: it cannot become a readable memory's nearest neighbour, which would hide the
+real pair and hint at the hidden one. It can still take one of the 500 places. A memory the
+candidate SQL admits and eligibility then denies, such as one with a link the caller cannot
+resolve, counts toward the bound, and each such memory can push one readable memory past the
+500th place, where it is not compared. That residual is accepted; recall's scan bound behaves
+the same way. Both sides of every pair are checked again before it is returned, and a denial
+on either side drops the whole pair. The call reads no retrieval-strategy setting: with a
+provider and stored vectors it answers under `lexical` too, and with no provider or no vectors
+for the model it answers no pairs rather than refusing. A call at the full bound measured about
+1.1 to 1.25 seconds on the test cluster, nearly all of it the 500 eligibility checks, and it
+grows with the links each candidate carries. The 501st-newest memory that qualifies for the
+bound is never compared, so a duplicate pair straddling that position is not proposed.
 
 ## Correction and supersession (FR 28, criterion 29)
 
@@ -339,21 +412,49 @@ a fresh replacement survives its expired predecessor's sweep on its own clock.
 
 ## The embedding job
 
-Embedding is a provider call and never runs inside a writing transaction. When the workspace's
-strategy is `dense` or `hybrid`, `remember`, `derive`, `correct`, and `supersede` enqueue a
-`recallatron.embed(memory_ref)` job after commit; the job reads the live memory, calls the
-provider through the [embedding seam](runtime-and-mcp.md#the-embedding-provider) with purpose
-`internal_analysis`, and writes the `memory_embedding` row for the configured `model_id`. Until
-the job has run, a just-written memory is reachable by the lexical index only, and the module
-says so rather than blocking the write on the network. A memory invalidated or deleted before its
-job runs is skipped by the job (it finds no live row).
+Embedding is a provider call and never runs inside a writing transaction. A write enqueues a
+`recallatron.embed` job only when the workspace's strategy is `dense` or `hybrid` **and** an
+embedding provider resolves for the deployment; the strategy alone never enqueues. No provider
+configured means no job is enqueued: under the shipped defaults, `hybrid` with provider `none`,
+a write leaves no job row, no worker wake and no failure entry. The job row is written in the
+writer's own transaction, so it commits with the write, and the provider call runs after that
+commit, in the worker. Two writers call the one enqueue helper: the insert that `remember`,
+`derive`, `supersede` and trusted acceptance share, and `correct`, which rewrites its row in
+place, never reaches that insert, and enqueues through its own call.
+
+The job reads the live memory row `FOR SHARE`, embeds `embed_input(title, body)` (the stored
+title, one newline, the stored body) through the
+[embedding seam](runtime-and-mcp.md#the-embedding-provider), and writes the `memory_embedding`
+row for the provider's `model_id`. A correction or invalidation takes the row's lock before it
+deletes the row's vectors, so the two cannot interleave and the vector that commits was made
+from the text the row then holds. A memory invalidated, superseded or deleted before its job
+runs is skipped, as is one that already has a row for the model. A provider gone by the time
+the job runs is a success that writes nothing; a provider that raises is a real failure,
+retried under the core's backoff, and after five attempts the job lands in the core failure
+list. Until the job has run, a just-written memory has no vector, and the module accepts that
+rather than blocking the write on the provider. Under `hybrid` the lexical arm can still find it;
+under `dense` recall does not return it at all. That gap can last up to
+`work.due_reconcile_seconds` (900 s by default). An ordinary write marks no workspace due; only
+a long-running dispatch does. So the job waits until the worker next visits the workspace, and
+the reconcile floor bounds that wait at the interval.
 
 `recallatron.embedding.rebuild`, mutate class, roles `owner`, long-running, is the whole-index
-form: it deletes embedding rows whose `model_id` is not the configured one, then walks every live
-memory without a row for it in batches of `recallatron.embedding.batch_size` (default 32),
-embedding each batch and reporting progress on its operation record. It runs after a restore
-(embeddings are not exported), after `recallatron.embedding.provider` or the model changes, and
-whenever an owner asks. The lexical index needs no rebuild; it is a generated column.
+form and the only backfill: turning a provider on embeds nothing that already exists. It refuses
+`embedding_provider_unavailable` when no provider resolves. Otherwise it enqueues one job, and
+that job does the whole walk in one transaction: it deletes embedding rows whose `model_id` is
+not the provider's, deletes every row when the workspace's stamped embed-input version
+(`embedding_state`, [entities](#entities)) is missing or not the current one and stamps the
+current one, then embeds every live memory without a row for the model in batches of
+`recallatron.embedding.batch_size` (default 32), reporting progress on its operation record.
+One transaction means the progress becomes visible at commit rather than batch by batch, a
+crash rolls the whole walk back, and a rerun is safe because the walk selects only memories
+lacking a row. It also means a correction, invalidation or deletion of a memory the walk has
+already embedded waits for the rebuild to commit, holding the workspace lifecycle lock while it
+waits. The walk skips a row another writer holds rather than waiting on it, and before it
+commits it queues an embed job for every live memory still without a vector. Nothing schedules
+it: an owner must run it after a restore (embeddings are not exported, so the rebuild recreates
+them), after the provider or its model changes, and whenever else it is needed. The lexical
+index needs no rebuild; it is a generated column.
 
 ## Migration from the predecessor (FR 53, criterion 32)
 
@@ -362,10 +463,13 @@ long-running: creates a `recallatron.migration_batch(id, source_label text, stat
 verification_id uuid null, created_at)` row (`state` in `importing`, `verified`, `live`,
 `failed`; a declared record type whose resolver returns a label and nothing else), writes each
 predecessor record as a memory with `origin = migrated`,
-`audience = workspace`, the default purposes, and a `derived_from` link to the batch, then runs
-the [embedding rebuild](#the-embedding-job) for the batch under the configured strategy and
+`audience = workspace`, the default purposes, and a `derived_from` link to the batch, then
 writes the `core.migration_verification` row
 ([migration verification](deletion-export-migration.md#migration-verification-fr-53)).
+Migrated memories get their vectors from the [embedding rebuild](#the-embedding-job) as it
+ships: it covers the whole workspace rather than one batch, runs only when a provider resolves,
+and refuses without one. Whether and when the import runs it, like the rest of the import's
+shape, is run 1b's to decide.
 Memories of a batch in state `verified` are excluded from the candidate SQL until
 `recallatron.migration.switch_over(batch_ref)` (mutate, roles `owner`) sets the batch `live`.
 The extract file and the report are workspace files under the data root, never in the
@@ -382,9 +486,10 @@ and set through the core's settings operations, not a module operation.
 
 `memory`, `memory_purpose`, `memory_entity`, `memory_mention`, `memory_link`, `source_receipt`,
 source keys, and marked-ancestry (`supersession_lineage`) rows are `exportable`;
-`memory_embedding` is not (the [embedding rebuild](#the-embedding-job) recreates it from `body`
-after a restore, since the embedding model may differ). The retention setting travels with the
-workspace settings. Content-free deletion evidence (`cause`, `retained_successor_ref`) travels
+`memory_embedding` and `embedding_state` are not (the [embedding rebuild](#the-embedding-job)
+recreates both after a restore, embedding each memory's title and body again, since the
+embedding model may differ). The retention setting travels with the workspace settings.
+Content-free deletion evidence (`cause`, `retained_successor_ref`) travels
 with the core deletion category. Criterion 36's comparison is over this exportable set.
 
 An export refuses `export_requires_retention_sweep` when the snapshot still holds content the
@@ -419,6 +524,7 @@ importer never commits, because the whole restore is one transaction.
 | `recallatron.memory.supersede` | mutate | owner, member | `recallatron_supersede` |
 | `core.record.delete` for `recallatron.memory` | destructive | owner, member (a member only for a memory its audience lets it read; the owner's route to a `member`-audience memory is declared and not reachable end to end, [deletion](#deletion-fr-28-r5-criterion-65)) | `recallatron_forget` |
 | `recallatron.entity.list`, `.get` | read | owner, member, service | none in release one (service-only: no MCP tool is registered for either, so no model reaches them) |
+| `recallatron.memory.dedup_candidates` | read | owner, member, service | none in release one (service-only, like the entity reads; [near-duplicate candidates](#near-duplicate-candidates)) |
 | `recallatron.embedding.rebuild` | mutate, long-running | owner | none |
 | `recallatron.migration.import`, `.switch_over` | mutate | owner | none (operator and web only) |
 

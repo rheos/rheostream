@@ -15,11 +15,14 @@ _PATH_TOKEN = "modules/recallatron"
 _MATRIX_PARSER = _REPO_ROOT / "tests" / "test_acceptance_matrix.py"
 _ABSENCE_PROOF_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _DECLARED_TEST_DEPENDENCIES = {
+    "tests/postgres/test_memory_dedup.py",
+    "tests/postgres/test_memory_embedding.py",
     "tests/postgres/test_memory_export_restore.py",
     "tests/postgres/test_memory_lifecycle.py",
     "tests/postgres/test_memory_mcp.py",
     "tests/postgres/test_memory_records.py",
     "tests/postgres/test_memory_retention.py",
+    "tests/postgres/test_memory_retrieval.py",
     "tests/postgres/test_module_install.py",
     "tests/postgres/test_module_lifecycle.py",
     "tests/postgres/test_module_migrations.py",
@@ -41,8 +44,13 @@ tool facade against the one module in the checkout that registers a tool naming 
 core operation, ``test_tool_telemetry.py`` drives the telemetry sink through that same
 tool surface — it needs a ``READ`` tool that declares both a query and a lifecycle
 selector and a ``DESTRUCTIVE`` one that answers ``approval_required``, and no fixture
-module declares either — and ``test_module_lifecycle.py`` reads a real module's package
-and schema versions back through ``core.workspace.status``; none has a substitute,
+module declares either — ``test_memory_embedding.py`` drives the embedding pipeline,
+whose providers, jobs and rebuild are Recallatron's own — ``test_memory_retrieval.py``
+drives the dense arm, which ranks over Recallatron's own vector index —
+``test_memory_dedup.py`` drives the dedup-candidate operation, which pairs memories
+over that same index under Recallatron's own eligibility — and
+``test_module_lifecycle.py`` reads a real module's package and schema versions back
+through ``core.workspace.status``; none has a substitute,
 because a fixture module has no migration chain, no owned-delete declaration and no
 installed distribution metadata to report.
 
