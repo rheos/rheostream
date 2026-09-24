@@ -562,23 +562,23 @@ before the test aborts, so the observed line is the captured-statement list.
 **Mutation:**
 ```diff
 diff --git a/apps/web/src/components/logout-form.tsx b/apps/web/src/components/logout-form.tsx
-index 508a537..1618256 100644
+index e66f725..c005ab8 100644
 --- a/apps/web/src/components/logout-form.tsx
 +++ b/apps/web/src/components/logout-form.tsx
-@@ -7,9 +7,9 @@
+@@ -9,9 +9,9 @@ import styles from "./logout-form.module.css";
   * same-host path from `logoutAction`; an absolute URL would send a subdomain-mode
   * POST to the identity host, which does not hold this host's session cookie.
   */
 -export function LogoutForm({ action }: { action: string }) {
 +export function LogoutForm({ action: _action }: { action: string }) {
    return (
--    <form method="post" action={action}>
-+    <form method="post" action="/auth/logout">
-       <button type="submit">Sign out</button>
-     </form>
-   );
+-    <form className={styles.form} method="post" action={action}>
++    <form className={styles.form} method="post" action="/auth/logout">
+       <button className={styles.button} type="submit">
+         Sign out
+       </button>
 diff --git a/apps/web/src/lib/routing/url-for.ts b/apps/web/src/lib/routing/url-for.ts
-index a7f2245..d9472a1 100644
+index f6b2db5..f0ff6e3 100644
 --- a/apps/web/src/lib/routing/url-for.ts
 +++ b/apps/web/src/lib/routing/url-for.ts
 @@ -88,15 +88,7 @@ export function urlFor(
@@ -599,10 +599,10 @@ index a7f2245..d9472a1 100644
  
  /**
 diff --git a/packages/core/src/rheo_core/routing/url_for.py b/packages/core/src/rheo_core/routing/url_for.py
-index 0e678ef..7fe146f 100644
+index 2ccd265..3f16791 100644
 --- a/packages/core/src/rheo_core/routing/url_for.py
 +++ b/packages/core/src/rheo_core/routing/url_for.py
-@@ -58,11 +58,7 @@ def url_for(config: RoutingConfig, surface: str, path: str) -> str:
+@@ -59,11 +59,7 @@ def url_for(config: RoutingConfig, surface: str, path: str) -> str:
          raise ValueError(
              f"routing surface {surface!r} is not served by this application"
          )
@@ -623,7 +623,15 @@ index 0e678ef..7fe146f 100644
 - `ci:web / Vitest (path mode)` — first observed failure line: `AssertionError: expected 'example.test' to be 'auth.example.test' // Object.is equality`. 5 tests failed.
 - `pytest:tests/test_routing.py::test_the_identity_callback_is_the_documented_url` — first observed failure line: `E       AssertionError: assert 'https://example.test/login' == 'https://circ...le.test/login'`. 9 failed, 34 passed.
 
-**Performed by:** C1 (2026-09-16), C9 (2026-09-17)
+**Performed by:** C1 (2026-09-16), C9 (2026-09-17); the whole three-file mutation re-performed
+by run 1a3 Prompt 6 (2026-09-24) against the same demonstrators, with the same first failure
+line on each. Counts on that run: routing-literal gate exit status 1; vitest subdomain mode 17
+failed, path mode 7 failed (the suite has grown since the counts above); `tests/test_routing.py`
+9 failed, 37 passed.
+
+**Why the hunk moved:** run 1a3 moved the logout form's styling onto the theme tokens, so its
+`<form>` and `<button>` now carry CSS Module classes and the file gained a stylesheet import.
+The mutation is the same two changed lines in the same place.
 
 **Note on C9's ops-side half (2026-09-17).** C1 proved the routing contract through product
 code and vitest; C9 proves the static gate itself bites. Mutation applied to
