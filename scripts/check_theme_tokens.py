@@ -31,7 +31,8 @@ Five rules, each independently self-tested:
      key for an assignment. `status: "green"`, `tone: "red"`
      and `"see #108"` are not colors.
    - every file: a named color, hex or color function in a `var()` fallback
-     (`var(--rs-color-ground, red)`).
+     (`var(--rs-color-ground, red)`), and a named color inside a gradient function
+     in any property or string (`mask-image: linear-gradient(red, transparent)`).
 2. In `.css` files only, no bare `px`/`rem`/`em`/`pt`/`pc`/`in`/`cm`/`mm`/`Q`
    length (any case, a leading-dot or exponent number included: `16PX`, `.5rem`,
    `1e2px`) outside an `@media`/`@container` prelude (`0`, `%`, `ch`, `fr`, `vh`,
@@ -40,9 +41,13 @@ Five rules, each independently self-tested:
    ring/border-width token, so `globals.css`'s `outline: medium solid
    var(--rs-color-control-focus)` has no token to spend instead.
 3. No inline style: no JSX `style=` attribute in a `.tsx`/`.jsx` file (a `const style
-   =` variable is not one), and no imperative style write in any script file
-   (`el.style.color = …`, `el.style.setProperty(…)`, `el.style.cssText = …`,
-   `el.style[…] = …`, `Object.assign(el.style, …)`).
+   =` variable is not one); no `style:` key with a non-string value in an object
+   literal outside a type body in a `.tsx`/`.jsx`/`.js`/`.mjs`/`.cjs` file (the props
+   behind `{...{ style: … }}`; `Intl.NumberFormat(…, { style: "percent" })` and
+   `style?: CSSProperties` are not styles); no `createElement(…, { style: … })` in any
+   script file; and no imperative style write in any script file (`el.style.color =
+   …`, `el.style.setProperty(…)`, `el.style.cssText = …`, `el.style[…] = …`,
+   `Object.assign(el.style, …)`).
 4. Every `var(--rs-…)` reference names an actual token on the v1 contract (or the
    `--rs-font-brand` font-loader variable) — catches a typo'd custom property that would
    otherwise silently resolve to nothing at runtime.
@@ -194,6 +199,30 @@ _IMPERATIVE_STYLE = re.compile(
     r"\.style\s*(?:\.\s*[A-Za-z]+\s*=(?!=)|\.\s*setProperty\s*\(|\[[^\]]*\]\s*=(?!=))"
     r"|\bassign\(\s*[\w$.]+\.style\b"
 )
+# A `style:` key whose value is not a string literal, in a JSX-bearing or plain JS
+# file — the props object behind `{...{ style: … }}` or a `createElement(…, { style:
+# … })` call. A string value is an unrelated option (`Intl.NumberFormat(…, { style:
+# "percent" })`), and `style?:` is an optional type member. `.ts` files are left out:
+# they carry types and plain data, never rendered props.
+_STYLE_KEY = re.compile(r"""(?<![\w$.-])['"]?style['"]?\s*:(?!:)(?!\s*["'`])""")
+_STYLE_KEY_SUFFIXES = frozenset({".tsx", ".jsx", ".js", ".mjs", ".cjs"})
+# `createElement(tag, { … style: … })` in any script file, `.ts` included.
+_CREATE_ELEMENT_STYLE = re.compile(
+    r"\bcreateElement\(\s*[^,()]+,\s*\{[^}]*(?<![\w$.-])['\"]?style['\"]?\s*:"
+)
+# What opens a type body rather than an object literal, read off the text just
+# before a `{`: a type alias, interface, `extends`, a single `&`/`|` type operator
+# (not the `&&`/`||` of a conditional spread), `satisfies`, or an annotation after
+# `)`, `}` or `]`.
+_TYPE_OPENER = re.compile(
+    r"(?:\btype\s+[\w$]+(?:\s*<[^=]*>)?\s*=|\binterface\s+[\w$][^{]*"
+    r"|\bextends\s+[^{]*|(?<![&|])[&|]|\bsatisfies\s*|[)}\]]\s*:)\s*$"
+)
+# The CSS gradient functions, whose arguments carry colors in any property
+# (`mask-image: linear-gradient(red, transparent)`).
+_GRADIENT_OPEN = re.compile(
+    r"(?<![\w-])(?:repeating-)?(?:linear|radial|conic)-gradient\(", re.IGNORECASE
+)
 
 _VAR_REF = re.compile(r"var\(\s*(--rs-[A-Za-z0-9-]+)\s*(?:,[^)]*)?\)")
 _CHROME_REF = re.compile(r"--rs-chrome-[A-Za-z0-9-]*")
@@ -280,6 +309,37 @@ def _named_colors_in(value: str) -> list[str]:
     ]
 
 
+def _gradient_colors_in(path: str, value: str) -> set[str]:
+    """Named colors inside every gradient function's (balanced) argument list."""
+    findings: set[str] = set()
+    for match in _GRADIENT_OPEN.finditer(value):
+        depth, i = 1, match.end()
+        while i < len(value) and depth:
+            depth += {"(": 1, ")": -1}.get(value[i], 0)
+            i += 1
+        for word in _named_colors_in(value[match.end() : i - 1 if not depth else i]):
+            findings.add(f"{path}: named color literal '{word}' in a gradient")
+    return findings
+
+
+def _in_type_body(text: str, position: int) -> bool:
+    """True when `position` sits inside a brace body that a type construct opens
+    (`_TYPE_OPENER`), at any nesting depth — a local copy of the same idea in
+    `check_search_boundary.py`, kept per script on purpose (see scripts/README.md)."""
+    depth = 0
+    for i in range(position - 1, -1, -1):
+        char = text[i]
+        if char == "}":
+            depth += 1
+        elif char == "{":
+            if depth:
+                depth -= 1
+                continue
+            if _TYPE_OPENER.search(text, max(0, i - 200), i):
+                return True
+    return False
+
+
 def _literal_colors_in(path: str, value: str) -> set[str]:
     """Hex, color-function and named-color findings for one color-position value."""
     findings: set[str] = set()
@@ -314,6 +374,7 @@ def _css_color_findings(path: str, stripped: str) -> set[str]:
         if prop.startswith("--") or _COLOR_BEARING_NAME.search(prop):
             for word in _named_colors_in(value):
                 findings.add(f"{path}: named color literal '{word}'")
+        findings |= _gradient_colors_in(path, value)
     return findings
 
 
@@ -321,6 +382,7 @@ def _script_color_findings(path: str, stripped: str) -> set[str]:
     findings = _var_fallback_findings(path, stripped)
     for match in _SCRIPT_STRING.finditer(stripped):
         value = match.group("v") if match.group("q") else match.group("t")
+        findings |= _gradient_colors_in(path, value)
         before = _KEY_BEFORE.search(
             stripped, max(0, match.start() - 120), match.start()
         )
@@ -347,9 +409,17 @@ def _length_findings(path: str, stripped: str) -> list[str]:
     return findings
 
 
-def _inline_style_findings(path: str, stripped: str, *, is_jsx: bool) -> list[str]:
+def _inline_style_findings(path: str, stripped: str, *, suffix: str) -> list[str]:
     findings = []
-    if is_jsx:
+    if suffix in _STYLE_KEY_SUFFIXES:
+        for match in _STYLE_KEY.finditer(stripped):
+            if not _in_type_body(stripped, match.start()):
+                line = stripped.count("\n", 0, match.start()) + 1
+                findings.append(f"{path}: inline style object key (line {line})")
+                break
+    if _CREATE_ELEMENT_STYLE.search(stripped):
+        findings.append(f"{path}: inline style in a createElement props object")
+    if suffix in _JSX_SUFFIXES:
         for match in _INLINE_STYLE.finditer(stripped):
             if _DECLARATION_BEFORE.search(
                 stripped, max(0, match.start() - 40), match.start()
@@ -393,9 +463,7 @@ def check(
         elif suffix in _SCRIPT_SUFFIXES:
             stripped = _strip_ts_comments(raw_text)
             findings.extend(sorted(_script_color_findings(path, stripped)))
-            findings.extend(
-                _inline_style_findings(path, stripped, is_jsx=suffix in _JSX_SUFFIXES)
-            )
+            findings.extend(_inline_style_findings(path, stripped, suffix=suffix))
         else:
             continue
         findings.extend(_token_findings(path, stripped, contract_var_names))
@@ -567,6 +635,36 @@ _PLANTED = {
         "Object.assign(el.style, overrides);\n",
         "imperative style write",
     ),
+    "planted/spread-style.tsx": (
+        "export const P = () => <p {...{ style: { gap: 0 } }} />;\n",
+        "inline style object key",
+    ),
+    "planted/conditional-spread-style.jsx": (
+        "export const P = (on) => <p {...(on && { style: tight })} />;\n",
+        "inline style object key",
+    ),
+    "planted/props-object-style.js": (
+        "const props = {\n  id: 'pill',\n  style: tight,\n};\n",
+        "inline style object key",
+    ),
+    "planted/create-element-style.ts": (
+        'createElement("div", { className: pill, style: tight });\n',
+        "createElement props object",
+    ),
+    # Rule 1, gradients in a non-color property.
+    "planted/gradient-mask.module.css": (
+        ".m { mask-image: linear-gradient(red, transparent); }\n",
+        "in a gradient",
+    ),
+    "planted/gradient-nested.module.css": (
+        ".m { list-style-image: radial-gradient(circle at 50% 50%, "
+        "var(--rs-color-ground), navy); }\n",
+        "in a gradient",
+    ),
+    "planted/gradient-string.tsx": (
+        'export const s = { maskImage: "conic-gradient(gold, transparent)" };\n',
+        "in a gradient",
+    ),
     # Rules 4 and 5.
     "planted/unknown-token.module.css": (
         ".v { color: var(--rs-color-nope); }\n",
@@ -620,6 +718,18 @@ _CLEAN = {
         "const style = { gap: 0 };\n"
         'function pick() { let style = "compact"; return style; }\n'
         "export const P = () => <p className={cx(style, pick())} />;\n"
+    ),
+    "clean/style-not-props.tsx": (
+        'export const pct = new Intl.NumberFormat("en", { style: "percent" });\n'
+        "type Props = { style: CSSProperties; tone: string };\n"
+        "interface Frame { style: CSSProperties }\n"
+        "export function C({ style }: { style: CSSProperties }) { return null; }\n"
+        "export const D = (p: { style?: CSSProperties }) => <p />;\n"
+    ),
+    "clean/style-key-data.ts": "export const option = { style: base, id: 1 };\n",
+    "clean/gradient-tokens.module.css": (
+        ".g { mask-image: linear-gradient(var(--rs-color-ground), transparent); }\n"
+        ".h { grid-area: red; animation-name: tomato; }\n"
     ),
     "clean/style-read.ts": (
         "const current = el.style.color === expected;\n"

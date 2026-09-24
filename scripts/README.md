@@ -31,8 +31,10 @@ every run before scanning the real tree.
 
 `python3 scripts/check_theme_tokens.py` fails on a hard-coded color in a color
 position (a CSS declaration, a style-shaped key or JSX attribute, a whole-string color
-value, a `var()` fallback) or a length literal in CSS, a JSX `style=` attribute or an
-imperative style write, an unrecognised `var(--rs-…)` reference, or any
+value, a `var()` fallback, a gradient's arguments in any property) or a length literal
+in CSS, an inline style (a JSX `style=` attribute, a `style:` props key behind a spread,
+a `createElement(…, { style: … })` call) or an imperative style write, an unrecognised
+`var(--rs-…)` reference, or any
 `--rs-chrome-*` reference, anywhere under `apps/web/src` or `modules/*/web` (TS and JS
 sources alike) outside test files and the two exact exempt directories
 `apps/web/src/theme/themes/` and `apps/web/src/generated/`. A missing `apps/web/src`
@@ -46,6 +48,15 @@ Recallatron's own search screen (`modules/recallatron/web/src/screens/search/`).
 declarations are not props. A missing `apps/web/src` fails it. Runs in both `make lint`
 and `make check`. Self-tests itself on every run before scanning the real tree.
 
+Known limit: the scan reads literals, not values, so it cannot see a search input
+whose value is only known at runtime. It misses a props object written in a `.ts`
+file and spread into JSX elsewhere, a conditional such as
+`role={cond ? "search" : undefined}`, and a constant such as `type={SEARCH_TYPE}`.
+Every literal form the spec names is caught. The runtime backstop for the shell is
+`apps/web/src/shell/ShellFrame.test.tsx`, whose "renders no search input when …" cases
+render the frame in each account state and assert the output has no
+`type="search"`/`role="search"`.
+
 `python3 scripts/check_workspace_scripts.py` fails when a web workspace package under
 `apps/*`, `packages/*` or `modules/*/web` does not declare `lint`, `typecheck` and
 `test` scripts, or is not listed in `pnpm-workspace.yaml` — `pnpm -r` skips either
@@ -54,9 +65,10 @@ tree.
 
 Each gate is a standalone, stdlib-only `python3` script with no import from
 anywhere else in the repository, so it runs from a bare checkout before any
-dependency is installed. That is why the quote-aware `_strip_ts_comments` helper is
-copied into each script that needs it rather than shared: the copies are deliberate,
-and a fix to one belongs in all of them.
+dependency is installed. That is why the quote-aware `_strip_ts_comments` helper, and
+the `_in_type_body` helper the search and theme gates share, are copied into each
+script that needs them rather than shared: the copies are deliberate, and a fix to one
+belongs in all of them.
 
 Run `python3 scripts/check_repository.py` from any directory in a checkout.
 Git and Python 3.9 or newer are the only dependencies.
