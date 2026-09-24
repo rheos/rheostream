@@ -37,6 +37,7 @@ helped. The validator applies the same duck check ``install_sink`` already does,
 the manifest and the installer agree on what a sink is.
 """
 
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -48,9 +49,10 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     PlainValidator,
+    StringConstraints,
     model_validator,
 )
-from rheo_contracts import OperationDeclaration, Role, ToolDeclaration
+from rheo_contracts import OperationDeclaration, Role, SafetyClass, ToolDeclaration
 from rheo_contracts.refs import is_reserved_module
 
 from rheo_core.audit.sink import AuditSink
@@ -109,6 +111,209 @@ class WebSurface:
     surface: str
     host: str
     path: str
+
+
+_SLUG: Final = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_ROUTE_SEGMENT: Final = re.compile(r"[a-z0-9-]+")
+_TS_IDENTIFIER: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+WEB_PACKAGE_SCOPE: Final = "@rheo-stream/"
+
+
+def _slug(value: str) -> str:
+    if not _SLUG.fullmatch(value):
+        raise ValueError(f"{value!r} is not a slug (lowercase words joined by '-')")
+    return value
+
+
+def _route_path(value: str) -> str:
+    """``/`` or ``/segment(/segment)*``: an exact path, never a pattern.
+
+    No path parameters, because parameters travel in the query string; a segment
+    that could carry one (``[id]``, ``:id``, ``*``) fails the segment grammar.
+    """
+    if value == "/":
+        return value
+    if not value.startswith("/") or not all(
+        _ROUTE_SEGMENT.fullmatch(segment) for segment in value[1:].split("/")
+    ):
+        raise ValueError(
+            f"route path {value!r} is not '/' or '/segment(/segment)*' with "
+            "segments of [a-z0-9-]; parameters travel in the query string"
+        )
+    return value
+
+
+def _ts_identifier(value: str) -> str:
+    """A TypeScript identifier, because ``rheo web compose`` emits it as a property
+    access (``recallatronWeb.screens.browse``) rather than as a string."""
+    if not _TS_IDENTIFIER.fullmatch(value):
+        raise ValueError(f"{value!r} is not a TypeScript identifier")
+    return value
+
+
+def _web_package_name(value: str) -> str:
+    if not value.startswith(WEB_PACKAGE_SCOPE) or value == WEB_PACKAGE_SCOPE:
+        raise ValueError(
+            f"package_name {value!r} does not start with {WEB_PACKAGE_SCOPE!r}"
+        )
+    return value
+
+
+Slug = Annotated[str, AfterValidator(_slug)]
+RoutePath = Annotated[str, AfterValidator(_route_path)]
+TsIdentifier = Annotated[str, AfterValidator(_ts_identifier)]
+NavigationLabel = Annotated[str, StringConstraints(min_length=1, max_length=40)]
+
+
+class NavigationEntry(BaseModel):
+    """One navigation item, pointing at one of the same contribution's routes.
+
+    Visible to ``roles`` only; the default is the two workspace roles a person holds.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: Slug
+    label: NavigationLabel
+    path: RoutePath
+    roles: frozenset[Role] = frozenset({Role.OWNER, Role.MEMBER})
+
+
+class WebRoute(BaseModel):
+    """One exact path under the module's surface, and the screen export it renders."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: Slug
+    path: RoutePath
+    screen: TsIdentifier
+
+
+class RecordView(BaseModel):
+    """The component that renders one of this module's own record types."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    record_type: str
+    component: TsIdentifier
+
+
+class FormDeclaration(BaseModel):
+    """A bespoke form component for one of this module's own operations."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation: str
+    component: TsIdentifier
+
+
+class SearchProvider(BaseModel):
+    """A search entry naming one of this module's own ``READ``-class operations."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: Slug
+    operation: str
+
+
+class WebContribution(BaseModel):
+    """What a module contributes to ``apps/web``: its surface and its screens.
+
+    ``rheo web compose`` reads this off every installed distribution and renders
+    ``apps/web/src/modules.generated.ts`` from it; the ownership rules that need the
+    manifest's own id, operations and record types are in
+    :meth:`ModuleManifest._check_invariants`, the grammar rules on the fields here.
+
+    **Two named deviations from ``module-contract.md``'s ratified table.**
+
+    - **``surface`` is not in the ratified field list and is added deliberately.**
+      ``routing_config()`` (``apps/core/src/rheo_app_core/internal_routes.py``) is a
+      live consumer of the module's routing surface and has no other source for it,
+      so the ``WebSurface`` this field used to be travels inside the contribution
+      rather than being dropped from the manifest.
+    - **A navigation entry carries ``path`` and no per-entry ``surface``**, where the
+      ratified export row lists ``surface``: a module contributes navigation only
+      under its own single surface, so a per-entry surface could only repeat this one
+      or name somebody else's.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    surface: WebSurface
+    package_name: Annotated[str, AfterValidator(_web_package_name)]
+    navigation: tuple[NavigationEntry, ...]
+    routes: tuple[WebRoute, ...]
+    record_views: tuple[RecordView, ...]
+    forms: tuple[FormDeclaration, ...]
+    search_providers: tuple[SearchProvider, ...]
+
+
+def _refuse_duplicates(field: str, what: str, keys: Sequence[str]) -> None:
+    seen: set[str] = set()
+    for key in keys:
+        if key in seen:
+            raise ValueError(f"web.{field}: {what} {key!r} is declared twice")
+        seen.add(key)
+
+
+def _check_web_contribution(
+    web: WebContribution,
+    *,
+    module_id: str,
+    operations: Mapping[str, SafetyClass],
+    record_types: frozenset[str],
+) -> None:
+    """The contribution's ownership rules, each refusal naming what it refused.
+
+    Everything here needs the manifest around the contribution — its id, its own
+    operations and its own record types — which is why it runs from
+    :meth:`ModuleManifest._check_invariants` rather than on :class:`WebContribution`.
+    """
+    _refuse_duplicates("navigation", "id", [entry.id for entry in web.navigation])
+    _refuse_duplicates("routes", "id", [route.id for route in web.routes])
+    _refuse_duplicates("routes", "path", [route.path for route in web.routes])
+    _refuse_duplicates(
+        "record_views", "record type", [view.record_type for view in web.record_views]
+    )
+    _refuse_duplicates("forms", "operation", [form.operation for form in web.forms])
+    _refuse_duplicates(
+        "search_providers", "id", [provider.id for provider in web.search_providers]
+    )
+    route_paths = {route.path for route in web.routes}
+    for entry in web.navigation:
+        if entry.path not in route_paths:
+            raise ValueError(
+                f"web.navigation: entry {entry.id!r} points at {entry.path!r}, "
+                "which none of this contribution's routes declares"
+            )
+    for provider in web.search_providers:
+        safety = operations.get(provider.operation)
+        if safety is None:
+            raise ValueError(
+                f"web.search_providers: provider {provider.id!r} names "
+                f"{provider.operation!r}, which is not one of module "
+                f"{module_id!r}'s own operations"
+            )
+        if safety is not SafetyClass.READ:
+            raise ValueError(
+                f"web.search_providers: provider {provider.id!r} names "
+                f"{provider.operation!r}, which is {safety.value!r}-class; a search "
+                "provider names a read-class operation"
+            )
+    for form in web.forms:
+        if form.operation not in operations:
+            raise ValueError(
+                f"web.forms: form {form.component!r} names {form.operation!r}, which "
+                f"is not one of module {module_id!r}'s own operations"
+            )
+    owned_types = {f"{module_id}.{name}" for name in record_types}
+    for view in web.record_views:
+        if view.record_type not in owned_types:
+            raise ValueError(
+                f"web.record_views: record type {view.record_type!r} is not "
+                f"'{module_id}.<name>' for one of module {module_id!r}'s own "
+                "record types"
+            )
 
 
 HealthCheck = Callable[[UnitOfWork], None]
@@ -533,7 +738,7 @@ class ModuleManifest(BaseModel):
     resolvers: tuple[tuple[str, RecordResolver], ...]
     deletion_participants: tuple[DeletionParticipant, ...]
     export: ExportDeclaration
-    web: WebSurface | None = None
+    web: WebContribution | None = None
     agent_guidance: str | None = None
     secret_scopes: tuple[str, ...]
     connector_bindings: tuple[ConnectorBinding, ...]
@@ -552,6 +757,13 @@ class ModuleManifest(BaseModel):
         still left to ``OperationRegistry.register`` and ``ResolverRegistry.
         register``, which the loader calls with ``origin = manifest.module_id``.
         Re-checking any of it here would be a second, weaker copy of a shipped gate.
+
+        **The web contribution's ownership rules were added in run 1a3** (see
+        :func:`_check_web_contribution`): they are here rather than on
+        :class:`WebContribution` because each one reads this manifest's own id,
+        operations or record types. No registration re-checks them, because nothing
+        registers a web contribution: ``rheo web compose`` reads it straight off the
+        manifest.
         """
         module_id = self.module_id
         if not module_id.isidentifier() or module_id != module_id.lower():
@@ -582,4 +794,14 @@ class ModuleManifest(BaseModel):
                     f"{dependency.version_range!r} for {dependency.module_id!r} "
                     "is not a PEP 440 specifier set"
                 ) from exc
+        if self.web is not None:
+            _check_web_contribution(
+                self.web,
+                module_id=module_id,
+                operations={
+                    declaration.name: declaration.safety_class
+                    for declaration, _ in self.operations
+                },
+                record_types=frozenset(record.name for record in self.record_types),
+            )
         return self

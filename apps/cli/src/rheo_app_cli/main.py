@@ -12,8 +12,9 @@ The no-subcommand path bootstraps nothing: no settings resolution, no data root,
 no database. Settings and the backend are bootstrapped inside a subcommand's own
 handler (``context.py``). Commands at this run's merge SHA: ``migrate``,
 ``account create``, ``workspace create|repair|list|status``, ``doctor``,
-``routing hosts``, ``member add``, ``token issue|revoke``, ``openapi`` (run 0v's,
-and the only one that bootstraps nothing — see ``commands/openapi.py``).
+``routing hosts``, ``member add``, ``token issue|revoke``, ``openapi`` (run 0v's)
+and ``web compose`` (run 1a3's). Those last two bootstrap nothing — see
+``commands/openapi.py`` and ``commands/web.py``.
 """
 
 import argparse
@@ -33,6 +34,7 @@ from rheo_app_cli.commands import (
     openapi,
     routing,
     token,
+    web,
     workspace,
 )
 
@@ -55,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         member,
         token,
         openapi,
+        web,
     ):
         module.add_parser(subparsers)
     return parser

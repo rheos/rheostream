@@ -19,14 +19,29 @@ import pydantic
 import pytest
 import rheo_contracts
 from packaging.requirements import Requirement
+from rheo_contracts import (
+    AuditSpec,
+    Idempotency,
+    OperationDeclaration,
+    Role,
+    SafetyClass,
+)
 from rheo_contracts.refs import RESERVED_MODULE_SEGMENT
 from rheo_core.audit import CORE_AUDIT_SINK
 from rheo_core.modules.manifest import (
     Dependency,
     ExportDeclaration,
+    FormDeclaration,
     ModuleManifest,
+    NavigationEntry,
+    RecordType,
+    RecordView,
+    SearchProvider,
     SensitivityTier,
     StorageDeclaration,
+    WebContribution,
+    WebRoute,
+    WebSurface,
 )
 from rheo_core.settings.schema import KeySpec, Scope, ValueType
 
@@ -378,6 +393,345 @@ def test_rheo_contracts_exposes_no_module_manifest() -> None:
     """
     assert hasattr(rheo_contracts, "OperationDeclaration")
     assert not hasattr(rheo_contracts, "ModuleManifest")
+
+
+# --- web: the contribution's shape ----------------------------------------------------
+
+
+class _ProbeInput(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="ignore")
+
+    text: str
+
+
+class _ProbeOutput(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    text: str
+
+
+def _probe_handler(*args: object, **kwargs: object) -> object:
+    return None
+
+
+def _operation(name: str, safety_class: SafetyClass) -> OperationDeclaration:
+    return OperationDeclaration(
+        name=name,
+        safety_class=safety_class,
+        roles=frozenset({Role.OWNER}),
+        input_model=_ProbeInput,
+        output=_ProbeOutput,
+        idempotency=Idempotency.NONE,
+        audit=AuditSpec(subject_field=None),
+    )
+
+
+READ_OPERATION = f"{MODULE_ID}.note.find"
+MUTATE_OPERATION = f"{MODULE_ID}.note.add"
+OWNED_RECORD_TYPE = "note"
+
+_WEB_OWNERSHIP = {
+    "operations": (
+        (_operation(READ_OPERATION, SafetyClass.READ), _probe_handler),
+        (_operation(MUTATE_OPERATION, SafetyClass.MUTATE), _probe_handler),
+    ),
+    "record_types": (
+        RecordType(
+            name=OWNED_RECORD_TYPE,
+            table="notes",
+            deletable=False,
+            delete_roles=frozenset(),
+            exportable=False,
+            audience_field=None,
+        ),
+    ),
+}
+"""The operations and record type a probe contribution may name as its own."""
+
+
+def _web(**overrides: object) -> WebContribution:
+    """A valid contribution exercising every tuple, before any override."""
+    fields: dict[str, object] = {
+        "surface": WebSurface(surface=MODULE_ID, host=MODULE_ID, path="/probe"),
+        "package_name": "@rheo-stream/manifest-probe-web",
+        "navigation": (NavigationEntry(id="home", label="Home", path="/"),),
+        "routes": (
+            WebRoute(id="home", path="/", screen="home"),
+            WebRoute(id="detail", path="/notes/detail", screen="detail"),
+        ),
+        "record_views": (
+            RecordView(
+                record_type=f"{MODULE_ID}.{OWNED_RECORD_TYPE}", component="NoteView"
+            ),
+        ),
+        "forms": (FormDeclaration(operation=MUTATE_OPERATION, component="NoteForm"),),
+        "search_providers": (SearchProvider(id="find", operation=READ_OPERATION),),
+    }
+    fields.update(overrides)
+    return WebContribution(**fields)  # type: ignore[arg-type]
+
+
+def _web_manifest(web: WebContribution) -> ModuleManifest:
+    return ModuleManifest(**_fields(**_WEB_OWNERSHIP, web=web))
+
+
+def test_web_is_an_optional_web_contribution() -> None:
+    """Widened from ``WebSurface | None``; the surface now travels inside it."""
+    assert ModuleManifest.model_fields["web"].annotation == WebContribution | None
+    assert ModuleManifest(**_fields()).web is None
+
+
+def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None:
+    assert set(WebContribution.model_fields) == {
+        "surface",
+        "package_name",
+        "navigation",
+        "routes",
+        "record_views",
+        "forms",
+        "search_providers",
+    }
+    fields = WebContribution.model_fields
+    assert fields["surface"].annotation is WebSurface
+    assert fields["navigation"].annotation == tuple[NavigationEntry, ...]
+    assert fields["routes"].annotation == tuple[WebRoute, ...]
+    assert fields["record_views"].annotation == tuple[RecordView, ...]
+    assert fields["forms"].annotation == tuple[FormDeclaration, ...]
+    assert fields["search_providers"].annotation == tuple[SearchProvider, ...]
+
+
+def test_the_entry_types_carry_their_declared_fields() -> None:
+    assert set(NavigationEntry.model_fields) == {"id", "label", "path", "roles"}
+    assert set(WebRoute.model_fields) == {"id", "path", "screen"}
+    assert set(RecordView.model_fields) == {"record_type", "component"}
+    assert set(FormDeclaration.model_fields) == {"operation", "component"}
+    assert set(SearchProvider.model_fields) == {"id", "operation"}
+    roles = NavigationEntry.model_fields["roles"]
+    assert roles.annotation == frozenset[Role]
+    assert roles.default == frozenset({Role.OWNER, Role.MEMBER})
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        NavigationEntry,
+        WebRoute,
+        RecordView,
+        FormDeclaration,
+        SearchProvider,
+        WebContribution,
+    ],
+)
+def test_every_web_type_is_frozen_and_forbids_extra_fields(
+    model: type[pydantic.BaseModel],
+) -> None:
+    assert model.model_config.get("frozen") is True
+    assert model.model_config.get("extra") == "forbid"
+
+
+def test_an_unknown_field_on_a_web_entry_is_refused() -> None:
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        NavigationEntry(id="home", label="Home", path="/", surface="elsewhere")  # type: ignore[call-arg]
+    assert "surface" in _locations(excinfo.value)
+
+
+def test_a_valid_contribution_is_accepted_and_hashable() -> None:
+    """The control every refusal below is measured against: the same contribution,
+    one field different, has to pass."""
+    manifest = _web_manifest(_web())
+    assert manifest.web == _web()
+    assert isinstance(hash(manifest), int)
+    assert manifest.web is not None
+    assert manifest.web.navigation[0].roles == frozenset({Role.OWNER, Role.MEMBER})
+
+
+# --- web: grammar, refused on the field ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path", ["search", "/Search", "/a/", "/a//b", "/item/[id]", "/item/:id", "/a b"]
+)
+def test_a_route_path_outside_the_exact_path_grammar_is_refused(path: str) -> None:
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        WebRoute(id="bad", path=path, screen="bad")
+    assert "path" in _locations(excinfo.value)
+    assert "query string" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("path", ["/", "/search", "/notes/detail", "/a-1/b2"])
+def test_an_exact_route_path_is_accepted(path: str) -> None:
+    assert WebRoute(id="ok", path=path, screen="ok").path == path
+
+
+@pytest.mark.parametrize(
+    "package_name", ["recallatron-web", "@other/probe-web", "@rheo-stream/"]
+)
+def test_a_package_name_outside_the_scope_is_refused(package_name: str) -> None:
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        _web(package_name=package_name)
+    assert "package_name" in _locations(excinfo.value)
+    assert "@rheo-stream/" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("identifier", ["browse-screen", "1view", "browse]", "a.b", ""])
+def test_a_screen_or_component_that_is_not_a_ts_identifier_is_refused(
+    identifier: str,
+) -> None:
+    with pytest.raises(pydantic.ValidationError) as screen:
+        WebRoute(id="bad", path="/", screen=identifier)
+    with pytest.raises(pydantic.ValidationError) as component:
+        RecordView(record_type=f"{MODULE_ID}.note", component=identifier)
+    with pytest.raises(pydantic.ValidationError) as form:
+        FormDeclaration(operation=MUTATE_OPERATION, component=identifier)
+    assert "screen" in _locations(screen.value)
+    assert "component" in _locations(component.value)
+    assert "component" in _locations(form.value)
+    assert "TypeScript identifier" in str(screen.value)
+
+
+@pytest.mark.parametrize("identifier", ["browse", "NoteView", "_private", "v2"])
+def test_a_ts_identifier_is_accepted(identifier: str) -> None:
+    assert WebRoute(id="ok", path="/", screen=identifier).screen == identifier
+
+
+@pytest.mark.parametrize("bad_id", ["Memory", "a_b", "-a", "a-", ""])
+def test_an_id_that_is_not_a_slug_is_refused(bad_id: str) -> None:
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        NavigationEntry(id=bad_id, label="Home", path="/")
+    assert "id" in _locations(excinfo.value)
+
+
+@pytest.mark.parametrize("label", ["", "x" * 41])
+def test_a_navigation_label_outside_one_to_forty_characters_is_refused(
+    label: str,
+) -> None:
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        NavigationEntry(id="home", label=label, path="/")
+    assert "label" in _locations(excinfo.value)
+
+
+def test_a_forty_character_label_is_accepted() -> None:
+    assert len(NavigationEntry(id="home", label="x" * 40, path="/").label) == 40
+
+
+# --- web: ownership, refused by _check_invariants ------------------------------------
+
+_HOME = WebRoute(id="home", path="/", screen="home")
+
+WEB_REFUSALS: dict[str, tuple[dict[str, object], str]] = {
+    "duplicate navigation id": (
+        {
+            "navigation": (
+                NavigationEntry(id="home", label="Home", path="/"),
+                NavigationEntry(id="home", label="Again", path="/"),
+            )
+        },
+        "web.navigation: id 'home' is declared twice",
+    ),
+    "duplicate route id": (
+        {"routes": (_HOME, WebRoute(id="home", path="/other", screen="other"))},
+        "web.routes: id 'home' is declared twice",
+    ),
+    "duplicate route path": (
+        {"routes": (_HOME, WebRoute(id="again", path="/", screen="again"))},
+        "web.routes: path '/' is declared twice",
+    ),
+    "duplicate record view": (
+        {
+            "record_views": (
+                RecordView(record_type=f"{MODULE_ID}.note", component="NoteView"),
+                RecordView(record_type=f"{MODULE_ID}.note", component="OtherView"),
+            )
+        },
+        f"web.record_views: record type '{MODULE_ID}.note' is declared twice",
+    ),
+    "duplicate form": (
+        {
+            "forms": (
+                FormDeclaration(operation=MUTATE_OPERATION, component="NoteForm"),
+                FormDeclaration(operation=MUTATE_OPERATION, component="OtherForm"),
+            )
+        },
+        f"web.forms: operation '{MUTATE_OPERATION}' is declared twice",
+    ),
+    "duplicate search provider id": (
+        {
+            "search_providers": (
+                SearchProvider(id="find", operation=READ_OPERATION),
+                SearchProvider(id="find", operation=READ_OPERATION),
+            )
+        },
+        "web.search_providers: id 'find' is declared twice",
+    ),
+    "dangling navigation path": (
+        {"navigation": (NavigationEntry(id="lost", label="Lost", path="/nowhere"),)},
+        "web.navigation: entry 'lost' points at '/nowhere'",
+    ),
+    "search provider naming another module's operation": (
+        {
+            "search_providers": (
+                SearchProvider(id="find", operation="other_probe.note.find"),
+            )
+        },
+        "web.search_providers: provider 'find' names 'other_probe.note.find', "
+        f"which is not one of module '{MODULE_ID}''s own operations",
+    ),
+    "search provider naming a mutate operation": (
+        {"search_providers": (SearchProvider(id="find", operation=MUTATE_OPERATION),)},
+        f"names '{MUTATE_OPERATION}', which is 'mutate'-class",
+    ),
+    "form naming another module's operation": (
+        {
+            "forms": (
+                FormDeclaration(operation="other_probe.note.add", component="NoteForm"),
+            )
+        },
+        "web.forms: form 'NoteForm' names 'other_probe.note.add'",
+    ),
+    "record view of an undeclared type": (
+        {
+            "record_views": (
+                RecordView(record_type=f"{MODULE_ID}.ghost", component="GhostView"),
+            )
+        },
+        f"web.record_views: record type '{MODULE_ID}.ghost' is not",
+    ),
+    "record view of another module's type": (
+        {
+            "record_views": (
+                RecordView(record_type="other_probe.note", component="NoteView"),
+            )
+        },
+        "web.record_views: record type 'other_probe.note' is not",
+    ),
+}
+"""Each rule ``_check_invariants`` adds for ``web``, broken one at a time against the
+valid :func:`_web` and named by the message only that rule produces."""
+
+
+@pytest.mark.parametrize("case", sorted(WEB_REFUSALS))
+def test_each_web_ownership_rule_refuses_by_name(case: str) -> None:
+    overrides, message = WEB_REFUSALS[case]
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        _web_manifest(_web(**overrides))
+    assert message in str(excinfo.value)
+
+
+def test_a_form_may_name_a_non_read_operation() -> None:
+    """Only a search provider is held to ``READ``; a form exists to write."""
+    manifest = _web_manifest(
+        _web(forms=(FormDeclaration(operation=MUTATE_OPERATION, component="F"),))
+    )
+    assert manifest.web is not None
+    assert manifest.web.forms[0].operation == MUTATE_OPERATION
+
+
+def test_the_web_rules_read_the_manifest_s_own_declarations() -> None:
+    """The same contribution on a manifest that declares no operations and no record
+    types is refused: ownership is read off this manifest, not assumed."""
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        ModuleManifest(**_fields(web=_web()))
+    assert "not one of module" in str(excinfo.value)
 
 
 # --- the packaging runtime dependency -------------------------------------------------

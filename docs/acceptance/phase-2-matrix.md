@@ -24,7 +24,8 @@ applied to `build-plan.md`, so the row now quotes the amended text, its evidence
 clause of it, and it is `complete`. Its second `Note:` records the promotion.
 
 Every mutation below was applied to this working tree on 2026-09-21, run, watched go red,
-and reverted, except criterion 31's, which run 1a2 captured the same way on 2026-09-23;
+and reverted, except criterion 31's, which run 1a2 captured the same way on 2026-09-23,
+and criterion 25's, which run 1a3 re-captured on 2026-09-23 when its context moved;
 each fenced block is the `git diff` that was captured while it was applied, never a
 hand-typed hunk. Criteria 25, 26 and 33 take their demonstrators from run 1a0b's
 close-out evidence, but 1a0b recorded test paths rather than node ids and captured no
@@ -98,23 +99,23 @@ migrations and versions, and they say nothing about interface contributions.
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/modules/manifest.py b/packages/core/src/rheo_core/modules/manifest.py
-index 32c1cd0..3ebaa52 100644
+index 0cd6fbe..1a1d12f 100644
 --- a/packages/core/src/rheo_core/modules/manifest.py
 +++ b/packages/core/src/rheo_core/modules/manifest.py
-@@ -531,7 +531,7 @@ class ModuleManifest(BaseModel):
+@@ -737,7 +737,7 @@ class ModuleManifest(BaseModel):
      schedules: tuple[Schedule, ...]
      resolvers: tuple[tuple[str, RecordResolver], ...]
      deletion_participants: tuple[DeletionParticipant, ...]
 -    export: ExportDeclaration
 +    export: ExportDeclaration | None = None
-     web: WebSurface | None = None
+     web: WebContribution | None = None
      agent_guidance: str | None = None
      secret_scopes: tuple[str, ...]
 ```
 
 **Cost:** `pytest:tests/test_module_manifest.py::test_an_omitted_field_is_refused_by_name` — first observed failure line: `E       Failed: DID NOT RAISE ValidationError`, on the `[export]` case, with the other four parametrised cases still passing
 
-**Performed by:** P7 (2026-09-21)
+**Performed by:** P7 (2026-09-21), 1a3-P1 (2026-09-23)
 
 **Note:** the first demonstrator is a parametrised family and is named as the family on
 purpose, per README.md's second parser rule: the criterion lists six declarations and the
@@ -131,6 +132,11 @@ nothing else in the suite notices.
 as its evidence, but recorded no node id and no applicable hunk. The node ids above were
 re-derived against this tree and the mutation is a fresh capture; nothing here is
 transcribed from the archived run.
+
+**Note:** run 1a3's first prompt widened `web` from `WebSurface | None` to
+`WebContribution | None`, which moved the hunk's context and stopped it applying. The same
+one-line mutation was applied again on 2026-09-23, watched fail with the same `[export]`
+line recorded in `Cost`, reverted, and the block above is that capture.
 
 ---
 

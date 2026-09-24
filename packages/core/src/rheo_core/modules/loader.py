@@ -186,9 +186,13 @@ def module_surfaces() -> Mapping[str, WebSurface]:
 
     Derived from :data:`_LOADED` rather than from a second table kept beside it: one
     record of what loaded cannot disagree with itself about which surfaces are live.
+
+    The surface is ``manifest.web.surface``, the ``WebSurface`` nested in the
+    manifest's ``WebContribution``; the value handed back is that ``WebSurface``
+    itself, because ``routing_config()`` reads ``.host`` and ``.path`` off it.
     """
     return {
-        manifest.web.surface: manifest.web
+        manifest.web.surface.surface: manifest.web.surface
         for manifest in _LOADED.values()
         if manifest.web is not None
     }
