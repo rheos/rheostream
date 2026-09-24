@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@rheo-stream/web-contract": "workspace:*",
     "next": "^16",
     "react": "^19",
     "react-dom": "^19"
