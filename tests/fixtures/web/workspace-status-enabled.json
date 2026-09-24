@@ -1,0 +1,12 @@
+{
+  "core_version": "0.1.0",
+  "core_contract_version": 1,
+  "modules": [
+    {
+      "module_id": "recallatron",
+      "package_version": "0.1.0",
+      "state": "enabled",
+      "schema_version": "0003_dense_retrieval"
+    }
+  ]
+}

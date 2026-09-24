@@ -182,9 +182,10 @@ jobs:
       # banners, because a byte-exactness assertion inside pytest would need Node
       # and pnpm and the `python` job has neither. That is also why this step is
       # here and not there, and why it is not a separate `codegen` job, which
-      # would duplicate both installs for one command.
+      # would duplicate both installs for one command. The composed module list
+      # (`rheo web compose`) is the third generated file and is diffed here too.
       - name: Generated API artifacts are reproducible
-        run: make codegen && git diff --exit-code -- apps/web/src/generated
+        run: make codegen && git diff --exit-code -- apps/web/src/generated apps/web/src/modules.generated.ts
       - name: ESLint
         run: pnpm -r lint
       - name: Type check

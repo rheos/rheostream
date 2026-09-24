@@ -1,9 +1,12 @@
 import type { NextConfig } from "next";
 
+import packageJson from "./package.json";
+import { workspaceTranspilePackages } from "./src/lib/transpile-packages";
+
 const nextConfig: NextConfig = {
-  // Workspace packages ship TypeScript source. Literal for now; Prompt 9 derives
-  // this list from package.json when a second @rheo-stream/* package arrives.
-  transpilePackages: ["@rheo-stream/web-contract"],
+  // Workspace packages ship TypeScript source. Derived from this app's own
+  // package.json, so a new @rheo-stream/* dependency needs no edit here.
+  transpilePackages: workspaceTranspilePackages(packageJson),
 };
 
 export default nextConfig;

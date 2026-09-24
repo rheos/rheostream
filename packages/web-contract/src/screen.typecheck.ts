@@ -1,47 +1,26 @@
 /**
- * Compile-time checks, enforced by `tsc --noEmit` (no runtime test runs them).
+ * Compile-time refusals, enforced by `tsc --noEmit` (no runtime test runs them).
  *
- * `goldenModules` reproduces the shape `rheo web compose` generates (the golden
- * text in tests/test_web_compose.py), with local stand-ins for the imported
- * module packages. If `ComposedModule` and the generator ever disagree on a key
- * or a type, this file stops compiling. The `@ts-expect-error` lines pin the
- * load-bearing refusal: a route whose `screen` is missing or has the wrong
- * signature must not type-check.
+ * The positive proof that `ComposedModule` and `rheo web compose` agree is not here.
+ * It is `apps/web/src/modules.generated.ts`: the generator's real, committed output,
+ * written `as const satisfies readonly ComposedModule[]` over the real module
+ * packages' real exports, so `tsc` checks it end to end on every run.
+ *
+ * What that file can never show is a refusal: every module that ships is, by
+ * construction, correctly shaped. The three `@ts-expect-error` probes below pin the
+ * load-bearing refusals against a small synthetic module instead, which is the only
+ * reason this file keeps one: a route whose `screen` is synchronous, takes the
+ * wrong props, or names an export the module does not have must not type-check.
  */
 import type { ReactNode } from "react";
 
-import type { ComposedModule, Screen, ScreenProps } from "./screen";
+import type { ComposedModule, Screen } from "./screen";
 
 const probeWeb = {
   screens: {
-    home: async ({ shell, query }: ScreenProps): Promise<ReactNode> =>
-      `${shell.role}:${query.q ?? ""}`,
-    settings: async (): Promise<ReactNode> => null,
+    home: async (): Promise<ReactNode> => null,
   },
-  components: { NoteView: () => null, NoteForm: () => null },
 } as const;
-
-export const goldenModules = [
-  {
-    id: "compose_probe",
-    surface: "compose_ui",
-    navigation: [
-      { id: "home", label: "Home", path: "/", roles: ["member", "owner"] },
-      { id: "settings", label: "Settings", path: "/settings", roles: ["owner"] },
-    ],
-    routes: [
-      { id: "home", path: "/", screen: probeWeb.screens.home },
-      { id: "settings", path: "/settings", screen: probeWeb.screens.settings },
-    ],
-    recordViews: [
-      { recordType: "compose_probe.note", component: probeWeb.components.NoteView },
-    ],
-    forms: [
-      { operation: "compose_probe.note.add", component: probeWeb.components.NoteForm },
-    ],
-    searchProviders: [{ id: "find", operation: "compose_probe.note.find" }],
-  },
-] as const satisfies readonly ComposedModule[];
 
 const synchronousScreen = (): ReactNode => null;
 const wrongPropsScreen = async (props: { other: number }): Promise<ReactNode> =>

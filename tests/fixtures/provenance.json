@@ -25,6 +25,16 @@
     "how": "hand-authored routing config fixture over the example.test host"
   },
   {
+    "path": "tests/fixtures/web/workspace-status-absent.json",
+    "origin": "synthetic",
+    "how": "hand-authored core.workspace.status result with no module installed"
+  },
+  {
+    "path": "tests/fixtures/web/workspace-status-enabled.json",
+    "origin": "synthetic",
+    "how": "hand-authored core.workspace.status result with the memory module enabled"
+  },
+  {
     "path": "modules/recallatron/web/fixtures/coverage-no-provider.json",
     "origin": "synthetic",
     "how": "hand-authored null-provider embedding.coverage response shape"

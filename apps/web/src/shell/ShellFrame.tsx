@@ -22,11 +22,26 @@ export interface ShellAccount {
 }
 
 /**
- * The frame the shell's signed-in-capable pages render inside, today the home page:
- * a header with the product name, the navigation slot and (signed in only) the
- * compact workspace switcher and logout, then the page, then the core-status line.
- * Sign-in, not-found and the error boundary do not use it; they render a bare
- * panel with no account or health context.
+ * One entry of the composed navigation, ready to render: `renderSurface` builds the
+ * `href` with `urlFor` and marks the entry for the page being shown as `current`.
+ */
+export interface ShellNavigationItem {
+  key: string;
+  label: string;
+  href: string;
+  current: boolean;
+}
+
+/**
+ * The frame the shell's signed-in-capable pages render inside, the home page and
+ * every module screen: a header with the product name, the composed navigation and
+ * (signed in only) the compact workspace switcher and logout, then the page, then
+ * the core-status line. Sign-in, not-found and the error boundary do not use it;
+ * they render a bare panel with no account or health context.
+ *
+ * The navigation is whatever `composeNavigation` let through for this workspace
+ * and role (decision A18). The frame names no module and renders no `<nav>` when
+ * the list is empty.
  *
  * The status line keeps the literal text `contract v`: `make demo`'s health check
  * greps the rendered home page for exactly that substring.
@@ -39,20 +54,35 @@ export interface ShellAccount {
 export function ShellFrame({
   health,
   account,
+  navigation = [],
   children,
 }: {
   health: CoreHealthResult;
   account?: ShellAccount | null;
+  navigation?: readonly ShellNavigationItem[];
   children: ReactNode;
 }) {
   return (
     <div className={styles.frame}>
       <header className={styles.header}>
         <p className={styles.brand}>rheoStream</p>
-        {/* Navigation slot. Entries come from the module manifests composed at build
-            time and filtered per workspace at runtime (decision A18), rendered here
-            as a <nav> once the shell composition runtime supplies them. Empty until
-            then, and never hard-wired to any one module. */}
+        {navigation.length > 0 ? (
+          <nav className={styles.nav} aria-label="Workspace">
+            <ul className={styles.navList}>
+              {navigation.map((item) => (
+                <li key={item.key}>
+                  <a
+                    className={styles.navLink}
+                    href={item.href}
+                    aria-current={item.current ? "page" : undefined}
+                  >
+                    {item.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        ) : null}
         {account ? (
           <div className={styles.controls}>
             <WorkspaceSwitcher

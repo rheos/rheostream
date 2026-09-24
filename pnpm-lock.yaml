@@ -10,6 +10,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@rheo-stream/recallatron-web':
+        specifier: workspace:*
+        version: link:../../modules/recallatron/web
       '@rheo-stream/web-contract':
         specifier: workspace:*
         version: link:../../packages/web-contract

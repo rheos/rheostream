@@ -34,8 +34,9 @@ export type Screen = (props: ScreenProps) => Promise<ReactNode>;
  *
  * The module's identifier is `id`, the key the generator
  * (`apps/cli/src/rheo_app_cli/web_compose.py`, pinned by
- * `tests/test_web_compose.py`'s golden output) writes. `screen.typecheck.ts`
- * holds that golden shape against this type.
+ * `tests/test_web_compose.py`'s golden output) writes. The committed
+ * `apps/web/src/modules.generated.ts` holds that shape against this type, with the
+ * real module packages' real exports.
  */
 export interface ComposedModule {
   id: string;

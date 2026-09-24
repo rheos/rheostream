@@ -29,6 +29,40 @@
   color: var(--rs-color-ink);
 }
 
+.nav {
+  display: flex;
+}
+
+.navList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-1);
+  margin: initial;
+  padding: initial;
+  list-style: none;
+}
+
+/* The current entry is marked by an accent underline as well as full ink, so the
+   state does not rest on the ink-dim/ink difference alone. */
+.navLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
+  padding-inline: var(--rs-space-3);
+  color: var(--rs-color-ink-dim);
+  text-decoration: none;
+  border-block-end: medium solid transparent;
+}
+
+.navLink:hover {
+  color: var(--rs-color-ink);
+}
+
+.navLink[aria-current="page"] {
+  color: var(--rs-color-ink);
+  border-block-end-color: var(--rs-color-accent);
+}
+
 .controls {
   display: flex;
   flex-wrap: wrap;

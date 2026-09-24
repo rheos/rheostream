@@ -1,8 +1,8 @@
 """AC 14: both generated artifacts carry a "do not edit" banner.
 
 Run 1a3 adds a third generator, ``rheo web compose``; its banner constant is pinned
-here too, against the renderer's own output until ``modules.generated.ts`` is
-committed.
+here too, against both the renderer's own output and the committed
+``modules.generated.ts``.
 
 Modelled on ``tests/test_ignored_artifacts.py``'s shape — one narrow property per
 test, asserted against the real file in the checkout. It lives in C5 rather than in
@@ -37,6 +37,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 OPENAPI_DOCUMENT = _REPO_ROOT / "apps" / "web" / "src" / "generated" / "openapi.json"
 API_TYPES = _REPO_ROOT / "apps" / "web" / "src" / "generated" / "api-types.ts"
+COMPOSED_MODULES = _REPO_ROOT / "apps" / "web" / "src" / "modules.generated.ts"
 
 BANNER_FIELD = "x-rheo-generated"
 
@@ -97,10 +98,19 @@ def test_the_generated_types_carry_openapi_typescript_s_own_banner() -> None:
 
 def test_the_composed_module_file_opens_with_compose_s_own_banner() -> None:
     """The generator half for ``modules.generated.ts``: the constant is the pinned
-    text, and it is the first line ``rheo web compose`` writes. The file is not
-    committed yet, so the on-disk half joins the two assertions above once it is."""
+    text, and it is the first line ``rheo web compose`` writes."""
     assert COMPOSE_BANNER == MODULES_BANNER, (
         "rheo_app_cli.web_compose.COMPOSE_BANNER has drifted from the pinned "
         f"banner: {COMPOSE_BANNER!r} != {MODULES_BANNER!r}"
     )
     assert render(()).splitlines()[0] == f"// {MODULES_BANNER}"
+
+
+def test_the_committed_composed_module_file_carries_the_banner() -> None:
+    """The on-disk half: the committed file opens with the same banner line."""
+    first = COMPOSED_MODULES.read_text(encoding="utf-8").splitlines()[0]
+    assert first == f"// {MODULES_BANNER}", (
+        f"{COMPOSED_MODULES.relative_to(_REPO_ROOT)} does not open with "
+        f"{MODULES_BANNER!r}; it is a generated artifact and is never hand-edited — "
+        "regenerate it with `make codegen`"
+    )

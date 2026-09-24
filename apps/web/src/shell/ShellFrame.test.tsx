@@ -66,6 +66,28 @@ describe("ShellFrame", () => {
     expect(signedOut).not.toContain("rheo-workspace");
   });
 
+  it("renders the composed navigation with aria-current on the active entry only", () => {
+    const html = renderToStaticMarkup(
+      <ShellFrame
+        health={HEALTHY}
+        navigation={[
+          { key: "m.one", label: "One", href: "/one-target", current: false },
+          { key: "m.two", label: "Two", href: "/two-target", current: true },
+        ]}
+      >
+        <p>page body</p>
+      </ShellFrame>,
+    );
+    expect(html).toMatch(/<nav[^>]*aria-label="Workspace"/);
+    expect(html).toMatch(/<a[^>]*href="\/one-target">One<\/a>/);
+    expect(html).toMatch(/<a[^>]*href="\/two-target" aria-current="page">Two<\/a>/);
+    expect(html.match(/aria-current/g)).toHaveLength(1);
+  });
+
+  it("renders no nav element when nothing is composed", () => {
+    expect(render(HEALTHY, ACCOUNT)).not.toContain("<nav");
+  });
+
   it("renders the page inside main", () => {
     expect(render(HEALTHY, null)).toMatch(/<main[^>]*><p>page body<\/p><\/main>/);
   });

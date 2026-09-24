@@ -263,6 +263,12 @@ criterion-31:
 # a wrong-looking output is fixed in the generator or the source model and
 # regenerated here, never hand-patched.
 #
+# The third command writes apps/web/src/modules.generated.ts, the composed module
+# list, from every installed distribution's manifest. It reads no setting (not even
+# `modules.installed`, see `rheo_app_cli.web_compose`), so it needs neither pin
+# below. It does check apps/web/package.json first and refuses, by name, a module
+# whose web package is not a dependency there.
+#
 # A canonical generation environment is what AC 3 depends on: the emitted bytes
 # must follow from the installed distributions and from nothing about the machine
 # that ran the command. The module allowlist is the deployment-scope setting
@@ -329,3 +335,4 @@ codegen:
 		RHEO__modules__installed= RHEO_DATA_ROOT="$$codegen_data_root" \
 		uv run rheo openapi --out apps/web/src/generated/openapi.json
 	pnpm -C apps/web exec openapi-typescript src/generated/openapi.json -o src/generated/api-types.ts
+	uv run rheo web compose --out apps/web/src/modules.generated.ts

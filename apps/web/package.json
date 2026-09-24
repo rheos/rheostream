@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@rheo-stream/recallatron-web": "workspace:*",
     "@rheo-stream/web-contract": "workspace:*",
     "next": "^16",
     "react": "^19",
