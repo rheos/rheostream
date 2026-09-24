@@ -14,7 +14,7 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  min-block-size: 100vh;
+  min-block-size: 100dvh;
 }
 
 /* Hidden until it takes keyboard focus, then drawn over the header's first row. */
@@ -105,8 +105,8 @@
   margin-inline-start: auto;
 }
 
-/* The page. Its only focus arrives from the skip link, so it draws no ring of its
-   own: `main` is a landmark, not a control. */
+/* The page. It is focusable (tabIndex -1) so the skip link can move focus to it,
+   but it draws no ring of its own: `main` is a landmark, not a control. */
 .main {
   flex: 1 0 auto;
   min-inline-size: 0;
@@ -151,7 +151,8 @@
   }
 
   /* The account controls take a row of their own under the nav: the switcher
-     fills it, and sign-out lines up with the switcher's select row. */
+     fills it, and sign-out aligns with the switcher's bottom row, the one that
+     holds the Switch button. */
   .controls {
     flex-basis: 100%;
     flex-wrap: nowrap;

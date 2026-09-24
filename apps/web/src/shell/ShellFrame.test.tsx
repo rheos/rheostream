@@ -91,4 +91,28 @@ describe("ShellFrame", () => {
   it("renders the page inside main", () => {
     expect(render(HEALTHY, null)).toMatch(/<main[^>]*><p>page body<\/p><\/main>/);
   });
+
+  it.each([
+    ["signed in", ACCOUNT],
+    ["signed out", null],
+  ] as const)(
+    "opens with a skip link to main, ahead of every other focusable element, when %s",
+    (_label, account) => {
+      const html = renderToStaticMarkup(
+        <ShellFrame
+          health={HEALTHY}
+          account={account}
+          navigation={[{ key: "m.one", label: "One", href: "/one-target", current: false }]}
+        >
+          <p>page body</p>
+        </ShellFrame>,
+      );
+      const firstFocusable = /<(a|button|select|input|textarea)\b[^>]*>/.exec(html)?.[0];
+      expect(firstFocusable).toMatch(/^<a [^>]*href="#rheo-main"/);
+      expect(html).toMatch(/<a [^>]*href="#rheo-main"[^>]*>Skip to content<\/a>/);
+      const main = /<main\b[^>]*>/.exec(html)?.[0];
+      expect(main).toContain('id="rheo-main"');
+      expect(main).toContain('tabindex="-1"');
+    },
+  );
 });

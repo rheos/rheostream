@@ -83,6 +83,15 @@ describe("Item", () => {
     expect(markup).toContain('data-state="memory-not-found"');
   });
 
+  it.each([
+    ["unavailable (not found)", refusal(NOT_FOUND), "memory-not-found"],
+    ["error", { state: "unavailable" } as const, "error"],
+  ] as const)("gives the %s state a page heading", async (_label, get, dataState) => {
+    const { markup } = await itemFor(REF, get);
+    expect(markup).toContain(`data-state="${dataState}"`);
+    expect(markup).toMatch(/<h1\b[^>]*>Memory<\/h1>/);
+  });
+
   it("falls back to the generic error otherwise", async () => {
     const { text } = await itemFor(REF, { state: "unavailable" });
     expect(text).toContain("Memory is unavailable right now.");

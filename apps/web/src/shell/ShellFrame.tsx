@@ -32,6 +32,9 @@ export interface ShellNavigationItem {
   current: boolean;
 }
 
+/** The skip link's target. A fragment on the current page, not a route. */
+const MAIN_ID = "rheo-main";
+
 /**
  * The frame the shell's signed-in-capable pages render inside, the home page and
  * every module screen: a header with the product name, the composed navigation and
@@ -51,9 +54,6 @@ export interface ShellNavigationItem {
  * only search input in the application belongs to the memory module's own Search
  * screen.
  */
-/** The skip link's target. A fragment on the current page, not a route. */
-const MAIN_ID = "rheo-main";
-
 export function ShellFrame({
   health,
   account,
@@ -68,7 +68,8 @@ export function ShellFrame({
   return (
     <div className={styles.frame}>
       {/* The first stop for a keyboard: past the header's links and controls to the
-          page itself. `main` takes focus only from this link (tabIndex -1). */}
+          page itself. `main` has tabIndex -1 so following the link moves focus there
+          without adding `main` to the Tab order. */}
       <a className={styles.skip} href={`#${MAIN_ID}`}>
         Skip to content
       </a>

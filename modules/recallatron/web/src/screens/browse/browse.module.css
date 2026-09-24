@@ -1,9 +1,9 @@
 /*
  * Browse: kind filter, then the entity list beside the selected entity. Every value
  * is a --rs-* theme token or a CSS keyword. Panes and rows are separated by the
- * hairline, not by background alone, because the seed's surfaces sit close in
- * luminance by design (surface-2 on surface-1 is about 1.03:1). For the same
- * reason the selected entity row carries an accent edge, not a surface change.
+ * hairline, not by background alone, because a theme's surface levels may sit
+ * close in luminance. For the same reason the selected entity row carries an
+ * accent edge, not only a surface change.
  */
 
 .screen {
