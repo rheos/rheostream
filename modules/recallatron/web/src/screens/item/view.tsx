@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { GenericError, StateMessage } from "../../components/state-message";
 import type { ItemDetail, ItemState, Stamp } from "./load";
 import styles from "./item.module.css";
@@ -11,12 +13,11 @@ function Time({ stamp }: { stamp: Stamp }) {
 function Memory({ item }: { item: ItemDetail }) {
   return (
     <article className={styles.article}>
-      <header className={styles.header}>
-        <p className={styles.kind}>{item.kind}</p>
-        <h1 className={styles.title}>{item.title}</h1>
-      </header>
+      <h1 className={styles.title}>{item.title}</h1>
       <p className={styles.body}>{item.body}</p>
       <dl className={styles.facts}>
+        <dt>Kind</dt>
+        <dd>{item.kind}</dd>
         {item.occurred !== null ? (
           <>
             <dt>Occurred</dt>
@@ -76,17 +77,33 @@ function Memory({ item }: { item: ItemDetail }) {
   );
 }
 
+/** A page with no memory to show still has a heading, so it has an outline. */
+function Unavailable({ children }: { children: ReactNode }) {
+  return (
+    <div className={styles.state}>
+      <h1 className={styles.stateTitle}>Memory</h1>
+      {children}
+    </div>
+  );
+}
+
 export function ItemView({ state }: { state: ItemState }) {
   switch (state.state) {
     case "item":
       return <Memory item={state.item} />;
     case "not-found":
       return (
-        <StateMessage name="memory-not-found">
-          <p className={styles.stateText}>This memory is unavailable.</p>
-        </StateMessage>
+        <Unavailable>
+          <StateMessage name="memory-not-found">
+            <p className={styles.stateText}>This memory is unavailable.</p>
+          </StateMessage>
+        </Unavailable>
       );
     case "error":
-      return <GenericError />;
+      return (
+        <Unavailable>
+          <GenericError />
+        </Unavailable>
+      );
   }
 }

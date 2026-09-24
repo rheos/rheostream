@@ -10,9 +10,17 @@
   padding-inline: var(--rs-space-5);
 }
 
+@media (max-width: 40rem) {
+  .page {
+    padding-inline: var(--rs-space-4);
+  }
+}
+
 .panel {
   inline-size: fit-content;
+  max-inline-size: 100%;
   margin-inline: auto;
+  overflow-wrap: anywhere;
   padding: var(--rs-space-5);
   background: var(--rs-color-surface-1);
   border: var(--rs-size-hairline) solid var(--rs-color-hairline);

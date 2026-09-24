@@ -1,4 +1,5 @@
-/* Item: one memory in full. Tokens and CSS keywords only. */
+/* Item: one memory in full. Tokens and CSS keywords only. The title leads; the kind
+   sits with the other facts rather than as a label above the heading. */
 
 .article {
   max-inline-size: 72ch;
@@ -8,23 +9,14 @@
   border-radius: var(--rs-radius-md);
 }
 
-.header {
-  margin-block-end: var(--rs-space-4);
-}
-
-.kind {
-  margin: 0;
-  font-size: var(--rs-font-size-sm);
-  color: var(--rs-color-ink-faint);
-}
-
 .title {
-  margin-block: var(--rs-space-2) 0;
+  margin-block: 0 var(--rs-space-4);
   overflow-wrap: anywhere;
 }
 
 .body {
-  margin-block: 0 var(--rs-space-4);
+  max-inline-size: 60ch;
+  margin-block: 0 var(--rs-space-5);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -76,6 +68,23 @@
   color: var(--rs-color-ink-faint);
 }
 
+.state {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-4);
+  max-inline-size: 72ch;
+}
+
+.stateTitle {
+  margin-block: 0;
+}
+
 .stateText {
   margin: 0;
+}
+
+@media (max-width: 40rem) {
+  .article {
+    padding: var(--rs-space-4);
+  }
 }

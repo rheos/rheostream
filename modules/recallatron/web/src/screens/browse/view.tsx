@@ -16,7 +16,7 @@ function memoryCount(count: number): string {
 
 function KindFilters({ kinds }: { kinds: KindFilter[] }) {
   return (
-    <nav aria-label="Filter entities by kind" className={styles.kinds}>
+    <nav aria-label="Filter entities by kind">
       <ul className={styles.kindList}>
         {kinds.map((kind) => (
           <li key={kind.label}>
@@ -148,19 +148,29 @@ function DetailPane({ detail }: { detail: DetailState }) {
           ) : (
             <ol className={styles.window}>
               {detail.items.map((item) => (
-                <li key={item.ref} className={styles.windowItem}>
-                  <a href={item.href}>{item.title}</a>
-                  <span className={styles.meta}>
-                    {item.kind} · <time dateTime={item.dateTime}>{item.when}</time>
-                  </span>
+                <li key={item.ref}>
+                  <a className={styles.windowLink} href={item.href}>
+                    <span className={styles.windowTitle}>{item.title}</span>
+                    <span className={styles.meta}>
+                      {item.kind} · <time dateTime={item.dateTime}>{item.when}</time>
+                    </span>
+                  </a>
                 </li>
               ))}
             </ol>
           )}
           {detail.olderHref !== null || detail.newerHref !== null ? (
             <nav aria-label="Move through this entity's memories" className={styles.pager}>
-              {detail.olderHref !== null ? <a href={detail.olderHref}>Older</a> : null}
-              {detail.newerHref !== null ? <a href={detail.newerHref}>Newer</a> : null}
+              {detail.olderHref !== null ? (
+                <a className={styles.pagerLink} href={detail.olderHref}>
+                  Older
+                </a>
+              ) : null}
+              {detail.newerHref !== null ? (
+                <a className={`${styles.pagerLink} ${styles.pagerNewer}`} href={detail.newerHref}>
+                  Newer
+                </a>
+              ) : null}
             </nav>
           ) : null}
         </>

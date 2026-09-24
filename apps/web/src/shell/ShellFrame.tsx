@@ -51,6 +51,9 @@ export interface ShellNavigationItem {
  * only search input in the application belongs to the memory module's own Search
  * screen.
  */
+/** The skip link's target. A fragment on the current page, not a route. */
+const MAIN_ID = "rheo-main";
+
 export function ShellFrame({
   health,
   account,
@@ -64,6 +67,11 @@ export function ShellFrame({
 }) {
   return (
     <div className={styles.frame}>
+      {/* The first stop for a keyboard: past the header's links and controls to the
+          page itself. `main` takes focus only from this link (tabIndex -1). */}
+      <a className={styles.skip} href={`#${MAIN_ID}`}>
+        Skip to content
+      </a>
       <header className={styles.header}>
         <p className={styles.brand}>rheoStream</p>
         {navigation.length > 0 ? (
@@ -94,7 +102,9 @@ export function ShellFrame({
           </div>
         ) : null}
       </header>
-      <main className={styles.main}>{children}</main>
+      <main id={MAIN_ID} tabIndex={-1} className={styles.main}>
+        {children}
+      </main>
       <footer className={styles.footer}>
         {health.status === "ok" ? (
           <p className={styles.statusOk}>core: ok (contract v{health.contractVersion})</p>

@@ -72,6 +72,11 @@ a:hover {
   color: var(--rs-color-accent-strong);
 }
 
+/* Timestamps line up in lists: every digit the same width. */
+time {
+  font-variant-numeric: tabular-nums;
+}
+
 code,
 kbd,
 pre,

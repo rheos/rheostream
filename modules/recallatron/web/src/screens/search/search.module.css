@@ -19,11 +19,14 @@
 }
 
 .label {
+  flex-basis: 100%;
+  font-size: var(--rs-font-size-sm);
   color: var(--rs-color-ink-dim);
 }
 
 .input {
   flex: 1 1 24ch;
+  min-inline-size: 0;
 }
 
 .section {
@@ -32,9 +35,12 @@
   gap: var(--rs-space-3);
 }
 
+/* Which search ran sits directly above what it found, in the same quiet size as
+   the result metadata. */
 .provenance {
   margin: 0;
   font-size: var(--rs-font-size-sm);
+  font-variant-numeric: tabular-nums;
   color: var(--rs-color-ink-dim);
 }
 
@@ -50,6 +56,7 @@
 .result {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: var(--rs-space-1);
   padding: var(--rs-space-4);
 }
@@ -58,18 +65,27 @@
   border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
 }
 
+/* Padded so the title link is a comfortable target even on one short line. */
 .resultTitle {
+  padding-block: var(--rs-space-1);
   font-weight: bold;
+  text-decoration: none;
   overflow-wrap: anywhere;
+}
+
+.resultTitle:hover {
+  text-decoration: underline;
 }
 
 .meta {
   font-size: var(--rs-font-size-sm);
+  font-variant-numeric: tabular-nums;
   color: var(--rs-color-ink-faint);
   overflow-wrap: anywhere;
 }
 
 .excerpt {
+  max-inline-size: 60ch;
   margin: 0;
   color: var(--rs-color-ink-dim);
 }

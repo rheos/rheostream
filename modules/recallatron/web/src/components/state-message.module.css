@@ -1,20 +1,30 @@
 /*
  * Screen states: empty, bounded and error. Every value is a --rs-* theme token or a
- * CSS keyword. The box is marked by a hairline edge rather than a background change,
- * because the seed's nested surfaces are too close in luminance to separate alone.
+ * CSS keyword.
+ *
+ * A neutral state is plain text, not a box: it usually sits inside a pane that
+ * already has its own hairline edge, and a second bordered box inside it reads as a
+ * card nested in a card. An error keeps a full hairline box in the danger color, so
+ * it stands apart from the page wherever it lands; the copy names the problem, so
+ * the color is never the only signal.
  */
 
 .neutral,
 .error {
-  padding-block: var(--rs-space-3);
-  padding-inline: var(--rs-space-4);
-  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
-  border-radius: var(--rs-radius-sm);
+  max-inline-size: 60ch;
   color: var(--rs-color-ink-dim);
 }
 
+.neutral {
+  padding-block: var(--rs-space-2);
+}
+
 .error {
-  border-inline-start: var(--rs-space-1) solid var(--rs-color-danger);
+  padding-block: var(--rs-space-3);
+  padding-inline: var(--rs-space-4);
+  border: var(--rs-size-hairline) solid var(--rs-color-danger);
+  border-radius: var(--rs-radius-sm);
+  color: var(--rs-color-ink);
 }
 
 .text {

@@ -2,7 +2,8 @@
  * Browse: kind filter, then the entity list beside the selected entity. Every value
  * is a --rs-* theme token or a CSS keyword. Panes and rows are separated by the
  * hairline, not by background alone, because the seed's surfaces sit close in
- * luminance by design.
+ * luminance by design (surface-2 on surface-1 is about 1.03:1). For the same
+ * reason the selected entity row carries an accent edge, not a surface change.
  */
 
 .screen {
@@ -15,10 +16,8 @@
   margin-block: 0;
 }
 
-.kinds {
-  overflow-x: auto;
-}
-
+/* The pills wrap, so the list never scrolls sideways and a focus ring is never
+   clipped by a scroll container. */
 .kindList {
   display: flex;
   flex-wrap: wrap;
@@ -63,6 +62,7 @@
 
 .listPane,
 .detailPane {
+  min-inline-size: 0;
   padding: var(--rs-space-4);
   background: var(--rs-color-surface-1);
   border: var(--rs-size-hairline) solid var(--rs-color-hairline);
@@ -87,24 +87,32 @@
   border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
 }
 
-.entityLink {
+/* Entity and window rows are whole-row links: the target is the row, not the
+   words, which keeps every row a comfortable touch target. */
+.entityLink,
+.windowLink {
   display: flex;
   flex-direction: column;
   gap: var(--rs-space-1);
   padding-block: var(--rs-space-3);
-  padding-inline: var(--rs-space-2);
-  color: var(--rs-color-ink);
+  padding-inline: var(--rs-space-3);
+  border: var(--rs-size-hairline) solid transparent;
+  border-radius: var(--rs-radius-sm);
   text-decoration: none;
 }
 
-.entityLink:hover {
-  background: var(--rs-color-surface-2);
+.entityLink {
   color: var(--rs-color-ink);
+}
+
+.entityLink:hover {
+  color: var(--rs-color-ink);
+  border-color: var(--rs-color-hairline);
 }
 
 .entityLink[aria-current="true"] {
   background: var(--rs-color-surface-2);
-  box-shadow: inset var(--rs-space-1) 0 0 var(--rs-color-accent);
+  border-color: var(--rs-color-accent);
 }
 
 .entityName {
@@ -112,14 +120,33 @@
   overflow-wrap: anywhere;
 }
 
+.entityLink:hover .entityName,
+.entityLink[aria-current="true"] .entityName {
+  color: var(--rs-color-accent-strong);
+}
+
+.windowLink {
+  padding-inline: 0;
+}
+
+.windowTitle {
+  color: var(--rs-color-accent);
+  overflow-wrap: anywhere;
+}
+
+.windowLink:hover .windowTitle {
+  color: var(--rs-color-accent-strong);
+  text-decoration: underline;
+}
+
 .meta {
   font-size: var(--rs-font-size-sm);
+  font-variant-numeric: tabular-nums;
   color: var(--rs-color-ink-faint);
 }
 
 .entityHeader {
   padding-block-end: var(--rs-space-3);
-  margin-block-end: var(--rs-space-3);
   border-block-end: var(--rs-size-hairline) solid var(--rs-color-hairline);
 }
 
@@ -151,18 +178,32 @@
   color: var(--rs-color-ink-dim);
 }
 
-.windowItem {
-  display: flex;
-  flex-direction: column;
-  gap: var(--rs-space-1);
-  padding-block: var(--rs-space-3);
-}
-
 .pager {
   display: flex;
-  justify-content: space-between;
   gap: var(--rs-space-3);
   margin-block-start: var(--rs-space-3);
+  padding-block-start: var(--rs-space-3);
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.pagerLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
+  padding-inline: var(--rs-space-3);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-sm);
+  color: var(--rs-color-ink);
+  text-decoration: none;
+}
+
+.pagerLink:hover {
+  color: var(--rs-color-ink);
+  border-color: var(--rs-color-ink-faint);
+}
+
+.pagerNewer {
+  margin-inline-start: auto;
 }
 
 .stateText {

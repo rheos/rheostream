@@ -36,21 +36,30 @@
 .sides {
   display: flex;
   flex-direction: column;
-  gap: var(--rs-space-1);
+  align-items: flex-start;
   min-inline-size: 0;
 }
 
+/* Padded so each side is a comfortable target on one short line. */
 .sideLink {
+  padding-block: var(--rs-space-1);
+  text-decoration: none;
   overflow-wrap: anywhere;
 }
 
+.sideLink:hover {
+  text-decoration: underline;
+}
+
 .unavailable {
+  padding-block: var(--rs-space-1);
   color: var(--rs-color-ink-faint);
 }
 
 .score {
-  font-family: var(--rs-font-mono);
   font-size: var(--rs-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   color: var(--rs-color-ink-dim);
 }
 
