@@ -20,6 +20,12 @@ jobs:
           persist-credentials: false
       - name: Check public repository boundaries and links
         run: python3 scripts/check_repository.py
+      - name: Check for legacy product names (criterion 34)
+        run: make legacy-names
+      - name: Check fixture provenance and synthetic content (criterion 35)
+        run: make fixture-provenance
+      - name: Check for search inputs outside Recallatron's screen (AC 10)
+        run: make search-boundary
 
   # The container image had no gate anywhere until this job (issue #49). The host
   # half of `make build` stalls on a credential helper reaching ghcr.io, which the
@@ -178,17 +184,17 @@ jobs:
       - name: Generated API artifacts are reproducible
         run: make codegen && git diff --exit-code -- apps/web/src/generated
       - name: ESLint
-        run: pnpm -C apps/web lint
+        run: pnpm -r lint
       - name: Type check
-        run: pnpm -C apps/web exec tsc --noEmit
+        run: pnpm -r typecheck
       - name: Build
         run: pnpm -C apps/web build
       - name: Vitest (path mode)
-        run: pnpm -C apps/web test
+        run: pnpm -r test
         env:
           RHEO_ROUTING_MODE: path
       - name: Vitest (subdomain mode)
-        run: pnpm -C apps/web test
+        run: pnpm -r test
         env:
           RHEO_ROUTING_MODE: subdomain
       # After `next build`, so .next/ exists — proves the scan skips generated output.
@@ -199,3 +205,9 @@ jobs:
       # step beside its sibling gate rather than ahead of a fresher tree state.
       - name: Routing-literal gate (criterion 22)
         run: python3 scripts/check_routing_literals.py
+      # Placed beside the two gates above for grouping only. Its roots are
+      # apps/web/src and modules/*/web, and apps/web/.next sits outside them, so
+      # running after the build proves nothing about skipping .next/; the self-test
+      # covers its exact-path exemptions instead.
+      - name: Theme-token gate (AC 4)
+        run: make theme-tokens

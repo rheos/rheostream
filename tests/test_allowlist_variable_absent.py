@@ -21,11 +21,17 @@ match is both what it asks for and strictly stronger here, and it keeps this che
 independent of the case-insensitive rule that harness is fixed at.
 """
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Final
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[1]
+
+#: The shared declaration of tracked-but-binary paths (also read by
+#: scripts/check_legacy_names.py and tests/test_absent_behaviour.py), so there is
+#: one list to keep honest rather than three drifting copies.
+_TRACKED_BINARIES_PATH: Final = _REPO_ROOT / "scripts" / "tracked_binaries.json"
 
 _THIS_FILE: Final = "tests/test_allowlist_variable_absent.py"
 
@@ -57,16 +63,12 @@ _EXPECTED_HITS: Final = {
     ),
 }
 
-#: Tracked files that are binary by format, each with its reason. They cannot be read
-#: as UTF-8, so the census leaves them out by exact path, and checks both ways that
-#: each is still tracked and still fails to decode: the list can neither outlive its
-#: file nor hide a text file from the search.
-_NOT_TEXT: Final = {
-    "apps/web/src/theme/fonts/geist-latin-wght-normal.woff2": (
-        "the vendored Geist web font, a compressed binary; the licence beside it "
-        "(OFL.txt) is text and is still searched"
-    ),
-}
+#: Tracked files that are binary by format, each with its reason — read from the
+#: shared declaration, not hand-kept here. They cannot be read as UTF-8, so the
+#: census leaves them out by exact path, and checks both ways that each is still
+#: tracked and still fails to decode: the list can neither outlive its file nor
+#: hide a text file from the search.
+_NOT_TEXT: Final = json.loads(_TRACKED_BINARIES_PATH.read_text(encoding="utf-8"))
 
 #: A floor on the walk, not a count of the tree. The tracked non-``docs/`` set is in
 #: the low hundreds; anything near zero means ``git ls-files`` answered from the wrong

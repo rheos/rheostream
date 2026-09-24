@@ -2048,18 +2048,19 @@ def test_a_compound_lexeme_stays_one_lexeme_in_the_built_query(
 ) -> None:
     """Step 4 casts the joined survivors to ``tsquery``; it does not re-parse them.
 
-    ``to_tsquery`` would turn the compound ``mot-intak`` into a phrase over its parts
-    (``'mot-intak' <-> 'mot' <-> 'intak'``, nine nodes where the cast has five), so a
-    part the frequency filter had dropped would come back inside the compound. Read
-    off the built expression directly, because recall's result set cannot see the
-    difference: the phrase branch matches the same rows its compound does.
+    ``to_tsquery`` would turn the compound ``widget-intak`` into a phrase over its
+    parts (``'widget-intak' <-> 'widget' <-> 'intak'``, nine nodes where the cast has
+    five), so a part the frequency filter had dropped would come back inside the
+    compound. Read off the built expression directly, because recall's result set
+    cannot see the difference: the phrase branch matches the same rows its compound
+    does.
     """
     with memory.reading() as uow:
-        built = lexical_tsquery(uow.connection, "mot-intake")
+        built = lexical_tsquery(uow.connection, "widget-intake")
         rendered, nodes = uow.connection.execute(
             select(built, func.numnode(built))
         ).one()
-    assert rendered == "'intak' | 'mot' | 'mot-intak'"
+    assert rendered == "'intak' | 'widget' | 'widget-intak'"
     assert nodes == 5
 
 

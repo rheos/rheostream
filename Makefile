@@ -12,7 +12,7 @@
 # (tests/conftest.py, pytest.exit) with a message naming the remedy — it never
 # skips, because a skipped `postgres` marker would pass this gate vacuously.
 
-.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31
+.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary
 
 ABSENCE_PROOF_CONFIG := $(shell git rev-parse --git-path rheo-absence-config.json)
 ABSENCE_PROOF_CHECKOUT := $(shell git rev-parse --git-path rheo-absence-checkout.json)
@@ -23,17 +23,18 @@ install:
 
 test:
 	uv run pytest
-	pnpm -C apps/web test
+	pnpm -r test
 
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
-	pnpm -C apps/web lint
+	pnpm -r lint
 	python3 scripts/check_routing_literals.py
+	python3 scripts/check_theme_tokens.py
 
 typecheck:
 	uv run mypy
-	pnpm -C apps/web exec tsc --noEmit
+	pnpm -r typecheck
 
 build:
 	pnpm -C apps/web build
@@ -191,6 +192,38 @@ demo:
 
 check:
 	python3 scripts/check_repository.py
+	python3 scripts/check_legacy_names.py
+	python3 scripts/check_fixture_provenance.py
+	python3 scripts/check_search_boundary.py
+
+# Criterion 34: no predecessor-product name or generalized source-product-prefix
+# compound identifier in any tracked path, or in any tracked file's text outside
+# the historical-docs exception list `check_legacy_names.py` declares (see that
+# script's own docstring for the exact denylist). Self-tests itself before
+# scanning the real tree, same convention as check_routing_literals.py.
+legacy-names:
+	python3 scripts/check_legacy_names.py
+
+# Criterion 35: every fixtures/-segment file has a provenance.json entry, and
+# content heuristics over fixtures/tests/web source catch a non-reserved email,
+# a non-documentation IPv4, a phone-shaped string, or an hourly-rate-shaped
+# string. Self-tests itself before scanning the real tree.
+fixture-provenance:
+	python3 scripts/check_fixture_provenance.py
+
+# AC 4: no hard-coded color/spacing value or inline style outside the theme
+# token contract, over apps/web/src and modules/*/web (theme data files under
+# apps/web/src/theme/themes/ and codegen output under apps/web/src/generated/ are
+# exempt, those exact paths only). Self-tests itself before scanning the real
+# tree.
+theme-tokens:
+	python3 scripts/check_theme_tokens.py
+
+# AC 10: no search input anywhere in the application shell outside
+# Recallatron's own screen components. Part of `check`; CI runs it as its own
+# step. Self-tests itself before scanning the real tree.
+search-boundary:
+	python3 scripts/check_search_boundary.py
 
 # The tree must be committed first because checkout builds its comparison from HEAD.
 absence-proof:
