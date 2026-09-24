@@ -54,6 +54,43 @@ importers:
         specifier: ^5
         version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1)(esbuild@0.28.2))
 
+  modules/recallatron/web:
+    dependencies:
+      '@rheo-stream/web-contract':
+        specifier: workspace:*
+        version: link:../../../packages/web-contract
+    devDependencies:
+      '@types/node':
+        specifier: ^26
+        version: 26.5.1
+      '@types/react':
+        specifier: ^19
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.3.0(@types/react@19.3.0)
+      eslint:
+        specifier: ^9
+        version: 9.39.5
+      eslint-config-next:
+        specifier: ^16
+        version: 16.3.5(eslint@9.39.5)(typescript@5.9.3)
+      react:
+        specifier: ^19
+        version: 19.3.0
+      react-dom:
+        specifier: ^19
+        version: 19.3.0(react@19.3.0)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+      vite:
+        specifier: ^8
+        version: 8.3.0(@types/node@26.5.1)(esbuild@0.28.2)
+      vitest:
+        specifier: ^5
+        version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1)(esbuild@0.28.2))
+
   packages/web-contract:
     devDependencies:
       '@types/node':

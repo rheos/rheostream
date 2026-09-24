@@ -1,0 +1,170 @@
+/*
+ * Browse: kind filter, then the entity list beside the selected entity. Every value
+ * is a --rs-* theme token or a CSS keyword. Panes and rows are separated by the
+ * hairline, not by background alone, because the seed's surfaces sit close in
+ * luminance by design.
+ */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-4);
+}
+
+.title {
+  margin-block: 0;
+}
+
+.kinds {
+  overflow-x: auto;
+}
+
+.kindList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kindLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
+  padding-inline: var(--rs-space-3);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-lg);
+  color: var(--rs-color-ink-dim);
+  text-decoration: none;
+}
+
+.kindLink:hover {
+  color: var(--rs-color-ink);
+  border-color: var(--rs-color-ink-faint);
+}
+
+.kindLink[aria-current="page"] {
+  color: var(--rs-color-ink);
+  border-color: var(--rs-color-accent);
+}
+
+.panes {
+  display: grid;
+  gap: var(--rs-space-4);
+}
+
+@media (min-width: 56rem) {
+  .panes {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    align-items: start;
+  }
+}
+
+.listPane,
+.detailPane {
+  padding: var(--rs-space-4);
+  background: var(--rs-color-surface-1);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+}
+
+.notice {
+  margin-block: 0 var(--rs-space-3);
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+
+.entityList,
+.window {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.entityList > li + li,
+.window > li + li {
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.entityLink {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-1);
+  padding-block: var(--rs-space-3);
+  padding-inline: var(--rs-space-2);
+  color: var(--rs-color-ink);
+  text-decoration: none;
+}
+
+.entityLink:hover {
+  background: var(--rs-color-surface-2);
+  color: var(--rs-color-ink);
+}
+
+.entityLink[aria-current="true"] {
+  background: var(--rs-color-surface-2);
+  box-shadow: inset var(--rs-space-1) 0 0 var(--rs-color-accent);
+}
+
+.entityName {
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-faint);
+}
+
+.entityHeader {
+  padding-block-end: var(--rs-space-3);
+  margin-block-end: var(--rs-space-3);
+  border-block-end: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.entityTitle {
+  margin-block: 0 var(--rs-space-3);
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--rs-space-1) var(--rs-space-3);
+  margin: 0;
+  font-size: var(--rs-font-size-sm);
+}
+
+.facts dt {
+  color: var(--rs-color-ink-faint);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--rs-color-ink-dim);
+}
+
+.count {
+  margin-block: var(--rs-space-3) 0;
+  color: var(--rs-color-ink-dim);
+}
+
+.windowItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-1);
+  padding-block: var(--rs-space-3);
+}
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--rs-space-3);
+  margin-block-start: var(--rs-space-3);
+}
+
+.stateText {
+  margin: 0;
+}

@@ -1,0 +1,59 @@
+/* Possible duplicates: pairs of links with a similarity. Tokens and keywords only. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-4);
+  max-inline-size: 72ch;
+}
+
+.title {
+  margin-block: 0;
+}
+
+.pairs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--rs-color-surface-1);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+}
+
+.pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--rs-space-3);
+  padding: var(--rs-space-4);
+}
+
+.pair + .pair {
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.sides {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-1);
+  min-inline-size: 0;
+}
+
+.sideLink {
+  overflow-wrap: anywhere;
+}
+
+.unavailable {
+  color: var(--rs-color-ink-faint);
+}
+
+.score {
+  font-family: var(--rs-font-mono);
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+
+.stateText {
+  margin: 0;
+}

@@ -1,0 +1,22 @@
+/*
+ * Screen states: empty, bounded and error. Every value is a --rs-* theme token or a
+ * CSS keyword. The box is marked by a hairline edge rather than a background change,
+ * because the seed's nested surfaces are too close in luminance to separate alone.
+ */
+
+.neutral,
+.error {
+  padding-block: var(--rs-space-3);
+  padding-inline: var(--rs-space-4);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-sm);
+  color: var(--rs-color-ink-dim);
+}
+
+.error {
+  border-inline-start: var(--rs-space-1) solid var(--rs-color-danger);
+}
+
+.text {
+  margin: initial;
+}
