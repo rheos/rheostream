@@ -57,6 +57,17 @@ _EXPECTED_HITS: Final = {
     ),
 }
 
+#: Tracked files that are binary by format, each with its reason. They cannot be read
+#: as UTF-8, so the census leaves them out by exact path, and checks both ways that
+#: each is still tracked and still fails to decode: the list can neither outlive its
+#: file nor hide a text file from the search.
+_NOT_TEXT: Final = {
+    "apps/web/src/theme/fonts/geist-latin-wght-normal.woff2": (
+        "the vendored Geist web font, a compressed binary; the licence beside it "
+        "(OFL.txt) is text and is still searched"
+    ),
+}
+
 #: A floor on the walk, not a count of the tree. The tracked non-``docs/`` set is in
 #: the low hundreds; anything near zero means ``git ls-files`` answered from the wrong
 #: directory, which is the failure the control above also catches.
@@ -98,8 +109,26 @@ def test_the_allowlist_variable_is_gone_outside_docs() -> None:
     in the post-change tree is found by the same read over that same set — in a file
     other than this one, so the control cannot be satisfied by its own declaration.
     """
+    tracked = _tracked_files()
+    not_text = set(_NOT_TEXT)
+    assert not_text <= set(tracked), (
+        f"declared binary files are not tracked: {sorted(not_text - set(tracked))}; "
+        "remove them from _NOT_TEXT"
+    )
+    for path in sorted(not_text):
+        try:
+            (_REPO_ROOT / path).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        raise AssertionError(
+            f"{path} is declared binary but decodes as UTF-8 text; a text file "
+            "belongs in the census, not in _NOT_TEXT"
+        )
+
     scanned = [
-        path for path in _tracked_files() if not path.startswith(_HISTORY_PREFIX)
+        path
+        for path in tracked
+        if not path.startswith(_HISTORY_PREFIX) and path not in not_text
     ]
     assert len(scanned) >= _MINIMUM_FILES, (
         f"the walk resolved to only {len(scanned)} tracked files outside "

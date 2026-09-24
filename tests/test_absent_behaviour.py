@@ -83,6 +83,26 @@ SPIKE_SURVIVORS = {
     ),
 }
 
+#: Tracked files that are binary by format, each with its reason. The census reads
+#: every file as UTF-8 and refuses one that will not decode, so these are left out of
+#: the walk by exact path. Checked both ways in the census: each must still be tracked
+#: and must still fail to decode, so the list can neither outlive its file nor hide a
+#: text file from the search.
+NOT_TEXT = {
+    "apps/web/src/theme/fonts/geist-latin-wght-normal.woff2": (
+        "the vendored Geist web font, a compressed binary; the licence beside it "
+        "(OFL.txt) is text and is still searched"
+    ),
+}
+
+
+def _decodes_as_utf8(path: str) -> bool:
+    try:
+        (_REPO_ROOT / path).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
 
 def _tracked_files() -> set[str]:
     result = subprocess.run(
@@ -122,8 +142,19 @@ def test_no_spike_remains() -> None:
         "that has been deleted or renamed must leave this list rather than sit in it"
     )
 
+    not_text = set(NOT_TEXT)
+    assert not_text <= tracked, (
+        f"declared binary files are not tracked: {sorted(not_text - tracked)}; "
+        "remove them from NOT_TEXT"
+    )
+    decodable = sorted(path for path in not_text if _decodes_as_utf8(path))
+    assert not decodable, (
+        f"declared binary files decode as UTF-8 text: {decodable}; a text file "
+        "belongs in the search, not in NOT_TEXT"
+    )
+
     absent_token(
-        paths=sorted(tracked - declared),
+        paths=sorted(tracked - declared - not_text),
         missing="spike",
         present="rheo",
         covers="AC 22",

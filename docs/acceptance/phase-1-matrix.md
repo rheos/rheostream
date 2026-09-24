@@ -686,8 +686,8 @@ diff --git a/apps/web/src/app/layout.tsx b/apps/web/src/app/layout.tsx
  import type { ReactNode } from "react";
 +import { x } from "@vercel/edge";
  
- export const metadata: Metadata = {
-   title: "rheoStream",
+ import { BUILT_IN_THEMES } from "@/theme/builtins";
+ import { builtInThemeCss } from "@/theme/built-in-css";
 ```
 
 A second mutation (`export const runtime = "edge"` in `apps/web/src/app/page.tsx`) was applied, confirmed, and reverted separately; first observed failure line: `Edge runtime export declared: apps/web/src/app/page.tsx`, exit status 1.
@@ -696,7 +696,13 @@ A second mutation (`export const runtime = "edge"` in `apps/web/src/app/page.tsx
 - `ci:web / Web platform-only gate (criterion 23)` — first observed failure line: `Platform-only @vercel/* import: apps/web/src/app/layout.tsx`, exit status 1.
 - `ci:docker / Build the core/worker image` — see C9 handoff for the GitHub Actions workflow run URL and conclusion on branch `bureau/20260916-0c3-remaining-skeleton`.
 
-**Performed by:** C9 (2026-09-17)
+**Performed by:** C9 (2026-09-17); the layout.tsx mutation re-performed by run 1a3 Prompt 5
+(2026-09-24) against `python3 scripts/check_web_platform.py`, with the same first failure line
+and exit status 1
+
+**Why the hunk moved:** run 1a3 added the theme and font imports under the layout's two type
+imports, so the hunk's trailing context is now those imports rather than `metadata`. The
+mutation is the same added line in the same place.
 
 ---
 
