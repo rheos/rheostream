@@ -1,0 +1,20 @@
+{
+  "ref": "recallatron.memory:10000000-0000-4000-8000-000000000021",
+  "kind": "fact",
+  "title": "Old watering note for the sample garden",
+  "body": "Beds were watered every evening during the trial week.",
+  "occurred_at": "2026-01-12T18:00:00Z",
+  "recorded_at": "2026-01-12T18:30:00Z",
+  "revision": 3,
+  "invalidated_at": "2026-02-18T08:30:00Z",
+  "invalidation_reason": "source_superseded",
+  "superseded_by": "recallatron.memory:10000000-0000-4000-8000-000000000013",
+  "links": [
+    {
+      "ref": "recallatron.memory:10000000-0000-4000-8000-000000000022",
+      "relation": "about",
+      "supersession_lineage": false,
+      "display": "Trial week plan for the sample garden"
+    }
+  ]
+}
