@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { NOT_FOUND } from "../../guards";
 import { EMBEDDING_COVERAGE, ENTITY_GET, ENTITY_LIST, READ } from "../../operations";
-import { fakeShell, type Responder } from "../../testing/fake-shell";
+import { callsOutside, fakeShell, type Responder } from "../../testing/fake-shell";
 import { field, fixture, ok, refusal, refused } from "../../testing/fixtures";
 import { render, textOf } from "../../testing/markup";
 import { LIST_LIMIT, LIST_RETRY_LIMIT, loadBrowse, READ_CONTEXT } from "./load";
@@ -14,6 +14,12 @@ import { BrowseView } from "./view";
 
 const ENTITY = field("entity-item.json", "ref");
 const AROUND = field("read-window.json", "items", 2, "ref");
+const BROWSE_OPERATIONS = [ENTITY_LIST, ENTITY_GET, READ, EMBEDDING_COVERAGE];
+
+/** A `read` whose targeted form no longer finds its target, while the targetless form still answers. */
+function staleAround(input: Readonly<Record<string, unknown>>) {
+  return "target_ref" in input ? refusal(NOT_FOUND) : ok("read-window.json");
+}
 
 function shellWith(overrides: Readonly<Record<string, Responder>> = {}, role = "member") {
   return fakeShell(role, {
@@ -74,6 +80,21 @@ describe("loadBrowse", () => {
     expect(calls.map((call) => call.operation)).not.toContain(READ);
     expect(calls.map((call) => call.operation)).not.toContain(ENTITY_GET);
     expect(markup).toContain('data-state="no-entity-selected"');
+  });
+
+  it.each([
+    ["no selection", {}, {}],
+    ["a selected entity", { entity: ENTITY }, {}],
+    ["a re-centred window", { entity: ENTITY, around: AROUND }, {}],
+    ["a stale re-centre", { entity: ENTITY, around: AROUND }, { [READ]: staleAround }],
+    ["a list retry", { kind: "person" }, { [ENTITY_LIST]: refused("entity-list-refused-budget.json") }],
+  ] as const)("calls only its four read operations for %s", async (_label, query, overrides) => {
+    for (const role of ["owner", "member"]) {
+      const { shell, calls } = shellWith(overrides, role);
+      await loadBrowse(shell, query);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(callsOutside(calls, BROWSE_OPERATIONS)).toEqual([]);
+    }
   });
 });
 
@@ -215,6 +236,27 @@ describe("Browse detail pane", () => {
     );
     expect(markup).toContain('data-state="entity-not-found"');
     expect(text).toContain("This entity is unavailable.");
+  });
+
+  it("falls back to the newest window, under the entity's header, when a re-centre target is gone", async () => {
+    const { calls, markup, text } = await browseText(
+      { entity: ENTITY, around: AROUND },
+      { [READ]: staleAround },
+    );
+    expect(calls.filter((call) => call.operation === READ).map((call) => call.input)).toEqual([
+      { container_ref: ENTITY, target_ref: AROUND, context: READ_CONTEXT },
+      { container_ref: ENTITY, context: READ_CONTEXT },
+    ]);
+    expect(markup).not.toContain('data-state="entity-not-found"');
+    expect(text).toContain("Sample Garden Project");
+    expect(text).toContain("12 memories you can read");
+    expect(text).toContain("Seed order placed for the sample garden");
+  });
+
+  it("does not retry a targetless read that answers not_found", async () => {
+    const { calls, markup } = await browseText({ entity: ENTITY }, { [READ]: refusal(NOT_FOUND) });
+    expect(calls.filter((call) => call.operation === READ)).toHaveLength(1);
+    expect(markup).toContain('data-state="entity-not-found"');
   });
 
   it("falls back to the generic error when an operation is unavailable", async () => {

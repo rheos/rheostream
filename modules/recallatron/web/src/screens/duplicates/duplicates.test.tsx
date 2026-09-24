@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { DEDUP_CANDIDATES, GET } from "../../operations";
-import { fakeShell, type Responder } from "../../testing/fake-shell";
+import { callsOutside, fakeShell, type Responder } from "../../testing/fake-shell";
 import { field, fixture, ok, refusal } from "../../testing/fixtures";
 import { render, textOf } from "../../testing/markup";
 import { loadDuplicates, PAIR_LIMIT } from "./load";
 import { DuplicatesView } from "./view";
 
-const ALLOWED = new Set([DEDUP_CANDIDATES, GET]);
+const ALLOWED = [DEDUP_CANDIDATES, GET];
 const REF_A = field("dedup-pairs.json", "pairs", 0, "ref_a");
 
 function titled(input: Readonly<Record<string, unknown>>) {
@@ -26,10 +26,14 @@ async function duplicates(dedup: Responder, get: Responder = titled) {
 }
 
 describe("loadDuplicates", () => {
-  it("calls only dedup_candidates and get", async () => {
-    const { calls } = await duplicates(ok("dedup-pairs.json"));
+  it.each([
+    ["pairs", ok("dedup-pairs.json")],
+    ["no pairs", ok("dedup-empty.json")],
+    ["a failed candidate read", { state: "unavailable" } as const],
+  ] as const)("calls only dedup_candidates and get for %s", async (_label, dedup) => {
+    const { calls } = await duplicates(dedup);
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.filter((call) => !ALLOWED.has(call.operation))).toEqual([]);
+    expect(callsOutside(calls, ALLOWED)).toEqual([]);
     expect(calls[0]).toEqual({ operation: DEDUP_CANDIDATES, input: { limit: PAIR_LIMIT } });
   });
 

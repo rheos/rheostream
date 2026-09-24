@@ -29,6 +29,18 @@ export function fakeHref(routeId: string, query?: Record<string, string | undefi
   return search ? `/${routeId}?${search}` : `/${routeId}`;
 }
 
+/**
+ * The operations a loader called that its screen's allowlist does not name. A test
+ * asserts this is empty, so a loader that starts calling anything else, a write
+ * included, fails on the recorded call itself rather than on how it was spelled.
+ */
+export function callsOutside(
+  calls: readonly RecordedCall[],
+  allowed: readonly string[],
+): string[] {
+  return calls.map((call) => call.operation).filter((operation) => !allowed.includes(operation));
+}
+
 export function fakeShell(
   role: string,
   responders: Readonly<Record<string, Responder>>,

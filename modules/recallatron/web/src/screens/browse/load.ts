@@ -168,11 +168,10 @@ async function loadDetail(
   }
   // The entity check and the window are independent calls over the same container, so
   // they run together; the entity's answer still takes precedence below.
+  const newest = { container_ref: entityRef, context: READ_CONTEXT };
   const readInput =
-    around === undefined
-      ? { container_ref: entityRef, context: READ_CONTEXT }
-      : { container_ref: entityRef, target_ref: around, context: READ_CONTEXT };
-  const [entity, window] = await Promise.all([
+    around === undefined ? newest : { ...newest, target_ref: around };
+  const [entity, targeted] = await Promise.all([
     callChecked(shell, ENTITY_GET, { entity_ref: entityRef }, isEntityItem),
     callChecked(shell, READ, readInput, isReadWindow),
   ]);
@@ -187,6 +186,15 @@ async function loadDetail(
   if (entity.state !== "ok") {
     return { state: "error" };
   }
+
+  // A stale `?around=`: the memory an Older/Newer link pointed at has since been
+  // corrected or invalidated, so the targeted read answers `not_found` while the entity
+  // itself is still visible. Fall back once to the entity's newest window rather than
+  // calling the entity unavailable.
+  const window =
+    around !== undefined && targeted.state === "refused" && targeted.code === NOT_FOUND
+      ? await callChecked(shell, READ, newest, isReadWindow)
+      : targeted;
 
   if (window.state === "refused") {
     switch (window.code) {

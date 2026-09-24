@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { NOT_FOUND } from "../../guards";
 import { GET } from "../../operations";
-import { fakeShell, type Responder } from "../../testing/fake-shell";
+import { callsOutside, fakeShell, type Responder } from "../../testing/fake-shell";
 import { field, fixture, ok, refusal } from "../../testing/fixtures";
 import { render, textOf } from "../../testing/markup";
 import { loadItem } from "./load";
@@ -21,6 +21,16 @@ describe("Item", () => {
   it("gets the memory by the ref in the query", async () => {
     const { calls } = await itemFor(REF);
     expect(calls).toEqual([{ operation: GET, input: { ref: REF } }]);
+  });
+
+  it.each([
+    ["a found memory", ok("memory-item.json")],
+    ["a missing memory", refusal(NOT_FOUND)],
+    ["an unavailable read", { state: "unavailable" } as const],
+  ] as const)("calls only get for %s", async (_label, get) => {
+    const { calls } = await itemFor(REF, get);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(callsOutside(calls, [GET])).toEqual([]);
   });
 
   it("renders kind, title, full body, UTC times, revision and invalidation", async () => {

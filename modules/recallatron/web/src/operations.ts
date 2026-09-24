@@ -13,3 +13,17 @@ export const ENTITY_LIST = "recallatron.entity.list";
 export const ENTITY_GET = "recallatron.entity.get";
 export const DEDUP_CANDIDATES = "recallatron.memory.dedup_candidates";
 export const EMBEDDING_COVERAGE = "recallatron.embedding.coverage";
+
+/**
+ * The only type an operation name can have in this package. `callChecked` accepts
+ * nothing else, so a name assembled at runtime, or any string not exported above,
+ * fails the type check before it can reach the shell.
+ */
+export type Operation =
+  | typeof RECALL
+  | typeof READ
+  | typeof GET
+  | typeof ENTITY_LIST
+  | typeof ENTITY_GET
+  | typeof DEDUP_CANDIDATES
+  | typeof EMBEDDING_COVERAGE;

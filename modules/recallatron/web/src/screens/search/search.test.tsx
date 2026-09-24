@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 
 import { EMBEDDING_COVERAGE, RECALL } from "../../operations";
-import { fakeShell, type Responder } from "../../testing/fake-shell";
+import { callsOutside, fakeShell, type Responder } from "../../testing/fake-shell";
 import { field, fixture, ok, refusal } from "../../testing/fixtures";
 import { render, textOf } from "../../testing/markup";
 import { EMPTY_COPY, emptyKind, loadSearch, QUERY_MAX_LENGTH, RECALL_K } from "./load";
 import { SearchView } from "./view";
 
-async function searchFor(q: string | undefined, recall: Responder = ok("recall-populated.json")) {
-  const { shell, calls } = fakeShell("member", {
+const SEARCH_OPERATIONS = [RECALL, EMBEDDING_COVERAGE];
+
+async function searchFor(
+  q: string | undefined,
+  recall: Responder = ok("recall-populated.json"),
+  role = "member",
+) {
+  const { shell, calls } = fakeShell(role, {
     [RECALL]: recall,
     [EMBEDDING_COVERAGE]: ok("coverage.json"),
   });
@@ -47,6 +53,18 @@ describe("Search form", () => {
 });
 
 describe("loadSearch", () => {
+  it.each([
+    ["a populated search", "garden", ok("recall-populated.json")],
+    ["an empty search", "garden", ok("recall-empty-degraded.json")],
+    ["a refused search", "garden", refusal("input_invalid")],
+    ["the prompt", "   ", ok("recall-populated.json")],
+  ] as const)("calls only recall and coverage for %s", async (_label, q, recall) => {
+    for (const role of ["owner", "member"]) {
+      const { calls } = await searchFor(q, recall, role);
+      expect(callsOutside(calls, SEARCH_OPERATIONS)).toEqual([]);
+    }
+  });
+
   it.each([undefined, "", "   ", "\t\n "])(
     "makes no call and shows the prompt for %j",
     async (q) => {
