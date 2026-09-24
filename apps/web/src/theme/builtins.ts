@@ -14,7 +14,7 @@ import seedDarkTheme from "./themes/seed-dark.json";
  * `seed-dark` is the seed default that run 2d replaces or extends, not the final
  * visual canon. Its sources, so 2d can tell them apart at a glance:
  *
- * Verbatim from the site's DESIGN.md token table (pinned by builtins.test.ts):
+ * Verbatim from the site's DESIGN.md token table (pinned by seed-dark.test.ts):
  *   color.ground, color.surface-1 (DESIGN.md's "ground-raised"), color.ink,
  *   color.ink-dim, color.ink-faint, color.accent, color.accent-strong,
  *   color.hairline.

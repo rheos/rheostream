@@ -2,6 +2,11 @@
  * Element-level base styles every page inherits. Values come only from the
  * theme's --rs-* custom properties or CSS keywords (inherit, initial, none,
  * medium, solid); no literal color, size or spacing. No component classes.
+ *
+ * The focus ring's width is the keyword `medium`, not a token. Contract v1 has no
+ * ring or border width token; its only width, size.hairline, is 1px, too thin for a
+ * visible focus indicator. A new token would need a new contract version, so the
+ * keyword stays until one exists.
  */
 
 *,
