@@ -451,9 +451,10 @@ crash rolls the whole walk back, and a rerun is safe because the walk selects on
 lacking a row. It also means a correction, invalidation or deletion of a memory the walk has
 already embedded waits for the rebuild to commit, holding the workspace lifecycle lock while it
 waits. The walk skips a row another writer holds rather than waiting on it, and before it
-commits it queues an embed job for every live memory still without a vector. It runs after a
-restore (embeddings are not exported), after the provider or its model changes, and whenever an
-owner asks. The lexical index needs no rebuild; it is a generated column.
+commits it queues an embed job for every live memory still without a vector. Nothing schedules
+it: an owner must run it after a restore (embeddings are not exported, so the rebuild recreates
+them), after the provider or its model changes, and whenever else it is needed. The lexical
+index needs no rebuild; it is a generated column.
 
 ## Migration from the predecessor (FR 53, criterion 32)
 
