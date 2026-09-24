@@ -1,6 +1,6 @@
 import type { ComposedModule, Screen, ShellApi } from "@rheo-stream/web-contract/screen";
 import { notFound } from "next/navigation";
-import type { ReactNode } from "react";
+import { cache, type ReactNode } from "react";
 
 import { fetchCoreHealth, type CoreHealthResult } from "@/lib/core-health";
 import {
@@ -9,7 +9,6 @@ import {
   currentWorkspaceStatus,
   enabledModuleIds,
   requestIdentity,
-  type RequestIdentity,
   type WorkspaceStatusResult,
 } from "@/lib/operations";
 import type { RoutingConfig } from "@/lib/routing/config";
@@ -32,16 +31,10 @@ import { ShellFrame, type ShellAccount, type ShellNavigationItem } from "@/shell
  * The one place a request becomes a page, for both route files: `app/page.tsx`
  * (the bare host) and `app/[...segments]/page.tsx` (everything below it).
  *
- * `resolveRequest` names the surface. The shell renders its home panel; a module
- * surface renders the matched route's screen inside the same frame; anything else,
- * including a module that is not composed, not routed or not enabled here, is
- * `notFound()`, and those cases are deliberately indistinguishable.
- *
- * Four request-time reads start together: core's `/healthz` (0a's, on the public
- * listener via `RHEO_CORE_INTERNAL_URL`), the routing configuration, the session,
- * and `core.workspace.status`. Each fails on its own and none renders blank. The
- * guard order is routing first, then the session: nothing about an account, and no
- * module screen, is shown on any path but a signed-in session.
+ * `decideSurface` makes every decision: which surface, whether it is served here,
+ * and what state it is in. `renderSurface` only draws the decision, and the catch-all
+ * segment's layout (`ensureServed`) only acts on its `not-found`, so the layout and
+ * the page cannot disagree about 404 versus render.
  */
 
 export interface SurfaceRequest {
@@ -51,6 +44,122 @@ export interface SurfaceRequest {
 }
 
 type Query = Readonly<Record<string, string | undefined>>;
+type SignedIn = Extract<SessionResult, { state: "ok" }>;
+type ModuleRequest = Extract<ResolvedRequest, { kind: "module" }>;
+
+/**
+ * Everything a request can come to, in the guard order: routing first, then the
+ * path, then the session, then the workspace's modules. Nothing about an account,
+ * and no module screen, is reachable on any branch but a signed-in session.
+ */
+export type SurfaceDecision =
+  | { kind: "routing-unavailable" }
+  | { kind: "not-found" }
+  | {
+      kind: "signed-out";
+      config: RoutingConfig;
+      resolved: Exclude<ResolvedRequest, { kind: "not-found" }>;
+      session: Exclude<SessionResult, { state: "ok" }>;
+    }
+  | {
+      kind: "shell";
+      config: RoutingConfig;
+      resolved: { kind: "shell" };
+      session: SignedIn;
+      workspace: WorkspaceStatusResult;
+      visibility: VisibilityOptions;
+    }
+  | {
+      /** Whether the module is enabled here cannot be known: no screen, no 404. */
+      kind: "modules-unavailable";
+      config: RoutingConfig;
+      resolved: ModuleRequest;
+      session: SignedIn;
+      visibility: VisibilityOptions;
+    }
+  | {
+      kind: "module";
+      config: RoutingConfig;
+      resolved: ModuleRequest;
+      session: SignedIn;
+      visibility: VisibilityOptions;
+      owner: ComposedModule;
+      screen: Screen;
+    };
+
+/** The visible module serving `resolved`, and its matched screen, or `undefined`. */
+function matchModule(
+  visibility: VisibilityOptions,
+  resolved: ModuleRequest,
+): { owner: ComposedModule; screen: Screen } | undefined {
+  const visible = visibleModules(MODULES, visibility);
+  const screen = findModuleRoute(visible, resolved.surface, resolved.subPath);
+  const owner = visible.find((each) => each.surface === resolved.surface);
+  return screen === undefined || owner === undefined ? undefined : { owner, screen };
+}
+
+/**
+ * The decision for one request, made once per request.
+ *
+ * The path is resolved against the routing configuration **before** the session or
+ * `core.workspace.status` is read, so a path this application does not serve costs
+ * no internal call beyond the routing read, which `loadRoutingConfig` memoises per
+ * process. The session and the workspace status are then read together.
+ *
+ * `React.cache` over the two string arguments makes the layout's call and the
+ * page's call one computation in a server request; outside one it does not memoise.
+ */
+export const decideSurface = cache(
+  async (host: string, pathname: string): Promise<SurfaceDecision> => {
+    const routing = await loadRoutingConfig();
+    if (routing.state !== "ok") {
+      return { kind: "routing-unavailable" };
+    }
+    const config = routing.config;
+    const resolved = resolveRequest(config, host, pathname);
+    if (resolved.kind === "not-found") {
+      return { kind: "not-found" };
+    }
+    const [session, workspace] = await Promise.all([
+      currentSession(),
+      currentWorkspaceStatus(),
+    ]);
+    if (session.state !== "ok") {
+      return { kind: "signed-out", config, resolved, session };
+    }
+    const visibility: VisibilityOptions = {
+      routingModules: config.surfaces.modules,
+      enabledModuleIds: workspace.state === "ok" ? enabledModuleIds(workspace.status) : [],
+    };
+    if (resolved.kind === "shell") {
+      return { kind: "shell", config, resolved, session, workspace, visibility };
+    }
+    if (workspace.state !== "ok") {
+      return { kind: "modules-unavailable", config, resolved, session, visibility };
+    }
+    const match = matchModule(visibility, resolved);
+    if (match === undefined) {
+      return { kind: "not-found" };
+    }
+    return { kind: "module", config, resolved, session, visibility, ...match };
+  },
+);
+
+/**
+ * `notFound()`, before anything streams, when the decision is `not-found`.
+ *
+ * `app/[...segments]/layout.tsx` calls this. The segment's `loading.tsx` wraps the
+ * page in a Suspense boundary, and a `notFound()` thrown inside one arrives after
+ * the 200 status has been sent: the not-found page renders, but as a soft 404. A
+ * layout sits outside that boundary, so acting on the decision here makes the
+ * status a real 404. Every other decision is left to `renderSurface`.
+ */
+export async function ensureServed(request: Omit<SurfaceRequest, "query">): Promise<void> {
+  const decision = await decideSurface(request.host, request.pathname);
+  if (decision.kind === "not-found") {
+    notFound();
+  }
+}
 
 /** A search-params object as Next hands it over, first value per key. */
 export function firstValues(
@@ -116,84 +225,87 @@ function StatusPanel({ heading, children }: { heading: string; children: ReactNo
   );
 }
 
-function sessionStatus(config: RoutingConfig, session: SessionResult): ReactNode {
+function sessionStatus(
+  config: RoutingConfig,
+  session: Exclude<SessionResult, { state: "ok" }>,
+): ReactNode {
   if (session.state === "unavailable") {
     return <p className={panel.line}>session: unavailable</p>;
   }
-  if (session.state === "unauthenticated") {
-    return (
-      <>
-        <p className={panel.line}>session: signed out ({session.refusal})</p>
-        <a className={panel.action} href={loginHref(config)}>
-          Sign in
-        </a>
-      </>
-    );
-  }
-  return null;
+  return (
+    <>
+      <p className={panel.line}>session: signed out ({session.refusal})</p>
+      <a className={panel.action} href={loginHref(config)}>
+        Sign in
+      </a>
+    </>
+  );
 }
 
 function unavailableHealth(): Promise<CoreHealthResult> {
   return Promise.resolve({ status: "unavailable" });
 }
 
-export async function renderSurface(request: SurfaceRequest): Promise<ReactNode> {
-  const baseUrl = process.env.RHEO_CORE_INTERNAL_URL;
-  const [health, routing, session, workspace, identity] = await Promise.all([
-    baseUrl ? fetchCoreHealth(baseUrl) : unavailableHealth(),
-    loadRoutingConfig(),
-    currentSession(),
-    currentWorkspaceStatus(),
-    requestIdentity(),
-  ]);
-
-  if (routing.state !== "ok") {
-    return (
-      <ShellFrame health={health}>
-        <StatusPanel heading="Home">
-          <p className={panel.line}>routing: unavailable</p>
-        </StatusPanel>
-      </ShellFrame>
-    );
-  }
-  const config = routing.config;
-  const resolved = resolveRequest(config, request.host, request.pathname);
-  if (resolved.kind === "not-found") {
-    notFound();
-  }
-  const heading = resolved.kind === "shell" ? "Home" : "Workspace";
-
-  if (session.state !== "ok") {
-    return (
-      <ShellFrame health={health}>
-        <StatusPanel heading={heading}>{sessionStatus(config, session)}</StatusPanel>
-      </ShellFrame>
-    );
-  }
-
-  const account: ShellAccount = {
+function accountOf(config: RoutingConfig, session: SignedIn): ShellAccount {
+  return {
     memberships: session.memberships,
     activeWorkspaceId: session.activeWorkspaceId,
     switcherAction: switcherAction(config),
     logoutAction: logoutAction(config),
   };
-  const visibility: VisibilityOptions = {
-    routingModules: config.surfaces.modules,
-    enabledModuleIds: workspace.state === "ok" ? enabledModuleIds(workspace.status) : [],
-  };
-  const navigation = navigationItems(config, resolved, { ...visibility, role: session.role });
+}
 
-  if (resolved.kind === "shell") {
+/**
+ * Draw the decision. Core's `/healthz` (0a's, on the public listener via
+ * `RHEO_CORE_INTERNAL_URL`) is read alongside it and shown on every branch, so an
+ * unreachable core still leaves the page rendering and no branch renders blank.
+ */
+export async function renderSurface(request: SurfaceRequest): Promise<ReactNode> {
+  const baseUrl = process.env.RHEO_CORE_INTERNAL_URL;
+  const [health, decision] = await Promise.all([
+    baseUrl ? fetchCoreHealth(baseUrl) : unavailableHealth(),
+    decideSurface(request.host, request.pathname),
+  ]);
+
+  switch (decision.kind) {
+    case "routing-unavailable":
+      return (
+        <ShellFrame health={health}>
+          <StatusPanel heading="Home">
+            <p className={panel.line}>routing: unavailable</p>
+          </StatusPanel>
+        </ShellFrame>
+      );
+    case "not-found":
+      return notFound();
+    case "signed-out":
+      return (
+        <ShellFrame health={health}>
+          <StatusPanel heading={decision.resolved.kind === "shell" ? "Home" : "Workspace"}>
+            {sessionStatus(decision.config, decision.session)}
+          </StatusPanel>
+        </ShellFrame>
+      );
+  }
+
+  const { config, resolved, session } = decision;
+  const account = accountOf(config, session);
+  const navigation = navigationItems(config, resolved, {
+    ...decision.visibility,
+    role: session.role,
+  });
+
+  if (decision.kind === "shell") {
     return (
       <ShellFrame health={health} account={account} navigation={navigation}>
-        <StatusPanel heading={heading}>
+        <StatusPanel heading="Home">
           <p className={panel.line}>
             account: {session.actor.kind} {session.actor.id}
           </p>
           <p className={panel.line}>
             workspace: {session.activeWorkspaceId} ({session.role})
           </p>
-          {workspace.state === "ok" ? null : (
+          {decision.workspace.state === "ok" ? null : (
             <p className={panel.line}>modules: unavailable</p>
           )}
         </StatusPanel>
@@ -201,96 +313,26 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
     );
   }
 
-  return (
-    <ShellFrame health={health} account={account} navigation={navigation}>
-      {await moduleContent(config, resolved, workspace, visibility, {
-        role: session.role,
-        request,
-        identity,
-      })}
-    </ShellFrame>
-  );
-}
-
-async function moduleContent(
-  config: RoutingConfig,
-  resolved: Extract<ResolvedRequest, { kind: "module" }>,
-  workspace: WorkspaceStatusResult,
-  visibility: VisibilityOptions,
-  context: {
-    role: string;
-    request: SurfaceRequest;
-    identity: RequestIdentity;
-  },
-): Promise<ReactNode> {
-  if (workspace.state !== "ok") {
-    // Whether the module is enabled here cannot be known, so neither its screen nor
-    // a not-found would be honest.
+  if (decision.kind === "modules-unavailable") {
     return (
-      <StatusPanel heading="Workspace">
-        <p className={panel.line}>modules: unavailable</p>
-      </StatusPanel>
+      <ShellFrame health={health} account={account} navigation={navigation}>
+        <StatusPanel heading="Workspace">
+          <p className={panel.line}>modules: unavailable</p>
+        </StatusPanel>
+      </ShellFrame>
     );
   }
-  const match = matchModule(visibility, resolved);
-  if (match === undefined) {
-    notFound();
-  }
-  const { owner, screen } = match;
+
+  const identity = await requestIdentity();
+  const { owner, screen } = decision;
   const shell: ShellApi = {
-    role: context.role,
-    call: (operation, input) => callOperation(operation, input, context.identity),
+    role: session.role,
+    call: (operation, input) => callOperation(operation, input, identity),
     href: (routeId, query) => moduleHref(config, owner, routeId, query),
   };
-  return screen({ shell, query: context.request.query });
-}
-
-/** The visible module serving `resolved`, and its matched screen, or `undefined`. */
-function matchModule(
-  visibility: VisibilityOptions,
-  resolved: Extract<ResolvedRequest, { kind: "module" }>,
-): { owner: ComposedModule; screen: Screen } | undefined {
-  const visible = visibleModules(MODULES, visibility);
-  const screen = findModuleRoute(visible, resolved.surface, resolved.subPath);
-  const owner = visible.find((each) => each.surface === resolved.surface);
-  return screen === undefined || owner === undefined ? undefined : { owner, screen };
-}
-
-/**
- * `notFound()`, before anything streams, for a request `renderSurface` would 404.
- *
- * `app/[...segments]/layout.tsx` calls this. The segment's `loading.tsx` wraps the
- * page in a Suspense boundary, and a `notFound()` thrown inside one arrives after
- * the 200 status has been sent: the not-found page renders, but as a soft 404. A
- * layout sits outside that boundary, so deciding here makes the status a real 404.
- * The decision is `renderSurface`'s own (the same resolution, the same
- * `matchModule`), over the same `React.cache`d reads, so it costs no extra round
- * trip and cannot disagree with the page. Anything it cannot decide (routing,
- * the session or the workspace status unavailable, or signed out) it leaves to
- * `renderSurface`, which renders that state.
- */
-export async function ensureServed(request: Omit<SurfaceRequest, "query">): Promise<void> {
-  const [routing, session, workspace] = await Promise.all([
-    loadRoutingConfig(),
-    currentSession(),
-    currentWorkspaceStatus(),
-  ]);
-  if (routing.state !== "ok") {
-    return;
-  }
-  const config = routing.config;
-  const resolved = resolveRequest(config, request.host, request.pathname);
-  if (resolved.kind === "not-found") {
-    notFound();
-  }
-  if (resolved.kind !== "module" || session.state !== "ok" || workspace.state !== "ok") {
-    return;
-  }
-  const visibility: VisibilityOptions = {
-    routingModules: config.surfaces.modules,
-    enabledModuleIds: enabledModuleIds(workspace.status),
-  };
-  if (matchModule(visibility, resolved) === undefined) {
-    notFound();
-  }
+  return (
+    <ShellFrame health={health} account={account} navigation={navigation}>
+      {await screen({ shell, query: request.query })}
+    </ShellFrame>
+  );
 }

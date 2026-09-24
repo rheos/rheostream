@@ -44,6 +44,7 @@ const seams = vi.hoisted(() => ({
   session: { state: "unavailable" } as SessionResult,
   status: null as unknown,
   calls: [] as string[],
+  sessionReads: 0,
 }));
 
 vi.mock("next/headers", () => ({
@@ -65,10 +66,13 @@ vi.mock("@/lib/routing/load", async (importOriginal) => ({
 
 vi.mock("@/lib/session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/session")>()),
-  fetchSession: async () => seams.session,
+  fetchSession: async () => {
+    seams.sessionReads += 1;
+    return seams.session;
+  },
 }));
 
-const { ensureServed, renderSurface } = await import("./render-surface");
+const { decideSurface, ensureServed, renderSurface } = await import("./render-surface");
 
 const SIGNED_IN: SessionResult = {
   state: "ok",
@@ -104,6 +108,7 @@ beforeEach(() => {
   seams.session = SIGNED_IN;
   seams.status = STATUS.enabled;
   seams.calls.length = 0;
+  seams.sessionReads = 0;
   vi.stubEnv("RHEO_CORE_INTERNAL_URL", "http://core.example.test");
   vi.stubEnv("RHEO_CORE_INTERNAL_API_URL", "http://core-internal.example.test");
   vi.stubEnv("RHEO_INTERNAL_SECRET", "synthetic-internal-secret");
@@ -197,29 +202,67 @@ describe("module screens through the real composition", () => {
     });
   });
 
-  it("decides the same 404s up front, for the layout outside the loading boundary", async () => {
-    await expect(ensureServed(moduleRequest("/search"))).resolves.toBeUndefined();
-    await expect(ensureServed(moduleRequest("/nope"))).rejects.toMatchObject({
-      digest: expect.stringContaining("404"),
-    });
-    seams.status = STATUS.absent;
-    await expect(ensureServed(moduleRequest("/search"))).rejects.toMatchObject({
-      digest: expect.stringContaining("404"),
-    });
-  });
-
-  it("leaves a state it cannot decide to the page", async () => {
-    seams.status = { unexpected: true };
-    await expect(ensureServed(moduleRequest("/search"))).resolves.toBeUndefined();
-    seams.session = { state: "unavailable" };
-    await expect(ensureServed(moduleRequest("/search"))).resolves.toBeUndefined();
-  });
-
   it("shows no screen to a signed-out session", async () => {
     seams.session = { state: "unauthenticated", refusal: "session_expired" };
     const html = await render(moduleRequest("/search"));
     expect(html).toContain("session: signed out (session_expired)");
     expect(html).not.toContain('type="search"');
     expect(html).not.toMatch(NAV);
+  });
+});
+
+/**
+ * The one decision both the catch-all layout (`ensureServed`) and the page
+ * (`renderSurface`) act on, so they cannot disagree about 404 versus render.
+ */
+describe("decideSurface", () => {
+  const decide = (request: { host: string; pathname: string }) =>
+    decideSurface(request.host, request.pathname);
+  const JUNK =
+    MODE === "path"
+      ? { host: "example.test", pathname: "/definitely/not/here" }
+      : { host: "circuit.example.test", pathname: "/definitely/not/here" };
+
+  it("404s a path it does not serve without reading the session or workspace status", async () => {
+    expect((await decide(JUNK)).kind).toBe("not-found");
+    expect(seams.sessionReads).toBe(0);
+    expect(seams.calls).toEqual([]);
+  });
+
+  it("serves an enabled module's route with its screen", async () => {
+    const decision = await decide(moduleRequest("/search"));
+    expect(decision.kind).toBe("module");
+    expect(decision.kind === "module" && decision.owner.id).toBe("recallatron");
+    expect(decision.kind === "module" && typeof decision.screen).toBe("function");
+  });
+
+  it.each([
+    ["an unknown route in an enabled module", () => undefined, "/nope"],
+    ["a module never installed", () => (seams.status = STATUS.absent), "/search"],
+    [
+      "a module enabled but not routed",
+      () => (seams.routing = { state: "ok", config: BASE }),
+      "/search",
+    ],
+  ])("404s %s", async (_label, arrange, subPath) => {
+    arrange();
+    expect((await decide(moduleRequest(subPath))).kind).toBe("not-found");
+  });
+
+  it("names the states it cannot 404 on", async () => {
+    expect((await decide(SHELL_REQUEST)).kind).toBe("shell");
+    seams.status = { unexpected: true };
+    expect((await decide(moduleRequest("/search"))).kind).toBe("modules-unavailable");
+    seams.session = { state: "unavailable" };
+    expect((await decide(moduleRequest("/search"))).kind).toBe("signed-out");
+    seams.routing = { state: "unavailable" };
+    expect((await decide(moduleRequest("/search"))).kind).toBe("routing-unavailable");
+  });
+
+  it("is what the layout's ensureServed acts on, and only on not-found", async () => {
+    await expect(ensureServed(moduleRequest("/search"))).resolves.toBeUndefined();
+    await expect(ensureServed(JUNK)).rejects.toMatchObject({
+      digest: expect.stringContaining("404"),
+    });
   });
 });

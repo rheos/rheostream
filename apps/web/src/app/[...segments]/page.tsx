@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 
-import { requestHost } from "@/lib/operations";
+import { requestHost } from "@/lib/request";
 import { firstValues, pathFromSegments, renderSurface } from "@/shell/render-surface";
 
 // Request-time for the same reason as the home page: every screen reads core.

@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 
-import { requestHost } from "@/lib/operations";
+import { requestHost } from "@/lib/request";
 import { firstValues, renderSurface } from "@/shell/render-surface";
 
 // Never prerender this route: reading `core`'s /healthz is request-time work, and

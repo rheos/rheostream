@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import { cache } from "react";
 
 import type { components } from "@/generated/api-types";
+import { requestHost } from "@/lib/request";
 import {
   INTERNAL_OPERATIONS_PATH,
   INTERNAL_SECRET_HEADER,
@@ -26,10 +27,12 @@ import {
  * `{state, operation_id, result}` when the operation succeeded, or
  * `{state, operation_id, error: {error_code, error_text}}` when it was refused. A
  * refusal arrives on a non-2xx status (401, 403, 404, 422 or 400) with that same
- * body, so the body is read whatever the status. Only `succeeded` with a result
- * is `ok`. A `pending` answer is not: no read this client serves is long-running,
- * and a queued result is not a result. A body that is neither shape, including the
- * listener's own 401 for a wrong `X-Rheo-Internal`, is `unavailable`.
+ * body, so the body is read whatever the status. Only `succeeded` is `ok`, with its
+ * `result`, or `null` when the envelope carries no `result` key: `envelope` omits
+ * the key for an operation that succeeded with no result, and that is still a
+ * success. A `pending` answer is not `ok`: no read this client serves is
+ * long-running, and a queued result is not a result. A body that is neither shape,
+ * including the listener's own 401 for a wrong `X-Rheo-Internal`, is `unavailable`.
  */
 
 export interface RequestIdentity {
@@ -66,8 +69,8 @@ export function outcomeOf(body: unknown): OperationOutcome {
     const text = typeof error.error_text === "string" ? error.error_text : "";
     return { state: "refused", code: error.error_code, text };
   }
-  if (body.state === SUCCEEDED && "result" in body) {
-    return { state: "ok", result: body.result };
+  if (body.state === SUCCEEDED) {
+    return { state: "ok", result: "result" in body ? body.result : null };
   }
   return { state: "unavailable" };
 }
@@ -155,14 +158,6 @@ export const requestIdentity = cache(async (): Promise<RequestIdentity> => {
     host: requestHost(headerList),
   };
 });
-
-/**
- * The host the browser asked for: `x-forwarded-host` first (a proxy rewrites `host`
- * to its upstream), then `host`. The same rule the middleware applies.
- */
-export function requestHost(headerList: Pick<Headers, "get">): string | undefined {
-  return headerList.get("x-forwarded-host") ?? headerList.get("host") ?? undefined;
-}
 
 export const currentSession = cache(
   async (): Promise<SessionResult> => fetchSession(await requestIdentity()),

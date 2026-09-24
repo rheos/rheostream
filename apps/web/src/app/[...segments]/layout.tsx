@@ -1,7 +1,7 @@
 import { headers } from "next/headers";
 import type { ReactNode } from "react";
 
-import { requestHost } from "@/lib/operations";
+import { requestHost } from "@/lib/request";
 import { ensureServed, pathFromSegments } from "@/shell/render-surface";
 
 /**

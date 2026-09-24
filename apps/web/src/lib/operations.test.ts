@@ -40,9 +40,17 @@ describe("outcomeOf", () => {
     ).toEqual({ state: "refused", code: "x", text: "" });
   });
 
+  it("maps a succeeded envelope with no result key to ok with a null result", () => {
+    // `api_routes.envelope` omits `result` when the operation's result is None.
+    expect(outcomeOf({ state: "succeeded", operation_id: null })).toEqual({
+      state: "ok",
+      result: null,
+    });
+  });
+
   it.each([
     ["a pending answer", { state: "pending", operation_id: "op-1", result: null }],
-    ["a succeeded answer with no result", { state: "succeeded", operation_id: null }],
+    ["a pending answer with no result key", { state: "pending", operation_id: "op-1" }],
     ["an error with no code", { state: "x", operation_id: null, error: {} }],
     ["a body with no state", { result: {} }],
     ["the listener's own 401 detail", { detail: "internal secret required" }],

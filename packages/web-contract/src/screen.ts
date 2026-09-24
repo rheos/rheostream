@@ -11,6 +11,17 @@ export interface ShellApi {
   href(routeId: string, query?: Record<string, string | undefined>): string;
 }
 
+/**
+ * What `ShellApi.call` answers.
+ *
+ * - `ok`: the operation succeeded. `result` is its result, or `null` when it
+ *   succeeded with none (the core envelope then omits `result`, and that is still a
+ *   success, never `unavailable`).
+ * - `refused`: the operation, or the session, refused; `code` is the envelope's
+ *   `error_code` and `text` its `error_text` (`""` when it has none).
+ * - `unavailable`: no readable answer, whatever the reason (network, a body that is
+ *   not an envelope, an answer still pending).
+ */
 export type OperationOutcome =
   | { state: "ok"; result: unknown }
   | { state: "refused"; code: string; text: string }
