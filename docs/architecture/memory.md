@@ -238,12 +238,13 @@ cross-workspace, expired or ineligible is `not_found`, whatever the container ho
 an entity container only, the entity's own visibility; then membership: an authorized target
 that is not a member of the named container refuses `container_membership_required` before a
 single neighbour is selected, so a caller cannot learn a container's population through a
-target that does not belong to it. A link container has no visibility step of its own; its
-only container check is membership. Without a target, which only an entity container allows,
+target that does not belong to it. A link container's own eligibility check is not yet
+implemented and is tracked as a follow-up; today its only container check is membership. Without a target, which only an entity container allows,
 the entity's visibility follows the input checks directly, then the candidate scan, and the
 window is the newest `min(total, 2·context + 1)` eligible members, with `target_position` null,
 `window_end` equal to `total` and `has_more` true exactly when older eligible members exist. An
-entity none of whose mentioning memories the caller may read is an empty window, not a refusal.
+entity none of whose mentioning memories the caller may read is an empty window, not a refusal
+(up to the scan bound; see the accepted residual below).
 
 Entity visibility is decided by the same function that answers `recallatron.entity.get`, and
 always in `current` mode, whatever `include_invalidated` asks for, in both the targeted and the
@@ -265,10 +266,10 @@ total, bounds, `has_more` flag or partial item.
 > **Accepted residual: the targetless entity read.** A targetless `read` over an entity
 > container refuses `window_scan_limit` whenever more than 500 memories mention the entity and
 > pass the row-local prefilter, even when every one of those memories is unreadable to the
-> caller (for example, each is a `workspace`-audience memory derived from another member's
-> private memory, which the prefilter keeps and only full eligibility removes). The refusal is
-> `window_scan_limit`'s existing fixed, content-free shape: no count, no name, no title, no text,
-> no reference. What leaks is only the fact that more than 500 mentions of this entity exist,
+> caller (for example, each is a `workspace`-audience memory whose `about` or `derived_from`
+> link the caller cannot read, which the prefilter keeps and only full eligibility removes). The
+> refusal is `window_scan_limit`'s existing fixed, content-free shape: no count, no name, no
+> title, no text, no reference. What leaks is only the fact that more than 500 mentions of this entity exist,
 > never anything about them.
 >
 > This differs from the ordinary `window_scan_limit` case described just above. There, the
@@ -282,10 +283,10 @@ total, bounds, `has_more` flag or partial item.
 > because its target has to be a readable member.
 >
 > This behaviour was reviewed during cold review of the built code and accepted as a maintainer
-> decision, not missed. It is not an open bug and no fix is deferred. Closing it would mean fully evaluating every
-> candidate's eligibility before the 500-row sentinel could apply, which turns a bounded,
-> fast-failing scan into an unbounded one for exactly the workspace shape the sentinel exists to
-> protect against.
+> decision, not missed. It is not an open bug and no fix is deferred. Closing it would mean
+> fully evaluating every candidate's eligibility before the 500-row sentinel could apply, which
+> turns a bounded, fast-failing scan into an unbounded one for exactly the workspace shape the
+> sentinel exists to protect against.
 
 **The tool requires a target; the operation does not.** The MCP tool `recallatron_read`
 validates against an input that always requires `target_ref`, so an agent's reach through the
@@ -307,7 +308,8 @@ a retention window it cannot read.
 ### Near-duplicate candidates
 
 `recallatron.memory.dedup_candidates(limit, purpose)`, read class, roles `owner`, `member`,
-`service`, and no MCP tool: like the two entity reads it is service-only in release one. It
+`service`. Like the two entity reads it has no MCP tool, so no model reaches it; it is reachable
+over the API by a token whose set holds it, which is how the web screens call it. It
 returns at most `limit` pairs (1 to 50, default 10), each `{ref_a, ref_b, score}`, where
 `score` is the cosine similarity of the two stored vectors and is at least 0.80
 (`DEDUP_PAIR_FLOOR`). It only proposes. Nothing merges, confirms or supersedes on a pair's
@@ -587,15 +589,15 @@ importer never commits, because the whole restore is one transaction.
 | --- | --- | --- | --- |
 | `recallatron.memory.recall` | read | owner, member, service | `recallatron_recall` |
 | `recallatron.memory.read` | read | owner, member, service | `recallatron_read` (the container may be a linked record reference or an entity reference; the tool always requires a target, while the operation admits none for an entity container, [retrieval](#retrieval-fr-27-fr-30-criteria-27-and-31)) |
-| `recallatron.memory.get` | read | owner, member, service | none: no MCP tool; reachable over the API by a token whose set holds it. Refusal precedence as implemented: target resolution first (a malformed or non-memory `ref` refuses `input_invalid`), then the purpose check (`purpose_mismatch` when a stated purpose is not the context's binding; `input_invalid` when it is not a purpose at all), then the retention read (`retention_unavailable`), then eligibility (`not_found`, the same for gone and not-yours). So a call with both a malformed reference and a mismatched purpose answers `input_invalid`, not `purpose_mismatch`: the reference is resolved first, and the purpose check never runs on a request that never produced a valid target |
+| `recallatron.memory.get` | read | owner, member, service | none: no MCP tool; reachable over the API by a token whose set holds it. Refusal precedence as implemented: target resolution first (a malformed or non-memory `ref` refuses `input_invalid`), then the purpose check (`purpose_mismatch` when a stated purpose is not the context's binding; `input_invalid` when it is not a purpose at all), then the retention read (`retention_unavailable`), then eligibility (`not_found`, the same for gone and not-yours; `reference_scan_limit` when the request's reference budget runs out, whether deciding the memory's own eligibility or checking whether its successor may be named). So a call with both a malformed reference and a mismatched purpose answers `input_invalid`, not `purpose_mismatch`: the reference is resolved first, and the purpose check never runs on a request that never produced a valid target |
 | `recallatron.embedding.coverage` | read | owner | none: no MCP tool; reachable over the API by a token whose set holds it (a non-owner is refused by its roles) |
 | `recallatron.memory.remember` | mutate | owner, member, service | `recallatron_remember` |
 | `recallatron.memory.derive` | mutate | owner, member, service | `recallatron_derive` |
 | `recallatron.memory.correct` | mutate | owner, member | `recallatron_correct` |
 | `recallatron.memory.supersede` | mutate | owner, member | `recallatron_supersede` |
 | `core.record.delete` for `recallatron.memory` | destructive | owner, member (a member only for a memory its audience lets it read; the owner's route to a `member`-audience memory is declared and not reachable end to end, [deletion](#deletion-fr-28-r5-criterion-65)) | `recallatron_forget` |
-| `recallatron.entity.list`, `.get` | read | owner, member, service | none in release one (service-only: no MCP tool is registered for either, so no model reaches them) |
-| `recallatron.memory.dedup_candidates` | read | owner, member, service | none in release one (service-only, like the entity reads; [near-duplicate candidates](#near-duplicate-candidates)) |
+| `recallatron.entity.list`, `.get` | read | owner, member, service | none: no MCP tool is registered for either, so no model reaches them; reachable over the API by a token whose set holds them |
+| `recallatron.memory.dedup_candidates` | read | owner, member, service | none: no MCP tool, like the entity reads; reachable over the API by a token whose set holds it ([near-duplicate candidates](#near-duplicate-candidates)) |
 | `recallatron.embedding.rebuild` | mutate, long-running | owner | none |
 | `recallatron.migration.import`, `.switch_over` | mutate | owner | none (operator and web only) |
 
