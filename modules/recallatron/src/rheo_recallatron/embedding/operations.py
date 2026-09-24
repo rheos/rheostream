@@ -1,4 +1,5 @@
-"""``recallatron.embedding.rebuild``: the owner's one way to (re)fill the dense index.
+"""``recallatron.embedding.rebuild``: the owner's one way to (re)fill the dense index;
+and ``recallatron.embedding.coverage``, the owner's read of how full it is.
 
 ``MUTATE``, ``long_running``, owner only. The dispatch mints an operation record, this
 handler enqueues exactly one job carrying that record's id, and the dispatch returns
@@ -43,8 +44,11 @@ from rheo_recallatron.contracts import Strict
 from rheo_recallatron.embedding.enqueue import enqueue_rebuild_job
 from rheo_recallatron.embedding.registry import resolve_provider
 from rheo_recallatron.refusals import EMBEDDING_PROVIDER_UNAVAILABLE
+from rheo_recallatron.storage.repository import embedding_coverage
+from rheo_recallatron.writes import opened
 
 EMBEDDING_REBUILD: Final = f"{MODULE_ID}.embedding.rebuild"
+EMBEDDING_COVERAGE: Final = f"{MODULE_ID}.embedding.coverage"
 
 
 class EmbeddingRebuildInput(Strict):
@@ -135,6 +139,54 @@ EMBEDDING_REBUILD_DECLARATION: Final = OperationDeclaration(
     long_running=True,
 )
 
+
+class EmbeddingCoverageInput(Strict):
+    """No fields: the model is the deployment's, and the workspace is the context's."""
+
+
+class EmbeddingCoverageReport(Strict):
+    """This workspace's live memories, and how many carry a vector from the configured
+    provider's model. All three ``None`` when no provider resolves: with nothing
+    configured there is no model to count coverage against."""
+
+    model_id: str | None
+    live: int | None
+    embedded: int | None
+
+
+def coverage(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: EmbeddingCoverageInput
+) -> EmbeddingCoverageReport:
+    """Per workspace by construction, because a workspace is a database.
+
+    The retention read comes first, as on every read path, so an unusable policy
+    refuses ``retention_unavailable`` here too rather than answering a count.
+    """
+    opened(ctx, uow)
+    provider = resolve_provider()
+    if provider is None:
+        return EmbeddingCoverageReport(model_id=None, live=None, embedded=None)
+    counted = embedding_coverage(uow.connection, model_id=provider.model_id)
+    return EmbeddingCoverageReport(
+        model_id=provider.model_id, live=counted.live, embedded=counted.embedded
+    )
+
+
+EMBEDDING_COVERAGE_DECLARATION: Final = OperationDeclaration(
+    name=EMBEDDING_COVERAGE,
+    safety_class=SafetyClass.READ,
+    # Owner alone, unlike every other read: ``live`` counts every live memory in the
+    # workspace, other members' private ones included, and handing that total to a
+    # member would report memories it may not see. The owner already sees the same
+    # whole-workspace figure on the rebuild's progress record.
+    roles=frozenset({Role.OWNER}),
+    input_model=EmbeddingCoverageInput,
+    output=EmbeddingCoverageReport,
+    idempotency=Idempotency.NONE,
+    audit=None,
+)
+
 EMBEDDING_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (EMBEDDING_REBUILD_DECLARATION, rebuild),
+    (EMBEDDING_COVERAGE_DECLARATION, coverage),
 )

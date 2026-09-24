@@ -77,6 +77,7 @@ from rheo_recallatron.configuration import (
     RETENTION_EXPIRE_BY_AGE_SPEC,
     RetentionPolicy,
 )
+from rheo_recallatron.references import entity_container
 from rheo_recallatron.refusals import NOT_FOUND, REFERENCE_SCAN_LIMIT
 from rheo_recallatron.storage import tables as t
 from rheo_recallatron.storage.repository import (
@@ -825,13 +826,30 @@ def row_local_conditions(
 
 
 def container_membership(container_ref: str) -> ColumnElement[bool]:
-    """``EXISTS`` over the exact stored link ``memory_link.ref = container_ref``.
+    """Which memories belong to the container the caller named, as one ``EXISTS``.
 
-    Exact, not "any link this memory has": the container is the reference the caller
-    named, and a looser test would let a member of one container answer for another.
-    A marked lineage row satisfies it like any other, which is § A6's "a marked lineage
+    **Two rules, chosen by the container's own shape.** An entity reference
+    (``recallatron.memory_entity:<uuid>``) is never a ``memory_link`` row — mentions
+    live in ``memory_mention`` — so its members are the memories with a mention row
+    naming it. Every other container keeps the exact stored link
+    ``memory_link.ref = container_ref``: exact, not "any link this memory has",
+    because a looser test would let a member of one container answer for another. A
+    marked lineage row satisfies it like any other, which is § A6's "a marked lineage
     ref may establish membership without resolving predecessor content".
+
+    Membership is only ever a narrowing. Whether the entity itself may be seen at all
+    is the read handler's question, asked before this one.
     """
+    entity_id = entity_container(container_ref)
+    if entity_id is not None:
+        return (
+            select(literal(1))
+            .where(
+                t.memory_mention.c.memory_id == t.memory.c.id,
+                t.memory_mention.c.entity_id == entity_id,
+            )
+            .exists()
+        )
     return (
         select(literal(1))
         .where(
@@ -843,17 +861,20 @@ def container_membership(container_ref: str) -> ColumnElement[bool]:
 
 
 def is_container_member(uow: UnitOfWork, memory_id: UUID, container_ref: str) -> bool:
-    """Step 3's existence check for one already-authorized target."""
-    found = uow.connection.execute(
-        select(literal(1))
-        .select_from(t.memory_link)
-        .where(
+    """Step 3's existence check for one already-authorized target, by the same two
+    rules as :func:`container_membership`."""
+    entity_id = entity_container(container_ref)
+    if entity_id is not None:
+        statement = select(literal(1)).where(
+            t.memory_mention.c.memory_id == memory_id,
+            t.memory_mention.c.entity_id == entity_id,
+        )
+    else:
+        statement = select(literal(1)).where(
             t.memory_link.c.memory_id == memory_id,
             t.memory_link.c.ref == container_ref,
         )
-        .limit(1)
-    ).first()
-    return found is not None
+    return uow.connection.execute(statement.limit(1)).first() is not None
 
 
 def container_candidates(

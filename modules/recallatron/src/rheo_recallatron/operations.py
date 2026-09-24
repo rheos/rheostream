@@ -42,6 +42,11 @@ because each of those refusals is answered by an earlier step. An implementation
 reordered these would still pass a test suite that only checked each refusal in
 isolation, which is why the paired small-container/over-cap-container cases exist.
 
+**An entity container adds one step and may drop two.** Its membership is a mention
+rather than a link, and its own visibility — ``entity.get``'s answer, always in
+``current`` mode — is checked after step 2 and before step 3. Named with no target, it
+skips steps 2 and 3 and answers its newest eligible members.
+
 **Refusals are raised, not returned.** The dispatcher turns
 :class:`~rheo_core.operations.refusals.OperationRefused` into an outcome whose state is
 the refusal code and rolls the transaction back, which is the established error path
@@ -50,10 +55,10 @@ field.
 """
 
 from datetime import datetime
-from typing import Final
+from typing import Final, Self
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from rheo_contracts import (
     AuditSpec,
     Idempotency,
@@ -108,12 +113,17 @@ from rheo_recallatron.eligibility import (
     memory_reference,
 )
 from rheo_recallatron.embedding.operations import EMBEDDING_OPERATIONS
-from rheo_recallatron.entities import ENTITY_OPERATIONS, resolve_mentions
+from rheo_recallatron.entities import (
+    ENTITY_OPERATIONS,
+    resolve_mentions,
+    visible_entity,
+)
 from rheo_recallatron.events import consumers_for_dispatch
 from rheo_recallatron.lifecycle import correct, supersede
-from rheo_recallatron.references import canonical_ref, memory_target
+from rheo_recallatron.references import canonical_ref, entity_container, memory_target
 from rheo_recallatron.refusals import (
     CONTAINER_MEMBERSHIP_REQUIRED,
+    INPUT_INVALID,
     NOT_FOUND,
     REFERENCE_SCAN_LIMIT,
     WINDOW_SCAN_LIMIT,
@@ -134,6 +144,7 @@ from rheo_recallatron.writes import (
 
 MEMORY_RECALL: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.recall"
 MEMORY_READ: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.read"
+MEMORY_GET: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.get"
 MEMORY_REMEMBER: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.remember"
 MEMORY_DERIVE: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.derive"
 MEMORY_CORRECT: Final = f"{MODULE_ID}.{MEMORY_RECORD_TYPE}.correct"
@@ -236,29 +247,64 @@ class RecallResult(Strict):
 
 
 class ReadInput(Strict):
+    """The operation's input. ``target_ref`` may be omitted for an entity container
+    only; the MCP tool uses :class:`ReadToolInput`, which always requires it."""
+
     container_ref: str
-    target_ref: str
+    target_ref: str | None = None
     context: int = Field(
         default=READ_CONTEXT_DEFAULT, ge=READ_CONTEXT_MIN, le=READ_CONTEXT_MAX
     )
     include_invalidated: bool = False
     purpose: str | None = None
 
+    @model_validator(mode="after")
+    def _target_or_entity(self) -> Self:
+        """No target is a request for an entity's newest window, and for nothing else.
+
+        ``ValueError`` rather than ``OperationRefused``, for the reason
+        :class:`~rheo_recallatron.tools.ForgetInput` gives: only a ``ValidationError``
+        reaches the dispatcher's ``input_invalid`` branch.
+        """
+        if self.target_ref is None and entity_container(self.container_ref) is None:
+            raise ValueError("a target is required unless the container is an entity")
+        return self
+
+
+class ReadToolInput(ReadInput):
+    """``recallatron_read``'s input: the same fields, with the target required.
+
+    The tool keeps requiring a target even though the operation admits none for an
+    entity container, so an agent's reach through the tool surface is unchanged.
+    """
+
+    target_ref: str
+
 
 class ReadWindow(Strict):
-    """A successful centered window, and only ever a successful one.
+    """A successful window, and only ever a successful one.
 
     Every field here is computed from the **fully eligible** ordering, so none of them
     counts a member this caller may not see. There is no field for a refusal: a refused
     read raises, and the caller is told a state rather than handed a half-window.
+    ``target_position`` is ``None`` exactly when the request named no target, which is
+    the newest window over an entity.
     """
 
     items: tuple[MemoryItem, ...]
-    target_position: int
+    target_position: int | None
     window_start: int
     window_end: int
     total: int
     has_more: bool
+
+
+class MemoryGetInput(Strict):
+    """One memory by a reference the caller already holds."""
+
+    ref: str
+    include_invalidated: bool = False
+    purpose: str | None = None
 
 
 # --- step 1: input, purpose binding and retention ------------------------------------
@@ -430,25 +476,57 @@ def recall(
 
 
 def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> ReadWindow:
-    """The bounded centered window around one authorized, proven-member target.
+    """A bounded window over one container: centred on an authorized, proven-member
+    target, or — for an entity container named with no target — its newest members.
 
-    The five numbered steps of this module's docstring, in that order and with nothing
-    between them.
+    The five numbered steps of this module's docstring, in that order, with one step
+    inserted for an entity container: **its visibility, decided by the function behind
+    ``entity.get`` and always in ``current`` mode**, after the target's own
+    authorization and before membership. A read can open a window over an entity
+    exactly when ``entity.get`` would answer for it, whatever ``include_invalidated``
+    asks for, so an entity reachable only through retained history is ``not_found``
+    here in both modes. Without a target there is no step 2 or 3: visibility, then the
+    candidate scan.
+
+    **Every count, bound, ``has_more`` and ``target_position`` comes from
+    ``evaluate_all``'s eligible ordering, never from the candidate list.** The row-local
+    prefilter drops only what one row can answer for itself; a workspace-audience
+    memory whose source this caller cannot read survives it and is removed only by full
+    evaluation, so a count taken one step early would report its existence.
     """
     # 1. Input, target type, purpose binding, retention. Before any container is named.
     container = _canonical(model_input.container_ref).format()
-    target = _memory_target(model_input.target_ref)
+    entity_id = entity_container(container)
+    target = (
+        None
+        if model_input.target_ref is None
+        else _memory_target(model_input.target_ref)
+    )
+    if target is None and entity_id is None:
+        # ``ReadInput`` refuses this shape already; a caller that reached the handler
+        # some other way gets the same answer rather than a link container's newest
+        # window, which no contract offers.
+        raise OperationRefused(INPUT_INVALID, "a target is required for this container")
     _checked_purpose(ctx, model_input.purpose)
     request = _opened(ctx, uow)
     mode = _mode(model_input.include_invalidated)
 
     # 2. The exact target, fully authorized, whatever the container holds.
-    authorized = eligible_memory(ctx, uow, target.id, mode=mode, request=request)
-    if isinstance(authorized, Denied):
-        raise _refuse(authorized)
+    if target is not None:
+        authorized = eligible_memory(ctx, uow, target.id, mode=mode, request=request)
+        if isinstance(authorized, Denied):
+            raise _refuse(authorized)
+
+    # 2a. An entity container's own visibility, in ``current`` mode by construction:
+    # ``visible_entity`` takes no mode. A denial is the same ``not_found`` an unknown
+    # memory gets; a spent budget passes through as ``reference_scan_limit``.
+    if entity_id is not None:
+        visible = visible_entity(ctx, uow, entity_id, request=request)
+        if isinstance(visible, Denied):
+            raise _refuse(visible)
 
     # 3. Exact stored membership, as an existence check, before any neighbour.
-    if not is_container_member(uow, target.id, container):
+    if target is not None and not is_container_member(uow, target.id, container):
         raise OperationRefused(
             CONTAINER_MEMBERSHIP_REQUIRED,
             "that memory is not linked to that container",
@@ -469,25 +547,58 @@ def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> Read
         raise _refuse(overflowed)
 
     order = [candidate for candidate, _ in eligible]
-    if target.id not in order:
-        # The target was eligible on its own and is not in the container's eligible
-        # ordering: it is not a member of this window. No partials.
-        raise OperationRefused(NOT_FOUND, "no such memory")
     total = len(order)
-    position = order.index(target.id)
-    window_start = max(0, position - model_input.context)
-    window_end = min(total, position + model_input.context + 1)
+    target_position: int | None
+    if target is None:
+        # The newest ``2·context + 1`` eligible members. An entity none of whose
+        # mentioning memories this caller may read is an empty window, not a refusal.
+        window_start = max(0, total - (2 * model_input.context + 1))
+        window_end = total
+        target_position = None
+    else:
+        if target.id not in order:
+            # The target was eligible on its own and is not in the container's
+            # eligible ordering: it is not a member of this window. No partials.
+            raise OperationRefused(NOT_FOUND, "no such memory")
+        position = order.index(target.id)
+        window_start = max(0, position - model_input.context)
+        window_end = min(total, position + model_input.context + 1)
+        target_position = position - window_start
     return ReadWindow(
         items=tuple(
             _item(ctx, uow, decision, request=request)
             for _, decision in eligible[window_start:window_end]
         ),
-        target_position=position - window_start,
+        target_position=target_position,
         window_start=window_start,
         window_end=window_end,
         total=total,
         has_more=window_start > 0 or window_end < total,
     )
+
+
+def get(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: MemoryGetInput
+) -> MemoryItem:
+    """One memory, by a reference this caller already holds, or ``not_found``.
+
+    A single record through the one eligibility function, in the requested mode, and
+    nothing about any other: no neighbours, no count. "Gone" and "not yours" are the
+    same ``not_found``, with the same words.
+    """
+    target = _memory_target(model_input.ref)
+    _checked_purpose(ctx, model_input.purpose)
+    request = _opened(ctx, uow)
+    decision = eligible_memory(
+        ctx,
+        uow,
+        target.id,
+        mode=_mode(model_input.include_invalidated),
+        request=request,
+    )
+    if isinstance(decision, Denied):
+        raise _refuse(decision)
+    return _item(ctx, uow, decision, request=request)
 
 
 # --- the write handlers ---------------------------------------------------------------
@@ -637,6 +748,18 @@ READ_DECLARATION: Final = OperationDeclaration(
     audit=None,
 )
 
+MEMORY_GET_DECLARATION: Final = OperationDeclaration(
+    name=MEMORY_GET,
+    safety_class=SafetyClass.READ,
+    roles=READ_ROLES,
+    input_model=MemoryGetInput,
+    output=MemoryItem,
+    idempotency=Idempotency.NONE,
+    # No MCP tool: § A10's seven are the agent's surface, and this is the interface's
+    # way to open one memory it already holds a reference to.
+    audit=None,
+)
+
 REMEMBER_DECLARATION: Final = OperationDeclaration(
     name=MEMORY_REMEMBER,
     safety_class=SafetyClass.MUTATE,
@@ -705,6 +828,7 @@ SUPERSEDE_DECLARATION: Final = OperationDeclaration(
 OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (RECALL_DECLARATION, recall),
     (READ_DECLARATION, read),
+    (MEMORY_GET_DECLARATION, get),
     (REMEMBER_DECLARATION, remember),
     (DERIVE_DECLARATION, derive),
     (CORRECT_DECLARATION, correct),
@@ -713,9 +837,10 @@ OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (DEDUP_DECLARATION, dedup_candidates),
     *EMBEDDING_OPERATIONS,
 )
-"""What the manifest declares: two reads, two writes, the two lifecycle changes, the
-two service-only entity reads, the service-only dedup-candidate read and the owner's
-embedding rebuild. The record resolver is declared beside this tuple
-on the manifest and shares the same eligibility function; erasure is not here at all,
+"""What the manifest declares: three memory reads (``recall``, ``read``, ``get``), two
+writes, the two lifecycle changes, the two service-only entity reads, the service-only
+dedup-candidate read and the owner's embedding rebuild and coverage. The record
+resolver is declared beside this tuple on the manifest and shares the same eligibility
+function; erasure is not here at all,
 because a memory is erased through the core's own record-delete operation against the
 owned-delete pair this module declares on its record type."""
