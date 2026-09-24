@@ -45,10 +45,16 @@ spanning the two, so a crash between them leaves a job undue until
 reconciliation. The reference compose topology runs that worker as its own
 service. **Recallatron is the first product module underway.** Memory records exist
 with `remember`, `derive`, `correct`, and `supersede`, plus retention and
-eligibility rules, lexical search, and export/restore. Its retrieval layer
-(dense and hybrid search alongside lexical) is under active development.
-Leads and Current are still empty stubs, and the durable layer is still not
-finished: there are no scheduled jobs. The module-manifest design is settled;
+eligibility rules, and export/restore. Recall now selects between lexical,
+dense, and hybrid retrieval strategies — hybrid is the default, fusing lexical
+and dense results, and degrades cleanly to lexical-only when no embedding
+provider is configured. Embeddings run in-process (fastembed MiniLM-L6-v2),
+with no credential and no network call. A read-only `dedup_candidates`
+operation proposes near-duplicate memory pairs. A real deployment cannot yet
+configure the embedding provider — a core settings-load-order defect keeps
+production on lexical-only until that's fixed. Leads and Current are still
+empty stubs, and the durable layer is still not finished: there are no
+scheduled jobs. The module-manifest design is settled;
 disable, remove, purge, and restore are not built. The license is AGPL-3.0.
 Directory names under `modules/`, `connectors/`, `channels/`, `runtimes/`,
 and `packs/` still mark intended boundaries, not implemented features; `apps/`
