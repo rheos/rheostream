@@ -239,7 +239,7 @@ an entity container only, the entity's own visibility; then membership: an autho
 that is not a member of the named container refuses `container_membership_required` before a
 single neighbour is selected, so a caller cannot learn a container's population through a
 target that does not belong to it. A link container's own eligibility check is not yet
-implemented and is tracked as a follow-up; today its only container check is membership. Without a target, which only an entity container allows,
+implemented and is tracked as #112; today its only container check is membership. Without a target, which only an entity container allows,
 the entity's visibility follows the input checks directly, then the candidate scan, and the
 window is the newest `min(total, 2·context + 1)` eligible members, with `target_position` null,
 `window_end` equal to `total` and `has_more` true exactly when older eligible members exist. An
