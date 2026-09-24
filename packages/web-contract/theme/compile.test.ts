@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { compileTheme } from "./compile";
-import { CONTRACT_V1, cssPropertyName } from "./contract";
+import { CONTRACT_V1, cssPropertyName, type ThemeFile } from "./contract";
 import { builtInTheme, thirdPartyTheme } from "./testing";
 
 const CHROME = CONTRACT_V1.filter((token) => token.reserved).map((token) => token.name);
@@ -77,5 +77,40 @@ describe("compileTheme", () => {
     const tokens: Record<string, string> = { ...base.tokens };
     delete tokens["chrome.ink"];
     expect(() => compileTheme({ ...base, tokens })).toThrow(/chrome\.ink/);
+  });
+});
+
+// compileTheme called directly, as if validateTheme had been bypassed. Each probe
+// would redeclare a chrome property in the second rule if it reached the output.
+describe("compileTheme — grammar re-check (second defence)", () => {
+  const PROBES = ["#000; --rs-chrome-ink: #f0f", "#000} :root { --rs-chrome-ink: #f0f"];
+
+  it.each(PROBES)("refuses overlay value %j", (probe) => {
+    const overlay = thirdPartyTheme({ "color.accent": probe });
+    expect(() => compileTheme(builtInTheme(), overlay)).toThrow(/color\.accent/);
+  });
+
+  it.each(PROBES)("refuses base value %j", (probe) => {
+    expect(() => compileTheme(builtInTheme({ "color.accent": probe }))).toThrow(/color\.accent/);
+  });
+
+  it("refuses a hostile base chrome value", () => {
+    const base = builtInTheme({ "chrome.ink": "#000; --rs-chrome-surface: #f0f" });
+    expect(() => compileTheme(base)).toThrow(/chrome\.ink/);
+  });
+
+  it("refuses a hostile length and font-stack value", () => {
+    const length = thirdPartyTheme({ "space.2": "1px; --rs-chrome-ink: #f0f" });
+    expect(() => compileTheme(builtInTheme(), length)).toThrow(/space\.2/);
+    const font = thirdPartyTheme({ "font.sans": "Inter} :root { --rs-chrome-ink: #f0f" });
+    expect(() => compileTheme(builtInTheme(), font)).toThrow(/font\.sans/);
+  });
+
+  it("refuses a hostile scheme", () => {
+    const overlay = {
+      ...thirdPartyTheme(),
+      scheme: "dark; --rs-chrome-ink: #f0f",
+    } as unknown as ThemeFile; // deliberately outside the type: the bypass under test
+    expect(() => compileTheme(builtInTheme(), overlay)).toThrow(/scheme/);
   });
 });

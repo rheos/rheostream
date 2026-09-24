@@ -23,14 +23,32 @@ const refusedAs = (token: string, reason: string) => ({
   errors: [{ token, reason }],
 });
 
+const fieldRefused = (field: string, reason: string) => ({
+  ok: false,
+  errors: [{ token: null, field, reason }],
+});
+
 describe("validateTheme — shape", () => {
-  it("accepts a complete built-in theme and a chrome-free third-party theme", () => {
-    expect(validateTheme(builtInTheme(), BUILT_IN)).toEqual({ ok: true });
-    expect(validateTheme(thirdPartyTheme(), THIRD_PARTY)).toEqual({ ok: true });
+  it("accepts a complete built-in theme and returns it typed", () => {
+    const theme = builtInTheme();
+    expect(validateTheme(theme, BUILT_IN)).toEqual({ ok: true, theme });
+  });
+
+  it("accepts a chrome-free third-party theme and keeps its description", () => {
+    const theme = { ...thirdPartyTheme(), description: "A synthetic sample." };
+    expect(validateTheme(theme, THIRD_PARTY)).toEqual({ ok: true, theme });
+  });
+
+  it("returns a fresh copy, not the input object", () => {
+    const theme = builtInTheme();
+    const result = validateTheme(theme, BUILT_IN);
+    if (!result.ok) throw new Error("expected a valid theme");
+    expect(result.theme).not.toBe(theme);
+    expect(result.theme.tokens).not.toBe(theme.tokens);
   });
 
   it("refuses any contract other than 1 with one contract-version error", () => {
-    const refused = { ok: false, errors: [{ token: null, reason: "contract-version" }] };
+    const refused = fieldRefused("contract", "contract-version");
     expect(validateTheme({ ...builtInTheme(), contract: 2 }, BUILT_IN)).toEqual(refused);
     expect(validateTheme({ ...builtInTheme(), contract: "1" }, BUILT_IN)).toEqual(refused);
     expect(validateTheme(null, BUILT_IN)).toEqual(refused);
@@ -51,12 +69,20 @@ describe("validateTheme — shape", () => {
     expect(validateTheme(theme, BUILT_IN)).toEqual(refusedAs("color.accnet", "unknown"));
   });
 
-  it("refuses a scheme that would not compile to a valid color-scheme", () => {
-    const theme = { ...builtInTheme(), scheme: "dark; }" };
-    expect(validateTheme(theme, BUILT_IN)).toEqual({
-      ok: false,
-      errors: [{ token: null, reason: "invalid-value" }],
-    });
+  it("names an unknown top-level key", () => {
+    const theme = { ...builtInTheme(), author: "Sample Author" };
+    expect(validateTheme(theme, BUILT_IN)).toEqual(fieldRefused("author", "unknown"));
+  });
+
+  it.each([
+    ["id", { id: "" }],
+    ["name", { name: 3 }],
+    ["description", { description: false }],
+    ["scheme", { scheme: "dark; }" }],
+    ["tokens", { tokens: ["#123456"] }],
+  ])("names the invalid theme-level field %s", (field, patch) => {
+    const theme = { ...builtInTheme(), ...patch };
+    expect(validateTheme(theme, BUILT_IN)).toEqual(fieldRefused(field, "invalid-value"));
   });
 });
 
@@ -72,17 +98,21 @@ describe("validateTheme — reserved chrome (AC 5)", () => {
 });
 
 describe("validateTheme — color grammar", () => {
-  it.each(["#06181b", "#06181B", "#06181b80", "rgb(1,2,3)", "rgba( 1 , 2 , 3 , 0.5 )"])(
-    "accepts %s",
-    (value) => {
-      expect(checkValue("color.ground", value)).toEqual({ ok: true });
-    },
-  );
+  it.each([
+    "#06181b",
+    "#06181B",
+    "#06181b80",
+    "rgb(1,2,3)",
+    "rgba( 1 , 2 , 3 , 0.5 )",
+    "rgba(1,\t2,\n3)",
+  ])("accepts %j", (value) => {
+    expect(checkValue("color.ground", value).ok).toBe(true);
+  });
 
   it("pins the seed alpha string verbatim, plus 0.1 and a bare integer alpha", () => {
-    expect(checkValue("color.hairline", "rgba(234,246,243,.10)")).toEqual({ ok: true });
-    expect(checkValue("color.hairline", "rgba(234,246,243,0.1)")).toEqual({ ok: true });
-    expect(checkValue("color.hairline", "rgba(234,246,243,1)")).toEqual({ ok: true });
+    expect(checkValue("color.hairline", "rgba(234,246,243,.10)").ok).toBe(true);
+    expect(checkValue("color.hairline", "rgba(234,246,243,0.1)").ok).toBe(true);
+    expect(checkValue("color.hairline", "rgba(234,246,243,1)").ok).toBe(true);
   });
 
   it("refuses a planted CSS-injection attempt", () => {
@@ -99,7 +129,9 @@ describe("validateTheme — color grammar", () => {
     "#1234567",
     "red",
     "#123456;}",
-  ])("refuses %s", (value) => {
+    "rgb(1, 2,3)",
+    "rgb(1, 2,3)",
+  ])("refuses %j", (value) => {
     expect(checkValue("color.ground", value)).toEqual(refusedAs("color.ground", "invalid-value"));
   });
 
@@ -111,7 +143,7 @@ describe("validateTheme — color grammar", () => {
 
 describe("validateTheme — length grammar", () => {
   it.each(["0px", "1.5rem", "0.875em", "12px"])("accepts %s", (value) => {
-    expect(checkValue("space.2", value)).toEqual({ ok: true });
+    expect(checkValue("space.2", value).ok).toBe(true);
   });
 
   it.each(["12", "12pt", "1.px", "calc(1px)", "4px;}"])("refuses %s", (value) => {
@@ -119,7 +151,7 @@ describe("validateTheme — length grammar", () => {
   });
 
   it("allows a negative length only on font.tracking-display", () => {
-    expect(checkValue("font.tracking-display", "-0.02em")).toEqual({ ok: true });
+    expect(checkValue("font.tracking-display", "-0.02em").ok).toBe(true);
     expect(checkValue("radius.md", "-2px")).toEqual(refusedAs("radius.md", "invalid-value"));
   });
 });
@@ -131,7 +163,7 @@ describe("validateTheme — font-stack grammar", () => {
     "'Inter Tight', \"IBM Plex Mono\", monospace",
     "var(--rs-font-brand), system-ui",
   ])("accepts %s", (value) => {
-    expect(checkValue("font.sans", value)).toEqual({ ok: true });
+    expect(checkValue("font.sans", value).ok).toBe(true);
   });
 
   it.each([
@@ -142,6 +174,7 @@ describe("validateTheme — font-stack grammar", () => {
     "'Inter\nTight'",
     "'Inter\fTight'",
     "Inter,\fsans-serif",
+    "Inter, sans-serif",
     "Inter; color: red",
     "Inter } :root {",
     "var(--rs-anything)",

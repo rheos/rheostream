@@ -1,12 +1,16 @@
-import { CONTRACT_V1, cssPropertyName, type ThemeFile } from "./contract";
+import { CONTRACT_V1, cssPropertyName, type ContractToken, type ThemeFile } from "./contract";
+import { isThemeScheme, isValidTokenValue } from "./validate";
 
-function declaration(token: string, value: string | undefined): string {
+function declaration(token: ContractToken, value: string | undefined): string {
   if (value === undefined) {
     // Only reachable when the caller skipped validateTheme; failing loudly beats
     // shipping a stylesheet with a silently absent custom property.
-    throw new Error(`theme token ${token} has no value`);
+    throw new Error(`theme token ${token.name} has no value`);
   }
-  return `  ${cssPropertyName(token)}: ${value};`;
+  if (!isValidTokenValue(token, value)) {
+    throw new Error(`theme token ${token.name} has a value outside its ${token.kind} grammar`);
+  }
+  return `  ${cssPropertyName(token.name)}: ${value};`;
 }
 
 /**
@@ -14,32 +18,37 @@ function declaration(token: string, value: string | undefined): string {
  * already validated with `origin: "built-in"`), with `overlay` layered over every
  * non-chrome token when given.
  *
- * The output is two `:root` rules, and their order is a security property:
+ * Two defences keep a theme from reaching the confirmation chrome, and neither
+ * depends on the caller having run validateTheme:
  *
- * 1. The chrome rule comes first, in its own already-closed rule, and its values
- *    are read from `base.tokens` only. There is no code path here that reads a
- *    `chrome.*` key off `overlay`, so even a theme that got past validateTheme
- *    could not change the confirmation chrome.
- * 2. Every other token follows in a second rule, plus `color-scheme`.
+ * 1. Grammar. Every value emitted here, from `base` and `overlay` alike, and the
+ *    `color-scheme` value, is re-checked against the same grammar validateTheme
+ *    uses (`isValidTokenValue`, `isThemeScheme`), and a mismatch throws. None of
+ *    the grammars admits `;`, `{` or `}`, so no value can end its declaration
+ *    and add another, such as a second `--rs-chrome-*` in the later rule.
+ * 2. Source. The chrome values are read from `base.tokens` only. There is no
+ *    code path here that reads a `chrome.*` key off `overlay`, so a theme cannot
+ *    set chrome by carrying chrome keys either.
  *
- * validateTheme's grammar check is the first line of defence against CSS
- * injection. This ordering is the second: a malformed overlay value that somehow
- * ran to end-of-input (an unterminated string, say) can only corrupt what comes
- * after it, which is the second rule. The browser has finished parsing the
- * chrome rule by then, so nothing later can reopen or swallow it.
+ * The output is two `:root` rules, chrome first in its own rule, then every
+ * other token plus `color-scheme`. The ordering is layout, not a defence on its
+ * own: a later rule's redeclaration of a custom property wins, which is why the
+ * grammar re-check above exists.
  */
 export function compileTheme(base: ThemeFile, overlay?: ThemeFile): string {
   const chrome: string[] = [];
   const rest: string[] = [];
   for (const token of CONTRACT_V1) {
     if (token.reserved) {
-      chrome.push(declaration(token.name, base.tokens[token.name]));
+      chrome.push(declaration(token, base.tokens[token.name]));
     } else {
-      rest.push(
-        declaration(token.name, overlay?.tokens[token.name] ?? base.tokens[token.name]),
-      );
+      rest.push(declaration(token, overlay?.tokens[token.name] ?? base.tokens[token.name]));
     }
   }
-  rest.push(`  color-scheme: ${overlay?.scheme ?? base.scheme};`);
+  const scheme: unknown = overlay?.scheme ?? base.scheme;
+  if (!isThemeScheme(scheme)) {
+    throw new Error("theme scheme is neither dark nor light");
+  }
+  rest.push(`  color-scheme: ${scheme};`);
   return [":root {", ...chrome, "}", ":root {", ...rest, "}", ""].join("\n");
 }
