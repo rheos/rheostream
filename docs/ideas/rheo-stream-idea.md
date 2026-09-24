@@ -1797,6 +1797,24 @@ The following changes are recorded here.
     policy against. Criterion 30 and its FR 29 trace row are amended to match, and the
     recorded change of direction is repeated in
     [memory](../architecture/memory.md#retention-fr-29-criterion-30).
+14. **The theme is a themable contract, not one theme.** Requirements decision D8, the
+    phase-two scope in the build plan, and criteria 34 and 37 specified the unified interface's
+    theme as singular: "one token set, one theme." That is superseded. A theme is now a small
+    declarative data file of values for a versioned token contract that sets color, type and
+    shape and nothing else; it is not arbitrary CSS. The approval and confirmation surface draws
+    from a reserved token subset that only built-in themes may set, so a third-party theme
+    cannot change how a destructive or financial confirmation reads. Reason: module screens are
+    written against whatever tokens the shell promises, so the token set is an interface with
+    the same standing as the module and runtime contracts and has to be versioned like them, and
+    a user-authored, shareable theme is only safe to allow if the confirmation chrome sits
+    outside its reach. Directed by the maintainer on 2026-09-12 and recorded in issue #40, which
+    also set the timing (phase two as planned, not pulled forward). Constraints: the contract
+    stays small, because every token added is one every shared theme must supply; phase two
+    ships the contract and one seed built-in theme, which a later UI phase replaces or extends
+    with its own built-ins, including a deep-water dark default and an authored light sibling;
+    theme selection and user-theme import are that later phase's work. Specified in
+    [theme contract](../architecture/theme-contract.md) as architecture decision A18; D8, the
+    phase-two scope bullet and criteria 34 and 37 carry an amendment note pointing here.
 
 ### Preferred but still to validate
 

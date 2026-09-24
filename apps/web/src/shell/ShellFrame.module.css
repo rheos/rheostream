@@ -1,0 +1,64 @@
+/*
+ * The shell frame. Every value is a --rs-* theme token or a CSS keyword.
+ *
+ * The header sits on surface-1 over the ground and is separated from the page by
+ * the hairline, not by background alone: the seed's surfaces are close in
+ * luminance by design, so an edge carries the separation.
+ */
+
+.frame {
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-4);
+  padding-block: var(--rs-space-3);
+  padding-inline: var(--rs-space-5);
+  background: var(--rs-color-surface-1);
+  border-block-end: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.brand {
+  margin: initial;
+  font-size: var(--rs-font-size-lg);
+  letter-spacing: var(--rs-font-tracking-display);
+  color: var(--rs-color-ink);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-3);
+  margin-inline-start: auto;
+}
+
+.main {
+  padding-block: var(--rs-space-6);
+  padding-inline: var(--rs-space-5);
+}
+
+.footer {
+  padding-block: var(--rs-space-3);
+  padding-inline: var(--rs-space-5);
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  font-size: var(--rs-font-size-sm);
+}
+
+.statusOk,
+.statusDown {
+  margin: initial;
+  font-family: var(--rs-font-mono);
+}
+
+.statusOk {
+  color: var(--rs-color-success);
+}
+
+.statusDown {
+  color: var(--rs-color-warning);
+}

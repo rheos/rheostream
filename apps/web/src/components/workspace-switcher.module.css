@@ -1,0 +1,20 @@
+/* The compact workspace switcher: label, select and button on one line in the
+   shell header. Every value is a --rs-* theme token or a CSS keyword. */
+
+.form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-2);
+}
+
+.label {
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+
+.refusal {
+  margin: initial;
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-danger);
+}

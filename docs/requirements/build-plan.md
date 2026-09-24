@@ -262,7 +262,12 @@ predecessor. This phase proves module contract v1 on the smallest domain that ca
   switches over on its own.
 - Navigation and theme unification on the phase-one application shell: one token set, one theme,
   and one navigation contract that modules contribute to, plus the memory browse, search, and
-  entity screens ported from the predecessor.
+  entity screens ported from the predecessor. *(Amended 2026-09-24 — issue #40: "one theme"
+  becomes a themable contract. The one token set is the versioned
+  [theme token contract](../architecture/theme-contract.md); a theme is a data file of values for
+  it, whose confirmation-chrome subset only built-in themes set; this phase ships one seed
+  built-in theme on it, which a later UI phase replaces or extends. See architecture decision
+  A18.)*
 - The naming and fixture-provenance checks, wired as gates in continuous integration. They bind
   from this phase onward because this phase carries the first ported interface code, which is
   where a legacy name, a hard-coded API path, or real data would enter the public repository. The
@@ -337,7 +342,10 @@ until a separately ratified append-only criterion amendment says otherwise.
     phase onward, and its scope includes this phase's ported surface: the navigation, the theme,
     and the memory browse, search, and entity screens. Documentation files recording historical
     migration notes are the single allowed exception, listed explicitly. *(Scenario: Publication
-    review; FR 49, guardrail 1.)*
+    review; FR 49, guardrail 1. Amended 2026-09-24 — issue #40: "the theme" is the theme token
+    contract and every theme file on it, the built-in themes and the contract definition
+    included, rather than one fixed theme; see
+    [theme contract](../architecture/theme-contract.md).)*
 35. Ported interface code contains no personal data, rate, client name, or private deployment
     detail, and every fixture in the repository is synthetic, asserted by a fixture provenance
     check that runs in continuous integration from this phase onward. *(Scenario: Publication
@@ -352,7 +360,11 @@ until a separately ratified append-only criterion amendment says otherwise.
     navigation and theme, and the memory browse, search, and entity screens. This criterion adds
     no new check; it asserts that the two gates established in phase one run unchanged in
     continuous integration over the larger surface. *(Scenario: Fresh public clone; FR 47,
-    FR 48.)*
+    FR 48. Amended 2026-09-24 — issue #40: "the theme" is now the theme token contract, its
+    built-in theme files and the shell rendered from them, rather than one fixed theme. The same
+    rules run over the larger surface; the amendment adds no new check, it only widens what the
+    existing criterion-22 and criterion-23 gates scan. See
+    [theme contract](../architecture/theme-contract.md).)*
 
 ---
 

@@ -1,3 +1,5 @@
+import styles from "./logout-form.module.css";
+
 /**
  * The sign-out form: a plain HTML POST, no JavaScript (C9).
  *
@@ -9,8 +11,10 @@
  */
 export function LogoutForm({ action }: { action: string }) {
   return (
-    <form method="post" action={action}>
-      <button type="submit">Sign out</button>
+    <form className={styles.form} method="post" action={action}>
+      <button className={styles.button} type="submit">
+        Sign out
+      </button>
     </form>
   );
 }

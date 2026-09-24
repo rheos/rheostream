@@ -1,11 +1,12 @@
 import { cookies, headers } from "next/headers";
+import type { ReactNode } from "react";
 
-import { LogoutForm } from "@/components/logout-form";
-import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { fetchCoreHealth, type CoreHealthResult } from "@/lib/core-health";
 import { loginHref, logoutAction, switcherAction } from "@/lib/routing/links";
 import { loadRoutingConfig } from "@/lib/routing/load";
 import { fetchSession, SESSION_COOKIE } from "@/lib/session";
+import panel from "@/shell/panel.module.css";
+import { ShellFrame, type ShellAccount } from "@/shell/ShellFrame";
 
 // Never prerender this route: reading `core`'s /healthz is request-time work, and
 // this line — not the fetchCoreHealth try/catch — is what keeps `next build` green
@@ -43,40 +44,49 @@ export default async function Page() {
     host: headerList.get("x-forwarded-host") ?? headerList.get("host") ?? undefined,
   });
 
-  return (
-    <main>
-      <h1>rheoStream</h1>
-      {health.status === "ok" ? (
-        <p>core: ok (contract v{health.contractVersion})</p>
-      ) : (
-        <p>core: unavailable</p>
-      )}
+  // The same guard order as ever: routing first, then the session. The account
+  // controls exist only on the last, signed-in branch; `ShellFrame` renders the
+  // core-status line (`health`) on every path, independently of both.
+  let status: ReactNode;
+  let account: ShellAccount | null = null;
+  if (routing.state !== "ok") {
+    status = <p className={panel.line}>routing: unavailable</p>;
+  } else if (session.state === "unavailable") {
+    status = <p className={panel.line}>session: unavailable</p>;
+  } else if (session.state === "unauthenticated") {
+    status = (
+      <>
+        <p className={panel.line}>session: signed out ({session.refusal})</p>
+        <a className={panel.action} href={loginHref(routing.config)}>
+          Sign in
+        </a>
+      </>
+    );
+  } else {
+    status = (
+      <>
+        <p className={panel.line}>
+          account: {session.actor.kind} {session.actor.id}
+        </p>
+        <p className={panel.line}>
+          workspace: {session.activeWorkspaceId} ({session.role})
+        </p>
+      </>
+    );
+    account = {
+      memberships: session.memberships,
+      activeWorkspaceId: session.activeWorkspaceId,
+      switcherAction: switcherAction(routing.config),
+      logoutAction: logoutAction(routing.config),
+    };
+  }
 
-      {routing.state !== "ok" ? (
-        <p>routing: unavailable</p>
-      ) : session.state === "unavailable" ? (
-        <p>session: unavailable</p>
-      ) : session.state === "unauthenticated" ? (
-        <>
-          <p>session: signed out ({session.refusal})</p>
-          <a href={loginHref(routing.config)}>Sign in</a>
-        </>
-      ) : (
-        <>
-          <p>
-            account: {session.actor.kind} {session.actor.id}
-          </p>
-          <p>
-            workspace: {session.activeWorkspaceId} ({session.role})
-          </p>
-          <WorkspaceSwitcher
-            action={switcherAction(routing.config)}
-            memberships={session.memberships}
-            activeWorkspaceId={session.activeWorkspaceId}
-          />
-          <LogoutForm action={logoutAction(routing.config)} />
-        </>
-      )}
-    </main>
+  return (
+    <ShellFrame health={health} account={account}>
+      <section className={panel.panel}>
+        <h1 className={panel.heading}>Home</h1>
+        {status}
+      </section>
+    </ShellFrame>
   );
 }
