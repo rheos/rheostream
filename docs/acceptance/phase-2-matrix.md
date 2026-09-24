@@ -16,16 +16,18 @@ row for one of those on the strength of a test that happens to pass; the guard's
 completeness check is what keeps the set exact, and widening the set is a decision, not a
 fix.
 
-**One row is `partial`.** Criterion 24's interface half belongs to run 1a3 and nothing this
-run can do closes it; the row carries a `Note:` saying which half is held back. Criterion 30
-was seeded `partial` earlier in this run, because its second clause then described behaviour
+**No row is `partial` any more.** Criterion 24 was seeded `partial` because its interface
+half belonged to run 1a3; that run shipped the interface contributions and promoted the row,
+and its last `Note:` records the promotion. Criterion 30 was seeded `partial` earlier in this
+run, because its second clause then described behaviour
 the 2026-09-21 retention correction reverses; that amendment has since been ratified and
 applied to `build-plan.md`, so the row now quotes the amended text, its evidence covers every
 clause of it, and it is `complete`. Its second `Note:` records the promotion.
 
 Every mutation below was applied to this working tree on 2026-09-21, run, watched go red,
 and reverted, except criterion 31's, which run 1a2 captured the same way on 2026-09-23,
-and criterion 25's, which run 1a3 re-captured on 2026-09-23 when its context moved;
+criterion 25's, which run 1a3 re-captured on 2026-09-23 when its context moved, and
+criterion 24's, which run 1a3 captured on 2026-09-24 when it promoted that row;
 each fenced block is the `git diff` that was captured while it was applied, never a
 hand-typed hunk. Criteria 25, 26 and 33 take their demonstrators from run 1a0b's
 close-out evidence, but 1a0b recorded test paths rather than node ids and captured no
@@ -38,49 +40,81 @@ are new captures. Each of those three rows says so in its own `Note:`.
 
 **Text:** "The memory module is installed and enabled entirely through the registration contract: no core file changes to add it, verified by a test that enables it in a fresh workspace and asserts its records, tools, migrations, and interface contributions all appear, and that the workspace row now records the module's version and its schema version through the operation criterion 10 names." (`build-plan.md:287-291`)
 
-**State:** partial
+**State:** complete
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_module_lifecycle.py::test_install_then_enable_makes_workspace_status_report_recallatron`
 - `pytest:tests/postgres/test_memory_lifecycle.py::test_loading_the_module_makes_its_memory_a_real_owned_deletable_type`
 - `pytest:tests/postgres/test_memory_records.py::test_the_manifest_declares_both_ratified_events_and_no_subscription`
+- `pytest:tests/postgres/test_web_contribution.py::test_the_committed_composition_is_what_compose_renders`
+- `pytest:tests/postgres/test_web_contribution.py::test_the_composition_carries_recallatron_navigation_routes_and_recall`
+- `pytest:tests/postgres/test_web_contribution.py::test_enabling_recallatron_in_a_fresh_workspace_reports_it_enabled_and_routed`
+- `pytest:tests/postgres/test_web_contribution.py::test_a_never_installed_workspace_reports_recallatron_absent`
+- `ci:web / Vitest (path mode)`
+- `ci:web / Vitest (subdomain mode)`
 
 **Mutation:**
 ```diff
-diff --git a/packages/core/src/rheo_core/operations/core_ops.py b/packages/core/src/rheo_core/operations/core_ops.py
-index 127184f..fdaaa6d 100644
---- a/packages/core/src/rheo_core/operations/core_ops.py
-+++ b/packages/core/src/rheo_core/operations/core_ops.py
-@@ -283,7 +283,7 @@ def _workspace_status(
-                 module_id=state.module_id,
-                 package_version=state.package_version,
-                 state=state.state,
--                schema_version=latest.get(state.module_id),
-+                schema_version=None,
-             )
-             for state in states
-         ],
+diff --git a/apps/web/src/shell/compose.ts b/apps/web/src/shell/compose.ts
+index 62f9c69..931d6f3 100644
+--- a/apps/web/src/shell/compose.ts
++++ b/apps/web/src/shell/compose.ts
+@@ -45,7 +45,7 @@ export function visibleModules(
+   const enabled = new Set(options.enabledModuleIds);
+   return modules.filter(
+     (composed) =>
+-      Object.hasOwn(options.routingModules, composed.surface) && enabled.has(composed.id),
++      Object.hasOwn(options.routingModules, composed.surface) && (enabled.has(composed.id) || true),
+   );
+ }
+ 
 ```
 
-**Cost:** `pytest:tests/postgres/test_module_lifecycle.py::test_install_then_enable_makes_workspace_status_report_recallatron` — first observed failure line: `E       AssertionError: assert [{'module_id'...rsion': None}] == [{'module_id'...ory_records'}]`, expanded by pytest to `{'module_id': 'recallatron', 'package_version': '0.1.0', 'state': 'enabled', 'schema_version': None} != {…, 'schema_version': '0002_memory_records'}`
+**Cost:** `ci:web / Vitest (path mode)` — first observed failure line: `AssertionError: expected [ …(3) ] to deeply equal []`, in `src/shell/compose.test.ts > composition over the real MODULES > shows none of it in a workspace where it was never installed`, which runs `composeNavigation` over the real `MODULES` and `tests/fixtures/web/workspace-status-absent.json` and received Recallatron's three navigation entries; 5 of 234 `apps/web` tests failed, the other four being the never-installed cases in `src/shell/render-surface.test.tsx` (no navigation, the status-read-failure fallback, and two module-path 404s)
 
-**Performed by:** P7 (2026-09-21)
+**Performed by:** 1a3-P11 (2026-09-24)
 
-**Note:** the mutation targets the *reporting* side rather than the install side, because
-that is the half of the criterion's sentence a silent regression would reach. Install and
-enable failing is loud; a status response that stopped carrying the applied schema revision
-would leave both operations succeeding and the workspace row's own claim unverifiable. The
-second and third demonstrators cover what "its records … all appear" means for the parts
-this run built: the memory record type reaches the core deletion registry as a real owned
-deletable type, and both declared events arrive from the manifest with no subscription —
-each purely through the registration contract, with no core file naming the module.
+**Note:** the mutation is the one run 1a3's composition prompt used to verify its own
+runtime filter, reused here as this row's evidence rather than a new one invented for it. It
+drops the enabled-module check from `visibleModules` and nothing else: the routing check
+beside it still stands, every composed contribution still renders, and the only change is
+that a workspace which never installed Recallatron is shown Recallatron's navigation and
+screens. That is the criterion's outcome claim failing in exactly the form a shallow "the
+screens exist" test would miss, and it fails in the TypeScript half, which reads the same
+absent-status fixture the Python companion
+`test_a_never_installed_workspace_reports_recallatron_absent` checks the live
+`core.workspace.status` output against. The Python demonstrators do not run TypeScript and do
+not red under this hunk; what reddens them was captured beside it on the same day, applied
+and reverted in turn: a copy of `modules.generated.ts` with the `duplicates` navigation entry
+removed reds the byte check (`E       AssertionError: assert b'// generate...edModule[];\n' == b'// generate...edModule[];\n'`,
+first difference at byte 460) and the navigation pin
+(`E       AssertionError: assert ['memory', 'search'] == ['memory', 's... 'duplicates']`);
+the enabled fixture's `state` changed to `installed` reds the enabled case
+(`E       AssertionError: assert [('recallatron', 'enabled')] == [('recallatron', 'installed')]`);
+and `routing_config()` dropping every module surface reds it too
+(`E       assert set() == {'recallatron'}`).
 
-**Note:** this row is `partial` and the held-back half is the criterion's "interface
-contributions". Run 1a3 owns the unified navigation, the theme and the memory browse,
-search and entity screens, and nothing in this repository contributes a `WebSurface` for
-Recallatron yet. Never promote this row to `complete` on the strength of the three
-demonstrators above: they prove the registration contract carries records, tools,
-migrations and versions, and they say nothing about interface contributions.
+**Note:** the first three demonstrators are the module-contract half, run 1a0's, and are
+unchanged. Its mutation, captured by P7 on 2026-09-21, set `schema_version=None` in
+`core_ops.py`'s `_workspace_status` and reddened
+`test_install_then_enable_makes_workspace_status_report_recallatron` with
+`E       AssertionError: assert [{'module_id'...rsion': None}] == [{'module_id'...ory_records'}]`.
+It targets the reporting side, because a status response that stopped carrying the applied
+schema revision would leave install and enable both succeeding and the workspace row's own
+claim unverifiable. The second and third demonstrators cover what "its records … all appear"
+means: the memory record type reaches the core deletion registry as a real owned deletable
+type, and both declared events arrive from the manifest with no subscription, each purely
+through the registration contract with no core file naming the module.
+
+**Note:** this row was seeded `partial`, holding back the criterion's "interface
+contributions", and run 1a3 promoted it to `complete` on 2026-09-24. The four
+`test_web_contribution.py` demonstrators were run on that date against the tree that
+promoted it: the committed `apps/web/src/modules.generated.ts` is byte-equal to a fresh
+`rheo web compose` render and carries Recallatron's three navigation entries, four routes
+and `recall` search provider; a fresh workspace that enables Recallatron reports it
+`enabled` with its surface in the routing configuration; and a never-installed workspace,
+with Recallatron loaded in the same process, reports it absent. The two `ci:web` steps run
+the TypeScript half in both routing modes.
 
 ---
 

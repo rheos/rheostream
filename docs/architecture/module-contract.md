@@ -400,15 +400,24 @@ The memory module's install and enable is criterion 24's test: no core file chan
 workspace status operation reports the version and schema version afterward. Relationships and
 Leads install the same way in phase three.
 
-**Criterion 24 is only partially closed by run 1a0, and a reader who marks it done after that
-run alone is reading a wrong record.** What 1a0 closes is the module-contract half:
-`core.module.install` and `core.module.enable` exist, Recallatron goes from `absent` to `enabled`
-through those two operations alone, and `core.workspace.status` reports its version, its state and its
-schema version afterwards (`tests/postgres/test_module_lifecycle.py`). What it does not close is
-the interface-contribution half — the `WebContribution` shape this document's manifest table still
-describes as run 1a3's, the `apps/web/src/modules.generated.ts` composition step, and the test
-that a module's screens appear once it is enabled. That half belongs to run 1a3, `apps/web/**` is
-outside 1a0's scope by decision, and until 1a3 lands, criterion 24 stays open.
+**Criterion 24 is closed, in two halves proved by two runs.** The module-contract half is run
+1a0's and is unchanged: `core.module.install` and `core.module.enable` exist, Recallatron goes
+from `absent` to `enabled` through those two operations alone, and `core.workspace.status`
+reports its version, its state and its schema version afterwards
+(`tests/postgres/test_module_lifecycle.py`). The interface-contribution half is run 1a3's: the
+manifest's `web` field carries the real `WebContribution` shape, `rheo web compose` renders
+every discovered module's contribution into `apps/web/src/modules.generated.ts`, and the shell
+filters that one generated list per request against `core.workspace.status` and the routing
+configuration. The end-to-end proof is `tests/postgres/test_web_contribution.py`: it holds the
+committed generated file byte-equal to a fresh render and checks it carries Recallatron's
+navigation, routes and `recall` search provider, then runs an enabled/absent pair, a fresh
+workspace that enables Recallatron and reports it `enabled` with its surface routed, and a
+never-installed workspace that reports it absent. Both status outputs are checked against the
+same `tests/fixtures/web/workspace-status-{enabled,absent}.json` files that `apps/web`'s vitest
+suite feeds to `composeNavigation`, so the Python and TypeScript halves are proven against one
+source. The criterion's row in
+[the phase-two acceptance matrix](../acceptance/phase-2-matrix.md#criterion-24) records the
+mutation that shows the pair bites.
 
 ### Upgrade, disable, re-enable, remove, purge, restore (on paper, D5)
 

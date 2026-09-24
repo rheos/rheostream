@@ -1811,8 +1811,11 @@ The following changes are recorded here.
     also set the timing (phase two as planned, not pulled forward). Constraints: the contract
     stays small, because every token added is one every shared theme must supply; phase two
     ships the contract and one seed built-in theme, which a later UI phase replaces or extends
-    with its own built-ins, including a deep-water dark default and an authored light sibling;
-    theme selection and user-theme import are that later phase's work. Specified in
+    with its own built-ins: two to start, both working names, the current rheo.stream site look
+    (dark only, seeded by this phase's theme) and a Novadiem theme with a light and a dark mode,
+    each mode its own theme file on contract v1, grouped behind a user-facing switch by later
+    registry work rather than a contract change; theme selection and user-theme import are that
+    later phase's work. Specified in
     [theme contract](../architecture/theme-contract.md) as architecture decision A18; D8, the
     phase-two scope bullet and criteria 34 and 37 carry an amendment note pointing to the theme
     contract, and D8's note also points here.
