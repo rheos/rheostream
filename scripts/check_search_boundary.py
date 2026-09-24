@@ -2,8 +2,9 @@
 """Search-input boundary scan (AC 10): "no search input exists anywhere in the
 application shell outside Recallatron's own screen components."
 
-Scans `apps/web/src/**`, `modules/*/web/**`, and `packages/web-contract/**` (`.tsx`
-and `.ts` files) for any statically visible search input, excluding exactly
+Scans `apps/web/src/**`, `modules/*/web/**`, and `packages/web-contract/**` (`.tsx`,
+`.ts`, and — because the shell's tsconfig sets `allowJs` — `.jsx`/`.js`/`.mjs`/`.cjs`)
+for any statically visible search input, excluding exactly
 `modules/recallatron/web/src/screens/search/**` — the one screen spec.md explicitly
 allows to carry one (build Prompt 8 creates that directory; the exclusion is written by
 path pattern rather than "does the directory exist", so it is correct before and after
@@ -11,15 +12,20 @@ Prompt 8 lands).
 
 What counts as a search input, every form case-insensitive in its value:
 
-- a `type` or `role` attribute whose value is `search` (`role` also `searchbox`, and
-  `role` as a space-separated fallback list), in any quoting JSX allows: `"search"`,
-  `'search'`, `{"search"}`, `{'search'}`, or a backtick template, with any casing
-  (`type="Search"`);
+- a `type`, `inputMode` or `enterKeyHint` attribute whose value is `search`, or a
+  `role` attribute of `search`/`searchbox` (also inside a space-separated fallback
+  list), in any quoting JSX allows: `"search"`, `'search'`, `{"search"}`,
+  `{'search'}`, or a backtick template, with any casing (`type="Search"`);
 - the HTML `<search>` element (lower-case: a capitalised `<Search>` is a React
   component, which this scan cannot see into by name);
-- an object literal carrying `type: "search"` or `role: "search"` — the statically
-  visible half of a spread (`const props = { type: "search" }; <input {...props} />`)
-  or a `createElement` props object — and `createElement("search")`.
+- `createElement("search")`, and `createElement("input", { type: "search" })`;
+- in `.tsx`/`.jsx` only, a props-shaped object literal carrying one of those keys
+  with a search value — the statically visible half of a spread (`const props = {
+  type: "search" }; <input {...props} />`). The value must end the property, so a
+  union such as `type: "search" | "nav"` or an interface member ending in `;` is not
+  props; neither is anything inside a `type X = {…}`/`interface X {…}` body. `.ts`
+  files carry contract types (a future `searchProviders` shape), not rendered props,
+  so this rule does not scan them.
 
 A match anywhere else fails the scan, naming the file **and line** — AC 10 is meant to
 be actionable at review time, and "some file in apps/web/src" is not.
@@ -33,12 +39,12 @@ Runs under the system python3 (3.9-compatible, no third-party deps), mirroring
 copy of the same stripper — see scripts/README.md), so a code comment that happens to
 mention `type="search"` in prose is never mistaken for a real attribute.
 
-**Test files (`*.test.ts(x)`/`*.spec.ts(x)`) are excluded**, the same structural
-exclusion `check_routing_literals.py`'s module docstring explains for its own scan:
-a companion regression test legitimately asserts the ABSENCE of a search input by
-matching the same literal pattern this scanner looks for — `ShellFrame.test.tsx`
-pins `/type="search"|role="search"/` as a regex literal precisely so the shell
-frame can never grow one.
+**Test files (`*.test.*`/`*.spec.*`) are excluded**, the same structural exclusion
+`check_routing_literals.py`'s module docstring explains for its own scan: a companion
+regression test legitimately asserts the ABSENCE of a search input by matching the same
+literal pattern this scanner looks for — `ShellFrame.test.tsx` pins
+`/type="search"|role="search"/` as a regex literal precisely so the shell frame can
+never grow one.
 
 Self-test (anti-vacuity): `main()` always checks every planted form against `check()`
 directly — each OUTSIDE the excluded path (must be caught) and one at the excluded
@@ -60,8 +66,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 _SHELL_WEB_SRC = Path("apps") / "web" / "src"
 _SKIP_DIRS = frozenset({"__pycache__", "node_modules", ".next"})
-_SUFFIXES = (".tsx", ".ts")
-_TEST_SUFFIXES = ("test.tsx", "spec.tsx", "test.ts", "spec.ts")
+_SUFFIXES = (".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs")
+_JSX_SUFFIXES = (".tsx", ".jsx")
+_TEST_FILE = re.compile(r"\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs)$")
 
 # The one screen this rule exempts (spec.md, AC 10). Written as a path-prefix check
 # against the POSIX-relative path, not a filesystem existence check — Prompt 8, not
@@ -70,9 +77,12 @@ _EXCLUDED_PREFIX = "modules/recallatron/web/src/screens/search/"
 
 _QUOTED = r"""(?P<q>["'`])"""
 _SEARCH_PATTERNS = (
-    # JSX attribute: type="search", type={"search"}, type={`search`}, any casing.
+    # JSX attribute: type/inputMode/enterKeyHint="search", in any JSX quoting.
     re.compile(
-        r"\btype\s*=\s*(?:\{\s*)?" + _QUOTED + r"\s*search\s*(?P=q)", re.IGNORECASE
+        r"\b(?:type|inputMode|enterKeyHint)\s*=\s*(?:\{\s*)?"
+        + _QUOTED
+        + r"\s*search\s*(?P=q)",
+        re.IGNORECASE,
     ),
     # JSX attribute: role="search" / "searchbox", or either in a fallback list.
     re.compile(
@@ -81,18 +91,49 @@ _SEARCH_PATTERNS = (
         + r"(?:(?!(?P=q)).)*?\bsearch(?:box)?\b(?:(?!(?P=q)).)*(?P=q)",
         re.IGNORECASE,
     ),
-    # Object literal (a spread's props, a createElement props object).
-    re.compile(
-        r"""(?<![\w$])['"]?(?:type|role)['"]?\s*:\s*"""
-        + _QUOTED
-        + r"\s*search(?:box)?\s*(?P=q)",
-        re.IGNORECASE,
-    ),
     # The HTML <search> element.
     re.compile(r"<search(?=[\s>/])"),
-    # createElement("search").
+    # createElement("search"), and createElement("input", { type: "search" }).
     re.compile(r"\bcreateElement\(\s*" + _QUOTED + r"search(?P=q)", re.IGNORECASE),
+    re.compile(
+        r"""\bcreateElement\(\s*(["'`])input\1\s*,\s*\{[^}]*"""
+        r"""\b(?:type|role|inputMode|enterKeyHint)['"]?\s*:\s*(["'`])"""
+        r"""\s*search(?:box)?\s*\2""",
+        re.IGNORECASE,
+    ),
 )
+
+# JSX files only: a props-shaped object literal carrying a search value (see the
+# module docstring). The lookahead requires the value to end the property.
+_PROPS_OBJECT = re.compile(
+    r"""(?<![\w$])['"]?(?:type|role|inputMode|enterKeyHint)['"]?\s*:\s*"""
+    + _QUOTED
+    + r"""\s*search(?:box)?\s*(?P=q)(?=\s*(?:[,})]|$))""",
+    re.IGNORECASE | re.MULTILINE,
+)
+# What opens a type body rather than an object literal, read off the text just
+# before a `{`.
+_TYPE_OPENER = re.compile(
+    r"(?:\btype\s+[\w$]+(?:\s*<[^=]*>)?\s*=|\binterface\s+[\w$][^{]*"
+    r"|\bextends\s+[^{]*|[&|]|\bsatisfies\s+[^{]*)\s*$"
+)
+
+
+def _in_type_body(text: str, position: int) -> bool:
+    """True when `position` sits inside a brace body that a type alias, interface,
+    `extends`, a `&`/`|` type operator, or `satisfies` opens, at any nesting depth."""
+    depth = 0
+    for i in range(position - 1, -1, -1):
+        char = text[i]
+        if char == "}":
+            depth += 1
+        elif char == "{":
+            if depth:
+                depth -= 1
+                continue
+            if _TYPE_OPENER.search(text, max(0, i - 200), i):
+                return True
+    return False
 
 
 def _strip_ts_comments(text: str) -> str:
@@ -143,7 +184,7 @@ def _is_excluded(relative: str) -> bool:
 
 
 def _is_test_file(relative: str) -> bool:
-    return any(relative.endswith(suffix) for suffix in _TEST_SUFFIXES)
+    return bool(_TEST_FILE.search(relative))
 
 
 def check(pairs: Iterable[tuple[str, str]]) -> list[str]:
@@ -159,6 +200,10 @@ def check(pairs: Iterable[tuple[str, str]]) -> list[str]:
         for pattern in _SEARCH_PATTERNS:
             for match in pattern.finditer(stripped):
                 hits.setdefault(match.start(), match.group(0))
+        if relative.endswith(_JSX_SUFFIXES):
+            for match in _PROPS_OBJECT.finditer(stripped):
+                if not _in_type_body(stripped, match.start()):
+                    hits.setdefault(match.start(), match.group(0))
         for start in sorted(hits):
             line = stripped.count("\n", 0, start) + 1
             findings.append(
@@ -206,42 +251,68 @@ def _scan_pairs(repo_root: Path) -> tuple[list[tuple[str, str]], list[str]]:
 
 # --- self-test ------------------------------------------------------------------------
 
+_OUTSIDE = "apps/web/src/components/"
+
+_PLANTED = {
+    "type-double.tsx": '<input type="search" placeholder="find anything" />;\n',
+    "type-braced-double.tsx": '<input type={"search"} />;\n',
+    "type-braced-single.tsx": "<input type={'search'} />;\n",
+    "type-backtick.tsx": "<input type={`search`} />;\n",
+    "type-case.tsx": '<input type="Search" />;\n',
+    "input-mode.tsx": '<input type="text" inputMode="search" />;\n',
+    "enter-key-hint.tsx": "<input type=\"text\" enterKeyHint={'search'} />;\n",
+    "role-double.tsx": '<div role="search"><input /></div>;\n',
+    "role-braced-double.tsx": '<div role={"search"}><input /></div>;\n',
+    "role-braced-single.tsx": "<div role={'search'}><input /></div>;\n",
+    "role-searchbox.tsx": '<div role="searchbox" contentEditable />;\n',
+    "role-fallback-list.tsx": '<div role="search navigation" />;\n',
+    "search-element.tsx": "<search><input /></search>;\n",
+    "spread-props.tsx": (
+        'const props = { type: "search" } as const;\n<input {...props} />;\n'
+    ),
+    "spread-inline.tsx": "<input {...{ type: 'search' }} />;\n",
+    "spread-multiline.jsx": (
+        "const props = {\n  id: 'find',\n  inputMode: 'search'\n};\n"
+        "<input {...props} />;\n"
+    ),
+    "legacy.jsx": '<input type="search" />;\n',
+    "legacy.mjs": "export const html = '<input type=\"search\">';\n",
+    "create-element.ts": 'createElement("input", { type: "search" });\n',
+    "create-search-element.js": 'createElement("search", null);\n',
+}
+_NEAR_MISSES = {
+    "quiet.tsx": (
+        '// a search input would use type="search" here, but this one is a link\n'
+        '<a href="/find">Find</a>;\n'
+    ),
+    "text-input.tsx": '<input type="text" name="search" aria-label="Find" />;\n',
+    "component.tsx": "<Search results={results} /><Researcher />;\n",
+    "search-provider.ts": 'export const provider = { kind: "search" };\n',
+    "contract-types.ts": (
+        'export type SearchProvider = { type: "search" | "nav"; id: string };\n'
+        'export const providers = [{ type: "search", id: "recall" }];\n'
+    ),
+    "union-in-jsx.tsx": (
+        'type Mode = { type: "search" | "nav" };\n'
+        'export type Only = { type: "search" };\n'
+        'interface Props { role: "search"; nested: { type: "search" } }\n'
+        'type Merged = Base & { type: "search" };\n'
+        "export const Nav = (p: Mode) => <nav />;\n"
+    ),
+    "prose.tsx": '<p>{"Use the search screen to find a memory."}</p>;\n',
+    # Inline annotations: the brace is not a type-alias body, so only the
+    # end-of-property rule keeps these out.
+    "inline-annotations.tsx": (
+        'export const Nav = (p: { type: "search" | "nav" }) => <nav />;\n'
+        'declare const mode: { type: "search"; id: string };\n'
+    ),
+}
+
 
 def _self_test() -> str | None:
-    outside = "apps/web/src/components/"
-    planted = {
-        "type-double.tsx": '<input type="search" placeholder="find anything" />;\n',
-        "type-braced-double.tsx": '<input type={"search"} />;\n',
-        "type-braced-single.tsx": "<input type={'search'} />;\n",
-        "type-backtick.tsx": "<input type={`search`} />;\n",
-        "type-case.tsx": '<input type="Search" />;\n',
-        "role-double.tsx": '<div role="search"><input /></div>;\n',
-        "role-braced-double.tsx": '<div role={"search"}><input /></div>;\n',
-        "role-braced-single.tsx": "<div role={'search'}><input /></div>;\n",
-        "role-searchbox.tsx": '<div role="searchbox" contentEditable />;\n',
-        "role-fallback-list.tsx": '<div role="search navigation" />;\n',
-        "search-element.tsx": "<search><input /></search>;\n",
-        "spread-props.tsx": (
-            'const props = { type: "search" } as const;\n<input {...props} />;\n'
-        ),
-        "spread-inline.tsx": "<input {...{ type: 'search' }} />;\n",
-        "props-module.ts": 'export const findProps = { role: "search" };\n',
-        "create-element.ts": 'createElement("input", { type: "search" });\n',
-        "create-search-element.ts": 'createElement("search", null);\n',
-    }
-    near_misses = {
-        "quiet.tsx": (
-            '// a search input would use type="search" here, but this one is a link\n'
-            '<a href="/find">Find</a>;\n'
-        ),
-        "text-input.tsx": '<input type="text" name="search" aria-label="Find" />;\n',
-        "component.tsx": "<Search results={results} /><Researcher />;\n",
-        "search-provider.ts": 'export const provider = { kind: "search" };\n',
-        "prose.tsx": '<p>{"Use the search screen to find a memory."}</p>;\n',
-    }
     pairs: list[tuple[str, str]] = [
-        *((outside + name, text) for name, text in planted.items()),
-        *((outside + name, text) for name, text in near_misses.items()),
+        *((_OUTSIDE + name, text) for name, text in _PLANTED.items()),
+        *((_OUTSIDE + name, text) for name, text in _NEAR_MISSES.items()),
         (
             "modules/recallatron/web/src/screens/search/index.tsx",
             '<input type="search" placeholder="recall" />;\n',
@@ -255,10 +326,10 @@ def _self_test() -> str | None:
     findings = check(pairs)
     flagged = {finding.split(":", 1)[0] for finding in findings}
 
-    missing = sorted(name for name in planted if outside + name not in flagged)
+    missing = sorted(name for name in _PLANTED if _OUTSIDE + name not in flagged)
     if missing:
         return f"self-test FAILED: planted search inputs went uncaught: {missing}"
-    wrong = sorted(name for name in near_misses if outside + name in flagged)
+    wrong = sorted(name for name in _NEAR_MISSES if _OUTSIDE + name in flagged)
     if wrong:
         return f"self-test FAILED: near-miss text was flagged: {wrong}"
     if "modules/recallatron/web/src/screens/search/index.tsx" in flagged:
@@ -271,7 +342,7 @@ def _self_test() -> str | None:
             "self-test FAILED: a companion regression test's own assertion "
             "text was flagged"
         )
-    if not any(f.startswith(outside + "spread-props.tsx:1:") for f in findings):
+    if not any(f.startswith(_OUTSIDE + "spread-props.tsx:1:") for f in findings):
         return (
             "self-test FAILED: the planted violation's line number was not "
             "reported as line 1"
@@ -281,10 +352,10 @@ def _self_test() -> str | None:
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
         module_file = repo / "modules" / "scratch" / "web" / "src" / "Find.tsx"
-        contract_file = repo / "packages" / "web-contract" / "src" / "find.ts"
+        contract_file = repo / "packages" / "web-contract" / "src" / "find.jsx"
         for path, text in (
             (module_file, '<input type="search" />;\n'),
-            (contract_file, 'export const p = { type: "search" };\n'),
+            (contract_file, '<div role="search" />;\n'),
         ):
             path.parent.mkdir(parents=True)
             path.write_text(text, encoding="utf-8")
@@ -301,12 +372,12 @@ def _self_test() -> str | None:
         found = {f.split(":", 1)[0] for f in check(pairs_found)}
         for expected in (
             "modules/scratch/web/src/Find.tsx",
-            "packages/web-contract/src/find.ts",
+            "packages/web-contract/src/find.jsx",
         ):
             if expected not in found:
                 return (
                     f"self-test FAILED: {expected} planted in a scratch tree went "
-                    "uncaught (root not discovered)"
+                    "uncaught (root not discovered, or suffix not scanned)"
                 )
     return None
 

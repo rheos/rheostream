@@ -30,7 +30,10 @@ or prose word, not a substring anywhere. The text is split into alphanumeric run
   (`MotView`, `Mots`; not `Motion`);
 - upper-case (`MOT`) at the run's start or after a lower-case letter or digit,
   ending at the run's end, a digit, or the start of the next camelCase hump
-  (`MOT`, `MOTView`; not `EMOTION`, `MOTOR`, `MOLECULE`).
+  (`MOT`, `MOTView`; not `EMOTION`, `MOTOR`, `MOLECULE`);
+- any other mix of cases (`MoT`, `mOT`, `moT`, `MoL`, `mOL`, …) when it is the
+  whole alphanumeric run, suffix allowed (`_WHOLE_RUN_LEGACY`): a mixed-case form
+  has no camelCase reading to split on, so only a standalone word is judged.
 
 Each form may carry a plural or version suffix — `s`, or an optional `v` plus digits
 (`MOTs`, `MOLs`, `MOTv2`, `mot2`). This is what keeps `DedupWorkspace` and prose such
@@ -121,6 +124,10 @@ _LEGACY_IN_RUN = re.compile(
     r"|(?<![A-Z])(?P<upper>MOT|MOL|MINISTRY|MINISTRIES)(?:[sS]|[vV]?\d+)?"
     r"(?=$|[^A-Za-z]|[A-Z][a-z])"
 )
+# Any case mix, judged only as a whole alphanumeric run (see module docstring).
+_WHOLE_RUN_LEGACY = re.compile(
+    r"(?:mot|mol|ministry|ministries)(?:s|v?\d+)?", re.IGNORECASE
+)
 
 _DOTTED = re.compile(r"(?i)(?<![a-z0-9])m\.o\.t(?![a-z0-9])")
 
@@ -138,6 +145,9 @@ _UPWORK = "upwork"
 def _legacy_words(text: str) -> set[str]:
     words: set[str] = set()
     for run in _IDENT_RUN.findall(text):
+        if _WHOLE_RUN_LEGACY.fullmatch(run):
+            words.add(run.lower())
+            continue
         for match in _LEGACY_IN_RUN.finditer(run):
             words.add(match.group(0).lower())
     return words
@@ -275,6 +285,14 @@ def _self_test() -> str | None:
         "planted/mot-version.txt": "The MOTv2 cutover.\n",
         "planted/mot-digit.txt": "service = mot2\n",
         "planted/ministry-plural.txt": "Every Ministries table.\n",
+        "planted/mot-mixed-1.txt": "The MoT screen.\n",
+        "planted/mot-mixed-2.txt": "The mOT screen.\n",
+        "planted/mot-mixed-3.txt": "The moT screen.\n",
+        "planted/mot-mixed-4.txt": "The mOt screen.\n",
+        "planted/mol-mixed-1.txt": "The MoL screen.\n",
+        "planted/mol-mixed-2.txt": "The mOL screen.\n",
+        "planted/mol-mixed-3.txt": "The moL screen.\n",
+        "planted/mot-mixed-suffix.txt": "Two MoTs and a mOLv2.\n",
         "planted/upwork-compound.txt": "table = upwork_jobs\n",
         "planted/upwork-underscore-infix.txt": "queue = sync_upwork_data\n",
         "planted/upwork-camel-infix.tsx": "function handleUpworkPayload() {}\n",
@@ -286,6 +304,7 @@ def _self_test() -> str | None:
             "remote motion molecule emotion model motor Molly moth.\n"
         ),
         "planted/near-miss-caps.txt": "REMOTE EMOTION MOTOR MOLECULE MOTH\n",
+        "planted/near-miss-mixed.txt": "MoTor mOTION eMoT MoLecule MoTH\n",
         "planted/near-miss-upwork-prose.txt": (
             "The maintainer's funnel is scored against Upwork job postings.\n"
         ),

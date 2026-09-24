@@ -29,19 +29,28 @@ non-documentation IPv4 literal, a phone number, or an hourly rate. An optional l
 repository whose lines are also checked for, case-insensitively. Self-tests itself on
 every run before scanning the real tree.
 
-`python3 scripts/check_theme_tokens.py` fails on a hard-coded color or length value,
-an inline `style=` attribute, an unrecognised `var(--rs-…)` reference, or any
-`--rs-chrome-*` reference, anywhere under `apps/web/src` or `modules/*/web` outside
-test files and the two exact exempt directories `apps/web/src/theme/themes/` and
-`apps/web/src/generated/`. A missing `apps/web/src` fails it. Self-tests itself on
-every run before scanning the real tree.
+`python3 scripts/check_theme_tokens.py` fails on a hard-coded color in a color
+position (a CSS declaration, a style-shaped key or JSX attribute, a whole-string color
+value, a `var()` fallback) or a length literal in CSS, a JSX `style=` attribute or an
+imperative style write, an unrecognised `var(--rs-…)` reference, or any
+`--rs-chrome-*` reference, anywhere under `apps/web/src` or `modules/*/web` (TS and JS
+sources alike) outside test files and the two exact exempt directories
+`apps/web/src/theme/themes/` and `apps/web/src/generated/`. A missing `apps/web/src`
+fails it. Self-tests itself on every run before scanning the real tree.
 
 `python3 scripts/check_search_boundary.py` fails on a search input — a `search`
-`type` or `role` in any JSX quoting, the `<search>` element, or a statically visible
-props object carrying one — anywhere under `apps/web/src`, `modules/*/web`, or
-`packages/web-contract`, outside Recallatron's own search screen
-(`modules/recallatron/web/src/screens/search/`). A missing `apps/web/src` fails it.
-Runs in `make check`. Self-tests itself on every run before scanning the real tree.
+`type`, `inputMode`, `enterKeyHint` or `role` in any JSX quoting, the `<search>`
+element, a `createElement` call making one, or a props object in a JSX file carrying
+one — anywhere under `apps/web/src`, `modules/*/web`, or `packages/web-contract`, outside
+Recallatron's own search screen (`modules/recallatron/web/src/screens/search/`). Type
+declarations are not props. A missing `apps/web/src` fails it. Runs in both `make lint`
+and `make check`. Self-tests itself on every run before scanning the real tree.
+
+`python3 scripts/check_workspace_scripts.py` fails when a web workspace package under
+`apps/*`, `packages/*` or `modules/*/web` does not declare `lint`, `typecheck` and
+`test` scripts, or is not listed in `pnpm-workspace.yaml` — `pnpm -r` skips either
+silently. Runs in `make check`. Self-tests itself on every run before checking the real
+tree.
 
 Each gate is a standalone, stdlib-only `python3` script with no import from
 anywhere else in the repository, so it runs from a bare checkout before any

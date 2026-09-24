@@ -26,6 +26,8 @@ jobs:
         run: make fixture-provenance
       - name: Check for search inputs outside Recallatron's screen (AC 10)
         run: make search-boundary
+      - name: Check every web workspace package declares lint/typecheck/test
+        run: make workspace-scripts
 
   # The container image had no gate anywhere until this job (issue #49). The host
   # half of `make build` stalls on a credential helper reaching ghcr.io, which the

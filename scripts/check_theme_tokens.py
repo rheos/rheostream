@@ -12,25 +12,37 @@ a runtime assertion.
 
 Five rules, each independently self-tested:
 
-1. No color literal: `#hex` or a color function (`rgb(`/`rgba(`/`hsl(`/`hsla(`/
-   `oklch(`/`oklab(`/`lab(`/`lch(`/`color(`) anywhere in code, and no CSS named color
-   in a value, other than the keywords `transparent`/`currentColor`/`inherit`. A named
-   color is found wherever it sits in the value: alone (`color: red`), inside a
-   shorthand (`border: 1px solid red`), before `!important`, or as a `var()` fallback
-   (`var(--rs-color-ground, red)`). In `.css` every declaration value is scanned word
-   by word; in `.ts`/`.tsx` three places are: a lone word after a `:` (`{ color:
-   "red" }`), a string value under a style-shaped key (`color`, `background`, `border`,
-   `outline`, `fill`, `stroke`, `shadow`, `decoration` in the key — `{ border: "1px
-   solid red" }`), and every `var()` fallback. Other TS strings are UI copy, where
-   "Red flags" is prose, not a color.
-2. In `.css` files only, no bare `px`/`rem`/`em`/`pt` length (any case, with or
-   without a leading zero: `16px`, `16PX`, `.5rem`) outside an `@media`/`@container`
-   prelude (`0`, `%`, `ch`, `fr`, `vh`, `vw` are always allowed — they carry no
-   token-vs-literal ambiguity the way a length unit does). The CSS keyword widths
-   `thin`/`medium`/`thick` (`ALLOWED_WIDTH_KEYWORDS`) are explicitly allowed too:
-   contract v1 has no ring/border-width token, so `globals.css`'s
-   `outline: medium solid var(--rs-color-control-focus)` has no token to spend instead.
-3. No inline `style=` attribute in any `.tsx` file.
+1. No color literal: `#hex`, a color function (`rgb(`/`rgba(`/`hsl(`/`hsla(`/`hwb(`/
+   `oklch(`/`oklab(`/`lab(`/`lch(`/`color(`, any case), or a CSS named color, other
+   than the keywords `transparent`/`currentColor`/`inherit`. The rule looks only where
+   a value is a color, so status words and prose are never mistaken for one:
+   - `.css`: every declaration value (quoted strings blanked first, so
+     `content: "gold"` is text). Hex and color functions are flagged in any
+     property; a named color only in a color-bearing property (`color`,
+     `background`, `border`, `outline`, `fill`, `stroke`, `shadow`, `decoration`,
+     `caret`, `accent`, `column-rule`, `emphasis`, `flood`, `lighting`, `stop` in the
+     name) or a custom property — so `font-family: Tan` is a font. Selectors are
+     never scanned, so `#abc { … }` is an id.
+   - `.ts`/`.tsx`/`.js`/`.jsx`/`.mjs`/`.cjs`: a string value under a style-shaped
+     key or JSX attribute (the same color-bearing names: `{ border: "1px solid
+     red" }`, `<path fill="red" />`), and a string whose whole content is a hex or
+     color-function value (`const accent = "#fff"`) unless it is the value of a
+     URL-shaped key or attribute (`href="#abc"`); a variable name counts as the
+     key for an assignment. `status: "green"`, `tone: "red"`
+     and `"see #108"` are not colors.
+   - every file: a named color, hex or color function in a `var()` fallback
+     (`var(--rs-color-ground, red)`).
+2. In `.css` files only, no bare `px`/`rem`/`em`/`pt`/`pc`/`in`/`cm`/`mm`/`Q`
+   length (any case, a leading-dot or exponent number included: `16PX`, `.5rem`,
+   `1e2px`) outside an `@media`/`@container` prelude (`0`, `%`, `ch`, `fr`, `vh`,
+   `vw` are always allowed). The CSS keyword widths `thin`/`medium`/`thick`
+   (`ALLOWED_WIDTH_KEYWORDS`) are explicitly allowed too: contract v1 has no
+   ring/border-width token, so `globals.css`'s `outline: medium solid
+   var(--rs-color-control-focus)` has no token to spend instead.
+3. No inline style: no JSX `style=` attribute in a `.tsx`/`.jsx` file (a `const style
+   =` variable is not one), and no imperative style write in any script file
+   (`el.style.color = …`, `el.style.setProperty(…)`, `el.style.cssText = …`,
+   `el.style[…] = …`, `Object.assign(el.style, …)`).
 4. Every `var(--rs-…)` reference names an actual token on the v1 contract (or the
    `--rs-font-brand` font-loader variable) — catches a typo'd custom property that would
    otherwise silently resolve to nothing at runtime.
@@ -47,7 +59,7 @@ own `theme/themes/` or `generated/` folder:
   and `apps/web/src/theme/builtins.ts`'s own docstring explains why they cannot promote
   themselves into anything else;
 - `apps/web/src/generated/` — the shell's machine-written codegen output;
-- test files (`*.test.ts(x)`/`*.spec.ts(x)`) — this codebase pins hex/rgba values in
+- test files (`*.test.*`/`*.spec.*`) — this codebase pins hex/rgba values in
   `contrast.test.ts`, `seed-dark.test.ts`, `built-in-css.test.ts` and
   `layout.test.tsx` on purpose, to assert what the *token pipeline* produces; the same
   reasoning `check_routing_literals.py`'s module docstring gives for its own test-file
@@ -55,9 +67,10 @@ own `theme/themes/` or `generated/` folder:
 
 `apps/web/src` is the one required root: when it is missing the scan fails rather than
 passing over nothing (the same shape as `check_web_platform.py`'s `_resolve_roots`).
-Every `modules/*/web` package is optional and scanned when present.
+Every `modules/*/web` package is optional and scanned when present. The shell's
+tsconfig sets `allowJs`, so `.js`/`.jsx`/`.mjs`/`.cjs` sources are scanned like TS.
 
-Comments are stripped before every check (CSS `/* */`; TS/TSX `//` and `/* */`,
+Comments are stripped before every check (CSS `/* */`; script `//` and `/* */`,
 quote-aware) so prose mentioning a color or a length in passing — this module's own
 docstring included — is never mistaken for a real declaration.
 
@@ -84,8 +97,10 @@ _SHELL_WEB_SRC = "apps/web/src"
 # The exact exempt directories (POSIX, repository-relative, trailing slash).
 _EXEMPT_PREFIXES = ("apps/web/src/theme/themes/", "apps/web/src/generated/")
 
-SUFFIXES = frozenset({".css", ".ts", ".tsx"})
-_TEST_SUFFIXES = ("test.ts", "test.tsx", "spec.ts", "spec.tsx")
+_SCRIPT_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
+_JSX_SUFFIXES = frozenset({".tsx", ".jsx"})
+SUFFIXES = _SCRIPT_SUFFIXES | {".css"}
+_TEST_FILE = re.compile(r"\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs)$")
 _SKIP_DIRS = frozenset({"__pycache__", "node_modules", ".next"})
 
 ALLOWED_COLOR_KEYWORDS = frozenset({"transparent", "currentcolor", "inherit"})
@@ -124,35 +139,61 @@ NAMED_COLORS = frozenset(
     wheat white whitesmoke yellow yellowgreen""".split()
 )
 
-_HEX_COLOR = re.compile(
-    r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b"
+# Property / key / attribute names whose value is a color.
+_COLOR_BEARING = (
+    r"color|background|border|outline|fill|stroke|shadow|decoration|caret|accent"
+    r"|column-rule|emphasis|flood|lighting|stop"
 )
-_COLOR_FUNC = re.compile(r"\b(?:rgba?|hsla?|oklch|oklab|lab|lch|color)\(")
+_COLOR_BEARING_NAME = re.compile(rf"(?:{_COLOR_BEARING})", re.IGNORECASE)
 
-# A standalone word in a CSS value: not part of an identifier (`--rs-color-red`,
+_HEX_COLOR = re.compile(
+    r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![\w-])"
+)
+_COLOR_FUNC = re.compile(
+    r"(?<![\w$.-])(?:rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(", re.IGNORECASE
+)
+_WHOLE_COLOR = re.compile(
+    r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})"
+    r"|(?:rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\([^)]*\)",
+    re.IGNORECASE,
+)
+
+# A standalone word in a value: not part of an identifier (`--rs-color-red`,
 # `.red-flag`, `#red`), not a function name (`rgb(`), not a file name (`red.png`).
 _VALUE_WORD = re.compile(r"(?<![\w#.-])([A-Za-z]+)(?![\w(.-])")
 # A CSS statement: text up to `;`, `{` or `}`. One ending in `;` or `}` is a
 # declaration (or an at-statement); one ending in `{` is a selector or prelude.
 _CSS_STATEMENT = re.compile(r"([^;{}]*)([;{}])")
-# Every `var()` fallback, in any file type: the text after the first comma.
+_CSS_STRING = re.compile(r"""(["'])(?:\\.|(?!\1)[^\\\n])*\1""")
+# Every `var()` fallback: the text after the first comma.
 _VAR_FALLBACK = re.compile(r"var\(\s*--[\w-]+\s*,([^)]*)\)")
-# TS/TSX: a lone word after a `:` (a JS object-literal key), optionally quoted,
-# followed by a statement-ending character.
-_NAMED_COLOR_VALUE = re.compile(r":\s*['\"`]?([A-Za-z]{3,20})['\"`]?\s*(?=[;,}\n)]|$)")
-# TS/TSX: a string value under a style-shaped key, e.g. `border: "1px solid red"`.
-_STYLE_KEY_STRING = re.compile(
-    r"""['"]?[A-Za-z-]*(?:[Cc]olor|[Bb]ackground|[Bb]order|[Oo]utline|[Ff]ill"""
-    r"""|[Ss]troke|[Ss]hadow|[Dd]ecoration)[A-Za-z-]*['"]?\s*:\s*"""
-    r"""(['"`])((?:\\.|(?!\1)[^\\\n])*)\1"""
+# Any script string literal (single line for '/", multi-line for backticks).
+_SCRIPT_STRING = re.compile(
+    r"""(?P<q>["'])(?P<v>(?:\\.|(?!(?P=q))[^\\\n])*)(?P=q)"""
+    r"""|`(?P<t>(?:\\.|[^\\`])*)`"""
+)
+# The key or JSX attribute a string literal is the value of, read off the text just
+# before the literal: `key: `, `"key": `, `attr=`, `attr={`.
+_KEY_BEFORE = re.compile(r"""['"]?([A-Za-z_$][\w$-]*)['"]?\s*(?::|=\s*\{?)\s*$""")
+_URL_KEYS = frozenset(
+    {"href", "to", "src", "action", "id", "hash", "anchor", "url", "link", "path"}
 )
 
+_LENGTH_UNITS = r"(?:rem|em|px|pt|pc|in|cm|mm|q)"
 _BARE_LENGTH = re.compile(
-    r"(?<![\w.])(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|pt)(?![A-Za-z0-9])", re.IGNORECASE
+    r"(?<![\w.])(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?" + _LENGTH_UNITS + r"(?![\w-])",
+    re.IGNORECASE,
 )
 _AT_RULE_PRELUDE = re.compile(r"@(?:media|container)\b[^{]*\{")
 
-_INLINE_STYLE = re.compile(r"(?<![\w-])style\s*=")
+# A JSX `style=` attribute: `style` preceded by whitespace (inside a tag) and followed
+# by `=` then `{` or a quote — never a `const style =` / `let style =` declaration.
+_INLINE_STYLE = re.compile(r"(?<![\w$.-])style\s*=\s*[{\"']")
+_DECLARATION_BEFORE = re.compile(r"\b(?:const|let|var)\s+$")
+_IMPERATIVE_STYLE = re.compile(
+    r"\.style\s*(?:\.\s*[A-Za-z]+\s*=(?!=)|\.\s*setProperty\s*\(|\[[^\]]*\]\s*=(?!=))"
+    r"|\bassign\(\s*[\w$.]+\.style\b"
+)
 
 _VAR_REF = re.compile(r"var\(\s*(--rs-[A-Za-z0-9-]+)\s*(?:,[^)]*)?\)")
 _CHROME_REF = re.compile(r"--rs-chrome-[A-Za-z0-9-]*")
@@ -219,8 +260,14 @@ def _strip_ts_comments(text: str) -> str:
     return "".join(out)
 
 
+def _blank_css_strings(text: str) -> str:
+    return _CSS_STRING.sub(
+        lambda m: "".join("\n" if ch == "\n" else " " for ch in m.group(0)), text
+    )
+
+
 def _is_exempt(relative: str) -> bool:
-    if any(relative.endswith(suffix) for suffix in _TEST_SUFFIXES):
+    if _TEST_FILE.search(relative):
         return True
     return relative.startswith(_EXEMPT_PREFIXES)
 
@@ -233,38 +280,66 @@ def _named_colors_in(value: str) -> list[str]:
     ]
 
 
-def _color_findings(path: str, stripped: str, *, is_css: bool) -> set[str]:
+def _literal_colors_in(path: str, value: str) -> set[str]:
+    """Hex, color-function and named-color findings for one color-position value."""
     findings: set[str] = set()
-    for match in _HEX_COLOR.finditer(stripped):
+    for match in _HEX_COLOR.finditer(value):
         findings.add(f"{path}: hex color literal {match.group(0)}")
-    for match in _COLOR_FUNC.finditer(stripped):
+    for match in _COLOR_FUNC.finditer(value):
         findings.add(f"{path}: color function literal {match.group(0)}")
-    named: list[str] = []
+    for word in _named_colors_in(value):
+        findings.add(f"{path}: named color literal '{word}'")
+    return findings
+
+
+def _var_fallback_findings(path: str, stripped: str) -> set[str]:
+    findings: set[str] = set()
     for match in _VAR_FALLBACK.finditer(stripped):
-        named.extend(_named_colors_in(match.group(1)))
-    if is_css:
-        for match in _CSS_STATEMENT.finditer(stripped):
-            statement, terminator = match.groups()
-            if terminator == "{" or ":" not in statement:
-                continue
-            named.extend(_named_colors_in(statement.split(":", 1)[1]))
-    else:
-        for match in _NAMED_COLOR_VALUE.finditer(stripped):
-            word = match.group(1)
-            if word.lower() in NAMED_COLORS:
-                named.append(word)
-        for match in _STYLE_KEY_STRING.finditer(stripped):
-            named.extend(_named_colors_in(match.group(2)))
-    for word in named:
-        if word.lower() not in ALLOWED_COLOR_KEYWORDS:
-            findings.add(f"{path}: named color literal '{word}'")
+        findings |= _literal_colors_in(path, match.group(1))
+    return findings
+
+
+def _css_color_findings(path: str, stripped: str) -> set[str]:
+    findings = _var_fallback_findings(path, stripped)
+    for match in _CSS_STATEMENT.finditer(_blank_css_strings(stripped)):
+        statement, terminator = match.groups()
+        if terminator == "{" or ":" not in statement:
+            continue
+        prop, value = statement.split(":", 1)
+        prop = prop.strip()
+        for hit in _HEX_COLOR.finditer(value):
+            findings.add(f"{path}: hex color literal {hit.group(0)}")
+        for hit in _COLOR_FUNC.finditer(value):
+            findings.add(f"{path}: color function literal {hit.group(0)}")
+        if prop.startswith("--") or _COLOR_BEARING_NAME.search(prop):
+            for word in _named_colors_in(value):
+                findings.add(f"{path}: named color literal '{word}'")
+    return findings
+
+
+def _script_color_findings(path: str, stripped: str) -> set[str]:
+    findings = _var_fallback_findings(path, stripped)
+    for match in _SCRIPT_STRING.finditer(stripped):
+        value = match.group("v") if match.group("q") else match.group("t")
+        before = _KEY_BEFORE.search(
+            stripped, max(0, match.start() - 120), match.start()
+        )
+        key = before.group(1) if before else None
+        if key and _COLOR_BEARING_NAME.search(key):
+            findings |= _literal_colors_in(path, value)
+            continue
+        if _WHOLE_COLOR.fullmatch(value.strip()) and (
+            key is None or key.lower() not in _URL_KEYS
+        ):
+            findings.add(f"{path}: color literal string '{value.strip()}'")
     return findings
 
 
 def _length_findings(path: str, stripped: str) -> list[str]:
     findings = []
-    prelude_spans = [m.span() for m in _AT_RULE_PRELUDE.finditer(stripped)]
-    for match in _BARE_LENGTH.finditer(stripped):
+    text = _blank_css_strings(stripped)
+    prelude_spans = [m.span() for m in _AT_RULE_PRELUDE.finditer(text)]
+    for match in _BARE_LENGTH.finditer(text):
         pos = match.start()
         if any(start <= pos < end for start, end in prelude_spans):
             continue
@@ -272,10 +347,19 @@ def _length_findings(path: str, stripped: str) -> list[str]:
     return findings
 
 
-def _inline_style_findings(path: str, stripped: str) -> list[str]:
-    if _INLINE_STYLE.search(stripped):
-        return [f"{path}: inline style= attribute"]
-    return []
+def _inline_style_findings(path: str, stripped: str, *, is_jsx: bool) -> list[str]:
+    findings = []
+    if is_jsx:
+        for match in _INLINE_STYLE.finditer(stripped):
+            if _DECLARATION_BEFORE.search(
+                stripped, max(0, match.start() - 40), match.start()
+            ):
+                continue
+            findings.append(f"{path}: inline style= attribute")
+            break
+    if _IMPERATIVE_STYLE.search(stripped):
+        findings.append(f"{path}: imperative style write")
+    return findings
 
 
 def _token_findings(
@@ -302,15 +386,18 @@ def check(
         if _is_exempt(path):
             continue
         suffix = Path(path).suffix
-        is_css = suffix == ".css"
-        stripped = (
-            _strip_css_comments(raw_text) if is_css else _strip_ts_comments(raw_text)
-        )
-        findings.extend(sorted(_color_findings(path, stripped, is_css=is_css)))
-        if is_css:
+        if suffix == ".css":
+            stripped = _strip_css_comments(raw_text)
+            findings.extend(sorted(_css_color_findings(path, stripped)))
             findings.extend(_length_findings(path, stripped))
-        if suffix == ".tsx":
-            findings.extend(_inline_style_findings(path, stripped))
+        elif suffix in _SCRIPT_SUFFIXES:
+            stripped = _strip_ts_comments(raw_text)
+            findings.extend(sorted(_script_color_findings(path, stripped)))
+            findings.extend(
+                _inline_style_findings(path, stripped, is_jsx=suffix in _JSX_SUFFIXES)
+            )
+        else:
+            continue
         findings.extend(_token_findings(path, stripped, contract_var_names))
     return findings
 
@@ -329,10 +416,10 @@ def _resolve_roots(repo_root: Path) -> list[Path]:
 
 
 def _scan_pairs(repo_root: Path) -> tuple[list[tuple[str, str]], list[str]]:
-    """Every `.css`/`.ts`/`.tsx` file under the resolved roots as (relative path,
-    text), plus an error for a missing required root. Exemptions are applied by
-    `check()`, not here, so they are decided by the same repository-relative path in
-    the real scan and in the self-test."""
+    """Every scanned-suffix file under the resolved roots as (relative path, text),
+    plus an error for a missing required root. Exemptions are applied by `check()`,
+    not here, so they are decided by the same repository-relative path in the real
+    scan and in the self-test."""
     pairs: list[tuple[str, str]] = []
     errors: list[str] = []
     for root in _resolve_roots(repo_root):
@@ -369,6 +456,186 @@ def _findings_by_path(findings: Iterable[str]) -> dict[str, list[str]]:
     return by_path
 
 
+_PLANTED = {
+    # Rule 1, CSS.
+    "planted/color.module.css": (".x { color: #fff; }\n", "hex color"),
+    "planted/color-fn.module.css": (
+        ".y { background: rgba(0,0,0,.5); }\n",
+        "color function",
+    ),
+    "planted/color-fn-upper.module.css": (
+        ".y { background: RGB(0 0 0); }\n",
+        "color function",
+    ),
+    "planted/color-fn-hsla-upper.module.css": (
+        ".y { color: HSLA(0, 0%, 0%, 1); }\n",
+        "color function",
+    ),
+    "planted/color-fn-hwb.module.css": (
+        ".y { color: hwb(0 0% 0%); }\n",
+        "color function",
+    ),
+    "planted/color-name.module.css": (".z { color: salmon; }\n", "named color"),
+    "planted/color-shorthand.module.css": (
+        ".z { border: var(--rs-size-hairline) solid red; }\n",
+        "named color",
+    ),
+    "planted/color-important.module.css": (
+        ".z { color: red !important; }\n",
+        "named color",
+    ),
+    "planted/color-last-declaration.module.css": (
+        ".z { padding: var(--rs-space-3); color: navy }\n",
+        "named color",
+    ),
+    "planted/color-custom-property.module.css": (
+        ".z { --local-accent: tomato; }\n",
+        "named color",
+    ),
+    "planted/color-var-fallback.module.css": (
+        ".z { color: var(--rs-color-ground, red); }\n",
+        "named color",
+    ),
+    # Rule 1, scripts.
+    "planted/color-var-fallback.ts": (
+        'export const c = "var(--rs-color-ground, tomato)";\n',
+        "named color",
+    ),
+    "planted/color-style-key.ts": (
+        'export const s = { border: "var(--rs-size-hairline) solid red" };\n',
+        "named color",
+    ),
+    "planted/color-style-key-lone.ts": (
+        'export const s = { color: "red" };\n',
+        "named color",
+    ),
+    "planted/color-jsx-attribute.tsx": (
+        'export const I = () => <path fill="red" />;\n',
+        "named color",
+    ),
+    "planted/color-whole-string.ts": (
+        'export const brand = "#fff";\n',
+        "color literal string",
+    ),
+    "planted/color-whole-string.js": (
+        "export const brand = 'rgb(0, 0, 0)';\n",
+        "color literal string",
+    ),
+    "planted/color-style-key.mjs": (
+        'export const s = { backgroundColor: "#000" };\n',
+        "hex color",
+    ),
+    # Rule 2.
+    "planted/length.module.css": (".w { margin: 16px; }\n", "bare length"),
+    "planted/length-leading-dot.module.css": (
+        ".w { margin: .5rem; }\n",
+        "bare length",
+    ),
+    "planted/length-upper.module.css": (".w { padding: 16PX; }\n", "bare length"),
+    "planted/length-exponent.module.css": (".w { width: 1e2px; }\n", "bare length"),
+    "planted/length-in.module.css": (".w { width: 1in; }\n", "bare length"),
+    "planted/length-cm.module.css": (".w { width: 2cm; }\n", "bare length"),
+    "planted/length-mm.module.css": (".w { width: 3mm; }\n", "bare length"),
+    "planted/length-pc.module.css": (".w { width: 1pc; }\n", "bare length"),
+    "planted/length-q.module.css": (".w { width: 4Q; }\n", "bare length"),
+    "planted/media-body-length.module.css": (
+        "@media (min-width: 600px) { .a { padding: 4px; } }\n",
+        "bare length",
+    ),
+    # Rule 3.
+    "planted/component.tsx": (
+        '<div style={{ color: "var(--rs-color-ground)" }} />;\n',
+        "inline style",
+    ),
+    "planted/component.jsx": (
+        '<div style="padding: var(--rs-space-3)" />;\n',
+        "inline style",
+    ),
+    "planted/imperative-assign.ts": (
+        'el.style.color = "var(--rs-color-ground)";\n',
+        "imperative style write",
+    ),
+    "planted/imperative-set-property.ts": (
+        'el.style.setProperty("--rs-space-3", "1");\n',
+        "imperative style write",
+    ),
+    "planted/imperative-index.js": (
+        'el.style["color"] = "var(--rs-color-ground)";\n',
+        "imperative style write",
+    ),
+    "planted/imperative-assign-object.ts": (
+        "Object.assign(el.style, overrides);\n",
+        "imperative style write",
+    ),
+    # Rules 4 and 5.
+    "planted/unknown-token.module.css": (
+        ".v { color: var(--rs-color-nope); }\n",
+        "does not name a contract token",
+    ),
+    "planted/chrome-ref.module.css": (
+        ".u { color: var(--rs-chrome-surface); }\n",
+        "chrome-token",
+    ),
+    # The exemptions are exact shell paths: a module package cannot borrow them.
+    "modules/scratch/web/src/theme/themes/planted.css": (
+        ".x { color: #fff; }\n",
+        "hex color",
+    ),
+    "modules/scratch/web/src/generated/planted.ts": (
+        'export const c = "#fff";\n',
+        "color literal string",
+    ),
+}
+
+_CLEAN = {
+    "clean/component.module.css": (
+        ".a { color: var(--rs-color-ground); padding: var(--rs-space-3); "
+        "border: var(--rs-size-hairline) solid var(--rs-color-ground); "
+        "outline: medium solid var(--rs-color-control-focus); }\n"
+        "@media (prefers-color-scheme: dark) and (min-width: 40rem) "
+        "{ .a { padding: var(--rs-space-3); } }\n"
+        ".red-flag:hover { color: currentColor; background: transparent; }\n"
+        "#abc { color: inherit; }\n"
+    ),
+    "clean/comment.module.css": (
+        "/* #fff and 16px and red are not real declarations */\n"
+        ".a { color: inherit; }\n"
+    ),
+    "clean/text-values.module.css": (
+        '.a::after { content: "gold"; }\n'
+        ".b { font-family: Tan, var(--rs-font-brand), serif; }\n"
+        '.c { content: "16px"; }\n'
+    ),
+    "clean/width-keywords.module.css": "".join(
+        f".w-{keyword} {{ outline: {keyword} solid "
+        "var(--rs-color-control-focus); }}\n"
+        for keyword in sorted(ALLOWED_WIDTH_KEYWORDS)
+    ),
+    "clean/status.tsx": (
+        'export const pill = { status: "green", tone: "red", label: "Gold" };\n'
+        'export const Link = () => <a href="#abc">{"see #108"}</a>;\n'
+        'export const Banner = () => <p title="Red flags">{"Green light"}</p>;\n'
+    ),
+    "clean/style-variable.tsx": (
+        "const style = { gap: 0 };\n"
+        'function pick() { let style = "compact"; return style; }\n'
+        "export const P = () => <p className={cx(style, pick())} />;\n"
+    ),
+    "clean/style-read.ts": (
+        "const current = el.style.color === expected;\n"
+        "export const x = getComputedStyle(el).color;\n"
+    ),
+    "clean/functions.ts": (
+        "export const lab = (x: number) => x;\n"
+        "export const y = model.color(1) + lab(2);\n"
+    ),
+    "apps/web/src/theme/themes/seed.ts": 'export const ground = "#101010";\n',
+    "apps/web/src/generated/api-types.ts": 'export const c = "#fff";\n',
+    "apps/web/src/components/pinned.test.tsx": 'expect(c).toBe("#fff");\n',
+    "apps/web/src/components/pinned.test.js": 'expect(c).toBe("#fff");\n',
+}
+
+
 def _self_test() -> str | None:
     contract = frozenset(
         {
@@ -378,116 +645,22 @@ def _self_test() -> str | None:
             "--rs-color-control-focus",
         }
     )
-    planted = {
-        "planted/color.module.css": (".x { color: #fff; }\n", "hex color"),
-        "planted/color-fn.module.css": (
-            ".y { background: rgba(0,0,0,.5); }\n",
-            "color function",
-        ),
-        "planted/color-name.module.css": (".z { color: salmon; }\n", "named color"),
-        "planted/color-shorthand.module.css": (
-            ".z { border: var(--rs-size-hairline) solid red; }\n",
-            "named color",
-        ),
-        "planted/color-important.module.css": (
-            ".z { color: red !important; }\n",
-            "named color",
-        ),
-        "planted/color-last-declaration.module.css": (
-            ".z { padding: var(--rs-space-3); color: navy }\n",
-            "named color",
-        ),
-        "planted/color-var-fallback.module.css": (
-            ".z { color: var(--rs-color-ground, red); }\n",
-            "named color",
-        ),
-        "planted/color-var-fallback.ts": (
-            'export const c = "var(--rs-color-ground, tomato)";\n',
-            "named color",
-        ),
-        "planted/color-style-key.ts": (
-            'export const s = { border: "var(--rs-size-hairline) solid red" };\n',
-            "named color",
-        ),
-        "planted/color-lone-value.ts": (
-            'export const s = { color: "red" };\n',
-            "named color",
-        ),
-        "planted/length.module.css": (".w { margin: 16px; }\n", "bare length"),
-        "planted/length-leading-dot.module.css": (
-            ".w { margin: .5rem; }\n",
-            "bare length",
-        ),
-        "planted/length-upper.module.css": (".w { padding: 16PX; }\n", "bare length"),
-        "planted/media-body-length.module.css": (
-            "@media (min-width: 600px) { .a { padding: 4px; } }\n",
-            "bare length",
-        ),
-        "planted/component.tsx": (
-            '<div style={{ color: "var(--rs-color-ground)" }} />;\n',
-            "inline style",
-        ),
-        "planted/unknown-token.module.css": (
-            ".v { color: var(--rs-color-nope); }\n",
-            "does not name a contract token",
-        ),
-        "planted/chrome-ref.module.css": (
-            ".u { color: var(--rs-chrome-surface); }\n",
-            "chrome-token",
-        ),
-        # The exemptions are exact shell paths: a module package cannot borrow them.
-        "modules/scratch/web/src/theme/themes/planted.css": (
-            ".x { color: #fff; }\n",
-            "hex color",
-        ),
-        "modules/scratch/web/src/generated/planted.ts": (
-            'export const c = "#fff";\n',
-            "hex color",
-        ),
-    }
-    clean = {
-        "clean/component.module.css": (
-            ".a { color: var(--rs-color-ground); padding: var(--rs-space-3); "
-            "border: var(--rs-size-hairline) solid var(--rs-color-ground); "
-            "outline: medium solid var(--rs-color-control-focus); }\n"
-            "@media (prefers-color-scheme: dark) and (min-width: 40rem) "
-            "{ .a { padding: var(--rs-space-3); } }\n"
-            ".red-flag:hover { color: currentColor; background: transparent; }\n"
-        ),
-        "clean/comment.module.css": (
-            "/* #fff and 16px and red are not real declarations */\n"
-            ".a { color: inherit; }\n"
-        ),
-        "clean/width-keywords.module.css": "".join(
-            f".w-{keyword} {{ outline: {keyword} solid "
-            "var(--rs-color-control-focus); }}\n"
-            for keyword in sorted(ALLOWED_WIDTH_KEYWORDS)
-        ),
-        "clean/copy.tsx": (
-            'export const Banner = () => <p title="Red flags">{"Green light"}</p>;\n'
-            'export const label = { title: "Gold members", kind: "neutral" };\n'
-        ),
-        "apps/web/src/theme/themes/seed.ts": 'export const ground = "#101010";\n',
-        "apps/web/src/generated/api-types.ts": 'export const c = "#fff";\n',
-        "apps/web/src/components/pinned.test.tsx": 'expect(c).toBe("#fff");\n',
-    }
-
     by_path = _findings_by_path(
         check(
             [
-                *((path, text) for path, (text, _) in planted.items()),
-                *clean.items(),
+                *((path, text) for path, (text, _) in _PLANTED.items()),
+                *_CLEAN.items(),
             ],
             contract_var_names=contract,
         )
     )
-    for path, (_, expect_substring) in planted.items():
+    for path, (_, expect_substring) in _PLANTED.items():
         if not any(expect_substring in hit for hit in by_path.get(path, [])):
             return (
                 f"self-test FAILED: {path} did not produce a '{expect_substring}' "
                 f"finding (got {by_path.get(path, [])})"
             )
-    for path in clean:
+    for path in _CLEAN:
         if path in by_path:
             return f"self-test FAILED: clean content was flagged: {by_path[path]}"
 
@@ -504,6 +677,9 @@ def _self_test() -> str | None:
                 "required root was dropped before the scan)"
             )
         (repo / "apps" / "web" / "src").mkdir(parents=True)
+        (repo / "apps" / "web" / "src" / "legacy.jsx").write_text(
+            'export const a = "#fff";\n', encoding="utf-8"
+        )
         pairs, errors = _scan_pairs(repo)
         if errors:
             return f"self-test FAILED: a present required root was reported: {errors}"
@@ -513,6 +689,8 @@ def _self_test() -> str | None:
                 "self-test FAILED: a literal planted in a scratch modules/<x>/web "
                 "package went uncaught (module root not discovered)"
             )
+        if "apps/web/src/legacy.jsx" not in found:
+            return "self-test FAILED: a .jsx source file was not scanned"
     return None
 
 

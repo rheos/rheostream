@@ -12,7 +12,7 @@
 # (tests/conftest.py, pytest.exit) with a message naming the remedy — it never
 # skips, because a skipped `postgres` marker would pass this gate vacuously.
 
-.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary
+.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts
 
 ABSENCE_PROOF_CONFIG := $(shell git rev-parse --git-path rheo-absence-config.json)
 ABSENCE_PROOF_CHECKOUT := $(shell git rev-parse --git-path rheo-absence-checkout.json)
@@ -31,6 +31,7 @@ lint:
 	pnpm -r lint
 	python3 scripts/check_routing_literals.py
 	python3 scripts/check_theme_tokens.py
+	python3 scripts/check_search_boundary.py
 
 typecheck:
 	uv run mypy
@@ -195,6 +196,7 @@ check:
 	python3 scripts/check_legacy_names.py
 	python3 scripts/check_fixture_provenance.py
 	python3 scripts/check_search_boundary.py
+	python3 scripts/check_workspace_scripts.py
 
 # Criterion 34: no predecessor-product name or generalized source-product-prefix
 # compound identifier in any tracked path, or in any tracked file's text outside
@@ -220,10 +222,17 @@ theme-tokens:
 	python3 scripts/check_theme_tokens.py
 
 # AC 10: no search input anywhere in the application shell outside
-# Recallatron's own screen components. Part of `check`; CI runs it as its own
-# step. Self-tests itself before scanning the real tree.
+# Recallatron's own screen components. Part of both `lint` and `check`; CI runs
+# it as its own step. Self-tests itself before scanning the real tree.
 search-boundary:
 	python3 scripts/check_search_boundary.py
+
+# Every web workspace package (apps/*, packages/*, modules/*/web) declares lint,
+# typecheck and test scripts and is listed in pnpm-workspace.yaml, because
+# `pnpm -r <script>` silently skips a package without one. Part of `check`.
+# Self-tests itself before checking the real tree.
+workspace-scripts:
+	python3 scripts/check_workspace_scripts.py
 
 # The tree must be committed first because checkout builds its comparison from HEAD.
 absence-proof:

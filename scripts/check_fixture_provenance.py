@@ -18,7 +18,8 @@ checks:
 2. **Content heuristics**, scanned over every fixture file plus `tests/**`,
    `modules/*/tests/**`, `apps/web/src/**`, `modules/*/web/**` and
    `packages/web-contract/**`: an email address must resolve to an RFC 2606/6761
-   reserved domain (`example.com`/`.org`/`.net`, anything under the reserved TLDs
+   reserved domain (`example.com`/`.org`/`.net` and any subdomain of them such as
+   `mail.example.com`, anything under the reserved TLDs
    `.example`/`.test`/`.invalid`, or `localhost`); an IPv4 literal must be loopback
    (`127.0.0.0/8`), `0.0.0.0`, or an RFC 5737 documentation range (`192.0.2.0/24`,
    `198.51.100.0/24`, `203.0.113.0/24`); a phone-number-shaped string (grouped
@@ -101,11 +102,15 @@ _RESERVED_EXACT_DOMAINS = frozenset(
     {"example.com", "example.org", "example.net", "localhost"}
 )
 _RESERVED_TLDS = ("example", "test", "invalid")
+# RFC 2606 reserves the example second-level domains together with every name under
+# them, so `mail.example.com` is as synthetic as `example.com`. A look-alike under a
+# different registry (`example.co.uk`) is a real, registrable domain and stays flagged.
+_RESERVED_PARENT_SUFFIXES = (".example.com", ".example.org", ".example.net")
 
 
 def _domain_is_reserved(domain: str) -> bool:
     low = domain.lower().rstrip(".")
-    if low in _RESERVED_EXACT_DOMAINS:
+    if low in _RESERVED_EXACT_DOMAINS or low.endswith(_RESERVED_PARENT_SUFFIXES):
         return True
     tld = low.rsplit(".", 1)[-1]
     return tld in _RESERVED_TLDS
@@ -317,6 +322,9 @@ def _self_test() -> str | None:
     # Every planted phone number is in the fictional 555-01xx range.
     planted_content = {
         "tests/fixtures/planted-email.json": '{"contact": "person@gmail.com"}',
+        "tests/fixtures/planted-email-lookalike.json": (
+            '{"contact": "person@example.co.uk"}'
+        ),
         "tests/fixtures/planted-ip.json": '{"host": "8.8.8.8"}',
         "tests/fixtures/planted-phone.json": '{"phone": "555-555-0100"}',
         "tests/fixtures/planted-phone-paren.json": '{"phone": "(555) 555-0101"}',
@@ -325,21 +333,29 @@ def _self_test() -> str | None:
             '{"phone": "+1 555 555 0103"}'
         ),
         "tests/fixtures/planted-phone-bare.json": '{"phone": "5555550104"}',
-        "tests/fixtures/planted-rate.json": '{"rate": "$85/hr"}',
-        "tests/fixtures/planted-rate-hour.json": '{"rate": "$85/hour"}',
-        "tests/fixtures/planted-rate-an-hour.json": '{"rate": "$85 an hour"}',
-        "tests/fixtures/planted-rate-code.json": '{"rate": "85 USD/hr"}',
-        "tests/fixtures/planted-rate-code-first.json": '{"rate": "USD 85 per hour"}',
-        "tests/fixtures/planted-rate-hourly.json": '{"rate": "€60 hourly"}',
+        # Every planted rate is an obviously impossible figure, never a real one.
+        "tests/fixtures/planted-rate.json": '{"rate": "$9999999/hr"}',
+        "tests/fixtures/planted-rate-hour.json": '{"rate": "$9999999/hour"}',
+        "tests/fixtures/planted-rate-an-hour.json": '{"rate": "$9999999 an hour"}',
+        "tests/fixtures/planted-rate-code.json": '{"rate": "9999999 USD/hr"}',
+        "tests/fixtures/planted-rate-code-first.json": (
+            '{"rate": "USD 9999999 per hour"}'
+        ),
+        "tests/fixtures/planted-rate-hourly.json": '{"rate": "€9999999 hourly"}',
     }
     clean_content = {
         "tests/fixtures/clean.json": (
             '{"contact": "person@example.com", "host": "192.0.2.10", '
             '"note": "no phone or rate shape here"}'
         ),
+        "tests/fixtures/clean-subdomains.json": (
+            '{"a": "ops@mail.example.com", "b": "x@team.example.org", '
+            '"c": "y@a.b.example.net", "d": "z@host.example"}'
+        ),
         "tests/fixtures/clean-numbers.json": (
             '{"epoch": 1727136000, "id": "3f2b1c4d-5e6f-4a7b-8c9d-5555550100ab", '
-            '"ratio": 0.5555550100, "budget": "$85 total", "count": 12345678901234}'
+            '"ratio": 0.5555550100, "budget": "$9999999 total", '
+            '"count": 12345678901234}'
         ),
     }
     content_findings = check_content([*planted_content.items(), *clean_content.items()])

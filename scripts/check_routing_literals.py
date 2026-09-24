@@ -14,7 +14,8 @@ literal would still return 200 in whichever mode happened to match it.
 Runs under the system python3 (3.9-compatible, no third-party deps), mirroring
 `scripts/check_web_platform.py`. Scans every TypeScript web-src root —
 `apps/web/src/**`, every `modules/*/web/src/**`, and `packages/web-contract/src/**`
-(`.ts`/`.tsx`) — plus `apps/core/src/**` (`.py`) — for a literal `http://`,
+(`.ts`/`.tsx`, and `.js`/`.jsx`/`.mjs`/`.cjs` because the shell's tsconfig sets
+`allowJs`) — plus `apps/core/src/**` (`.py`) — for a literal `http://`,
 `https://`, `/auth/`, `/api/`, or `/mcp` route string. spec.md Technical Risk 6:
 without this widening, criterion 22 would be vacuous for module screens —
 `apps/web/src` alone says nothing about a route literal hard-coded inside a
@@ -114,14 +115,16 @@ def _resolve_web_roots(repo_root: Path) -> list[Path]:
     return [repo_root / _SHELL_WEB_SRC] + [r for r in optional if r.is_dir()]
 
 
-TS_SUFFIXES = frozenset({".ts", ".tsx"})
+TS_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 PY_SUFFIXES = frozenset({".py"})
 
 # Structural exclusion (see module docstring, point 2): file-suffix based, not
 # content-based, and applied only on the web side, where tests live beside the
 # code they test. Python tests for this run live under the top-level tests/,
 # which is outside both scanned roots already.
-_TEST_SUFFIXES = ("test.ts", "test.tsx", "spec.ts", "spec.tsx")
+_TEST_SUFFIXES = tuple(
+    f"{kind}{suffix}" for kind in ("test", "spec") for suffix in sorted(TS_SUFFIXES)
+)
 
 # Structural exclusion by directory (see module docstring, point 3): exactly
 # `apps/web/src/generated/`, the shell's codegen output that `make codegen`'s
@@ -370,6 +373,9 @@ def _self_test() -> str | None:
             "module generated/ dir (exemption is shell-only)": (
                 repo / "modules/scratch/web/src/generated/planted.ts"
             ),
+            # allowJs: JS sources are bundled, so they are scanned too.
+            "shell .jsx file": repo / "apps/web/src/components/legacy.jsx",
+            "module .mjs file": repo / "modules/scratch/web/src/screens/client.mjs",
         }
         for path in must_catch.values():
             _write(path, literal)
@@ -382,6 +388,7 @@ def _self_test() -> str | None:
             repo / "apps/web/src/generated/openapi.ts",
             # The routing package owns the literals url_for returns.
             repo / "apps/web/src/lib/routing/links.ts",
+            repo / "apps/web/src/components/legacy.test.js",
             # Test files pin what the routing functions produce.
             repo / "modules/scratch/web/src/screens/planted.test.tsx",
         ]
