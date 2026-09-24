@@ -140,6 +140,8 @@ describe("validateTheme — font-stack grammar", () => {
     "Inter,\nsans-serif",
     "Inter,\rsans-serif",
     "'Inter\nTight'",
+    "'Inter\fTight'",
+    "Inter,\fsans-serif",
     "Inter; color: red",
     "Inter } :root {",
     "var(--rs-anything)",

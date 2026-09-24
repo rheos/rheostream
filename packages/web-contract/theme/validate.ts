@@ -42,8 +42,10 @@ const FONT_BRAND_VAR = "var(--rs-font-brand)";
 const BARE_FAMILY = /^[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*$/;
 // A closed quote on both ends, and inside it no line break, no copy of the
 // opening quote and none of `; { } ( ) \ <`.
-const QUOTED_FAMILY = /^(?:'[^'\r\n;{}()\\<]+'|"[^"\r\n;{}()\\<]+")$/;
-const LINE_BREAK = /[\r\n]/;
+const QUOTED_FAMILY = /^(?:'[^'\r\n\f;{}()\\<]+'|"[^"\r\n\f;{}()\\<]+")$/;
+// CSS counts form feed as a newline too: unescaped inside a string, it ends the
+// string as a bad-string token, the same hazard as `\n` or `\r`.
+const LINE_BREAK = /[\r\n\f]/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
