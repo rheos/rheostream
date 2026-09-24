@@ -112,10 +112,11 @@ _PROPS_OBJECT = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 # What opens a type body rather than an object literal, read off the text just
-# before a `{`.
+# before a `{`: a single `&`/`|` is a type operator, but the `&&`/`||` of a
+# conditional spread (`{...(cond && { type: "search" })}`) is not.
 _TYPE_OPENER = re.compile(
     r"(?:\btype\s+[\w$]+(?:\s*<[^=]*>)?\s*=|\binterface\s+[\w$][^{]*"
-    r"|\bextends\s+[^{]*|[&|]|\bsatisfies\s+[^{]*)\s*$"
+    r"|\bextends\s+[^{]*|(?<![&|])[&|]|\bsatisfies\s+[^{]*)\s*$"
 )
 
 
@@ -279,6 +280,13 @@ _PLANTED = {
     "legacy.mjs": "export const html = '<input type=\"search\">';\n",
     "create-element.ts": 'createElement("input", { type: "search" });\n',
     "create-search-element.js": 'createElement("search", null);\n',
+    # `&&`/`||` guard a conditional spread; they are not type operators.
+    "conditional-spread-and.tsx": (
+        'export const F = (on) => <input {...(on && { type: "search" })} />;\n'
+    ),
+    "conditional-spread-or.jsx": (
+        "export const F = (p) => <input {...(p || { role: 'search' })} />;\n"
+    ),
 }
 _NEAR_MISSES = {
     "quiet.tsx": (
@@ -298,6 +306,9 @@ _NEAR_MISSES = {
         'interface Props { role: "search"; nested: { type: "search" } }\n'
         'type Merged = Base & { type: "search" };\n'
         "export const Nav = (p: Mode) => <nav />;\n"
+        # A single `&`/`|` in an inline annotation is still a type operator.
+        'export const A = (p: Base & { type: "search" }) => <nav />;\n'
+        'export const B = (p: Base | { role: "search" }) => <nav />;\n'
     ),
     "prose.tsx": '<p>{"Use the search screen to find a memory."}</p>;\n',
     # Inline annotations: the brace is not a type-alias body, so only the
