@@ -68,7 +68,7 @@ vi.mock("@/lib/session", async (importOriginal) => ({
   fetchSession: async () => seams.session,
 }));
 
-const { renderSurface } = await import("./render-surface");
+const { ensureServed, renderSurface } = await import("./render-surface");
 
 const SIGNED_IN: SessionResult = {
   state: "ok",
@@ -195,6 +195,24 @@ describe("module screens through the real composition", () => {
     await expect(renderSurface(moduleRequest("/nope"))).rejects.toMatchObject({
       digest: expect.stringContaining("404"),
     });
+  });
+
+  it("decides the same 404s up front, for the layout outside the loading boundary", async () => {
+    await expect(ensureServed(moduleRequest("/search"))).resolves.toBeUndefined();
+    await expect(ensureServed(moduleRequest("/nope"))).rejects.toMatchObject({
+      digest: expect.stringContaining("404"),
+    });
+    seams.status = STATUS.absent;
+    await expect(ensureServed(moduleRequest("/search"))).rejects.toMatchObject({
+      digest: expect.stringContaining("404"),
+    });
+  });
+
+  it("leaves a state it cannot decide to the page", async () => {
+    seams.status = { unexpected: true };
+    await expect(ensureServed(moduleRequest("/search"))).resolves.toBeUndefined();
+    seams.session = { state: "unavailable" };
+    await expect(ensureServed(moduleRequest("/search"))).resolves.toBeUndefined();
   });
 
   it("shows no screen to a signed-out session", async () => {

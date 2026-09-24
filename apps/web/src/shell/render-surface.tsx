@@ -1,4 +1,4 @@
-import type { ComposedModule, ShellApi } from "@rheo-stream/web-contract/screen";
+import type { ComposedModule, Screen, ShellApi } from "@rheo-stream/web-contract/screen";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
@@ -61,6 +61,11 @@ export function firstValues(
     query[key] = Array.isArray(value) ? value[0] : value;
   }
   return query;
+}
+
+/** The catch-all route's segments as the pathname `resolveRequest` reads. */
+export function pathFromSegments(segments: readonly string[]): string {
+  return `/${segments.join("/")}`;
 }
 
 /** A module route's absolute URL, with the defined query values appended. */
@@ -227,16 +232,65 @@ async function moduleContent(
       </StatusPanel>
     );
   }
-  const visible = visibleModules(MODULES, visibility);
-  const screen = findModuleRoute(visible, resolved.surface, resolved.subPath);
-  const owner = visible.find((each) => each.surface === resolved.surface);
-  if (screen === undefined || owner === undefined) {
+  const match = matchModule(visibility, resolved);
+  if (match === undefined) {
     notFound();
   }
+  const { owner, screen } = match;
   const shell: ShellApi = {
     role: context.role,
     call: (operation, input) => callOperation(operation, input, context.identity),
     href: (routeId, query) => moduleHref(config, owner, routeId, query),
   };
   return screen({ shell, query: context.request.query });
+}
+
+/** The visible module serving `resolved`, and its matched screen, or `undefined`. */
+function matchModule(
+  visibility: VisibilityOptions,
+  resolved: Extract<ResolvedRequest, { kind: "module" }>,
+): { owner: ComposedModule; screen: Screen } | undefined {
+  const visible = visibleModules(MODULES, visibility);
+  const screen = findModuleRoute(visible, resolved.surface, resolved.subPath);
+  const owner = visible.find((each) => each.surface === resolved.surface);
+  return screen === undefined || owner === undefined ? undefined : { owner, screen };
+}
+
+/**
+ * `notFound()`, before anything streams, for a request `renderSurface` would 404.
+ *
+ * `app/[...segments]/layout.tsx` calls this. The segment's `loading.tsx` wraps the
+ * page in a Suspense boundary, and a `notFound()` thrown inside one arrives after
+ * the 200 status has been sent: the not-found page renders, but as a soft 404. A
+ * layout sits outside that boundary, so deciding here makes the status a real 404.
+ * The decision is `renderSurface`'s own (the same resolution, the same
+ * `matchModule`), over the same `React.cache`d reads, so it costs no extra round
+ * trip and cannot disagree with the page. Anything it cannot decide (routing,
+ * the session or the workspace status unavailable, or signed out) it leaves to
+ * `renderSurface`, which renders that state.
+ */
+export async function ensureServed(request: Omit<SurfaceRequest, "query">): Promise<void> {
+  const [routing, session, workspace] = await Promise.all([
+    loadRoutingConfig(),
+    currentSession(),
+    currentWorkspaceStatus(),
+  ]);
+  if (routing.state !== "ok") {
+    return;
+  }
+  const config = routing.config;
+  const resolved = resolveRequest(config, request.host, request.pathname);
+  if (resolved.kind === "not-found") {
+    notFound();
+  }
+  if (resolved.kind !== "module" || session.state !== "ok" || workspace.state !== "ok") {
+    return;
+  }
+  const visibility: VisibilityOptions = {
+    routingModules: config.surfaces.modules,
+    enabledModuleIds: enabledModuleIds(workspace.status),
+  };
+  if (matchModule(visibility, resolved) === undefined) {
+    notFound();
+  }
 }
