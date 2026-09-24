@@ -18,7 +18,7 @@ required-environments = [
 
 [tool.uv.workspace]
 members = ["packages/*", "apps/*", "modules/*", "connectors", "runtimes", "channels"]
-exclude = ["apps/web"]
+exclude = ["apps/web", "packages/web-contract"]
 
 [dependency-groups]
 dev = [
