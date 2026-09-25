@@ -22,7 +22,7 @@ to tables that live and die in one database; these do not.
 | Operation, approval, job, session, token identifiers | UUID version 7 | The core | Same type everywhere, so a caller cannot tell a workspace record from a control-plane record by shape, and neither leaks routing. |
 | Source event identifier | Opaque text, at most 512 bytes | The external source, or the transport connector when the source supplies none | Unique only within `(connection, source_event_id)`. Never a UUID by contract; never used as a primary key. |
 | Configuration identifier | Slug `[a-z][a-z0-9_]{0,31}` | A person or a package author | Module ids, record type names, stage ids, field names, mapping ids, operation-set names. Human-chosen, immutable once referenced. |
-| Workspace slug | Slug, unique in the control plane | The workspace creator | Display and switcher label only. Never used for storage routing; the UUID is. |
+| Workspace slug | Lowercase letters, digits, and hyphens, at most 63 characters; unique in the control plane | The workspace creator (the workspace's UUID string when none is given) | Display and switcher label only. Never used for storage routing; the UUID is. |
 | Outbox position | `bigint` sequence, per workspace database | Postgres | Total order of events inside one database. Local, never exported as identity. |
 
 No identifier encodes the workspace. Two records from two workspaces are distinguishable only by
@@ -32,8 +32,9 @@ knowing where it lives, and it is not authorization (edge case 9).
 Version 7 rather than version 4: the random part still gives coordination-free uniqueness, and
 the leading timestamp keeps B-tree inserts local. Version 7 rather than a ULID string: Postgres has
 a native 16-byte `uuid` type and no native ULID; storing ULIDs as text costs 26 bytes per key and
-loses type checking. The Python core mints with the standard library where available and a vetted
-fallback otherwise; the web tier never mints durable identifiers.
+loses type checking. The Python core mints with its own RFC 9562 implementation
+(`rheo_core.refs.uuid7`), because the pinned Python 3.12 standard library has no version 7; the
+web tier never mints durable identifiers.
 
 ## Record references
 
@@ -55,8 +56,9 @@ Rules:
   (operations, approvals). A delivery receipt is Leads-owned, so its reference is
   `leads.delivery_receipt:<uuid>`, not `core.`.
 - The record type is declared in the owning module's manifest
-  ([module contract](module-contract.md#owned-record-types)). A reference whose type no manifest
-  declares fails validation.
+  ([module contract](module-contract.md#owned-record-types)). Parsing checks only the form; a
+  reference whose type has no resolver registered through a manifest resolves to `Unavailable`
+  (`unresolvable`).
 - A reference is a value, never a join. A module that holds a reference to another module's record
   stores the string (or the UUID plus the type) in its own tables and resolves it through the core.
   It never has a foreign key into another module's schema. This is how FR 11 stays checkable by a
@@ -110,7 +112,10 @@ aliases; a module that wants "the canonical reference" offers a read operation f
 | Configuration key | `<module>.<section>.<key>` | `recallatron.retention.days` |
 | Job kind | `<module>.<name>` | `recallatron.retention_sweep` |
 | Consumer id | `<module>.<handler>` | `recallatron.on_record_deleted` |
-| Secret scope | `<component>.<purpose>` | `runtime.claude_cli.credential` |
+| Secret scope | `<component>[.<name>]` | `runtime.claude_cli`, `identity.github`, `storage` |
 
 The registry refuses any registration whose name does not start with the registering module's id
-(or `core`), which is what keeps the namespaces from colliding without a central list.
+(or `core`), which is what keeps the namespaces from colliding without a central list. Today that
+check covers operations, record resolvers, configuration keys, and event types. Tool names, job
+kinds, and consumer ids are not yet prefix-checked (a module's job kind or consumer id can replace
+a core one), so for those three the rule is a convention until the check lands.

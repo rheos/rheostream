@@ -46,7 +46,7 @@ are new captures. Each of those three rows says so in its own `Note:`.
 
 ### Criterion 24
 
-**Text:** "The memory module is installed and enabled entirely through the registration contract: no core file changes to add it, verified by a test that enables it in a fresh workspace and asserts its records, tools, migrations, and interface contributions all appear, and that the workspace row now records the module's version and its schema version through the operation criterion 10 names." (`build-plan.md:287-291`)
+**Text:** "The memory module is installed and enabled entirely through the registration contract: no core file changes to add it, verified by a test that enables it in a fresh workspace and asserts its records, tools, migrations, and interface contributions all appear, and that the workspace row now records the module's version and its schema version through the operation criterion 10 names." (`build-plan.md:292-296`)
 
 **State:** complete
 
@@ -128,7 +128,7 @@ the TypeScript half in both routing modes.
 
 ### Criterion 25
 
-**Text:** "The module's manifest declares its owned record types, its storage destination, its migrations, its configuration schema, its provided tools with their safety classes, and its export format. A manifest missing any of these fails validation at install with a named missing field." (`build-plan.md:292-295`)
+**Text:** "The module's manifest declares its owned record types, its storage destination, its migrations, its configuration schema, its provided tools with their safety classes, and its export format. A manifest missing any of these fails validation at install with a named missing field." (`build-plan.md:297-300`)
 
 **State:** complete
 
@@ -184,7 +184,7 @@ line recorded in `Cost`, reverted, and the block above is that capture.
 
 ### Criterion 26
 
-**Text:** "The module writes only to its own storage. A test asserts that no memory-module code path holds a handle to another module's tables, that the core's storage API is the only route to a connection, and that a cross-module change is effected only through a public operation or event." (`build-plan.md:296-299`)
+**Text:** "The module writes only to its own storage. A test asserts that no memory-module code path holds a handle to another module's tables, that the core's storage API is the only route to a connection, and that a cross-module change is effected only through a public operation or event." (`build-plan.md:301-304`)
 
 **State:** complete
 
@@ -233,7 +233,7 @@ read off the current file rather than transcribed, and the mutation is a fresh c
 
 ### Criterion 27
 
-**Text:** "A retrieval call by an actor without permission on a source record returns no content derived from that record, verified by a test that stores a memory under one permission scope and queries it under another." (`build-plan.md:300-302`)
+**Text:** "A retrieval call by an actor without permission on a source record returns no content derived from that record, verified by a test that stores a memory under one permission scope and queries it under another." (`build-plan.md:305-307`)
 
 **State:** complete
 
@@ -279,7 +279,7 @@ rule expressly allows.
 
 ### Criterion 28
 
-**Text:** "A memory derived from two sources carries the intersection of their audiences, not the union. A test combines a broadly readable source with a restricted one and asserts the result is restricted." (`build-plan.md:303-305`)
+**Text:** "A memory derived from two sources carries the intersection of their audiences, not the union. A test combines a broadly readable source with a restricted one and asserts the result is restricted." (`build-plan.md:308-310`)
 
 **State:** complete
 
@@ -324,7 +324,7 @@ second, and a purpose bug would not widen who can read the derived row.
 
 ### Criterion 29
 
-**Text:** "Deleting or superseding a source record invalidates its derived summaries and its embeddings in the same operation, verified by querying the retrieval index afterward." (`build-plan.md:306-308`)
+**Text:** "Deleting or superseding a source record invalidates its derived summaries and its embeddings in the same operation, verified by querying the retrieval index afterward." (`build-plan.md:311-313`)
 
 **State:** complete
 
@@ -376,7 +376,7 @@ index query.
 
 ### Criterion 30
 
-**Text:** "Every workspace has explicit memory retention settings rather than an inherited posture: both are written as rows when the module is enabled, so what a workspace does about age is always a stored, readable choice. The package default for the age-expiry gate is off, so nothing is deleted for age alone unless a workspace states that it wants that, and the retention window is a bounded positive number of days, read only while the gate is on. A missing or out-of-range window is refused rather than replaced by a default, and the window carries no indefinite sentinel value: unbounded retention is the gate's off state." (`build-plan.md:309-318`)
+**Text:** "Every workspace has explicit memory retention settings rather than an inherited posture: both are written as rows when the module is enabled, so what a workspace does about age is always a stored, readable choice. The package default for the age-expiry gate is off, so nothing is deleted for age alone unless a workspace states that it wants that, and the retention window is a bounded positive number of days, read only while the gate is on. A missing or out-of-range window is refused rather than replaced by a default, and the window carries no indefinite sentinel value: unbounded retention is the gate's off state." (`build-plan.md:314-323`)
 
 **State:** complete
 
@@ -436,7 +436,7 @@ clause of it has a demonstrator, which is what the earlier `Note:` said promotio
 
 ### Criterion 31
 
-**Text:** "The retrieval strategy is selected through the adapter, and a test runs the module's full behavioural suite against both a dense-only and a lexical-only configuration, both passing." (`build-plan.md:319-321`)
+**Text:** "The retrieval strategy is selected through the adapter, and a test runs the module's full behavioural suite against both a dense-only and a lexical-only configuration, both passing." (`build-plan.md:324-326`)
 
 **State:** complete
 
@@ -490,7 +490,7 @@ point, so it proves the steady state and not a memory written moments before its
 runs. One assertion holds only when the
 answer is lexical-only: the exact list `["apples"]` in
 `test_recall_returns_eligible_rows_marked_with_the_resolved_strategy`
-(`test_memory_records.py:1513`). That form encodes lexical `@@` semantics. On the shipped
+(`test_memory_records.py:1516`). That form encodes lexical `@@` semantics. On the shipped
 provider `pears / a note about pears` scores cosine 0.471 against `apples`, clears the floor,
 and dense returns it, so under `dense` the test asserts instead that `apples` comes first, the
 expired row is absent and every score clears the floor. The dense equivalent is proven beside
@@ -502,7 +502,7 @@ first dense pass (Prompt 6) reported no red among the other measured sites, and 
 
 ### Criterion 33
 
-**Text:** "Every phase-one path completes correctly in a workspace where the memory module was never installed and never enabled, verified by running the phase-one acceptance suite in such a workspace. Workspace-level disable is phase-seven work under D5, so release one proves the module boundary by absence rather than by disable." (`build-plan.md:328-333`)
+**Text:** "Every phase-one path completes correctly in a workspace where the memory module was never installed and never enabled, verified by running the phase-one acceptance suite in such a workspace. Workspace-level disable is phase-seven work under D5, so release one proves the module boundary by absence rather than by disable." (`build-plan.md:333-338`)
 
 **State:** complete
 
@@ -558,7 +558,7 @@ runs agreed" from quietly meaning "both runs ran nothing".
 
 ### Criterion 36
 
-**Text:** "Criterion 21 is re-asserted at the end of this phase against a workspace that has the memory module installed, enabled, and populated. The export carries the module's records through the export format its manifest declares (criterion 25), and after a restore into an empty deployment the restored workspace's composition, configuration versions, module schema versions, and memory records match the original by comparison." (`build-plan.md:345-350`)
+**Text:** "Criterion 21 is re-asserted at the end of this phase against a workspace that has the memory module installed, enabled, and populated. The export carries the module's records through the export format its manifest declares (criterion 25), and after a restore into an empty deployment the restored workspace's composition, configuration versions, module schema versions, and memory records match the original by comparison." (`build-plan.md:353-358`)
 
 **State:** complete
 

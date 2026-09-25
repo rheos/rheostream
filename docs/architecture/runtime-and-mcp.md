@@ -10,7 +10,7 @@ provider) and the capability-check half of question 10.
 
 The runtime owns model conversation mechanics. rheoStream owns identity, authorization, tool
 policy, domain data, audit, and durable work state (idea document). The contract is the seam
-between the two, in `packages/contracts.runtime`, and every domain service that wants a model
+between the two, in `rheo_contracts.runtime` (`packages/contracts`), and every domain service that wants a model
 depends on it and on nothing more specific (FR 19, guardrail 4).
 
 ### Request binding
@@ -24,11 +24,11 @@ operation; no module constructs one.
 | `actor`, `workspace_id`, `audience` | Copied from the originating operation record (a run inside a job carries the operation's actor and audience, not the worker's `system` actor); the runtime may not change them. The actor must have an account behind it, because the run-scoped token is issued to that account: an operation started by the operator or by a schedule cannot start a run and is refused `runtime_actor_required` before any adapter is invoked. |
 | `purpose` | From the purpose vocabulary; drives redaction and permission filtering. |
 | `task` | The instruction text, as data. Never interpolated into a shell command. |
-| `context_items` | List of `ContextItem(ref, tier, text)` already permission-checked and redacted by the context builder. |
-| `permitted_tools` | List of MCP tool names, the adapter's allow list. Derived from the operation's declared tool needs intersected with the tools whose operations the originating actor may call; never wider than the actor. The [run-scoped token](#the-run-scoped-token) holds the *operations* these tools name, not the tool names. |
+| `context_items` | List of `ContextItem(ref, tier, text)` already permission-checked by the context builder. Redaction by tier is planned, not built ([redaction](#tiers)); today every item is a head's `display` tagged `internal`. |
+| `permitted_tools` | List of MCP tool names, the adapter's allow list. The tool names the caller requested in `core.runtime.run`'s `permitted_tools` input, intersected with the tools whose operations the originating actor may call and stripped of non-token-issuable operations; never wider than the actor. The [run-scoped token](#the-run-scoped-token) holds the *operations* these tools name, not the tool names. |
 | `output` | `text`, `structured(json_schema)`, or `stream`. |
 | `requirements` | Set of capability names the workflow needs (below). |
-| `limits` | `deadline_seconds` (default and ceiling `runtime.max_deadline_seconds`, package default 600, floor `min`), `max_iterations` (default 40), `max_output_bytes`. |
+| `limits` | `deadline_seconds` (default and ceiling `runtime.max_deadline_seconds`, package default 600, floor `min`, and a hard ceiling of 3600 in code), `max_iterations` (default 40), `max_output_bytes` (default 1000000; recorded, not yet enforced by the adapter). |
 | `continuation` | `None`, or the id of a `runtime_session` row the caller may resume. |
 | `credential_slot` | A slot name such as `model`. The adapter maps it to a secret reference from its private configuration; the reference never enters the request ([secrets](storage-and-workspaces.md#a4-the-secret-store-fr-13-guardrail-14)). |
 | `runtime_id`, `model_id` | Chosen from the workspace's permitted set, itself a subset of the operator's (`runtime.allowed_runtimes`, `runtime.allowed_models`, floor `subset`). Runtime and model are separate settings. |
@@ -92,8 +92,9 @@ actions with their own records, not part of the transcript.
 ### The run-scoped token
 
 Every run reaches the deployment's tools through the MCP surface with a token of kind `runtime`,
-issued by the core's `runtime` package through `core.token.issue` (never by the adapter, which
-opens no database) on behalf of the originating actor: `account_id` is the account behind that
+issued by the core's `runtime` package through `rheo_core.tokens.issue.issue_runtime_token`
+(not the `core.token.issue` operation, and never by the adapter, which opens no database) on
+behalf of the originating actor: `account_id` is the account behind that
 actor, `issued_from = runtime`, `purpose` the run's, `expires_at` the run's deadline, and the
 snapshot is the operations the run's `permitted_tools` name, intersected with the originating
 actor's own permitted set and stripped of the non-token-issuable set
@@ -109,7 +110,7 @@ reach.
 | --- | --- | --- |
 | `core.runtime_request` | `id`, `operation_id`, `runtime_id`, `model_id`, `purpose`, `context_digest bytea`, `permitted_tools text[]`, `requirements text[]`, `deadline_seconds`, `max_iterations`, `max_output_bytes`, `terminal_event text`, `failure_kind null`, `usage_input_tokens null`, `usage_output_tokens null`, `usage_cost null`, `usage_kind null`, `started_at`, `ended_at null` | One row per run. `context_digest` is a digest of the redacted text, never the text. `permitted_tools` and `requirements` stay arrays because nothing queries them. |
 | `core.runtime_request_context` | `request_id`, `ref text` | Primary key both columns. Which references the run was sent; a child table because the [deletion cascade](deletion-export-migration.md#the-cascade) queries it to find the transcripts of every run whose context named an erased record. |
-| `core.runtime_transcript` | `id`, `request_id`, `ordinal integer`, `kind text`, `body text`, `byte_length integer`, `recorded_at`, `retention_until timestamptz` | `kind` in `model_output`, `tool_result_summary`, `progress`. `retention_until` is `recorded_at` plus `runtime.transcript_retention_days` (default 90, floor `min`); `core.retention_sweep` removes rows past it. Rows for a run whose context named a deleted record are removed by the deletion cascade at once, because a transcript can restate what the model was shown. |
+| `core.runtime_transcript` | `id`, `request_id`, `ordinal integer`, `kind text`, `body text`, `byte_length integer`, `recorded_at`, `retention_until timestamptz` | `kind` in `model_output`, `tool_result_summary`, `progress`. `retention_until` is `recorded_at` plus `runtime.transcript_retention_days` (default 90, floor `min`); `core.retention_sweep` removes rows past it. Rows for a run whose context named a deleted record are to be removed by the deletion cascade at once, because a transcript can restate what the model was shown; that cascade step is not built yet, so today only the sweep removes transcripts. |
 
 No secret value or reference, no tool argument, and no raw context text is in any of the three
 tables (criterion 17).
@@ -134,7 +135,7 @@ tables above are unchanged by it, and run 1a1 ships no transcript reader, extrac
 
 ## `ClaudeCliRuntime`
 
-The first adapter, in `runtimes/claude_cli`. It spawns the local `claude` executable in print mode
+The first adapter, `rheo_runtimes.claude_cli` in `runtimes/`. It spawns the local `claude` executable in print mode
 and uses that program's own agent loop.
 
 | Concern | Design |
@@ -145,14 +146,14 @@ and uses that program's own agent loop.
 | Tools | The adapter writes a per-run MCP configuration file pointing at this deployment's MCP endpoint with the [run-scoped token](#the-run-scoped-token) the core handed it, and passes `permitted_tools` as the executable's allow list. The facade enforces the token's snapshot on every call, so the allow list is a convenience and the token is the boundary. |
 | Working directory | `<data_root>/workspaces/<id>/runs/<operation_id>/`, created empty, removed after the run. The parent development workspace is never the working directory. |
 | Configuration directory | `<data_root>/workspaces/<id>/runtime/claude-cli/`, passed as the executable's configuration-directory variable (`CLAUDE_CONFIG_DIR`) and as `HOME`, so that everything the executable writes by convention (its session files among them) lands under the data root and nowhere else. It is per workspace, not per run, because `continuation` resumes a native session from a later operation; a per-run directory would lose it. The retention sweep removes regular files under `projects/` only (`config_dir / "projects"`), older than `runtime.transcript_retention_days`. The once-copied login seed at the configuration-directory root is not a session file and is not unlinked. |
-| Credential and seeding | `runtime.claude_cli.credential_kind`, a deployment setting, is `login` or `api_key`; the package default is `login`, the personal self-host arrangement release one targets. With `login`, the operator completes the executable's interactive login once on the host into `runtime.claude_cli.login_seed_dir` (a directory under the data root, mode 0700), records whose login it is in `runtime.claude_cli.credential_account_id` ([below](#the-login-credential-is-bound-to-one-account)), and the adapter **seeds** each workspace's configuration directory by copying that directory into it the first time the workspace runs; a missing or empty seed directory is `credential_invalid` at spawn, before any process starts. With `api_key`, the `model` credential slot maps to a secret reference in the adapter's private configuration, resolved through the adapter's secret scope and passed in the child environment as the executable's own credential variable, and the configuration directory is created empty. Either way nothing about the credential enters the request, the operation record, or the transcript (criterion 17). A hosted edition never uses `login` ([later phases](later-phases.md#phase-8-the-hosted-edition)). |
+| Credential and seeding | `runtime.claude_cli.credential_kind`, a deployment setting, is `login` or `api_key`; the package default is `login`, the personal self-host arrangement release one targets. With `login`, the operator completes the executable's interactive login once on the host into `runtime.claude_cli.login_seed_dir` (a directory under the data root, mode 0700; unset, it is `<data_root>/config/claude-cli-login`), records whose login it is in `runtime.claude_cli.credential_account_id` ([below](#the-login-credential-is-bound-to-one-account)), and the adapter **seeds** each workspace's configuration directory by copying that directory into it the first time the workspace runs; a missing or empty seed directory is `credential_invalid` at spawn, before any process starts. With `api_key`, the `model` credential slot maps to the secret reference in `runtime.claude_cli.credential_ref` (a deployment setting; the adapter's secret scope admits only `secret://file/runtime/claude_cli/...` and `secret://env/RHEO_ANTHROPIC_API_KEY`), resolved through that scope and passed in the child environment as `ANTHROPIC_API_KEY`, and the configuration directory is created empty. Either way nothing about the credential enters the request, the operation record, or the transcript (criterion 17). A hosted edition never uses `login` ([later phases](later-phases.md#phase-8-the-hosted-edition)). |
 | Environment | An allowlist: locale, path, the two directory variables above, and, under `api_key`, the executable's credential variable. Nothing else from the host environment reaches the child. |
 | Capability vector | `tool_calling = true`, `structured_output = true` (the adapter validates the final output against the request's schema itself and fails `output_invalid`), `streaming = true`, `continuation = true`, `cancellation = true` (the process group is killed on the token), `usage_reporting = exact`, `isolation = advisory`. Criterion 15's gate runs against this vector: a request requiring `isolation = enforced` is the one release-one requirement it cannot meet. |
 | Isolation | Reports `advisory` in release one: the adapter constrains the working directory and the tool allow list but cannot enforce a filesystem or network sandbox on its own. Workflows requiring `enforced` are refused on it until an operator-provided sandbox is configured. |
-| Deadline | A timer kills the process group at `deadline_seconds`; `deadline_exceeded`. |
-| Stream parsing | One JSON object per line. A process exit with no terminal `result` object is `stream_truncated`. An authentication error object is `credential_invalid`. A tool refusal from the facade surfaces as `tool_result(refused)` and, if the run cannot proceed, `tool_denied`. |
+| Deadline | The core's poll loop cancels the handle once `deadline_seconds` has passed, which kills the process group; `deadline_exceeded`. |
+| Stream parsing | One JSON object per line. Only the terminal `result` object is read; no `progress`, `tool_call`, `tool_result`, or `usage` event is emitted yet. A process exit with no terminal `result` object is `stream_truncated`. An error `result` whose `result` is `authentication_failed` is `credential_invalid`, one whose `result` is `tool_denied` is `tool_denied`, and any other error `result` is `runtime_error`. |
 | Continuation | The `session_id` in the stream is stored as `native_handle`; resumed only through the bound lookup. The phase-one runtime test starts a run, ends it, and resumes it from a second operation with `continuation`, which is what proves the per-workspace configuration directory carries the native session across runs. |
-| Usage | Reported as `exact` when the result object carries it. |
+| Usage | Declared `exact`, but the adapter does not yet read usage from the result object, so no `usage` event is emitted and the `usage_*` columns stay null. |
 
 The adapter never opens a database, never sees a `WorkspaceContext`, and never sees a secret
 reference outside its own configuration.
@@ -164,9 +165,9 @@ interactive login. That credential is a **person's** subscription, not a service
 the deployment has no way to make it anything else. So the runtime binds it:
 
 - `runtime.claude_cli.credential_account_id` (deployment setting, required when
-  `credential_kind = login`) names the account whose login was seeded. A deployment that sets
-  `login` without it fails startup naming the setting, in the same pass that validates the seed
-  directory.
+  `credential_kind = login`) names the account whose login was seeded. The worker refuses to
+  start, naming the setting, when `runtime.claude_cli.executable` is set under `login` without
+  it; the seed directory is checked at spawn, where a missing one is `credential_invalid`.
 - Before any process is spawned, the runtime compares the run's originating account — the account
   behind `RuntimeRequest.actor`, which the [run-scoped token](#the-run-scoped-token) is already
   issued to — with that setting. A mismatch is the terminal failure `credential_not_owned`, and
@@ -237,6 +238,11 @@ mode `mcp.<base>/`; path mode `/mcp`). Bearer token only, of kind `mcp` or `runt
 token is refused `token_wrong_kind`, and cookies are ignored on this surface
 ([presentation](identity-and-topology.md#tokens-for-cli-and-mcp-fr-4)).
 
+**Not mounted yet.** `rheo_app_mcp.transport.build_mcp_app` builds the gated application and
+`apps/core`'s `build_mcp_surface()` binds it to the process's consumer registry, but nothing
+calls it, so no process serves the `mcp` surface today. The transport is exercised in-process by
+tests.
+
 **Session resolution.** The token resolves to an `access_token` row, and the boundary builds the
 `WorkspaceContext` from it: workspace, actor `token`, role from the token's account membership,
 `operation_set` from the token's snapshot rows, `audience = token`. A malformed, wrong-kind,
@@ -249,19 +255,23 @@ listed before a revocation is refused after it (idea document: discovery grants 
 
 **Signature conventions.**
 
-- Name: `<module>_<verb>[_<noun>]`; core tools use `workspace_`, `operations_`, `audit_`.
+- Name: `<module>_<verb>[_<noun>]`; core tools use `workspace_`, `operations_`, `audit_`
+  (only `workspace_status` is registered so far).
 - Input: the operation's input model, with the reserved names forbidden at registration
   (criterion 6). Record references are strings in the documented form; a reference from another
   workspace resolves to nothing and the call fails `not_found`.
 - Class: declared on the tool and required to equal the operation's ([module contract](module-contract.md#operations-tools-events)).
-- Output: the operation's output model, rendered by the facade through the owning module's
-  `render_for_model` under the [redaction tiers](#tiers) with the token's `purpose`
+- Output (planned; see "Not built yet" below): the operation's output model, rendered by the
+  facade through the owning module's `render_for_model` under the [redaction tiers](#tiers) with the token's `purpose`
   (`internal_analysis` when the token carries none), so a tool never returns a `restricted`
   field, a contact value, or a secret reference to a model, whatever the operation returns to a
   person. A destructive, external, or financial call without an approval returns
   `approval_required` with the approval id and the operation id, distinct from success and from
-  error (criterion 19).
-- Long-running operations return `{ operation_id, state }` and the caller polls `operations_get`.
+  error (criterion 19). **Not built yet:** no module implements `render_for_model`, and the
+  facade returns the operation's output model as JSON unchanged. Recallatron, the one module
+  with tools, declares no tiered field, so nothing it returns would be withheld today anyway.
+- Long-running operations return `{ operation_id, state }` and the caller polls
+  `core.operation.get`, which has no MCP tool yet (it is reachable over the API).
 
 **No SQL, no repository.** A tool has no handler; `apps/mcp` imports the service registry and the
 contracts and nothing from `rheo_core.storage` or any driver (criterion 20).
@@ -279,8 +289,9 @@ operation tables in the module documents are authoritative.
 
 | Phase | Tool | Class | Roles |
 | --- | --- | --- | --- |
-| One (core) | `workspace_status`, `operations_get`, `operations_list` | read | owner, member |
-| One (core) | `audit_list` | read | owner, operator |
+| One (core) | `workspace_status` | read | owner, member, operator |
+| One (core) | `operations_get`, `operations_list` (not registered yet) | read | owner, member, operator |
+| One (core) | `audit_list` (not registered yet) | read | owner, operator |
 | Two (memory) | recallatron_recall, recallatron_read | read | owner, member, service |
 | Two (memory) | recallatron_remember, recallatron_derive | mutate | owner, member, service |
 | Two (memory) | recallatron_correct, recallatron_supersede | mutate | owner, member |
@@ -306,10 +317,10 @@ No tool in the production set is external or financial class. The recording sink
 destructive fixture are test-harness registrations, never in the production set (criterion 18);
 the sink is release one's only external-class operation anywhere.
 
-Release one ships **no no-query context bundle**: every memory a run is shown arrives through
-`recallatron.memory.recall` or `recallatron.memory.read` with a query the caller supplied, and a
-tool that handed a model a bundle of memories it never asked for is out of scope for this
-release.
+Release one ships **no no-query context bundle**: every memory a run is shown is one its caller
+named by reference in `core.runtime.run` or one the run fetched itself through
+`recallatron_recall` or `recallatron_read`, and a tool that handed a model a bundle of memories
+it never asked for is out of scope for this release.
 
 ## The redaction contract
 
@@ -319,7 +330,13 @@ boundary; this is the operational rule.
 ### Tiers
 
 Every field of every record type is in one tier, declared in the owning module's manifest
-(`sensitivity`):
+(`sensitivity`).
+
+**Built so far: the tier vocabulary only.** A manifest's `sensitivity` map takes the three tiers
+below (`SensitivityTier`). The enforcement this section describes is not built: no module
+implements `render_for_model`, the `redaction.*` keys and `<module>.redaction.exclude_types` are
+not declared settings, and nothing masks free text. Recallatron declares no tiered field, so
+nothing it holds is withheld by this contract today.
 
 | Tier | Contents | Sent to a model |
 | --- | --- | --- |
@@ -332,23 +349,27 @@ one. The tier for secrets exists so that a *reference* string in a record is als
 
 ### The context builder
 
-`core.runtime.build_context(ctx, purpose, refs)`: resolve each reference under `ctx`, drop those
-not readable, obtain memory items only through `recallatron.memory.recall` with the same
-`purpose` (which applies the audience, purpose, link, and contact-permission filters,
-[memory](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31); FR 27), render each readable
-record through its module's `render_for_model(record, tier_policy)` which omits fields above the
-allowed tier, and cap total bytes at `runtime.max_context_bytes` (package default 200000, floor
-`min`). Restricted values that appear inside free text (an email address inside a message body)
+`rheo_core.runtime.build_context(ctx, refs, *, uow)`. Built today: resolve each reference under
+`ctx` through the record resolver (`resolve_in`, which for a memory applies Recallatron's
+eligibility rule), drop those not live and readable, send each head's `display` text (for a
+memory, its title) as a `ContextItem` tagged `internal`, and cap total bytes at
+`runtime.max_context_bytes` (package default 200000, floor `min`). The design goes further:
+obtain memory items only through `recallatron.memory.recall` with the same `purpose` (which
+applies the audience, purpose, link, and contact-permission filters,
+[memory](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31); FR 27), and render each readable
+record through its module's `render_for_model(record, tier_policy)`, which omits fields above
+the allowed tier. Restricted values that appear inside free text (an email address inside a message body)
 are masked by pattern before sending unless the `respond` allowance is on. Derived memories carry
 the intersection of their sources' audiences and purposes, so the filter on a memory is never
 looser than on what it was made from (criterion 28).
 
 **Purpose comes from the context's principal, not from the argument.** When
 [`ctx.principal`](overview.md#the-workspace-context) carries a bound purpose — a runtime token's,
-or a job's or approval's stored purpose on a rebuild — that purpose is the one applied: an
-omitted argument uses it, and an argument naming a different purpose refuses rather than
-narrowing or widening silently. A run therefore cannot reach memory outside the purpose its
-token was issued for by passing a different value here. An unbound authenticated person or
+or a job's or approval's stored purpose on a rebuild — that purpose is the one applied.
+`build_context` takes no purpose argument at all, and a stored job purpose that disagrees with
+its token's refuses `purpose_mismatch` when the job's context is rebuilt, rather than narrowing
+or widening silently. A run therefore cannot reach memory outside the purpose its token was
+issued for by passing a different value. An unbound authenticated person or
 service browsing without a bound purpose has no memory-purpose gate at all, which is the
 ordinary interface case and not a bypass: the audience, link and contact-permission filters
 still run in full.
@@ -357,7 +378,8 @@ still run in full.
 
 - The core stores context references and a digest, and transcripts for the retention period or
   until a record the run was shown is deleted, whichever comes first
-  ([the cascade](deletion-export-migration.md#the-cascade)).
+  ([the cascade](deletion-export-migration.md#the-cascade); the deletion half is not built yet,
+  so today only `core.retention_sweep` removes transcripts).
   The provider's copy is outside the deployment's control, and the documentation says so rather
   than claiming otherwise. The CLI's local files are directed under the data root by the
   per-workspace configuration directory and swept with the transcripts; the contract claims only

@@ -25,7 +25,14 @@ dispatcher applies the class before the handler runs:
 Workspace policy may tighten (a workspace may require confirmation for a named mutate
 operation via `approvals.confirm_operations`, a list under a `union` floor that can only
 grow) and can never loosen (the three upper classes cannot be moved to a standing grant by any
-setting; the class-to-behaviour table is code, not configuration).
+setting; the class-to-behaviour table is code, not configuration). `approvals.confirm_operations`
+is not a declared setting yet, so no lower-class call requires confirmation today.
+
+The external half of the table is not built yet either. No core migration creates
+`external_action`, no production operation is external or financial class, and the one
+external-class registration, the test harness's recording sink, executes inside
+`core.approval.approve`'s transaction exactly as a destructive operation does. The financial
+`payload_ref` check is not written.
 
 ## The approval record
 
@@ -42,7 +49,7 @@ setting; the class-to-behaviour table is code, not configuration).
 | `payload_ref` | The `core.approval_payload(approval_id pk, body jsonb, byte_length integer)` row holding the snapshot, so the interface can show what is being approved. `body` is never queried and is bounded by `approvals.max_payload_bytes` (default 65536). The row is deleted when its approval is invalidated by the [deletion cascade](deletion-export-migration.md#the-cascade), because a snapshot of a request about a deleted record is a copy of that record. |
 | `purpose text` | From the purpose vocabulary. |
 | `window_start`, `window_end` | Execution window. Default length `approvals.default_window_seconds` 900; maximum `approvals.max_window_seconds` 86400, floor `min`. |
-| `state` | `pending`, `approved`, `executed`, `expired`, `invalidated`, `refused`, `requires_reapproval`. |
+| `state` | `pending`, `approved`, `executed`, `expired`, `invalidated`, `refused`, `requires_reapproval`. The approval path writes `pending`, `approved`, `executed`, and `refused`; restore writes `requires_reapproval`; nothing writes `expired` or `invalidated` yet. |
 | `approved_by_kind`, `approved_by_id`, `approved_at`, `approved_entry` | Who approved and through which entry: `web` in release one, `channel` from phase six; never `mcp`, `api`, or `cli`, because no token carries the approval operation. |
 | `executed_at`, `invalidated_reason text null` | |
 
@@ -69,10 +76,19 @@ criterion 59's instructing text has no operation to reach.
 2. A person approves: `core.approval.approve(approval_id)`, a mutate-class operation with its own
    audit row. State `approved`.
 3. Execution: for destructive, the dispatcher runs the original operation now, with the approval
-   id; for external and financial, it enqueues the `external_action` job. Either path reruns the
-   guards first.
-4. On success, `executed`; on a guard failure, `refused` with the guard named; on window
-   expiry, `expired`.
+   id, inside the approve operation's own transaction; for external and financial, it enqueues
+   the `external_action` job (not built yet, see above). Either path reruns the guards first.
+4. On success, `executed`; on a guard failure, `refused` with the guard named. Nothing moves an
+   approval to `expired` yet: one past its window stays `pending`, and approving it refuses
+   `invalid_approval` from the binding check.
+
+**Superseded in run 1a1: the executed operation now runs as the held caller.**
+`rheo_core.approvals.gate.execute_approved` rebuilds the original caller's context
+(`context_for_approved_execution`, from the approval's `actor_*` fields and the held operation
+record's audience and entry), and the handler and the gated operation's audit row both run under
+it. The approver's act is the separate `core.approval.approve` audit row, plus `approved_by_*`
+and `approved_entry` on the approval. The four paragraphs below record the release-one decision
+that change reversed and no longer describe the code.
 
 **The executed operation runs under the approver's identity. Decided, not defaulted.** Step 3
 says the dispatcher "runs the original operation now" without naming a context; the context it
@@ -113,8 +129,9 @@ question from the one settled here.
 A standing grant lets a token or session run the listed operations without a per-call
 confirmation the workspace would otherwise require through `approvals.confirm_operations`. It
 never satisfies destructive, external, or financial: the dispatcher does not consult grants for
-those classes at all. `core.standing_grant.create` and `.revoke` are non-token-issuable, so a
-grant is always a web session's act.
+those classes at all. Because that key is not built, nothing consults a grant yet; the two
+operations record, revoke, and report what a grant covers. `core.standing_grant.create` and
+`.revoke` are non-token-issuable, so a grant is always a web session's act.
 
 ## Execution guards
 
@@ -130,6 +147,9 @@ it must add, because the core's are always present.
 | `RecordStateGuard` | every upper-class operation whose input names a `subject_ref`, by the core, calling the owning module's resolver | The subject resolves to `deleted` or `unavailable`, or its `RecordHead.revision` ([identifiers](identifiers.md#resolution-under-permission)) differs from `approval.subject_revision`. A mutable type's `revision` is advanced only by a compare-and-set write ([storage adapter seam](storage-and-workspaces.md#revision-is-a-compare-and-set-not-a-counter)), never by a bare increment; an immutable type (an observation, a receipt) reports the constant `1`, so the guard on it can only fail by deletion. |
 | `ContactPermissionGuard` | external operations with a party destination, by Leads | `leads.contact_permission.check(destination party, purpose, channel)` returns anything but `permitted` (criterion 61). |
 | `DestinationGuard` | external operations that execute a handoff or send through a connector, by the connector owning the destination | The destination is not registered, or the connector's credential is unavailable. Release one has no such operation outside the test harness: `leads.handoff.request` is mutate class and records `unavailable` itself ([handoffs](#opportunities-parties-qualifications-and-handoffs)), and the guard's first production use is the phase-five execution operation. |
+
+Only the first three are built (`rheo_core.approvals.guards`). `ContactPermissionGuard` and
+`DestinationGuard` are domain guards that arrive with Leads and the first connector.
 
 A refused guard leaves the external action `refused`, the operation `failed` with the guard's
 code, and the sink or provider untouched. An earlier approval never overrides a later revocation
@@ -157,7 +177,8 @@ moved because the profile gate is the part that carries a criterion.
 ## Pipeline presets and their limits
 
 Answers idea-document question 17: what a preset can configure, and how records move when it
-changes.
+changes. Leads is phase-three work and not built yet (`modules/leads` is a placeholder), so
+everything from here to the end of this document is design.
 
 ### Entities
 

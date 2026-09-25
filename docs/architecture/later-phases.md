@@ -94,8 +94,9 @@ a synthetic specialist module registering records, tools, screens, jobs, migrati
 export through the public extension points; domain packs; the invitation flow and self-service
 membership; the licence.
 
-**How it fits.** The lifecycle operations act on `core.module_state` and the registration epoch
-already present. The synthetic module is a distribution with a manifest and no core change, which
+**How it fits.** The lifecycle operations act on `core.module_state`, whose state set already
+includes `disabled` and `removed`. The registration epoch the module contract names is not built
+yet; the tool facade already re-checks a tool's origin module on every listing and call. The synthetic module is a distribution with a manifest and no core change, which
 is exactly what criterion 24 already proved for the memory module. Domain packs are data:
 a versioned bundle naming modules, presets, mappings, and vocabulary, applied by an operation that
 produces an inspectable plan and refuses to overwrite a workspace setting it did not set; the

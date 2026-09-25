@@ -29,14 +29,14 @@ surrogate id column on any of them, and `embedding_state` is a single row keyed 
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `memory` | `kind text`, `title text`, `body text`, `search_tsv tsvector`, `audience_kind text`, `audience_id uuid null`, `confidence numeric null`, `occurred_at timestamptz null`, `recorded_at`, `recorded_by_kind`, `recorded_by_id`, `origin text`, `revision integer`, `corrected_at null`, `superseded_by_id uuid null`, `invalidated_at null`, `invalidation_reason text null`, `source_namespace text null`, `external_source_key text null` | `kind` in `note`, `fact`, `decision`, `summary`. `search_tsv` is generated from `title` and `body` with a GIN index (the lexical index). `audience_kind` in `workspace`, `member`; `audience_id` is the account when `member` and null otherwise (check constraint). `confidence` is nullable and bounded 0 to 1. `origin` in `told`, `derived`, `migrated`. `revision` is at least 1. `superseded_by_id` is a nullable self-reference with `ON DELETE SET NULL` and names the memory that replaced this one. `invalidated_at` and `invalidation_reason` are written as a pair; the reason is one of `source_deleted`, `source_corrected`, `source_superseded`, and normal APIs never retain `source_deleted` content. The nullable pair `source_namespace`/`external_source_key` is trusted-ingest provenance, not a reference. Retention is not a column: a memory is retained while the workspace's age gate is off, and while the gate is on, a `workspace`-audience memory is retained while `recorded_at` is within `recallatron.retention.days` ([retention](#retention-fr-29-criterion-30)). |
+| `memory` | `kind text`, `title text`, `body text`, `search_tsv tsvector`, `audience_kind text`, `audience_id uuid null`, `confidence double precision null`, `occurred_at timestamptz null`, `recorded_at`, `recorded_by_kind`, `recorded_by_id`, `origin text`, `revision integer`, `corrected_at null`, `superseded_by_id uuid null`, `invalidated_at null`, `invalidation_reason text null`, `source_namespace text null`, `external_source_key text null` | `kind` in `note`, `fact`, `decision`, `summary`. `search_tsv` is generated from `title` and `body` with a GIN index (the lexical index). `audience_kind` in `workspace`, `member`; `audience_id` is the account when `member` and null otherwise (check constraint). `confidence` is nullable and bounded 0 to 1. `origin` in `told`, `derived`, `migrated`. `revision` is at least 1. `superseded_by_id` is a nullable self-reference with `ON DELETE SET NULL` and names the memory that replaced this one. `invalidated_at` and `invalidation_reason` are written as a pair; the reason is one of `source_deleted`, `source_corrected`, `source_superseded`, and normal APIs never retain `source_deleted` content. The nullable pair `source_namespace`/`external_source_key` is trusted-ingest provenance, not a reference. Retention is not a column: a memory is retained while the workspace's age gate is off, and while the gate is on, a `workspace`-audience memory is retained while `recorded_at` is within `recallatron.retention.days` ([retention](#retention-fr-29-criterion-30)). |
 | `memory_purpose` | `memory_id`, `purpose text` | Primary key both columns. The memory's purpose set, a non-empty subset of the closed vocabulary; a child table rather than an array because retrieval filters by it (house rule). |
 | `memory_entity` | `kind text`, `name text`, `normalized_name text`, `ref text null`, `created_at`, `source_namespace text null`, `external_source_key text null` | `kind` in `person`, `organization`, `project`, `topic`, `place`, `thing`. `name` is required and `normalized_name` is derived from it deterministically. `ref` is an immutable optional canonical backing reference, set when the entity is created and resolved under permission on read. The nullable pair `source_namespace`/`external_source_key` is trusted-ingest provenance; **the columns and their export path exist and nothing in release one writes them** — every entity insert leaves both null, so an entity-keyed `source_receipt` is a shape the schema admits and no code path produces yet. Entity identity is its globally safe UUIDv7, not its name. Equal normalized names are permitted. Creation always creates an independent entity; selecting an existing entity requires an authorized canonical ref. Entity reads expose a label only through an eligible mention or readable backing ref. Deleting the final mention also deletes an entity with no backing ref. There is no uniqueness constraint on name or normalized name and no global name probe; the nonunique `(kind, normalized_name, id)` index only filters an entity set the caller is already eligible for. |
 | `memory_mention` | `memory_id`, `entity_id`, `role text null` | Primary key `(memory_id, entity_id)`, with owning foreign keys to both sides. Which entities a memory is about; `role` is bounded. A mention of an entity that carries a `ref` is always accompanied by an `about` link to that ref in the same transaction ([provenance](#provenance-and-links)). |
 | `memory_link` | `memory_id`, `ref text`, `relation text`, `created_at`, `supersession_lineage boolean` | Primary key `(memory_id, ref, relation)`; the memory foreign key is `ON DELETE CASCADE`. `relation` in `derived_from` (a source this memory was made from: another memory, or a record) and `about` (a record this memory concerns, including every party a source involves and every mentioned entity's record, written at write time). `supersession_lineage` defaults false, is **server-owned and immutable** — no caller sets or clears it — and is allowed only on a `derived_from` link to a memory reference. A marked row retains ancestry, not content, and does not require the source it names to still be live. No link is a foreign key into another schema. Provenance, the permission check, and the contact-permission filter all read this table and nothing else. |
 | `memory_embedding` | `memory_id`, `model_id text`, `dimensions integer`, `vector vector(384)`, `embedded_at` | Primary key `(memory_id, model_id)` and a memory foreign key `ON DELETE CASCADE`; no surrogate id. The dense index: migration `0003_dense_retrieval` narrows the column to `vector(384)` and adds the HNSW cosine index `memory_embedding_vector_hnsw`. Rows exist only for live, non-invalidated memories and are written by the [embedding job](#the-embedding-job) and the rebuild, never inside the writing transaction. |
 | `embedding_state` | `id boolean`, `embed_input_version integer` | One row per workspace (`CHECK (id)`), added by migration `0003_dense_retrieval` and written by the first [rebuild](#the-embedding-job), not by the migration. It records which composition of a memory's text the stored vectors were made from; a rebuild that finds it missing or different deletes every vector first. Internal and not exported. |
-| `source_receipt` | `representation_type text`, `source_namespace text`, `external_source_key text`, `record_id uuid null`, `payload_digest bytea`, `state text`, `producer_kind text`, `authority_id uuid`, `principal_account_id uuid null`, `audience_kind text`, `audience_id uuid null`, `bound_purpose text null`, `source_recorded_at`, `source_expires_at` | Internal and `exportable`. Primary key `(representation_type, source_namespace, external_source_key)`; `representation_type` in `memory`, `entity`. `record_id` is the nullable original UUIDv7 of the representation the unit created. `payload_digest` is a 32-byte SHA-256. `state` in `active`, `noop`, `denied`, `erased`, `expired`, `orphaned`. The authority columns are immutable and normalized: `producer_kind` in `migration`, `rheo_runtime`, `claude_code_local`; `authority_id` a UUIDv7; `audience_kind` in `workspace`, `member` paired with `audience_id`; `bound_purpose` a nullable member of the closed vocabulary; `source_recorded_at` and `source_expires_at` paired. The table holds no source body, label, filename, transcript or session id, model prompt or output, raw payload, or prior value. |
+| `source_receipt` | `representation_type text`, `source_namespace text`, `external_source_key text`, `record_id uuid null`, `payload_digest bytea`, `state text`, `producer_kind text`, `authority_id uuid`, `principal_account_id uuid null`, `audience_kind text`, `audience_id uuid null`, `bound_purpose text null`, `source_recorded_at null`, `source_expires_at null` | Internal and `exportable`. Primary key `(representation_type, source_namespace, external_source_key)`; `representation_type` in `memory`, `entity`. `record_id` is the nullable original UUIDv7 of the representation the unit created. `payload_digest` is a 32-byte SHA-256. `state` in `active`, `noop`, `denied`, `erased`, `expired`, `orphaned`. The authority columns are immutable and normalized: `producer_kind` in `migration`, `rheo_runtime`, `claude_code_local`; `authority_id` a UUIDv7; `audience_kind` in `workspace`, `member` paired with `audience_id`; `bound_purpose` a nullable member of the closed vocabulary; `source_recorded_at` and `source_expires_at` paired. The table holds no source body, label, filename, transcript or session id, model prompt or output, raw payload, or prior value. |
 
 1a1 provided memory_embedding's table, composite primary key and memory foreign key only. 1a2
 owns dimension/provider/index strategy, dense fill/rebuild and retrieval behavior, and its
@@ -56,7 +56,8 @@ written. There is no implicit "everyone".
 
 **Audience** is a two-level lattice in release one: `workspace` (every member of the workspace)
 above `member:<account>` (that account only). `recallatron.memory.remember(kind, title, body,
-audience, purposes, refs)` takes `audience` as a selection, `workspace` or `member`, default
+audience, purposes, confidence, occurred_at, about_refs, mentions, provenance_refs)` takes
+`audience` as a selection, `workspace` or `member`, default
 `workspace`. `member` resolves to the account behind the caller's
 [`WorkspaceContext.audience`](overview.md#the-workspace-context): a `session` audience is the
 session's account, a `token` audience is the token's account, and a `job` audience is the
@@ -69,15 +70,18 @@ started it. Phase six's channel audiences are a later value of the same column, 
 mechanism.
 
 **Purposes** are the closed vocabulary shared with contact permission (`respond`, `follow_up`,
-`share_with_referral`, `internal_analysis`), stored in `memory_purpose`. A `remember` call names
-them; the default is `recallatron.default_purposes` (package default `respond, follow_up,
-internal_analysis`, workspace scope, floor `subset`). A run with purpose `p` can be given a
+`share_with_referral`, `internal_analysis`), stored in `memory_purpose`. There is no default
+purpose setting: a caller with a bound purpose writes exactly that purpose, an unbound
+`remember` must name its purposes or is refused `purposes_empty`, and an unbound `derive` that
+names none takes its sources' intersection (`resolve_purposes` in the module's `writes`
+module). A run with purpose `p` can be given a
 memory only when `p` is in its purposes ([context builder](runtime-and-mcp.md#the-context-builder)).
 
-**Derivation intersects, never unions.** `recallatron.memory.derive(sources, kind, title, body)`
-writes a memory whose `audience` is the meet of its sources' audiences (`workspace` and
-`member:A` give `member:A`; `member:A` and `member:B` give nothing) and whose purpose set is the
-intersection of its sources' purposes. An empty audience refuses with `audience_empty`; an empty
+**Derivation intersects, never unions.** `recallatron.memory.derive(sources, kind, title, body,
+…)`, whose other fields are `remember`'s with `sources` in place of `provenance_refs`, writes a
+memory whose `audience` is the meet of its sources' audiences (`workspace` and `member:A` give
+`member:A`; `member:A` and `member:B` give nothing) and whose purpose set is the intersection of
+its sources' purposes. An empty audience refuses with `audience_empty`; an empty
 purpose set refuses with `purposes_empty`; a memory nobody may read for no purpose is not
 written. A record source (an opportunity, an observation, a party) contributes `workspace` and the
 full vocabulary, because records carry neither column in release one; the person behind a record
@@ -109,19 +113,20 @@ a named constant in the module's own `configuration` module, not a literal at a 
 
 - `derived_from`: each source of a `derive`, each record a `remember` cites, and the predecessor
   record of a migrated memory.
-- `about`: each record the memory concerns, plus every `relationships.party` a source involves at
-  the time of writing (an opportunity's linked parties through `leads.opportunity.get`; an
-  observation's `party_ref`), plus the `ref` of every entity the memory mentions that has one,
+- `about`: each record the memory concerns, plus (once Leads and relationships ship in phase
+  three; nothing expands it today) every `relationships.party` a source involves at the time of
+  writing (an opportunity's linked parties through `leads.opportunity.get`; an observation's
+  `party_ref`), plus the `ref` of every entity the memory mentions that has one,
   expanded once at write time so retrieval has a bounded set to check. The mention rule is what
   keeps a memory tied to a person only through `memory_mention` inside the reach of that
   person's withdrawal: the contact-permission filter reads `about` links and nothing else, so a
   mention that produced no link would be a memory the filter could not see.
 
 A link is a reference string, never a foreign key into another schema (FR 11). A memory may link
-to Leads records only when Leads is enabled in the workspace; the memory module declares Leads
-and relationships as optional dependencies and reaches them through registered operations by
-name, which is what lets criterion 66's no-memory run and a memory-without-Leads workspace both
-exist.
+to Leads records only when Leads is enabled in the workspace; the memory module is to declare
+Leads and relationships as optional dependencies when they exist (today its manifest declares no
+dependencies) and reaches them through registered operations by name, which is what lets
+criterion 66's no-memory run and a memory-without-Leads workspace both exist.
 
 Automatic memories retain origin=derived and the existing four memory kinds. A private trusted
 source-unit contract supplies immutable producer_kind, authority_id, original
@@ -158,8 +163,8 @@ suite under `lexical` and under `dense`. The two stages, in order:
    id; a `token` actor resolves to its account; a `system` or `connection` actor has no account
    and sees `workspace` memories only), a `memory_purpose` row for `purpose` exists,
    `invalidated_at is null`, `superseded_by_id is null`, the row is inside the workspace's age
-   horizon when one applies at all ([retention](#retention-fr-29-criterion-30)), plus the
-   caller's kind and time filters. Nothing outside this set is scored.
+   horizon when one applies at all ([retention](#retention-fr-29-criterion-30)). `recall` takes
+   no kind or time filter. Nothing outside this set is scored.
 2. **Ranking, then the per-link permission check.** The strategy hands back one ranked list of
    at most 500 positions ([storage](storage-and-workspaces.md#retrieval-adapter-d9-fr-30)), and
    the call walks that list in order until it has `k` eligible hits or reaches its end, which is
@@ -571,6 +576,9 @@ index needs no rebuild; it is a generated column.
 
 ## Migration from the predecessor (FR 53, criterion 32)
 
+Not built yet: this is run 1b's design, and neither operation nor the `migration_batch` table
+exists in the module today.
+
 `recallatron.migration.import(source_label, extract_file_ref)`, mutate, roles `owner`,
 long-running: creates a `recallatron.migration_batch(id, source_label text, state text,
 verification_id uuid null, created_at)` row (`state` in `importing`, `verified`, `live`,
@@ -644,7 +652,7 @@ importer never commits, because the whole restore is one transaction.
 | `recallatron.entity.list`, `.get` | read | owner, member, service | none: no MCP tool is registered for either, so no model reaches them; reachable over the API by a token whose set holds them |
 | `recallatron.memory.dedup_candidates` | read | owner, member, service | none: no MCP tool, like the entity reads; reachable over the API by a token whose set holds it ([near-duplicate candidates](#near-duplicate-candidates)) |
 | `recallatron.embedding.rebuild` | mutate, long-running | owner | none |
-| `recallatron.migration.import`, `.switch_over` | mutate | owner | none (operator and web only) |
+| `recallatron.migration.import`, `.switch_over` | mutate | owner | none (operator and web only). Not built yet: run 1b's, and neither is registered today |
 
 `service` on `remember` and `derive` is what lets a job or a model run write a memory on the
 actor's behalf; the audience of anything a `service` actor writes is the audience carried onto

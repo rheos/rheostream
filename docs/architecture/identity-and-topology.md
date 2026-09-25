@@ -20,9 +20,10 @@ That is the whole boundary. `rheo_core.identity` owns it, resolves a `ProviderId
 `account` through `control.identity`, creates the account on first login when signup is open
 ([first run](#first-run-and-who-may-sign-up)), and creates the session. Providers live in
 `rheo_core.identity.providers.<provider_id>`; the GitHub implementation is the only shipped one,
-configured by `control.identity_provider` with the client secret as a reference. The `state`
-value passed to `begin` is a random 128-bit value that the identity host also sets in a host-only
-cookie (`rheo_oauth_state`, ten-minute expiry) before redirecting; `/auth/callback` compares the
+configured by the `identity.providers.github.*` deployment settings with the client secret as a
+reference (`client_secret_ref`), which startup mirrors into `control.identity_provider`. The
+`state` value passed to `begin` is a random 192-bit value that the identity host also sets in a
+host-only cookie (`rheo_oauth_state`, ten-minute expiry) before redirecting; `/auth/callback` compares the
 cookie to the returned `state` and refuses `invalid_state` on a mismatch, so a callback that did
 not begin in this browser creates no session. Domain modules import neither the providers package
 nor the boundary; a CI check asserts it (criterion 8). The test double is a provider that
@@ -38,12 +39,13 @@ On a fresh deployment the control plane has no account. The sequence is fixed:
 1. **First login creates the first account.** Signup is *computed*, not configured: a login
    whose identity is unknown creates an account when the control plane holds no account at all,
    or when the deployment setting `identity.allow_signup` is explicitly `true`. The setting's
-   package default is null, and null means "open until the first account exists, closed after",
-   so an operator who never touches it gets a deployment that admits exactly one person and does
-   not change underneath them.
-2. **The first workspace is created by that account** through the shell's first-run screen or
-   `rheo workspace create --owner <account>`, and the creator is written as `owner` in
-   `control.membership`. Every later workspace works the same way: its creator is its owner.
+   package default is `false`, and the first-account check runs whatever its value, so the default
+   means "open until the first account exists, closed after": an operator who never touches it
+   gets a deployment that admits exactly one person and does not change underneath them.
+2. **The first workspace is created for that account** with `rheo workspace create --owner
+   <account>` (a first-run screen in the shell is planned and not built yet), and that account is
+   written as `owner` in `control.membership`. Every later workspace works the same way: its
+   creator is its owner.
 3. **A second person needs an account before a membership.** With signup closed, the operator
    pre-registers them: `rheo account create --provider github --subject <provider subject>
    --display-name <name>` writes the `account` and `identity` rows, so their first login resolves
@@ -82,11 +84,11 @@ host's cookie at once because every host's secret resolves to the one revoked se
 | Format | `rheo_<kind>_<43 base64url chars>`: 256 random bits from a CSPRNG. Only the SHA-256 is stored (`access_token.token_hash`). |
 | Scope | Exactly one account, one workspace, one operation set. The operation set is **snapshotted at issuance** into `control.access_token_operation`, one row per permitted operation name, and nothing widens it later; a new scope is a new token. The snapshot is expanded from a named package set ([below](#the-named-package-operation-sets)) or, for a run-scoped token, from an explicit list. |
 | Kinds | `cli` (a person's command-line token), `mcp` (a person's token for an MCP client), `runtime` (the run-scoped token the core issues for one model run, [runtime](runtime-and-mcp.md#the-run-scoped-token)). `access_token.kind` holds the value; `issued_from` records the issuing authority (`session`, `operator`, `runtime`). |
-| Issuance | Through `core.token.issue` only, from one of three issuing authorities: an authenticated web session (the account issuing for itself in a workspace it belongs to); the operator command on a headless install (`rheo token issue --account <id> --workspace <id> --set <name>`, against the control plane); or the core's `runtime` package, on behalf of the actor that started a run. The value is shown once, or handed to the adapter once. No token can issue a token: `core.token.issue` is itself non-token-issuable (below). |
-| Lifetime | `cli` default 90 days, `mcp` default 30 days (`identity.token_max_days`, floor `min`), `runtime` the run's deadline. |
+| Issuance | Through `core.token.issue` only, from one of three issuing authorities: an authenticated web session (the account issuing for itself in a workspace it belongs to); the operator command on a headless install (`rheo token issue --account <id> --workspace <id> --set <name> --kind <cli\|mcp>`, against the control plane); or the core's `runtime` package, on behalf of the actor that started a run. The value is shown once, or handed to the adapter once. No token can issue a token: `core.token.issue` is itself non-token-issuable (below). |
+| Lifetime | `cli` default 90 days, `mcp` default 30 days (`identity.token_max_days.cli` and `identity.token_max_days.mcp`, floor `min`), `runtime` the run's deadline. |
 | Presentation | `Authorization: Bearer` on the `api` and `mcp` surfaces, each accepting the kinds made for it: the `api` surface accepts `cli` and `mcp`; the `mcp` surface accepts `mcp` and `runtime`. Neither surface reads a cookie, and a session secret presented as a bearer value is `token_malformed` because it matches no token row. A person's `cli` token is refused on the `mcp` surface as `token_wrong_kind`, so a person's command-line credential handed to an MCP client is refused by kind before its scope is even read. No browser flow is ever involved after issuance. |
-| Refusal | Malformed, wrong kind for the surface, expired, revoked, scope-invalid, and out-of-scope each return a distinct state (`token_malformed`, `token_wrong_kind`, `token_expired`, `token_revoked`, `token_scope_invalid`, `operation_not_permitted`) at the boundary, before any service runs, with no partial effect (criterion 9). `token_scope_invalid` is returned when a presented token's snapshot contains a non-token-issuable operation; it can only arise from a row written outside `core.token.issue`, and the boundary checks it anyway so that the rule below is enforced at both ends. |
-| Revocation | `core.token.revoke`; membership removal revokes the account's tokens for that workspace. A run-scoped token is deleted with its snapshot rows when its run ends; the run's `runtime_request` row keeps what the run was permitted. |
+| Refusal | Malformed, wrong kind for the surface, expired, revoked, scope-invalid, carrying an unusable stored purpose, and out-of-scope each return a distinct state (`token_malformed`, `token_wrong_kind`, `token_expired`, `token_revoked`, `token_scope_invalid`, `token_purpose_invalid`, `operation_not_permitted`) at the boundary, before any service runs, with no partial effect (criterion 9). `token_scope_invalid` is returned when a presented token's snapshot contains a non-token-issuable operation; it can only arise from a row written outside `core.token.issue`, and the boundary checks it anyway so that the rule below is enforced at both ends. |
+| Revocation | `core.token.revoke`; membership removal revokes the account's tokens for that workspace (no membership-removal path is built yet; presentation refuses `membership_missing` regardless). A run-scoped token is deleted with its snapshot rows when its run ends; the run's `runtime_request` row keeps what the run was permitted. |
 
 ### What a token can never carry, and what it holds for a gated operation
 
@@ -155,8 +157,9 @@ including hosts served by other software, so cookie scope cannot satisfy the las
 reverse proxy cannot strip what is sent to a different server. This specification therefore uses
 **host-only cookies and a session grant**.
 
-- The session cookie `rheo_session` is set with no `Domain` attribute, `Secure`, `HttpOnly`,
-  `SameSite=Lax`, `Path=/`, on each application host separately. Its value is a **session
+- The session cookie `rheo_session` is set with no `Domain` attribute, `Secure` (dropped only for
+  a plain-`http` scheme outside the `production` profile), `HttpOnly`, `SameSite=Lax`, `Path=/`,
+  on each application host separately. Its value is a **session
   secret minted for that host**: 256 random bits, whose SHA-256 is stored in
   `control.session_secret(secret_hash, session_id, host, created_at)` with `(session_id, host)`
   unique. One session, one secret per host; the session id itself is never in a cookie or a URL.
@@ -169,20 +172,22 @@ reverse proxy cannot strip what is sent to a different server. This specificatio
   host (`Secure`, `HttpOnly`, `SameSite=Lax`, five-minute expiry), and redirects to
   `<identity>/auth/continue?return=<absolute url>&nonce=<nonce>`, built through the routing
   configuration from the forwarded host, never from a hard-coded name.
-- `/auth/continue` on the identity host first checks the `return` URL: its scheme must be the
-  configured scheme and its host must be in `RoutingConfig`'s **application-host set** (the
-  shell host, the identity host, and the enabled module hosts in subdomain mode; the single host
-  in path mode). Any other host is refused with `invalid_return` and no grant is written, so the
-  identity host cannot be used as an open redirect or made to mint a grant for an arbitrary
-  label. With a valid session cookie and a valid return, it writes a `control.session_grant` row
-  (a random 256-bit code, its SHA-256 stored, `target_host` set to the return URL's host, the
-  SHA-256 of the nonce in `nonce_hash`, 60-second expiry, single use) and redirects to
-  `<return host>/auth/continue?code=<code>`. Without a cookie, it starts the login flow and
-  returns here afterward.
-- The reverse proxy routes only the hosts the routing configuration names. The template in
-  `deploy/` enumerates them from the same configuration; it never routes a bare `*.<base_host>`
-  wildcard to the application, so a label nobody configured reaches no listener and can neither
-  receive a cookie nor complete a grant.
+- `/auth/continue` on the identity host first checks the `return` URL: its host must be in
+  `RoutingConfig`'s **application-host set** (the shell host, the identity host, and the hosts of
+  the modules the deployment loaded, in subdomain mode; the single host in path mode). Its scheme
+  is not compared: the grant redirect is built with the configured scheme, and the final redirect
+  carries only the return URL's path and query. Any other host is refused with `invalid_return`
+  and no grant is written, so the identity host cannot be used as an open redirect or made to mint
+  a grant for an arbitrary label. With a valid session cookie and a valid return, it writes a
+  `control.session_grant` row (a random 256-bit code, its SHA-256 stored, `target_host` set to the
+  return URL's host, the SHA-256 of the nonce in `nonce_hash`, 60-second expiry, single use) and
+  redirects to `<return host>/auth/continue?code=<code>&return=<return url>`. Without a cookie, it
+  starts the login flow and returns here afterward.
+- The reverse proxy routes only the hosts the routing configuration names. The template planned
+  for `deploy/` (not written yet; `rheo routing hosts` prints the list today) enumerates them from
+  the same configuration; it never routes a bare `*.<base_host>` wildcard to the application, so a
+  label nobody configured reaches no listener and can neither receive a cookie nor complete a
+  grant.
 - `/auth/continue` on the application host: the core (which serves `/auth/*` on every
   application host) looks up the code's hash, checks `target_host` equals the request's forwarded
   host, the code is unused and unexpired, and the SHA-256 of the `rheo_continue` cookie equals
@@ -199,22 +204,25 @@ reverse proxy cannot strip what is sent to a different server. This specificatio
 - Logout on any host revokes the session row; every other host's secret now resolves to a
   revoked session and its cookie is cleared on its next request.
 
-CSRF: state-changing web requests are Next.js server actions and route handlers that check
-`Origin` against the routing configuration's host set; the `/auth/*` POSTs do the same. The
-`api` and `mcp` surfaces accept no cookie, so they need no CSRF defence. CORS: no
-`Access-Control-Allow-Origin` is emitted anywhere by default; `api.cors_origins` (deployment
-setting, empty) exists for a later second front end and is not needed by the first-party web
-tier, which reaches the core server-side.
+CSRF: the `/auth/*` POSTs check `Origin` against the routing configuration's host set and refuse
+`origin_not_allowed` otherwise; they are the only state-changing browser requests today, and any
+Next.js server action or route handler the web tier later adds for a state change does the same.
+The `api` and `mcp` surfaces accept no cookie, so they need no CSRF defence. CORS: no
+`Access-Control-Allow-Origin` is emitted anywhere; `api.cors_origins` (a deployment setting,
+empty) is reserved for a later second front end and is not declared yet. The first-party web tier
+does not need it, because it reaches the core server-side.
 
 **The internal API's trust boundary.** The core process has two listeners. The public one is
 what the proxy routes to (`/auth/*`, the `api` surface, the `mcp` surface). The internal one is a
-second port on the container network only (`RHEO_CORE_INTERNAL_URL`, `http://core:8100` in the
-reference deployment); the proxy has no rule that reaches it and `deploy/` publishes no port for
+second port on the container network only (`RHEO_CORE_INTERNAL_API_URL`, `http://core:8100` in
+the reference deployment); the proxy has no rule that reaches it and `deploy/` publishes no port for
 it. The web tier, having read the `rheo_session` cookie, calls the internal listener with the
 session secret in the `X-Rheo-Session` header and the forwarded host in `X-Rheo-Host`, plus a
 shared secret in `X-Rheo-Internal` that the web tier reads from its own environment
-(`RHEO_INTERNAL_SECRET`) and the core resolves through the internal listener's secret scope
-(`secret://env/RHEO_INTERNAL_SECRET` by default). The internal listener hashes the header value,
+(`RHEO_INTERNAL_SECRET`) and the core resolves through the internal listener's secret scope from
+the `internal.secret_ref` setting. Its package default is empty, which refuses every internal
+request until a deployment sets it (`deploy/compose.yaml` sets
+`secret://env/RHEO_INTERNAL_SECRET`). The internal listener hashes the header value,
 looks it up in `session_secret` for that host, joins the session row, and ignores cookies; the
 public listener reads cookies on `/auth/*` only and ignores the header. A browser therefore
 cannot reach the internal listener at all, and cannot make the public listener treat a header as
@@ -224,9 +232,9 @@ a session, which is what keeps the `api` surface cookie-free in fact and not onl
 
 ### The routing configuration
 
-One typed object, loaded by the core from deployment settings and served to the web tier at
-startup through the internal API (and to the browser as a serialised copy in the shell's initial
-render):
+One typed object, loaded by the core from deployment settings and served to the web tier through
+the internal API (`GET /internal/v1/routing`, fetched on first use and cached). The browser never
+receives a copy; every link is rendered on the server:
 
 ```text
 RoutingConfig
@@ -241,12 +249,14 @@ RoutingConfig
     mcp:      { host: "mcp",     path: "/mcp" }
     docs:     { host: "docs",    external: true }
     integration: { host: "tuttle", external: true, reserved: true }
-    modules:  { leads: { host: "leads", path: "/leads" }, current: {...}, recallatron: {...}, relationships: {...} }
+    modules:  { recallatron: { host: "recallatron", path: "/recallatron" }, ... }  # loaded manifests
 ```
 
-Both the Python core and the web tier expose one function, `url_for(surface, path)`, and every
-link, redirect, callback URL, and MCP configuration file goes through it. In `subdomain` mode it
-yields `https://<host>.<public_host><path>`; in `path` mode `https://<public_host><surface path><path>`.
+Both the Python core and the web tier expose one function, `url_for(config, surface, path)`
+(`urlFor` in the web tier), and every link, redirect, callback URL, and MCP configuration file goes
+through it. In `subdomain` mode it yields `https://<host>.<public_host><path>`, except that the
+identity surface keeps its `/auth` prefix; in `path` mode
+`https://<public_host><surface path><path>`.
 `public_host` is the URL authority and may carry a port. `base_host` is the port-free
 name used for Host-header matching; when `public_host` is empty it inherits `base_host`.
 The OAuth callback URL registered with the provider is `url_for("identity", "/callback")`, which
@@ -304,7 +314,8 @@ place hosts are named.
 ## Platform independence (D10, FR 48)
 
 The web tier runs under `next start` behind the proxy with no edge function, no hosted image
-pipeline, and no build integration from any hosting platform. The build fails on a platform-only
-import or configuration key by a dependency allow list and a check over `next.config` (criterion
-23). Redirects from middleware are absolute URLs built from the forwarded host through
-`url_for`, never relative, and never from the internal listener's host.
+pipeline, and no build integration from any hosting platform. CI fails on a platform-only import
+or an edge-runtime declaration through a static scan of `apps/web`, every `modules/*/web`, and
+`packages/web-contract` (`scripts/check_web_platform.py`, criterion 23); `next build` alone would
+not catch either. Redirects from middleware are absolute URLs built from the forwarded host
+through `url_for`, never relative, and never from the internal listener's host.

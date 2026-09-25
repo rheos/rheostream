@@ -20,6 +20,10 @@ their five `complete` rows carries a mutation freshly applied to this working tr
 demonstration. Criteria 15, 16 and 17 name run 0c4 in their own row text rather than here,
 because a reader who lands on one row is not reading this paragraph.
 
+That paragraph describes the tree as run 0c3 found it. Criteria 15, 16 and 17 have since been
+completed by C5 on 2026-09-18, as each row's `Performed by` line records; all three now read
+`complete` and no longer name 0c4.
+
 ---
 
 ### Criterion 1
@@ -152,7 +156,7 @@ under this hunk. The first reason to reach for was that its guarded behaviour li
 `.gitignore`, which is not a declared path for run 0c3 so no mutation of it was attempted. That
 was true, and it was not the whole reason. The test built its eight fixture paths from **string
 literals** (`f".rheo-local/workspaces/{token}/profile.json"`, and seven like it) rather than
-from `LOCAL_OPT_IN` (`packages/core/src/rheo_core/storage/data_root.py:36`), the constant this
+from `LOCAL_OPT_IN` (`packages/core/src/rheo_core/storage/data_root.py:39`), the constant this
 hunk changes. So it asserted that a fixed list of paths somebody typed is ignored, not that
 **what the product produces** is ignored — and the criterion's own words are "every
 configuration file, upload, database, database sidecar, export, and log **it produces**". Under
@@ -170,7 +174,7 @@ The two demonstrators stay independent instruments rather than one guard seen tw
 reads the product's own refusal path, the second reads `.gitignore` through `git check-ignore`.
 And deriving here leaves the name pinned, not unpinned — the literal `.rheo-local` is still
 asserted exactly once, in `test_rheo_local_is_accepted_only_when_named_explicitly`
-(`tests/test_data_root.py:114-131`), which is the literal-list companion that catches the
+(`tests/test_data_root.py:119-136`), which is the literal-list companion that catches the
 constant being renamed at all.
 
 ---
@@ -821,7 +825,7 @@ keeping the gate in the file, so the hunk is a bound that is wrong by one rather
 that is gone. The identical `'succeeded' == 'failed'` line on both nodes is not a copy-paste but
 it is the same assertion: both tests read the `job` row first, and the second
 (`test_an_exhausted_long_running_job_terminalises_its_operation_record`, at
-`tests/postgres/test_worker_loop.py:626`) carries its `core.operation` assertion three lines
+`tests/postgres/test_worker_loop.py:644`) carries its `core.operation` assertion three lines
 further down, which the hunk never reaches because the job-row assertion aborts the test first.
 The operation-record half of "is not silently dropped" is therefore covered by that test and not
 by this observation — recorded rather than implied.
@@ -979,10 +983,11 @@ re-capture ran it under this hunk: 5 passed, all five parametrised safety classe
 expected answer rather than a surprise — it is a *registration*-time refusal and this hunk edits
 a sink write — and it is recorded because "not executed" was a gap that a single command closed.
 
-**Note on the fourteen-operation set and where its literal lives.**
-`test_the_mutating_set_derived_from_the_registry_is_the_declared_fourteen` derives the set from the
-registry by safety class and compares it against `THE_FOURTEEN`, a literal frozenset of the
-fourteen names (resolve it by that constant name, not by a line number). It is
+**Note on the mutating-operation set and where its literal lives.**
+`test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen` derives the set from the
+registry by safety class and compares it against `THE_SEVENTEEN`, a literal frozenset of the
+names (resolve it by that constant name, not by a line number). The set held fourteen names when
+this note was written and holds twenty today; the next note says why the names lag. It is
 listed as a demonstrator for the same reason criterion 6's second demonstrator is: it is the
 literal-list companion that catches a shrinking set, which a coverage assertion derived from the
 registry alone could not. Neither test is parametrised over the constant it tests.
@@ -1015,6 +1020,18 @@ a `succeeded` row; from C6 that dispatch is *held* for an approval, so the test 
 (`assert 'harness' == 'harness.probe.destroy'`) because the operation-name assertion still fails
 first — but that identity was **captured, not assumed**: the line above is what the node printed
 when run on its own at re-capture.
+
+**Note added 2026-09-24 (issue #109 audit): the set has grown past fourteen since C7, and the
+evidence above predates that.** Later commits registered more operations above the read class:
+C8's export and restore (`ecbd0db`) took it to sixteen, the 0c4 follow-up (`211b333`) added the
+runtime run and renamed the demonstrator and its constant to `_seventeen` / `THE_SEVENTEEN`, and
+module install, module enable and record delete (`b37b692`, `3ac1ce8`, `cf252b6`) took it to
+twenty, fifteen core and five harness, with no further rename. The test's own docstring says the name stays at
+"seventeen" on purpose because renaming it would break this row's demonstrator id. The
+`_fourteen` names in the two notes above are the names those tests had when C6 and C7 ran
+them. The hunk still applies and every demonstrator still resolves, but the `Cost` lines and
+the "13 failed, 10 passed" aggregate were observed against fourteen operations and have not
+been re-captured against twenty.
 
 **Note on one clause with a live demonstrator and no performed mutation.** "A mutating operation
 registered without an audit path fails registration at startup with a named operation" is
@@ -1299,8 +1316,8 @@ also passes: it pins the four refusal-state strings and never resolves a value, 
 change can reach it.
 
 **Note on the parametrisation.** `test_read_path_clamps_a_stored_loosening_row` is parametrised
-over `CASES` (`tests/test_settings_floor.py:70-103`) and `test_comparators` over a literal list
-of tuples (`:261-275`), and in both the expected values (`clamped_looser=50`, and the rest) are
+over `CASES` (`tests/test_settings_floor.py:72-105`) and `test_comparators` over a literal list
+of tuples (`:287-301`), and in both the expected values (`clamped_looser=50`, and the rest) are
 written as literals rather than derived from `Floor` or from `REGISTRY`. So this is not the
 shape criterion 6's note warns about: shrinking a constant cannot silently remove a case here,
 because the cases are not built from the constant under test.

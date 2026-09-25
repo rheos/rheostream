@@ -7,6 +7,9 @@ and criterion 69 it records the test or CI step that demonstrates the criterion,
 mutation that proves that demonstrator bites: a real edit that was applied to a real
 working tree, watched go red, and reverted.
 
+`phase-2-matrix.md` does the same for phase two, over criteria 24-31, 33 and 36 so far, under
+the same grammar. The two files are validated independently and share no criterion number.
+
 ## What this is not
 
 **Not a coverage report.** Coverage answers "is this line executed by some test". The
@@ -23,11 +26,11 @@ was proposed, measured and rejected on 2026-09-16. Do not rebuild it.
 
 The qualifier "in its name" is load-bearing and the looser claim is false: criterion numbers
 do appear inside test bodies and docstrings, for instance the `covers=11` and `covers=14`
-arguments at `tests/test_absent_behaviour.py:200,208,216`. That is the point. A census reads
+arguments at `tests/test_absent_behaviour.py:237,245,253`. That is the point. A census reads
 names, the numbers live elsewhere, and the gap it reports is an artefact of where it looked.
 
 **Not a claim that the guard re-ran anything.** `tests/test_acceptance_matrix.py`, which
-chunk 10 writes, parses this file and checks only what is mechanically true without
+chunk 10 writes, parses each matrix file and checks only what is mechanically true without
 running a criterion: that every criterion number is present exactly once, that every
 demonstrator still resolves to a real test node or workflow step, that every mutation hunk
 still applies, and that every non-`deferred` row names a performer. **It never asserts that
@@ -71,8 +74,9 @@ log printed>`
 **Performed by:** <chunk> (<YYYY-MM-DD>)[, <chunk> (<YYYY-MM-DD>)]
 ````
 
-A `deferred` row (15, 16) has no `Mutation`, `Cost`, or `Performed by` — write `none` for each —
-and adds a **Note:** line naming 0c4 in its own words. A `partial` row (17) carries real
+A `deferred` row (15 and 16 when this grammar was written; both are `complete` now) has no
+`Mutation`, `Cost`, or `Performed by` — write `none` for each — and adds a **Note:** line
+naming 0c4 in its own words. A `partial` row (17 then, `complete` now) carries real
 `Demonstrator`/`Mutation`/`Cost`/`Performed by` for the half that IS demonstrated, plus a
 **Note:** naming the blocked half and 0c4.
 
@@ -104,8 +108,8 @@ still has to resolve.
 ### How a `ci:` demonstrator is spelled
 
 The part before the ` / ` is the **job key** in `.github/workflows/repository-checks.yml` —
-`repository-checks`, `docker`, `python`, `web` — not the job's human `name:`. The part after
-is the step's `name:` exactly as written. One rule, so the guard can resolve the pair from
+`repository-checks`, `docker`, `python`, `absence-proof`, `web` — not the job's human
+`name:`. The part after is the step's `name:` exactly as written. One rule, so the guard can resolve the pair from
 the parsed YAML without guessing which of the two spellings a row meant.
 
 ## Reproducing any row
@@ -122,8 +126,8 @@ git apply -R /tmp/row.diff
 The second command is the row's own `Demonstrator`; criterion 9's is shown as the worked
 example. Substitute the node id or ids that row names. A `ci:` row's demonstrator is a
 workflow step, so run that step's own command instead: `python3 scripts/check_repository.py`,
-`docker build -f Dockerfile .`, `RHEO_ROUTING_MODE=subdomain pnpm -C apps/web test`, or
-`python3 scripts/check_routing_literals.py`. The third command reverts; `git checkout --
+`docker build -f Dockerfile .`, `RHEO_ROUTING_MODE=subdomain pnpm -r test`,
+`python3 scripts/check_routing_literals.py`, `make criterion-31`, or `make absence-proof`. The third command reverts; `git checkout --
 <path>` does the same job when the hunk touches one file.
 
 **Export `RHEO_TEST_CLUSTER_DSN` before the second command.** `tests/conftest.py` reads that

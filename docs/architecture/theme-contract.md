@@ -183,7 +183,9 @@ rather than rendering an unstyled page.
 ## Writing against the contract
 
 - Every color, font and spacing value in a shell or module screen comes from a `var(--rs-…)`
-  token. No literal.
+  token. No literal. `scripts/check_theme_tokens.py` enforces this over `apps/web/src` and
+  `modules/*/web`, and until a chrome consumer ships it refuses every `--rs-chrome-*`
+  reference there.
 - Separate nested surfaces with the `color.hairline` edge, not background alone. In the seed,
   `surface-2` is only about 1.03:1 against `surface-1`: it is held dark enough that the verbatim
   `ink-faint` keeps AA on it, so a background change by itself does not read as an edge.

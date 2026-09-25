@@ -13,8 +13,10 @@ idea-document question 13 for release one.
 `core.record.delete(ref)`, destructive class, per-action confirmation, no standing grant. Any
 module can call it for a record type whose manifest marks `deletable = true`; release one has
 four: the three R5 types (`leads.observation`, `relationships.party`, `leads.opportunity`) and
-`recallatron.memory`, whose `recallatron_forget` tool is this same coordinator. Who may call it
-per type is the manifest's `delete_roles` ([module contract](module-contract.md#operations-tools-events)).
+`recallatron.memory`, whose `recallatron_forget` tool is this same coordinator. Only
+`recallatron.memory` is built so far; the other three arrive with Leads and Relationships.
+Who may call it per type is the manifest's `delete_roles`
+([module contract](module-contract.md#operations-tools-events)).
 
 ### The cascade
 
@@ -61,8 +63,9 @@ which the one-database-per-workspace layout makes possible without a distributed
    what the model was shown; the `runtime_request` row stays, holding references and a digest
    ([runtime](runtime-and-mcp.md#what-the-core-records-about-a-run)). Outbox rows are not
    touched, because event `data` never carries personal content
-   ([events](intake-and-events.md#events-and-the-outbox-fr-15)); only references, which now
-   resolve to `deleted`.
+   ([events](intake-and-events.md#events-and-the-outbox-fr-15)); only references, which are
+   to resolve to `deleted` once the resolver reads the deletion record (not built yet; see
+   below).
 5. **Held exports.** Every `export_record` whose `export_record_ref` rows include the reference is
    marked `state = removed_by_deletion` with `removed_at` and the deletion record id.
 6. **Deletion record.** `core.deletion_record` is written.
@@ -83,13 +86,14 @@ shared credentials, or to unrelated records (idea document).
 | `record_type text`, `record_id uuid` | What, by identifier only. |
 | `actor_kind`, `actor_id`, `approval_id uuid null` | Who, and the confirmation. `approval_id` is null only when `actor_kind = system` and the deletion is the memory retention sweep, which is R5's one permitted scheduled expiry ([memory](memory.md#retention-fr-29-criterion-30)). |
 | `participants text[]` | Which participants ran. |
-| `cancelled_job_count integer`, `cancelled_action_count integer`, `removed_export_count integer`, `invalidated_memory_count integer` | Counts only, and restricted audit data rather than caller output: a count of what a deletion reached can describe records across audiences the caller may not read, so the four are readable through the owner/operator audit surface and are never part of the operation's own result. |
+| `cancelled_job_count integer`, `cancelled_action_count integer`, `removed_export_count integer`, `invalidated_memory_count integer` | Counts only, and restricted audit data rather than caller output: a count of what a deletion reached can describe records across audiences the caller may not read, so the four are readable through the owner/operator audit surface (`core.audit.list`) and are never part of the operation's own result. |
 | `cause text` | user_erasure or retention_expiry; never a caller-selectable approval bypass. |
 | `retained_successor_ref text null` | Canonical successor captured only for scheduled expiry of a superseded memory, so restore can validate content-free ancestry after physical predecessor removal. Never source content. |
 
 No column can hold content from the deleted record; the model has no field for it, and the test
 in criterion 65 asserts no field value from the deleted record appears anywhere in the row. The
-record resolver returns `state = deleted` for the reference from this table.
+record resolver is to return `state = deleted` for the reference from this table; that lookup is
+not built yet, so today a deleted reference resolves to `Unavailable` like any absent row.
 
 The persisted outcome still has exactly four counters. 1a1 implements the owning memory delete,
 Recallatron invalidation, deletion evidence and transactional audit only; its first three
@@ -125,36 +129,38 @@ and release one ships no such command.
 
 ### The artifact
 
-A directory under `<data_root>/workspaces/<id>/exports/<export_id>/`, packed to one `.tar.zst`
-when complete:
+One zstd-compressed tar, `<data_root>/workspaces/<id>/exports/<export_id>/<export_id>.tar.zst`,
+written by the export job from one read-only `REPEATABLE READ` snapshot of the workspace:
 
 ```text
 manifest.json          core version, contract version, workspace id and slug, owner account id,
                        created_at,
-                       modules: [{ module_id, package_version, schema_version, export_format_version }],
-                       settings_digest, record_counts per type, approval_count
+                       modules: [{ module_id, package_version, state, schema_version,
+                                   export_format_version }],
+                       settings_digest, record_counts per category, approval_count
 settings.jsonl         workspace and member settings, one row each; secret references, never values
 core/
   approvals.jsonl      every non-terminal approval, written with state = requires_reapproval
   operations.jsonl     non-terminal operations, written as unresolved
   audit.jsonl          the audit log
   deletions.jsonl      deletion records
-<module_id>/
-  <record_type>.jsonl  one line per record, in the module's declared export format,
-                       validated against its JSON Schema (schema_path) before the export completes
-  files/               copies of workspace files the module's records reference
+modules/
+  <module_id>.jsonl    one line per row, each carrying a `record` discriminator, in the module's
+                       declared export format, validated against its JSON Schema before the
+                       export completes
 ```
 
-Every record type marked `exportable` is written by the module's `exporter` through a core writer
-that enforces the schema. The core writes its own tables. Secret values are absent by
-construction: no exporter can resolve one.
+Every exportable module's rows are written by its `exporter` through a core writer that
+enforces the schema. The core writes its own tables. Secret values are absent by construction:
+no exporter can resolve one. Copies of workspace files are to travel with the records that
+reference them; no module stores files yet, so the artifact carries none.
 
 ### Export records
 
 | Table | Columns |
 | --- | --- |
 | `core.export_record` | `id uuid`, `kind` (`export`, `restore`), `artifact_path null`, `source_digest bytea null`, `created_at`, `created_by_id`, `state` (`in_progress`, `complete`, `failed`, `removed_by_deletion`), `removed_at null`, `deletion_record_id null`, `byte_length null`. A `restore` row records the digest of the artifact restored from and holds no path; the reference index below is written only for `export` rows. |
-| `core.export_record_ref` | `export_id`, `record_ref` for every record of a deletable type in the artifact. It ships empty in release one because no domain record type exists yet. |
+| `core.export_record_ref` | `export_id`, `record_ref` for every record of a deletable type in the artifact. The table exists but nothing writes it yet, including for exported `recallatron.memory` rows; it arrives with the held-export step of the cascade (2c). |
 
 The reference index exists for one reason: criterion 65's "the export artifact is gone from the
 data root and its export record says why" needs the coordinator to find which artifacts carry a
@@ -166,30 +172,35 @@ of held exports, and the sweep removes rows with their artifacts.
 `rheo workspace restore <artifact>` on the operator command, or `core.workspace.restore` for an
 owner into a workspace the control plane does not yet know:
 
-1. Read and validate `manifest.json`; refuse if the contract version is unsupported or any listed
-   module is not host-loadable at a version satisfying the recorded one, naming it.
+1. Read and validate `manifest.json`; refuse if the contract version is unsupported, or if any
+   listed module is not loaded by this host or declares an `export_format_version` other than
+   the host's, naming it.
 2. Create the workspace row with the recorded id and slug (identifiers are globally safe, so the
    id is kept and comparison in criteria 21, 36, 67 is by id), provision the database, apply the
-   core chain.
-3. Install each module at the recorded schema version by running its chain to that version, then
-   upgrade to the host's version if newer (a second migration, recorded).
-4. Import settings, then each module's records through its `importer` in dependency order, then
-   core tables.
-5. Every approval lands `requires_reapproval`; every pending external action lands `pending` with
-   `approval_id` pointing at an approval that is not `approved`, so it cannot execute until a
-   person approves again (criterion 21). Every connection lands `needs_credential`; every member
-   credential `needs_value`.
-6. Set the workspace `active`; write an `export_record` of `kind = restore` with the source
-   artifact's digest.
+   core chain, and hold the row in state `restoring`.
+3. In one transaction from here to the commit: create each loadable module's extensions and run
+   its whole chain to the host's head, then write its `module_state` row from the artifact.
+4. Import settings, approvals, operations and the audit log; then each module's rows through its
+   `importer`, parents first; then the deletion records, which a module's ancestry check reads;
+   then each module's second pass, which resolves self-references.
+5. Every approval lands `requires_reapproval`. An operation bound to a restored approval lands
+   `approval_required` and any other lands `unresolved`, so nothing executes until a person
+   approves again (criterion 21). Every pending external action is to land `pending` with
+   `approval_id` pointing at an approval that is not `approved`, every connection
+   `needs_credential` and every member credential `needs_value`; none of the three is built yet.
+6. Write an `export_record` of `kind = restore` with the source artifact's digest, commit, and
+   set the workspace `active`.
 
 The comparison the criteria require is a supported operation, `core.workspace.digest`, that
-returns per-type record counts and a per-type content digest computed from the export
-serialisation, so "match by comparison" is one call on each side.
+returns a line count and a SHA-256 digest per category of the export serialisation (the core
+categories plus one per exportable module), read through the same snapshot an export uses, so
+"match by comparison" is one call on each side.
 
 ## Migration verification (FR 53)
 
 The predecessor memory store's migration in phase two, and any later predecessor migration, is
-verified before switchover and the result kept where the data lives:
+verified before switchover and the result kept where the data lives. None of this section is
+built yet: the table, the switchover operation and the CI check below arrive with run 1b.
 
 | `core.migration_verification` column | Meaning |
 | --- | --- |
@@ -209,13 +220,14 @@ Answers the remainder of idea-document question 13 at release-one scale.
 
 - **What is backed up.** The control-plane database and every workspace database by `pg_dump`,
   plus the data root (secrets directory, workspace files, exports). Postgres backups are the
-  operator's, on the operator's schedule; `deploy/` ships a generic example.
+  operator's, on the operator's schedule; `deploy/` is to ship a generic example and does not
+  yet.
 - **What restore means.** Two paths, both exercised: a database-level restore of a cluster
   backup, which is Postgres's own procedure; and the application-level export and restore above,
   which is the path the acceptance criteria drill at the end of each phase.
 - **How it is tested.** Criteria 21, 36, and 67 are the drill: export, restore into an empty
   deployment, compare by digest. Running them in CI at every phase end is the release-one
-  disaster-recovery test plan; a cluster-backup restore drill is an operator runbook in `deploy/`
-  and is not automated in release one.
+  disaster-recovery test plan; a cluster-backup restore drill is to be an operator runbook in
+  `deploy/` (not written yet) and is not automated in release one.
 - **What is not covered.** Point-in-time recovery, replica failover, and per-workspace encryption
   keys are the hosted edition's ([later phases](later-phases.md#phase-8-the-hosted-edition)).

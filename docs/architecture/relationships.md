@@ -5,6 +5,8 @@ FR 40, FR 41, and criteria 50 to 54 and the party clauses of 65. Gives R4's "rev
 property of the representation" its representation.
 **Decision:** A16 (alias-based merge; references are never rewritten). See the
 [decision list](README.md#architecture-decisions).
+**Not built yet.** This is phase three's design: `modules/relationships` is still a placeholder
+package, so none of the tables, operations, tools or events below exist.
 
 ## What the module owns
 

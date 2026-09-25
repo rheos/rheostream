@@ -6,8 +6,8 @@ directions the maintainer already gave; the five decisions under
 [Questions resolved here](#questions-resolved-here), R1 to R5, were taken on the maintainer's
 behalf and are ratified by that merge. The `circuit.` shell-host name was confirmed at
 ratification, with the reference deployment additionally keeping the `app.` name in reserve as a
-redirect to `circuit.`. D12 was added at run 1a2's close-out (2026-09-23) and is ratified by the
-maintainer's merge of the pull request that carries it.
+redirect to `circuit.`. D12 was added at run 1a2's close-out (2026-09-23) and was ratified by the
+maintainer's merge of the pull request that carried it (PR #107, 2026-09-24).
 **Lineage:** This document supersedes no earlier requirements document. The path it replaced,
 `docs/requirements/rheo-stream-requirements.md`, held no requirements.
 **Source:** [Idea document](../ideas/rheo-stream-idea.md), including its 26 architectural
@@ -465,7 +465,9 @@ acceptance criteria.
 - **FR 28.** Correction, supersession, and deletion invalidate derived summaries and embeddings
   as well as the source record.
 - **FR 29.** Memory retention is explicit per workspace. Nothing is retained permanently by
-  default.
+  default. This forbids accidental indefinite hoarding, not a workspace choosing to keep its
+  memories: age-based expiry is an opt-in, per-workspace setting (maintainer, 2026-09-21; see
+  [memory § Retention](../architecture/memory.md#retention-fr-29-criterion-30)).
 - **FR 30.** Retrieval runs behind an adapter so that the ranking strategy (dense, lexical, or
   hybrid) is a replaceable choice rather than a schema commitment (see D9).
 

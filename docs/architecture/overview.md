@@ -37,28 +37,30 @@ requirement that forces each of them.
 ## Processes
 
 Release one deploys four containers plus the operator's reverse proxy. The core and the worker
-share one image.
+share one image. The local stack in `deploy/compose.yaml` runs `postgres`, `core`, and `worker`;
+`web` runs under `next start` outside it.
 
 | Process | Directory | Serves | Notes |
 | --- | --- | --- | --- |
-| `core` | `apps/core` | HTTP API on the `api` surface, MCP on the `mcp` surface, identity endpoints under `/auth/*` on every application host, the internal API for the web tier | FastAPI under uvicorn. Holds every module's Python package. |
-| `worker` | `apps/worker` | Nothing over HTTP | Same image as `core`, worker entry point. Visits only the workspaces the control plane's due-work index (`control.workspace_work_due`) reports as due, never every active workspace in turn, and serves their `core.job` and `core.event_delivery` tables ([jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16)). May run inside the `core` process in development (`--with-worker`). |
+| `core` | `apps/core` | HTTP API on the `api` surface, identity endpoints under `/auth/*` on every application host, the internal API for the web tier | FastAPI under uvicorn. Holds every module's Python package. The MCP facade is built (`apps/mcp`) but not yet mounted in this process, so nothing answers on the `mcp` surface today; serving MCP there is planned (#127). |
+| `worker` | `apps/worker` | Nothing over HTTP | Same image as `core`, worker entry point. Visits only the workspaces the control plane's due-work index (`control.workspace_work_due`) reports as due, never every active workspace in turn, and serves their `core.job` and `core.event_delivery` tables ([jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16)). Entry point `python -m rheo_app_worker.main`. A development mode that runs it inside the `core` process is not built. |
 | `web` | `apps/web` | The application shell, the workspace switcher, and every module's screens | Next.js under `next start`. No database access; every read and write goes to `core`'s internal API. No platform-only feature (FR 48, criterion 23). |
 | `postgres` | `deploy/` | The control-plane database and every workspace database | A standard image with pgvector and `pg_trgm` available (requirements assumption). |
-| reverse proxy | operator-provided | TLS, host routing | Generic: any proxy that can route by host and path and terminate a wildcard certificate. `deploy/` ships a placeholder configuration, never a product name (D10). |
+| reverse proxy | operator-provided | TLS, host routing | Generic: any proxy that can route by host and path and terminate a wildcard certificate. `deploy/` is to ship a placeholder configuration, never a product name (D10); no proxy template exists there yet. |
 
 The proxy's routing table is the same in both topologies ([identity and topology](identity-and-topology.md#the-routing-table)):
 `/auth/*`, `/api/*`, and `/mcp` go to `core`; everything else on an application host goes to
-`web`. The web tier reaches `core` over the container network at `RHEO_CORE_INTERNAL_URL`, a
-second listener the proxy never exposes, forwarding the session secret in a header the public
-listener ignores ([the internal API's trust boundary](identity-and-topology.md#sessions-and-cookies));
-the browser never calls the `api` host for the first-party interface, which is why release one
-needs no CORS allowlist.
+`web`. The web tier reaches `core` over the container network at `RHEO_CORE_INTERNAL_API_URL`,
+a second listener (port 8100) the proxy never exposes, forwarding the session secret in a header
+the public listener ignores
+([the internal API's trust boundary](identity-and-topology.md#sessions-and-cookies)); the browser
+never calls the `api` host for the first-party interface, which is why release one needs no CORS
+allowlist.
 
-`apps/cli` is the `rheo` operator command (workspace creation and repair, member addition, token
-issuance on a headless install, migrate, export, restore, doctor). It runs in the `core` image and
-talks to the control plane and the workspace databases directly through the same core packages;
-it is the only surface with the `operator` actor kind.
+`apps/cli` is the `rheo` operator command (account creation, workspace creation, repair, export
+and restore, member addition, token issuance on a headless install, migrate, doctor). It runs in
+the `core` image and talks to the control plane and the workspace databases directly through the
+same core packages; it is the only surface with the `operator` actor kind.
 
 ## The workspace context
 
@@ -72,7 +74,7 @@ and no service accepts a workspace or actor any other way (FR 2, FR 23).
 | `role` | `owner`, `member`, `operator`, or `service` | from `control.membership` for an account or a token's account; `operator` for the CLI; `service` for a `connection` actor and a `system` actor |
 | `entry` | `web`, `api`, `mcp`, `cli`, `job`, `intake`, `channel` | which boundary built the context |
 | `audience` | `Audience(kind, id)` | who may see outputs: `session` (id: the account), `token` (id: the token; its account is the person behind it), `job` (the originating operation's audience, copied onto the job when an operation enqueues it; a scheduled job has none), or `channel:<conversation>`. The memory module maps this to a memory's audience ([memory](memory.md#audience-and-purposes-fr-27-criteria-27-and-28)). |
-| `operation_set` | frozen set of operation names, or `all` | from the token's snapshot rows; `all` for a web session and the operator; for a `connection` actor the operations its module's `connector_bindings` name for that transport; for a `system` actor at `entry = job` the operations whose declared roles include `service` |
+| `operation_set` | frozen set of operation names, or `all` | from the token's snapshot rows; `all` for a web session and the operator; for a `connection` actor the operations its module's `connector_bindings` name for that transport; for a `system` actor at `entry = job` the operations whose declared roles include `service` (the one `system` context built so far, the retention sweep's, carries only `core.record.delete`) |
 | `enabled_modules` | frozen set of module ids | from `core.module_state` for this workspace |
 | `request_id` | uuid | for logs and the audit record |
 | `principal` | `AuthenticatedPrincipal(account_id, bound_purpose)` | server-resolved, never from a request: the account the boundary verified (null for the operator), and the purpose it is bound to (from `access_token.purpose` for a token, from the stored job or approval purpose on a rebuild, null when unbound) |
@@ -83,8 +85,9 @@ Session/human/service browsing without a bound purpose has no memory-purpose gat
 and purpose-bound jobs must carry a valid purpose and cannot override it through operation
 arguments.
 
-The class lives in `packages/core/boundary/` and only that package's factory functions construct
-it; a test asserts no module or app package calls the constructor. Boundary adapters are the four
+The class is defined in `packages/contracts` (`rheo_contracts.WorkspaceContext`), and only the
+factory functions in `packages/core`'s `rheo_core.boundary` construct it; a test asserts no module
+or app package calls the constructor. Boundary adapters are the four
 places FR 1 names: `apps/core` HTTP middleware, the MCP facade's session resolver, the worker's
 job loader, and the intake receiver. Channels (phase six) add a fifth.
 
@@ -126,17 +129,22 @@ over the same registry. None of them contains a branch on domain meaning.
 
 **The HTTP `api` surface** is one route shape over the registry, so that no builder invents a
 resource layout per module: `POST /api/v1/operations/<operation_name>` with the operation's
-input model as the JSON body, returning `{ "state", "operation_id", "result" | "error" }` where
-`state` is the operation record's state (`succeeded` with the output model in `result`;
-`approval_required` with the approval id in `result`; `failed` or `refused` with `error_code` and
-`error_text` in `error`; `pending` for a long-running operation, whose caller then polls
-`GET /api/v1/operations/<operation_id>`, the same shape). The webhook receiver's route
+input model as the JSON body, returning `{ "state", "operation_id", "result" | "error" }`
+(`succeeded` with the output model in `result`; `pending` for a long-running operation, with its
+operation record id in `operation_id` and the output model in `result`; `approval_required` with
+the held call's operation record id in `operation_id` and `error_code` and `error_text` in
+`error`, the approval id appearing only inside `error_text`; `failed` or a named refusal state
+with `error_code` and `error_text` in `error`). A caller polls a long-running operation through
+the registered read `core.operation.get` over the same route; there is no separate
+`GET /api/v1/operations/<operation_id>` route. The webhook receiver's route
 ([intake](intake-and-events.md#transports)) is the one route outside that shape, registered by a
 connector binding. The surface accepts bearer tokens of kind `cli` and `mcp`, never a cookie and
-never a `runtime` token ([presentation](identity-and-topology.md#tokens-for-cli-and-mcp-fr-4)),
-and its OpenAPI document is generated from the registry's input and output models at startup;
-the web tier's client is generated from that document and is never hand-edited. The internal
-listener serves the same routes to the web tier with the session header in place of the token.
+never a `runtime` token ([presentation](identity-and-topology.md#tokens-for-cli-and-mcp-fr-4)).
+Its OpenAPI document is generated from the registry's input and output models by `rheo openapi`
+and committed as `apps/web/src/generated/openapi.json`, which CI regenerates and diffs; the web
+tier's client is generated from that document and is never hand-edited. The internal listener
+serves the same operation contract to the web tier at `POST /internal/v1/operations/<name>`,
+with the session header in place of the token.
 
 ## Directory and package mapping
 
@@ -153,9 +161,14 @@ The scaffold's tree is the package layout; nothing new is invented.
 | `packs` | data only | Reusable defaults; empty of behaviour in release one. |
 | `apps/core`, `apps/worker`, `apps/mcp`, `apps/cli` | entry points | Composition roots. `apps/mcp` is a package imported by `apps/core`, kept separate so criterion 20's import check has a boundary to test. |
 | `apps/web` | Next.js application | The shell and the composed module screens. |
+| `packages/web-contract` | `@rheo-stream/web-contract` | The TypeScript screen contract module web packages build against, and the theme token contract. |
 | `deploy` | container and proxy templates | Generic. |
 | `tests` | the behavioural suites | Contract, integration, acceptance, one directory per public phase. |
 | `examples` | synthetic fixtures | The synthetic funnel, demo workspace content. |
+
+Only part of this tree holds code today. `modules/recallatron` (phase two) is the one built
+module; `modules/leads` and `modules/relationships` (phase three), `modules/current` (phase five),
+`connectors`, and `channels` are placeholder distributions with an empty package.
 
 The core carries no import of any module: `rheo_core` and `rheo_contracts` list no module
 distribution as a dependency, and modules are discovered through the `rheo.modules` packaging
@@ -172,8 +185,8 @@ The idea document's six core responsibilities map onto `packages/core` subpackag
 | --- | --- | --- |
 | Identity and access | `identity`, `sessions`, `tokens`, `boundary` | [identity and topology](identity-and-topology.md) |
 | Extension lifecycle | `modules` (registry, install, enable, manifest validation) | [module contract](module-contract.md) |
-| Agent and application access | `operations` (service registry), `routing`, `apps/mcp` | [runtime and MCP](runtime-and-mcp.md), [confirmation](confirmation-and-safety.md) |
-| Durable execution | `work` (outbox, deliveries, jobs, schedules), `approvals`, `secrets` | [intake and events](intake-and-events.md), [confirmation](confirmation-and-safety.md) |
+| Agent and application access | `operations` (service registry), `routing`, `runtime`, `apps/mcp` | [runtime and MCP](runtime-and-mcp.md), [confirmation](confirmation-and-safety.md) |
+| Durable execution | `events` (outbox, deliveries, consumers), `work` (jobs, schedules), `approvals`, `secrets` | [intake and events](intake-and-events.md), [confirmation](confirmation-and-safety.md) |
 | Data operations | `storage`, `migrations`, `exports`, `deletion`, `audit` | [storage](storage-and-workspaces.md), [deletion, export, migration](deletion-export-migration.md) |
 | Record references | `refs` | [identifiers](identifiers.md) |
 
@@ -189,7 +202,8 @@ The core knows no record type of its own beyond those tables. It has no `party`,
 `leads` requires `relationships`; `relationships` requires nothing (FR 40, criterion 54).
 `recallatron` links to Leads records by reference and declares Leads an optional dependency, which
 is what lets the phase-three suite run with memory absent (criterion 66) and memory run with Leads
-absent.
+absent. The shipped `recallatron` manifest declares no dependencies yet, because neither optional
+module exists.
 
 ## Stack decision record (D3)
 
