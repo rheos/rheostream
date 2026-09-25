@@ -2,12 +2,12 @@
 
 `python3 scripts/check_routing_literals.py` fails on a hard-coded route literal
 (`http(s)://`, `/auth/`, `/api/`, `/mcp`) anywhere under `apps/web/src`, every
-`modules/*/web/src`, `packages/web-contract/src`, or `apps/core/src` outside
-`apps/web/src/lib/routing/`, `apps/web/src/generated/` and the two FastAPI route
-modules that serve those paths — every link must go through `url_for`/`urlFor`
-instead. Self-tests itself on every run (plants literals in a scratch repository tree
-whose roots it finds through the same resolver as the real scan) before scanning the
-real tree.
+`modules/*/web/src`, `packages/web-contract/src`, `packages/web-contract/theme`, or
+`apps/core/src` outside `apps/web/src/lib/routing/`, `apps/web/src/generated/` and
+the two FastAPI route modules that serve those paths — every link must go through
+`url_for`/`urlFor` instead. Self-tests itself on every run (plants literals in a
+scratch repository tree whose roots it finds through the same resolver as the real
+scan) before scanning the real tree.
 
 `python3 scripts/check_web_platform.py` fails on a platform-only `@vercel/*` import
 or an edge-runtime declaration anywhere under `apps/web`, every `modules/*/web`, or

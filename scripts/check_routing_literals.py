@@ -13,13 +13,13 @@ literal would still return 200 in whichever mode happened to match it.
 
 Runs under the system python3 (3.9-compatible, no third-party deps), mirroring
 `scripts/check_web_platform.py`. Scans every TypeScript web-src root —
-`apps/web/src/**`, every `modules/*/web/src/**`, and `packages/web-contract/src/**`
-(`.ts`/`.tsx`, and `.js`/`.jsx`/`.mjs`/`.cjs` because the shell's tsconfig sets
-`allowJs`) — plus `apps/core/src/**` (`.py`) — for a literal `http://`,
-`https://`, `/auth/`, `/api/`, or `/mcp` route string. spec.md Technical Risk 6:
-without this widening, criterion 22 would be vacuous for module screens —
-`apps/web/src` alone says nothing about a route literal hard-coded inside a
-module's own web package.
+`apps/web/src/**`, every `modules/*/web/src/**`, `packages/web-contract/src/**` and
+`packages/web-contract/theme/**` (`.ts`/`.tsx`, and `.js`/`.jsx`/`.mjs`/`.cjs`
+because the shell's tsconfig sets `allowJs`) — plus `apps/core/src/**` (`.py`) —
+for a literal `http://`, `https://`, `/auth/`, `/api/`, or `/mcp` route string.
+spec.md Technical Risk 6: without this widening, criterion 22 would be vacuous
+for module screens — `apps/web/src` alone says nothing about a route literal
+hard-coded inside a module's own web package.
 
 Three allowlist mechanisms, not one, and they are deliberately different in kind:
 
@@ -71,12 +71,12 @@ noisier failure mode than the one this scan is for.
 
 Self-test (anti-vacuity, `spec.md` Technical Risk 10 / criterion 22): `main()`
 always builds a scratch repository tree — `apps/web/src`, a `modules/<x>/web/src`,
-`packages/web-contract/src`, `apps/core/src` — plants literals in each root and
-beside each exclusion, and runs `check()` against it through the same root resolver
-the real scan uses, before scanning the real tree. A scan that stopped being able to
-catch anything (a broken regex, an allowlist that grew too wide, a root the resolver
-no longer discovers) fails loudly on every invocation rather than silently passing
-forever.
+`packages/web-contract/src`, `packages/web-contract/theme`, `apps/core/src` —
+plants literals in each root and beside each exclusion, and runs `check()` against
+it through the same root resolver the real scan uses, before scanning the real tree.
+A scan that stopped being able to catch anything (a broken regex, an allowlist that
+grew too wide, a root the resolver no longer discovers) fails loudly on every
+invocation rather than silently passing forever.
 """
 
 from __future__ import annotations
@@ -95,23 +95,27 @@ ROOT = Path(__file__).resolve().parents[1]
 _SHELL_WEB_SRC = Path("apps") / "web" / "src"
 _CORE_SRC = Path("apps") / "core" / "src"
 _WEB_CONTRACT_SRC = Path("packages") / "web-contract" / "src"
+_WEB_CONTRACT_THEME = Path("packages") / "web-contract" / "theme"
 
 
 def _resolve_web_roots(repo_root: Path) -> list[Path]:
     """Every TypeScript web-src root this gate scans: the shell, every module's own
-    web package, and the shared web-contract package — widened from `apps/web/src`
-    alone (spec.md Technical Risk 6).
+    web package, and the shared web-contract package's `src/` and `theme/` —
+    widened from `apps/web/src` alone (spec.md Technical Risk 6; criterion 37 claims
+    the widening covers the whole web-contract package, and its theme compiler lives
+    in `theme/`, not `src/`).
 
     `apps/web/src` is the one REQUIRED root and is always returned, even when it is
     missing, so `check()` reports it rather than scanning nothing (the same shape as
-    `check_web_platform.py`'s `_resolve_roots`). A module web package and the
-    web-contract package are optional and included only when they exist.
+    `check_web_platform.py`'s `_resolve_roots`). A module web package and the two
+    web-contract roots are optional and included only when they exist.
     """
     optional: list[Path] = []
     modules_root = repo_root / "modules"
     if modules_root.is_dir():
         optional.extend(sorted(modules_root.glob("*/web/src")))
     optional.append(repo_root / _WEB_CONTRACT_SRC)
+    optional.append(repo_root / _WEB_CONTRACT_THEME)
     return [repo_root / _SHELL_WEB_SRC] + [r for r in optional if r.is_dir()]
 
 
@@ -359,7 +363,7 @@ def _self_test() -> str | None:
 
     Returns `None` on success, or a diagnostic string naming the failure. The
     scratch tree is laid out like the real one (`apps/web/src`,
-    `modules/<x>/web/src`, `packages/web-contract/src`, `apps/core/src`) and
+    `modules/<x>/web/src`, `packages/web-contract/{src,theme}`, `apps/core/src`) and
     `check()` finds its roots through `_resolve_web_roots()`, so breaking module-
     or contract-root discovery turns this red, not only breaking the pattern.
     """
@@ -370,6 +374,7 @@ def _self_test() -> str | None:
             "shell": repo / "apps/web/src/components/planted.tsx",
             "module web-src root": repo / "modules/scratch/web/src/screens/planted.tsx",
             "web-contract src root": repo / "packages/web-contract/src/planted.ts",
+            "web-contract theme root": repo / "packages/web-contract/theme/planted.ts",
             "module generated/ dir (exemption is shell-only)": (
                 repo / "modules/scratch/web/src/generated/planted.ts"
             ),
