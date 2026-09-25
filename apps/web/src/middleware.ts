@@ -6,8 +6,20 @@ import {
   mintNonce,
 } from "@/lib/continue-redirect";
 import { requestHost } from "@/lib/request";
+import type { RoutingConfig } from "@/lib/routing/config";
 import { loadRoutingConfig } from "@/lib/routing/load";
+import { identityPath } from "@/lib/routing/url-for";
 import { SESSION_COOKIE } from "@/lib/session";
+
+/**
+ * Whether `pathname` is the identity path itself or anything under it. The prefix
+ * is operator-configurable, so it is derived from the routing configuration, never
+ * written here. A plain prefix match would also catch a sibling such as `/authors`.
+ */
+function isIdentityPath(config: RoutingConfig, pathname: string): boolean {
+  const bare = identityPath(config, "/").replace(/\/$/, "");
+  return pathname === bare || pathname.startsWith(`${bare}/`);
+}
 
 /**
  * Send an unauthenticated request to the identity host, carrying the nonce that
@@ -29,6 +41,14 @@ import { SESSION_COOKIE } from "@/lib/session";
  * screen. The convenience of not redirecting a request that merely *looks* signed in
  * is all this buys.
  *
+ * **The order of checks.** Routing loads first (`loadRoutingConfig` memoises a
+ * successful load, so a signed-in navigation does not pay a fetch each time). Then
+ * any request at or under the identity path gets a plain 404 with no `Location`
+ * and no cookie, session or not: that path is `core`'s, so reaching the web tier
+ * means the proxy is misrouted, and redirecting would loop through `/continue`
+ * forever (#119). Then a request carrying the session cookie passes through, and
+ * everything else is redirected.
+ *
  * When the routing configuration is unavailable the request is passed through
  * rather than redirected, because there is no correct cross-host URL to redirect
  * to — guessing one would be worse than rendering. `make demo` exercises exactly
@@ -38,15 +58,22 @@ import { SESSION_COOKIE } from "@/lib/session";
  * passing through — the page still shows the signed-out state.
  */
 export async function middleware(request: NextRequest): Promise<NextResponse> {
-  if (request.cookies.get(SESSION_COOKIE)?.value) {
-    return NextResponse.next();
-  }
-
   const routing = await loadRoutingConfig();
   if (routing.state !== "ok") {
     return NextResponse.next();
   }
   const routingConfig = routing.config;
+
+  // The identity path belongs to `core`. Reaching it here means the proxy is
+  // misrouted, and redirecting would loop (the redirect target is itself on the
+  // identity path), so answer a plain 404 whether or not a session cookie is present.
+  if (isIdentityPath(routingConfig, request.nextUrl.pathname)) {
+    return new NextResponse(null, { status: 404 });
+  }
+
+  if (request.cookies.get(SESSION_COOKIE)?.value) {
+    return NextResponse.next();
+  }
 
   // The host the browser actually asked for (`lib/request.ts`, the rule the server
   // components share). Never a configured name: the return target has to bring the
@@ -70,6 +97,8 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
+    // Five minutes, the lifetime `sessions/cookies.py` gives it server-side.
+    maxAge: 300,
     // The same rule `sessions/cookies.py` applies server-side: Secure unless the
     // scheme is plain http *and* this is not a production deployment.
     secure:

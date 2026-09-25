@@ -126,6 +126,8 @@ describe("an unauthenticated request in subdomain mode", () => {
     expect(attributes.get("path")).toBe("/");
     expect(attributes.has("secure")).toBe(true);
     expect(attributes.has("domain")).toBe(false);
+    // Five minutes, matching `build_cookie` server-side (#136).
+    expect(attributes.get("max-age")).toBe("300");
   });
 
   it("prefers the forwarded host over the upstream one", async () => {
@@ -196,6 +198,84 @@ describe("requests the middleware passes through", () => {
     const response = await middleware(request);
 
     expect(response.headers.get("location")).toBeNull();
+  });
+});
+
+/**
+ * A misrouted proxy that sends identity-path traffic to the web tier (#119). Each
+ * case runs against both fixtures, with the host that mode serves the path on.
+ */
+const MODES = [
+  {
+    mode: "subdomain",
+    config: SUBDOMAIN_CONFIG,
+    identityHost: "auth.example.test",
+    appHost: "circuit.example.test",
+  },
+  {
+    mode: "path",
+    config: PATH_CONFIG,
+    identityHost: "example.test",
+    appHost: "example.test",
+  },
+] as const;
+
+describe.each(MODES)(
+  "a request on the identity path in $mode mode",
+  ({ config, identityHost, appHost }) => {
+    it.each([
+      { label: "under it, signed out", pathname: "/auth/continue", cookie: undefined },
+      {
+        label: "under it, with a session cookie",
+        pathname: "/auth/continue",
+        cookie: "rheo_session=a1b2c3",
+      },
+      { label: "the bare path, signed out", pathname: "/auth", cookie: undefined },
+      {
+        label: "the bare path, with a session cookie",
+        pathname: "/auth",
+        cookie: "rheo_session=a1b2c3",
+      },
+    ])("answers a plain 404: $label", async ({ pathname, cookie }) => {
+      const middleware = await middlewareWith(config);
+      const response = await middleware(
+        requestFor(`https://${identityHost}${pathname}`, {
+          headers: { host: identityHost },
+          cookie,
+        }),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.getSetCookie()).toEqual([]);
+    });
+
+    it("does not catch a sibling path that merely shares the prefix", async () => {
+      const middleware = await middlewareWith(config);
+      const response = await middleware(
+        requestFor(`https://${appHost}/authors`, { headers: { host: appHost } }),
+      );
+
+      const target = new URL(response.headers.get("location") as string);
+      expect(target.pathname).toBe("/auth/continue");
+      expect(target.searchParams.get("return")).toBe(`https://${appHost}/authors`);
+      expect(continueCookie(response.headers)).toBeTruthy();
+    });
+  },
+);
+
+describe("the identity-path guard with no routing configuration", () => {
+  it("passes an identity-path request through unchanged", async () => {
+    const middleware = await middlewareWith(null);
+    const response = await middleware(
+      requestFor("https://auth.example.test/auth/continue", {
+        headers: { host: "auth.example.test" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.getSetCookie()).toEqual([]);
   });
 });
 
