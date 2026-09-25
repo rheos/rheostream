@@ -15,9 +15,17 @@ import { SESSION_COOKIE } from "@/lib/session";
  * Whether `pathname` is the identity path itself or anything under it. The prefix
  * is operator-configurable, so it is derived from the routing configuration, never
  * written here. A plain prefix match would also catch a sibling such as `/authors`.
+ *
+ * A root prefix (`routing.identity.path` of `"/"` or `""`, which the settings
+ * registry does not refuse and `joinPrefix` treats as contributing nothing) leaves
+ * no prefix to tell identity routes from application routes, so nothing matches:
+ * 404-ing every path would take the whole application down.
  */
 function isIdentityPath(config: RoutingConfig, pathname: string): boolean {
   const bare = identityPath(config, "/").replace(/\/$/, "");
+  if (bare === "") {
+    return false;
+  }
   return pathname === bare || pathname.startsWith(`${bare}/`);
 }
 

@@ -264,6 +264,50 @@ describe.each(MODES)(
   },
 );
 
+/**
+ * A root identity prefix leaves nothing to distinguish identity routes by, so the
+ * guard must match nothing rather than everything.
+ */
+describe.each(
+  MODES.flatMap((entry) =>
+    ["/", ""].map((rootPath) => ({ ...entry, rootPath })),
+  ),
+)(
+  "a root identity prefix ($rootPath) in $mode mode",
+  ({ config, appHost, rootPath }) => {
+    const rootConfig = {
+      ...config,
+      surfaces: {
+        ...config.surfaces,
+        identity: { ...config.surfaces.identity, path: rootPath },
+      },
+    } as RoutingConfig;
+
+    it("still redirects an ordinary signed-out route instead of 404-ing it", async () => {
+      const middleware = await middlewareWith(rootConfig);
+      const response = await middleware(
+        requestFor(`https://${appHost}/reports`, { headers: { host: appHost } }),
+      );
+
+      expect(response.status).not.toBe(404);
+      expect(response.headers.get("location")).not.toBeNull();
+    });
+
+    it("passes a signed-in ordinary route through", async () => {
+      const middleware = await middlewareWith(rootConfig);
+      const response = await middleware(
+        requestFor(`https://${appHost}/reports`, {
+          headers: { host: appHost },
+          cookie: "rheo_session=a1b2c3",
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBeNull();
+    });
+  },
+);
+
 describe("the identity-path guard with no routing configuration", () => {
   it("passes an identity-path request through unchanged", async () => {
     const middleware = await middlewareWith(null);
