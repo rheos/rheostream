@@ -45,9 +45,10 @@ owned-deletable record type in the checkout, ``test_memory_mcp.py`` drives the M
 tool facade against the one module in the checkout that registers a tool naming a
 core operation, ``test_memory_redaction_mcp.py`` drives the redaction policy (contact
 masking, the mask-token write-back refusal, excluded types) through Recallatron's real
-tools, since memory bodies are the free text the contact mask exists for, ``test_tool_telemetry.py`` drives the telemetry sink through that same
-tool surface — it needs a ``READ`` tool that declares both a query and a lifecycle
-selector and a ``DESTRUCTIVE`` one that answers ``approval_required``, and no fixture
+tools, since memory bodies are the free text the contact mask exists for,
+``test_tool_telemetry.py`` drives the telemetry sink through that same tool surface
+— it needs a ``READ`` tool that declares both a query and a lifecycle selector and a
+``DESTRUCTIVE`` one that answers ``approval_required``, and no fixture
 module declares either — ``test_memory_embedding.py`` drives the embedding pipeline,
 whose providers, jobs and rebuild are Recallatron's own — ``test_memory_retrieval.py``
 drives the dense arm, which ranks over Recallatron's own vector index —

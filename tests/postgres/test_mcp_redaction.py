@@ -50,8 +50,9 @@ from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.redaction.masking import PHONE_MASK
 from rheo_core.redaction.tiers import SensitivityTier, Tiered
-from rheo_core.settings import TEST_HARNESS_ORIGIN
+from rheo_core.settings import TEST_HARNESS_ORIGIN, encode_text, spec_for
 from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_core.tokens.sets import ToolRegistry
 
 pytestmark = pytest.mark.postgres
@@ -123,6 +124,7 @@ class Surface:
         register_harness()
         row = cluster.registry_row(workspace)
         engine = cluster.backend.pools.engine_for(row.database_name)
+        self.unit_of_work = lambda: UnitOfWork(engine, row.database_name)
         with UnitOfWork(engine, row.database_name) as uow:
             enable_harness_module(uow.connection)
             uow.commit()
@@ -138,6 +140,17 @@ class Surface:
         written = dispatch(ctx, NOTE_WRITE, {"body": probe_body()})
         assert written.ok, written
         self.ref = written.result.ref  # type: ignore[union-attr]
+
+    def set_workspace(self, key: str, value: object) -> None:
+        with self.unit_of_work() as uow:
+            upsert_workspace_setting(
+                uow.connection,
+                key=key,
+                value=encode_text(spec_for(key), value),  # type: ignore[arg-type]
+                value_type=spec_for(key).type,
+                updated_by=None,
+            )
+            uow.commit()
 
     def bound(self, purpose: ContextPurpose) -> WorkspaceContext:
         account_id = self.ctx.principal.account_id
@@ -205,10 +218,11 @@ def test_a_purpose_without_internal_loses_the_organization(surface: Surface) -> 
 def test_the_allowance_still_releases_no_restricted_field(
     surface: Surface, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The operator's ``true`` with no workspace row makes the allowance effective
-    for ``respond``, and structured contact fields are still withheld: only a
-    module's own renderer may release them (``rheo_core/redaction/policy.py``)."""
+    """Operator and workspace both explicitly true make the allowance effective, and
+    structured contact fields are still withheld: only a module's own renderer may
+    release them (``rheo_core/redaction/policy.py``)."""
     monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "true")
+    surface.set_workspace("redaction.contact_points_to_model", True)
     outcome = surface.call(surface.bound(ContextPurpose.RESPOND))
     assert outcome.model_view is not None
     _assert_no_contact(json.dumps(outcome.model_view.value))

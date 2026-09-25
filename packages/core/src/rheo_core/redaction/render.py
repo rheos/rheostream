@@ -25,22 +25,28 @@ value actually is.
 """
 
 import dataclasses
+import types
 import typing
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final, Protocol
 
 from pydantic import BaseModel, RootModel
+from pydantic_core import to_jsonable_python
 from rheo_contracts import RecordRef, RecordRefMalformed, WorkspaceContext
 
 from rheo_core.redaction.masking import mask_for_model
 from rheo_core.redaction.policy import TierPolicy
 from rheo_core.redaction.tiers import (
     SensitivityTier,
-    annotation_tier,
-    model_field_tiers,
+    UnresolvedModel,
+    carries_tiers,
+    class_carries_tiers,
     most_restrictive,
+    structured_fields,
+    structured_kind,
+    type_tiers,
 )
 from rheo_core.storage.backend import UnitOfWork
 
@@ -131,6 +137,7 @@ class RenderedResult:
 
     value: object
     withheld: bool = False
+    reason: str | None = None
 
 
 class _Withheld:
@@ -198,34 +205,73 @@ class _OutputWalk:
             return [item for item in items if item is not _DROP]
         return dumped
 
-    def value(self, value: object, dumped: object) -> object:
+    def value(self, value: object, dumped: object, annotation: object = None) -> object:
+        """``value`` rendered, paired with its dump and, where known, its annotation.
+
+        **Fail closed where pairing fails.** When the instance and its dump cannot be
+        walked side by side (a serializer reshaped it, a model dumped to a string, a
+        tiered ``NamedTuple`` dumped positionally), the fallback is the masked dump
+        only when nothing tiered could be inside; if the annotation or the instance
+        carries any tier, the value is withheld whole. The second review found the
+        old fallback masking such a value and sending its restricted fields.
+        """
         if isinstance(value, RecordRef):
             return _DROP if self._excluded(value) else self.json(dumped)
         if isinstance(value, RootModel):
-            return self.value(value.root, dumped)
+            root = type(value).model_fields["root"]
+            return self.value(value.root, dumped, root.annotation)
         if isinstance(value, BaseModel) and isinstance(dumped, dict):
-            return self.fields(value, model_field_tiers(type(value)), dumped)
+            return self.fields(value, type(value), dumped, getattr)
         if (
             dataclasses.is_dataclass(value)
             and not isinstance(value, type)
             and isinstance(dumped, dict)
         ):
-            return self.fields(value, _dataclass_tiers(type(value)), dumped)
+            return self.fields(value, type(value), dumped, getattr)
+        typed_dict = _typed_dict_of(annotation)
+        if typed_dict is not None and isinstance(value, Mapping):
+            if isinstance(dumped, dict):
+                return self.fields(value, typed_dict, dumped, _mapping_get)
+            return self.unpaired(value, dumped, annotation)
+        if isinstance(value, tuple) and hasattr(value, "_fields"):
+            if class_carries_tiers(type(value)):
+                return _DROP
         if isinstance(value, Mapping) and isinstance(dumped, dict):
-            return self.mapping(value, dumped)
+            return self.mapping(value, dumped, _argument(annotation, 1))
         if (
             isinstance(value, list | tuple)
             and isinstance(dumped, list)
             and len(value) == len(dumped)
         ):
             items = [
-                self.value(item, part) for item, part in zip(value, dumped, strict=True)
+                self.value(item, part, _element(annotation, index))
+                for index, (item, part) in enumerate(zip(value, dumped, strict=True))
             ]
             return [item for item in items if item is not _DROP]
+        if isinstance(value, set | frozenset):
+            # A set's dump order is arbitrary, so its members are rendered one by one
+            # against their own dumps rather than paired by position.
+            element = _argument(annotation, 0)
+            rendered = [
+                self.value(item, to_jsonable_python(item), element) for item in value
+            ]
+            return [item for item in rendered if item is not _DROP]
+        if isinstance(dumped, str) and not isinstance(value, BaseModel):
+            if self._excluded(dumped):
+                return _DROP
+            return mask_for_model(dumped, self.policy)
+        return self.unpaired(value, dumped, annotation)
+
+    def unpaired(self, value: object, dumped: object, annotation: object) -> object:
+        if carries_tiers(annotation) or _instance_carries(value):
+            return _DROP
         return self.json(dumped)
 
     def mapping(
-        self, value: Mapping[object, object], dumped: dict[str, object]
+        self,
+        value: Mapping[object, object],
+        dumped: dict[str, object],
+        item_annotation: object,
     ) -> object:
         # A mapping's keys are data, not field names, so they are masked like values,
         # and an entry whose key does not dump to what the walk expects is withheld
@@ -235,7 +281,7 @@ class _OutputWalk:
             json_key = _json_key(key)
             if json_key not in dumped or self._excluded(key):
                 continue
-            part = self.value(item, dumped[json_key])
+            part = self.value(item, dumped[json_key], item_annotation)
             if part is _DROP:
                 continue
             rendered[mask_for_model(json_key, self.policy)] = part
@@ -244,38 +290,98 @@ class _OutputWalk:
     def fields(
         self,
         value: object,
-        tiers: Mapping[str, SensitivityTier],
+        cls: type,
         dumped: dict[str, object],
+        get: Callable[[object, str, object], object],
     ) -> object:
+        # The object's own reference first, before tiering can drop it: an unmarked or
+        # ``internal`` ``ref`` on a tiered class is removed by the tier loop, and the
+        # "this object is an excluded record" rule has to see it before that happens.
+        if self._excluded(get(value, "ref", None)) or self._excluded(dumped.get("ref")):
+            return _DROP
+        try:
+            annotations = structured_fields(cls)
+            tiers = type_tiers(cls)
+        except UnresolvedModel:
+            return _DROP
         rendered: dict[str, object] = {}
         for key, item in dumped.items():
             if tiers:
                 tier = tiers.get(key)
                 if tier is None or not self.policy.allows(tier):
                     continue
-            part = self.value(getattr(value, key, item), item)
+            part = self.value(get(value, key, item), item, annotations.get(key))
             if part is _DROP:
                 if key == "ref":
-                    # The object's own reference names an excluded type: the object
-                    # *is* such a record, so none of it goes.
                     return _DROP
                 continue
             rendered[key] = part
         return rendered
 
 
-def _dataclass_tiers(cls: type) -> Mapping[str, SensitivityTier]:
-    """A dataclass's field tiers, read the way a model's are."""
-    try:
-        hints = typing.get_type_hints(cls, include_extras=True)
-    except Exception:  # an unresolvable hint tiers nothing it can read
-        hints = {}
-    tiers: dict[str, SensitivityTier] = {}
-    for item in dataclasses.fields(cls):
-        tier = annotation_tier(hints.get(item.name, item.type))
-        if tier is not None:
-            tiers[item.name] = tier
-    return tiers
+def _mapping_get(value: object, key: str, default: object) -> object:
+    assert isinstance(value, Mapping)
+    return value.get(key, default)
+
+
+def _unwrap(annotation: object) -> object:
+    """``annotation`` without an ``Annotated`` wrapper, and without ``| None``."""
+    while typing.get_origin(annotation) is typing.Annotated:
+        annotation = typing.get_args(annotation)[0]
+    if typing.get_origin(annotation) is typing.Union or isinstance(
+        annotation, types.UnionType
+    ):
+        arms = [arm for arm in typing.get_args(annotation) if arm is not type(None)]
+        if len(arms) == 1:
+            return _unwrap(arms[0])
+    return annotation
+
+
+def _typed_dict_of(annotation: object) -> type | None:
+    bare = _unwrap(annotation)
+    return bare if structured_kind(bare) == "typeddict" else None  # type: ignore[return-value]
+
+
+def _argument(annotation: object, index: int) -> object:
+    """The ``index``-th type argument of a container annotation, or ``None``."""
+    arguments = typing.get_args(_unwrap(annotation))
+    if len(arguments) > index:
+        return arguments[index]
+    return None
+
+
+def _element(annotation: object, position: int) -> object:
+    """A sequence element's annotation: ``list[X]``/``tuple[X, ...]`` give ``X``,
+    ``tuple[A, B]`` gives the one at ``position``."""
+    arguments = typing.get_args(_unwrap(annotation))
+    if not arguments:
+        return None
+    if len(arguments) == 2 and arguments[1] is Ellipsis:
+        return arguments[0]
+    if len(arguments) == 1:
+        return arguments[0]
+    return arguments[position] if position < len(arguments) else None
+
+
+def _instance_carries(value: object) -> bool:
+    """Whether ``value`` is, or holds, an instance of a tier-carrying class."""
+    if isinstance(value, BaseModel) or (
+        dataclasses.is_dataclass(value) and not isinstance(value, type)
+    ):
+        return class_carries_tiers(type(value))
+    if isinstance(value, tuple) and hasattr(value, "_fields"):
+        return class_carries_tiers(type(value))
+    if isinstance(value, list | tuple | set | frozenset):
+        return any(_instance_carries(item) for item in value)
+    if isinstance(value, Mapping):
+        return any(_instance_carries(item) for item in value.values())
+    return False
+
+
+UNRENDERABLE_REASON: Final = (
+    "the result holds a tiered value whose serialized shape cannot be rendered "
+    "under its tiers"
+)
 
 
 def render_output(model: BaseModel, policy: TierPolicy) -> RenderedResult:
@@ -288,9 +394,18 @@ def render_output(model: BaseModel, policy: TierPolicy) -> RenderedResult:
 
     **Excluded record types** (``<module>.redaction.exclude_types``): a string or
     ``RecordRef`` naming one is dropped, and an object whose own ``ref`` names one is
-    dropped whole; a result that is itself such a record comes back ``withheld``.
+    dropped whole; a result that is itself such a record comes back ``withheld`` with
+    :data:`WITHHELD_REASON`. A result the walk had to withhold whole for any other
+    reason (a tiered shape it cannot pair, which operation registration refuses in the
+    first place) comes back ``withheld`` with :data:`UNRENDERABLE_REASON`.
     """
-    rendered = _OutputWalk(policy).value(model, model.model_dump(mode="json"))
+    walk = _OutputWalk(policy)
+    rendered = walk.value(model, model.model_dump(mode="json"))
     if rendered is _DROP:
-        return RenderedResult(value=None, withheld=True)
+        excluded = walk._excluded(getattr(model, "ref", None))
+        return RenderedResult(
+            value=None,
+            withheld=True,
+            reason=WITHHELD_REASON if excluded else UNRENDERABLE_REASON,
+        )
     return RenderedResult(value=rendered)

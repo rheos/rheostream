@@ -487,7 +487,8 @@ never loaded or composed. The marker rather than the record-type `sensitivity` m
 contact-permission record is `restricted` whole and `leads.contact_permission.withdrawn` still
 carries its `party_ref` and `purpose` by design; matching field names across the two would
 refuse it. The marker is found in any spelling (`X | None`, `Optional[X]`, a union arm, a
-container element), and a model whose forward references do not resolve is refused, since
+container element) and inside nested models, dataclasses, `TypedDict`s and `NamedTuple`s,
+the same traversal the tool-output renderer uses, and a model whose forward references do not resolve is refused, since
 the guard cannot see a field pydantic cannot type. Nothing checks an unmarked field: the rule
 is that a field declared restricted cannot travel, not that every field must be declared. A
 field typed `Any` or `dict` carries no marker and so cannot be checked at all; an event model

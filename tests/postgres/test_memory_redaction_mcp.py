@@ -207,10 +207,59 @@ def test_a_correction_carrying_a_mask_token_is_refused(memories: Memories) -> No
     assert refused.state == "input_invalid", refused
     assert refused.error is not None
     assert EMAIL_MASK in refused.error.error_text
+    # The text must not suggest leaving the masked part out: a correction restates the
+    # whole record, so that would delete the value the mask stands for.
+    assert "omit" not in refused.error.error_text.lower()
+    assert "ask a person" in refused.error.error_text
     # Nothing was written: the stored body is still the real one.
     after = memories.recall()
     assert after.result.items[0].body == BODY  # type: ignore[union-attr]
     assert after.result.items[0].revision == 1  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "[EMAIL WITHHELD]",
+        "[email\u00a0withheld]",
+        "[Email  Withheld]",
+        "\uff3bemail withheld\uff3d",
+    ],
+    ids=["upper", "nbsp", "spaced", "full-width"],
+)
+def test_a_correction_carrying_a_retyped_mask_token_is_refused(
+    memories: Memories, variant: str
+) -> None:
+    ref = memories.remember()
+    refused = memories.call(
+        "recallatron_correct",
+        {
+            "ref": ref,
+            "expected_revision": 1,
+            "title": TITLE,
+            "body": f"Reach Jane at {variant}",
+        },
+    )
+    assert refused.state == "input_invalid", refused
+
+
+def test_the_operator_floor_alone_with_no_workspace_row_is_masked(
+    memories: Memories, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Robin's rule, enforced strictly: the operator's ``true`` is a permission, and a
+    workspace that never wrote a row has not opted in."""
+    monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "true")
+    memories.remember()
+    assert EMAIL not in _bodies(memories.recall())[0]
+
+
+def test_a_workspace_row_under_an_operator_false_is_masked(
+    memories: Memories, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "false")
+    memories.set_workspace(CONTACT_POINTS_KEY, True)
+    memories.remember()
+    assert EMAIL not in _bodies(memories.recall())[0]
 
 
 def test_a_remember_carrying_a_mask_token_is_refused(memories: Memories) -> None:

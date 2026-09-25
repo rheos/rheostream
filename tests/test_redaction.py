@@ -51,7 +51,12 @@ from rheo_core.redaction.policy import (
     TierPolicy,
     exclude_types_spec,
 )
-from rheo_core.redaction.render import RenderedResult, render_output, render_record
+from rheo_core.redaction.render import (
+    WITHHELD_REASON,
+    RenderedResult,
+    render_output,
+    render_record,
+)
 from rheo_core.redaction.tiers import SensitivityTier, Tiered, model_field_tiers
 from rheo_core.settings import (
     ResolvedSettings,
@@ -156,13 +161,15 @@ def test_the_operator_can_withdraw_internal_from_every_purpose(
     [
         (None, None, False),  # the package default
         (None, True, False),  # a workspace cannot switch on what the operator did not
-        ("true", None, True),  # the operator's value stands
+        # The operator's ``true`` alone is a permission, not an opt-in: no workspace
+        # row means masked (Robin, issue #130 final review).
+        ("true", None, False),
         ("true", True, True),
         ("true", False, False),  # a workspace may keep it off
         ("false", True, False),
     ],
 )
-def test_the_contact_point_allowance_is_an_and_floor(
+def test_the_contact_point_allowance_needs_both_levels_explicitly(
     monkeypatch: pytest.MonkeyPatch,
     deployment: str | None,
     workspace: bool | None,
@@ -172,8 +179,17 @@ def test_the_contact_point_allowance_is_an_and_floor(
         monkeypatch.setenv("RHEO__redaction__contact_points_to_model", deployment)
     rows = {} if workspace is None else {CONTACT_POINTS_KEY: workspace}
     settings = _settings(**rows)
-    assert settings.get_bool(CONTACT_POINTS_KEY) is expected
-    assert _policy(ContextPurpose.RESPOND, settings).contact_points_allowed is expected
+    assert settings.set_by_workspace(CONTACT_POINTS_KEY) is (workspace is not None)
+    policy = _policy(ContextPurpose.RESPOND, settings)
+    assert policy.contact_points_allowed is expected
+    masked = mask_for_model(f"mail {EMAIL}", policy)
+    assert masked == (f"mail {EMAIL}" if expected else f"mail {EMAIL_MASK}")
+
+
+def _opted_in(monkeypatch: pytest.MonkeyPatch) -> ResolvedSettings:
+    """Operator ``true`` and a workspace row of ``true``: the only opted-in state."""
+    monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "true")
+    return _settings(**{CONTACT_POINTS_KEY: True})
 
 
 def test_the_allowance_applies_to_every_purpose(
@@ -181,8 +197,7 @@ def test_the_allowance_applies_to_every_purpose(
 ) -> None:
     """Robin's decision in the #130 review: with both floors true, contact values are
     released whatever the purpose, not for ``respond`` only."""
-    monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "true")
-    settings = _settings()
+    settings = _opted_in(monkeypatch)
     for purpose in ContextPurpose:
         policy = _policy(purpose, settings)
         assert policy.contact_points_allowed is True, purpose
@@ -199,8 +214,7 @@ def test_without_the_allowance_every_purpose_is_masked() -> None:
 def test_the_allowance_never_releases_a_restricted_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "true")
-    policy = _policy(ContextPurpose.RESPOND)
+    policy = _policy(ContextPurpose.RESPOND, _opted_in(monkeypatch))
     assert policy.contact_points_allowed is True
     assert policy.allows(RESTRICTED) is False
     assert policy.ceiling is RESTRICTED
@@ -272,8 +286,7 @@ def test_non_contact_text_is_left_alone(text: str) -> None:
 def test_secret_references_are_masked_even_with_the_allowance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "true")
-    policy = _policy(ContextPurpose.RESPOND)
+    policy = _policy(ContextPurpose.RESPOND, _opted_in(monkeypatch))
     text = f"key secret://file/ws/018f/signing for {EMAIL}"
     assert mask_for_model(text, policy) == f"key {SECRET_MASK} for {EMAIL}"
 
@@ -327,8 +340,9 @@ def test_an_undeclared_field_is_withheld() -> None:
 def test_the_allowance_does_not_release_a_restricted_field_in_the_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "true")
-    rendered = render_record(RECORD, TIERS, _policy(ContextPurpose.RESPOND))
+    policy = _policy(ContextPurpose.RESPOND, _opted_in(monkeypatch))
+    assert policy.contact_points_allowed is True
+    rendered = render_record(RECORD, TIERS, policy)
     assert rendered is not None
     assert EMAIL not in rendered.text
 
@@ -678,7 +692,7 @@ def test_records_of_an_excluded_type_are_dropped_from_a_result(
 
 def test_a_result_that_is_an_excluded_record_is_withheld(exclude_note: None) -> None:
     rendered = render_output(RefItem(ref=NOTE_REF, title="hidden"), _policy())
-    assert rendered == RenderedResult(value=None, withheld=True)
+    assert rendered == RenderedResult(value=None, withheld=True, reason=WITHHELD_REASON)
 
 
 def test_nothing_is_dropped_when_nothing_is_excluded() -> None:

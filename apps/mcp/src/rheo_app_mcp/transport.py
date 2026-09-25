@@ -274,7 +274,7 @@ async def _on_call_tool(
         # model (``runtime-and-mcp.md`` § The MCP facade, Output).
         if outcome.model_view.withheld:
             payload["result"] = None
-            payload["withheld"] = WITHHELD_REASON
+            payload["withheld"] = outcome.model_view.reason or WITHHELD_REASON
         else:
             payload["result"] = outcome.model_view.value
     if outcome.error is not None:

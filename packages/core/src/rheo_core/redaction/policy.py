@@ -10,11 +10,13 @@
   (``and`` floor, package default false) allows contact point values, and
   :attr:`TierPolicy.contact_points_allowed` is how that reaches a renderer.
 
-**The allowance is for every purpose (Robin, 2026-09-25, issue #130 review).** The
-ratified text scoped it to ``respond``; the decision widens it: with the operator's
-floor and the workspace both true, contact masking lifts and contact values are
-released whatever the purpose. The ``and`` floor is unchanged, so a workspace alone can
-never switch it on.
+**The allowance is for every purpose, and both levels must opt in explicitly (Robin,
+2026-09-25, issue #130 reviews).** The ratified text scoped it to ``respond``; the
+decision widens it: with the operator's floor and the workspace both explicitly true,
+contact masking lifts and contact values are released whatever the purpose. A workspace
+with no row for the key is not opted in, whatever the deployment says, so the
+operator's ``true`` is a permission and never a default. The ``and`` floor is
+unchanged, so a workspace alone can never switch it on.
 
 **What the allowance releases, and what it does not.** The tier vocabulary has three
 members and no "contact point" sub-tier, so a ``restricted`` field does not say whether
@@ -120,8 +122,21 @@ class TierPolicy:
 
     @property
     def contact_points_allowed(self) -> bool:
-        """The effective ``redaction.contact_points_to_model``, for any purpose."""
-        return self.settings().get_bool(CONTACT_POINTS_KEY)
+        """``redaction.contact_points_to_model`` true at both levels, for any purpose.
+
+        **An explicit workspace opt-in on top of the operator's permission.** The
+        ``and`` floor alone would let a workspace with no row inherit the operator's
+        ``true``; Robin's rule is that masking lifts only when the operator *and* the
+        workspace have each said yes. So the effective value (already the ``and`` of the
+        two when a row exists) counts only when a workspace row supplied it, and no row
+        is ``false`` whatever the deployment says. The operator's value is the
+        permission: a workspace row of ``true`` under an operator ``false`` resolves
+        ``false`` through the floor, and the write path refuses it.
+        """
+        settings = self.settings()
+        return settings.set_by_workspace(CONTACT_POINTS_KEY) and settings.get_bool(
+            CONTACT_POINTS_KEY
+        )
 
     def allows(self, tier: SensitivityTier) -> bool:
         """Whether a field of ``tier`` may be sent as a field. Never ``restricted``."""

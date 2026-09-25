@@ -223,8 +223,8 @@ def build_context(
        policy allows. A record that renders to nothing is skipped; the resolver's
        ``display`` is never the fallback, because for a tiered type its tier is
        exactly what nobody declared.
-    5. Mask free text (secret references always, contact values unless ``respond``
-       holds the allowance) on every path, then apply the byte cap.
+    5. Mask free text (secret references always, contact values unless the operator
+       and the workspace have both opted in) on every path, then apply the byte cap.
 
     ``renderings`` exists for tests that register a probe rendering without touching
     the process-global table; production passes nothing.

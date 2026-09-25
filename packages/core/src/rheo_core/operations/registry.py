@@ -62,6 +62,7 @@ from rheo_core.operations.refusals import (
     ROLE_NOT_PERMITTED,
     RegistrationRefused,
 )
+from rheo_core.redaction.tiers import unrenderable_paths
 from rheo_core.settings import CORE_ORIGIN, TEST_HARNESS_ORIGIN, current_profile
 from rheo_core.storage.backend import UnitOfWork
 
@@ -246,6 +247,23 @@ class OperationRegistry:
                 "input model sets extra = 'allow', which would carry a reserved "
                 "payload key into model_extra",
             )
+        # The redaction contract's registration half for output (issue #130): a tool
+        # result is rendered for a model by walking the output instance beside its
+        # dump, and a tiered value whose serializer reshapes it cannot be walked. The
+        # renderer withholds such a value at run time; refusing it here is what makes
+        # that a packaging error found at load rather than a model shown nothing.
+        # Checked on the operation rather than on the tool because the output belongs
+        # to the operation, and every tool that could return it names one.
+        output = getattr(decl, "output", None)
+        if isinstance(output, type):
+            unrenderable = unrenderable_paths(output)
+            if unrenderable:
+                raise RegistrationRefused(
+                    name,
+                    f"output {output.__name__} holds tiered value(s) the model "
+                    f"renderer cannot pair with their dump: {list(unrenderable)}; "
+                    "drop the custom serializer or the tier marker",
+                )
         if not callable(handler):
             raise TypeError("the handler must be callable")
         existing = self._operations.get(name)

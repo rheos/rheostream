@@ -315,12 +315,23 @@ listed before a revocation is refused after it (idea document: discovery grants 
   dataclasses, lists and mappings included; a class that marks any field withholds every field
   it leaves unmarked (extra and computed fields among them); every string left, set members and
   mapping keys included, and the error text, is masked as below; a `RootModel` renders its
-  root. Wherever the walk cannot pair a value with its type (a set, a serializer that reshaped
-  a value, a mapping key that does not dump as expected) it falls back to the dump with every
-  string masked, never the raw dump. A record of a type the workspace excludes
+  root; a set's members are rendered one by one. Wherever the walk cannot pair a value with
+  its type (a serializer that reshaped it, a model that dumps to a string, a mapping key that
+  does not dump as expected) it withholds the value if anything tiered could be inside it
+  (a marker in its annotation, or a tiered model, dataclass, `TypedDict` or `NamedTuple`), and
+  otherwise falls back to the dump with every string masked; never the raw dump. Operation
+  registration refuses those shapes up front: an output holding a tiered model with a
+  `@model_serializer`, a tiered field with a custom serializer, or a tiered `NamedTuple` is
+  `RegistrationRefused`. A record of a type the workspace excludes
   (`<module>.redaction.exclude_types`) is dropped from a result, and a result that is itself
-  one (its own `ref` names the type) comes back with `result: null` and a `withheld` reason,
-  for a person's MCP token and a run's token alike. A class with no marker is untiered and
+  one (its own `ref` names the type, checked before tiering so an unmarked `ref` still counts)
+  comes back with `result: null` and a `withheld` reason, for a person's MCP token and a run's
+  token alike. A write into an excluded type still succeeds and commits; the model is told
+  only that the result is withheld, which avoids a retry writing it twice. A result's
+  aggregate fields are not recomputed when excluded items are dropped: a `recallatron_read`
+  window's `total` and positions, and a recall's provenance counts, still count them, a
+  one-bit residual (the model can tell excluded memories exist) recorded here rather than
+  closed. A class with no marker is untiered and
   answers its JSON dump with contact values and secret references masked, which is every output
   model in release one: Recallatron's and the core's tools return the same fields as before,
   and a contact value inside a memory's text reaches a model as `[email withheld]` or `[phone
@@ -373,9 +384,10 @@ operation tables in the module documents are authoritative.
 telemetry, and the deletion ledger with its exact closure counters), so a tool call naming either
 is `input_invalid` and a model reads the audit records alone: metadata (actor, operation, subject
 reference, request digest, outcome) with no payload. The tool's narrowing binds the tool call
-only, and the `api` surface accepts `mcp` tokens, so the operation enforces the same rule on every
-surface: it refuses either opt-in `operation_not_permitted` for an `mcp` or `runtime` token (a
-token whose row is gone counts as one). A person with the role still asks for both through a
+only, so the operation enforces the same rule on every surface: it refuses either opt-in
+`operation_not_permitted` for an `mcp` or `runtime` token (a token whose row is gone counts as
+one). Since issue #130 the `api` surface refuses `mcp` tokens outright (`token_wrong_kind`), so
+over HTTP that refusal is reached first. A person with the role still asks for both through a
 session or a `cli` token. The listing filters on role, so a member's token is never offered
 `audit_list`.
 A runtime run's token holds only the tools its caller named in `core.runtime.run`, so none of the
@@ -421,7 +433,7 @@ what it sends is the free-text mask and the exclusion list.
 | --- | --- | --- |
 | `public` | Titles, stage labels, notes the workspace wrote for itself, message bodies the sender addressed to the workspace, qualification explanations | Yes, when the caller may read the record. |
 | `internal` | Party display names, organization names, opportunity value estimates, dates | Yes for purposes the workspace enables (`redaction.internal_purposes`, default `respond, follow_up, internal_analysis`, `subset` floor), no otherwise. |
-| `restricted` | Contact point values (email, phone, address), permission records, member credentials, every secret reference, other members' personal material, raw delivery payloads | Never by default. `redaction.contact_points_to_model` (`and` floor, package default false) allows contact point values for **every** purpose when both the operator's value and the workspace's are true (widened from `respond` only by the maintainer's decision in the issue #130 review); nothing enables the rest. As built, the allowance lifts the free-text contact mask; the default renderers never release a `restricted` field, because the tier does not say which restricted fields are contact values, and a module's own `render_for_model` may release its contact point fields when `TierPolicy.contact_points_allowed` is true. Secret references are masked whatever the allowance says. |
+| `restricted` | Contact point values (email, phone, address), permission records, member credentials, every secret reference, other members' personal material, raw delivery payloads | Never by default. `redaction.contact_points_to_model` (`and` floor, package default false) allows contact point values for **every** purpose when both the operator's value and the workspace's are explicitly true (widened from `respond` only by the maintainer's decision in the issue #130 review). The workspace's opt-in must be a row: a workspace with no row for the key is not opted in whatever the deployment says, so the operator's `true` is a permission, never a default (`ResolvedSettings.set_by_workspace`). Nothing enables the rest. As built, the allowance lifts the free-text contact mask; the default renderers never release a `restricted` field, because the tier does not say which restricted fields are contact values, and a module's own `render_for_model` may release its contact point fields when `TierPolicy.contact_points_allowed` is true. Secret references are masked whatever the allowance says. |
 
 Secrets are not a tier; they cannot enter a context item because no domain service can resolve
 one. The tier for secrets exists so that a *reference* string in a record is also withheld.
@@ -447,15 +459,21 @@ one. The tier for secrets exists so that a *reference* string in a record is als
    type the label's tier is exactly what nobody declared.
 5. Mask free text, then cap total bytes at `runtime.max_context_bytes` (package default
    200000, floor `min`). Secret references (`secret://...`, any case) are always masked;
-   email addresses and phone numbers are masked unless the contact-point allowance is on.
+   email addresses and phone numbers are masked unless the contact-point allowance is on,
+   which takes the operator's value **and** an explicit workspace row of `true`: a workspace
+   with no row for the key is not opted in, whatever the deployment says.
    The patterns are conservative on purpose (`rheo_core/redaction/masking.py`): an address
    with a letters-only top-level domain (Unicode letters allowed), a `+` international
    number with a country code starting 2-9 and 9 to 15 digits, or a North American
    `NPA-NXX-XXXX` whose area code and exchange start 2-9, one separator throughout,
-   optionally led by `1` or `+1`; never a bare run of digits, an ISO date, a UUID, a dotted
-   quad or a longer dashed id. They are a backstop behind the field tiers. Known limits: three
-   space-separated numbers that satisfy the NANP digit rule (`256 512 1024`) still mask; a
-   seven-digit local number and a postal address are not recognised.
+   optionally led by `1` or `+1`, a `Tel.` prefix and an extension (`x12`, `ext. 7`)
+   included, non-breaking hyphens and en dashes accepted as separators; never a bare run of
+   digits, an ISO date, a UUID, a dotted quad or a longer dashed id. They are a backstop
+   behind the field tiers. Known limits: three space-separated numbers that satisfy the NANP
+   digit rule (`256 512 1024`, `299 399 4999`) still mask; full-width digits, a seven-digit
+   local number and a postal address are not recognised. The write-back refusal matches mask
+   tokens after NFKC normalisation, casefolding and whitespace collapsing, so
+   `[EMAIL WITHHELD]` and a no-break-space variant are refused too.
 
 The run's task text is masked under the same policy before the request is built, so no
 adapter can send a secret reference, or a contact value while the allowance is off, in it.

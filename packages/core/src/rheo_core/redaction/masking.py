@@ -36,6 +36,7 @@ the field tiers are for, and this is the backstop behind them, not a substitute.
 """
 
 import re
+import unicodedata
 from collections.abc import Iterator
 from typing import Final
 
@@ -51,18 +52,24 @@ model that was shown masked text can never write the mask back over the real val
 _EMAIL: Final = re.compile(
     r"(?<![\w.%+-])[\w.%+-]+@(?:[^\W_](?:[\w-]*[^\W_])?\.)+[^\W\d_]{2,}(?![\w-])"
 )
-_SEP: Final = "[-. ‒–]"
+_DASHES: Final = "\u2011\u2012\u2013"
+"""Non-breaking hyphen, figure dash, en dash: what word processors put in numbers."""
+_SEP: Final = f"[-. {_DASHES}]"
+_EXTENSION: Final = r"(?:\s?(?:x|ext\.?|#)\s?\d{1,6})?"
 _NORTH_AMERICAN: Final = re.compile(
-    r"(?<![\w.+\-‒–])"
+    # Not after a word character, a sign or a dash, and not after "<digit>." (the
+    # tail of a dotted quad); a letter then a dot ("Tel.250-...") is fine.
+    rf"(?<![\w+\-{_DASHES}])(?<!\d\.)"
     rf"(?:"
     rf"\+1[2-9]\d{{2}}[2-9]\d{{6}}"
     rf"|(?:\+?1{_SEP})?\([2-9]\d{{2}}\) ?[2-9]\d{{2}}{_SEP}\d{{4}}"
     rf"|(?:\+?1(?P<lead>{_SEP}))?[2-9]\d{{2}}(?P<sep>{_SEP})[2-9]\d{{2}}(?P=sep)\d{{4}}"
-    rf")"
-    r"(?![\w]|[-.‒–]\d)"
+    rf"){_EXTENSION}"
+    rf"(?![\w]|[-.{_DASHES}]\d)",
+    re.IGNORECASE,
 )
 _INTERNATIONAL: Final = re.compile(
-    r"(?<![\w+])\+[2-9]\d{0,2}(?:[ .\-‒–]?\(?\d{1,4}\)?){2,6}(?![\w])"
+    rf"(?<![\w+])\+[2-9]\d{{0,2}}(?:[ .\-{_DASHES}]?\(?\d{{1,4}}\)?){{2,6}}(?![\w])"
 )
 _SECRET_REFERENCE: Final = re.compile(
     r"secret://[A-Za-z0-9_-]+/[^\s\"'<>]*[^\s\"'<>.,;:!?)\]]", re.IGNORECASE
@@ -110,11 +117,31 @@ def mask_for_model(text: str, policy: TierPolicy) -> str:
     return mask_contact_values(masked)
 
 
+_WHITESPACE: Final = re.compile(r"\s+")
+
+
+def _normal(text: str) -> str:
+    """``text`` compatibility-normalised, casefolded, whitespace collapsed.
+
+    NFKC folds full-width brackets and letters and turns a no-break space into a
+    space, casefolding catches ``[EMAIL WITHHELD]``, and collapsing whitespace catches
+    a doubled or tab-separated token. What a model might retype or a client might
+    transcode, the refusal still recognises.
+    """
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    return _WHITESPACE.sub(" ", folded)
+
+
+_NORMAL_TOKENS: Final = tuple((token, _normal(token)) for token in MASK_TOKENS)
+
+
 def mask_tokens_in(value: object) -> Iterator[str]:
     """Every mask token found in any string inside ``value`` (mappings, sequences and
-    sets walked, keys included)."""
+    sets walked, keys included), matched after :func:`_normal`, and reported in its
+    canonical spelling."""
     if isinstance(value, str):
-        yield from (token for token in MASK_TOKENS if token in value)
+        text = _normal(value)
+        yield from (token for token, normal in _NORMAL_TOKENS if normal in text)
     elif isinstance(value, dict):
         for key, item in value.items():
             yield from mask_tokens_in(key)

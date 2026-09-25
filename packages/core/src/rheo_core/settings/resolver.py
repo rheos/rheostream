@@ -58,11 +58,27 @@ class ResolvedSettings(Mapping[str, SettingValue]):
     ``KeyError`` so the refusal state is named at the read seam too.
     """
 
-    __slots__ = ("_values",)
+    __slots__ = ("_values", "_workspace_keys")
     _values: Mapping[str, FrozenValue]
+    _workspace_keys: frozenset[str]
 
-    def __init__(self, values: Mapping[str, FrozenValue]) -> None:
+    def __init__(
+        self,
+        values: Mapping[str, FrozenValue],
+        workspace_keys: frozenset[str] = frozenset(),
+    ) -> None:
         object.__setattr__(self, "_values", MappingProxyType(dict(values)))
+        object.__setattr__(self, "_workspace_keys", frozenset(workspace_keys))
+
+    def set_by_workspace(self, key: str) -> bool:
+        """Whether a valid workspace override row supplied ``key``'s value.
+
+        For a key whose policy is an explicit workspace opt-in on top of the
+        operator's permission (``redaction.contact_points_to_model``, issue #130):
+        there, "no row" must mean "not opted in", not "inherit the operator's value",
+        and only the resolver knows which values came from a row.
+        """
+        return key in self._workspace_keys
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("ResolvedSettings is frozen")
@@ -196,7 +212,9 @@ def _apply_rows(
     scope: Scope,
     workspace_id: UUID,
     account_id: UUID | None,
-) -> None:
+) -> frozenset[str]:
+    """Apply ``rows`` over ``values``; return the keys a valid row supplied."""
+    applied: set[str] = set()
     for key, text in rows.items():
         spec = REGISTRY.lookup(key)
         if spec is None:
@@ -213,6 +231,8 @@ def _apply_rows(
         if spec.floor is not None:
             value = apply_floor(spec.floor, values[key], value)
         values[key] = value
+        applied.add(key)
+    return frozenset(applied)
 
 
 def _ignore(
@@ -247,8 +267,9 @@ def resolve(
         spec.key: spec.default for spec in REGISTRY.specs()
     }
     values.update(deployment_layer())
+    workspace_keys: frozenset[str] = frozenset()
     if source is not None and workspace_id is not None:
-        _apply_rows(
+        workspace_keys = _apply_rows(
             values,
             source.workspace_overrides(workspace_id),
             scope=Scope.WORKSPACE,
@@ -263,4 +284,4 @@ def resolve(
                 workspace_id=workspace_id,
                 account_id=account_id,
             )
-    return ResolvedSettings(values)
+    return ResolvedSettings(values, workspace_keys)

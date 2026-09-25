@@ -445,8 +445,13 @@ def _mask_token_write(
     written over the value it hides, and the person would lose the real address to a
     redaction artefact. So any write-class tool (every class above ``READ``) refuses
     input containing one of :data:`~rheo_core.redaction.masking.MASK_TOKENS`, anywhere
-    in the arguments, before dispatch. A read may carry one: searching for the literal
-    token writes nothing.
+    in the arguments, before dispatch, matched case- and width-insensitively
+    (:func:`~rheo_core.redaction.masking.mask_tokens_in`). A read may carry one:
+    searching for the literal token writes nothing.
+
+    **The refusal text must not suggest omitting the masked part.** A correction and a
+    supersession restate the whole record, so "leave it out" would delete the value
+    the mask stands for; the text sends the change to a person or to the allowance.
     """
     if declaration.safety_class is SafetyClass.READ:
         return None
@@ -455,10 +460,11 @@ def _mask_token_write(
         return None
     return _refused(
         INPUT_INVALID,
-        f"{declaration.name} input carries the redaction mask token(s) {found}; "
-        "masked text stands in for a value the model was not shown, so it cannot be "
-        "written back. Leave the masked part unchanged by omitting it, or ask the "
-        "person for the real value",
+        f"{declaration.name} input carries the redaction mask token(s) {found}. "
+        "The record holds a value the model was not shown, so a model cannot "
+        "correct, supersede or restate it without losing that value: ask a person "
+        "to make this change, or have the workspace enable "
+        "redaction.contact_points_to_model so the model sees the real value",
     )
 
 
