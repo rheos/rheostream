@@ -1,8 +1,9 @@
 """``recallatron.memory.dedup_candidates``: memory pairs that may say the same thing.
 
 ``READ``, owner/member/service (the set ``recall`` declares), no audit row, and **no MCP
-tool**: like the two entity reads it is a service-only operation until a caller story
-exists for it. It stores nothing and returns bounded ``{ref_a, ref_b, score}`` pairs.
+tool**: like the two entity reads, no model reaches it, and it is reachable over the
+API by a token whose set holds it. It stores nothing and returns bounded
+``{ref_a, ref_b, score}`` pairs.
 
 **It only proposes.** A pair is a question for a person, never an instruction. Nothing
 in this file writes, and no code path added with it acts on a pair: the output models
@@ -193,5 +194,6 @@ DEDUP_DECLARATION: Final = OperationDeclaration(
     # ``READ`` also rests on the scan being bounded: see ``nearest_embedding_pairs``.
     audit=None,
 )
-"""Service-only in this release, like ``recallatron.entity.list`` and ``.get``: no MCP
-tool names it, so no model reaches it (spec requirement 18)."""
+"""No MCP tool, like ``recallatron.entity.list`` and ``.get``: no tool names it, so no
+model reaches it (spec requirement 18). It is reachable over the API by a token whose
+set holds it."""

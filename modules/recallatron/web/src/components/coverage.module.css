@@ -1,0 +1,9 @@
+/* The owner's meaning-search coverage line. Tokens and CSS keywords only. */
+
+.figure {
+  margin-block: var(--rs-space-4) 0;
+  padding-block-start: var(--rs-space-3);
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-faint);
+}

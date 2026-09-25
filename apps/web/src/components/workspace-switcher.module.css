@@ -1,0 +1,46 @@
+/* The compact workspace switcher: label, select and button on one line in the
+   shell header. Every value is a --rs-* theme token or a CSS keyword.
+
+   The select may shrink below its longest option, so a long workspace label
+   clips inside the control instead of widening the page; the full label is still
+   the option's text and what a screen reader announces. */
+
+.form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-2);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.label {
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+
+/* Reached through the form rather than its own class, so the select's markup (which
+   shell-controls.test.tsx pins) stays exactly as it was. */
+.form select {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  text-overflow: ellipsis;
+}
+
+.refusal {
+  flex-basis: 100%;
+  margin: initial;
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-danger);
+}
+
+@media (max-width: 40rem) {
+  .form {
+    flex: 1 1 0;
+  }
+
+  .label {
+    flex-basis: 100%;
+  }
+}

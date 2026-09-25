@@ -295,7 +295,8 @@ operation tables in the module documents are authoritative.
 | Three (leads) | `leads_prepare_followup` | draft | owner, member |
 | Three (leads) | `leads_delete` | destructive | owner |
 
-Entity list/get are service-only in release one. Tool origin and delegated operation availability
+Entity list/get have no MCP tool in release one, so no model reaches them; they are reachable over
+the API by a token whose set holds them. Tool origin and delegated operation availability
 are checked on every discovery/call; a cached listing grants no authority. READ query text is not
 persisted in release-one tool telemetry. Metadata telemetry is workspace-scoped,
 owner/operator-readable and bounded to seven days and ten thousand rows or a tighter workspace

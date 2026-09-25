@@ -1,0 +1,125 @@
+/*
+ * Element-level base styles every page inherits. Values come only from the
+ * theme's --rs-* custom properties or CSS keywords (inherit, initial, none,
+ * medium, solid); no literal color, size or spacing. No component classes.
+ *
+ * The focus ring's width is the keyword `medium`, not a token. Contract v1 has no
+ * ring or border width token; its only width, size.hairline, is 1px, too thin for a
+ * visible focus indicator. A new token would need a new contract version, so the
+ * keyword stays until one exists.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--rs-color-ground);
+  color: var(--rs-color-ink);
+  font-family: var(--rs-font-sans);
+  font-size: var(--rs-font-size-md);
+  caret-color: var(--rs-color-accent);
+  scrollbar-color: var(--rs-color-ink-faint) var(--rs-color-ground);
+}
+
+body {
+  /* `initial` is 0 for margin; this drops the user-agent body inset. */
+  margin: initial;
+}
+
+::selection {
+  background: var(--rs-color-accent);
+  color: var(--rs-color-on-accent);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--rs-color-ink);
+  margin-block: var(--rs-space-5) var(--rs-space-3);
+}
+
+h1 {
+  font-size: var(--rs-font-size-display);
+  letter-spacing: var(--rs-font-tracking-display);
+}
+
+h2 {
+  font-size: var(--rs-font-size-xl);
+}
+
+h3,
+h4 {
+  font-size: var(--rs-font-size-lg);
+}
+
+p {
+  margin-block: var(--rs-space-3);
+}
+
+small {
+  font-size: var(--rs-font-size-sm);
+}
+
+a {
+  color: var(--rs-color-accent);
+}
+
+a:hover {
+  color: var(--rs-color-accent-strong);
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--rs-font-mono);
+  font-size: var(--rs-font-size-sm);
+}
+
+hr {
+  border: none;
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+:focus-visible {
+  outline: medium solid var(--rs-color-control-focus);
+  outline-offset: var(--rs-size-hairline);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--rs-color-control-bg);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-sm);
+  min-block-size: var(--rs-size-control);
+  padding-inline: var(--rs-space-3);
+}
+
+textarea {
+  padding-block: var(--rs-space-2);
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--rs-color-ink-faint);
+}
+
+button:disabled {
+  color: var(--rs-color-ink-faint);
+  cursor: not-allowed;
+}
+
+::placeholder {
+  color: var(--rs-color-control-placeholder);
+}

@@ -1,0 +1,5 @@
+{
+  "model_id": "sample-embedding-model-384",
+  "live": 120,
+  "embedded": 96
+}

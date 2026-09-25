@@ -2,10 +2,13 @@
 itself, and the allowlist that decides whether it loads at all.
 
 - ``manifest.py`` — ``ModuleManifest`` as a frozen pydantic model, its ten
-  declaration types and its ``WebSurface``. Not in ``rheo_contracts``, which may not
-  import ``UnitOfWork`` (F3).
+  declaration types, and its ``WebContribution`` with the ``WebSurface`` and five
+  entry types inside it. Not in ``rheo_contracts``, which may not import
+  ``UnitOfWork`` (F3).
 - ``loader.py`` — ``discovered()`` over the ``rheo.modules`` entry-point group,
-  ``allowed_module_ids()`` over the ``modules.installed`` setting, ``load_modules()``,
+  ``allowed_module_ids()`` over the ``modules.installed`` setting,
+  ``load_entry_point()`` (one entry point through the three load gates),
+  ``load_modules()``,
   ``loaded_manifests()``, ``loaded_in_dependency_order()`` and ``module_surfaces()``.
 
 **No lifecycle.** Install, enable and disable are phase 2's; nothing in release one can
@@ -17,6 +20,7 @@ from rheo_core.modules.loader import (
     ENTRY_POINT_GROUP,
     allowed_module_ids,
     discovered,
+    load_entry_point,
     load_modules,
     loaded_in_dependency_order,
     loaded_manifests,
@@ -31,17 +35,23 @@ from rheo_core.modules.manifest import (
     EventDeclaration,
     ExportDeclaration,
     Exporter,
+    FormDeclaration,
     FrozenMap,
     HealthCheck,
     Importer,
     JobKind,
     ManifestInvalid,
     ModuleManifest,
+    NavigationEntry,
     RecordType,
+    RecordView,
     Schedule,
+    SearchProvider,
     Sensitivity,
     SensitivityTier,
     StorageDeclaration,
+    WebContribution,
+    WebRoute,
     WebSurface,
 )
 
@@ -63,20 +73,27 @@ __all__ = [
     "EventDeclaration",
     "ExportDeclaration",
     "Exporter",
+    "FormDeclaration",
     "FrozenMap",
     "HealthCheck",
     "Importer",
     "JobKind",
     "ManifestInvalid",
     "ModuleManifest",
+    "NavigationEntry",
     "RecordType",
+    "RecordView",
     "Schedule",
+    "SearchProvider",
     "Sensitivity",
     "SensitivityTier",
     "StorageDeclaration",
+    "WebContribution",
+    "WebRoute",
     "WebSurface",
     "allowed_module_ids",
     "discovered",
+    "load_entry_point",
     "load_modules",
     "loaded_in_dependency_order",
     "loaded_manifests",

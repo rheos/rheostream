@@ -12,8 +12,9 @@ point, and that entry point resolves straight to a **manifest**: a `ModuleManife
 validated model in `packages/core` the next section describes. The core's own `_register`
 (`packages/core/src/rheo_core/modules/loader.py`) is what attaches the manifest's operations,
 resolvers, tools, job kinds, subscriptions, settings keys and audit sink to the live registries,
-by iterating the manifest's own tuples, and records the manifest itself — the `web` surface is
-read back off that record by `module_surfaces()` rather than registered anywhere. Loading is
+by iterating the manifest's own tuples, and records the manifest itself — the routing surface
+nested in the `web` contribution (`manifest.web.surface`, a `WebSurface`) is read back off that
+record by `module_surfaces()` rather than registered anywhere. Loading is
 idempotent rather than once-per-process: `apps/core`'s FastAPI lifespan runs it more than once in
 a single process under test, and every registry it calls treats an identical re-registration as a
 no-op. **Named deviation:**
@@ -61,7 +62,7 @@ that argument in full.
 | `resolvers` | mapping of record type to resolver | One per owned record type ([identifiers](identifiers.md#resolution-under-permission)). |
 | `deletion_participants` | list of `DeletionParticipant(record_types, handler)` | Hooks the [deletion coordinator](deletion-export-migration.md#the-cascade) calls. `handler` was narrowed in run 1a1 from an untyped callable to `(ctx, uow, ref, *, disposition) -> RemovedMemories`, read off its first real caller rather than guessed. A participant that raises aborts the whole deletion, so a handler has no refusal channel of its own and needs none; `disposition` is keyword-only, so a handler that ignores it still reads as one that was offered it. |
 | `export` | `ExportDeclaration(format_version, schema_path, exporter, importer)` | The module's versioned export format. **Both callables were narrowed in run 1a1, when the export collector became their first caller.** `exporter` receives only `rheo_core.exports.artifact.ExportSnapshot` — the sealed view of one source transaction, carrying the connection, a fixed `snapshot_at` and the transaction-bound settings source — and never a bare connection, which is what would let a module read a second, later view into the same artifact. `importer` receives the restore transaction's unit of work and the already-validated rows, and returns the **second pass** the core calls after core's own deletion evidence has landed: restore is two passes with the ledger between them, so parents go in with their self-references null and only then are those references resolved and marked ancestry validated against that evidence. A module cannot schedule that itself without committing or reaching into the core's ordering, and an importer never commits, because the whole restore is one transaction and a module ending it would take the rollback guarantee with it. |
-| `web` | optional `WebContribution(package_name, navigation, routes, record_views, forms, search_providers)` | The TypeScript contribution composed into `apps/web`. **Release one ships `WebSurface \| None` instead** (`packages/core/src/rheo_core/modules/manifest.py`): the surface name, host label and path prefix, and nothing else, because its one consumer is the internal listener's `routing_config()` (`apps/core/src/rheo_app_core/internal_routes.py`). The interface contribution above is run 1a3's, and widening or replacing this field is that run's to do. |
+| `web` | optional `WebContribution(surface, package_name, navigation, routes, record_views, forms, search_providers)` | The TypeScript contribution composed into `apps/web` ([extension points](#extension-points)). `package_name` starts with `@rheo-stream/`; `navigation` is `NavigationEntry(id, label, path, roles)`, `routes` is `WebRoute(id, path, screen)`, `record_views` is `RecordView(record_type, component)`, `forms` is `FormDeclaration(operation, component)`, `search_providers` is `SearchProvider(id, operation)`. The manifest refuses, by name, a duplicate id or route path, two record views for one record type, two forms for one operation, a navigation entry whose `path` no route declares, a form or search provider naming an operation this manifest does not declare, a search provider whose operation is not `READ`-class, and a record view of a type that is not `<module_id>.<name>` for one of this manifest's own record types. `screen` and `component` are TypeScript identifiers because the generated file emits them as property accesses. **Two named deviations:** `surface` (a `WebSurface`: surface name, host label, path prefix) is not in the ratified field list and is added because the internal listener's `routing_config()` (`apps/core/src/rheo_app_core/internal_routes.py`) is a live consumer of the module's surface with no other source; and a navigation entry carries `path` and no per-entry `surface`, because a module contributes navigation only under its own single surface. |
 | `agent_guidance` | optional path | Text a runtime may include as tool guidance. It describes use; it grants nothing (idea document). |
 | `secret_scopes` | list of scope prefixes | Empty for domain modules in release one. Only components that present secrets declare any. |
 | `connector_bindings` | list of `ConnectorBinding(transport, service_operation, route)` | Which of the module's operations a transport connector may call, and the HTTP route the binding registers on the `api` surface when the transport has one (`route` is null otherwise). Leads declares three, one per transport, all naming `leads.intake.accept_delivery` ([the three bindings](intake-and-events.md#transports)). |
@@ -249,21 +250,51 @@ Event and subscription shapes, delivery, and replay are in [intake and events](i
 ### Extension points
 
 The `web` contribution is a TypeScript package under the module directory (`modules/leads/web`)
-that the web application composes at build time. It exports:
+that the web application composes at build time. The manifest's `WebContribution` declares what
+is composed, and the package exports the screens and components the declarations name:
 
 | Export | Shape | Filtered by |
 | --- | --- | --- |
-| `navigation` | list of `{ id, label, surface, path, roles }` | enabled modules for the session's workspace, role |
-| `routes` | a route tree mounted under the module's surface ([topology](identity-and-topology.md#the-routing-table)) | enabled modules |
+| `navigation` | list of `{ id, label, path, roles }`; `path` is one of the module's own routes | enabled modules for the session's workspace, role |
+| `routes` | list of `{ id, path, screen }` mounted under the module's surface ([topology](identity-and-topology.md#the-routing-table)) | enabled modules |
 | `recordViews` | `{ recordType, component }` | permission through the record resolver |
 | `forms` | `{ operation, component }` for operations that need a bespoke form | operation set, role |
 | `searchProviders` | `{ id, operation }` naming a read-class search operation | enabled modules |
 
-Composition is a generated file (`apps/web/src/modules.generated.ts`) produced from the installed
-distributions' manifests by `rheo web compose`; it is never hand-edited. Enablement is applied at
-runtime from the core's `workspace_status` response, so a module that is installed on the host and
-not enabled in the workspace contributes nothing visible. A build is required to add a module's
-screens, which is the "code installation may require a build or restart" the idea document allows.
+**A route is an exact path with no parameters**: `/` or `/segment(/segment)*`, each segment
+`[a-z0-9-]+`. Parameters travel in the query string, so one path names one screen and nothing
+has to match a pattern to find it.
+
+Composition is a generated file (`apps/web/src/modules.generated.ts`) produced by
+`rheo web compose`; it is never hand-edited. **Compose reads the installed distributions, not
+the runtime allowlist**: it loads every discovered `rheo.modules` entry point and never reads
+`modules.installed`, because the build answers "what could this host ship" while the allowlist
+decides what a deployment loads. Each entry point still passes the loader's own per-manifest
+gates (`load_entry_point`: it loads to a manifest, its id matches its entry-point name, it is
+written against this core's contract version), so a module the runtime would refuse is refused at
+compose rather than built into screens nothing can show. The command is
+`rheo web compose --out <path|-> [--package-json <path>]`: `--out -` prints the file, and a path
+writes it after checking the `package.json` that `--package-json` names (default
+`apps/web/package.json`, relative to the working directory, so run it from the repository root).
+Each screen and component is emitted as a property access on the
+module package's import (`recallatronWeb.screens.browse`), so a screen the package does not
+export fails the type check rather than going missing at runtime.
+
+**What is shown at runtime is composed ∩ routed ∩ enabled ∩ role**: a contribution is visible only
+when it was composed into the build, its surface is present in the routing configuration, its
+module is enabled in the workspace per the core's `workspace_status` response, and (for
+navigation) the session's role is among the entry's `roles`. So a module that is installed on the
+host and not enabled in the workspace contributes nothing visible.
+
+A build is required to add a module's screens, which is the "code installation may require a
+build or restart" the idea document allows. Adding them takes four steps, none of which touches a
+core file:
+
+1. install the module's distribution;
+2. add its web package to `apps/web/package.json` and commit the updated lockfile;
+3. run `rheo web compose`, which refuses, naming it, a composed package missing from
+   `apps/web/package.json`;
+4. build the web application.
 
 ## Discovery and registration
 
@@ -369,15 +400,26 @@ The memory module's install and enable is criterion 24's test: no core file chan
 workspace status operation reports the version and schema version afterward. Relationships and
 Leads install the same way in phase three.
 
-**Criterion 24 is only partially closed by run 1a0, and a reader who marks it done after that
-run alone is reading a wrong record.** What 1a0 closes is the module-contract half:
-`core.module.install` and `core.module.enable` exist, Recallatron goes from `absent` to `enabled`
-through those two operations alone, and `core.workspace.status` reports its version, its state and its
-schema version afterwards (`tests/postgres/test_module_lifecycle.py`). What it does not close is
-the interface-contribution half — the `WebContribution` shape this document's manifest table still
-describes as run 1a3's, the `apps/web/src/modules.generated.ts` composition step, and the test
-that a module's screens appear once it is enabled. That half belongs to run 1a3, `apps/web/**` is
-outside 1a0's scope by decision, and until 1a3 lands, criterion 24 stays open.
+**Criterion 24 is closed, in two halves proved by two runs.** The module-contract half is run
+1a0's and is unchanged: `core.module.install` and `core.module.enable` exist, Recallatron goes
+from `absent` to `enabled` through those two operations alone, and `core.workspace.status`
+reports its version, its state and its schema version afterwards
+(`tests/postgres/test_module_lifecycle.py`). The interface-contribution half is run 1a3's: the
+manifest's `web` field carries the real `WebContribution` shape, `rheo web compose` renders
+every discovered module's contribution into `apps/web/src/modules.generated.ts`, and the shell
+filters that one generated list per request against `core.workspace.status` and the routing
+configuration. The end-to-end proof is `tests/postgres/test_web_contribution.py`: it holds the
+committed generated file byte-equal to a fresh render and checks it carries Recallatron's
+navigation, routes and `recall` search provider, then runs an enabled/absent pair, a fresh
+workspace that enables Recallatron and reports it `enabled`, and a never-installed workspace
+that reports it absent. Routing is not part of that pair: `routing_config()` describes the
+whole deployment, and the test checks separately that it carries Recallatron's surface once
+the module is loaded. Both status outputs are checked against the
+same `tests/fixtures/web/workspace-status-{enabled,absent}.json` files that `apps/web`'s vitest
+suite feeds to `composeNavigation`, so the Python and TypeScript halves are proven against one
+source. The criterion's row in
+[the phase-two acceptance matrix](../acceptance/phase-2-matrix.md#criterion-24) records the
+mutation that shows the pair bites.
 
 ### Upgrade, disable, re-enable, remove, purge, restore (on paper, D5)
 

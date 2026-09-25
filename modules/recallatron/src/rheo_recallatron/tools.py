@@ -66,7 +66,7 @@ from rheo_recallatron.operations import (
     MEMORY_RECALL,
     MEMORY_REMEMBER,
     MEMORY_SUPERSEDE,
-    ReadInput,
+    ReadToolInput,
     RecallInput,
 )
 from rheo_recallatron.references import is_memory_ref
@@ -140,13 +140,16 @@ READ_TOOL: Final = ToolDeclaration(
     name=f"{MODULE_ID}_read",
     safety_class=SafetyClass.READ,
     operation=MEMORY_READ,
-    input_model=ReadInput,
+    input_model=ReadToolInput,
     description=(
         "Read a bounded window of memories centred on one target inside one "
-        "container. Refuses input_invalid for an unparseable reference, "
-        "purpose_mismatch when the stated purpose is not this context's binding, "
-        "not_found when the target is missing or not yours to read, "
-        "container_membership_required when the target is not linked to that "
+        "container. The container is either a record reference a memory links to, "
+        "or an entity reference whose mentions define its members; the target is "
+        "required through this tool. Refuses input_invalid for an unparseable "
+        "reference or a missing target, purpose_mismatch when the stated purpose "
+        "is not this context's binding, not_found when the target is missing or "
+        "not yours to read, or when the container is an entity you cannot see, "
+        "container_membership_required when the target is not a member of that "
         "container, window_scan_limit when the container holds more members than "
         "a read scans, and reference_scan_limit when the window exhausts its "
         "shared reference budget."

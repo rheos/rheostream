@@ -5,6 +5,7 @@ import {
   continueRedirect,
   mintNonce,
 } from "@/lib/continue-redirect";
+import { requestHost } from "@/lib/request";
 import { loadRoutingConfig } from "@/lib/routing/load";
 import { SESSION_COOKIE } from "@/lib/session";
 
@@ -22,9 +23,10 @@ import { SESSION_COOKIE } from "@/lib/session";
  * deliberate. It looks only for the *presence* of the host-only `rheo_session`
  * cookie, because deciding whether a session is genuinely valid is `core`'s job
  * and costs a round trip on every navigation. Nothing downstream trusts this
- * decision: `page.tsx` reads `/internal/v1/session` itself and fails closed, so a
- * stale or forged cookie gets past this function and is then shown the signed-out
- * page. The convenience of not redirecting a request that merely *looks* signed in
+ * decision: `decideSurface` (`shell/render-surface.tsx`, behind both route files)
+ * reads `/internal/v1/session` itself and fails closed, so a stale or forged cookie
+ * gets past this function and is then shown the signed-out panel, with no module
+ * screen. The convenience of not redirecting a request that merely *looks* signed in
  * is all this buys.
  *
  * When the routing configuration is unavailable the request is passed through
@@ -46,11 +48,10 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   }
   const routingConfig = routing.config;
 
-  // The host the browser actually asked for. `x-forwarded-host` first (a proxy
-  // rewrites `host` to the upstream), then `host`. Never a configured name: the
-  // return target has to bring the browser back where it started.
-  const host =
-    request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  // The host the browser actually asked for (`lib/request.ts`, the rule the server
+  // components share). Never a configured name: the return target has to bring the
+  // browser back where it started.
+  const host = requestHost(request.headers);
   if (!host) {
     return NextResponse.next();
   }

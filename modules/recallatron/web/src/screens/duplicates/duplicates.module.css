@@ -1,0 +1,68 @@
+/* Possible duplicates: pairs of links with a similarity. Tokens and keywords only. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-4);
+  max-inline-size: 72ch;
+}
+
+.title {
+  margin-block: 0;
+}
+
+.pairs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--rs-color-surface-1);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+}
+
+.pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--rs-space-3);
+  padding: var(--rs-space-4);
+}
+
+.pair + .pair {
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.sides {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-inline-size: 0;
+}
+
+/* Padded so each side is a comfortable target on one short line. */
+.sideLink {
+  padding-block: var(--rs-space-1);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.sideLink:hover {
+  text-decoration: underline;
+}
+
+.unavailable {
+  padding-block: var(--rs-space-1);
+  color: var(--rs-color-ink-faint);
+}
+
+.score {
+  font-size: var(--rs-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--rs-color-ink-dim);
+}
+
+.stateText {
+  margin: 0;
+}

@@ -14,8 +14,8 @@ instead, and drops the lexemes too common to discriminate:
    survives, keep the :data:`LEXICAL_RAREST_KEPT` rarest instead of an empty query.
 4. **Assemble**: ``quote_literal`` each survivor, join with `` | ``, and cast the
    string to ``tsquery``. Not ``to_tsquery``: that re-parses a compound lexeme such as
-   ``mot-intak`` into a phrase over its parts, bringing back the parts step 3 may have
-   dropped, where the cast keeps it one lexeme.
+   ``widget-intak`` into a phrase over its parts, bringing back the parts step 3 may
+   have dropped, where the cast keeps it one lexeme.
 
 A caller's double-quoted ``"phrase"`` is the exception: it goes through
 ``phraseto_tsquery``, is OR-ed in, and never reaches step 3.

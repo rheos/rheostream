@@ -1,0 +1,162 @@
+/*
+ * The shell frame. Every value is a --rs-* theme token or a CSS keyword.
+ *
+ * The header sits on surface-1 over the ground and is separated from the page by
+ * the hairline, not by background alone: the seed's surfaces are close in
+ * luminance by design, so an edge carries the separation.
+ *
+ * Narrow screens: the header wraps into rows (brand, navigation, account
+ * controls), and every child may shrink below its content width, so a long
+ * workspace label never pushes the page wider than the viewport.
+ */
+
+.frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-block-size: 100dvh;
+}
+
+/* Hidden until it takes keyboard focus, then drawn over the header's first row. */
+.skip {
+  position: absolute;
+  inset-block-start: var(--rs-space-2);
+  inset-inline-start: var(--rs-space-2);
+  z-index: 1;
+  padding-block: var(--rs-space-2);
+  padding-inline: var(--rs-space-3);
+  background: var(--rs-color-accent);
+  color: var(--rs-color-on-accent);
+  border-radius: var(--rs-radius-sm);
+  text-decoration: none;
+  clip-path: inset(50%);
+}
+
+.skip:focus,
+.skip:focus-visible {
+  clip-path: none;
+}
+
+.skip:hover {
+  color: var(--rs-color-on-accent);
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-2) var(--rs-space-4);
+  padding-block: var(--rs-space-3);
+  padding-inline: var(--rs-space-5);
+  background: var(--rs-color-surface-1);
+  border-block-end: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.brand {
+  margin: initial;
+  font-size: var(--rs-font-size-lg);
+  letter-spacing: var(--rs-font-tracking-display);
+  color: var(--rs-color-ink);
+}
+
+.nav {
+  display: flex;
+  min-inline-size: 0;
+}
+
+.navList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-1);
+  margin: initial;
+  padding: initial;
+  list-style: none;
+}
+
+/* The current entry is marked by an accent underline as well as full ink, so the
+   state does not rest on the ink-dim/ink difference alone. */
+.navLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
+  padding-inline: var(--rs-space-3);
+  color: var(--rs-color-ink-dim);
+  text-decoration: none;
+  border-block-end: medium solid transparent;
+}
+
+.navLink:hover {
+  color: var(--rs-color-ink);
+  border-block-end-color: var(--rs-color-hairline);
+}
+
+.navLink[aria-current="page"] {
+  color: var(--rs-color-ink);
+  border-block-end-color: var(--rs-color-accent);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-3);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  margin-inline-start: auto;
+}
+
+/* The page. It is focusable (tabIndex -1) so the skip link can move focus to it,
+   but it draws no ring of its own: `main` is a landmark, not a control. */
+.main {
+  flex: 1 0 auto;
+  min-inline-size: 0;
+  padding-block: var(--rs-space-6);
+  padding-inline: var(--rs-space-5);
+}
+
+.main:focus {
+  outline: none;
+}
+
+.footer {
+  padding-block: var(--rs-space-3);
+  padding-inline: var(--rs-space-5);
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  font-size: var(--rs-font-size-sm);
+}
+
+.statusOk,
+.statusDown {
+  margin: initial;
+  font-family: var(--rs-font-mono);
+}
+
+.statusOk {
+  color: var(--rs-color-success);
+}
+
+.statusDown {
+  color: var(--rs-color-warning);
+}
+
+@media (max-width: 40rem) {
+  .header,
+  .main,
+  .footer {
+    padding-inline: var(--rs-space-4);
+  }
+
+  .main {
+    padding-block: var(--rs-space-5);
+  }
+
+  /* The account controls take a row of their own under the nav: the switcher
+     fills it, and sign-out aligns with the switcher's bottom row, the one that
+     holds the Switch button. */
+  .controls {
+    flex-basis: 100%;
+    flex-wrap: nowrap;
+    align-items: flex-end;
+    margin-inline-start: initial;
+  }
+}

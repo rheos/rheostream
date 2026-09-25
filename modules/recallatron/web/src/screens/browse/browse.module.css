@@ -1,0 +1,211 @@
+/*
+ * Browse: kind filter, then the entity list beside the selected entity. Every value
+ * is a --rs-* theme token or a CSS keyword. Panes and rows are separated by the
+ * hairline, not by background alone, because a theme's surface levels may sit
+ * close in luminance. For the same reason the selected entity row carries an
+ * accent edge, not only a surface change.
+ */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-4);
+}
+
+.title {
+  margin-block: 0;
+}
+
+/* The pills wrap, so the list never scrolls sideways and a focus ring is never
+   clipped by a scroll container. */
+.kindList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kindLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
+  padding-inline: var(--rs-space-3);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-lg);
+  color: var(--rs-color-ink-dim);
+  text-decoration: none;
+}
+
+.kindLink:hover {
+  color: var(--rs-color-ink);
+  border-color: var(--rs-color-ink-faint);
+}
+
+.kindLink[aria-current="page"] {
+  color: var(--rs-color-ink);
+  border-color: var(--rs-color-accent);
+}
+
+.panes {
+  display: grid;
+  gap: var(--rs-space-4);
+}
+
+@media (min-width: 56rem) {
+  .panes {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    align-items: start;
+  }
+}
+
+.listPane,
+.detailPane {
+  min-inline-size: 0;
+  padding: var(--rs-space-4);
+  background: var(--rs-color-surface-1);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+}
+
+.notice {
+  margin-block: 0 var(--rs-space-3);
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+
+.entityList,
+.window {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.entityList > li + li,
+.window > li + li {
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+/* Entity and window rows are whole-row links: the target is the row, not the
+   words, which keeps every row a comfortable touch target. */
+.entityLink,
+.windowLink {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-1);
+  padding-block: var(--rs-space-3);
+  padding-inline: var(--rs-space-3);
+  border: var(--rs-size-hairline) solid transparent;
+  border-radius: var(--rs-radius-sm);
+  text-decoration: none;
+}
+
+.entityLink {
+  color: var(--rs-color-ink);
+}
+
+.entityLink:hover {
+  color: var(--rs-color-ink);
+  border-color: var(--rs-color-hairline);
+}
+
+.entityLink[aria-current="true"] {
+  background: var(--rs-color-surface-2);
+  border-color: var(--rs-color-accent);
+}
+
+.entityName {
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+.entityLink:hover .entityName,
+.entityLink[aria-current="true"] .entityName {
+  color: var(--rs-color-accent-strong);
+}
+
+.windowLink {
+  padding-inline: 0;
+}
+
+.windowTitle {
+  color: var(--rs-color-accent);
+  overflow-wrap: anywhere;
+}
+
+.windowLink:hover .windowTitle {
+  color: var(--rs-color-accent-strong);
+  text-decoration: underline;
+}
+
+.meta {
+  font-size: var(--rs-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-color-ink-faint);
+}
+
+.entityHeader {
+  padding-block-end: var(--rs-space-3);
+  border-block-end: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.entityTitle {
+  margin-block: 0 var(--rs-space-3);
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--rs-space-1) var(--rs-space-3);
+  margin: 0;
+  font-size: var(--rs-font-size-sm);
+}
+
+.facts dt {
+  color: var(--rs-color-ink-faint);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--rs-color-ink-dim);
+}
+
+.count {
+  margin-block: var(--rs-space-3) 0;
+  color: var(--rs-color-ink-dim);
+}
+
+.pager {
+  display: flex;
+  gap: var(--rs-space-3);
+  margin-block-start: var(--rs-space-3);
+  padding-block-start: var(--rs-space-3);
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.pagerLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
+  padding-inline: var(--rs-space-3);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-sm);
+  color: var(--rs-color-ink);
+  text-decoration: none;
+}
+
+.pagerLink:hover {
+  color: var(--rs-color-ink);
+  border-color: var(--rs-color-ink-faint);
+}
+
+.pagerNewer {
+  margin-inline-start: auto;
+}
+
+.stateText {
+  margin: 0;
+}

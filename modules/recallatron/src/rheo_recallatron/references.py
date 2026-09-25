@@ -41,6 +41,24 @@ def is_memory_ref(parsed: RecordRef) -> bool:
     return parsed.module == MODULE_ID and parsed.record_type == MEMORY_RECORD_TYPE
 
 
+def is_entity_ref(parsed: RecordRef) -> bool:
+    return parsed.module == MODULE_ID and parsed.record_type == ENTITY_RECORD_TYPE
+
+
+def entity_container(reference: str) -> UUID | None:
+    """The entity a container reference names, or ``None`` for any other container.
+
+    ``None`` also for a reference that will not parse: this answers "which membership
+    rule applies", and the caller that owns the input has already refused a malformed
+    one as ``input_invalid`` before it asks.
+    """
+    try:
+        parsed = RecordRef.parse(reference)
+    except (RecordRefMalformed, TypeError):
+        return None
+    return parsed.id if is_entity_ref(parsed) else None
+
+
 def memory_target(reference: str) -> RecordRef:
     """A canonical reference that names one of this module's memories."""
     parsed = canonical_ref(reference)
@@ -57,6 +75,6 @@ def entity_reference(entity_id: UUID) -> str:
 def entity_target(reference: str) -> UUID:
     """A canonical reference that names one of this module's entities."""
     parsed = canonical_ref(reference)
-    if parsed.module != MODULE_ID or parsed.record_type != ENTITY_RECORD_TYPE:
+    if not is_entity_ref(parsed):
         raise OperationRefused(INPUT_INVALID, "the target must be an entity reference")
     return parsed.id

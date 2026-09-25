@@ -7,7 +7,7 @@
 - ``registry.py`` — the registered providers and the one reader of the configured name.
 - ``enqueue.py`` — the one enqueue helper both memory writers call, and the rebuild's.
 - ``job.py`` / ``rebuild.py`` — the after-commit embed job, and the one-job rebuild.
-- ``operations.py`` — ``recallatron.embedding.rebuild``.
+- ``operations.py`` — ``recallatron.embedding.rebuild`` and ``.coverage``.
 
 **This file imports nothing; the four behavioural submodules are imported by path.**
 ``enqueue.py`` reaches the retrieval dispatcher, and the dispatcher will reach the

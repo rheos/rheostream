@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Routing-literal denylist scan of apps/web/src and apps/core/src (criterion 22, B10).
+"""Routing-literal denylist scan of every web-src root and apps/core/src
+(criterion 22, B10).
 
 `docs/architecture/identity-and-topology.md` § The routing configuration calls this
 "a lint failure in both codebases": every link, redirect, callback URL and MCP
@@ -11,9 +12,14 @@ is why this is a static scan rather than a runtime assertion — a wrong hard-co
 literal would still return 200 in whichever mode happened to match it.
 
 Runs under the system python3 (3.9-compatible, no third-party deps), mirroring
-`scripts/check_web_platform.py`. Scans exactly two roots — `apps/web/src/**`
-(`.ts`/`.tsx`) and `apps/core/src/**` (`.py`) — for a literal `http://`, `https://`,
-`/auth/`, `/api/`, or `/mcp` route string.
+`scripts/check_web_platform.py`. Scans every TypeScript web-src root —
+`apps/web/src/**`, every `modules/*/web/src/**`, `packages/web-contract/src/**` and
+`packages/web-contract/theme/**` (`.ts`/`.tsx`, and `.js`/`.jsx`/`.mjs`/`.cjs`
+because the shell's tsconfig sets `allowJs`) — plus `apps/core/src/**` (`.py`) —
+for a literal `http://`, `https://`, `/auth/`, `/api/`, or `/mcp` route string.
+spec.md Technical Risk 6: without this widening, criterion 22 would be vacuous
+for module screens — `apps/web/src` alone says nothing about a route literal
+hard-coded inside a module's own web package.
 
 Three allowlist mechanisms, not one, and they are deliberately different in kind:
 
@@ -50,7 +56,10 @@ Three allowlist mechanisms, not one, and they are deliberately different in kind
    AC 3: `git diff --exit-code -- apps/web/src/generated` after regenerating), so
    the directory cannot quietly become a place to hide hand-written code — a
    hand-edit there fails that gate instead of this one. Neither gate alone would
-   be enough; together they cover the whole directory.
+   be enough; together they cover the whole directory. That pairing is why the
+   exclusion is exactly `apps/web/src/generated/` and nothing else: a module
+   package's own `web/src/generated/` has no byte-exact regeneration check behind
+   it, so it is scanned like any other source directory.
 
 A third piece keeps both scans honest without either allowlist mechanism becoming
 a place to hide a real link: comments, JSDoc, and Python docstrings are stripped
@@ -61,10 +70,13 @@ docstring — would fail the gate on documentation, which is a different and muc
 noisier failure mode than the one this scan is for.
 
 Self-test (anti-vacuity, `spec.md` Technical Risk 10 / criterion 22): `main()`
-always plants a literal in a scratch tree and re-runs `check()` against it before
-scanning the real tree, so a scan that stopped being able to catch anything (a
-broken regex, an allowlist that grew too wide) fails loudly on every invocation
-rather than silently passing forever.
+always builds a scratch repository tree — `apps/web/src`, a `modules/<x>/web/src`,
+`packages/web-contract/src`, `packages/web-contract/theme`, `apps/core/src` —
+plants literals in each root and beside each exclusion, and runs `check()` against
+it through the same root resolver the real scan uses, before scanning the real tree.
+A scan that stopped being able to catch anything (a broken regex, an allowlist that
+grew too wide, a root the resolver no longer discovers) fails loudly on every
+invocation rather than silently passing forever.
 """
 
 from __future__ import annotations
@@ -77,23 +89,52 @@ from collections.abc import Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-WEB_ROOT = ROOT / "apps" / "web" / "src"
-CORE_ROOT = ROOT / "apps" / "core" / "src"
 
-TS_SUFFIXES = frozenset({".ts", ".tsx"})
+# Every location below is relative to a repository root, so `check()` and the
+# self-test resolve the same layout against the real tree and a scratch tree alike.
+_SHELL_WEB_SRC = Path("apps") / "web" / "src"
+_CORE_SRC = Path("apps") / "core" / "src"
+_WEB_CONTRACT_SRC = Path("packages") / "web-contract" / "src"
+_WEB_CONTRACT_THEME = Path("packages") / "web-contract" / "theme"
+
+
+def _resolve_web_roots(repo_root: Path) -> list[Path]:
+    """Every TypeScript web-src root this gate scans: the shell, every module's own
+    web package, and the shared web-contract package's `src/` and `theme/` —
+    widened from `apps/web/src` alone (spec.md Technical Risk 6; criterion 37 claims
+    the widening covers the whole web-contract package, and its theme compiler lives
+    in `theme/`, not `src/`).
+
+    `apps/web/src` is the one REQUIRED root and is always returned, even when it is
+    missing, so `check()` reports it rather than scanning nothing (the same shape as
+    `check_web_platform.py`'s `_resolve_roots`). A module web package and the two
+    web-contract roots are optional and included only when they exist.
+    """
+    optional: list[Path] = []
+    modules_root = repo_root / "modules"
+    if modules_root.is_dir():
+        optional.extend(sorted(modules_root.glob("*/web/src")))
+    optional.append(repo_root / _WEB_CONTRACT_SRC)
+    optional.append(repo_root / _WEB_CONTRACT_THEME)
+    return [repo_root / _SHELL_WEB_SRC] + [r for r in optional if r.is_dir()]
+
+
+TS_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 PY_SUFFIXES = frozenset({".py"})
 
 # Structural exclusion (see module docstring, point 2): file-suffix based, not
 # content-based, and applied only on the web side, where tests live beside the
 # code they test. Python tests for this run live under the top-level tests/,
 # which is outside both scanned roots already.
-_TEST_SUFFIXES = ("test.ts", "test.tsx", "spec.ts", "spec.tsx")
+_TEST_SUFFIXES = tuple(
+    f"{kind}{suffix}" for kind in ("test", "spec") for suffix in sorted(TS_SUFFIXES)
+)
 
-# Structural exclusion by directory (see module docstring, point 3): relative to
-# whichever web root is being scanned, so the self-test's scratch tree behaves
-# exactly like the real one. Its planted literal lives under `components/`, which
-# this does not cover, so the anti-vacuity check is unaffected.
-_GENERATED_DIR = "generated"
+# Structural exclusion by directory (see module docstring, point 3): exactly
+# `apps/web/src/generated/`, the shell's codegen output that `make codegen`'s
+# byte-exact CI check covers. A module package's own `web/src/generated/` gets no
+# such pairing, so it is scanned like any other source directory.
+_GENERATED_DIR = _SHELL_WEB_SRC / "generated"
 
 # Generated/vendored dirs a walk of a src/ root should never meet in this repo,
 # kept anyway so this scan degrades the same way check_web_platform.py's does if
@@ -104,11 +145,11 @@ _SKIP_DIRS = frozenset({"__pycache__", "node_modules", ".next"})
 # them — deliberately not "any file under rheo_app_core" or "any file under
 # lib/", which would silently cover a future file that has no business holding a
 # route literal.
-_ALLOWLISTED_DIRS = (WEB_ROOT / "lib" / "routing",)
+_ALLOWLISTED_DIRS = (_SHELL_WEB_SRC / "lib" / "routing",)
 _ALLOWLISTED_FILES = frozenset(
     {
-        CORE_ROOT / "rheo_app_core" / "auth_routes.py",
-        CORE_ROOT / "rheo_app_core" / "api_routes.py",
+        _CORE_SRC / "rheo_app_core" / "auth_routes.py",
+        _CORE_SRC / "rheo_app_core" / "api_routes.py",
     }
 )
 
@@ -122,30 +163,37 @@ def _is_test_file(path: Path) -> bool:
     return any(path.name.endswith(suffix) for suffix in _TEST_SUFFIXES)
 
 
-def _is_generated(path: Path, root: Path) -> bool:
-    """True for anything under `<web root>/generated/` — a machine-written file.
-
-    The first path segment only, not "a `generated` segment anywhere": one known
-    directory is excluded, and a `lib/spike/generated/` invented later would have
-    to be added here deliberately rather than inheriting the exemption by name.
-    """
+def _repo_relative(path: Path, repo_root: Path) -> Path | None:
     try:
-        relative = path.relative_to(root)
+        return path.relative_to(repo_root)
     except ValueError:
+        return None
+
+
+def _is_generated(path: Path, repo_root: Path) -> bool:
+    """True for anything under `apps/web/src/generated/` — the shell's
+    machine-written codegen output, and nothing else.
+
+    One exact directory, not "a `generated` segment anywhere": a module package's
+    `web/src/generated/`, or a `lib/spike/generated/` invented later, would have to
+    be added here deliberately rather than inheriting the exemption by name.
+    """
+    relative = _repo_relative(path, repo_root)
+    if relative is None:
         return False
-    return relative.parts[:1] == (_GENERATED_DIR,)
+    return relative.parts[: len(_GENERATED_DIR.parts)] == _GENERATED_DIR.parts
 
 
-def _is_allowlisted(path: Path) -> bool:
-    if path in _ALLOWLISTED_FILES:
+def _is_allowlisted(path: Path, repo_root: Path) -> bool:
+    relative = _repo_relative(path, repo_root)
+    if relative is None:
+        return False
+    if relative in _ALLOWLISTED_FILES:
         return True
-    for directory in _ALLOWLISTED_DIRS:
-        try:
-            path.relative_to(directory)
-        except ValueError:
-            continue
-        return True
-    return False
+    return any(
+        relative.parts[: len(directory.parts)] == directory.parts
+        for directory in _ALLOWLISTED_DIRS
+    )
 
 
 def _strip_ts_comments(text: str) -> str:
@@ -269,23 +317,30 @@ def _relative(path: Path) -> str:
         return str(path)
 
 
-def check(*, web_root: Path = WEB_ROOT, core_root: Path = CORE_ROOT) -> list[str]:
+def check(*, repo_root: Path = ROOT) -> list[str]:
+    """Scan every web-src root `_resolve_web_roots(repo_root)` discovers, plus
+    `apps/core/src`, under `repo_root` — the real tree by default, a scratch tree in
+    the self-test, through the same resolver either way."""
     errors: list[str] = []
-    for path in sorted(_iter_files(web_root, TS_SUFFIXES)):
-        if (
-            _is_allowlisted(path)
-            or _is_test_file(path)
-            or _is_generated(path, web_root)
-        ):
+    for web_root in _resolve_web_roots(repo_root):
+        if not web_root.is_dir():
+            errors.append(f"web root not found at {web_root}")
             continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            continue
-        if _LITERAL.search(_strip_ts_comments(text)):
-            errors.append(f"Hard-coded route literal: {_relative(path)}")
-    for path in sorted(_iter_files(core_root, PY_SUFFIXES)):
-        if _is_allowlisted(path):
+        for path in sorted(_iter_files(web_root, TS_SUFFIXES)):
+            if (
+                _is_allowlisted(path, repo_root)
+                or _is_test_file(path)
+                or _is_generated(path, repo_root)
+            ):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            if _LITERAL.search(_strip_ts_comments(text)):
+                errors.append(f"Hard-coded route literal: {_relative(path)}")
+    for path in sorted(_iter_files(repo_root / _CORE_SRC, PY_SUFFIXES)):
+        if _is_allowlisted(path, repo_root):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -296,35 +351,89 @@ def check(*, web_root: Path = WEB_ROOT, core_root: Path = CORE_ROOT) -> list[str
     return errors
 
 
-def _self_test() -> str | None:
-    """Plant a literal outside every allowlist and confirm `check()` catches it.
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
-    Returns `None` on success, or a diagnostic string naming the failure. Runs
-    against a scratch directory tree, never the real repo, so it proves the
-    scan's mechanism (pattern, comment-stripping, allowlist logic) without ever
-    depending on — or risking corrupting — a tracked file.
+
+def _self_test() -> str | None:
+    """Build a scratch repository tree, plant literals in every root the resolver
+    must discover and beside every exclusion, and confirm `check()` tells them
+    apart.
+
+    Returns `None` on success, or a diagnostic string naming the failure. The
+    scratch tree is laid out like the real one (`apps/web/src`,
+    `modules/<x>/web/src`, `packages/web-contract/{src,theme}`, `apps/core/src`) and
+    `check()` finds its roots through `_resolve_web_roots()`, so breaking module-
+    or contract-root discovery turns this red, not only breaking the pattern.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        web_root = tmp_path / "web-src"
-        core_root = tmp_path / "core-src"
-        (web_root / "components").mkdir(parents=True)
-        core_root.mkdir(parents=True)
-        planted = web_root / "components" / "planted.tsx"
-        planted.write_text(
-            'export const plantedHref = "/api/v1/planted"; // not allowlisted\n'
+        repo = Path(tmp)
+        literal = 'export const plantedHref = "/api/v1/planted";\n'
+        must_catch = {
+            "shell": repo / "apps/web/src/components/planted.tsx",
+            "module web-src root": repo / "modules/scratch/web/src/screens/planted.tsx",
+            "web-contract src root": repo / "packages/web-contract/src/planted.ts",
+            "web-contract theme root": repo / "packages/web-contract/theme/planted.ts",
+            "module generated/ dir (exemption is shell-only)": (
+                repo / "modules/scratch/web/src/generated/planted.ts"
+            ),
+            # allowJs: JS sources are bundled, so they are scanned too.
+            "shell .jsx file": repo / "apps/web/src/components/legacy.jsx",
+            "module .mjs file": repo / "modules/scratch/web/src/screens/client.mjs",
+        }
+        for path in must_catch.values():
+            _write(path, literal)
+        _write(
+            repo / "apps/core/src/rheo_app_core/planted.py",
+            'LINK = "/auth/login"\n',
+        )
+        must_pass = [
+            # The shell's codegen output (exempt, paired with make codegen's check).
+            repo / "apps/web/src/generated/openapi.ts",
+            # The routing package owns the literals url_for returns.
+            repo / "apps/web/src/lib/routing/links.ts",
+            repo / "apps/web/src/components/legacy.test.js",
+            # Test files pin what the routing functions produce.
+            repo / "modules/scratch/web/src/screens/planted.test.tsx",
+        ]
+        for path in must_pass:
+            _write(path, literal)
+        _write(
+            repo / "apps/core/src/rheo_app_core/auth_routes.py",
+            '@router.get("/auth/login")\n',
         )
         # A comment-only occurrence must NOT be flagged — proves the stripper
         # does not just make the scan more trigger-happy than the real gate is.
-        quiet = web_root / "components" / "quiet.tsx"
-        quiet.write_text("// mentions /api/ only in prose, never in code\n")
-        findings = check(web_root=web_root, core_root=core_root)
-        planted_hit = any("planted.tsx" in finding for finding in findings)
-        quiet_hit = any("quiet.tsx" in finding for finding in findings)
-        if not planted_hit:
-            return "self-test FAILED: a planted literal went uncaught"
-        if quiet_hit:
-            return "self-test FAILED: comment-only text was flagged (stripper broke)"
+        quiet = repo / "apps/web/src/components/quiet.tsx"
+        _write(quiet, "// mentions /api/ only in prose, never in code\n")
+
+        findings = check(repo_root=repo)
+        joined = "\n".join(findings)
+        for label, path in must_catch.items():
+            if str(path) not in joined:
+                return (
+                    f"self-test FAILED: a literal planted in the {label} went "
+                    "uncaught (root not discovered, or exclusion too wide)"
+                )
+        if "planted.py" not in joined:
+            return "self-test FAILED: a literal planted in apps/core/src went uncaught"
+        allowed_route = repo / "apps/core/src/rheo_app_core/auth_routes.py"
+        for path in [*must_pass, quiet, allowed_route]:
+            if str(path) in joined:
+                return (
+                    f"self-test FAILED: an exempt or comment-only file was flagged: "
+                    f"{path.relative_to(repo)}"
+                )
+
+        # The required shell root is reported when missing, never scanned as empty.
+        with tempfile.TemporaryDirectory() as empty:
+            missing = check(repo_root=Path(empty))
+            if not any("web root not found" in f for f in missing):
+                return (
+                    "self-test FAILED: a missing apps/web/src was not reported "
+                    "(the required root was dropped before check() saw it)"
+                )
         return None
 
 

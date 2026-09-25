@@ -4,6 +4,8 @@ import { useState, type FormEvent } from "react";
 
 import type { Membership } from "@/lib/session";
 
+import styles from "./workspace-switcher.module.css";
+
 /**
  * The active-workspace switcher (C9, B3).
  *
@@ -62,8 +64,10 @@ export function WorkspaceSwitcher({
   }
 
   return (
-    <form onSubmit={onSubmit}>
-      <label htmlFor="rheo-workspace">Active workspace</label>
+    <form className={styles.form} onSubmit={onSubmit}>
+      <label className={styles.label} htmlFor="rheo-workspace">
+        Active workspace
+      </label>
       <select
         id="rheo-workspace"
         name="target_workspace_id"
@@ -79,7 +83,11 @@ export function WorkspaceSwitcher({
       <button type="submit" disabled={pending}>
         Switch
       </button>
-      {refusal === null ? null : <p>switch refused: {refusal}</p>}
+      {refusal === null ? null : (
+        <p className={styles.refusal} role="status">
+          switch refused: {refusal}
+        </p>
+      )}
     </form>
   );
 }

@@ -57,6 +57,7 @@ from rheo_core.modules import (
     ManifestInvalid,
     ModuleManifest,
     StorageDeclaration,
+    WebContribution,
     WebSurface,
     allowed_module_ids,
     discovered,
@@ -131,11 +132,27 @@ DECLARATION = OperationDeclaration(
 SINK = _ProbeSink()
 
 
+def _surface_only(surface: WebSurface) -> WebContribution:
+    """A contribution carrying a surface and no screens: all ``module_surfaces()``
+    reads is the surface, so every other tuple is declared empty."""
+    return WebContribution(
+        surface=surface,
+        package_name="@rheo-stream/fixture-probe-web",
+        navigation=(),
+        routes=(),
+        record_views=(),
+        forms=(),
+        search_providers=(),
+    )
+
+
 MANIFEST = _manifest(
     MODULE_ID,
     operations=((DECLARATION, _handler),),
     resolvers=((RECORD_TYPE, _resolver),),
-    web=WebSurface(surface=MODULE_ID, host=MODULE_ID, path="/fixture-probe"),
+    web=_surface_only(
+        WebSurface(surface=MODULE_ID, host=MODULE_ID, path="/fixture-probe")
+    ),
     audit_sink=SINK,
 )
 """The object the fabricated entry point loads to. ``ENTRY_POINT`` points at this
@@ -151,7 +168,7 @@ SURFACE_ONLY_MANIFEST = _manifest(
     SURFACE_ONLY_ID,
     # A surface whose name is NOT the module id: ``module_surfaces()`` is keyed by
     # the surface, and the two are not required to agree.
-    web=WebSurface(surface="probe_ui", host="probe", path="/probe"),
+    web=_surface_only(WebSurface(surface="probe_ui", host="probe", path="/probe")),
 )
 SURFACE_ONLY_ENTRY_POINT = EntryPoint(
     name=SURFACE_ONLY_ID,
@@ -371,6 +388,26 @@ def test_a_loaded_manifest_records_its_surface_keyed_by_the_surface_name(
         surface="probe_ui", host="probe", path="/probe"
     )
     assert SURFACE_ONLY_ID not in surfaces
+
+
+def test_the_value_is_the_nested_web_surface_not_the_contribution(
+    monkeypatch: pytest.MonkeyPatch,
+    registries: tuple[OperationRegistry, ResolverRegistry],
+) -> None:
+    """``routing_config()`` reads ``.host`` and ``.path`` straight off each value.
+
+    With ``manifest.web`` now a ``WebContribution``, handing back ``manifest.web``
+    rather than ``manifest.web.surface`` would still key correctly and would put a
+    contribution — which has no ``.host`` — where that consumer expects a surface.
+    """
+    registry, resolvers = registries
+    _publish(monkeypatch, SURFACE_ONLY_ENTRY_POINT)
+    _install(monkeypatch, SURFACE_ONLY_ID)
+    load_modules(registry=registry, resolvers=resolvers)
+
+    surface = module_surfaces()["probe_ui"]
+    assert type(surface) is WebSurface
+    assert (surface.host, surface.path) == ("probe", "/probe")
 
 
 def test_a_loaded_manifest_without_a_surface_records_none(

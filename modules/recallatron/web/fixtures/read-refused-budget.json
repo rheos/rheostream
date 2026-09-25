@@ -1,0 +1,8 @@
+{
+  "state": "reference_scan_limit",
+  "operation_id": null,
+  "error": {
+    "error_code": "reference_scan_limit",
+    "error_text": "this read exceeded its reference budget"
+  }
+}

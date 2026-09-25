@@ -186,9 +186,13 @@ def module_surfaces() -> Mapping[str, WebSurface]:
 
     Derived from :data:`_LOADED` rather than from a second table kept beside it: one
     record of what loaded cannot disagree with itself about which surfaces are live.
+
+    The surface is ``manifest.web.surface``, the ``WebSurface`` nested in the
+    manifest's ``WebContribution``; the value handed back is that ``WebSurface``
+    itself, because ``routing_config()`` reads ``.host`` and ``.path`` off it.
     """
     return {
-        manifest.web.surface: manifest.web
+        manifest.web.surface.surface: manifest.web.surface
         for manifest in _LOADED.values()
         if manifest.web is not None
     }
@@ -220,6 +224,37 @@ def _as_manifest(loaded: object) -> ModuleManifest:
             "a rheo.modules entry point must load to a ModuleManifest",
         )
     return loaded
+
+
+def load_entry_point(entry_point: EntryPoint) -> ModuleManifest:
+    """Load one discovered entry point and apply the three per-manifest load gates.
+
+    It must load to a ``ModuleManifest``, its ``module_id`` must equal the name it
+    was published under, and it must be written against this core's
+    ``CONTRACT_VERSION``. Public because two callers need the same answer:
+    :func:`load_modules` for what a deployment loads, and ``rheo web compose`` for
+    what a build composes. A module refused here must not be composed into a build
+    whose runtime would then refuse to load it.
+    """
+    manifest = _as_manifest(entry_point.load())
+    if manifest.module_id != entry_point.name:
+        raise ManifestInvalid(
+            manifest.module_id,
+            f"is published under the {ENTRY_POINT_GROUP} entry-point name "
+            f"{entry_point.name!r}; the allowlist gates the name, so the two "
+            "must agree",
+        )
+    if CONTRACT_VERSION not in manifest.core_contract_versions:
+        # Before anything of this manifest's is registered: a module written
+        # against a contract major this core does not publish is refused rather
+        # than loaded and left to fail on the first shape that moved.
+        raise ManifestInvalid(
+            manifest.module_id,
+            f"is written against core contract version(s) "
+            f"{list(manifest.core_contract_versions)}, which do not include "
+            f"this core's CONTRACT_VERSION {CONTRACT_VERSION}",
+        )
+    return manifest
 
 
 def load_modules(
@@ -315,25 +350,7 @@ def load_modules(
     for entry_point in discovered():
         if entry_point.name not in permitted:
             continue
-        manifest = _as_manifest(entry_point.load())
-        if manifest.module_id != entry_point.name:
-            raise ManifestInvalid(
-                manifest.module_id,
-                f"is published under the {ENTRY_POINT_GROUP} entry-point name "
-                f"{entry_point.name!r}; the allowlist gates the name, so the two "
-                "must agree",
-            )
-        if CONTRACT_VERSION not in manifest.core_contract_versions:
-            # Before anything of this manifest's is registered: a module written
-            # against a contract major this core does not publish is refused rather
-            # than loaded and left to fail on the first shape that moved.
-            raise ManifestInvalid(
-                manifest.module_id,
-                f"is written against core contract version(s) "
-                f"{list(manifest.core_contract_versions)}, which do not include "
-                f"this core's CONTRACT_VERSION {CONTRACT_VERSION}",
-            )
-        manifests.append(manifest)
+        manifests.append(load_entry_point(entry_point))
     _check_events(manifests)
     _check_subscriptions(manifests)
     loaded: list[str] = []

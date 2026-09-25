@@ -1,0 +1,23 @@
+{
+  "name": "@rheo-stream/web-contract",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    "./screen": "./src/screen.ts",
+    "./theme": "./theme/entry.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26",
+    "@types/react": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^16",
+    "typescript": "^5",
+    "vite": "^8",
+    "vitest": "^5"
+  }
+}

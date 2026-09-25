@@ -1,0 +1,127 @@
+[
+  {
+    "path": "tests/fixtures/ac8-credential-leak.diff",
+    "origin": "synthetic",
+    "how": "a hand-authored diff illustrating a credential leak, no real code or secret"
+  },
+  {
+    "path": "tests/fixtures/modules/probe_pkg/src/probe.py.txt",
+    "origin": "synthetic",
+    "how": "a two-line probe package body using the placeholder workspace id \"probe\""
+  },
+  {
+    "path": "tests/fixtures/routing/expected-urls.json",
+    "origin": "synthetic",
+    "how": "hand-authored routing expectations over the example.test/*.example.test hosts"
+  },
+  {
+    "path": "tests/fixtures/routing/path-mode.json",
+    "origin": "synthetic",
+    "how": "hand-authored routing config fixture over the example.test host"
+  },
+  {
+    "path": "tests/fixtures/routing/subdomain-mode.json",
+    "origin": "synthetic",
+    "how": "hand-authored routing config fixture over the example.test host"
+  },
+  {
+    "path": "tests/fixtures/web/workspace-status-absent.json",
+    "origin": "synthetic",
+    "how": "hand-authored core.workspace.status result with no module installed"
+  },
+  {
+    "path": "tests/fixtures/web/workspace-status-enabled.json",
+    "origin": "synthetic",
+    "how": "hand-authored core.workspace.status result with the memory module enabled"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/coverage-no-provider.json",
+    "origin": "synthetic",
+    "how": "hand-authored null-provider embedding.coverage response shape"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/coverage.json",
+    "origin": "synthetic",
+    "how": "hand-authored embedding.coverage response with a placeholder model id and counts"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/dedup-empty.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty dedup_candidates response shape"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/dedup-pairs.json",
+    "origin": "synthetic",
+    "how": "hand-authored dedup_candidates response using sequential placeholder UUIDs"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/entity-item.json",
+    "origin": "synthetic",
+    "how": "hand-authored EntityItem shape from an invented \"sample garden\" scenario"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/entity-list-refused-budget.json",
+    "origin": "synthetic",
+    "how": "hand-authored reference_scan_limit refusal response shape"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/entity-list.json",
+    "origin": "synthetic",
+    "how": "hand-authored entity.list response from the invented \"sample garden\" scenario"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/memory-item.json",
+    "origin": "synthetic",
+    "how": "hand-authored MemoryItem shape from the invented \"sample garden\" scenario"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/read-empty.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty memory.read window response shape"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/read-refused-budget.json",
+    "origin": "synthetic",
+    "how": "hand-authored reference_scan_limit refusal response shape"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/read-refused-window.json",
+    "origin": "synthetic",
+    "how": "hand-authored window_scan_limit refusal response shape"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/read-window.json",
+    "origin": "synthetic",
+    "how": "hand-authored memory.read window from the invented \"sample garden\" scenario"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/recall-empty-degraded.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty hybrid-recall response with dense degraded"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/recall-empty-dense-degraded.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty dense-recall response with dense degraded"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/recall-empty-dense.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty dense-recall response with dense available"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/recall-empty-hybrid.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty hybrid-recall response with dense available"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/recall-empty-lexical.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty lexical-only recall response"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/recall-populated.json",
+    "origin": "synthetic",
+    "how": "hand-authored populated recall response from the invented \"sample garden\" scenario"
+  }
+]

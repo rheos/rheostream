@@ -206,8 +206,8 @@ run 1b's. The `pg_trgm`
 title index exists, and no recall statement reads it. The dense arm embeds the bare query with
 the configured provider and ranks by cosine similarity, keeping only rows at or above
 `recallatron.retrieval.dense_floor_percent` (an integer percent, default 30, so cosine 0.30).
-That default was measured on the shipped provider. The predecessor's floor, M.O.T.'s L2 bound
-of 0.76 (cosine 0.71), came from a different embedding space and does not transfer; run 1b
+That default was measured on the shipped provider. The predecessor's floor, an L2 bound of
+0.76 (cosine 0.71), came from a different embedding space and does not transfer; run 1b
 confirms the number on a migrated corpus. `hybrid` runs both arms, fuses them by reciprocal
 rank (constant 60), and within an equal fused score puts the newer memory first.
 
@@ -221,17 +221,106 @@ the failure class, never memory text or the query: no provider logs at DEBUG, be
 shipped default and would otherwise log on every `hybrid` recall, and the other three log at
 WARNING.
 
-`recallatron.memory.read(container_ref, target_ref, context, include_invalidated, purpose)`,
-read class, roles `owner`, `member`, `service`, is the second read: one authorized target and a
-bounded window of its neighbours in a named container. Its precedence is fixed. Target eligibility is decided first, then the
-container's own eligibility, then membership: an authorized target not linked to the named
-container refuses `container_membership_required` before a single neighbour is selected, so a
-caller cannot learn a container's population through a target that does not belong to it. At most
-500 row-locally eligible candidates are evaluated and the 501st identifier is an existence test
-only; past it the call refuses `window_scan_limit`, a fixed, content-free refusal carrying no
-target content, candidate count, eligible or hidden count, identity, position, total, bounds,
-`has_more` flag or partial item. One request-wide budget of 4096 distinct references and depth 64
-is shared by the target, every candidate and every link either reaches; exhausting it refuses
+`recallatron.memory.read(container_ref, target_ref?, context, include_invalidated, purpose)`,
+read class, roles `owner`, `member`, `service`, is the second read: a bounded window over one
+named container, centred on an authorized target or, for an entity container named with no
+target, made of its newest members. A container is one of two things. A record reference that
+memories link to has as its members the memories holding an exact stored `memory_link` row
+with that reference. An entity reference (`recallatron.memory_entity:<uuid>`) has as its members
+the memories holding a `memory_mention` row for that entity. `target_ref` may be omitted for an
+entity container only; any other container named without a target refuses `input_invalid`.
+
+Its precedence is fixed. Input (the references, the target's type, the context width, the read
+mode), the purpose binding and the retention policy come first, so `input_invalid`,
+`purpose_mismatch` and `retention_unavailable` all land before any container is looked at.
+With a target, the target's eligibility in the requested mode is decided next (missing,
+cross-workspace, expired or ineligible is `not_found`, whatever the container holds); then, for
+an entity container only, the entity's own visibility; then membership: an authorized target
+that is not a member of the named container refuses `container_membership_required` before a
+single neighbour is selected, so a caller cannot learn a container's population through a
+target that does not belong to it. A link container's own eligibility check is not yet
+implemented and is tracked as #112; today its only container check is membership. Without a target, which only an entity container allows,
+the entity's visibility follows the input checks directly, then the candidate scan, and the
+window is the newest `min(total, 2·context + 1)` eligible members, with `target_position` null,
+`window_end` equal to `total` and `has_more` true exactly when older eligible members exist. An
+entity none of whose mentioning memories the caller may read is an empty window, not a refusal
+(up to the scan and reference bounds; see the residuals below).
+
+Entity visibility is decided by the same function that answers `recallatron.entity.get`, and
+always in `current` mode, whatever `include_invalidated` asks for, in both the targeted and the
+targetless branch. A read can open a window over an entity exactly when `entity.get` would
+answer for it, so an entity reachable only through invalidated or superseded history is
+`not_found` to `read` in both modes, as it is to `entity.get`. A denied entity gets the same
+`not_found` an unknown id does; a spent reference budget during the check passes through as
+`reference_scan_limit`. Every count, bound, `has_more` and `target_position` in a window comes
+from the fully evaluated eligible ordering, never from the row-local candidate list: the SQL
+prefilter removes only what one row can answer for itself (audience, bound purpose, retention,
+lifecycle mode), and a `workspace`-audience memory whose `about` or `derived_from` link the
+caller cannot read survives it and is removed only by full eligibility.
+
+At most 500 row-locally eligible candidates are evaluated and the 501st identifier is an
+existence test only; past it the call refuses `window_scan_limit`, a fixed, content-free refusal
+carrying no target content, candidate count, eligible or hidden count, identity, position,
+total, bounds, `has_more` flag or partial item.
+
+> **Accepted residuals: the targetless entity read.** A targetless `read` over an entity
+> container can refuse because of mentions the caller cannot read. There are two such
+> content-free bits. Each refusal keeps its existing fixed shape: no count, no name, no title,
+> no text, no reference, no partial content and no window metadata.
+>
+> **Bit 1: `window_scan_limit` past 500 mentions.** A targetless `read` refuses
+> `window_scan_limit` whenever more than 500 memories mention the entity and pass the row-local
+> prefilter, even when every one of those memories is unreadable to the caller (for example,
+> each is a `workspace`-audience memory whose `about` or `derived_from` link the caller cannot
+> read, which the prefilter keeps and only full eligibility removes). What leaks is only the
+> fact that more than 500 mentions of this entity exist, never anything about them.
+>
+> This differs from the ordinary `window_scan_limit` case described just above. There, the
+> refusal answers a caller who would otherwise see some readable content in a large window.
+> Here it can fire when the caller can read **nothing**: no readable memory would appear in the
+> window, and a targetless call has no target to centre on either. The entity must still be
+> visible to the caller, which with no readable mention means through its readable backing ref,
+> and `entity.get` answers such a caller with a `mention_count` of 0. That caller, with zero read
+> access to any of the entity's mentions, still learns from the shape of the refusal alone that
+> the entity is mentioned by more than 500 memories. A targeted read cannot reach this state,
+> because its target has to be a readable member.
+>
+> **Bit 2: `reference_scan_limit` from invalidated mentions.** The entity's visibility is
+> decided in `current` mode only, as described above, so that check evaluates the entity's
+> current mentions and never looks at an invalidated or superseded one. A targetless read with
+> `include_invalidated = true` then takes its candidates in history mode, which adds the
+> retained invalidated and superseded mentions, and evaluates them against the same
+> request-wide budget of 4096 distinct references. A caller who sees the entity only through
+> its backing ref, and so can read none of its current mentions, can get `reference_scan_limit`
+> from those history mentions, which the visibility check never examined and which the caller
+> may not be able to read either. What leaks is only that evaluating the entity's history ran
+> past the reference budget.
+>
+> The web screens do not reach bit 2: the Browse screen never sends `include_invalidated`, so
+> its reads run in `current` mode. Neither bit is reachable through the MCP tool, which requires
+> a target. Both are reachable over the API by a token whose set holds `recallatron.memory.read`.
+>
+> Both bits were reviewed and accepted as maintainer decisions, not missed. Bit 1 was accepted
+> on 2026-09-24, after it was found in cold review of the built code. Bit 2 was accepted on
+> 2026-09-25, after it was found in the final review of the whole change. Neither is an open
+> bug and no fix is deferred. Closing bit 1 would mean fully
+> evaluating every candidate's eligibility before the 500-row sentinel could apply, which turns
+> a bounded, fast-failing scan into an unbounded one for exactly the workspace shape the
+> sentinel exists to protect against. Closing bit 2 would mean either deciding entity
+> visibility in history mode, which the `current`-mode rule above deliberately does not do, or
+> lifting the reference budget that keeps the scan bounded.
+
+**The tool requires a target; the operation does not.** The MCP tool `recallatron_read`
+validates against an input that always requires `target_ref`, so an agent's reach through the
+tool is unchanged by entity containers. The operation itself is not gated by the tool: any
+token whose operation set includes `recallatron.memory.read` (every `read_only` set does,
+[package operation sets](identity-and-topology.md#the-named-package-operation-sets)), whatever
+kind of client holds it, can call it over the bearer `api` surface with no target and an entity
+container. That is the real boundary, and it holds because the same visibility check gates a
+targetless read and the same eligibility filters every item and count.
+
+One request-wide budget of 4096 distinct references and depth 64 is shared by the target, the
+entity check, every candidate and every link any of them reaches; exhausting it refuses
 `reference_scan_limit` with no partial content and no window metadata. `context` is 0 to 10
 neighbours either side (default 2); `recall` takes a query of 1 to 1000 characters and a `k` of
 1 to 50 (default 10), and entity listing a limit of 1 to 50 (default 10). Every read path refuses
@@ -241,7 +330,8 @@ a retention window it cannot read.
 ### Near-duplicate candidates
 
 `recallatron.memory.dedup_candidates(limit, purpose)`, read class, roles `owner`, `member`,
-`service`, and no MCP tool: like the two entity reads it is service-only in release one. It
+`service`. Like the two entity reads it has no MCP tool, so no model reaches it; it is reachable
+over the API by a token whose set holds it, which is how the web screens call it. It
 returns at most `limit` pairs (1 to 50, default 10), each `{ref_a, ref_b, score}`, where
 `score` is the cosine similarity of the two stored vectors and is at least 0.80
 (`DEDUP_PAIR_FLOOR`). It only proposes. Nothing merges, confirms or supersedes on a pair's
@@ -477,10 +567,13 @@ repository.
 
 ## Web contribution
 
-Memory browse, search, and entity screens (the phase-two port) plus the unified navigation and
-theme. The screens call `recall`, `read`, `remember`, `derive`, `correct`, `supersede`, and the
-entity reads through the internal API like every other screen; both retention settings are read
-and set through the core's settings operations, not a module operation.
+Memory browse, search, item and possible-duplicate screens plus the unified navigation and
+theme. The screens are read-only. They call exactly these operations through the internal API,
+like every other screen: `recallatron.memory.recall`, `recallatron.memory.read`,
+`recallatron.memory.get`, `recallatron.entity.list`, `recallatron.entity.get`,
+`recallatron.memory.dedup_candidates` and `recallatron.embedding.coverage`. No screen calls a
+write or lifecycle operation. Both retention settings are read and set through the core's
+settings operations, not a module operation.
 
 ## Export
 
@@ -517,14 +610,16 @@ importer never commits, because the whole restore is one transaction.
 | Operation | Class | Roles | Tool |
 | --- | --- | --- | --- |
 | `recallatron.memory.recall` | read | owner, member, service | `recallatron_recall` |
-| `recallatron.memory.read` | read | owner, member, service | `recallatron_read` |
+| `recallatron.memory.read` | read | owner, member, service | `recallatron_read` (the container may be a linked record reference or an entity reference; the tool always requires a target, while the operation admits none for an entity container, [retrieval](#retrieval-fr-27-fr-30-criteria-27-and-31)) |
+| `recallatron.memory.get` | read | owner, member, service | none: no MCP tool; reachable over the API by a token whose set holds it. Refusal precedence as implemented: target resolution first (a malformed or non-memory `ref` refuses `input_invalid`), then the purpose check (`purpose_mismatch` when a stated purpose is not the context's binding; `input_invalid` when it is not a purpose at all), then the retention read (`retention_unavailable`), then eligibility (`not_found`, the same for gone and not-yours; `reference_scan_limit` when the request's reference budget runs out, whether deciding the memory's own eligibility or checking whether its successor may be named). So a call with both a malformed reference and a mismatched purpose answers `input_invalid`, not `purpose_mismatch`: the reference is resolved first, and the purpose check never runs on a request that never produced a valid target |
+| `recallatron.embedding.coverage` | read | owner | none: no MCP tool; reachable over the API by a token whose set holds it (a non-owner is refused by its roles) |
 | `recallatron.memory.remember` | mutate | owner, member, service | `recallatron_remember` |
 | `recallatron.memory.derive` | mutate | owner, member, service | `recallatron_derive` |
 | `recallatron.memory.correct` | mutate | owner, member | `recallatron_correct` |
 | `recallatron.memory.supersede` | mutate | owner, member | `recallatron_supersede` |
 | `core.record.delete` for `recallatron.memory` | destructive | owner, member (a member only for a memory its audience lets it read; the owner's route to a `member`-audience memory is declared and not reachable end to end, [deletion](#deletion-fr-28-r5-criterion-65)) | `recallatron_forget` |
-| `recallatron.entity.list`, `.get` | read | owner, member, service | none in release one (service-only: no MCP tool is registered for either, so no model reaches them) |
-| `recallatron.memory.dedup_candidates` | read | owner, member, service | none in release one (service-only, like the entity reads; [near-duplicate candidates](#near-duplicate-candidates)) |
+| `recallatron.entity.list`, `.get` | read | owner, member, service | none: no MCP tool is registered for either, so no model reaches them; reachable over the API by a token whose set holds them |
+| `recallatron.memory.dedup_candidates` | read | owner, member, service | none: no MCP tool, like the entity reads; reachable over the API by a token whose set holds it ([near-duplicate candidates](#near-duplicate-candidates)) |
 | `recallatron.embedding.rebuild` | mutate, long-running | owner | none |
 | `recallatron.migration.import`, `.switch_over` | mutate | owner | none (operator and web only) |
 

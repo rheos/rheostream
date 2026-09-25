@@ -1,0 +1,49 @@
+{
+  "items": [
+    {
+      "ref": "recallatron.memory:10000000-0000-4000-8000-000000000001",
+      "kind": "decision",
+      "title": "Sample garden project moves to raised beds",
+      "body": "The sample garden project will use four raised beds instead of in-ground rows, starting with the spring planting.",
+      "occurred_at": "2026-03-02T10:00:00Z",
+      "recorded_at": "2026-03-02T10:15:00Z",
+      "revision": 1,
+      "invalidated_at": null,
+      "invalidation_reason": null,
+      "superseded_by": null,
+      "links": [
+        {
+          "ref": "recallatron.memory:10000000-0000-4000-8000-000000000002",
+          "relation": "derived_from",
+          "supersession_lineage": false,
+          "display": "Soil test results for the sample garden"
+        }
+      ],
+      "score": 0.03278688524590164,
+      "strategy": "hybrid"
+    },
+    {
+      "ref": "recallatron.memory:10000000-0000-4000-8000-000000000002",
+      "kind": "fact",
+      "title": "Soil test results for the sample garden",
+      "body": "The soil test for the sample garden came back slightly acidic, with low nitrogen.",
+      "occurred_at": null,
+      "recorded_at": "2026-02-20T14:05:00Z",
+      "revision": 2,
+      "invalidated_at": null,
+      "invalidation_reason": null,
+      "superseded_by": null,
+      "links": [],
+      "score": 0.016129032258064516,
+      "strategy": "hybrid"
+    }
+  ],
+  "provenance": {
+    "strategy": "hybrid",
+    "arms": {
+      "lexical": 2,
+      "dense": 1
+    },
+    "dense_available": true
+  }
+}

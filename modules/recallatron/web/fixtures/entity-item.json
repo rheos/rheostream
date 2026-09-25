@@ -1,0 +1,7 @@
+{
+  "ref": "recallatron.memory_entity:20000000-0000-4000-8000-000000000002",
+  "kind": "project",
+  "name": "Sample Garden Project",
+  "backing_ref": "recallatron.memory:10000000-0000-4000-8000-000000000001",
+  "mention_count": 12
+}

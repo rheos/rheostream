@@ -9,7 +9,8 @@ sites under the shipped default (no job for ``remember``, ``derive``, ``correct`
 the embed job's skip, no-op and raise outcomes, driven through a real
 worker visit; ``recallatron.embedding.rebuild``'s prune, fill and committed progress
 (AC 12), its version prune and its refusal; ``fill_missing_embeddings`` called on its
-own; and per-workspace coverage (AC 14).
+own; per-workspace coverage (AC 14); and ``recallatron.embedding.coverage``, the
+owner-only read of that figure.
 
 **One way to select a provider, everywhere.** A test rebinds
 ``registry.configured_provider_name`` (``monkeypatch`` undoes it). The ``RHEO__``
@@ -48,7 +49,8 @@ from harness.modules import (
     install_and_enable_module,
     loaded_probe_modules,
 )
-from rheo_contracts import Role, WorkspaceContext
+from harness.registry import add_member
+from rheo_contracts import Role, SafetyClass, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.events import ConsumerRegistry
 from rheo_core.operations import dispatch, register_core_operations
@@ -91,7 +93,10 @@ from rheo_recallatron.embedding.local import (
     LocalEmbeddingProvider,
 )
 from rheo_recallatron.embedding.operations import (
+    EMBEDDING_COVERAGE,
+    EMBEDDING_COVERAGE_DECLARATION,
     EMBEDDING_REBUILD,
+    EmbeddingCoverageReport,
     EmbeddingRebuildScheduled,
 )
 from rheo_recallatron.embedding.protocol import EmbeddingProvider
@@ -1030,6 +1035,76 @@ def test_coverage_is_answered_per_workspace(
     assert partial.live == second.live_count()
     assert partial.embedded == 1 < partial.live
     assert full != partial
+
+
+def _coverage_report(outcome: OperationOutcome) -> EmbeddingCoverageReport:
+    assert outcome.ok, outcome
+    assert isinstance(outcome.result, EmbeddingCoverageReport), outcome
+    return outcome.result
+
+
+def test_the_coverage_read_answers_each_workspace_its_own_corpus(
+    loaded: Loaded,
+    cluster: ClusterSession,
+    make_workspace: MakeWorkspace,
+    owner_account_id: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``recallatron.embedding.coverage`` through ``dispatch``: two workspaces with
+    different corpora, each told its own figure for the configured provider's model."""
+    fake = _fake()
+    _select(monkeypatch, registry.FAKE_PROVIDER)
+    first = loaded.first
+    second = _enabled(cluster, loaded.surfaces, make_workspace(), owner_account_id)
+    _seed(first, "apples", "pears", "plums")
+    _seed(first, "quinces", invalidated=True)
+    _seed(second, "figs", "dates", "limes", "kiwis", "grapes")
+    with first.unit() as uow:
+        fill_missing_embeddings(uow, provider=fake, batch_size=2)
+    with second.unit() as uow:
+        fill_batch(uow, provider=fake, after=None, limit=1)
+
+    mine = _coverage_report(first.call(EMBEDDING_COVERAGE, {}))
+    theirs = _coverage_report(second.call(EMBEDDING_COVERAGE, {}))
+    assert mine == EmbeddingCoverageReport(model_id=fake.model_id, live=3, embedded=3)
+    assert theirs == EmbeddingCoverageReport(model_id=fake.model_id, live=5, embedded=1)
+
+
+def test_the_coverage_read_is_the_owner_s_alone(
+    embedding: EmbeddingWorkspace, cluster: ClusterSession
+) -> None:
+    """``live`` counts other members' private memories, so a member is refused before
+    the handler runs rather than handed a total it may not see."""
+    member = add_member(
+        cluster.backend, embedding.workspace, Role.MEMBER, display_name="member-two"
+    )
+    ctx = context_for_harness(embedding.workspace, member, Role.MEMBER)
+    assert isinstance(ctx, WorkspaceContext), ctx
+    outcome = dispatch(
+        ctx, EMBEDDING_COVERAGE, {}, registry=embedding.surfaces.operations
+    )
+    assert outcome.state == "role_not_permitted", outcome
+    assert outcome.result is None
+
+
+def test_the_coverage_read_is_all_none_without_a_provider(
+    embedding: EmbeddingWorkspace,
+) -> None:
+    assert registry.resolve_provider() is None
+    _seed(embedding, "apples")
+    report = _coverage_report(embedding.call(EMBEDDING_COVERAGE, {}))
+    assert report == EmbeddingCoverageReport(model_id=None, live=None, embedded=None)
+
+
+def test_the_coverage_declaration_is_a_tool_less_owner_read() -> None:
+    """AC 18: ``READ``, no audit spec, not long-running, and no MCP tool names it."""
+    declaration = EMBEDDING_COVERAGE_DECLARATION
+    assert declaration.name == EMBEDDING_COVERAGE
+    assert declaration.safety_class is SafetyClass.READ
+    assert declaration.audit is None
+    assert declaration.long_running is False
+    assert declaration.roles == frozenset({Role.OWNER})
+    assert EMBEDDING_COVERAGE not in {tool.operation for tool in MANIFEST.tools}
 
 
 # --- a reference check ----------------------------------------------------------------

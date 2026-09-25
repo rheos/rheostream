@@ -1,0 +1,62 @@
+/*
+ * The content panel shared by the home page, sign-in, not-found and the error
+ * boundary: one surface-1 card with a hairline edge, a heading, plain status
+ * lines, and at most one primary action. Every value is a --rs-* theme token or
+ * a CSS keyword.
+ */
+
+.page {
+  padding-block: var(--rs-space-6);
+  padding-inline: var(--rs-space-5);
+}
+
+@media (max-width: 40rem) {
+  .page {
+    padding-inline: var(--rs-space-4);
+  }
+}
+
+.panel {
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  margin-inline: auto;
+  overflow-wrap: anywhere;
+  padding: var(--rs-space-5);
+  background: var(--rs-color-surface-1);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+}
+
+.heading {
+  margin-block-start: initial;
+}
+
+.line {
+  margin-block: var(--rs-space-2);
+  color: var(--rs-color-ink-dim);
+}
+
+.detail {
+  margin-block: var(--rs-space-2);
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-faint);
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
+  margin-block-start: var(--rs-space-3);
+  padding-inline: var(--rs-space-4);
+  background: var(--rs-color-accent);
+  color: var(--rs-color-on-accent);
+  border: var(--rs-size-hairline) solid var(--rs-color-accent);
+  border-radius: var(--rs-radius-sm);
+  text-decoration: none;
+}
+
+.action:hover {
+  background: var(--rs-color-accent-strong);
+  border-color: var(--rs-color-accent-strong);
+  color: var(--rs-color-on-accent);
+}

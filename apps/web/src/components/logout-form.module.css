@@ -1,0 +1,15 @@
+/* Sign out, as a quiet button beside the workspace switcher. Every value is a
+   --rs-* theme token or a CSS keyword. */
+
+.form {
+  display: flex;
+}
+
+.button {
+  background: none;
+  color: var(--rs-color-ink-dim);
+}
+
+.button:hover {
+  color: var(--rs-color-ink);
+}

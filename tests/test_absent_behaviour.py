@@ -34,6 +34,7 @@ otherwise identical fails that criterion exactly as surely as a missing one, so
 :func:`test_no_spike_remains` may not be renamed for house-style reasons either.
 """
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -41,6 +42,11 @@ import pytest
 from harness import absent_attribute, absent_call, absent_token, covered_by_probe
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: The shared declaration of tracked-but-binary paths (also read by
+#: scripts/check_legacy_names.py and tests/test_allowlist_variable_absent.py), so
+#: there is one list to keep honest rather than three drifting copies.
+_TRACKED_BINARIES_PATH = _REPO_ROOT / "scripts" / "tracked_binaries.json"
 
 #: The three roots a boundary scan covers. ``tests/`` is deliberately **not** a fourth
 #: and must not become one: an AST scan matching a call by its trailing identifier
@@ -83,6 +89,22 @@ SPIKE_SURVIVORS = {
     ),
 }
 
+#: Tracked files that are binary by format, each with its reason — read from the
+#: shared declaration, not hand-kept here. The census reads every file as UTF-8 and
+#: refuses one that will not decode, so these are left out of the walk by exact
+#: path. Checked both ways in the census: each must still be tracked and must still
+#: fail to decode, so the list can neither outlive its file nor hide a text file
+#: from the search.
+NOT_TEXT = json.loads(_TRACKED_BINARIES_PATH.read_text(encoding="utf-8"))
+
+
+def _decodes_as_utf8(path: str) -> bool:
+    try:
+        (_REPO_ROOT / path).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
 
 def _tracked_files() -> set[str]:
     result = subprocess.run(
@@ -122,8 +144,19 @@ def test_no_spike_remains() -> None:
         "that has been deleted or renamed must leave this list rather than sit in it"
     )
 
+    not_text = set(NOT_TEXT)
+    assert not_text <= tracked, (
+        f"declared binary files are not tracked: {sorted(not_text - tracked)}; "
+        "remove them from NOT_TEXT"
+    )
+    decodable = sorted(path for path in not_text if _decodes_as_utf8(path))
+    assert not decodable, (
+        f"declared binary files decode as UTF-8 text: {decodable}; a text file "
+        "belongs in the search, not in NOT_TEXT"
+    )
+
     absent_token(
-        paths=sorted(tracked - declared),
+        paths=sorted(tracked - declared - not_text),
         missing="spike",
         present="rheo",
         covers="AC 22",

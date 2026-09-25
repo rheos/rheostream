@@ -1,0 +1,94 @@
+{
+  "items": [
+    {
+      "ref": "recallatron.memory:10000000-0000-4000-8000-000000000011",
+      "kind": "note",
+      "title": "Seed order placed for the sample garden",
+      "body": "Placed the seed order: two kinds of beans, one squash, and a mixed herb pack.",
+      "occurred_at": "2026-02-10T09:00:00Z",
+      "recorded_at": "2026-02-10T09:20:00Z",
+      "revision": 1,
+      "invalidated_at": null,
+      "invalidation_reason": null,
+      "superseded_by": null,
+      "links": []
+    },
+    {
+      "ref": "recallatron.memory:10000000-0000-4000-8000-000000000012",
+      "kind": "fact",
+      "title": "Volunteer rota for the sample garden",
+      "body": "Watering is covered on weekdays by the volunteer rota; weekends are still open.",
+      "occurred_at": null,
+      "recorded_at": "2026-02-14T16:40:00Z",
+      "revision": 1,
+      "invalidated_at": null,
+      "invalidation_reason": null,
+      "superseded_by": null,
+      "links": []
+    },
+    {
+      "ref": "recallatron.memory:10000000-0000-4000-8000-000000000013",
+      "kind": "decision",
+      "title": "Sample garden watering schedule",
+      "body": "Beds are watered every second morning until the first harvest, then daily.",
+      "occurred_at": "2026-02-18T08:00:00Z",
+      "recorded_at": "2026-02-18T08:30:00Z",
+      "revision": 1,
+      "invalidated_at": null,
+      "invalidation_reason": null,
+      "superseded_by": null,
+      "links": [
+        {
+          "ref": "recallatron.memory:10000000-0000-4000-8000-000000000021",
+          "relation": "derived_from",
+          "supersession_lineage": true,
+          "display": null
+        }
+      ]
+    },
+    {
+      "ref": "recallatron.memory:10000000-0000-4000-8000-000000000014",
+      "kind": "note",
+      "title": "Tool shed inventory",
+      "body": "The shed holds six trowels, two rakes, one wheelbarrow and a hose reel.",
+      "occurred_at": null,
+      "recorded_at": "2026-02-21T11:10:00Z",
+      "revision": 1,
+      "invalidated_at": null,
+      "invalidation_reason": null,
+      "superseded_by": null,
+      "links": []
+    },
+    {
+      "ref": "recallatron.memory:10000000-0000-4000-8000-000000000015",
+      "kind": "summary",
+      "title": "February summary for the sample garden",
+      "body": "February covered the seed order, the watering schedule and the shed inventory.",
+      "occurred_at": null,
+      "recorded_at": "2026-02-28T17:00:00Z",
+      "revision": 1,
+      "invalidated_at": null,
+      "invalidation_reason": null,
+      "superseded_by": null,
+      "links": [
+        {
+          "ref": "recallatron.memory:10000000-0000-4000-8000-000000000013",
+          "relation": "derived_from",
+          "supersession_lineage": false,
+          "display": "Sample garden watering schedule"
+        },
+        {
+          "ref": "recallatron.memory:10000000-0000-4000-8000-000000000014",
+          "relation": "derived_from",
+          "supersession_lineage": false,
+          "display": "Tool shed inventory"
+        }
+      ]
+    }
+  ],
+  "target_position": 2,
+  "window_start": 3,
+  "window_end": 8,
+  "total": 10,
+  "has_more": true
+}

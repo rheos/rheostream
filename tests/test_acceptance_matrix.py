@@ -26,10 +26,10 @@ A ``deferred`` row is routed past checks 2 and 3 the moment ``State`` reads
 ``deferred``. Its ``Demonstrator`` and ``Mutation`` fields hold the literal
 ``none`` by grammar; they are never resolved and never passed to ``git apply``.
 Neither live matrix holds one today; phase one's rows 15-17 are ``complete``, and
-phase two's one held-back half — criterion 24's interface contributions, which are
-run 1a3's — is a ``partial`` row carrying real evidence for the half it does
-demonstrate. Criterion 30 was the second such row until the public retention
-amendment landed and its evidence covered the amended text.
+so is every phase-two row. Criterion 24 was a ``partial`` row, holding back its
+interface contributions, until run 1a3 shipped them and promoted it; criterion 30
+was the second such row until the public retention amendment landed and its
+evidence covered the amended text.
 
 ``vitest:`` stays in the schema and is not resolved here: no matrix row uses it,
 so ``validate`` takes no ``known_vitest_ids``. The positive control and the
@@ -61,9 +61,10 @@ PHASE_TWO_CRITERIA = frozenset({24, 25, 26, 27, 28, 29, 30, 31, 33, 36})
 """Phase two's seeded set.
 
 Ten of phase two's fourteen criteria. 31 joined at run 1a2's close-out, in the same
-change as its row. 32, 34, 35 and 37 are absent because no run has closed them, and
-the completeness check is what keeps them absent: a row for one of them fails here
-as ``unexpected`` rather than quietly widening what the repository claims.
+change as its row. 32, 34, 35 and 37 have no row: 32's run has not happened, and
+34, 35 and 37 have gates in CI but no matrix row yet (``phase-2-matrix.md`` says
+why). The completeness check is what keeps them absent: a row for one of them fails
+here as ``unexpected`` rather than quietly widening what the repository claims.
 """
 
 MATRICES: Final[tuple[tuple[Path, frozenset[int]], ...]] = (

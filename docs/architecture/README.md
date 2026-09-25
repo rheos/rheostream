@@ -6,7 +6,9 @@ FR 53) and the accepted [build plan](../requirements/build-plan.md). The decisio
 A1 to A17 are this specification's own calls, made where the requirements deliberately left the
 design open. They are **accepted architecture**: the maintainer reviewed and merged the pull
 request that carried them (PR #7, 2026-09-09). Each is written as a decision with rationale so
-that a later revisit can reject one on its reasoning rather than on its vagueness.
+that a later revisit can reject one on its reasoning rather than on its vagueness. A18 was added
+afterwards, with the [theme token contract](theme-contract.md), by the change that resolved
+issue #40 and amended D8 from one theme to a themable contract.
 
 **Source of truth for what the system must do:** the requirements. This specification never
 reopens a settled decision; where it believes one is worth revisiting it says so under
@@ -30,6 +32,7 @@ table at column level. One page per later phase.
 | [Confirmation, safety classes, pipeline presets, and the opportunity records](confirmation-and-safety.md) | The six classes' dispatch behaviour, the approval record and binding, standing grants, execution guards, the test fixtures, what a pipeline preset can configure and how records migrate, and the opportunity, its parties, qualifications, drafts, and handoffs at column level. |
 | [Deletion, export and restore, and migration verification](deletion-export-migration.md) | The record-level deletion cascade, the content-free deletion record, receipt survival, the export artifact and restore, migration verification, and release-one disaster recovery. |
 | [Identity, sessions, tokens, and URL topology](identity-and-topology.md) | The identity-provider boundary, sessions and the active workspace, CLI and MCP tokens with the non-token-issuable rule, the issuer bound, and the named package sets, host-only cookies with per-host secrets and the session grant, the routing configuration and table, the reference deployment's hosts, and the hosted-edition constraint. |
+| [Theme token contract, version 1](theme-contract.md) | A theme as declarative data: the 43 tokens in six groups, `validateTheme` and `compileTheme`, the value grammars that guard the `<style>` element, the confirmation chrome only built-in themes set, with validation as the first line and `compileTheme`'s own two defences behind it, the `color-scheme` residual, and the seed default. |
 | [Later phases](later-phases.md) | Phases four to eight, one page each. |
 
 ## Architecture decisions
@@ -56,6 +59,7 @@ functional requirements (FR) are cited by number throughout; these are the addit
 | A15 | **Pipeline presets** are versioned copy-on-write; opportunities and qualifications pin a version; migration is an explicit operation with a stage map. | [confirmation and safety](confirmation-and-safety.md#pipeline-presets-and-their-limits) |
 | A16 | A **merged party is an alias**: it keeps its row, references outside the module are never rewritten, the resolver follows one hop, and the merge record holds the pre-merge ownership so unmerge restores from the record. | [relationships](relationships.md#a16-alias-based-merge-decided) |
 | A17 | Every **memory carries an explicit audience and purpose set**; derivation takes the intersection and refuses when empty; one invalidation rule serves deletion, correction, and supersession. | [memory](memory.md#a17-explicit-audience-and-purposes-intersection-one-invalidation-rule) |
+| A18 | The **web interface is composed from module manifests at build time and filtered per workspace at runtime**; the **theme is a versioned declarative token contract** whose confirmation-chrome subset only built-in themes set. | [theme contract](theme-contract.md), [module contract](module-contract.md#extension-points) |
 
 ## What this specification does not decide
 
