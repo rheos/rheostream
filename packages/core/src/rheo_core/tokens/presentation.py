@@ -54,14 +54,22 @@ from rheo_core.tokens.format import parse
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 
 _SURFACE_ACCEPTS: Final[dict[str, frozenset[str]]] = {
-    "api": frozenset({"cli", "mcp"}),
+    "api": frozenset({"cli"}),
     "mcp": frozenset({"mcp", "runtime"}),
 }
 """Which token ``kind``s each bearer surface accepts (``format.py``'s docstring,
-``presentation.py``'s own checkpoint). An unrecognised surface accepts nothing --
-every registered kind refuses ``TOKEN_WRONG_KIND`` -- rather than raising, since
-the only two callers (``apps/core``'s ``api`` route and ``apps/mcp``'s
-``session.py``) always pass one of the two keys above."""
+``presentation.py``'s own checkpoint).
+
+**The ``api`` surface stopped accepting ``mcp`` tokens in issue #130 (Robin's
+decision).** An ``mcp`` token is what a model holds, and everything a model is sent
+goes through the tool facade's redaction; over ``/api/v1/operations/*`` the same token
+would get the operation's raw output, tiers and masks bypassed. So an ``mcp`` token
+works on the ``mcp`` surface only, and a ``cli`` token is the HTTP credential.
+
+An unrecognised surface accepts nothing -- every registered kind refuses
+``TOKEN_WRONG_KIND`` -- rather than raising, since the only two callers
+(``apps/core``'s ``api`` route and ``apps/mcp``'s ``session.py``) always pass one of
+the two keys above."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -745,7 +745,8 @@ def test_an_owner_may_retry_but_the_owners_model_may_not(
         {"kind": "mcp", "operations": [WORK_RETRY, WORK_SKIP, WORK_REPLAY]},
     )
     assert issued.ok, issued
-    model = context_from_token(issued.result.value, "api")  # type: ignore[union-attr]
+    # The ``mcp`` surface: since issue #130 the ``api`` surface refuses ``mcp`` tokens.
+    model = context_from_token(issued.result.value, "mcp")  # type: ignore[union-attr]
     assert isinstance(model, WorkspaceContext), model
     _, run_value = issue_runtime_token(
         account_id=owner_account_id,
