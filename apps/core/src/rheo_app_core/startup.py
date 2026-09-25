@@ -1,11 +1,12 @@
 """The ``core`` process's startup sequence, run once from the FastAPI ``lifespan``.
 
-In order: settings → the production/https invariant → data root → the
-``secret://env/*`` reference check → ensure the control database and run the
-``control`` chain → the identity-provider sync → migrate active workspaces serially
-→ build the operation registry → build the tool registry → load the modules the
-resolved ``modules.installed`` setting names → check that every registered operation
-above the read class has an installed audit sink.
+In order: the allowed modules' settings keys (#108) → settings → the
+production/https invariant → data root → the ``secret://env/*`` reference check →
+ensure the control database and run the ``control`` chain → the identity-provider
+sync → migrate active workspaces serially → build the operation registry → build the
+tool registry → load the modules the resolved ``modules.installed`` setting names →
+check that every registered operation above the read class has an installed audit
+sink.
 "Ensure the control database" treats psycopg's ``DuplicateDatabase`` as success
 (``PostgresBackend.ensure_database``), mirroring provisioning's "already exists is a
 retry": the advisory lock covers the migration chain, not the ``CREATE DATABASE``
@@ -38,7 +39,7 @@ from rheo_core.migrations.orchestrator import (
     migrate_active_workspaces,
     migrate_control,
 )
-from rheo_core.modules import load_modules
+from rheo_core.modules import load_modules, register_module_settings
 from rheo_core.operations import REGISTRY, register_core_operations
 from rheo_core.operations.audit_paths import check_audit_paths
 from rheo_core.routing import SCHEME_KEY
@@ -101,6 +102,9 @@ class StartupReport:
 
 def run_startup() -> StartupReport:
     """The sequence in the module docstring; blocking, run off the event loop."""
+    # Before the first resolve (#108): an allowed module's own RHEO__<module>__*
+    # variable is a stray until its configuration_schema is registered.
+    register_module_settings()
     settings = resolve()
     _check_production_scheme(
         settings.get_str(PROFILE_KEY), settings.get_str(SCHEME_KEY)

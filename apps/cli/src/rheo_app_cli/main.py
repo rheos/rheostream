@@ -9,18 +9,23 @@ the console-script wrapper (``apps/cli/pyproject.toml``) does. argparse's own ex
 inside a test sees a return value, never ``SystemExit``.
 
 The no-subcommand path bootstraps nothing: no settings resolution, no data root,
-no database. Settings and the backend are bootstrapped inside a subcommand's own
-handler (``context.py``). Commands at this run's merge SHA: ``migrate``,
-``account create``, ``workspace create|repair|list|status``, ``doctor``,
-``routing hosts``, ``member add``, ``token issue|revoke``, ``openapi`` (run 0v's)
-and ``web compose`` (run 1a3's). Those last two bootstrap nothing — see
-``commands/openapi.py`` and ``commands/web.py``.
+no database. Every other subcommand first registers the allowed modules' own settings
+keys (``register_module_settings()``, #108, in :func:`run_command`), then settings
+and the backend are bootstrapped inside its own handler (``context.py``); ``openapi``
+and ``web`` skip that registration (``NO_BOOTSTRAP_COMMANDS``). Commands at this
+run's merge SHA: ``migrate``, ``account create``,
+``workspace create|repair|list|status``, ``doctor``, ``routing hosts``,
+``member add``, ``token issue|revoke``, ``openapi`` (run 0v's) and ``web compose``
+(run 1a3's). Those last two bootstrap nothing — see ``commands/openapi.py`` and
+``commands/web.py``.
 """
 
 import argparse
 import sys
 from collections.abc import Callable, Sequence
+from typing import Final
 
+from rheo_core.modules import register_module_settings
 from rheo_core.secrets import SecretRefusal
 from rheo_core.settings import SettingsError
 from rheo_core.storage.backend import StorageRefusal
@@ -39,6 +44,10 @@ from rheo_app_cli.commands import (
 )
 
 Handler = Callable[[argparse.Namespace], int]
+
+NO_BOOTSTRAP_COMMANDS: Final = frozenset({"openapi", "web"})
+"""Subcommands that bootstrap nothing, so :func:`run_command` skips the early module
+settings registration for them: ``make codegen`` runs both, with no deployment."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,8 +82,15 @@ def _exit_code(code: object) -> int:
 
 
 def run_command(handler: Handler, args: argparse.Namespace) -> int:
-    """Run one handler; a refusal prints its state to stderr and exits ``1``."""
+    """Run one handler; a refusal prints its state to stderr and exits ``1``.
+
+    Registers the allowed modules' settings keys first (#108), inside the ``try`` so a
+    refusal it raises prints and exits like any other, except for the commands in
+    :data:`NO_BOOTSTRAP_COMMANDS`.
+    """
     try:
+        if getattr(args, "command", None) not in NO_BOOTSTRAP_COMMANDS:
+            register_module_settings()
         return handler(args)
     except (StorageRefusal, SettingsError, DataRootRefusal, SecretRefusal) as refusal:
         print(f"{refusal.state}: {refusal.detail}", file=sys.stderr)

@@ -8,7 +8,7 @@ itself, and the allowlist that decides whether it loads at all.
 - ``loader.py`` — ``discovered()`` over the ``rheo.modules`` entry-point group,
   ``allowed_module_ids()`` over the ``modules.installed`` setting,
   ``load_entry_point()`` (one entry point through the three load gates),
-  ``load_modules()``,
+  ``load_modules()``, ``register_module_settings()`` (the settings-only early hook),
   ``loaded_manifests()``, ``loaded_in_dependency_order()`` and ``module_surfaces()``.
 
 **No lifecycle.** Install, enable and disable are phase 2's; nothing in release one can
@@ -25,6 +25,7 @@ from rheo_core.modules.loader import (
     loaded_in_dependency_order,
     loaded_manifests,
     module_surfaces,
+    register_module_settings,
     reset_surfaces,
 )
 from rheo_core.modules.manifest import (
@@ -105,5 +106,6 @@ __all__ = [
     "loaded_manifests",
     "model_cache_dir",
     "module_surfaces",
+    "register_module_settings",
     "reset_surfaces",
 ]
