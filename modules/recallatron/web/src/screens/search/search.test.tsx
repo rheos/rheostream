@@ -115,8 +115,6 @@ describe("Search results", () => {
     const { text } = await searchFor("garden");
     expect(text).toContain("Strategy: hybrid");
     expect(text).toContain("Meaning search available: yes");
-    expect(text).toContain("Word matches: 2");
-    expect(text).toContain("Meaning matches: 1");
   });
 
   it("cuts a long body to its first 280 characters", async () => {
@@ -178,11 +176,64 @@ describe("Search results", () => {
     expect(emptyKind("something-new", true)).toBe("hybrid");
   });
 
+  it("renders a degraded provenance with its strategy and no meaning search", async () => {
+    const { text } = await searchFor("garden", ok("recall-empty-degraded.json"));
+    expect(text).toContain("Strategy: hybrid");
+    expect(text).toContain("Meaning search available: no");
+  });
+
   it("falls back to the generic error on a refusal or an unavailable outcome", async () => {
     for (const outcome of [refusal("input_invalid"), { state: "unavailable" } as const]) {
       const { markup, text } = await searchFor("garden", outcome);
       expect(markup).toContain('data-state="error"');
       expect(text).toContain("Memory is unavailable right now.");
     }
+  });
+});
+
+describe("Search arm counts", () => {
+  // recall counts each arm before the permission walk, so a count can include memories
+  // the caller cannot read. Distinctive values make any count that reaches the page
+  // easy to spot; the fixture's shape is kept, only its arm values change.
+  const LEXICAL = 7;
+  const DENSE = 11;
+  const STANDALONE_COUNT = new RegExp(`(?<![\\w.:-])(?:${LEXICAL}|${DENSE})(?![\\w:-])`);
+
+  function withDistinctiveArms(name: string) {
+    const result = fixture(name) as { provenance: Record<string, unknown> };
+    return {
+      state: "ok",
+      result: {
+        ...result,
+        provenance: { ...result.provenance, arms: { lexical: LEXICAL, dense: DENSE } },
+      },
+    } as const;
+  }
+
+  function provenanceOf(markup: string): string {
+    const line = /<p[^>]*data-provenance=""[^>]*>([\s\S]*?)<\/p>/.exec(markup);
+    if (line?.[1] === undefined) throw new Error("no provenance line rendered");
+    return textOf(line[1]);
+  }
+
+  const RENDERED: readonly (readonly [string, string])[] = [
+    ["recall-populated.json", "results"],
+    ...EMPTY_FIXTURES.map(([name, kind]) => [name, `empty-${kind}`] as const),
+  ];
+
+  it.each(RENDERED)("never renders an arm count for %s (%s)", async (name, rendered) => {
+    const { state, markup, text } = await searchFor("garden", withDistinctiveArms(name));
+    expect(markup).toContain(rendered === "results" ? "<ol" : `data-state="${rendered}"`);
+
+    // The view state holds no count to render in the first place.
+    if (state.results.state !== "results" && state.results.state !== "empty") {
+      throw new Error(`${name} did not reach a provenance state`);
+    }
+    expect(Object.keys(state.results.provenance).sort()).toEqual(["denseAvailable", "strategy"]);
+
+    // Nor does the page: no count copy, and no count in the provenance line or elsewhere.
+    expect(text).not.toMatch(/word matches:|meaning matches:/i);
+    expect(provenanceOf(markup)).not.toMatch(/\d/);
+    expect(text).not.toMatch(STANDALONE_COUNT);
   });
 });

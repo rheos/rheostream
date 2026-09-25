@@ -10,8 +10,7 @@ function ProvenanceLine({ provenance }: { provenance: Provenance }) {
   return (
     <p className={styles.provenance} data-provenance="">
       Strategy: <code>{provenance.strategy}</code>. Meaning search available:{" "}
-      {provenance.denseAvailable ? "yes" : "no"}. Word matches: {provenance.lexicalCount}.
-      Meaning matches: {provenance.denseCount}.
+      {provenance.denseAvailable ? "yes" : "no"}.
     </p>
   );
 }

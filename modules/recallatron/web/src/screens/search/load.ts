@@ -51,11 +51,16 @@ export interface SearchResultRow {
   href: string;
 }
 
+/**
+ * What the screen says about how a search ran. It deliberately has no arm counts:
+ * `recall` takes those before the permission walk, so a count can include memories
+ * the caller cannot read, and on an empty result any non-zero count is exactly a
+ * hidden memory. Only the strategy and whether meaning search was available reach
+ * the view.
+ */
 export interface Provenance {
   strategy: string;
   denseAvailable: boolean;
-  lexicalCount: number;
-  denseCount: number;
 }
 
 export type ResultsState =
@@ -89,8 +94,6 @@ async function loadResults(shell: ShellApi, query: string): Promise<ResultsState
   const summary: Provenance = {
     strategy: provenance.strategy,
     denseAvailable: provenance.dense_available,
-    lexicalCount: provenance.arms.lexical,
-    denseCount: provenance.arms.dense,
   };
   if (items.length === 0) {
     return {
