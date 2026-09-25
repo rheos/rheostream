@@ -24,8 +24,10 @@ Fusion and rerank are written here by hand, a few lines each, and borrow from no
 """
 
 import dataclasses
+import heapq
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
+from fractions import Fraction
 from typing import Final
 from uuid import UUID
 
@@ -62,7 +64,9 @@ adapter. It damps the head of each list: rank 1 scores ``1/61``, rank 2 ``1/62``
 _NOT_READ: Final = datetime.min.replace(tzinfo=UTC)
 """The rerank's timestamp for a ranked id whose row was gone by the time its
 ``recorded_at`` was read (deleted by a commit between two of this call's statements).
-It sorts oldest, and the permission walk then drops it as not found."""
+It sorts oldest. Without ``admit`` the permission walk then drops it as not found;
+under ``recall()``, which decides eligibility before this read, the row was readable
+when decided and is returned as it was then."""
 
 
 # --- the over-fetch multiplier --------------------------------------------------------
@@ -123,6 +127,12 @@ def fuse(
     return [(ref, scores[ref]) for ref in ordered]
 
 
+def _rrf(rank: int) -> Fraction:
+    """One arm's fusion term at a 1-based rank, exactly: the stopping test below
+    compares bounds that can be equal, and a float could round one past the other."""
+    return Fraction(1, RRF_CONSTANT + rank)
+
+
 def admitted_arms(
     lexical: Sequence[UUID],
     dense: Sequence[UUID],
@@ -134,31 +144,59 @@ def admitted_arms(
     ranks fusion counts are ranks among memories the caller may read (#125).
 
     Fused over the unfiltered arms, a score ``1 / (60 + rank)`` gives away the rank,
-    and the rank counts every hidden row above it. Fused over these lists, every score
-    and the order of every returned item are what they would be if the hidden rows
-    did not exist. One residual stays: the dense arm is cut to its width before this
-    runs, so enough hidden rows nearer the query can still push a readable one out.
+    and the rank counts every hidden row above it. Fused over these lists, the top
+    ``k`` (which ``recall()`` takes) holds the same items, scores and order as if the
+    hidden rows did not exist. Two residuals stay, both from each arm's own bound
+    before this runs: the dense arm is cut to its width and the lexical arm to the
+    scan bound, so enough hidden rows ahead of a readable one can push it out.
 
     **The dense arm is decided in full**; it is at most ``k`` times the multiplier
-    long. **The lexical arm is decided only as deep as the answer needs:** past both
-    its ``k``-th admitted row and every admitted dense id it also holds. A row left
-    undecided is then in no admitted dense position, so its fused score is lexical
-    alone at an admitted rank above ``k``, at most ``1 / (61 + k)``, below each of the
-    ``k`` admitted rows already found. It cannot reach the top ``k`` that ``recall()``
-    takes, so nothing it could change is ever returned. The remaining positions of
-    the fused list are then approximate, and no caller reads past ``k``.
+    long. **The lexical arm is decided only until nothing undecided can reach the top
+    ``k``.** With ``r`` rows admitted so far, an undecided row's admitted lexical rank
+    is at least ``r + 1``, so it can score at most ``1 / (61 + r)``, plus its dense
+    term if it is an admitted dense id the walk has not reached yet. Every other
+    candidate's score is exact: an admitted lexical row once reached, and an admitted
+    dense id the lexical arm never returned. The walk stops once ``k`` exact scores
+    are known and every undecided bound is strictly below the ``k``-th of them, so no
+    undecided row can tie into the top ``k`` either. An admitted dense id left
+    unreached is fused on its dense term alone, below the top ``k``. Positions past
+    ``k`` are approximate; no caller reads them.
     """
     dense_kept = [ref for ref in dense if admit(ref)]
-    position = {ref: index for index, ref in enumerate(lexical)}
-    must_reach = max(
-        (position[ref] for ref in dense_kept if ref in position), default=-1
-    )
+    dense_rank = {ref: rank for rank, ref in enumerate(dense_kept, start=1)}
+    in_lexical = set(lexical)
+    best: list[Fraction] = []  # a min-heap of the k best exact scores
+
+    def record(score: Fraction) -> None:
+        if len(best) < k:
+            heapq.heappush(best, score)
+        elif score > best[0]:
+            heapq.heapreplace(best, score)
+
+    for ref, rank in dense_rank.items():
+        if ref not in in_lexical:
+            record(_rrf(rank))
+    # Dense ranks of admitted dense ids the lexical walk has yet to reach, best first.
+    unreached = sorted(rank for ref, rank in dense_rank.items() if ref in in_lexical)
+
     lexical_kept: list[UUID] = []
-    for index, ref in enumerate(lexical):
-        if len(lexical_kept) >= k and index > must_reach:
-            break
-        if admit(ref):
-            lexical_kept.append(ref)
+    for ref in lexical:
+        if len(best) == k:
+            floor = best[0]
+            undecided = _rrf(len(lexical_kept) + 1)
+            if undecided < floor and (
+                not unreached or _rrf(unreached[0]) + undecided < floor
+            ):
+                break
+        if not admit(ref):
+            continue
+        lexical_kept.append(ref)
+        score = _rrf(len(lexical_kept))
+        dense_position = dense_rank.get(ref)
+        if dense_position is not None:
+            score += _rrf(dense_position)
+            unreached.remove(dense_position)
+        record(score)
     return lexical_kept, dense_kept
 
 

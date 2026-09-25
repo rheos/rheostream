@@ -9,6 +9,7 @@ lexical first, so float equality is exact.
 reads (the multiplier and ``recorded_at``) stubbed, to pin the cut it hands on.
 """
 
+import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -260,31 +261,59 @@ def test_hidden_candidates_move_no_fused_score_or_position(
     }
 
 
-def test_the_lexical_arm_is_decided_past_k_and_every_admitted_dense_id() -> None:
-    """The admitted lexical walk stops once it holds ``k`` rows **and** has passed
-    every admitted dense id the lexical arm also holds, so that id's lexical rank is
-    known. A dense id lexical never returned sets no depth."""
-    lexical = [_id(n) for n in range(1, 101)]
-    deep = lexical[49]
-    elsewhere = _id(5_000)
+def _deciding(lexical: list[UUID], dense: list[UUID], k: int) -> list[UUID]:
+    """The lexical rows :func:`admitted_arms` decided, admitting everything."""
     asked: list[UUID] = []
 
     def admit(ref: UUID) -> bool:
         asked.append(ref)
         return True
 
-    kept_lexical, kept_dense = admitted_arms(
-        lexical, [deep, elsewhere], admit=admit, k=2
-    )
+    admitted_arms(lexical, dense, admit=admit, k=k)
+    return [ref for ref in asked if ref in set(lexical) - set(dense)]
 
-    assert kept_dense == [deep, elsewhere]
-    assert kept_lexical == lexical[:50]
-    assert asked == [deep, elsewhere, *lexical[:50]]
 
-    asked.clear()
-    kept_lexical, _ = admitted_arms(lexical, [elsewhere], admit=admit, k=2)
-    assert kept_lexical == lexical[:2]
-    assert asked == [elsewhere, *lexical[:2]]
+def test_the_lexical_walk_reaches_a_deep_admitted_dense_id() -> None:
+    """An admitted dense id at lexical position 50 could still reach the top two with
+    its lexical term, so the walk decides every row down to it, and stops there."""
+    lexical = [_id(n) for n in range(1, 101)]
+    deep, elsewhere = lexical[49], _id(5_000)
+
+    assert _deciding(lexical, [deep, elsewhere], k=2) == lexical[:49]
+
+
+def test_the_lexical_walk_stops_once_nothing_undecided_can_reach_the_top_k() -> None:
+    """With no dense arm, ``k`` lexical rows settle it: the next can score at most
+    ``1/(61+k)``, below the ``k``-th. With a dense-only id at ``1/61`` and one lexical
+    row at ``1/61``, one lexical row settles a ``k`` of two."""
+    lexical = [_id(n) for n in range(1, 101)]
+
+    assert _deciding(lexical, [], k=2) == lexical[:2]
+    assert _deciding(lexical, [_id(5_000)], k=2) == lexical[:1]
+
+
+def test_admitted_fusion_matches_fusion_over_fully_filtered_arms() -> None:
+    """The claim itself, as a property: over random arms, hidden sets, ``k`` and
+    ``recorded_at`` ties, the top ``k`` fused from :func:`admitted_arms` is the top
+    ``k`` fused from both arms with every hidden row removed, ids and scores."""
+    rng = random.Random(125)
+    for _ in range(2_000):
+        pool = [_id(n) for n in range(1, rng.randint(2, 60))]
+        lexical = rng.sample(pool, rng.randint(0, len(pool)))
+        dense = rng.sample(pool, rng.randint(0, min(len(pool), 15)))
+        hidden = {ref for ref in pool if rng.random() < 0.4}
+        k = rng.randint(1, 12)
+        recorded_at = {ref: _NOW + timedelta(seconds=rng.randint(0, 3)) for ref in pool}
+
+        kept = admitted_arms(
+            lexical, dense, admit=(set(pool) - hidden).__contains__, k=k
+        )
+        filtered = (
+            [ref for ref in lexical if ref not in hidden],
+            [ref for ref in dense if ref not in hidden],
+        )
+
+        assert fuse(kept, recorded_at)[:k] == fuse(filtered, recorded_at)[:k]
 
 
 def test_a_denied_lexical_row_does_not_count_toward_k() -> None:

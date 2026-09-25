@@ -164,7 +164,10 @@ suite under `lexical` and under `dense`. The two stages, in order:
    at most 500 positions ([storage](storage-and-workspaces.md#retrieval-adapter-d9-fr-30)), and
    the call walks that list in order until it has `k` eligible hits or reaches its end, which is
    the scan bound of 500. This permission walk has no over-fetch multiplier: no setting widens
-   or narrows how far it looks. The one over-fetch setting,
+   or narrows how far the walk itself looks. Under `hybrid`, eligibility is also decided
+   earlier, inside `search` (#125): for the whole dense arm, so there the multiplier does widen
+   how many decisions are taken, and for the lexical arm only until nothing undecided can reach
+   the top `k`. The one over-fetch setting,
    `recallatron.retrieval.overfetch_multiplier` (default 3, bounds 1 to 10), acts at an earlier
    stage and on the dense arm alone: inside `search`, before fusion, the `hybrid` dense arm
    fetches `min(k × multiplier, 500)` rows. The lexical arm fetches 500 under `lexical` and
@@ -197,12 +200,20 @@ response: `ts_rank_cd` under `lexical`, cosine similarity under `dense`, and the
 memories the caller may read: `recall()` hands the strategy its eligibility decision, both arms
 are cut to admitted candidates, and only then fused. Fused over the raw arms, a score would
 give away its rank and so the number of hidden memories above it (#125). The dense arm is
-decided in full; the lexical arm only as deep as the top `k` needs, past its `k`-th admitted
-row and every admitted dense id it also holds, since no row below that can reach the top `k`.
-The same decisions are cached for the walk, which re-reads them. A score compared across
-strategies, or stored and compared later, compares nothing. The candidate SQL and the link
-check are strategy-independent; 1a1 owns the records, the eligibility rules both stages apply,
-and the bounds below.
+decided in full. The lexical arm is decided only until nothing undecided can reach the top `k`:
+with `r` rows admitted, an undecided row can score at most `1 / (61 + r)`, plus the dense term
+of an admitted dense id not yet reached, and the walk stops once `k` exact scores are known and
+every such bound is strictly below the `k`-th. The same decisions are cached for the walk,
+which re-reads them. Each arm's own bound, taken before any decision, is a residual: the dense
+arm's `k × overfetch_multiplier` and the lexical arm's scan bound of 500 both count hidden
+rows, so enough hidden rows ahead of a readable memory can push it out of that arm. How many
+decisions a `hybrid` recall takes also depends on raw positions, hidden rows included, so
+hidden rows with many links can exhaust the shared reference budget and turn an answer into
+`reference_scan_limit`: a content-free, query-dependent bit of the same kind the walk had
+before #125 and `read` has as bit 2 below. It is documented here, not yet accepted. A score
+compared across strategies, or stored and compared later, compares nothing. The candidate SQL
+and the link check are strategy-independent; 1a1 owns the records, the eligibility rules both
+stages apply, and the bounds below.
 
 **How each strategy ranks.** The lexical arm matches the query against `search_tsv` with an
 **OR** join, not an AND: a memory needs one of the query's surviving terms, not all of them.
