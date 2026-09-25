@@ -21,6 +21,9 @@ unregister, so the autouse fixture swaps copies of its two tables in through
 originals come back afterwards; environment variables go through ``monkeypatch`` too.
 """
 
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from importlib.metadata import EntryPoint
 from pathlib import Path
@@ -42,7 +45,14 @@ from rheo_core.modules import (
 )
 from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.refs import uuid7
-from rheo_core.settings import KeySpec, Scope, ValueType, env_variable_names, resolve
+from rheo_core.settings import (
+    PROFILE_KEY,
+    KeySpec,
+    Scope,
+    ValueType,
+    env_variable_names,
+    resolve,
+)
 from rheo_core.settings.deployment import read_deployment_value
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
 from rheo_core.settings.schema import SettingTypeMismatch, SettingUndeclared
@@ -317,6 +327,133 @@ def test_an_allowed_module_that_cannot_load_is_a_cli_refusal(
 
 
 # --- the worker's composition root ----------------------------------------------------
+
+
+# --- a genuinely cold interpreter -----------------------------------------------------
+#
+# Every case above runs in a process where pytest imported ``rheo_recallatron`` long
+# before ``monkeypatch.setenv``, so an import-time side effect of that package never
+# sees the module's variable. A deployment's core, worker and CLI each start cold with
+# the variable already set; these cases do the same in a fresh interpreter.
+
+_COLD_REPRO = """
+from rheo_core.modules import register_module_settings
+register_module_settings()
+from rheo_recallatron.embedding.registry import configured_provider_name
+print(configured_provider_name())
+"""
+
+# What a composition root does after the early hook: import the module (as the full
+# load will) and resolve in full, strictly.
+_COLD_RESOLVE = """
+from rheo_core.modules import register_module_settings
+register_module_settings()
+import rheo_recallatron.embedding.registry
+from rheo_core.settings import resolve
+resolve()
+"""
+
+
+def _cold_run(
+    tmp_path: Path, extra: dict[str, str], script: str = _COLD_REPRO
+) -> subprocess.CompletedProcess[str]:
+    """``script`` in a fresh interpreter with every inherited RHEO_* stripped."""
+    environ = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("RHEO_")
+    }
+    environ["RHEO_DATA_ROOT"] = str(tmp_path)
+    environ.update(extra)
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        env=environ,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_cold_start_resolves_an_allowed_modules_environment_setting(
+    tmp_path: Path,
+) -> None:
+    result = _cold_run(
+        tmp_path,
+        {env_variable_names(ALLOWLIST_KEY)[0]: RECALLATRON, PROVIDER_VARIABLE: "none"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "none"
+
+
+def test_cold_start_still_refuses_a_stray_variable_of_an_allowed_module(
+    tmp_path: Path,
+) -> None:
+    result = _cold_run(
+        tmp_path,
+        {env_variable_names(ALLOWLIST_KEY)[0]: RECALLATRON, STRAY_VARIABLE: "anything"},
+        _COLD_RESOLVE,
+    )
+    assert result.returncode != 0
+    assert "SettingUndeclared" in result.stderr
+    assert STRAY_VARIABLE in result.stderr
+
+
+def test_cold_start_still_refuses_a_module_variable_when_not_allowlisted(
+    tmp_path: Path,
+) -> None:
+    result = _cold_run(tmp_path, {PROVIDER_VARIABLE: "none"}, _COLD_RESOLVE)
+    assert result.returncode != 0
+    assert "SettingUndeclared" in result.stderr
+    assert PROVIDER_VARIABLE in result.stderr
+
+
+# Importing the registry registers nothing and reads no deployment layer; the first use
+# registers the built-ins exactly once, however many uses follow.
+_COLD_FIRST_USE = """
+import rheo_recallatron.embedding.registry as registry
+assert registry.PROVIDERS == {}, sorted(registry.PROVIDERS)
+calls = []
+original = registry.register_builtin_providers
+def counting():
+    calls.append(1)
+    original()
+registry.register_builtin_providers = counting
+fake = registry.providers()[registry.FAKE_PROVIDER]
+registry.resolve_provider()
+registry.register_provider("probe", fake)
+assert registry.providers()[registry.FAKE_PROVIDER] is fake
+assert calls == [1], calls
+print("registered once")
+"""
+
+# The import itself never reads the strict deployment layer, so a variable no schema
+# declares yet cannot fail it; the first use still reads it, and still refuses.
+_COLD_IMPORT_THEN_USE = """
+import rheo_recallatron.embedding.registry as registry
+print("imported")
+registry.providers()
+"""
+
+
+def test_cold_registry_registers_built_ins_on_first_use_exactly_once(
+    tmp_path: Path,
+) -> None:
+    result = _cold_run(
+        tmp_path, {env_variable_names(PROFILE_KEY)[0]: "test"}, _COLD_FIRST_USE
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "registered once"
+
+
+def test_cold_registry_import_reads_no_deployment_layer_but_first_use_stays_strict(
+    tmp_path: Path,
+) -> None:
+    result = _cold_run(tmp_path, {PROVIDER_VARIABLE: "none"}, _COLD_IMPORT_THEN_USE)
+    assert result.stdout.strip() == "imported", result.stderr
+    assert result.returncode != 0
+    assert "SettingUndeclared" in result.stderr
+    assert PROVIDER_VARIABLE in result.stderr
 
 
 class _ReachedModuleLoad(Exception):

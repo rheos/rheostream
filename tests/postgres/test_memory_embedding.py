@@ -363,12 +363,12 @@ def _install(
     on undo; ``register_provider`` then applies the width check a real registration
     gets.
     """
-    monkeypatch.setitem(registry.PROVIDERS, name, provider)
+    monkeypatch.setitem(registry.providers(), name, provider)
     registry.register_provider(name, provider)
 
 
 def _fake() -> FakeEmbeddingProvider:
-    provider = registry.PROVIDERS.get(registry.FAKE_PROVIDER)
+    provider = registry.providers().get(registry.FAKE_PROVIDER)
     assert isinstance(provider, FakeEmbeddingProvider), (
         "the fake provider registers only under the test profile"
     )
@@ -556,7 +556,7 @@ def test_a_missing_extra_registers_no_local_provider_and_a_wrong_width_raises(
     degrades to no provider; a provider of the wrong width is a packaging error."""
     # The control: with the extra present, the built-in registration took ``local``.
     assert isinstance(
-        registry.PROVIDERS.get(registry.LOCAL_PROVIDER), LocalEmbeddingProvider
+        registry.providers().get(registry.LOCAL_PROVIDER), LocalEmbeddingProvider
     ), f"the local-embeddings extra is not installed: run `{_EXTRA_REMEDY}`"
 
     monkeypatch.setitem(sys.modules, "fastembed", None)
