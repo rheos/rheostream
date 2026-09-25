@@ -1725,6 +1725,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -1788,6 +1792,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -1851,6 +1859,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -1914,6 +1926,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -1977,6 +1993,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2040,6 +2060,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2103,6 +2127,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2166,6 +2194,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2229,6 +2261,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2292,6 +2328,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2355,6 +2395,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2418,6 +2462,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2481,6 +2529,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2544,6 +2596,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2607,6 +2663,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2670,6 +2730,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2733,6 +2797,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2796,6 +2864,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2859,6 +2931,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2922,6 +2998,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {
@@ -2985,6 +3065,10 @@
               "application/json": {
                 "schema": {
                   "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
                     "error": {
                       "properties": {
                         "error_code": {

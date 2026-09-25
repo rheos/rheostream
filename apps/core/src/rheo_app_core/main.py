@@ -12,10 +12,13 @@ tests stay database-free and why ``tests/postgres/test_cli.py`` drives the lifes
 explicitly to prove the startup sequence.
 
 The ``/auth/*`` routes, ``/api/v1/operations``, the internal listener, ``serve()``
-and the MCP facade seam are 0b2's; the MCP transport is 0c's. ``rheo_app_mcp`` is
-still imported at module scope to record the composition-root import edge the
-architecture draws — now as :func:`build_mcp_surface`, which binds this process's
-``ConsumerRegistry`` to the façade rather than merely naming the package.
+and the MCP facade seam are 0b2's; the MCP transport is 0c's. The ``mcp`` surface is
+served by this app too (issue #127): :class:`~rheo_app_core.mcp_mount.McpSurfaceRouter`
+sits in front of the routes below and hands the surface's requests to the façade,
+and the lifespan builds that façade from the resolved routing settings and runs its
+session manager (``mcp_mount.py`` has the matching rules and the reasons). With no
+lifespan running there is no mount, so the database-free tests above see only
+FastAPI.
 """
 
 import asyncio
@@ -23,34 +26,13 @@ import contextlib
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
-from rheo_app_mcp.transport import build_mcp_app
 from rheo_contracts import CONTRACT_VERSION
 from rheo_core.storage.postgres import get_backend
-from starlette.applications import Starlette
 
 from rheo_app_core import api_routes, auth_routes
 from rheo_app_core.internal_app import internal_app as internal_app
-from rheo_app_core.startup import CONSUMERS, run_startup
-
-
-def build_mcp_surface() -> Starlette:
-    """The MCP façade, wired to **this** process's one ``ConsumerRegistry``.
-
-    Not mounted in this run, and not called from anywhere in it: mounting the
-    façade into this process's request-serving path is a later step
-    (``rheo_app_mcp.transport``'s own docstring says so). What this function is for
-    is the wiring decision, which belongs at the composition root and nowhere else.
-    ``build_mcp_app`` takes ``consumers`` as a keyword with no default, so a
-    mounting that forgot it would not compile rather than quietly publishing into a
-    registry nobody subscribed to; naming :data:`~rheo_app_core.startup.CONSUMERS`
-    here is what makes the in-process MCP surface and the HTTP routes above reach
-    the same object once it is mounted.
-
-    A function rather than a module-level application: constructing the SDK's
-    session manager has real setup behind it, and the composition-root import edge
-    this replaces did no work at all. Calling it is still the mounting step's job.
-    """
-    return build_mcp_app(consumers=CONSUMERS)
+from rheo_app_core.mcp_mount import McpSurfaceRouter, mounted_mcp
+from rheo_app_core.startup import run_startup
 
 
 def _dispose_backend() -> None:
@@ -63,15 +45,23 @@ def _dispose_backend() -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup sequence before the first request; dispose the engines at shutdown."""
+    """Startup, then the mounted ``mcp`` surface; unwound in reverse at shutdown.
+
+    The surface is built after ``run_startup`` because it reads the routing settings
+    startup has just checked, and because a tool call needs the registries startup
+    fills. It is torn down before the engines are disposed, so no MCP session is
+    still dispatching when its database connections go.
+    """
     app.state.startup = await asyncio.to_thread(run_startup)
     try:
-        yield
+        async with mounted_mcp(app):
+            yield
     finally:
         await asyncio.to_thread(_dispose_backend)
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(McpSurfaceRouter)
 
 public_app = app
 """``app`` bound to a second name. ``spec.md``'s architecture text and 11's

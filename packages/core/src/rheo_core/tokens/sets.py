@@ -14,9 +14,11 @@ anywhere, so a set tracks the registry live:
 :class:`ToolRegistry` is also the MCP facade's tool table
 (``apps/mcp/src/rheo_app_mcp/tools.py`` lists exactly what this registry holds --
 one declaration site, read from both directions, so the façade and this module's
-policy can never drift apart). :data:`CORE_TOOLS` names the two declarations
-:func:`register_core_tools` feeds it: ``workspace_status`` (production) and
-``harness_get_note`` (test profile only), mirroring how
+policy can never drift apart). :data:`CORE_TOOLS` names the declarations
+:func:`register_core_tools` feeds it: the four production core tools
+(``workspace_status``, ``operations_get``, ``operations_list``, ``audit_list``;
+``runtime-and-mcp.md`` § Release-one tool set) and ``harness_get_note`` (test
+profile only), mirroring how
 ``operations/core_ops.py`` pairs :data:`~rheo_core.operations.core_ops.
 CORE_OPERATIONS` with ``register_core_operations()``.
 
@@ -37,10 +39,14 @@ filtering is "gating its inclusion the same way the harness gates its own
 registrations": the harness's registration attempt is what is profile-gated, not
 a second check duplicated here.
 
-This module defines its own tiny input models for both tools rather than
-importing ``rheo_core.operations.core_ops`` or ``tests/harness/registry.py``'s:
-the latter would make a shipped package depend on test-only code that is never
-installed. Duplicating two small, stable shapes is cheaper than that.
+This module defines its own tiny input models for every tool rather than
+importing ``rheo_core.operations.core_ops``, ``operation_ops``, ``audit.operations``
+or ``tests/harness/registry.py``'s: the first three would close the import cycle
+below, and the last would make a shipped package depend on test-only code that is
+never installed. Duplicating a few small, stable shapes is cheaper than either. The
+mirrors are held to their originals by ``tests/test_core_tools.py``, which compares
+each tool's published JSON schema with its operation's and checks each tool's safety
+class against the operation's declaration.
 
 **Everything from ``rheo_core.operations`` is imported lazily, inside the function
 that needs it, never at module level** -- ``REGISTRY`` in the three set
@@ -64,8 +70,9 @@ case-by-case.
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from rheo_contracts import SafetyClass, ToolDeclaration
 
 from rheo_core.settings import CORE_ORIGIN
@@ -75,6 +82,14 @@ _WORKSPACE_STATUS_OPERATION: Final = "core.workspace.status"
 """Duplicated from ``operations/core_ops.py``'s ``WORKSPACE_STATUS`` -- see the
 module docstring's cycle note. The two are proven equal by
 ``test_tokens.py``'s own ``agent_default`` assertion, not by a shared import."""
+
+_OPERATION_GET_OPERATION: Final = "core.operation.get"
+_OPERATION_LIST_OPERATION: Final = "core.operation.list"
+_AUDIT_LIST_OPERATION: Final = "core.audit.list"
+"""Duplicated from ``operations/operation_ops.py``'s ``OPERATION_GET`` /
+``OPERATION_LIST`` and ``audit/operations.py``'s ``AUDIT_LIST``, for the cycle
+reason above; ``tests/test_core_tools.py`` proves each names a registered
+operation."""
 
 _HARNESS_NOTE_GET_OPERATION: Final = "harness.note.get"
 """Duplicated from ``tests/harness/registry.py``'s ``NOTE_GET`` -- that file's own
@@ -89,6 +104,46 @@ class _WorkspaceStatusToolInput(BaseModel):
     docstring's cycle note."""
 
     model_config = ConfigDict(extra="ignore")
+
+
+class _OperationRefToolInput(BaseModel):
+    """Mirrors ``operations/operation_ops.py``'s ``OperationRef``: which record."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    operation_id: UUID
+
+
+class _OperationListToolInput(BaseModel):
+    """Mirrors ``operations/operation_ops.py``'s ``OperationListInput``, bound and
+    all: the ``ge``/``le`` pair is what keeps a model's ``-1`` an ``input_invalid``
+    refusal at the tool rather than a driver error at the query."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class _AuditListToolInput(BaseModel):
+    """``audit/operations.py``'s ``AuditListInput`` **narrowed to ``limit``**.
+
+    The operation's two opt-ins, ``include_tool_telemetry`` and
+    ``include_deletions``, are deliberately not declared, so the façade refuses
+    them as unknown arguments (``tool_facade._validated``) and the operation runs
+    with both at their ``False`` defaults. Each opens an owner/operator-only
+    collection (§ A11's tool telemetry, § A8's deletion ledger with the exact
+    closure counters every other surface withholds). The operation refuses both to
+    an ``mcp`` or ``runtime`` token on every surface as well
+    (``audit/operations.py``'s ``MODEL_HELD_TOKEN_KINDS``), because this narrowing
+    binds only the tool call and the ``api`` surface accepts ``mcp`` tokens. A person
+    with the role still reaches both through a session or a ``cli`` token; a model
+    reads the audit records alone, which are metadata (actor, operation name,
+    subject reference, request digest, outcome) and carry no payload.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    limit: int = Field(default=50, ge=1, le=500)
 
 
 class _HarnessNoteRefToolInput(BaseModel):
@@ -107,6 +162,42 @@ WORKSPACE_STATUS_TOOL: Final[ToolDeclaration] = ToolDeclaration(
     input_model=_WorkspaceStatusToolInput,
 )
 
+OPERATIONS_GET_TOOL: Final[ToolDeclaration] = ToolDeclaration(
+    name="operations_get",
+    safety_class=SafetyClass.READ,
+    operation=_OPERATION_GET_OPERATION,
+    input_model=_OperationRefToolInput,
+    description=(
+        "Reads one operation record of this workspace by its operation_id: its "
+        "state, outcome and terminal check. Use it to poll a long-running call or "
+        "a call held at approval_required. An id from another workspace, or one "
+        "that does not exist, is not_found."
+    ),
+)
+
+OPERATIONS_LIST_TOOL: Final[ToolDeclaration] = ToolDeclaration(
+    name="operations_list",
+    safety_class=SafetyClass.READ,
+    operation=_OPERATION_LIST_OPERATION,
+    input_model=_OperationListToolInput,
+    description=(
+        "Lists this workspace's most recently created operation records, newest "
+        "first (limit 1 to 500, default 50)."
+    ),
+)
+
+AUDIT_LIST_TOOL: Final[ToolDeclaration] = ToolDeclaration(
+    name="audit_list",
+    safety_class=SafetyClass.READ,
+    operation=_AUDIT_LIST_OPERATION,
+    input_model=_AuditListToolInput,
+    description=(
+        "Lists this workspace's most recent audit records, newest first (limit 1 "
+        "to 500, default 50). Owner and operator only. Records are metadata: who "
+        "acted, which operation, on which record, and the outcome; never a payload."
+    ),
+)
+
 HARNESS_GET_NOTE_TOOL: Final[ToolDeclaration] = ToolDeclaration(
     name="harness_get_note",
     safety_class=SafetyClass.READ,
@@ -116,6 +207,9 @@ HARNESS_GET_NOTE_TOOL: Final[ToolDeclaration] = ToolDeclaration(
 
 CORE_TOOLS: Final[tuple[ToolDeclaration, ...]] = (
     WORKSPACE_STATUS_TOOL,
+    OPERATIONS_GET_TOOL,
+    OPERATIONS_LIST_TOOL,
+    AUDIT_LIST_TOOL,
     HARNESS_GET_NOTE_TOOL,
 )
 """The declarations :func:`register_core_tools` offers the registry.

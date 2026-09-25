@@ -42,7 +42,7 @@ share one image. The local stack in `deploy/compose.yaml` runs `postgres`, `core
 
 | Process | Directory | Serves | Notes |
 | --- | --- | --- | --- |
-| `core` | `apps/core` | HTTP API on the `api` surface, identity endpoints under `/auth/*` on every application host, the internal API for the web tier | FastAPI under uvicorn. Holds every module's Python package. The MCP facade is built (`apps/mcp`) but not yet mounted in this process, so nothing answers on the `mcp` surface today; serving MCP there is planned (#127). |
+| `core` | `apps/core` | HTTP API on the `api` surface, identity endpoints under `/auth/*` on every application host, the MCP facade on the `mcp` surface, the internal API for the web tier | FastAPI under uvicorn. Holds every module's Python package. The MCP facade (`apps/mcp`) is mounted in this process by `rheo_app_core.mcp_mount`, built in the lifespan from the resolved routing settings ([the MCP facade](runtime-and-mcp.md#the-mcp-facade)). |
 | `worker` | `apps/worker` | Nothing over HTTP | Same image as `core`, worker entry point. Visits only the workspaces the control plane's due-work index (`control.workspace_work_due`) reports as due, never every active workspace in turn, and serves their `core.job` and `core.event_delivery` tables ([jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16)). Entry point `python -m rheo_app_worker.main`. A development mode that runs it inside the `core` process is not built. |
 | `web` | `apps/web` | The application shell, the workspace switcher, and every module's screens | Next.js under `next start`. No database access; every read and write goes to `core`'s internal API. No platform-only feature (FR 48, criterion 23). |
 | `postgres` | `deploy/` | The control-plane database and every workspace database | A standard image with pgvector and `pg_trgm` available (requirements assumption). |
@@ -132,11 +132,11 @@ resource layout per module: `POST /api/v1/operations/<operation_name>` with the 
 input model as the JSON body, returning `{ "state", "operation_id", "result" | "error" }`
 (`succeeded` with the output model in `result`; `pending` for a long-running operation, with its
 operation record id in `operation_id` and the output model in `result`; `approval_required` with
-the held call's operation record id in `operation_id` and `error_code` and `error_text` in
-`error`, the approval id appearing only inside `error_text`; `failed` or a named refusal state
-with `error_code` and `error_text` in `error`). A caller polls a long-running operation through
-the registered read `core.operation.get` over the same route; there is no separate
-`GET /api/v1/operations/<operation_id>` route. The webhook receiver's route
+the held call's operation record id in `operation_id`, the approval id in `approval_id` (a key
+present only on this state), and `error_code` and `error_text` in `error`; `failed` or a named
+refusal state with `error_code` and `error_text` in `error`). A caller polls a long-running
+operation through the registered read `core.operation.get` over the same route; there is no
+separate `GET /api/v1/operations/<operation_id>` route. The webhook receiver's route
 ([intake](intake-and-events.md#transports)) is the one route outside that shape, registered by a
 connector binding. The surface accepts bearer tokens of kind `cli` and `mcp`, never a cookie and
 never a `runtime` token ([presentation](identity-and-topology.md#tokens-for-cli-and-mcp-fr-4)).

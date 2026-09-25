@@ -18,11 +18,16 @@ resolved by :class:`_BearerGate`.
 2. **It does not re-implement listing or dispatch.** ``list_tools``/``call_tool``
    in ``tools.py`` are the seam; the handlers below translate their results into
    the SDK's result types and back, and translate nothing else.
-3. **It does not mount itself.** ``apps/core``'s ``main.py`` imports this package
-   only to record the composition-root import edge, and says so; wiring the
-   transport into that process's request-serving path is a later step. A test
-   drives :func:`build_mcp_app`'s return value through an ASGI transport with no
-   process, which is the same way ``tests/test_healthz.py`` drives ``app``.
+3. **It does not mount itself, and it knows nothing of the routing topology.**
+   ``apps/core``'s ``mcp_mount.py`` decides which requests are the ``mcp``
+   surface (a path in path mode, a host in subdomain mode), builds this
+   application in the core process's lifespan and forwards those requests to it.
+   What crosses the boundary is plain data: the host names the surface answers on
+   and the scheme, which :func:`transport_security_for` turns into the SDK's
+   DNS-rebinding allow-list. This package cannot read the routing configuration
+   itself, because ``rheo_core.routing`` is outside what criterion 20's import scan
+   lets it import. ``tests/postgres/test_mcp_transport.py`` still drives
+   :func:`build_mcp_app`'s return value directly, with no core app in front.
 
 **Why the gate is ASGI middleware and not an MCP-layer check.** "A malformed,
 wrong-kind, expired, revoked, or scope-invalid token is refused at the transport
@@ -32,6 +37,16 @@ half and not the second: the MCP session would already be initialised and the
 handler already entered. Refusing in front of the ASGI application means the
 request never reaches the SDK at all, which is a property a test can assert by
 watching a call counter stay at zero rather than by reading this paragraph.
+
+**Why the server is stateless.** Every request is served by a fresh transport and
+no ``Mcp-Session-Id`` is issued or honoured (``stateless_http=True``). Nothing here
+needs session state: the gate resolves the bearer on every request, and a tool call
+reads only the context that request carried. A stateful server would need its
+sessions bound to the bearer that opened them, and SDK 2.2.0 binds a session only to
+an ``AuthenticatedUser`` in ``scope["user"]``, which this gate never sets; so with
+sessions on, token B holding token A's session id could drive or ``DELETE`` A's
+session. Stateless also means no long-lived ``GET`` stream holds shutdown open and
+no one token can use up the session limit.
 
 **Why the resolved context travels in the ASGI scope.** The gate resolves once
 and puts the :class:`~rheo_contracts.WorkspaceContext` in ``scope["state"]``; the
@@ -44,12 +59,13 @@ between the two resolutions would give two different answers to one request.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, Final
 
 import mcp.types as types
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
+from mcp.server.transport_security import TransportSecuritySettings
 from rheo_contracts import ToolDeclaration, WorkspaceContext
 from rheo_core.boundary.context import TOKEN_MALFORMED, Refusal
 from rheo_core.operations.tool_facade import ConsumerRegistry
@@ -60,8 +76,12 @@ from rheo_app_mcp.session import resolve_context
 from rheo_app_mcp.tools import call_tool, list_tools
 
 MCP_PATH: Final = "/mcp"
-"""The path-mode surface. Subdomain mode serves the same application at ``/``;
-which one a deployment uses is a routing decision above this module."""
+"""The one path the built application answers on.
+
+Not necessarily the path a client uses: ``apps/core``'s mount forwards the
+surface's own endpoint (``/mcp`` and ``/mcp/`` in path mode, ``/`` on the ``mcp``
+host in subdomain mode) to this path, so the SDK sees one route whatever the
+topology. A test driving :func:`build_mcp_app` directly uses it as-is."""
 
 SERVER_NAME: Final = "rheo-stream"
 
@@ -227,6 +247,10 @@ async def _on_call_tool(
     the part a caller acts on, so it is in the structured content rather than only
     in prose.
 
+    ``approval_id`` is present exactly when the outcome carries one, which is an
+    ``approval_required`` hold, and absent otherwise, the same way ``operation_id``
+    and ``result`` are present only when there is one to report.
+
     ``consumers`` is bound by :func:`build_server` from what the composition root
     handed :func:`build_mcp_app`, so a publishing handler reached through this
     surface publishes into the same registry the process's HTTP routes publish
@@ -247,6 +271,11 @@ async def _on_call_tool(
         }
     if outcome.operation_id is not None:
         payload["operation_id"] = str(outcome.operation_id)
+    if outcome.approval_id is not None:
+        # Criterion 19's identifier as a field, beside ``operation_id``, so a client
+        # holding an ``approval_required`` result can name the approval without
+        # parsing it out of ``error_text`` (which still says the same thing in prose).
+        payload["approval_id"] = str(outcome.approval_id)
     return types.CallToolResult(
         content=[types.TextContent(text=json.dumps(payload))],
         structured_content=payload,
@@ -277,19 +306,55 @@ def build_server(*, consumers: ConsumerRegistry | None) -> Server[Any]:
     )
 
 
+def transport_security_for(
+    hosts: Sequence[str], *, origins: Sequence[str]
+) -> TransportSecuritySettings:
+    """DNS-rebinding protection that admits exactly ``hosts`` and ``origins``.
+
+    ``hosts`` are ``Host`` header values, spelled the way a client sends them: a
+    bare name for a default port, ``name:port`` otherwise, or the SDK's ``name:*``
+    pattern where the caller means any port. ``origins`` are whole origins in the
+    same spelling. Both come from the composition root, which reads the routing
+    configuration this package may not import. A non-browser MCP client sends no
+    ``Origin`` at all, which the SDK admits; a browser page on some other origin is
+    what the origin list refuses.
+
+    Protection stays enabled. The SDK's own default for a non-loopback ``host`` is
+    to switch it off, which is why the composition root passes this object rather
+    than a host string, and why an empty ``hosts`` raises instead of quietly
+    producing a list that admits nobody (or, worse, a settings object a later edit
+    might read as "no restriction").
+    """
+    allowed_hosts = list(dict.fromkeys(hosts))
+    if not allowed_hosts:
+        raise ValueError("the mcp surface needs at least one allowed host")
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=list(dict.fromkeys(origins)),
+    )
+
+
 def build_mcp_app(
     *,
     consumers: ConsumerRegistry | None,
     path: str = MCP_PATH,
     json_response: bool = False,
     host: str = "127.0.0.1",
+    transport_security: TransportSecuritySettings | None = None,
 ) -> Starlette:
     """The gated streamable-HTTP application, ready to mount or to drive in-process.
 
-    A factory rather than a module-level singleton: constructing the SDK's session
-    manager has real setup behind it, and ``apps/core``'s ``main.py`` imports this
-    package for the composition-root edge alone. An application built at import
-    time would make that edge do work nobody asked for.
+    A factory rather than a module-level singleton, for a reason the SDK imposes:
+    the session manager inside the returned application (stateless here, but still
+    the object that owns the per-request task group) can be ``run()`` exactly once.
+    ``apps/core`` builds a fresh one each time its lifespan starts (tests run that
+    lifespan more than once per process), after the deployment's settings have
+    resolved, and runs it for the lifespan's duration.
+
+    Always stateless; see the module docstring. ``json_response`` stays a choice
+    because both answers work stateless: the mounted surface asks for plain JSON,
+    and the direct transport tests keep the SDK's default event-stream reply.
 
     ``consumers`` is keyword-only and has **no default**, and that is the whole of
     how this surface stays wired to the same
@@ -302,16 +367,30 @@ def build_mcp_app(
     that genuinely has none -- a test driving a read-only tool -- says ``None``
     rather than leaving the argument off and finding out at the first publish.
 
-    ``host`` is passed through to the SDK, which turns it into the DNS-rebinding
-    protection a browser-reachable endpoint needs; it is named here so a
-    deployment can widen it deliberately rather than discovering the default by
-    being blocked.
+    **DNS-rebinding protection is always on.** With ``transport_security`` left
+    out, ``host`` keeps its loopback default, which the SDK turns into protection
+    admitting ``127.0.0.1``/``localhost``/``[::1]`` on any port: the right answer for
+    a test driving this in-process, and a refusal of every real host name. The
+    mounted surface passes ``transport_security`` built by
+    :func:`transport_security_for` from the routing configuration instead. A
+    settings object with protection switched off is refused here, because the SDK
+    would otherwise accept any ``Host`` a DNS-rebinding page chose to send.
     """
+    if (
+        transport_security is not None
+        and not transport_security.enable_dns_rebinding_protection
+    ):
+        raise ValueError(
+            "the mcp surface keeps DNS-rebinding protection on; pass the hosts "
+            "it should admit instead of switching it off"
+        )
     server = build_server(consumers=consumers)
     app = server.streamable_http_app(
         streamable_http_path=path,
         json_response=json_response,
+        stateless_http=True,
         host=host,
+        transport_security=transport_security,
     )
     app.add_middleware(_BearerGate)
     return app
@@ -326,4 +405,5 @@ __all__ = [
     "SERVER_NAME",
     "build_mcp_app",
     "build_server",
+    "transport_security_for",
 ]

@@ -1302,6 +1302,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1335,6 +1337,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1368,6 +1372,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1401,6 +1407,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1434,6 +1442,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1467,6 +1477,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1500,6 +1512,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1533,6 +1547,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1566,6 +1582,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1599,6 +1617,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1632,6 +1652,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1665,6 +1687,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1698,6 +1722,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1731,6 +1757,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1764,6 +1792,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1797,6 +1827,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1830,6 +1862,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1863,6 +1897,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1896,6 +1932,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1929,6 +1967,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;
@@ -1962,6 +2002,8 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
                         error?: {
                             error_code: string;
                             error_text: string;

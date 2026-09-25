@@ -10,7 +10,8 @@ reserved fields ``RESERVED_INPUT_FIELDS`` names, so a workspace-naming key
 arriving through either channel is silently dropped exactly as it is at a bare
 ``dispatch()`` call -- the same criterion 6 (B2) proof, over the HTTP surface),
 dispatches, and returns the envelope ``{"state", "operation_id", "result"
-| "error": {"error_code", "error_text"}}`` with the status mapping ``spec.md``
+| "error": {"error_code", "error_text"}}`` (plus ``approval_id`` on an
+``approval_required`` hold) with the status mapping ``spec.md``
 gives: 200 succeeded, 401 for every ``context_from_token`` refusal (including
 a missing/malformed ``Authorization`` header, before any token is even looked
 up), 403 ``operation_not_permitted``/``role_not_permitted``, 404 ``not_found``,
@@ -85,6 +86,7 @@ def envelope(
     state: str,
     operation_id: UUID | None,
     *,
+    approval_id: UUID | None,
     result: dict[str, object] | None = None,
     error_code: str | None = None,
     error_text: str | None = None,
@@ -111,11 +113,23 @@ def envelope(
     quietly keeping the default -- which is the exact failure a shared helper exists
     to prevent, and it is what makes AC 20 true on both surfaces at once instead of
     needing two independent proofs.
+
+    **``approval_id`` is keyword-only with no default, for the same reason, and is
+    in the body only when it is set** (issue #127). It is the outcome's own
+    ``approval_id``, which ``dispatch`` sets on an ``approval_required`` hold and
+    nowhere else, so criterion 19's identifier is a field a client reads rather
+    than a uuid it parses out of ``error_text`` (which still names it in prose).
+    Present-only-when-set rather than always ``null`` like ``operation_id``: an
+    added key a reader may ignore, so no existing caller's body changes shape, and
+    the key appearing is itself the signal that there is an approval to act on.
+    The three refusals that fire before ``dispatch`` pass ``None`` explicitly.
     """
     body: dict[str, object] = {
         "state": state,
         "operation_id": None if operation_id is None else str(operation_id),
     }
+    if approval_id is not None:
+        body["approval_id"] = str(approval_id)
     if result is not None:
         body["result"] = result
     if error_code is not None:
@@ -159,6 +173,7 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
             envelope(
                 TOKEN_MALFORMED,
                 None,
+                approval_id=None,
                 error_code=TOKEN_MALFORMED,
                 error_text="no bearer token was presented",
             ),
@@ -169,7 +184,13 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
         # Also before ``dispatch()``: a token that resolved to a refusal never
         # reaches it.
         return JSONResponse(
-            envelope(ctx.state, None, error_code=ctx.state, error_text=str(ctx)),
+            envelope(
+                ctx.state,
+                None,
+                approval_id=None,
+                error_code=ctx.state,
+                error_text=str(ctx),
+            ),
             status_code=_TOKEN_REFUSAL_STATUS,
         )
     payload: dict[str, object] = dict(request.query_params)
@@ -190,7 +211,12 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
             None if outcome.result is None else outcome.result.model_dump(mode="json")
         )
         return JSONResponse(
-            envelope(outcome.state, outcome.operation_id, result=result),
+            envelope(
+                outcome.state,
+                outcome.operation_id,
+                approval_id=outcome.approval_id,
+                result=result,
+            ),
             status_code=status,
         )
     error = outcome.error
@@ -198,6 +224,7 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
         envelope(
             outcome.state,
             outcome.operation_id,
+            approval_id=outcome.approval_id,
             error_code=None if error is None else error.error_code,
             error_text=None if error is None else error.error_text,
         ),

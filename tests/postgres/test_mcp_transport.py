@@ -7,10 +7,11 @@ bearer gate in front of them.
 ``httpx2.ASGITransport`` carries real HTTP bytes from ``mcp.client`` into the
 Starlette application ``build_mcp_app()`` returns — the same no-process technique
 ``tests/test_healthz.py`` uses against ``app``. So the JSON-RPC envelope, the
-session handshake, the ``Mcp-Session-Id`` header and the content negotiation are
-all exercised, and nothing is stubbed between the client's ``list_tools()`` and
-``rheo_core.operations.dispatch``. What is *not* exercised is a socket and a
-uvicorn worker, which is the part a test cannot own anyway.
+initialize handshake and the content negotiation are all exercised (the server
+is stateless, so no ``Mcp-Session-Id`` is issued), and nothing is stubbed between
+the client's ``list_tools()`` and ``rheo_core.operations.dispatch``. What is *not*
+exercised is a socket and a uvicorn worker, which is the part a test cannot own
+anyway.
 
 **Both registration helpers are called in this module's own fixture.** The tool
 set is empty until ``register_core_tools()`` runs and the operation set is empty
@@ -249,10 +250,13 @@ async def test_tool_list_round_trip_returns_the_visible_tools(
 ) -> None:
     """``tools/list`` over the wire returns exactly what this context may call.
 
-    ``workspace_status`` only, and that is the filtering claim, not an accident of
-    registration: this token's ``agent_default`` set carries ``harness.note.get``
-    as well, and ``harness_get_note`` is absent because the ``harness`` module is
-    not enabled in a freshly provisioned workspace. **Both halves are asserted, and
+    The four core tools (issue #127 registered ``operations_get``,
+    ``operations_list`` and ``audit_list`` beside ``workspace_status``; the token's
+    account is an owner, so ``audit_list``'s owner/operator restriction admits it),
+    and that is the filtering claim, not an accident of registration: this token's
+    ``agent_default`` set carries ``harness.note.get`` as well, and
+    ``harness_get_note`` is absent because the ``harness`` module is not enabled in
+    a freshly provisioned workspace. **Both halves are asserted, and
     the second is the load-bearing one** — without it, a listing that had stopped
     filtering entirely and a token that never carried the operation would look
     identical from here.
@@ -264,9 +268,15 @@ async def test_tool_list_round_trip_returns_the_visible_tools(
     async for client in _client(app, value):
         listed = await client.list_tools()
     names = [tool.name for tool in listed.tools]
-    assert names == ["workspace_status"]
+    assert names == [
+        "audit_list",
+        "operations_get",
+        "operations_list",
+        "workspace_status",
+    ]
+    assert "harness_get_note" not in names
     assert seam.list_tools >= 1
-    schema = listed.tools[0].input_schema
+    schema = listed.tools[names.index("workspace_status")].input_schema
     assert schema["type"] == "object"
 
 

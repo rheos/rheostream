@@ -160,7 +160,7 @@ def _session_refusal(state: str, detail: str) -> JSONResponse:
     nothing has been minted for a request that never reached the dispatcher.
     """
     return JSONResponse(
-        envelope(state, None, error_code=state, error_text=detail),
+        envelope(state, None, approval_id=None, error_code=state, error_text=detail),
         status_code=SESSION_REFUSAL_STATUS,
     )
 
@@ -239,7 +239,12 @@ async def run_operation(
             None if outcome.result is None else outcome.result.model_dump(mode="json")
         )
         return JSONResponse(
-            envelope(outcome.state, outcome.operation_id, result=result),
+            envelope(
+                outcome.state,
+                outcome.operation_id,
+                approval_id=outcome.approval_id,
+                result=result,
+            ),
             status_code=status_code,
         )
     error = outcome.error
@@ -247,6 +252,7 @@ async def run_operation(
         envelope(
             outcome.state,
             outcome.operation_id,
+            approval_id=outcome.approval_id,
             error_code=None if error is None else error.error_code,
             error_text=None if error is None else error.error_text,
         ),

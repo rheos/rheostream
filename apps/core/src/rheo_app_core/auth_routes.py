@@ -80,8 +80,13 @@ ORIGIN_NOT_ALLOWED = "origin_not_allowed"
 
 def normalize_host(host: str) -> str:
     """Strip a port and lowercase a host read from any header — every call site in
-    this listener does this itself; nothing upstream is trusted to have done it."""
-    return host.rsplit(":", 1)[0].strip().lower()
+    this listener does this itself; nothing upstream is trusted to have done it.
+
+    Trailing dots are stripped too: ``example.test.`` is the fully qualified
+    spelling of ``example.test``, the same name to DNS, and a compare that kept the
+    dot would let one host answer as two (issue #127: ``Host: mcp.example.test.``
+    fell past the ``mcp`` host's router to FastAPI's routes)."""
+    return host.rsplit(":", 1)[0].strip().rstrip(".").lower()
 
 
 def _current_host(request: Request) -> str:

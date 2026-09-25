@@ -238,10 +238,41 @@ mode `mcp.<base>/`; path mode `/mcp`). Bearer token only, of kind `mcp` or `runt
 token is refused `token_wrong_kind`, and cookies are ignored on this surface
 ([presentation](identity-and-topology.md#tokens-for-cli-and-mcp-fr-4)).
 
-**Not mounted yet.** `rheo_app_mcp.transport.build_mcp_app` builds the gated application and
-`apps/core`'s `build_mcp_surface()` binds it to the process's consumer registry, but nothing
-calls it, so no process serves the `mcp` surface today. The transport is exercised in-process by
-tests.
+**Mounting.** `rheo_app_mcp.transport.build_mcp_app` builds the gated application, and
+`apps/core`'s `mcp_mount.py` serves it from the public listener. The core process's lifespan
+builds it after startup, from the resolved `routing.*` settings and the loaded modules' surfaces,
+binds it to the process's consumer registry, and runs the SDK's session manager until shutdown.
+The server is **stateless**: each request gets a fresh transport, no `Mcp-Session-Id` is issued
+or honoured, and a `POST` is answered with one JSON body. The bearer is resolved on every request
+anyway, so no session state is needed, and SDK 2.2.0 would bind a session only to an
+authenticated user object this gate never sets, which would let one token drive another's
+session. Only `POST` reaches the facade; `GET`, `DELETE` and every other method answer 405. A
+pure ASGI router in front of the FastAPI routes decides which requests are the surface:
+
+- Path mode: exactly the surface path and that path with a trailing slash (`/mcp` and `/mcp/`),
+  both answered by the one SDK route with no redirect. Longer paths under it go to FastAPI.
+- Subdomain mode: every request whose `Host` is the `mcp` host, compared lowercased with the
+  port and any trailing dot stripped. `/` is the endpoint; every other path on that host is a
+  404, so the `mcp` host serves no `/auth/*`, `/api/*` or `/healthz`. A request on any other host
+  never reaches MCP. Startup refuses an empty `routing.mcp.host`, or one whose host is also the
+  shell, identity, `api` or a module host.
+
+The runtime's `url_for(config, "mcp", "/")` (`https://<public_host>/mcp/` or
+`https://mcp.<public_host>/`) is therefore served in both modes. The bearer gate still answers
+first: no bearer, or a refused one, is a 401 with the refusal state and no tool runs.
+
+**DNS-rebinding protection** is the SDK's, kept on and configured from the routing settings
+rather than from its loopback default. The allowed `Host` values are exactly the surface's hosts:
+`base_host` in path mode, `mcp.<base_host>` in subdomain mode, plus the same name under
+`public_host` when that differs (a published port, `example.test:8443`). No wildcard port is
+admitted for a real name, so a deployment reached on a non-default port says so in
+`routing.public_host`, which is also what makes `url_for` print a usable URL. The allowed origins
+are those authorities under `routing.scheme`; a client that sends no `Origin`, which is every
+non-browser MCP client, is admitted. When `base_host` is `localhost` or `127.0.0.1` the list also
+admits `localhost:*`, `127.0.0.1:*` and `[::1]:*` (and `mcp.<base_host>:*` in subdomain mode),
+with origins under `http` and `https`, as the SDK's own loopback default does: a rebinding attack
+presents the attacker's domain in `Host`, never a loopback name. A disallowed `Host` is 421 and a disallowed `Origin` 403, in both cases before a tool
+runs.
 
 **Session resolution.** The token resolves to an `access_token` row, and the boundary builds the
 `WorkspaceContext` from it: workspace, actor `token`, role from the token's account membership,
@@ -255,8 +286,7 @@ listed before a revocation is refused after it (idea document: discovery grants 
 
 **Signature conventions.**
 
-- Name: `<module>_<verb>[_<noun>]`; core tools use `workspace_`, `operations_`, `audit_`
-  (only `workspace_status` is registered so far).
+- Name: `<module>_<verb>[_<noun>]`; core tools use `workspace_`, `operations_`, `audit_`.
 - Input: the operation's input model, with the reserved names forbidden at registration
   (criterion 6). Record references are strings in the documented form; a reference from another
   workspace resolves to nothing and the call fails `not_found`.
@@ -267,11 +297,13 @@ listed before a revocation is refused after it (idea document: discovery grants 
   field, a contact value, or a secret reference to a model, whatever the operation returns to a
   person. A destructive, external, or financial call without an approval returns
   `approval_required` with the approval id and the operation id, distinct from success and from
-  error (criterion 19). **Not built yet:** no module implements `render_for_model`, and the
+  error (criterion 19). Both ids are fields of the tool result's structured payload
+  (`approval_id`, `operation_id`), beside `state` and `error`; `error_text` names the approval
+  in prose as well. **Not built yet:** no module implements `render_for_model`, and the
   facade returns the operation's output model as JSON unchanged. Recallatron, the one module
   with tools, declares no tiered field, so nothing it returns would be withheld today anyway.
 - Long-running operations return `{ operation_id, state }` and the caller polls
-  `core.operation.get`, which has no MCP tool yet (it is reachable over the API).
+  `core.operation.get` through `operations_get`.
 
 **No SQL, no repository.** A tool has no handler; `apps/mcp` imports the service registry and the
 contracts and nothing from `rheo_core.storage` or any driver (criterion 20).
@@ -290,8 +322,8 @@ operation tables in the module documents are authoritative.
 | Phase | Tool | Class | Roles |
 | --- | --- | --- | --- |
 | One (core) | `workspace_status` | read | owner, member, operator |
-| One (core) | `operations_get`, `operations_list` (not registered yet) | read | owner, member, operator |
-| One (core) | `audit_list` (not registered yet) | read | owner, operator |
+| One (core) | `operations_get`, `operations_list` | read | owner, member, operator |
+| One (core) | `audit_list` (`limit` only; see below) | read | owner, operator |
 | Two (memory) | recallatron_recall, recallatron_read | read | owner, member, service |
 | Two (memory) | recallatron_remember, recallatron_derive | mutate | owner, member, service |
 | Two (memory) | recallatron_correct, recallatron_supersede | mutate | owner, member |
@@ -305,6 +337,19 @@ operation tables in the module documents are authoritative.
 | Three (leads) | `leads_handoff` | mutate; writes the handoff record and returns `unavailable` with no destination (criterion 64) | owner, member |
 | Three (leads) | `leads_prepare_followup` | draft | owner, member |
 | Three (leads) | `leads_delete` | destructive | owner |
+
+`audit_list` declares `limit` and nothing else. `core.audit.list`'s two opt-ins,
+`include_tool_telemetry` and `include_deletions`, open owner/operator-only collections (tool
+telemetry, and the deletion ledger with its exact closure counters), so a tool call naming either
+is `input_invalid` and a model reads the audit records alone: metadata (actor, operation, subject
+reference, request digest, outcome) with no payload. The tool's narrowing binds the tool call
+only, and the `api` surface accepts `mcp` tokens, so the operation enforces the same rule on every
+surface: it refuses either opt-in `operation_not_permitted` for an `mcp` or `runtime` token (a
+token whose row is gone counts as one). A person with the role still asks for both through a
+session or a `cli` token. The listing filters on role, so a member's token is never offered
+`audit_list`.
+A runtime run's token holds only the tools its caller named in `core.runtime.run`, so none of the
+three reaches a run that did not ask for it.
 
 Entity list/get have no MCP tool in release one, so no model reaches them; they are reachable over
 the API by a token whose set holds them. Tool origin and delegated operation availability

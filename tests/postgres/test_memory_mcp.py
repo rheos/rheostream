@@ -104,6 +104,15 @@ _SEVEN: Final[tuple[str, ...]] = (
 tautology over whatever the manifest happens to declare, which is the claim under
 test rather than the premise of it."""
 
+_CORE_TOOLS: Final[tuple[str, ...]] = (
+    "audit_list",
+    "operations_get",
+    "operations_list",
+    "workspace_status",
+)
+"""The core's own production tools (``runtime-and-mcp.md`` § Release-one tool set),
+all visible to the fully permitted owner these listings are taken for."""
+
 _MATERIAL_REFUSALS: Final[dict[str, frozenset[str]]] = {
     "recallatron_recall": frozenset(
         {"input_invalid", "purpose_mismatch", "reference_scan_limit"}
@@ -336,14 +345,14 @@ def test_exactly_the_seven_declared_tools_are_discoverable(
     doing rather than an artefact of nothing having registered them.
 
     The whole listing is asserted, not only this module's slice, because "no eighth"
-    has to be a claim about what the surface returns. ``workspace_status`` is the
-    core's own and is expected beside the seven; ``harness_get_note`` is registered
+    has to be a claim about what the surface returns. The four core tools are the
+    core's own and are expected beside the seven; ``harness_get_note`` is registered
     as a declaration here and is absent because its operation is not, which is the
     delegate check doing its job on a tool nobody disabled.
     """
     ctx = memory_tools.context()
     listed = memory_tools.listed(ctx)
-    assert listed == tuple(sorted((*_SEVEN, "workspace_status")))
+    assert listed == tuple(sorted((*_SEVEN, *_CORE_TOOLS)))
     assert tuple(name for name in listed if name.startswith("recallatron_")) == _SEVEN
     assert "harness_get_note" in memory_tools.surfaces.tools.names()
     registered = memory_tools.surfaces.operations.names()
