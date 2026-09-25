@@ -433,11 +433,24 @@ def recall(
     No no-query recency bundle and no implicit session expansion. Every item and the
     response's ``provenance`` name the strategy that answered. ``provenance.arms``
     counts, per arm, the returned items that arm ranked, so nothing the walk dropped
-    can move it.
+    can move it. A strategy that scores by rank (``hybrid``) is handed the same
+    eligibility decision up front and ranks admitted candidates only, so no score or
+    position counts a memory this caller may not read either (#125).
     """
     _checked_purpose(ctx, model_input.purpose)
     request = _opened(ctx, uow)
     mode = _mode(model_input.include_invalidated)
+
+    def admit(memory_id: UUID) -> bool:
+        # The walk's own decision, taken early for a strategy that ranks by position
+        # (#125). ``eligible_memory`` caches it on ``request`` and charges the shared
+        # budget once per reference, so the walk below re-reads it for free.
+        decision = eligible_memory(ctx, uow, memory_id, mode=mode, request=request)
+        if isinstance(decision, Denied):
+            if decision.state == REFERENCE_SCAN_LIMIT:
+                raise _refuse(decision)
+            return False
+        return True
 
     strategy = resolve_strategy(ctx, uow)
     ranked = strategy.search(
@@ -449,6 +462,7 @@ def recall(
             memory=request,
             limit=CANDIDATE_SCAN_LIMIT,
             k=model_input.k,
+            admit=admit,
         ),
     )
 

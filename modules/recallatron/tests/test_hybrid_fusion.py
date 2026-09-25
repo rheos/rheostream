@@ -9,6 +9,8 @@ lexical first, so float equality is exact.
 reads (the multiplier and ``recorded_at``) stubbed, to pin the cut it hands on.
 """
 
+import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -26,6 +28,7 @@ from rheo_recallatron.eligibility import MemoryRequest, ReadMode
 from rheo_recallatron.retrieval import hybrid
 from rheo_recallatron.retrieval.hybrid import (
     HybridStrategy,
+    admitted_arms,
     fuse,
     overfetch_multiplier_in,
 )
@@ -203,6 +206,125 @@ def test_each_fused_hit_names_the_arms_whose_list_held_it(
         b: frozenset({ARM_LEXICAL, ARM_DENSE}),
         d: frozenset({ARM_DENSE}),
     }
+
+
+def _hybrid_request(
+    k: int, admit: Callable[[UUID], bool] | None = None
+) -> SearchRequest:
+    return SearchRequest(
+        query="apples",
+        mode=ReadMode.CURRENT,
+        memory=cast(MemoryRequest, None),
+        limit=CANDIDATE_SCAN_LIMIT,
+        k=k,
+        admit=admit,
+    )
+
+
+def _fused(
+    monkeypatch: pytest.MonkeyPatch,
+    lexical: tuple[UUID, ...],
+    dense: tuple[UUID, ...],
+    request: SearchRequest,
+) -> list[tuple[UUID, float, frozenset[str]]]:
+    monkeypatch.setattr(
+        hybrid, "overfetch_multiplier", lambda ctx, uow: OVERFETCH_MULTIPLIER_DEFAULT
+    )
+    monkeypatch.setattr(hybrid, "_recorded_at", lambda uow, ids: {})
+    result = HybridStrategy(lexical=_StubArm(lexical), dense=_StubArm(dense)).search(
+        cast(WorkspaceContext, None), cast(UnitOfWork, None), request
+    )
+    return [(hit.ref, hit.score, hit.arms) for hit in result.hits]
+
+
+def test_hidden_candidates_move_no_fused_score_or_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#125. Hidden ``h1`` tops lexical and hidden ``h2`` tops dense. Admitted, the
+    fusion is exactly the one over the arms without them: ``a`` scores ``1/61``, not
+    the ``1/62`` that would say one row sat above it."""
+    h1, h2, a, b = _id(90), _id(91), _id(1), _id(2)
+    hidden = {h1, h2}
+
+    with_hidden = _fused(
+        monkeypatch,
+        (h1, a, b),
+        (h2, b),
+        _hybrid_request(10, admit=lambda ref: ref not in hidden),
+    )
+    without_hidden = _fused(monkeypatch, (a, b), (b,), _hybrid_request(10))
+
+    assert with_hidden == without_hidden
+    assert dict((ref, score) for ref, score, _ in with_hidden) == {
+        b: 1 / 62 + 1 / 61,
+        a: 1 / 61,
+    }
+
+
+def _deciding(lexical: list[UUID], dense: list[UUID], k: int) -> list[UUID]:
+    """The lexical rows :func:`admitted_arms` decided, admitting everything."""
+    asked: list[UUID] = []
+
+    def admit(ref: UUID) -> bool:
+        asked.append(ref)
+        return True
+
+    admitted_arms(lexical, dense, admit=admit, k=k)
+    return [ref for ref in asked if ref in set(lexical) - set(dense)]
+
+
+def test_the_lexical_walk_reaches_a_deep_admitted_dense_id() -> None:
+    """An admitted dense id at lexical position 50 could still reach the top two with
+    its lexical term, so the walk decides every row down to it, and stops there."""
+    lexical = [_id(n) for n in range(1, 101)]
+    deep, elsewhere = lexical[49], _id(5_000)
+
+    assert _deciding(lexical, [deep, elsewhere], k=2) == lexical[:49]
+
+
+def test_the_lexical_walk_stops_once_nothing_undecided_can_reach_the_top_k() -> None:
+    """With no dense arm, ``k`` lexical rows settle it: the next can score at most
+    ``1/(61+k)``, below the ``k``-th. With a dense-only id at ``1/61`` and one lexical
+    row at ``1/61``, one lexical row settles a ``k`` of two."""
+    lexical = [_id(n) for n in range(1, 101)]
+
+    assert _deciding(lexical, [], k=2) == lexical[:2]
+    assert _deciding(lexical, [_id(5_000)], k=2) == lexical[:1]
+
+
+def test_admitted_fusion_matches_fusion_over_fully_filtered_arms() -> None:
+    """The claim itself, as a property: over random arms, hidden sets, ``k`` and
+    ``recorded_at`` ties, the top ``k`` fused from :func:`admitted_arms` is the top
+    ``k`` fused from both arms with every hidden row removed, ids and scores."""
+    rng = random.Random(125)
+    for _ in range(2_000):
+        pool = [_id(n) for n in range(1, rng.randint(2, 60))]
+        lexical = rng.sample(pool, rng.randint(0, len(pool)))
+        dense = rng.sample(pool, rng.randint(0, min(len(pool), 15)))
+        hidden = {ref for ref in pool if rng.random() < 0.4}
+        k = rng.randint(1, 12)
+        recorded_at = {ref: _NOW + timedelta(seconds=rng.randint(0, 3)) for ref in pool}
+
+        kept = admitted_arms(
+            lexical, dense, admit=(set(pool) - hidden).__contains__, k=k
+        )
+        filtered = (
+            [ref for ref in lexical if ref not in hidden],
+            [ref for ref in dense if ref not in hidden],
+        )
+
+        assert fuse(kept, recorded_at)[:k] == fuse(filtered, recorded_at)[:k]
+
+
+def test_a_denied_lexical_row_does_not_count_toward_k() -> None:
+    """Denied rows are skipped, not counted: with the top three denied and ``k`` of
+    two, the walk goes on to the fourth and fifth."""
+    lexical = [_id(n) for n in range(1, 11)]
+    denied = set(lexical[:3])
+
+    kept, _ = admitted_arms(lexical, [], admit=lambda ref: ref not in denied, k=2)
+
+    assert kept == lexical[3:5]
 
 
 @pytest.mark.parametrize(
