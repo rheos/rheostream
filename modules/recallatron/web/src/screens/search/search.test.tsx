@@ -221,19 +221,47 @@ describe("Search arm counts", () => {
     ...EMPTY_FIXTURES.map(([name, kind]) => [name, `empty-${kind}`] as const),
   ];
 
+  // The exact key set of each state that reaches the view, so a count can't ride along
+  // on a new field anywhere in it.
+  const KEYS = {
+    search: ["action", "coverage", "query", "results"],
+    results: ["provenance", "rows", "state"],
+    empty: ["empty", "provenance", "state"],
+    provenance: ["denseAvailable", "strategy"],
+    row: ["dateTime", "excerpt", "href", "kind", "ref", "title", "when"],
+  };
+
+  const keysOf = (value: object) => Object.keys(value).sort();
+
+  /** React's static-markup escaping, to find the fixed empty copy in raw markup. */
+  const escaped = (copy: string) =>
+    copy.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
+
   it.each(RENDERED)("never renders an arm count for %s (%s)", async (name, rendered) => {
     const { state, markup, text } = await searchFor("garden", withDistinctiveArms(name));
     expect(markup).toContain(rendered === "results" ? "<ol" : `data-state="${rendered}"`);
 
     // The view state holds no count to render in the first place.
-    if (state.results.state !== "results" && state.results.state !== "empty") {
+    expect(keysOf(state)).toEqual(KEYS.search);
+    const results = state.results;
+    if (results.state === "results") {
+      expect(keysOf(results)).toEqual(KEYS.results);
+      for (const row of results.rows) expect(keysOf(row)).toEqual(KEYS.row);
+    } else if (results.state === "empty") {
+      expect(keysOf(results)).toEqual(KEYS.empty);
+    } else {
       throw new Error(`${name} did not reach a provenance state`);
     }
-    expect(Object.keys(state.results.provenance).sort()).toEqual(["denseAvailable", "strategy"]);
+    expect(keysOf(results.provenance)).toEqual(KEYS.provenance);
 
-    // Nor does the page: no count copy, and no count in the provenance line or elsewhere.
+    // Nor does the page, in its text or its raw markup, attributes included. The fixed
+    // empty copy ("No word matches. …") is the one allowed use of "matches".
+    const raw =
+      results.state === "empty" ? markup.replace(escaped(EMPTY_COPY[results.empty]), "") : markup;
     expect(text).not.toMatch(/word matches:|meaning matches:/i);
+    expect(raw).not.toMatch(/matches/i);
     expect(provenanceOf(markup)).not.toMatch(/\d/);
     expect(text).not.toMatch(STANDALONE_COUNT);
+    expect(raw).not.toMatch(STANDALONE_COUNT);
   });
 });
