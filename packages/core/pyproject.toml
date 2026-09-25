@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "rheo-contracts",
-    "sqlalchemy>=2.0,<3",
+    "sqlalchemy>=2.0.54,<3",
     "psycopg[binary]>=3.3.5,<4",
     "alembic>=1.20.0,<2",
     # No upper bound: `packaging` is CalVer, so a `<26` would read "nothing released
