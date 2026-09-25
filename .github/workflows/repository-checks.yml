@@ -51,7 +51,28 @@ jobs:
       - name: Build the core/worker image
         run: docker build -f Dockerfile .
       - name: Build the web image
-        run: docker build -f apps/web/Dockerfile .
+        run: docker build -t rheo-web -f apps/web/Dockerfile .
+      # A web image that builds is not yet one that serves: `next start` must
+      # find the production build from the image's runtime directory. Start it
+      # detached and poll for HTTP 200 (bounded at about 60 s), printing the
+      # container's logs if it never answers.
+      - name: The web image serves HTTP 200
+        run: |
+          docker run -d --name rheo-web-check -p 3000:3000 rheo-web
+          ok=0
+          for attempt in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)" = "200" ]; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "web image did not answer HTTP 200 within about 60 s" >&2
+            docker logs rheo-web-check >&2 || true
+          fi
+          docker rm -f rheo-web-check >/dev/null
+          [ "$ok" = "1" ]
       - name: Build the flagship core image (local-embeddings extra)
         run: docker build --build-arg UV_SYNC_ARGS="--extra local-embeddings" -t rheo-flagship-core -f Dockerfile .
       # AC-10: the flagship image installs the local embedding runtime and can
@@ -67,15 +88,18 @@ jobs:
             -e RHEO__recallatron__embedding__provider=local \
             rheo-flagship-core uv run python -c "
           from rheo_core.modules import register_module_settings
-          from rheo_recallatron.embedding.registry import configured_provider_name
+          from rheo_recallatron.embedding.local import LocalEmbeddingProvider
+          from rheo_recallatron.embedding.registry import configured_provider_name, resolve_provider
 
           register_module_settings()
           provider = configured_provider_name()
           assert provider == 'local', f'expected local, got {provider!r}'
+          resolved = resolve_provider()
+          assert isinstance(resolved, LocalEmbeddingProvider), f'expected LocalEmbeddingProvider, got {resolved!r}'
 
           import fastembed  # noqa: F401 -- proves the extra's runtime is importable offline
 
-          print(f'AC-10 OK: configured_provider_name() == {provider!r}; fastembed imported')
+          print(f'AC-10 OK: configured_provider_name() == {provider!r}; resolve_provider() is LocalEmbeddingProvider; fastembed imported')
           "
 
   python:

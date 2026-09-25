@@ -1,27 +1,29 @@
-# Full allow-list for apps/web/Dockerfile's build (context: repository root).
+# Web-only build context for apps/web/Dockerfile (context: repository root).
 # BuildKit's per-Dockerfile ignore file (`<dockerfile>.dockerignore`, beside
 # the Dockerfile) REPLACES the root `.dockerignore` for this build; nothing
 # from the root file applies here. This file stands alone.
+#
+# It admits only the pnpm workspace root manifests and the three
+# pnpm-workspace.yaml package trees: apps/web, packages/web-contract and
+# modules/*/web. There are deliberately no parent re-includes (`!apps/`,
+# `!modules/`, ...): Docker matches every pattern against each of a path's
+# parent directories too, so re-including a parent re-includes its whole
+# subtree, and that would pull every Python app, package and module back in.
 **
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
-!apps/
-!apps/web/
+!apps/web
 !apps/web/**
-!packages/
-!packages/web-contract/
+!packages/web-contract
 !packages/web-contract/**
-!modules/
-!modules/*/
-!modules/*/web/
+!modules/*/web
 !modules/*/web/**
 
-# Re-exclude private artifacts and local dependencies within the allowed
-# source trees above. Both the directory entry itself and its contents are
-# excluded — `**/node_modules/**` alone still leaves an empty `node_modules`
-# directory in the build context, since it excludes the directory's contents
-# but not the directory entry that the `!apps/web/**` re-include restores.
+# Re-exclude private artifacts, local dependencies and build output inside the
+# allowed trees (last match wins). Directory names are excluded at the
+# directory level as well as by contents, so the directory entry itself never
+# reaches the context either (`**/x/**` alone still leaves an empty `x`).
 **/node_modules
 **/node_modules/**
 **/.next
@@ -31,19 +33,31 @@
 **/.env
 **/.env.*
 **/.envrc*
+**/*.db
+**/*.sqlite
+**/*.log
 **/AGENTS.md
 **/AGENTS.override.md
 **/CLAUDE.md
 **/CLAUDE.local.md
-**/.claude/**
-**/.codex/**
 **/.mcp.json
-**/.bureau/**
-**/.bureau-worktrees/**
-**/.secrets/**
-**/.rheo-local/**
 **/rheo.local.*
-**/*.log
+**/.claude
+**/.claude/**
+**/.codex
+**/.codex/**
+**/.bureau
+**/.bureau/**
+**/.bureau-worktrees
+**/.bureau-worktrees/**
+**/.secrets
+**/.secrets/**
+**/.rheo-local
+**/.rheo-local/**
+**/.git
 **/.git/**
-private/
+**/.venv
+**/.venv/**
+private
+**/private
 **/private/**

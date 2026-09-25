@@ -24,12 +24,14 @@ WORKDIR /app
 # independently of the source copied after it.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
-# The three pnpm-workspace.yaml package globs. The committed codegen outputs
-# under apps/web/src/generated/ and apps/web/src/modules.generated.ts are used
-# as checked in; there is no codegen step in this build.
+# The three pnpm-workspace.yaml package globs. `modules` is copied whole
+# because the ignore file admits only `modules/*/web` from it, so every
+# module's web package arrives without being named here. The committed codegen
+# outputs under apps/web/src/generated/ and apps/web/src/modules.generated.ts
+# are used as checked in; there is no codegen step in this build.
 COPY apps/web ./apps/web
 COPY packages/web-contract ./packages/web-contract
-COPY modules/recallatron/web ./modules/recallatron/web
+COPY modules ./modules
 
 # `--filter @rheo-stream/web...` installs the web app and every workspace
 # dependency it needs (web-contract, recallatron-web) and nothing else the
@@ -43,6 +45,9 @@ RUN pnpm -C apps/web build
 
 EXPOSE 3000
 
-# pnpm is build-time only: the runtime command calls the installed `next`
+# `next start` looks for the production build in `./.next`, so it runs from
+# the app's own directory (the build output is /app/apps/web/.next). pnpm is
+# build-time only: the runtime command calls the app's installed `next`
 # binary directly rather than going back through `pnpm start`.
-CMD ["apps/web/node_modules/.bin/next", "start", "-p", "3000"]
+WORKDIR /app/apps/web
+CMD ["node_modules/.bin/next", "start", "-p", "3000"]
