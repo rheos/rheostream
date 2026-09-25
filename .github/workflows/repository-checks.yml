@@ -50,6 +50,33 @@ jobs:
           persist-credentials: false
       - name: Build the core/worker image
         run: docker build -f Dockerfile .
+      - name: Build the web image
+        run: docker build -f apps/web/Dockerfile .
+      - name: Build the flagship core image (local-embeddings extra)
+        run: docker build --build-arg UV_SYNC_ARGS="--extra local-embeddings" -t rheo-flagship-core -f Dockerfile .
+      # AC-10: the flagship image installs the local embedding runtime and can
+      # select it offline, no database and no network, through the same `uv
+      # run` entry the `core` and `worker` services use. `register_module_settings()`
+      # is #108's early hook; `configured_provider_name()` reads back the
+      # deployment-scoped key it declares. Proves #108 end to end inside the
+      # shipped flagship image.
+      - name: Dense retrieval is selectable, offline, in the flagship image (AC-10)
+        run: |
+          docker run --rm --network none \
+            -e RHEO__modules__installed=recallatron \
+            -e RHEO__recallatron__embedding__provider=local \
+            rheo-flagship-core uv run python -c "
+          from rheo_core.modules import register_module_settings
+          from rheo_recallatron.embedding.registry import configured_provider_name
+
+          register_module_settings()
+          provider = configured_provider_name()
+          assert provider == 'local', f'expected local, got {provider!r}'
+
+          import fastembed  # noqa: F401 -- proves the extra's runtime is importable offline
+
+          print(f'AC-10 OK: configured_provider_name() == {provider!r}; fastembed imported')
+          "
 
   python:
     name: Python checks

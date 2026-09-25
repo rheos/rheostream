@@ -1,0 +1,49 @@
+# Full allow-list for apps/web/Dockerfile's build (context: repository root).
+# BuildKit's per-Dockerfile ignore file (`<dockerfile>.dockerignore`, beside
+# the Dockerfile) REPLACES the root `.dockerignore` for this build; nothing
+# from the root file applies here. This file stands alone.
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!apps/
+!apps/web/
+!apps/web/**
+!packages/
+!packages/web-contract/
+!packages/web-contract/**
+!modules/
+!modules/*/
+!modules/*/web/
+!modules/*/web/**
+
+# Re-exclude private artifacts and local dependencies within the allowed
+# source trees above. Both the directory entry itself and its contents are
+# excluded — `**/node_modules/**` alone still leaves an empty `node_modules`
+# directory in the build context, since it excludes the directory's contents
+# but not the directory entry that the `!apps/web/**` re-include restores.
+**/node_modules
+**/node_modules/**
+**/.next
+**/.next/**
+**/*.tsbuildinfo
+**/next-env.d.ts
+**/.env
+**/.env.*
+**/.envrc*
+**/AGENTS.md
+**/AGENTS.override.md
+**/CLAUDE.md
+**/CLAUDE.local.md
+**/.claude/**
+**/.codex/**
+**/.mcp.json
+**/.bureau/**
+**/.bureau-worktrees/**
+**/.secrets/**
+**/.rheo-local/**
+**/rheo.local.*
+**/*.log
+**/.git/**
+private/
+**/private/**

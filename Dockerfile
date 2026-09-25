@@ -50,7 +50,8 @@ COPY channels/ ./channels/
 # own command is not installed as a console script in the image." The real
 # defence is each env.py refusing to run without the orchestrator's connection;
 # this closes the doc/reality gap around it.
-RUN uv sync --frozen \
+ARG UV_SYNC_ARGS=""
+RUN uv sync --frozen $UV_SYNC_ARGS \
     && rm -f /app/.venv/bin/alembic
 
 # The in-image data root (rheo_core.storage.data_root reads RHEO_IN_CONTAINER to
