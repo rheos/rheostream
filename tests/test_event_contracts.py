@@ -115,11 +115,12 @@ def test_registration_refuses_an_empty_identifier(field: str) -> None:
         )
 
 
-def test_a_subscription_carries_replay_safe_even_though_nothing_reads_it() -> None:
-    """The ratified three fields are all present, including the one with no reader.
+def test_a_subscription_carries_replay_safe() -> None:
+    """The ratified three fields are all present, ``replay_safe`` included.
 
-    Nothing this run does consults it; the point of the assertion is that the shape a
-    later run needs is already there to be consulted.
+    Its one reader is ``core.work.replay``, whose refusal of an unsafe consumer is
+    ``tests/postgres/test_work_recovery.py``'s; this pins only that the field is kept
+    as declared.
     """
     assert _subscription("harness.first", replay_safe=False).replay_safe is False
     assert _subscription("harness.first").replay_safe is True

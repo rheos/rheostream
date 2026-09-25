@@ -86,6 +86,9 @@ from rheo_core.operations import (
     ROLE_NOT_PERMITTED,
     SETTINGS_SET,
     SETTINGS_SET_MEMBER,
+    WORK_REPLAY,
+    WORK_RETRY,
+    WORK_SKIP,
     WORKSPACE_EXPORT,
     WORKSPACE_RESTORE,
     OperationRegistry,
@@ -101,6 +104,7 @@ from rheo_core.operations.core_ops import (
 )
 from rheo_core.operations.operation_ops import OPERATION_RESOLVE
 from rheo_core.operations.records import AUDIENCE_NONE, mark_unresolved, mint
+from rheo_core.refs import uuid7
 from rheo_core.runtime import RUNTIME_RUN
 from rheo_core.settings import TEST_HARNESS_ORIGIN
 from rheo_core.storage.backend import (
@@ -140,13 +144,16 @@ THE_SEVENTEEN = frozenset(
         MODULE_INSTALL,
         MODULE_ENABLE,
         RECORD_DELETE,
+        WORK_RETRY,
+        WORK_SKIP,
+        WORK_REPLAY,
     }
 )
-"""Every registered operation above the read class: fifteen core and five harness
+"""Every registered operation above the read class: eighteen core and five harness
 (test profile only).
 
 **The name is pinned by an acceptance record and does not track the count.** It says
-seventeen and the set holds twenty, which is the right trade:
+seventeen and the set holds twenty-three, which is the right trade:
 ``test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen`` below is
 one of criterion 14's demonstrator pytest node ids, listed verbatim in
 ``docs/acceptance/phase-1-matrix.md``, and ``tests/test_acceptance_matrix.py`` resolves
@@ -165,12 +172,13 @@ C7 had added ``core.standing_grant.create`` and ``core.standing_grant.revoke``.
 C6 had added ``core.approval.approve`` and ``core.approval.refuse`` (both ``MUTATE``)
 and the two upper-class harness fixtures — ``harness.fixture.act`` (``DESTRUCTIVE``)
 and ``harness.sink.send`` (``EXTERNAL``), the first operations of any class above
-``MUTATE`` in the tree.
+``MUTATE`` in the tree. Issue #131 adds ``core.work.retry``, ``.skip`` and ``.replay``
+(all ``MUTATE``), which makes twenty-three.
 
 **A literal, and the registry-derived set is compared against it**, not the other way
 round. Derived alone, the assertion would equal whatever the registry happened to hold
 and could not fail — an operation that lost its ``MUTATE`` class would match its own
-mistake. The count is asserted as well as the membership, so a twenty-first operation
+mistake. The count is asserted as well as the membership, so a twenty-fourth operation
 added later fails here loudly rather than being silently left out of the coverage
 below."""
 
@@ -329,7 +337,8 @@ def _commit_from_the_handler(
 def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
     private_registry: OperationRegistry,
 ) -> None:
-    """AC 26's first half: the set under test comes from the registry, and is twenty.
+    """AC 26's first half: the set under test comes from the registry, and is
+    twenty-three.
 
     **The name still says seventeen and stays that way**: it is a criterion-14
     demonstrator node id, resolved verbatim by ``tests/test_acceptance_matrix.py``
@@ -352,7 +361,7 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
         and operation.declaration.safety_class is not SafetyClass.READ
     }
     assert mutating == set(THE_SEVENTEEN), sorted(mutating)
-    assert len(mutating) == 20, sorted(mutating)
+    assert len(mutating) == 23, sorted(mutating)
 
 
 def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
@@ -477,6 +486,21 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
         # into this operation that needs no synthetic owned type — the owned path is
         # ``tests/postgres/test_record_deletion.py``'s whole subject.
         RECORD_DELETE: dispatch(owner, RECORD_DELETE, {"ref": subject}),
+        # Issue #131's three. Retry and skip of a delivery that does not exist refuse
+        # ``not_found``, and replay with no consumer registry wired into the dispatch
+        # refuses ``consumers_missing``: refused-but-audited records all three, and
+        # the drained paths are ``tests/postgres/test_work_recovery.py``'s subject.
+        WORK_RETRY: dispatch(
+            owner, WORK_RETRY, {"event_id": str(uuid7()), "consumer_id": "core.none"}
+        ),
+        WORK_SKIP: dispatch(
+            owner,
+            WORK_SKIP,
+            {"event_id": str(uuid7()), "consumer_id": "core.none", "note": "audit"},
+        ),
+        WORK_REPLAY: dispatch(
+            owner, WORK_REPLAY, {"consumer_id": "core.none", "from_position": 1}
+        ),
     }
     assert member is not None
 

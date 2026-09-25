@@ -478,6 +478,82 @@
         "title": "DeletionRecord",
         "type": "object"
       },
+      "DeliveryChanged": {
+        "description": "The delivery a retry or skip acted on, and the state it is in now.",
+        "properties": {
+          "consumer_id": {
+            "title": "Consumer Id",
+            "type": "string"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "consumer_id",
+          "state"
+        ],
+        "title": "DeliveryChanged",
+        "type": "object"
+      },
+      "DeliveryRef": {
+        "description": "One delivery, by the composite key it is stored under.",
+        "properties": {
+          "consumer_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Consumer Id",
+            "type": "string"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "consumer_id"
+        ],
+        "title": "DeliveryRef",
+        "type": "object"
+      },
+      "DeliverySkipInput": {
+        "description": "A delivery to skip, and why. ``note`` is required and non-empty for the reason\n``OperationResolveInput`` gives: letting an event go unprocessed is an explicit\nact, and one with no stated reason is indistinguishable from an accident. Bounded\nso it cannot become an unbounded write.",
+        "properties": {
+          "consumer_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Consumer Id",
+            "type": "string"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "note": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "consumer_id",
+          "note"
+        ],
+        "title": "DeliverySkipInput",
+        "type": "object"
+      },
       "DigestEntry": {
         "properties": {
           "count": {
@@ -501,6 +577,11 @@
         "properties": {
           "attempts": {
             "title": "Attempts",
+            "type": "integer"
+          },
+          "blocked_count": {
+            "description": "Later deliveries of the same consumer and subject this failed head holds back until it is retried or skipped.",
+            "title": "Blocked Count",
             "type": "integer"
           },
           "completed_at": {
@@ -541,7 +622,8 @@
           "consumer_id",
           "attempts",
           "last_error",
-          "completed_at"
+          "completed_at",
+          "blocked_count"
         ],
         "title": "FailedDelivery",
         "type": "object"
@@ -638,6 +720,49 @@
           }
         },
         "title": "FailureListInput",
+        "type": "object"
+      },
+      "FailureSummary": {
+        "description": "The counts the shell's banner is to read (``intake-and-events.md`` \u00a7 A failed\nhead is surfaced).\n\n``failed_count``, ``blocked_count`` and ``oldest_failed_at`` are over\n**deliveries**, the ratified three. ``unresolved_count`` is the operation records\nin ``unresolved``, which the same section says the summary counts, as a fourth\nfield rather than folded into ``failed_count``: the two are cleared by different\noperations and a banner that summed them could not say which screen to open.\nFailed jobs are not counted. They block nothing, and ``core.work.failures`` lists\nthem.",
+        "properties": {
+          "blocked_count": {
+            "title": "Blocked Count",
+            "type": "integer"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "oldest_failed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Failed At"
+          },
+          "unresolved_count": {
+            "title": "Unresolved Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "failed_count",
+          "blocked_count",
+          "oldest_failed_at",
+          "unresolved_count"
+        ],
+        "title": "FailureSummary",
+        "type": "object"
+      },
+      "FailureSummaryInput": {
+        "description": "No fields: the workspace comes from the context.",
+        "properties": {},
+        "title": "FailureSummaryInput",
         "type": "object"
       },
       "JsonValue": {},
@@ -1010,6 +1135,57 @@
           "id"
         ],
         "title": "RecordRef",
+        "type": "object"
+      },
+      "ReplayInput": {
+        "description": "Which consumer to replay, and from which outbox position on (inclusive).",
+        "properties": {
+          "consumer_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Consumer Id",
+            "type": "string"
+          },
+          "from_position": {
+            "minimum": 1,
+            "title": "From Position",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "consumer_id",
+          "from_position"
+        ],
+        "title": "ReplayInput",
+        "type": "object"
+      },
+      "ReplayResult": {
+        "description": "What a replay did. ``reset`` counts existing deliveries put back ``pending``;\n``created`` counts deliveries made for retained events the consumer had none for.",
+        "properties": {
+          "consumer_id": {
+            "title": "Consumer Id",
+            "type": "string"
+          },
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "from_position": {
+            "title": "From Position",
+            "type": "integer"
+          },
+          "reset": {
+            "title": "Reset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "consumer_id",
+          "from_position",
+          "reset",
+          "created"
+        ],
+        "title": "ReplayResult",
         "type": "object"
       },
       "RuntimeRunInput": {
@@ -2778,6 +2954,73 @@
         "summary": "core.token.revoke (mutate)"
       }
     },
+    "/api/v1/operations/core.work.failure_summary": {
+      "post": {
+        "operationId": "core.work.failure_summary",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FailureSummaryInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/FailureSummary"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.work.failure_summary (read)"
+      }
+    },
     "/api/v1/operations/core.work.failures": {
       "post": {
         "operationId": "core.work.failures",
@@ -2843,6 +3086,207 @@
           }
         },
         "summary": "core.work.failures (read)"
+      }
+    },
+    "/api/v1/operations/core.work.replay": {
+      "post": {
+        "operationId": "core.work.replay",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ReplayResult"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.work.replay (mutate)"
+      }
+    },
+    "/api/v1/operations/core.work.retry": {
+      "post": {
+        "operationId": "core.work.retry",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/DeliveryChanged"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.work.retry (mutate)"
+      }
+    },
+    "/api/v1/operations/core.work.skip": {
+      "post": {
+        "operationId": "core.work.skip",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliverySkipInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/DeliveryChanged"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.work.skip (mutate)"
       }
     },
     "/api/v1/operations/core.workspace.digest": {

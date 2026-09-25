@@ -231,10 +231,11 @@ class HandlerUnitOfWork(UnitOfWork):
     annotation compiling (``core_ops.py``, ``tokens/issue.py``, ``resolve_in`` and
     the test harness need no edit), and reaches the four private slots only because
     it lives in the module that declares them.
-    ``__slots__ = ("_operation_id", "_consumers", "_scheduled_execution")``: it adds
-    exactly three of its own, read through the :attr:`operation_id`,
-    :attr:`consumers` and :attr:`scheduled_execution` properties, and none is a change
-    to ``UnitOfWork``'s pinned surface — the guard reads ``dir(UnitOfWork)`` and
+    ``__slots__ = ("_operation_id", "_consumers", "_scheduled_execution",
+    "_due_mark_requested")``: it adds exactly four of its own, the first three read
+    through the :attr:`operation_id`, :attr:`consumers` and :attr:`scheduled_execution`
+    properties and the fourth described below, and none is a change to
+    ``UnitOfWork``'s pinned surface — the guard reads ``dir(UnitOfWork)`` and
     ``UnitOfWork.__slots__``, neither of which a subclass's own slot appears in.
     ``tests/test_handler_uow.py`` pins the tuple exactly, so every addition to it is a
     deliberate, reviewed change.
@@ -279,9 +280,25 @@ class HandlerUnitOfWork(UnitOfWork):
     findings note carries the remaining gap as F1; ``overview.md``'s "a handler cannot
     commit on its own" is true of the two named methods after this and still false of
     the connection.
+
+    **What ``_due_mark_requested`` is for.** A handler that makes workspace work due
+    without queuing a ``long_running`` job (``core.work.retry`` and ``.replay`` put
+    deliveries back ``pending``) needs the workspace marked due in the control plane
+    *after* the commit, for the reason ``dispatch()``'s ``_mark_workspace_due`` gives:
+    a mark written before the commit can be read by a worker that then visits, finds
+    nothing yet, and pushes the index back out to the reconcile floor. The handler
+    cannot reach the post-commit point itself, so it asks through
+    :meth:`request_due_mark` and ``dispatch()`` reads :attr:`due_mark_requested` once
+    it has committed. Unlike the other three this slot is written by the handler, and
+    it carries one bit: nothing else about the mark is the handler's to choose.
     """
 
-    __slots__ = ("_operation_id", "_consumers", "_scheduled_execution")
+    __slots__ = (
+        "_operation_id",
+        "_consumers",
+        "_scheduled_execution",
+        "_due_mark_requested",
+    )
 
     def __init__(
         self,
@@ -315,6 +332,7 @@ class HandlerUnitOfWork(UnitOfWork):
         self._operation_id = operation_id
         self._consumers = consumers
         self._scheduled_execution = scheduled_execution
+        self._due_mark_requested = False
 
     @property
     def operation_id(self) -> UUID | None:
@@ -350,6 +368,20 @@ class HandlerUnitOfWork(UnitOfWork):
         refuses anything that is not the very object this property returned.
         """
         return self._scheduled_execution
+
+    def request_due_mark(self) -> None:
+        """Ask ``dispatch()`` to mark this workspace due once the work has committed.
+
+        A request and not a write: nothing reaches the control plane from here, and a
+        dispatch that rolls back writes no mark. A view the worker builds has no
+        dispatcher behind it, so the request is simply never read there.
+        """
+        self._due_mark_requested = True
+
+    @property
+    def due_mark_requested(self) -> bool:
+        """Whether the handler asked for a post-commit due mark."""
+        return self._due_mark_requested
 
     def __enter__(self) -> Self:
         raise StorageRefusal(

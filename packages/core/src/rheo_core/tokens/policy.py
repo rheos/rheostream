@@ -34,3 +34,16 @@ from there would route ``rheo_core.tokens.policy`` -> ``rheo_core.operations.
 core_ops`` -> ``rheo_core.tokens.issue`` -> ``rheo_core.tokens.policy``, a real
 import cycle. Duplicating two short literal strings is cheaper than that cycle;
 ``core_ops.py`` carries a comment pointing back here so the two stay in lockstep."""
+
+
+PERSON_HELD_TOKEN_KINDS: Final[frozenset[str]] = frozenset({"cli"})
+"""The token kinds a person holds, and the only ones an act reserved for a person
+accepts. An **allow-list**, deliberately: ``mcp`` and ``runtime`` are made for a model,
+and a token kind added later is refused by every check that reads this until someone
+decides it belongs here, rather than admitted until someone remembers to deny it.
+
+Read by ``audit/operations.py`` (the ``core.audit.list`` opt-ins) and
+``work/operations.py`` (``core.work.retry``, ``.skip`` and ``.replay``). A context that
+is not a token at all (a session, the operator CLI) is not a token-kind question and
+neither check applies to it. A token whose control-plane row is gone is refused, so
+the rule fails closed."""

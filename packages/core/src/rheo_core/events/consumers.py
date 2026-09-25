@@ -13,12 +13,9 @@ owning module is implicit there; a registry that holds subscriptions from every
 module has to carry it, because fan-out tests "belongs to a module enabled in the
 workspace" against it (``intake-and-events.md:305``).
 
-**``replay_safe`` is declared and stored, and nothing reads it this run.** The
-deferred operation that replays a delivered event is the reader, and it is a later
-run's. It is declared now because the ratified shape has three fields, and a
-subscription that cannot say whether replaying it is safe is a shape that run would
-have to widen — a widening that would reach every module manifest, not just this
-package.
+**``replay_safe`` has one reader: ``core.work.replay``** (``work/operations.py``),
+which refuses ``replay_unsafe`` for a subscription that declares ``False``. The fan-out
+and the worker ignore it, because a first delivery is never a replay.
 """
 
 from collections.abc import Callable

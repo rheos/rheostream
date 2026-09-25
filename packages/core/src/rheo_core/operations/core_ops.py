@@ -24,6 +24,12 @@ whose own row is the ``:105`` the cited range now reaches.
   directly. Its models and handler live in ``rheo_core.work.operations``, beside
   that repository; only the declaration is here. ``audit = None`` for the same
   reason ``core.workspace.status`` carries it.
+- ``core.work.failure_summary`` — ``read``; roles ``owner, operator``. The counts the
+  shell's banner is to read (issue #131).
+- ``core.work.retry`` / ``.skip`` / ``.replay`` — ``mutate``; roles ``owner,
+  operator``. The three ways a person moves a delivery out of ``failed`` (issue #131).
+  Models and handlers in ``rheo_core.work.operations``, which also refuses a
+  token of any kind but ``cli``.
 - ``core.operation.get`` / ``core.operation.list`` — ``read``; roles ``owner,
   member, operator``. The supported reads of an operation record (run 0c2, C4).
 - ``core.operation.resolve`` — ``mutate``; roles ``owner, operator``. Clears an
@@ -181,9 +187,32 @@ from rheo_core.storage.repositories import (
     upsert_workspace_setting,
 )
 from rheo_core.work.operations import (
+    WORK_FAILURE_SUMMARY as WORK_FAILURE_SUMMARY,
+)
+from rheo_core.work.operations import (
+    WORK_REPLAY as WORK_REPLAY,
+)
+from rheo_core.work.operations import (
+    WORK_RETRY as WORK_RETRY,
+)
+from rheo_core.work.operations import (
+    WORK_SKIP as WORK_SKIP,
+)
+from rheo_core.work.operations import (
+    DeliveryChanged,
+    DeliveryRef,
+    DeliverySkipInput,
     FailureList,
     FailureListInput,
+    FailureSummary,
+    FailureSummaryInput,
+    ReplayInput,
+    ReplayResult,
+    failure_summary_handler,
     failures_handler,
+    replay_handler,
+    retry_handler,
+    skip_handler,
 )
 
 WORKSPACE_STATUS: Final = "core.workspace.status"
@@ -389,6 +418,57 @@ WORK_FAILURES_DECLARATION: Final = OperationDeclaration(
     audit=None,
 )
 
+WORK_FAILURE_SUMMARY_DECLARATION: Final = OperationDeclaration(
+    name=WORK_FAILURE_SUMMARY,
+    safety_class=SafetyClass.READ,
+    # ``module-contract.md``'s own row: ``owner, operator``, the pair
+    # ``core.work.failures`` carries, spelled out for the reason that one is.
+    roles=frozenset({Role.OWNER, Role.OPERATOR}),
+    input_model=FailureSummaryInput,
+    output=FailureSummary,
+    idempotency=Idempotency.NONE,
+    audit=None,
+)
+
+# The three writes that move a delivery out of ``failed``. ``MUTATE``, roles
+# ``owner, operator`` (``module-contract.md``), each audited with
+# ``subject_field=None`` because a delivery is not a record type with a resolver.
+# ``Idempotency.NONE``: a repeat retry or skip finds the row no longer ``failed`` and
+# refuses ``delivery_state``, and a repeat replay resets the same rows again, so there
+# is no stored answer for a repeat to return. A token of any kind but ``cli`` is
+# refused inside each handler (``work/operations.py``).
+_WORK_WRITE_ROLES: Final = frozenset({Role.OWNER, Role.OPERATOR})
+
+WORK_RETRY_DECLARATION: Final = OperationDeclaration(
+    name=WORK_RETRY,
+    safety_class=SafetyClass.MUTATE,
+    roles=_WORK_WRITE_ROLES,
+    input_model=DeliveryRef,
+    output=DeliveryChanged,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field=None),
+)
+
+WORK_SKIP_DECLARATION: Final = OperationDeclaration(
+    name=WORK_SKIP,
+    safety_class=SafetyClass.MUTATE,
+    roles=_WORK_WRITE_ROLES,
+    input_model=DeliverySkipInput,
+    output=DeliveryChanged,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field=None),
+)
+
+WORK_REPLAY_DECLARATION: Final = OperationDeclaration(
+    name=WORK_REPLAY,
+    safety_class=SafetyClass.MUTATE,
+    roles=_WORK_WRITE_ROLES,
+    input_model=ReplayInput,
+    output=ReplayResult,
+    idempotency=Idempotency.NONE,
+    audit=AuditSpec(subject_field=None),
+)
+
 OPERATION_GET_DECLARATION: Final = OperationDeclaration(
     name=OPERATION_GET,
     safety_class=SafetyClass.READ,
@@ -499,6 +579,10 @@ CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (SETTINGS_SET_DECLARATION, _settings_set),
     (SETTINGS_SET_MEMBER_DECLARATION, _settings_set_member),
     (WORK_FAILURES_DECLARATION, failures_handler),
+    (WORK_FAILURE_SUMMARY_DECLARATION, failure_summary_handler),
+    (WORK_RETRY_DECLARATION, retry_handler),
+    (WORK_SKIP_DECLARATION, skip_handler),
+    (WORK_REPLAY_DECLARATION, replay_handler),
     (OPERATION_GET_DECLARATION, get_handler),
     (OPERATION_LIST_DECLARATION, list_handler),
     (OPERATION_RESOLVE_DECLARATION, resolve_handler),

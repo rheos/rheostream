@@ -276,6 +276,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.work.failure_summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.work.failure_summary (read) */
+        post: operations["core.work.failure_summary"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.work.failures": {
         parameters: {
             query?: never;
@@ -287,6 +304,57 @@ export interface paths {
         put?: never;
         /** core.work.failures (read) */
         post: operations["core.work.failures"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.work.replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.work.replay (mutate) */
+        post: operations["core.work.replay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.work.retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.work.retry (mutate) */
+        post: operations["core.work.retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.work.skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.work.skip (mutate) */
+        post: operations["core.work.skip"];
         delete?: never;
         options?: never;
         head?: never;
@@ -597,6 +665,52 @@ export interface components {
             /** Retained Successor Ref */
             retained_successor_ref: string | null;
         };
+        /**
+         * DeliveryChanged
+         * @description The delivery a retry or skip acted on, and the state it is in now.
+         */
+        DeliveryChanged: {
+            /** Consumer Id */
+            consumer_id: string;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** State */
+            state: string;
+        };
+        /**
+         * DeliveryRef
+         * @description One delivery, by the composite key it is stored under.
+         */
+        DeliveryRef: {
+            /** Consumer Id */
+            consumer_id: string;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+        };
+        /**
+         * DeliverySkipInput
+         * @description A delivery to skip, and why. ``note`` is required and non-empty for the reason
+         *     ``OperationResolveInput`` gives: letting an event go unprocessed is an explicit
+         *     act, and one with no stated reason is indistinguishable from an accident. Bounded
+         *     so it cannot become an unbounded write.
+         */
+        DeliverySkipInput: {
+            /** Consumer Id */
+            consumer_id: string;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Note */
+            note: string;
+        };
         /** DigestEntry */
         DigestEntry: {
             /** Count */
@@ -621,6 +735,11 @@ export interface components {
         FailedDelivery: {
             /** Attempts */
             attempts: number;
+            /**
+             * Blocked Count
+             * @description Later deliveries of the same consumer and subject this failed head holds back until it is retried or skipped.
+             */
+            blocked_count: number;
             /** Completed At */
             completed_at: string | null;
             /** Consumer Id */
@@ -705,6 +824,34 @@ export interface components {
              */
             limit: number;
         };
+        /**
+         * FailureSummary
+         * @description The counts the shell's banner is to read (``intake-and-events.md`` § A failed
+         *     head is surfaced).
+         *
+         *     ``failed_count``, ``blocked_count`` and ``oldest_failed_at`` are over
+         *     **deliveries**, the ratified three. ``unresolved_count`` is the operation records
+         *     in ``unresolved``, which the same section says the summary counts, as a fourth
+         *     field rather than folded into ``failed_count``: the two are cleared by different
+         *     operations and a banner that summed them could not say which screen to open.
+         *     Failed jobs are not counted. They block nothing, and ``core.work.failures`` lists
+         *     them.
+         */
+        FailureSummary: {
+            /** Blocked Count */
+            blocked_count: number;
+            /** Failed Count */
+            failed_count: number;
+            /** Oldest Failed At */
+            oldest_failed_at: string | null;
+            /** Unresolved Count */
+            unresolved_count: number;
+        };
+        /**
+         * FailureSummaryInput
+         * @description No fields: the workspace comes from the context.
+         */
+        FailureSummaryInput: Record<string, never>;
         JsonValue: unknown;
         /**
          * ModuleEnableInput
@@ -917,6 +1064,31 @@ export interface components {
             module: string;
             /** Record Type */
             record_type: string;
+        };
+        /**
+         * ReplayInput
+         * @description Which consumer to replay, and from which outbox position on (inclusive).
+         */
+        ReplayInput: {
+            /** Consumer Id */
+            consumer_id: string;
+            /** From Position */
+            from_position: number;
+        };
+        /**
+         * ReplayResult
+         * @description What a replay did. ``reset`` counts existing deliveries put back ``pending``;
+         *     ``created`` counts deliveries made for retained events the consumer had none for.
+         */
+        ReplayResult: {
+            /** Consumer Id */
+            consumer_id: string;
+            /** Created */
+            created: number;
+            /** From Position */
+            from_position: number;
+            /** Reset */
+            reset: number;
         };
         /** RuntimeRunInput */
         RuntimeRunInput: {
@@ -1842,6 +2014,41 @@ export interface operations {
             };
         };
     };
+    "core.work.failure_summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FailureSummaryInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["FailureSummary"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
     "core.work.failures": {
         parameters: {
             query?: never;
@@ -1871,6 +2078,111 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["FailureList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.work.replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplayInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ReplayResult"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.work.retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["DeliveryChanged"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.work.skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliverySkipInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["DeliveryChanged"];
                         state: string;
                     };
                 };

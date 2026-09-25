@@ -49,7 +49,7 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import Connection, Row, insert, select, update
+from sqlalchemy import Connection, Row, func, insert, select, update
 from sqlalchemy.sql.elements import ColumnElement
 
 from rheo_core.refs import uuid7
@@ -596,3 +596,15 @@ def list_recent(conn: Connection, *, limit: int) -> tuple[OperationRow, ...]:
         .limit(limit)
     )
     return tuple(_row(row) for row in rows)
+
+
+def count_unresolved(conn: Connection) -> int:
+    """How many records are ``unresolved``: the operation half of
+    ``core.work.failure_summary``. One aggregate, no rows."""
+    return int(
+        conn.execute(
+            select(func.count())
+            .select_from(t.operation)
+            .where(t.operation.c.state == UNRESOLVED)
+        ).scalar_one()
+    )
