@@ -17,6 +17,13 @@ import threading
 from datetime import UTC, datetime
 from types import FrameType
 
+# First, and on purpose (#142): ``rheo_core.exports`` and ``rheo_core.operations``
+# import each other through ``approvals`` and ``core_ops``, and only the order that
+# starts at ``rheo_core.operations`` completes. Every other process entry point reaches
+# it first by accident; this one did not, so ``python -m rheo_app_worker.main`` died at
+# import. ``tests/test_entry_point_imports.py`` imports every entry point in a fresh
+# interpreter so the order cannot silently break again.
+import rheo_core.operations  # noqa: F401
 from rheo_core.events import ConsumerRegistry
 from rheo_core.exports import (
     EXPORT_JOB_KIND,
