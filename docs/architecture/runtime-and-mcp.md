@@ -477,8 +477,9 @@ one. The tier for secrets exists so that a *reference* string in a record is als
    tokens after NFKC normalisation, casefolding and whitespace collapsing, so
    `[EMAIL WITHHELD]` and a no-break-space variant are refused too.
 
-The run's task text is masked under the same policy before the request is built, so no
-adapter can send a secret reference, or a contact value while the allowance is off, in it.
+The run's task text has its secret references masked before the request is built, so no
+adapter can send one. Contact values in the task are not masked: the task is the person's own
+instruction, so an address they typed into it is meant to reach the model (#149).
 
 The mask runs on the text the renderer hands over, so a resolver that truncates its own
 `display` can cut an address before the mask sees it; Recallatron's label is the whole
