@@ -129,7 +129,12 @@ from rheo_recallatron.refusals import (
     WINDOW_SCAN_LIMIT,
 )
 from rheo_recallatron.retrieval.dispatch import resolve_strategy
-from rheo_recallatron.retrieval.protocol import SearchRequest
+from rheo_recallatron.retrieval.protocol import (
+    ARM_DENSE,
+    ARM_LEXICAL,
+    Hit,
+    SearchRequest,
+)
 from rheo_recallatron.writes import (
     ORIGIN_DERIVED,
     ORIGIN_TOLD,
@@ -426,7 +431,9 @@ def recall(
     candidate scan, whichever comes first.
 
     No no-query recency bundle and no implicit session expansion. Every item and the
-    response's ``provenance`` name the strategy that answered.
+    response's ``provenance`` name the strategy that answered. ``provenance.arms``
+    counts, per arm, the returned items that arm ranked, so nothing the walk dropped
+    can move it.
     """
     _checked_purpose(ctx, model_input.purpose)
     request = _opened(ctx, uow)
@@ -446,6 +453,7 @@ def recall(
     )
 
     items: list[RecallItem] = []
+    returned: list[Hit] = []
     for hit in ranked.hits:
         if len(items) == model_input.k:
             break
@@ -465,11 +473,18 @@ def recall(
                 strategy=strategy.name,
             )
         )
+        returned.append(hit)
     return RecallResult(
         items=tuple(items),
         provenance=RecallProvenance(
             strategy=strategy.name,
-            arms=ArmCounts(lexical=ranked.arms.lexical, dense=ranked.arms.dense),
+            # Counted over the returned items only, never from ``ranked.arms``: that
+            # is taken before the walk and would count memories this caller may not
+            # read (#121).
+            arms=ArmCounts(
+                lexical=sum(ARM_LEXICAL in hit.arms for hit in returned),
+                dense=sum(ARM_DENSE in hit.arms for hit in returned),
+            ),
             dense_available=ranked.dense_available,
         ),
     )

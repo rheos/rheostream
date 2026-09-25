@@ -10,6 +10,8 @@ SQL that decides what may be ranked is strategy-independent by construction.
 from rheo_recallatron.retrieval.dispatch import STRATEGY_REGISTRY, resolve_strategy
 from rheo_recallatron.retrieval.lexical import LexicalStrategy
 from rheo_recallatron.retrieval.protocol import (
+    ARM_DENSE,
+    ARM_LEXICAL,
     ArmProvenance,
     Hit,
     IndexItem,
@@ -19,6 +21,8 @@ from rheo_recallatron.retrieval.protocol import (
 )
 
 __all__ = [
+    "ARM_DENSE",
+    "ARM_LEXICAL",
     "STRATEGY_REGISTRY",
     "ArmProvenance",
     "Hit",

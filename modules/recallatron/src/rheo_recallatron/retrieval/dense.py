@@ -72,6 +72,7 @@ from rheo_recallatron.embedding.protocol import EmbeddingProvider
 from rheo_recallatron.embedding.registry import resolve_provider
 from rheo_recallatron.references import canonical_ref
 from rheo_recallatron.retrieval.protocol import (
+    ARM_DENSE,
     ArmProvenance,
     Hit,
     IndexItem,
@@ -345,7 +346,12 @@ class DenseStrategy:
             return _unavailable(NO_EMBEDDINGS, provider)
 
         hits = tuple(
-            Hit(ref=memory_id, score=float(score), strategy=self.name)
+            Hit(
+                ref=memory_id,
+                score=float(score),
+                strategy=self.name,
+                arms=frozenset({ARM_DENSE}),
+            )
             for memory_id, score in rows
         )
         return SearchResult(

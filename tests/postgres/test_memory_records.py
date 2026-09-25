@@ -112,6 +112,7 @@ from rheo_recallatron.configuration import (
     LEXICAL_DF_THRESHOLD,
     LEXICAL_RAREST_KEPT,
     MEMORY_RECORD_TYPE,
+    RECALL_K_DEFAULT,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
     RETRIEVAL_STRATEGY_KEY,
@@ -158,10 +159,12 @@ from rheo_recallatron.operations import (
 from rheo_recallatron.references import entity_reference
 from rheo_recallatron.resolvers import resolve_memory
 from rheo_recallatron.retrieval import (
+    ARM_DENSE,
     STRATEGY_REGISTRY,
     ArmProvenance,
     Hit,
     IndexItem,
+    LexicalStrategy,
     SearchRequest,
     SearchResult,
 )
@@ -1607,7 +1610,9 @@ def test_recall_runs_the_strategy_the_registry_resolves(
     The workspace pins ``lexical`` and the proof swaps that entry for a spy. Pinned,
     because the default resolves ``hybrid`` and would never reach the spy. The spy
     answers ``apples`` with the ``pears`` row, which shares no lexeme with the query,
-    and with arm counts lexical never reports.
+    attributed to the dense arm, which lexical never reports. Its pre-walk arm lengths
+    (seven and three) never reach the response: the counts are the returned item's
+    own arms (#121).
     """
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples", body="a note about apples"))
@@ -1617,7 +1622,14 @@ def test_recall_runs_the_strategy_the_registry_resolves(
         )
     spy = _SpyStrategy(
         answer=SearchResult(
-            hits=(Hit(ref=pears.id, score=0.5, strategy="spy"),),
+            hits=(
+                Hit(
+                    ref=pears.id,
+                    score=0.5,
+                    strategy="spy",
+                    arms=frozenset({ARM_DENSE}),
+                ),
+            ),
             arms=ArmProvenance(lexical=7, dense=3),
             dense_available=True,
         )
@@ -1629,12 +1641,15 @@ def test_recall_runs_the_strategy_the_registry_resolves(
 
     assert [request.query for request in spy.requests] == ["apples"]
     assert spy.requests[0].limit == CANDIDATE_SCAN_LIMIT
+    # ``k`` sets the hybrid dense arm's width; AC 9 reads that width from the
+    # strategy directly, so this is what proves ``recall()`` passes it through.
+    assert spy.requests[0].k == RECALL_K_DEFAULT
     assert [item.title for item in result.items] == ["pears"]
     assert [item.strategy for item in result.items] == ["spy"]
     assert result.items[0].score == 0.5
     assert result.provenance == RecallProvenance(
         strategy="spy",
-        arms=ArmCounts(lexical=7, dense=3),
+        arms=ArmCounts(lexical=0, dense=1),
         dense_available=True,
     )
 
@@ -1669,7 +1684,14 @@ def test_recall_runs_the_strategy_the_stored_setting_names(
     )
     spy = _SpyStrategy(
         answer=SearchResult(
-            hits=(Hit(ref=pears.id, score=0.25, strategy="spy"),),
+            hits=(
+                Hit(
+                    ref=pears.id,
+                    score=0.25,
+                    strategy="spy",
+                    arms=frozenset({ARM_DENSE}),
+                ),
+            ),
             arms=ArmProvenance(lexical=0, dense=1),
             dense_available=True,
         )
@@ -1777,22 +1799,35 @@ def test_lexical_recall_returns_what_the_inline_statement_returned(
             request = begin_request(ctx, uow)
             assert request is not None
             baseline = _inline_recall_refs(uow, request, query_text)
+            # The arm's own list, read before any permission walk, matches the
+            # baseline too. The walk would drop the private and corrected rows
+            # anyway, so without this a strategy that lost the row-local filter
+            # would still return the same items. Read from the strategy, because
+            # the response counts returned items only (#121).
+            arm = LexicalStrategy().search(
+                ctx,
+                uow,
+                SearchRequest(
+                    query=query_text,
+                    mode=ReadMode.CURRENT,
+                    memory=request,
+                    limit=CANDIDATE_SCAN_LIMIT,
+                    k=50,
+                ),
+            )
         assert len(baseline) >= 4, (query_text, baseline)
+        assert [memory_reference(hit.ref) for hit in arm.hits] == baseline, query_text
 
         result = _recalled(memory.recall(ctx, query=query_text, k=50))
         assert [item.ref for item in result.items] == baseline, query_text
-        # The arm's own count, taken before the permission walk, matches the
-        # baseline too. The walk would drop the private and corrected rows anyway,
-        # so without this a strategy that lost the row-local filter would still
-        # return the same items.
         assert result.provenance.arms.lexical == len(baseline), query_text
         assert {item.strategy for item in result.items} == {STRATEGY_LEXICAL}
         assert all(item.score > 0 for item in result.items)
 
 
 def test_every_recall_carries_lexical_provenance(memory: MemoryWorkspace) -> None:
-    """AC 8's ``false`` half: provenance on every response, counting the ranked list
-    before the permission walk, with no dense arm to report."""
+    """AC 8's ``false`` half: provenance on every response, counting the returned
+    items per arm, with no dense arm to report."""
     memory.set_strategy(STRATEGY_LEXICAL)
     with memory.unit() as uow:
         _write(uow.connection, _row(title="apples one", body="apples, readable"))
@@ -1804,10 +1839,10 @@ def test_every_recall_carries_lexical_provenance(memory: MemoryWorkspace) -> Non
 
     ranked = _recalled(memory.recall(memory.context(), query="apples"))
     assert [item.title for item in ranked.items] == ["apples one"]
-    # Two ranked, one shown: the walk removed the other after the count was taken.
+    # Two ranked, one shown: the count is the one shown, not the two ranked (#121).
     assert ranked.provenance == RecallProvenance(
         strategy=STRATEGY_LEXICAL,
-        arms=ArmCounts(lexical=2, dense=0),
+        arms=ArmCounts(lexical=1, dense=0),
         dense_available=False,
     )
     assert all(item.strategy == ranked.provenance.strategy for item in ranked.items)
@@ -1815,6 +1850,73 @@ def test_every_recall_carries_lexical_provenance(memory: MemoryWorkspace) -> Non
     empty = _recalled(memory.recall(memory.context(), query="quinces"))
     assert empty.items == ()
     assert empty.provenance == RecallProvenance(
+        strategy=STRATEGY_LEXICAL,
+        arms=ArmCounts(lexical=0, dense=0),
+        dense_available=False,
+    )
+
+
+def test_an_unreadable_matching_memory_never_changes_a_caller_visible_count(
+    memory: MemoryWorkspace,
+) -> None:
+    """#121: recall's ``provenance`` is the same with or without memories the caller
+    may not read, and an answer with no readable match counts zero.
+
+    The hidden rows are ``workspace``-audience, so the row-local prefilter admits them
+    and only full eligibility, on their unreadable ``about`` link, removes them. They
+    repeat the query word, so they rank above the readable row: the strategy's own
+    list is gated to hold them, which makes a pre-walk count show if it ever returns.
+    """
+    memory.set_strategy(STRATEGY_LEXICAL)
+    ctx = memory.context()
+    with memory.unit() as uow:
+        _write(uow.connection, _row(title="apples one", body="apples, readable"))
+
+    before = _recalled(memory.recall(ctx, query="apples"))
+    assert [item.title for item in before.items] == ["apples one"]
+
+    with memory.unit() as uow:
+        hidden = [
+            _write(
+                uow.connection,
+                _row(
+                    title="apples",
+                    body="apples apples apples",
+                    recorded_at=_recent(offset),
+                ),
+                links=((f"harness.note:{uuid7()}", "about", False),),
+            )
+            for offset in range(1, 4)
+        ]
+        _write(
+            uow.connection,
+            _row(title="quinces", body="quinces", recorded_at=_recent(9)),
+            links=((f"harness.note:{uuid7()}", "about", False),),
+        )
+    with memory.reading() as uow:
+        request = begin_request(ctx, uow)
+        assert request is not None
+        arm = LexicalStrategy().search(
+            ctx,
+            uow,
+            SearchRequest(
+                query="apples",
+                mode=ReadMode.CURRENT,
+                memory=request,
+                limit=CANDIDATE_SCAN_LIMIT,
+                k=RECALL_K_DEFAULT,
+            ),
+        )
+    assert {row.id for row in hidden} <= {hit.ref for hit in arm.hits}
+    assert arm.arms.lexical == len(hidden) + 1
+
+    after = _recalled(memory.recall(ctx, query="apples"))
+    assert [item.ref for item in after.items] == [item.ref for item in before.items]
+    assert after.provenance == before.provenance
+
+    only_hidden = _recalled(memory.recall(ctx, query="quinces"))
+    assert only_hidden.items == ()
+    assert only_hidden.provenance == RecallProvenance(
         strategy=STRATEGY_LEXICAL,
         arms=ArmCounts(lexical=0, dense=0),
         dense_available=False,

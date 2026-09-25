@@ -30,6 +30,8 @@ from rheo_recallatron.retrieval.hybrid import (
     overfetch_multiplier_in,
 )
 from rheo_recallatron.retrieval.protocol import (
+    ARM_DENSE,
+    ARM_LEXICAL,
     ArmProvenance,
     Hit,
     IndexItem,
@@ -124,7 +126,10 @@ class _StubArm:
         self.requests.append(request)
         return SearchResult(
             hits=tuple(
-                Hit(ref=ref, score=1.0, strategy=self.name) for ref in self.refs
+                # Deliberately the wrong arm: the fused hit's ``arms`` must come
+                # from which list held it, never from what an arm says of itself.
+                Hit(ref=ref, score=1.0, strategy=self.name, arms=frozenset({"stub"}))
+                for ref in self.refs
             ),
             arms=ArmProvenance(lexical=0, dense=0),
             dense_available=True,
@@ -169,6 +174,35 @@ def test_the_fused_list_handed_on_is_cut_to_the_scan_bound(
     assert [asked.limit for asked in dense.requests] == [
         k * OVERFETCH_MULTIPLIER_DEFAULT
     ]
+
+
+def test_each_fused_hit_names_the_arms_whose_list_held_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#121's counting input. ``b`` is in both lists, ``a`` in lexical's alone and
+    ``d`` in dense's alone, so ``recall()`` can count per arm over what it returns."""
+    monkeypatch.setattr(
+        hybrid, "overfetch_multiplier", lambda ctx, uow: OVERFETCH_MULTIPLIER_DEFAULT
+    )
+    monkeypatch.setattr(hybrid, "_recorded_at", lambda uow, ids: {})
+    a, b, d = _id(1), _id(2), _id(4)
+    request = SearchRequest(
+        query="apples",
+        mode=ReadMode.CURRENT,
+        memory=cast(MemoryRequest, None),
+        limit=CANDIDATE_SCAN_LIMIT,
+        k=10,
+    )
+
+    result = HybridStrategy(lexical=_StubArm((a, b)), dense=_StubArm((b, d))).search(
+        cast(WorkspaceContext, None), cast(UnitOfWork, None), request
+    )
+
+    assert {hit.ref: hit.arms for hit in result.hits} == {
+        a: frozenset({ARM_LEXICAL}),
+        b: frozenset({ARM_LEXICAL, ARM_DENSE}),
+        d: frozenset({ARM_DENSE}),
+    }
 
 
 @pytest.mark.parametrize(

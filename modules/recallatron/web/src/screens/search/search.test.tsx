@@ -192,9 +192,11 @@ describe("Search results", () => {
 });
 
 describe("Search arm counts", () => {
-  // recall counts each arm before the permission walk, so a count can include memories
-  // the caller cannot read. Distinctive values make any count that reaches the page
-  // easy to spot; the fixture's shape is kept, only its arm values change.
+  // recall once counted each arm before the permission walk, so a count could include
+  // memories the caller cannot read (#121). It now counts returned items only, and the
+  // screen still renders neither number. Distinctive values make any count that
+  // reaches the page easy to spot; the fixture's shape is kept, only its arm values
+  // change.
   const LEXICAL = 7;
   const DENSE = 11;
   const STANDALONE_COUNT = new RegExp(`(?<![\\w.:-])(?:${LEXICAL}|${DENSE})(?![\\w:-])`);

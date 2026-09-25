@@ -8,7 +8,7 @@ and one that opened its own connection could disagree with what this transaction
 """
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Final, Protocol
 from uuid import UUID
 
 from rheo_contracts import WorkspaceContext
@@ -37,6 +37,11 @@ class SearchRequest:
     k: int
 
 
+ARM_LEXICAL: Final = "lexical"
+ARM_DENSE: Final = "dense"
+"""The two arm names a :attr:`Hit.arms` set may hold, one per ``ArmCounts`` field."""
+
+
 @dataclass(frozen=True, slots=True)
 class Hit:
     """One ranked candidate. ``ref`` is the memory's id; the canonical reference is
@@ -46,17 +51,28 @@ class Hit:
     fusing strategy may set per arm. ``recall()`` does **not** label its items from
     it. Every item, and the response's provenance, carry the dispatched strategy's
     ``name``, so the two can never disagree within one response.
+
+    ``arms`` names the arms whose ranked list held this hit: one for a single-arm
+    strategy, one or both after fusion. ``recall()`` counts the caller-facing
+    ``provenance.arms`` from this set over the items it returns, and never from
+    :class:`ArmProvenance`, so a hit the walk drops is never counted.
     """
 
     ref: UUID
     score: float
     strategy: str
+    arms: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
 class ArmProvenance:
     """The length of each arm's ranked list as it entered fusion — after the arm's
-    own ``LIMIT``, before the permission walk. Zero for an arm that did not run."""
+    own ``LIMIT``, before the permission walk. Zero for an arm that did not run.
+
+    **Internal diagnostics only.** These lengths include candidates the caller may not
+    read, so they never reach a response: a non-zero count beside an empty answer
+    would tell the caller a hidden memory matched (#121). Tests and operators read
+    them from the strategy directly."""
 
     lexical: int
     dense: int

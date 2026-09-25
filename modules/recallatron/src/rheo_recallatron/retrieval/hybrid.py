@@ -44,6 +44,8 @@ from rheo_recallatron.configuration import (
 from rheo_recallatron.retrieval.dense import DenseStrategy
 from rheo_recallatron.retrieval.lexical import LexicalStrategy
 from rheo_recallatron.retrieval.protocol import (
+    ARM_DENSE,
+    ARM_LEXICAL,
     ArmProvenance,
     Hit,
     IndexItem,
@@ -172,7 +174,9 @@ class HybridStrategy:
         permission walk after it all run on the transaction that survived.
 
         ``arms`` counts each arm's list as it entered fusion; ``dense_available`` is
-        the dense arm's own answer.
+        the dense arm's own answer. Each hit's own ``arms`` is read from which arm's
+        list held its id, not from the arms' ``Hit.arms``, so a stand-in arm cannot
+        mislabel a fused hit.
         """
         width = min(request.k * overfetch_multiplier(ctx, uow), request.limit)
         dense = self._dense.search(ctx, uow, dataclasses.replace(request, limit=width))
@@ -183,9 +187,22 @@ class HybridStrategy:
             [hit.ref for hit in dense.hits],
         )
         fused = fuse(ranked, _recorded_at(uow, {ref for arm in ranked for ref in arm}))
+        in_lexical, in_dense = (frozenset(arm) for arm in ranked)
         return SearchResult(
             hits=tuple(
-                Hit(ref=ref, score=score, strategy=self.name)
+                Hit(
+                    ref=ref,
+                    score=score,
+                    strategy=self.name,
+                    arms=frozenset(
+                        name
+                        for name, members in (
+                            (ARM_LEXICAL, in_lexical),
+                            (ARM_DENSE, in_dense),
+                        )
+                        if ref in members
+                    ),
+                )
                 for ref, score in fused[: request.limit]
             ),
             arms=ArmProvenance(lexical=len(lexical.hits), dense=len(dense.hits)),
