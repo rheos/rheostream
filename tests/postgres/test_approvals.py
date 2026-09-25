@@ -50,6 +50,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+import httpx
 import pytest
 from conftest import ClusterSession
 from harness.registry import (
@@ -70,6 +71,7 @@ from harness.registry import (
     sent_messages,
 )
 from pydantic import BaseModel
+from rheo_app_core.main import public_app
 from rheo_contracts import ActorKind, Entry, RecordRef, Role, WorkspaceContext
 from rheo_core.approvals import (
     APPROVAL_APPROVE,
@@ -1518,3 +1520,38 @@ def test_criterion_19_end_to_end_through_an_mcp_token_session(
     assert refused.state == STANDING_GRANT_CLASS_REFUSED, refused
     assert refused.error is not None
     assert FIXTURE_ACT in refused.error.error_text
+
+
+async def test_the_http_envelope_carries_the_approval_id_as_a_field(
+    owner: WorkspaceContext, engine: Engine, database: str, note: str
+) -> None:
+    """Issue #127: over ``POST /api/v1/operations/{name}`` a held call's envelope names
+    its approval in ``approval_id``, not only inside ``error_text``, and that value is
+    the one a person approves with.
+
+    Approving through the id read off the envelope, and then counting the fixture's
+    recorded acts, is what makes this more than a shape check: an envelope carrying
+    some other uuid would fail the approval, and one carrying the right uuid only in
+    prose would fail the key lookup.
+    """
+    issued = dispatch(owner, TOKEN_ISSUE, {"kind": "cli", "operations": [FIXTURE_ACT]})
+    assert issued.ok, issued
+    value = str(issued.result.value)  # type: ignore[union-attr]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=public_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/operations/{FIXTURE_ACT}",
+            headers={"Authorization": f"Bearer {value}"},
+            json=act_payload(note),
+        )
+    body = response.json()
+    assert body["state"] == "approval_required", body
+    assert body["operation_id"] is not None, body
+    approval_id = UUID(body["approval_id"])
+    assert body["approval_id"] in body["error"]["error_text"], body
+    assert _acts(engine, database) == ()
+
+    record = _record(_approve(owner, approval_id))
+    assert record.operation_id == UUID(body["operation_id"])
+    assert _acts(engine, database) == (note,)

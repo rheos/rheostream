@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from rheo_contracts import Role, WorkspaceContext
+from rheo_contracts import ActorKind, Role, WorkspaceContext
 
 from rheo_core.audit.records import AuditRow, list_audit_records
 from rheo_core.audit.tool_telemetry import (
@@ -63,6 +63,16 @@ owner/operator-only ``audit.list`` opt-in ``deletions`` collection" — and thos
 are the closure size every other surface deliberately withholds, so the gate is at the
 point of disclosure here for the reason :data:`TELEMETRY_ROLES` gives: an operation
 whose own roles widen later must not widen this with them."""
+
+MODEL_HELD_TOKEN_KINDS: Final = frozenset({"mcp", "runtime"})
+"""Token kinds a model holds, which may not open either opt-in collection (#127).
+
+An ``mcp`` token is made for an MCP client and a ``runtime`` token is handed to one
+model run; both put this operation within a model's reach, the first on the ``api``
+surface as well as the ``mcp`` one, since the ``api`` surface accepts ``mcp`` tokens.
+``audit_list``, the tool, declares ``limit`` only, but a narrowed tool schema binds
+the tool call and nothing else, so the rule lives here, in the operation, where every
+surface meets it. A ``cli`` token and a person's session keep both opt-ins."""
 
 # See ``rheo_core.operations.core_ops`` for why ``ignore`` (the default) is stated.
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
@@ -329,6 +339,46 @@ def _telemetry(
     ]
 
 
+def _refuse_model_held_opt_ins(
+    ctx: WorkspaceContext, model_input: AuditListInput
+) -> None:
+    """Refuse ``operation_not_permitted`` when a model-held token asks for an opt-in.
+
+    The context names a token actor by id and not by kind, so the kind is read from
+    the token's control-plane row, and only when an opt-in was actually asked for: a
+    plain listing costs no extra read. A token row that is gone by now (a run's token
+    is deleted when the run ends) is treated as model-held, so the rule fails closed.
+
+    Refused rather than answered with ``None``: ``None`` already means "not asked or
+    not owner/operator", and a caller that is an owner's model should be told the
+    opt-in is closed to it rather than be shown an answer that looks like the other.
+
+    Imports are deferred for the cycle this module's docstring describes.
+    """
+    if not (model_input.include_tool_telemetry or model_input.include_deletions):
+        return
+    if ctx.actor.kind is not ActorKind.TOKEN:
+        return
+    from rheo_core.operations.refusals import (  # deferred, see module docstring
+        OPERATION_NOT_PERMITTED,
+        OperationRefused,
+    )
+    from rheo_core.storage.control_plane import get_access_token
+    from rheo_core.storage.postgres import get_backend
+
+    kind: str | None = None
+    if ctx.actor.id is not None:
+        with get_backend().control_engine.connect() as connection:
+            row = get_access_token(connection, ctx.actor.id)
+        kind = None if row is None else row.kind
+    if kind is None or kind in MODEL_HELD_TOKEN_KINDS:
+        raise OperationRefused(
+            OPERATION_NOT_PERMITTED,
+            "include_tool_telemetry and include_deletions are not available to an "
+            f"{kind or 'unknown'}-kind token; a model may read the audit records only",
+        )
+
+
 def audit_list_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: AuditListInput
 ) -> AuditList:
@@ -340,7 +390,11 @@ def audit_list_handler(
 
     The workspace is the context's: ``uow.connection`` is already routed to it, so no
     input field names one and none can.
+
+    A model-held token asking for either opt-in is refused before anything is read
+    (:func:`_refuse_model_held_opt_ins`).
     """
+    _refuse_model_held_opt_ins(ctx, model_input)
     return AuditList(
         records=[
             _published(row)

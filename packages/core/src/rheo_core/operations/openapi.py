@@ -103,6 +103,10 @@ def _envelope_schema(result_ref: str) -> Schema:
     mints one for a declaration carrying ``long_running = True`` and none for any
     other, so a generated client must be able to read both a uuid and ``null`` there.
     Every operation registered in release one still answers ``null``.
+
+    ``approval_id`` is optional and never ``null``: the envelope carries it only on
+    an ``approval_required`` hold (``api_routes.envelope``), so a generated client
+    reads it as ``string | undefined``, and its presence is the signal.
     """
     return {
         "type": "object",
@@ -110,6 +114,7 @@ def _envelope_schema(result_ref: str) -> Schema:
         "properties": {
             "state": {"type": "string"},
             "operation_id": {"type": ["string", "null"], "format": "uuid"},
+            "approval_id": {"type": "string", "format": "uuid"},
             "result": {"$ref": result_ref},
             "error": {
                 "type": "object",

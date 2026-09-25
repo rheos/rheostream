@@ -280,6 +280,13 @@ The reverse proxy's rules are the same in both modes; only the host matching cha
 mode, and the single host in path mode. Inside `web`, the module's route tree is mounted at
 `url_for(module, "/")`, so a module's screens are the same components under either topology.
 
+The `mcp` surface is matched inside `core` as well as at the proxy. In path mode `core` serves
+MCP at the surface path (`/mcp` and `/mcp/`). In subdomain mode it serves MCP at `/` on the `mcp`
+host and nothing else there: the `mcp` host is not an application host, so `/auth/*`, the HTTP
+API and `/healthz` answer 404 on it, and no other host reaches MCP. The SDK's DNS-rebinding
+protection admits only the surface's own `Host` values
+([the MCP facade](runtime-and-mcp.md#the-mcp-facade)).
+
 ### The reference deployment's hosts
 
 Recorded from the ratified requirements; each is configuration a self-hoster may change.

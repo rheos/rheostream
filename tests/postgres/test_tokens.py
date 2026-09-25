@@ -320,11 +320,21 @@ def test_agent_default_evaluates_to_registered_tools(
     session_ctx: WorkspaceContext,
 ) -> None:
     """B7's own set claim, commissioned explicitly rather than left untested:
-    ``agent_default`` is exactly the two tools 0b2 registers."""
-    assert agent_default() == frozenset({"core.workspace.status", NOTE_GET})
+    ``agent_default`` is exactly the operations the registered tools name: 0b2's
+    two, and the three core reads issue #127 gave tools."""
+    expected = frozenset(
+        {
+            "core.workspace.status",
+            "core.operation.get",
+            "core.operation.list",
+            "core.audit.list",
+            NOTE_GET,
+        }
+    )
+    assert agent_default() == expected
     # And an issued agent_default token carries exactly that snapshot.
     _, _, operations = _issue(session_ctx, kind="mcp", set_name="agent_default")
-    assert operations == frozenset({"core.workspace.status", NOTE_GET})
+    assert operations == expected
 
 
 def test_cli_full_excludes_the_six_names(session_ctx: WorkspaceContext) -> None:
