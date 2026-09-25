@@ -250,6 +250,8 @@ def context_for_harness(
     account_id: UUID,
     role: Role | str,
     entry: Entry | str = Entry.CLI,
+    *,
+    bound_purpose: ContextPurpose | None = None,
 ) -> WorkspaceContext | Refusal:
     """Test scaffolding: an account's context, ``profile = test``-gated, boundary-owned.
 
@@ -308,8 +310,13 @@ def context_for_harness(
         request_id=uuid7(),
         # Architecture A4: an account factory sets the authenticated account and an
         # unbound purpose. Browsing as a person is not done *for* a purpose, so there
-        # is no memory-purpose gate to apply here.
-        principal=AuthenticatedPrincipal(account_id=account_id, bound_purpose=None),
+        # is no memory-purpose gate to apply here. ``bound_purpose`` exists for tests
+        # that stand in for a purpose-bound principal (a runtime or MCP token's) without
+        # minting one, e.g. the redaction policy's per-purpose tiers (#130); it is
+        # keyword-only and this factory stays ``profile = test``-gated.
+        principal=AuthenticatedPrincipal(
+            account_id=account_id, bound_purpose=bound_purpose
+        ),
     )
 
 

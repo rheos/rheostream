@@ -140,6 +140,31 @@ def _fields(**overrides: object) -> dict[str, object]:
     return fields
 
 
+def _load_note(*args: object) -> None:
+    """Never called: these manifests are validated, not rendered."""
+    return None
+
+
+def _tiered_note(tiers: dict[str, dict[str, SensitivityTier]]) -> dict[str, object]:
+    """Overrides for a manifest tiering its own ``note`` type.
+
+    Since issue #130 a ``sensitivity`` key must name one of the manifest's own record
+    types and a tiered type must declare ``load_for_model``
+    (``tests/test_redaction_manifest.py`` covers both refusals), so the tests below
+    that exercise the map's freezing declare the type they tier.
+    """
+    note = RecordType(
+        name="note",
+        table=f"{MODULE_ID}.note",
+        deletable=False,
+        delete_roles=frozenset(),
+        exportable=False,
+        audience_field=None,
+        load_for_model=_load_note,
+    )
+    return {"record_types": (note,), "sensitivity": tiers}
+
+
 def _locations(error: pydantic.ValidationError) -> set[object]:
     """Every ``loc`` element pydantic reported, flattened."""
     return {part for detail in error.errors() for part in detail["loc"]}
@@ -200,7 +225,7 @@ def test_a_deferred_collection_is_still_required(omitted: str) -> None:
 
 def test_sensitivity_carries_the_three_tiers() -> None:
     manifest = ModuleManifest(
-        **_fields(sensitivity={"note": {"body": SensitivityTier.RESTRICTED}})
+        **_fields(**_tiered_note({"note": {"body": SensitivityTier.RESTRICTED}}))
     )
     assert manifest.sensitivity["note"]["body"] is SensitivityTier.RESTRICTED
     assert manifest.sensitivity == {"note": {"body": SensitivityTier.RESTRICTED}}
@@ -214,7 +239,7 @@ def test_a_manifest_is_hashable() -> None:
     dataclass this model replaced had one. A plain ``dict`` in ``sensitivity`` would
     make this raise TypeError."""
     manifest = ModuleManifest(
-        **_fields(sensitivity={"note": {"body": SensitivityTier.INTERNAL}})
+        **_fields(**_tiered_note({"note": {"body": SensitivityTier.INTERNAL}}))
     )
     assert isinstance(hash(manifest), int)
     assert hash(manifest) == hash(manifest)
@@ -224,7 +249,7 @@ def test_sensitivity_cannot_be_mutated_in_place_at_either_level() -> None:
     """The other half of the promise. Only freezing the outer mapping would leave
     ``manifest.sensitivity["note"]["body"] = ...`` working on a frozen manifest."""
     manifest = ModuleManifest(
-        **_fields(sensitivity={"note": {"body": SensitivityTier.INTERNAL}})
+        **_fields(**_tiered_note({"note": {"body": SensitivityTier.INTERNAL}}))
     )
     with pytest.raises(TypeError):
         manifest.sensitivity["other"] = {}  # type: ignore[index]
@@ -237,7 +262,7 @@ def test_the_caller_s_own_dict_cannot_reach_back_into_the_manifest() -> None:
     """A copy, not a view: mutating the mapping that was passed in must not change
     what the manifest holds."""
     source = {"note": {"body": SensitivityTier.INTERNAL}}
-    manifest = ModuleManifest(**_fields(sensitivity=source))
+    manifest = ModuleManifest(**_fields(**_tiered_note(source)))
     source["note"]["body"] = SensitivityTier.PUBLIC
     source["added"] = {}
     assert manifest.sensitivity["note"]["body"] is SensitivityTier.INTERNAL

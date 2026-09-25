@@ -13,7 +13,7 @@ import json
 import shutil
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
@@ -52,8 +52,12 @@ from rheo_core.operations.records import (
     set_progress,
 )
 from rheo_core.operations.refusals import OperationRefused
+from rheo_core.redaction.masking import mask_for_model
+from rheo_core.redaction.policy import TierPolicy, purpose_of
+from rheo_core.redaction.render import RenderedRecord, render_record
+from rheo_core.redaction.tiers import SensitivityTier
 from rheo_core.refs import uuid7
-from rheo_core.refs.resolver import LIVE, Unavailable, resolve_in
+from rheo_core.refs.resolver import LIVE, RecordHead, Unavailable, resolve_in
 from rheo_core.routing.config import MCP, RoutingConfig
 from rheo_core.routing.url_for import url_for
 from rheo_core.runtime.registry import AdapterRegistry
@@ -69,6 +73,9 @@ from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 from rheo_core.tokens.sets import TOOL_REGISTRY
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
+
+if TYPE_CHECKING:  # pragma: no cover - see ``build_context`` on the call-time import
+    from rheo_core.redaction.registry import RenderingRegistry
 
 RUNTIME_RUN: Final = "core.runtime.run"
 RUNTIME_ACTOR_REQUIRED: Final = "runtime_actor_required"
@@ -191,17 +198,46 @@ def build_context(
     refs: Sequence[str],
     *,
     uow: UnitOfWork,
+    renderings: RenderingRegistry | None = None,
 ) -> list[ContextItem]:
-    """Resolve live, readable refs on the sealed handler UoW. Truncate at the cap.
+    """Resolve live, readable refs on the sealed handler UoW, render each for the
+    model under the redaction contract, and truncate at the cap.
 
     No ``purpose`` parameter: the binding is on ``ctx.principal.bound_purpose``, put
     there by the factory that rebuilt the job's context, so a caller cannot hand this
     function a purpose the context was not resolved under. It took one until 1a1 and
     discarded it (``del purpose``), which is the shape that made the parameter worth
-    removing rather than wiring up.
+    removing rather than wiring up. An unbound principal renders under
+    ``internal_analysis`` (``rheo_core/redaction/policy.py``).
+
+    Per reference, in order (``runtime-and-mcp.md`` § The context builder):
+
+    1. Resolve under ``ctx``; skip anything not live and readable.
+    2. Skip a record type ``<module>.redaction.exclude_types`` lists, before tiering.
+    3. **Untiered type** (no entry in :data:`~rheo_core.redaction.registry.RENDERINGS`,
+       which is every Recallatron type): the resolver's ``display`` label, tagged
+       ``public``, since a module that tiers none of a type's fields has declared
+       nothing withheld (the tier table puts titles in ``public``).
+    4. **Tiered type**: the module's ``load_for_model`` reads the fields, and its own
+       ``render_for_model`` or the default renderer drops every field above what the
+       policy allows. A record that renders to nothing is skipped; the resolver's
+       ``display`` is never the fallback, because for a tiered type its tier is
+       exactly what nobody declared.
+    5. Mask free text (secret references always, contact values unless ``respond``
+       holds the allowance) on every path, then apply the byte cap.
+
+    ``renderings`` exists for tests that register a probe rendering without touching
+    the process-global table; production passes nothing.
     """
     settings = resolve(workspace_id=ctx.workspace_id, source=PostgresOverrideSource())
     cap = settings.get_int("runtime.max_context_bytes")
+    policy = TierPolicy.from_settings(purpose_of(ctx), settings)
+    # Imported at call time: the registry imports ``rheo_core.operations`` for its
+    # origin rule, whose package ``__init__`` imports this module, so a module-level
+    # import here closes that cycle for whichever of the two is imported first.
+    from rheo_core.redaction.registry import RENDERINGS
+
+    table = RENDERINGS if renderings is None else renderings
     items: list[ContextItem] = []
     used = 0
     for ref in refs:
@@ -210,17 +246,48 @@ def build_context(
         head = resolve_in(ref, ctx, uow)
         if isinstance(head, Unavailable) or not head.readable or head.state != LIVE:
             continue
-        text = head.display
+        if head.ref.record_type in policy.excluded_types(head.ref.module):
+            continue
+        rendered = _render_for_context(ctx, uow, head, table, policy)
+        if rendered is None:
+            continue
+        text = rendered.text
         remaining = cap - used
         raw = text.encode("utf-8")
         if len(raw) > remaining:
             text = raw[:remaining].decode("utf-8", errors="ignore")
             raw = text.encode("utf-8")
         items.append(
-            ContextItem(ref=head.ref.format(), tier=ContextTier.INTERNAL, text=text)
+            ContextItem(
+                ref=head.ref.format(), tier=ContextTier(rendered.tier.value), text=text
+            )
         )
         used += len(raw)
     return items
+
+
+def _render_for_context(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    head: RecordHead,
+    table: RenderingRegistry,
+    policy: TierPolicy,
+) -> RenderedRecord | None:
+    """One resolved head as context text, or ``None`` to send nothing for it."""
+    rendering = table.lookup(head.ref.module, head.ref.record_type)
+    if rendering is None:
+        return RenderedRecord(
+            text=mask_for_model(head.display, policy), tier=SensitivityTier.PUBLIC
+        )
+    record = rendering.load(ctx, uow, head.ref)
+    if record is None:
+        return None
+    if rendering.render is None:
+        return render_record(record, rendering.tiers, policy)
+    text = rendering.render(record, policy)
+    if not text:
+        return None
+    return RenderedRecord(text=mask_for_model(text, policy), tier=policy.ceiling)
 
 
 def _backing_account_id(ctx: WorkspaceContext) -> UUID:
@@ -773,7 +840,13 @@ def make_run_runtime_job(
                 workspace_id=ctx.workspace_id,
                 audience=audience,
                 purpose=purpose,
-                task=payload.task,
+                # The task text goes to the provider like any context item, so it is
+                # masked under the same policy: secret references always, contact
+                # values unless the allowance is on. Masked here rather than in an
+                # adapter, so no adapter can forget it.
+                task=mask_for_model(
+                    payload.task, TierPolicy.from_settings(purpose_of(ctx), settings)
+                ),
                 context_items=items,
                 permitted_tools=tools,
                 output=output,

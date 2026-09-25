@@ -7,6 +7,13 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
+from harness.redaction import (
+    PROBE_EMAIL,
+    PROBE_ORGANIZATION,
+    PROBE_TITLE,
+    note_renderings,
+    probe_body,
+)
 from harness.registry import (
     NOTE_WRITE,
     enable_harness_module,
@@ -33,6 +40,8 @@ from rheo_core.events.consumers import ConsumerRegistry
 from rheo_core.operations import dispatch
 from rheo_core.operations import records as operation_records
 from rheo_core.operations.core_ops import register_core_operations
+from rheo_core.redaction import registry as redaction_registry
+from rheo_core.redaction.masking import EMAIL_MASK, SECRET_MASK
 from rheo_core.refs import uuid7
 from rheo_core.runtime import (
     RUNTIME_RUN,
@@ -529,6 +538,68 @@ def test_runtime_build_context_resolves_refs_in_the_job(
     dumped = job["input"]
     assert dumped["refs"] == [ref]
     assert "note body for the model" not in str(dumped)
+
+
+@pytest.mark.parametrize(
+    ("purpose", "expected"),
+    [
+        ("respond", f"title: {PROBE_TITLE}\norganization: {PROBE_ORGANIZATION}"),
+        ("share_with_referral", f"title: {PROBE_TITLE}"),
+    ],
+)
+def test_runtime_build_context_redacts_a_tiered_record_in_the_job(
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+    purpose: str,
+    expected: str,
+) -> None:
+    """Issue #130 through the real job: the run's purpose is the one its token was
+    minted with, rebuilt onto the job's context, and the tiered note reaches the
+    adapter as its allowed fields and nothing of its restricted email.
+
+    The rendering is patched over the process-global table, which is the one the job
+    handler's ``build_context`` reads, and put back when the test ends.
+    """
+    _api_key(monkeypatch)
+    monkeypatch.setattr(redaction_registry, "RENDERINGS", note_renderings())
+    ctx = _owner_context(cluster, workspace, owner_account_id, harness=True)
+    written = dispatch(ctx, NOTE_WRITE, {"body": probe_body()})
+    assert written.ok, written
+    ref = written.result.ref  # type: ignore[union-attr]
+    adapter = RecordingAdapter()
+    clock = datetime.now(UTC)
+    payload = _payload()
+    payload["refs"] = [ref]
+    payload["purpose"] = purpose
+    outcome = dispatch(ctx, RUNTIME_RUN, payload)
+    assert outcome.operation_id is not None, outcome
+    _visit(cluster, workspace, _kinds(adapter, lambda: clock))
+    request = adapter.start_calls[0][0]
+    assert [item.text for item in request.context_items] == [expected]
+    assert PROBE_EMAIL not in request.model_dump_json()
+    assert PROBE_EMAIL.split("@", 1)[0] not in request.model_dump_json()
+
+
+def test_runtime_task_text_is_masked_before_the_adapter_sees_it(
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The task goes to the provider like a context item, so the same policy masks
+    it: a secret reference always, a contact value while the allowance is off."""
+    _api_key(monkeypatch)
+    ctx = _owner_context(cluster, workspace, owner_account_id)
+    adapter = RecordingAdapter()
+    clock = datetime.now(UTC)
+    payload = _payload()
+    payload["task"] = f"use secret://env/RHEO_KEY and write to {PROBE_EMAIL}"
+    dispatch(ctx, RUNTIME_RUN, payload)
+    _visit(cluster, workspace, _kinds(adapter, lambda: clock))
+    request = adapter.start_calls[0][0]
+    assert request.task == f"use {SECRET_MASK} and write to {EMAIL_MASK}"
 
 
 def test_runtime_token_kind_and_issuer_constraint(

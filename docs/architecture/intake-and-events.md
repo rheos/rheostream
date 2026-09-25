@@ -479,8 +479,23 @@ their `data` fields, each declared as a model in the owning manifest:
 | `core.record.deleted` | `ref`, `deletion_record_ref` |
 
 A manifest whose event model declares a field of a `restricted` tier fails registration, which is
-the static half of the rule (not built yet: nothing reads a manifest's `sensitivity`
-declaration today). Of the types above, only `recallatron.memory.recorded`, `.invalidated` and
+the static half of the rule. An event's `data` model tiers a field with the `Tiered` marker
+(`Annotated[str, Tiered(SensitivityTier.RESTRICTED)]`), and the manifest's own validator walks
+the model, nested models included, and refuses one that marks any field `restricted`, naming
+the event type and the field; a manifest that breaks the rule cannot be constructed, so it is
+never loaded or composed. The marker rather than the record-type `sensitivity` map, because a
+contact-permission record is `restricted` whole and `leads.contact_permission.withdrawn` still
+carries its `party_ref` and `purpose` by design; matching field names across the two would
+refuse it. The marker is found in any spelling (`X | None`, `Optional[X]`, a union arm, a
+container element), and a model whose forward references do not resolve is refused, since
+the guard cannot see a field pydantic cannot type. Nothing checks an unmarked field: the rule
+is that a field declared restricted cannot travel, not that every field must be declared. A
+field typed `Any` or `dict` carries no marker and so cannot be checked at all; an event model
+should type its fields, and the ones the table lists are all references and scalars. The
+loader re-runs the check over the loaded set before it registers anything, so a manifest built
+with `model_construct`, which skips validators, is refused there instead.
+
+Of the types above, only `recallatron.memory.recorded`, `.invalidated` and
 `core.record.deleted` are published today, and the worker registers no consumer at all until
 Leads ships. Release one's only production consumer is `leads.process_delivery`;
 the other types are published so that the phase-one deduplicating test consumer and the later

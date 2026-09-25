@@ -24,7 +24,7 @@ operation; no module constructs one.
 | `actor`, `workspace_id`, `audience` | Copied from the originating operation record (a run inside a job carries the operation's actor and audience, not the worker's `system` actor); the runtime may not change them. The actor must have an account behind it, because the run-scoped token is issued to that account: an operation started by the operator or by a schedule cannot start a run and is refused `runtime_actor_required` before any adapter is invoked. |
 | `purpose` | From the purpose vocabulary; drives redaction and permission filtering. |
 | `task` | The instruction text, as data. Never interpolated into a shell command. |
-| `context_items` | List of `ContextItem(ref, tier, text)` already permission-checked by the context builder. Redaction by tier is planned, not built ([redaction](#tiers)); today every item is a head's `display` tagged `internal`. |
+| `context_items` | List of `ContextItem(ref, tier, text)` already permission-checked and redacted by the [context builder](#the-context-builder). `tier` is the highest tier of what went into the text: `public` for an untiered record's `display`, and for a tiered record the highest tier among the fields the policy let through. |
 | `permitted_tools` | List of MCP tool names, the adapter's allow list. The tool names the caller requested in `core.runtime.run`'s `permitted_tools` input, intersected with the tools whose operations the originating actor may call and stripped of non-token-issuable operations; never wider than the actor. The [run-scoped token](#the-run-scoped-token) holds the *operations* these tools name, not the tool names. |
 | `output` | `text`, `structured(json_schema)`, or `stream`. |
 | `requirements` | Set of capability names the workflow needs (below). |
@@ -88,6 +88,14 @@ consumed the output checking its own record, not by the runtime.
 Switching runtimes starts a new native session with the selected authorized context; nothing
 is carried across adapters. Completed effects are never replayed because effects are external
 actions with their own records, not part of the transcript.
+
+**The binding does not include the purpose.** A continuation is matched on the columns
+above, so a run under a narrower purpose (`share_with_referral`) can resume a native session
+first built under a wider one (`internal_analysis`), and the provider-side transcript of that
+session still holds whatever the wider run was shown. The new run's own context items are
+rendered under its own purpose; what the session already holds is not re-redacted. Adding
+`purpose` to the binding would close this; it is recorded here as a known gap of the
+redaction contract (issue #130 review).
 
 ### The run-scoped token
 
@@ -220,8 +228,9 @@ returned vector that is not unit length fails the call.
 What release one's provider receives is the memory's stored title and body, composed as
 `embed_input(title, body)` (the title, one newline, the body), or a recall's bare query.
 Recallatron's manifest declares an empty `sensitivity`, so no memory field carries the
-`internal` or `restricted` tier and nothing is redacted from that input today. The redaction
-contract applies to the embed input the day a memory field is tiered.
+`internal` or `restricted` tier. The embed input does not pass through the redaction renderer:
+the release-one provider runs in process and sends nothing anywhere, and a remote provider
+would have to route its input through the renderer before it could ship.
 
 **Known limit, issue #108.** A real deployment cannot set `recallatron.embedding.provider` yet.
 The module loader resolves deployment settings, to read `modules.installed`, before any
@@ -291,17 +300,38 @@ listed before a revocation is refused after it (idea document: discovery grants 
   (criterion 6). Record references are strings in the documented form; a reference from another
   workspace resolves to nothing and the call fails `not_found`.
 - Class: declared on the tool and required to equal the operation's ([module contract](module-contract.md#operations-tools-events)).
-- Output (planned; see "Not built yet" below): the operation's output model, rendered by the
-  facade through the owning module's `render_for_model` under the [redaction tiers](#tiers) with the token's `purpose`
-  (`internal_analysis` when the token carries none), so a tool never returns a `restricted`
-  field, a contact value, or a secret reference to a model, whatever the operation returns to a
-  person. A destructive, external, or financial call without an approval returns
-  `approval_required` with the approval id and the operation id, distinct from success and from
-  error (criterion 19). Both ids are fields of the tool result's structured payload
-  (`approval_id`, `operation_id`), beside `state` and `error`; `error_text` names the approval
-  in prose as well. **Not built yet:** no module implements `render_for_model`, and the
-  facade returns the operation's output model as JSON unchanged. Recallatron, the one module
-  with tools, declares no tiered field, so nothing it returns would be withheld today anyway.
+- Output: the operation's output model, rendered by the facade under the [redaction
+  tiers](#tiers) with the token's `purpose` (`internal_analysis` when the token carries none),
+  so a tool never returns a `restricted` field, a contact value, or a secret reference to a
+  model, whatever the operation returns to a person.
+  `rheo_core.operations.tool_facade.call_registered_tool` fills the outcome's `model_view` and
+  the transport sends that as `result`, never the raw model; an outcome with a result and no
+  `model_view` sends no `result` at all. An output model tiers its fields with the `Tiered`
+  marker in `Annotated` metadata (`email: Annotated[str, Tiered(SensitivityTier.RESTRICTED)]`),
+  because a tool's output is a model rather than a record and the manifest's `sensitivity` map
+  is keyed by record type. The marker is read in any spelling: `X | None`, `Optional[X]`, a
+  union arm or a container element (`list[Annotated[str, Tiered(...)]]`) tiers the field, the
+  strictest marker winning. A field above the policy's tier is dropped, nested models,
+  dataclasses, lists and mappings included; a class that marks any field withholds every field
+  it leaves unmarked (extra and computed fields among them); every string left, set members and
+  mapping keys included, and the error text, is masked as below; a `RootModel` renders its
+  root. Wherever the walk cannot pair a value with its type (a set, a serializer that reshaped
+  a value, a mapping key that does not dump as expected) it falls back to the dump with every
+  string masked, never the raw dump. A record of a type the workspace excludes
+  (`<module>.redaction.exclude_types`) is dropped from a result, and a result that is itself
+  one (its own `ref` names the type) comes back with `result: null` and a `withheld` reason,
+  for a person's MCP token and a run's token alike. A class with no marker is untiered and
+  answers its JSON dump with contact values and secret references masked, which is every output
+  model in release one: Recallatron's and the core's tools return the same fields as before,
+  and a contact value inside a memory's text reaches a model as `[email withheld]` or `[phone
+  withheld]` unless the allowance below is on. A write-class tool (every class above `read`)
+  refuses input carrying one of those mask tokens `input_invalid`, so a model shown masked text
+  cannot write the mask back over the real value through `recallatron_correct`,
+  `recallatron_supersede` or `recallatron_remember`. A destructive, external, or financial call
+  without an approval returns `approval_required` with the approval id and the operation id,
+  distinct from success and from error (criterion 19). Both ids are fields of the tool result's
+  structured payload (`approval_id`, `operation_id`), beside `state` and `error`; `error_text`
+  names the approval in prose as well.
 - Long-running operations return `{ operation_id, state }` and the caller polls
   `core.operation.get` through `operations_get`.
 
@@ -377,34 +407,65 @@ boundary; this is the operational rule.
 Every field of every record type is in one tier, declared in the owning module's manifest
 (`sensitivity`).
 
-**Built so far: the tier vocabulary only.** A manifest's `sensitivity` map takes the three tiers
-below (`SensitivityTier`). The enforcement this section describes is not built: no module
-implements `render_for_model`, the `redaction.*` keys and `<module>.redaction.exclude_types` are
-not declared settings, and nothing masks free text. Recallatron declares no tiered field, so
-nothing it holds is withheld by this contract today.
+The enforcement lives in `rheo_core.redaction`. A record type's fields are tiered in the
+manifest's `sensitivity` map (record type, then field, then tier); a pydantic model's fields
+(an event's `data`, an operation's output) are tiered with the `Tiered` marker on the field,
+because a model is not a record type and a name match across the two would refuse events the
+design names on purpose (a contact-permission record is `restricted` whole, and
+`leads.contact_permission.withdrawn` carries its `party_ref` and `purpose`). The policy is
+`TierPolicy`: `public` always, `internal` for the purposes `redaction.internal_purposes` lists,
+`restricted` never as a field. Recallatron declares no tiered field, so the only change to
+what it sends is the free-text mask and the exclusion list.
 
 | Tier | Contents | Sent to a model |
 | --- | --- | --- |
 | `public` | Titles, stage labels, notes the workspace wrote for itself, message bodies the sender addressed to the workspace, qualification explanations | Yes, when the caller may read the record. |
-| `internal` | Party display names, organization names, opportunity value estimates, dates | Yes for purposes the workspace enables (`redaction.internal_purposes`, default `respond, follow_up, internal_analysis`), no otherwise. |
-| `restricted` | Contact point values (email, phone, address), permission records, member credentials, every secret reference, other members' personal material, raw delivery payloads | Never by default. `redaction.contact_points_to_model` (`and` floor, package default false) may allow contact point values for `respond`; nothing enables the rest. |
+| `internal` | Party display names, organization names, opportunity value estimates, dates | Yes for purposes the workspace enables (`redaction.internal_purposes`, default `respond, follow_up, internal_analysis`, `subset` floor), no otherwise. |
+| `restricted` | Contact point values (email, phone, address), permission records, member credentials, every secret reference, other members' personal material, raw delivery payloads | Never by default. `redaction.contact_points_to_model` (`and` floor, package default false) allows contact point values for **every** purpose when both the operator's value and the workspace's are true (widened from `respond` only by the maintainer's decision in the issue #130 review); nothing enables the rest. As built, the allowance lifts the free-text contact mask; the default renderers never release a `restricted` field, because the tier does not say which restricted fields are contact values, and a module's own `render_for_model` may release its contact point fields when `TierPolicy.contact_points_allowed` is true. Secret references are masked whatever the allowance says. |
 
 Secrets are not a tier; they cannot enter a context item because no domain service can resolve
 one. The tier for secrets exists so that a *reference* string in a record is also withheld.
 
 ### The context builder
 
-`rheo_core.runtime.build_context(ctx, refs, *, uow)`. Built today: resolve each reference under
-`ctx` through the record resolver (`resolve_in`, which for a memory applies Recallatron's
-eligibility rule), drop those not live and readable, send each head's `display` text (for a
-memory, its title) as a `ContextItem` tagged `internal`, and cap total bytes at
-`runtime.max_context_bytes` (package default 200000, floor `min`). The design goes further:
+`rheo_core.runtime.build_context(ctx, refs, *, uow)`. For each reference, in order:
+
+1. Resolve it under `ctx` through the record resolver (`resolve_in`, which for a memory
+   applies Recallatron's eligibility rule) and drop it unless it is live and readable.
+2. Drop it if `<module>.redaction.exclude_types` lists its record type (below).
+3. An **untiered** record type (no `sensitivity` entry and no `render_for_model`, which is
+   every Recallatron type) sends its head's `display` text (for a memory, its title), tagged
+   `public`: a module that tiers none of a type's fields has declared nothing withheld, and the
+   tier table puts titles in `public`.
+4. A **tiered** record type sends what its renderer allows. The manifest's `RecordType`
+   declares `load_for_model(ctx, uow, ref)`, which reads the record's fields (a resolver
+   answers only a head), and optionally `render_for_model(record, tier_policy)`, the ratified
+   renderer. With none, the default renderer writes one `name: value` line per field the
+   policy allows and omits the rest; a field the loader returns and the tier map does not name
+   is omitted too, the fail-closed reading of a point the design leaves open. A record that
+   renders to nothing is skipped, and its `display` is never the fallback, because for a tiered
+   type the label's tier is exactly what nobody declared.
+5. Mask free text, then cap total bytes at `runtime.max_context_bytes` (package default
+   200000, floor `min`). Secret references (`secret://...`, any case) are always masked;
+   email addresses and phone numbers are masked unless the contact-point allowance is on.
+   The patterns are conservative on purpose (`rheo_core/redaction/masking.py`): an address
+   with a letters-only top-level domain (Unicode letters allowed), a `+` international
+   number with a country code starting 2-9 and 9 to 15 digits, or a North American
+   `NPA-NXX-XXXX` whose area code and exchange start 2-9, one separator throughout,
+   optionally led by `1` or `+1`; never a bare run of digits, an ISO date, a UUID, a dotted
+   quad or a longer dashed id. They are a backstop behind the field tiers. Known limits: three
+   space-separated numbers that satisfy the NANP digit rule (`256 512 1024`) still mask; a
+   seven-digit local number and a postal address are not recognised.
+
+The run's task text is masked under the same policy before the request is built, so no
+adapter can send a secret reference, or a contact value while the allowance is off, in it.
+
+The mask runs on the text the renderer hands over, so a resolver that truncates its own
+`display` can cut an address before the mask sees it; Recallatron's label is the whole
+title and is not exposed to this. The design goes further than what is built in one respect:
 obtain memory items only through `recallatron.memory.recall` with the same `purpose` (which
 applies the audience, purpose, link, and contact-permission filters,
-[memory](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31); FR 27), and render each readable
-record through its module's `render_for_model(record, tier_policy)`, which omits fields above
-the allowed tier. Restricted values that appear inside free text (an email address inside a message body)
-are masked by pattern before sending unless the `respond` allowance is on. Derived memories carry
+[memory](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31); FR 27). Derived memories carry
 the intersection of their sources' audiences and purposes, so the filter on a memory is never
 looser than on what it was made from (criterion 28).
 
@@ -435,4 +496,11 @@ still run in full.
   the operator's floor, the runtime and model allow lists within the operator's, and transcript
   retention within the operator's maximum.
 - A record type can be marked `never_to_model` at the workspace level per module
-  (`<module>.redaction.exclude_types`), which the builder honours before tiering.
+  (`<module>.redaction.exclude_types`, a list of the module's record type names, `union`
+  floor so a workspace can only add to the operator's list), which the builder honours before
+  tiering, for tiered and untiered types alike. The loader declares the key for every loaded
+  module that owns a record type, and the manifest reserves `<module_id>.redaction.*` to the
+  core so no module declares a key there itself. An operator value for it in the environment
+  or `deployment.toml` fails startup with `SettingUndeclared` until issue #108 lands, for that
+  issue's reason (deployment settings resolve before any module key is registered); a
+  workspace row is unaffected.

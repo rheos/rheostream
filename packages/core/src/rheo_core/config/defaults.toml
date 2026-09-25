@@ -13,7 +13,9 @@
 # (run 0c1) adds work.max_attempts, for thirty-five; C6 (run 0c3) adds the three
 # approvals.* keys, so this file carried thirty-eight; routing.public_host makes
 # thirty-nine; C2 (run 0c4) adds the eleven runtime.* keys, for fifty; run 1a0's
-# module contract adds modules.installed, for fifty-one. Harness keys
+# module contract adds modules.installed, for fifty-one; run 1a1 adds the two
+# telemetry.* keys, for fifty-three; issue #130 adds the two redaction.* keys, for
+# fifty-five. Harness keys
 # (tests/harness/) are registry-only by design and never appear here.
 
 profile = "development"
@@ -143,3 +145,11 @@ installed = []
 [telemetry]
 tool_retention_days = 7
 tool_max_rows = 10000
+
+# The redaction tier policy (issue #130). internal_purposes is a subset floor (a
+# workspace may only remove purposes) and contact_points_to_model an and floor (a
+# workspace may only keep it false). Each module's <module>.redaction.exclude_types is
+# declared by the loader, with a union floor, and has no row here.
+[redaction]
+internal_purposes = ["respond", "follow_up", "internal_analysis"]
+contact_points_to_model = false

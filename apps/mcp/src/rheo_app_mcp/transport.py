@@ -68,7 +68,7 @@ from mcp.server.lowlevel import Server
 from mcp.server.transport_security import TransportSecuritySettings
 from rheo_contracts import ToolDeclaration, WorkspaceContext
 from rheo_core.boundary.context import TOKEN_MALFORMED, Refusal
-from rheo_core.operations.tool_facade import ConsumerRegistry
+from rheo_core.operations.tool_facade import WITHHELD_REASON, ConsumerRegistry
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -251,6 +251,11 @@ async def _on_call_tool(
     ``approval_required`` hold, and absent otherwise, the same way ``operation_id``
     and ``result`` are present only when there is one to report.
 
+    ``result`` is ``outcome.model_view``, the operation's output as
+    ``rheo_core.operations.tool_facade`` rendered it for a model under the token's
+    purpose (``internal_analysis`` when it carries none), so a tool never returns a
+    ``restricted`` field, a contact value or a secret reference.
+
     ``consumers`` is bound by :func:`build_server` from what the composition root
     handed :func:`build_mcp_app`, so a publishing handler reached through this
     surface publishes into the same registry the process's HTTP routes publish
@@ -262,8 +267,16 @@ async def _on_call_tool(
         workspace_ctx, params.name, params.arguments or {}, consumers=consumers
     )
     payload: dict[str, Any] = {"state": outcome.state}
-    if outcome.result is not None:
-        payload["result"] = outcome.result.model_dump(mode="json")
+    if outcome.model_view is not None:
+        # The facade's rendering under the redaction tiers, never ``outcome.result``:
+        # a result reaching here with no ``model_view`` bypassed the facade, and
+        # sending nothing is the fail-closed answer to that, not a dump of the raw
+        # model (``runtime-and-mcp.md`` § The MCP facade, Output).
+        if outcome.model_view.withheld:
+            payload["result"] = None
+            payload["withheld"] = WITHHELD_REASON
+        else:
+            payload["result"] = outcome.model_view.value
     if outcome.error is not None:
         payload["error"] = {
             "error_code": outcome.error.error_code,

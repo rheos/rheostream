@@ -23,7 +23,9 @@ adds ``storage.pool_idle_close_seconds``, for thirty-three, and C7 (run 0c0) add
 keys, for thirty-eight; the public-authority split adds
 ``routing.public_host`` (seventeen routing keys), for thirty-nine; C2 (run 0c4)
 adds the eleven ``runtime.*`` keys, for fifty; run 1a0's module contract adds
-``modules.installed``, for fifty-one.
+``modules.installed``, for fifty-one. Run 1a1 adds the two ``telemetry.*`` keys, for
+fifty-three, and issue #130 adds the two ``redaction.*`` keys the tier policy reads
+(``rheo_core/redaction/policy.py``), for fifty-five.
 ``api.cors_origins`` is still not declared here, for the reason this key was not
 until now: a key with no reader is machinery with no caller, and the registry/TOML
 identity check holds per merge SHA — every later chunk that adds a key adds it to
@@ -994,6 +996,31 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         default=10000,
         minimum=1,
         maximum=10000,
+    ),
+    # --- redaction (issue #130) -------------------------------------------------------
+    # The tier policy's two workspace controls (``runtime-and-mcp.md`` § Tiers), both
+    # "within the operator's floor". ``internal_purposes`` is ``subset``: a workspace
+    # may stop sending ``internal`` fields for a purpose the operator allowed, never
+    # start for one the operator did not. ``contact_points_to_model`` is ``and``: a
+    # workspace can only keep it false unless the operator set true. Neither is
+    # ``explicit_per_workspace``: the package default is the policy, not a per-workspace
+    # fact to record. The per-module ``<module>.redaction.exclude_types`` (``union``) is
+    # the loader's to declare, one per loaded module, and so is not in this tuple.
+    KeySpec(
+        key="redaction.internal_purposes",
+        type=ValueType.STR_LIST,
+        scope=Scope.WORKSPACE,
+        floor=Floor.SUBSET,
+        explicit_per_workspace=False,
+        default=("respond", "follow_up", "internal_analysis"),
+    ),
+    KeySpec(
+        key="redaction.contact_points_to_model",
+        type=ValueType.BOOL,
+        scope=Scope.WORKSPACE,
+        floor=Floor.AND,
+        explicit_per_workspace=False,
+        default=False,
     ),
 )
 

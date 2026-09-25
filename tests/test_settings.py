@@ -113,6 +113,8 @@ PRODUCTION_KEYS = {
     "modules.installed": (),
     "telemetry.tool_retention_days": 7,
     "telemetry.tool_max_rows": 10000,
+    "redaction.internal_purposes": ("respond", "follow_up", "internal_analysis"),
+    "redaction.contact_points_to_model": False,
 }
 
 FLOORED_KEYS = frozenset(
@@ -127,6 +129,8 @@ FLOORED_KEYS = frozenset(
         "runtime.allowed_models",
         "telemetry.tool_retention_days",
         "telemetry.tool_max_rows",
+        "redaction.internal_purposes",
+        "redaction.contact_points_to_model",
     }
 )
 """The production keys a workspace may override, each with a floor.
@@ -135,7 +139,8 @@ Named as a literal rather than matched by prefix. The loop below asserts that ev
 *other* declared key is deployment-scope and unfloored, so this set is the exhaustive
 answer to "who can a workspace tighten". ``min`` floors cap numeric ceilings;
 ``subset`` floors (``runtime.allowed_runtimes``, ``runtime.allowed_models``) are the
-first production subset keys."""
+first production subset keys, and ``redaction.contact_points_to_model`` (issue #130) is
+the first production ``and`` key."""
 
 
 class Rows:
@@ -207,6 +212,18 @@ def test_the_registry_declares_every_production_key_and_its_shape() -> None:
     )
     assert spec_for("runtime.max_context_bytes").floor is Floor.MIN
     assert spec_for("runtime.transcript_retention_days").floor is Floor.MIN
+    purposes = spec_for("redaction.internal_purposes")
+    assert (purposes.scope, purposes.floor, purposes.type) == (
+        Scope.WORKSPACE,
+        Floor.SUBSET,
+        ValueType.STR_LIST,
+    )
+    contact = spec_for("redaction.contact_points_to_model")
+    assert (contact.scope, contact.floor, contact.type) == (
+        Scope.WORKSPACE,
+        Floor.AND,
+        ValueType.BOOL,
+    )
     runtimes = spec_for("runtime.allowed_runtimes")
     assert (runtimes.scope, runtimes.floor, runtimes.type) == (
         Scope.WORKSPACE,
