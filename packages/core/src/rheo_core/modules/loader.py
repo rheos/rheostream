@@ -85,6 +85,14 @@ still raises ``SettingTypeMismatch`` if the key is ever redeclared at another
 :func:`register_module_settings` is the early hook every composition root calls
 first; every later ``resolve()`` is exactly as strict as it was.
 
+**One command no longer rejects a stray early.** Before #108 the ``rheo openapi``
+subcommand reached the allowlist through ``load_modules()`` and a full ``resolve()``,
+so a stray ``RHEO__*`` variable in its environment raised ``SettingUndeclared``
+there. It now reads only ``modules.installed`` and ignores such a variable (and it is
+in the CLI's ``NO_BOOTSTRAP_COMMANDS``, so no full resolve runs at all). That is
+deliberate: ``make codegen`` runs it with no deployment. ``core`` and the worker
+still refuse the stray at their own later ``resolve()``.
+
 **Three sets, three names, and no function here answers for two of them.**
 :func:`discovered` is "installed on this host"; :func:`allowed_module_ids` and
 :func:`loaded_manifests` are "loaded by this deployment"; the ``core.module_state``
@@ -170,8 +178,15 @@ def allowed_module_ids() -> frozenset[str]:
     value = read_deployment_value(ALLOWLIST_KEY)
     if value is None:
         value = spec.default
-    assert isinstance(value, tuple)
-    return frozenset(value)
+    if not isinstance(value, tuple):
+        # Unreachable while the declaration check above holds: the deployment
+        # layer's coercion returns a tuple for a STR_LIST key. A typed refusal
+        # rather than an assert, which ``python -O`` would strip.
+        raise SettingTypeMismatch(
+            f"{ALLOWLIST_KEY} resolved to {type(value).__name__}, not a list",
+            key=ALLOWLIST_KEY,
+        )
+    return frozenset(str(item) for item in value)
 
 
 def loaded_manifests() -> Mapping[str, ModuleManifest]:
