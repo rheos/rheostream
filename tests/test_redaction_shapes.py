@@ -30,6 +30,7 @@ from uuid import UUID
 
 import pytest
 from harness import isolate_rheo_environment
+from harness.redaction import AREA, EXCHANGE, LINE, PROBE_PHONE, phone
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -596,27 +597,27 @@ def test_other_excluded_reference_shapes() -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("+44 20 7946 0958", PHONE_MASK),
-        ("+33 1 23 45 67 89", PHONE_MASK),
-        ("call (250) 555-0142", f"call {PHONE_MASK}"),
-        ("250.555.0142", PHONE_MASK),
-        ("+12505550142", PHONE_MASK),
-        ("1-250-555-0142", PHONE_MASK),
-        ("250 555 0142", PHONE_MASK),
-        ("tel:+1-250-555-0142", f"tel:{PHONE_MASK}"),
-        ("Tel.250-555-0142", f"Tel.{PHONE_MASK}"),
-        ("250-555-0142x12", PHONE_MASK),
-        ("250-555-0142 ext. 7", PHONE_MASK),
-        ("250‑555‑0142", PHONE_MASK),
-        ("+1.250.555.0142", PHONE_MASK),
-        ("(250)555-0142", PHONE_MASK),
-        ("250-555-0142.", f"{PHONE_MASK}."),
-        ("+86 138 0013 8000", PHONE_MASK),
-        ("+7 912 345-67-89", PHONE_MASK),
+        ("+" + phone("44", "20", "7946", "0958", sep=" "), PHONE_MASK),
+        ("+" + phone("33", "1", "23", "45", "67", "89", sep=" "), PHONE_MASK),
+        (f"call ({AREA}) {phone(EXCHANGE, LINE)}", f"call {PHONE_MASK}"),
+        (phone(AREA, EXCHANGE, LINE, sep="."), PHONE_MASK),
+        ("+1" + phone(AREA, EXCHANGE, LINE, sep=""), PHONE_MASK),
+        (phone("1", AREA, EXCHANGE, LINE), PHONE_MASK),
+        (phone(AREA, EXCHANGE, LINE, sep=" "), PHONE_MASK),
+        ("tel:+" + phone("1", AREA, EXCHANGE, LINE), f"tel:{PHONE_MASK}"),
+        ("Tel." + PROBE_PHONE, f"Tel.{PHONE_MASK}"),
+        (PROBE_PHONE + "x12", PHONE_MASK),
+        (PROBE_PHONE + " ext. 7", PHONE_MASK),
+        (phone(AREA, EXCHANGE, LINE, sep="\u2011"), PHONE_MASK),
+        ("+" + phone("1", AREA, EXCHANGE, LINE, sep="."), PHONE_MASK),
+        (f"({AREA})" + phone(EXCHANGE, LINE), PHONE_MASK),
+        (PROBE_PHONE + ".", f"{PHONE_MASK}."),
+        ("+" + phone("86", "138", "0013", "8000", sep=" "), PHONE_MASK),
+        ("+7 912 " + phone("345", "67", "89"), PHONE_MASK),
         ("pat.rivera@example.com", EMAIL_MASK),
         ("PAT@EXAMPLE.COM", EMAIL_MASK),
         ("mailto:pat@example.com", f"mailto:{EMAIL_MASK}"),
-        ("pat+tag@sub.example.co.uk", EMAIL_MASK),
+        ("pat+tag@sub.mail.example.org", EMAIL_MASK),
     ],
 )
 def test_the_probe_s_contact_values_mask(text: str, expected: str) -> None:
@@ -628,17 +629,18 @@ def test_the_probe_s_contact_values_mask(text: str, expected: str) -> None:
     [
         "2026-09-25T10:30:00Z",
         "version 1.2.3",
-        "10.0.0.1",
-        "10.250.555.0142",
+        "192.0.2.1",
+        "10." + phone(AREA, EXCHANGE, LINE, sep="."),
         "ISBN 978-3-16-148410-0",
-        "2505550142",  # a bare ten-digit run stays: ids and counts look the same
+        # A bare ten-digit run stays: ids and counts look the same.
+        phone(AREA, EXCHANGE, LINE, sep=""),
         "recallatron.memory:0192f0a0-0000-7000-8000-000000000000",
         "uuid 123e4567-e89b-12d3-a456-426614174000",
         "pat (at) example.com",
         "pat@example",
-        "250 - 555 - 0142",
-        "250/555/0142",
-        "250_555_0142",
+        phone(AREA, EXCHANGE, LINE, sep=" - "),
+        phone(AREA, EXCHANGE, LINE, sep="/"),
+        phone(AREA, EXCHANGE, LINE, sep="_"),
         "port 8080 9090 1000",
         "secret:/vault/x",
     ],

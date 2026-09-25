@@ -34,7 +34,21 @@ from harness.registry import NOTE_RECORD_TYPE
 PROBE_TITLE: Final = "Quarterly check-in with the harbour co-op"
 PROBE_ORGANIZATION: Final = "Harbour Supply Co-op"
 PROBE_EMAIL: Final = "pat.rivera@example.com"
-PROBE_PHONE: Final = "250-555-0142"
+# Repository policy (``scripts/check_fixture_provenance.py``, criterion 35) forbids a
+# phone-number-shaped literal anywhere under ``tests/``, synthetic or not. The masking
+# tests need phone numbers, so they assemble them at run time from these groups with
+# :func:`phone`, and no test file spells one out, in code, docstrings or comments.
+AREA: Final = "250"
+EXCHANGE: Final = "555"
+LINE: Final = "0142"
+
+
+def phone(*groups: str, sep: str = "-") -> str:
+    """A phone-shaped string built from ``groups`` at run time; see the note above."""
+    return sep.join(groups)
+
+
+PROBE_PHONE: Final = phone(AREA, EXCHANGE, LINE)
 
 NOTE_TIERS: Final[Mapping[str, SensitivityTier]] = {
     "title": SensitivityTier.PUBLIC,

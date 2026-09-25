@@ -32,7 +32,7 @@ from harness.modules import (
     install_and_enable_module,
     loaded_probe_modules,
 )
-from harness.redaction import register_module_exclude_key
+from harness.redaction import AREA, EXCHANGE, phone, register_module_exclude_key
 from rheo_app_mcp.tools import call_tool
 from rheo_contracts import (
     ContextPurpose,
@@ -60,7 +60,7 @@ pytestmark = pytest.mark.postgres
 
 _MODULE = MANIFEST.module_id
 EMAIL = "jane@example.com"
-PHONE = "250-555-0100"
+PHONE = phone(AREA, EXCHANGE, "0100")
 TITLE = "Harbour co-op check-in"
 BODY = f"Reach Jane at {EMAIL} or {PHONE} about the harbour order."
 

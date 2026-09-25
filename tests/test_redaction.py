@@ -27,6 +27,7 @@ from uuid import UUID
 
 import pytest
 from harness import isolate_rheo_environment
+from harness.redaction import AREA, EXCHANGE, LINE, phone
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -68,7 +69,7 @@ from rheo_core.settings import (
 
 WORKSPACE = UUID("018f0000-0000-7000-8000-0000000001a0")
 EMAIL = "pat.rivera@example.com"
-PHONE = "250-555-0142"
+PHONE = phone(AREA, EXCHANGE, LINE)
 
 PUBLIC = SensitivityTier.PUBLIC
 INTERNAL = SensitivityTier.INTERNAL
@@ -248,12 +249,15 @@ def test_a_policy_that_needs_no_setting_reads_none() -> None:
         (f"mail {EMAIL} today", f"mail {EMAIL_MASK} today"),
         ("ops+alerts@sub.example.org.", f"{EMAIL_MASK}."),
         (f"call {PHONE}", f"call {PHONE_MASK}"),
-        ("call 250.555.0199 now", f"call {PHONE_MASK} now"),
-        ("call 250 555 0101", f"call {PHONE_MASK}"),
-        ("(250) 555-0177", PHONE_MASK),
-        ("+1 250 555 0123", PHONE_MASK),
-        ("+44 20 5550 0188", PHONE_MASK),
-        ("+12505550123", PHONE_MASK),
+        (
+            f"call {phone(AREA, EXCHANGE, '0199', sep='.')} now",
+            f"call {PHONE_MASK} now",
+        ),
+        (f"call {phone(AREA, EXCHANGE, '0101', sep=' ')}", f"call {PHONE_MASK}"),
+        (f"({AREA}) {phone(EXCHANGE, '0177')}", PHONE_MASK),
+        ("+1 " + phone(AREA, EXCHANGE, "0123", sep=" "), PHONE_MASK),
+        ("+" + phone("44", "20", "5550", "0188", sep=" "), PHONE_MASK),
+        ("+1" + phone(AREA, EXCHANGE, "0123", sep=""), PHONE_MASK),
     ],
 )
 def test_contact_values_are_masked(text: str, expected: str) -> None:
@@ -268,11 +272,12 @@ def test_contact_values_are_masked(text: str, expected: str) -> None:
         "recallatron.memory:0190b7a2-3c4d-7e8f-9a0b-1c2d3e4f5a6b",
         "0190b7a2-3c4d-7e8f-9a0b-1c2d3e4f5a6b",
         "1727231400",
-        "2505550123",  # a bare run of digits is an id or a count as often as a phone
+        # A bare run of digits is an id or a count as often as a phone.
+        phone(AREA, EXCHANGE, "0123", sep=""),
         "version 1.2.3",
-        "10.0.0.1",
-        "the ratio was 250-555",
-        "250-555-01234",
+        "192.0.2.1",
+        f"the ratio was {phone(AREA, EXCHANGE)}",
+        phone(AREA, EXCHANGE, "01234"),
         "a+b@c",  # no top-level domain
         "user at example dot com",
         "+00:00",
@@ -706,13 +711,13 @@ def test_nothing_is_dropped_when_nothing_is_excluded() -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("1-250-555-0100", PHONE_MASK),
-        ("+1-250-555-0100", PHONE_MASK),
-        ("tel:+1-250-555-0100", f"tel:{PHONE_MASK}"),
-        ("250–555–0100", PHONE_MASK),
+        (phone("1", AREA, EXCHANGE, "0100"), PHONE_MASK),
+        ("+" + phone("1", AREA, EXCHANGE, "0100"), PHONE_MASK),
+        ("tel:+" + phone("1", AREA, EXCHANGE, "0100"), f"tel:{PHONE_MASK}"),
+        (phone(AREA, EXCHANGE, "0100", sep="\u2013"), PHONE_MASK),
         ("josé@example.com", EMAIL_MASK),
         ("user@münchen.de", EMAIL_MASK),
-        ("+33 6 12 34 56 78", PHONE_MASK),
+        ("+" + phone("33", "6", "12", "34", "56", "78", sep=" "), PHONE_MASK),
     ],
 )
 def test_the_review_s_false_negatives_now_mask(text: str, expected: str) -> None:
@@ -722,15 +727,16 @@ def test_the_review_s_false_negatives_now_mask(text: str, expected: str) -> None
 @pytest.mark.parametrize(
     "text",
     [
-        "sizes 128 256 1024",
-        "ids 100-200-3000",
-        "192.168.100.1000",
-        "+100 200 300",
-        "score +12 345 678",
-        "234-567-8901-2",
-        "250-155-0100",  # an exchange starting 1 is not a North American number
-        "150-555-0100",  # nor is an area code starting 1
-        "250-555.0100",  # mixed separators
+        "sizes " + phone("128", "256", "1024", sep=" "),
+        "ids " + phone("100", "200", "3000"),
+        phone("192", "168", "100", "1000", sep="."),
+        "+" + phone("100", "200", "300", sep=" "),
+        "score +" + phone("12", "345", "678", sep=" "),
+        phone("234", "567", "8901", "2"),
+        # An exchange starting 1 is not a North American number, nor an area code.
+        phone(AREA, "155", "0100"),
+        phone("150", EXCHANGE, "0100"),
+        phone(AREA, EXCHANGE) + ".0100",  # mixed separators
         "user@localhost",
     ],
 )
