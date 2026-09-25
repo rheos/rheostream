@@ -411,8 +411,10 @@ filters that one generated list per request against `core.workspace.status` and 
 configuration. The end-to-end proof is `tests/postgres/test_web_contribution.py`: it holds the
 committed generated file byte-equal to a fresh render and checks it carries Recallatron's
 navigation, routes and `recall` search provider, then runs an enabled/absent pair, a fresh
-workspace that enables Recallatron and reports it `enabled` with its surface routed, and a
-never-installed workspace that reports it absent. Both status outputs are checked against the
+workspace that enables Recallatron and reports it `enabled`, and a never-installed workspace
+that reports it absent. Routing is not part of that pair: `routing_config()` describes the
+whole deployment, and the test checks separately that it carries Recallatron's surface once
+the module is loaded. Both status outputs are checked against the
 same `tests/fixtures/web/workspace-status-{enabled,absent}.json` files that `apps/web`'s vitest
 suite feeds to `composeNavigation`, so the Python and TypeScript halves are proven against one
 source. The criterion's row in

@@ -18,7 +18,8 @@ gate plants violations in a self-test on every run, so it cannot pass by scannin
 None of the three has a row yet, because adding one widens the guard's expected set and each
 row needs a captured mutation. Criterion 34's also has a constraint of its own: this file is
 inside the legacy-name scan, so a fenced hunk that plants a legacy name would itself fail the
-gate. Do not add a row for one of those on the strength of a test that happens to pass; the
+gate. The other route is to mutate the scanner itself so its self-test goes red, and that
+needs a maintainer's go-ahead before anyone edits a gate script. Do not add a row for one of those on the strength of a test that happens to pass; the
 guard's per-file completeness check is what keeps the set exact, and widening the set is a
 decision, not a fix.
 
@@ -76,7 +77,7 @@ index 62f9c69..931d6f3 100644
  
 ```
 
-**Cost:** `ci:web / Vitest (path mode)` — first observed failure line: `AssertionError: expected [ …(3) ] to deeply equal []`, in `src/shell/compose.test.ts > composition over the real MODULES > shows none of it in a workspace where it was never installed`, which runs `composeNavigation` over the real `MODULES` and `tests/fixtures/web/workspace-status-absent.json` and received Recallatron's three navigation entries; 5 of 234 `apps/web` tests failed, the other four being the never-installed cases in `src/shell/render-surface.test.tsx` (no navigation, the status-read-failure fallback, and two module-path 404s)
+**Cost:** `ci:web / Vitest (path mode)` — first observed failure line: `AssertionError: expected [ …(3) ] to deeply equal []`, in `src/shell/compose.test.ts > composition over the real MODULES > shows none of it in a workspace where it was never installed`, which runs `composeNavigation` over the real `MODULES` and `tests/fixtures/web/workspace-status-absent.json` and received Recallatron's three navigation entries; 5 of 234 `apps/web` tests failed, the other four all in `src/shell/render-surface.test.tsx`: three never-installed cases (no navigation, and two module-path 404s) and the status-read-failure case, where the workspace status read fails and the frame should render with no module navigation
 
 **Performed by:** 1a3-P11 (2026-09-24)
 
