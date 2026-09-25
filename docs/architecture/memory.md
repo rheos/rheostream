@@ -210,10 +210,10 @@ rows, so enough hidden rows ahead of a readable memory can push it out of that a
 decisions a `hybrid` recall takes also depends on raw positions, hidden rows included, so
 hidden rows with many links can exhaust the shared reference budget and turn an answer into
 `reference_scan_limit`: a content-free, query-dependent bit of the same kind the walk had
-before #125 and `read` has as bit 2 below. It is documented here, not yet accepted. A score
-compared across strategies, or stored and compared later, compares nothing. The candidate SQL
-and the link check are strategy-independent; 1a1 owns the records, the eligibility rules both
-stages apply, and the bounds below.
+before #125 and `read` has as bit 2 below. It was reviewed and accepted as a maintainer
+decision on 2026-09-25, like bit 2. A score compared across strategies, or stored and compared
+later, compares nothing. The candidate SQL and the link check are strategy-independent; 1a1
+owns the records, the eligibility rules both stages apply, and the bounds below.
 
 **How each strategy ranks.** The lexical arm matches the query against `search_tsv` with an
 **OR** join, not an AND: a memory needs one of the query's surviving terms, not all of them.
