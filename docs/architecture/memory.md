@@ -300,9 +300,9 @@ total, bounds, `has_more` flag or partial item.
 > its reads run in `current` mode. Neither bit is reachable through the MCP tool, which requires
 > a target. Both are reachable over the API by a token whose set holds `recallatron.memory.read`.
 >
-> Both bits were reviewed, bit 1 during cold review of the built code and bit 2 during the
-> final review of the whole change, and both were accepted as a maintainer decision, not
-> missed. Neither is an open bug and no fix is deferred. Closing bit 1 would mean fully
+> Bit 1 was found during cold review of the built code and accepted as a maintainer decision.
+> Bit 2 was found during the final review of the whole change and is recorded here with the
+> same content-free shape; it is documented, not fixed. Closing bit 1 would mean fully
 > evaluating every candidate's eligibility before the 500-row sentinel could apply, which turns
 > a bounded, fast-failing scan into an unbounded one for exactly the workspace shape the
 > sentinel exists to protect against. Closing bit 2 would mean either deciding entity
