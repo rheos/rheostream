@@ -197,7 +197,7 @@ this is the inventory.
 | `approval`, `approval_payload`, `standing_grant`, `standing_grant_operation`, `external_action` (not built yet) | [confirmation and safety](confirmation-and-safety.md) |
 | `runtime_request`, `runtime_request_context`, `runtime_session`, `runtime_transcript` | [runtime and MCP](runtime-and-mcp.md) |
 | `tool_telemetry` | [runtime and MCP](runtime-and-mcp.md#the-mcp-facade) |
-| `deletion_record`, `export_record`, `export_record_ref`, `migration_verification` (not built yet) | [deletion, export, migration](deletion-export-migration.md) |
+| `deletion_record`, `export_record`, `export_record_ref`, `migration_verification` (the last not built yet) | [deletion, export, migration](deletion-export-migration.md) |
 
 ### Composition and schema versions (FR 9)
 
@@ -269,8 +269,8 @@ yet, and `text(` also appears in the migration orchestrator, module install and 
 snapshot. What ships is criterion 20's check that no file in the MCP facade imports a database
 driver or the core's storage or migrations packages (`tests/test_mcp_boundary.py`).
 
-The behavioural test suite (FR 8) is written against the protocols with a `backend` fixture.
-Release one runs it against Postgres only. D2 asks the seam to be provable later, so the suite
+FR 8 calls for a behavioural test suite written against the protocols with a `backend` fixture,
+run against Postgres only in release one. D2 asks the seam to be provable later, so the suite
 must contain the cases where backends are known to differ: concurrent compare-and-set on a
 `revision` column, concurrent `SKIP LOCKED` leasing,
 serialization failures under concurrent receipt insert, advisory locks, generated `tsvector`

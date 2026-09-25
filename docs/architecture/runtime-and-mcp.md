@@ -24,7 +24,7 @@ operation; no module constructs one.
 | `actor`, `workspace_id`, `audience` | Copied from the originating operation record (a run inside a job carries the operation's actor and audience, not the worker's `system` actor); the runtime may not change them. The actor must have an account behind it, because the run-scoped token is issued to that account: an operation started by the operator or by a schedule cannot start a run and is refused `runtime_actor_required` before any adapter is invoked. |
 | `purpose` | From the purpose vocabulary; drives redaction and permission filtering. |
 | `task` | The instruction text, as data. Never interpolated into a shell command. |
-| `context_items` | List of `ContextItem(ref, tier, text)` already permission-checked and redacted by the context builder. |
+| `context_items` | List of `ContextItem(ref, tier, text)` already permission-checked by the context builder. Redaction by tier is planned, not built ([redaction](#tiers)); today every item is a head's `display` tagged `internal`. |
 | `permitted_tools` | List of MCP tool names, the adapter's allow list. The tool names the caller requested in `core.runtime.run`'s `permitted_tools` input, intersected with the tools whose operations the originating actor may call and stripped of non-token-issuable operations; never wider than the actor. The [run-scoped token](#the-run-scoped-token) holds the *operations* these tools name, not the tool names. |
 | `output` | `text`, `structured(json_schema)`, or `stream`. |
 | `requirements` | Set of capability names the workflow needs (below). |
@@ -261,8 +261,8 @@ listed before a revocation is refused after it (idea document: discovery grants 
   (criterion 6). Record references are strings in the documented form; a reference from another
   workspace resolves to nothing and the call fails `not_found`.
 - Class: declared on the tool and required to equal the operation's ([module contract](module-contract.md#operations-tools-events)).
-- Output: the operation's output model, rendered by the facade through the owning module's
-  `render_for_model` under the [redaction tiers](#tiers) with the token's `purpose`
+- Output (planned; see "Not built yet" below): the operation's output model, rendered by the
+  facade through the owning module's `render_for_model` under the [redaction tiers](#tiers) with the token's `purpose`
   (`internal_analysis` when the token carries none), so a tool never returns a `restricted`
   field, a contact value, or a secret reference to a model, whatever the operation returns to a
   person. A destructive, external, or financial call without an approval returns

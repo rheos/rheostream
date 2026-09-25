@@ -63,8 +63,9 @@ which the one-database-per-workspace layout makes possible without a distributed
    what the model was shown; the `runtime_request` row stays, holding references and a digest
    ([runtime](runtime-and-mcp.md#what-the-core-records-about-a-run)). Outbox rows are not
    touched, because event `data` never carries personal content
-   ([events](intake-and-events.md#events-and-the-outbox-fr-15)); only references, which now
-   resolve to `deleted`.
+   ([events](intake-and-events.md#events-and-the-outbox-fr-15)); only references, which are
+   to resolve to `deleted` once the resolver reads the deletion record (not built yet; see
+   below).
 5. **Held exports.** Every `export_record` whose `export_record_ref` rows include the reference is
    marked `state = removed_by_deletion` with `removed_at` and the deletion record id.
 6. **Deletion record.** `core.deletion_record` is written.
