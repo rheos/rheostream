@@ -47,6 +47,7 @@ from rheo_core.storage.data_root import Purpose, run_dir_for, workspace_dir_for
 from rheo_core.storage.postgres import get_backend
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.tokens.issue import issue_runtime_token
+from rheo_core.work.cancellation import CancellationToken, JobCancelled
 from rheo_core.work.jobs import has_job_for_operation
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
@@ -575,3 +576,68 @@ def test_runtime_clock_driven_deadline_does_not_sleep(
     assert operation.state == "failed"
     assert operation.error_code == "deadline_exceeded"
     assert adapter.start_calls  # start happened, then the clock jumped
+
+
+class _CancelRecordingHandle:
+    """A run still going: never answers, never finishes, and records ``cancel``."""
+
+    native_handle = None
+
+    def __init__(self) -> None:
+        self.polls = 0
+        self.cancelled = False
+
+    def poll(self) -> RuntimeEvent | None:
+        self.polls += 1
+        return None
+
+    def finished(self) -> bool:
+        return self.cancelled
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class _CancelRecordingAdapter(RecordingAdapter):
+    def __init__(self) -> None:
+        super().__init__(events=[], native_handle=None)
+        self.handle = _CancelRecordingHandle()
+
+    def start(self, request: RuntimeRequest, *, spawn: AdapterSpawn) -> RuntimeHandle:
+        self.start_calls.append((request, spawn))
+        return self.handle
+
+
+def test_a_cancelled_runtime_job_kills_the_running_process(
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#128. A job cancelled while its run is live leaves the poll loop by
+    ``token.checkpoint()`` raising ``JobCancelled``. The handle must be cancelled on
+    the way out, which kills the CLI's process group; before the fix only the token
+    and working directory were cleaned up and the process ran on.
+
+    The checkpoint is made to raise once the run has polled, which is the moment an
+    operator's cancel would be observed; how ``cancel_requested`` reaches the token is
+    the worker's own tested path and not this test's subject.
+    """
+    _api_key(monkeypatch)
+    adapter = _CancelRecordingAdapter()
+    original = CancellationToken.checkpoint
+
+    def checkpoint(self: CancellationToken, now: datetime | None = None) -> None:
+        if adapter.handle.polls:
+            raise JobCancelled("cancelled mid-run")
+        original(self, now)
+
+    monkeypatch.setattr(CancellationToken, "checkpoint", checkpoint)
+    ctx = _owner_context(cluster, workspace, owner_account_id)
+    dispatch(ctx, RUNTIME_RUN, _payload())
+
+    _visit(cluster, workspace, _kinds(adapter, lambda: datetime.now(UTC)))
+
+    assert adapter.start_calls
+    assert adapter.handle.polls >= 1
+    assert adapter.handle.cancelled

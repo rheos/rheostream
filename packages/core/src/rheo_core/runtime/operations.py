@@ -677,6 +677,7 @@ def make_run_runtime_job(
     ) -> None:
         assert isinstance(payload, RuntimeJobPayload)
         token_id: UUID | None = None
+        handle: RuntimeHandle | None = None
         work_dir_path = run_dir_for(payload.workspace_id, payload.operation_id)
         try:
             ctx = context_from_operation(
@@ -859,6 +860,12 @@ def make_run_runtime_job(
                 retention_days=settings.get_int("runtime.transcript_retention_days"),
             )
         finally:
+            # However the loop ended (the deadline, a cancelled job raising out of
+            # ``token.checkpoint()``, a lost lease, any other exception), a process
+            # still running is killed before its token and working directory go
+            # (#128). ``cancel`` is a no-op once the process has exited.
+            if handle is not None and not handle.finished():
+                handle.cancel()
             if token_id is not None:
                 with get_backend().control_engine.begin() as connection:
                     delete_access_token(connection, token_id)
