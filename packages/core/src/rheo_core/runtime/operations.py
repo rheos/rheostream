@@ -53,7 +53,7 @@ from rheo_core.operations.records import (
     set_progress,
 )
 from rheo_core.operations.refusals import OperationRefused
-from rheo_core.redaction.masking import mask_for_model
+from rheo_core.redaction.masking import mask_for_model, mask_secret_references
 from rheo_core.redaction.policy import TierPolicy, policy_digest, purpose_of
 from rheo_core.redaction.render import RenderedRecord, render_record
 from rheo_core.redaction.tiers import SensitivityTier
@@ -872,13 +872,11 @@ def make_run_runtime_job(
                 workspace_id=ctx.workspace_id,
                 audience=audience,
                 purpose=purpose,
-                # The task text goes to the provider like any context item, so it is
-                # masked under the same policy: secret references always, contact
-                # values unless the allowance is on. Masked here rather than in an
-                # adapter, so no adapter can forget it.
-                task=mask_for_model(
-                    payload.task, TierPolicy.from_settings(purpose_of(ctx), settings)
-                ),
+                # The task is the person's own instruction, so a contact value they
+                # typed into it reaches the model; only secret references are masked
+                # (Robin, 2026-09-25, #149). Masked here rather than in an adapter, so
+                # no adapter can forget it.
+                task=mask_secret_references(payload.task),
                 context_items=items,
                 permitted_tools=tools,
                 output=output,

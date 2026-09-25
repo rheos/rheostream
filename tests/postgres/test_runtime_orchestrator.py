@@ -42,7 +42,7 @@ from rheo_core.operations import dispatch
 from rheo_core.operations import records as operation_records
 from rheo_core.operations.core_ops import register_core_operations
 from rheo_core.redaction import registry as redaction_registry
-from rheo_core.redaction.masking import EMAIL_MASK, SECRET_MASK
+from rheo_core.redaction.masking import SECRET_MASK
 from rheo_core.redaction.policy import TierPolicy, policy_digest
 from rheo_core.refs import uuid7
 from rheo_core.runtime import (
@@ -601,8 +601,9 @@ def test_runtime_task_text_is_masked_before_the_adapter_sees_it(
     owner_account_id: UUID,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The task goes to the provider like a context item, so the same policy masks
-    it: a secret reference always, a contact value while the allowance is off."""
+    """The task is the person's own instruction: a secret reference in it is always
+    masked, and a contact value they typed passes through even with the contact
+    allowance off (#149)."""
     _api_key(monkeypatch)
     ctx = _owner_context(cluster, workspace, owner_account_id)
     adapter = RecordingAdapter()
@@ -612,7 +613,7 @@ def test_runtime_task_text_is_masked_before_the_adapter_sees_it(
     dispatch(ctx, RUNTIME_RUN, payload)
     _visit(cluster, workspace, _kinds(adapter, lambda: clock))
     request = adapter.start_calls[0][0]
-    assert request.task == f"use {SECRET_MASK} and write to {EMAIL_MASK}"
+    assert request.task == f"use {SECRET_MASK} and write to {PROBE_EMAIL}"
 
 
 def test_runtime_token_kind_and_issuer_constraint(
