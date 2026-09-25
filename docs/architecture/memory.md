@@ -263,7 +263,7 @@ existence test only; past it the call refuses `window_scan_limit`, a fixed, cont
 carrying no target content, candidate count, eligible or hidden count, identity, position,
 total, bounds, `has_more` flag or partial item.
 
-> **Residuals: the targetless entity read (bit 1 accepted, bit 2 documented).** A targetless `read` over an entity
+> **Accepted residuals: the targetless entity read.** A targetless `read` over an entity
 > container can refuse because of mentions the caller cannot read. There are two such
 > content-free bits. Each refusal keeps its existing fixed shape: no count, no name, no title,
 > no text, no reference, no partial content and no window metadata.
@@ -300,9 +300,10 @@ total, bounds, `has_more` flag or partial item.
 > its reads run in `current` mode. Neither bit is reachable through the MCP tool, which requires
 > a target. Both are reachable over the API by a token whose set holds `recallatron.memory.read`.
 >
-> Bit 1 was found during cold review of the built code and accepted as a maintainer decision.
-> Bit 2 was found during the final review of the whole change and is recorded here with the
-> same content-free shape; it is documented, not fixed. Closing bit 1 would mean fully
+> Both bits were reviewed and accepted as maintainer decisions, not missed. Bit 1 was accepted
+> on 2026-09-24, after it was found in cold review of the built code. Bit 2 was accepted on
+> 2026-09-25, after it was found in the final review of the whole change. Neither is an open
+> bug and no fix is deferred. Closing bit 1 would mean fully
 > evaluating every candidate's eligibility before the 500-row sentinel could apply, which turns
 > a bounded, fast-failing scan into an unbounded one for exactly the workspace shape the
 > sentinel exists to protect against. Closing bit 2 would mean either deciding entity
