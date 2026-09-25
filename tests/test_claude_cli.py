@@ -31,6 +31,8 @@ from rheo_contracts import (
     RuntimeRequest,
     StructuredOutput,
     TextOutput,
+    UsageEvent,
+    UsageKind,
     UsageReporting,
 )
 from rheo_runtimes.claude_cli import (
@@ -472,6 +474,71 @@ def test_structured_output_match_emits_final_output(
     )
     assert event.type == "final_output"
     assert event.structured == {"ok": True}
+
+
+def _events_until_terminal(handle: object, *, timeout: float = 2.0) -> list[object]:
+    """Every event up to and including the terminal one, in order."""
+    deadline = time.monotonic() + timeout
+    events: list[object] = []
+    while time.monotonic() < deadline:
+        event = handle.poll()  # type: ignore[attr-defined]
+        if event is not None:
+            events.append(event)
+            if event.type in {"failure", "final_output", "cancelled"}:  # type: ignore[attr-defined]
+                return events
+        elif handle.finished():  # type: ignore[attr-defined]
+            return events
+    raise AssertionError(f"no terminal event before timeout; events={events!r}")
+
+
+def test_result_line_usage_is_emitted_as_exact_usage_before_the_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#128: the adapter declares exact usage, so it reports the result line's own.
+    Input counts fresh, cache-write and cache-read tokens together."""
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    seed = _fill_seed(tmp_path / "seed")
+    _configure(monkeypatch, tmp_path, executable=stub, seed=seed)
+    spawn = _spawn(tmp_path)
+    (Path(spawn.work_dir) / "result.json").write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "session_id": "sess-usage",
+                "result": "ok",
+                "total_cost_usd": 0.0125,
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_creation_input_tokens": 20,
+                    "cache_read_input_tokens": 300,
+                    "output_tokens": 45,
+                },
+            }
+        )
+        + "\n"
+    )
+
+    events = _events_until_terminal(ClaudeCliRuntime().start(_request(), spawn=spawn))
+
+    assert [event.type for event in events] == ["usage", "final_output"]  # type: ignore[attr-defined]
+    usage = events[0]
+    assert usage == UsageEvent(
+        input_tokens=420, output_tokens=45, cost=0.0125, kind=UsageKind.EXACT
+    )
+
+
+def test_a_result_line_without_usage_reports_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    seed = _fill_seed(tmp_path / "seed")
+    _configure(monkeypatch, tmp_path, executable=stub, seed=seed)
+
+    events = _events_until_terminal(
+        ClaudeCliRuntime().start(_request(), spawn=_spawn(tmp_path))
+    )
+
+    assert [event.type for event in events] == ["final_output"]  # type: ignore[attr-defined]
 
 
 def test_structured_output_mismatch_is_output_invalid(

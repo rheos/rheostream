@@ -34,6 +34,8 @@ from rheo_contracts import (
     RuntimeEvent,
     RuntimeRequest,
     StructuredOutput,
+    UsageEvent,
+    UsageKind,
     UsageReporting,
 )
 from rheo_core.secrets import SecretRef, SecretRefusal, SecretStore
@@ -190,6 +192,10 @@ class ClaudeCliHandle:
         session_id = payload.get("session_id")
         if isinstance(session_id, str) and session_id:
             self.native_handle = session_id
+        usage = _usage_event(payload)
+        if usage is not None:
+            # Before the terminal event, so the core records it before the loop ends.
+            self._pending.append(usage)
         if payload.get("is_error"):
             self._pending.append(_error_result(payload.get("result")))
             return
@@ -222,6 +228,45 @@ class ClaudeCliHandle:
         else:
             body = json.dumps(result)
         return [FinalOutputEvent(text=body)]
+
+
+_INPUT_USAGE_KEYS: Final = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _usage_event(payload: Mapping[str, object]) -> UsageEvent | None:
+    """The result line's own usage, as the ``exact`` usage this adapter declares.
+
+    ``input_tokens`` is every input token the model processed, cached or not: the
+    CLI reports fresh, cache-write and cache-read input separately. ``cost`` is the
+    CLI's ``total_cost_usd``. A result line without a well-formed ``usage`` object
+    reports nothing, rather than a guess; a missing cost reads as zero.
+    """
+    usage = payload.get("usage")
+    if not isinstance(usage, Mapping):
+        return None
+    output_tokens = _count(usage.get("output_tokens"))
+    input_parts = [_count(usage.get(key)) for key in _INPUT_USAGE_KEYS]
+    if output_tokens is None or input_parts[0] is None:
+        return None
+    cost = payload.get("total_cost_usd")
+    return UsageEvent(
+        input_tokens=sum(part for part in input_parts if part is not None),
+        output_tokens=output_tokens,
+        cost=float(cost)
+        if isinstance(cost, int | float) and not isinstance(cost, bool)
+        else 0.0,
+        kind=UsageKind.EXACT,
+    )
 
 
 def _error_result(result: object) -> FailureEvent:
