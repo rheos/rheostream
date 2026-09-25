@@ -61,9 +61,10 @@ PHASE_TWO_CRITERIA = frozenset({24, 25, 26, 27, 28, 29, 30, 31, 33, 36})
 """Phase two's seeded set.
 
 Ten of phase two's fourteen criteria. 31 joined at run 1a2's close-out, in the same
-change as its row. 32, 34, 35 and 37 are absent because no run has closed them, and
-the completeness check is what keeps them absent: a row for one of them fails here
-as ``unexpected`` rather than quietly widening what the repository claims.
+change as its row. 32, 34, 35 and 37 have no row: 32's run has not happened, and
+34, 35 and 37 have gates in CI but no matrix row yet (``phase-2-matrix.md`` says
+why). The completeness check is what keeps them absent: a row for one of them fails
+here as ``unexpected`` rather than quietly widening what the repository claims.
 """
 
 MATRICES: Final[tuple[tuple[Path, frozenset[int]], ...]] = (

@@ -6,15 +6,21 @@ above all its "what this is not" section govern every row here: the matrix recor
 test demonstrates a criterion and which mutation proves that test bites, and it never
 claims a criterion is demonstrated merely because a row exists.
 
-**Ten rows, not fourteen.** Phase two's criteria run 24 to 37. Criteria 32, 34, 35 and 37
-have no row because no run has closed them, and an absent row is the honest record of that.
-Retrieval-strategy selection (31) was run 1a2's and its row was added at that run's
-close-out. The predecessor migration (32) is run 1b's, and the naming gate,
-fixture-provenance gate and re-asserted CI gates (34, 35, 37) are run 1a3's, because each
-of them names this phase's ported interface surface, which does not exist yet. Do not add a
-row for one of those on the strength of a test that happens to pass; the guard's per-file
-completeness check is what keeps the set exact, and widening the set is a decision, not a
-fix.
+**Ten rows, not fourteen.** Phase two's criteria run 24 to 37, and criteria 32, 34, 35 and
+37 have no row. Retrieval-strategy selection (31) was run 1a2's and its row was added at
+that run's close-out. The predecessor migration (32) is run 1b's, which has not run, so no
+evidence for it exists yet. The naming gate, fixture-provenance gate and re-asserted CI
+gates (34, 35, 37) are run 1a3's. That run built the ported interface surface they name,
+and their gates run in continuous integration over it: the `repository-checks` job's
+legacy-name and fixture-provenance steps, and the `web` job's criterion-22 routing-literal
+and criterion-23 platform-only steps, whose scans now cover every module's web package. Each
+gate plants violations in a self-test on every run, so it cannot pass by scanning nothing.
+None of the three has a row yet, because adding one widens the guard's expected set and each
+row needs a captured mutation. Criterion 34's also has a constraint of its own: this file is
+inside the legacy-name scan, so a fenced hunk that plants a legacy name would itself fail the
+gate. Do not add a row for one of those on the strength of a test that happens to pass; the
+guard's per-file completeness check is what keeps the set exact, and widening the set is a
+decision, not a fix.
 
 **No row is `partial` any more.** Criterion 24 was seeded `partial` because its interface
 half belonged to run 1a3; that run shipped the interface contributions and promoted the row,
