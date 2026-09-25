@@ -199,7 +199,7 @@ Version 1 validates and compiles version-1 themes only.
 
 - Theme selection (a settings key under the operator policy floor), importing a user theme with
   text-on-surface contrast validation, and the built-in themes on this same contract: a later UI
-  phase, tracked by a public follow-up issue. Two built-ins are planned to start, both working
+  phase, tracked as #113. Two built-ins are planned to start, both working
   names: the current rheo.stream site look, dark only, which `seed-dark` seeds, and a Novadiem
   theme with a light and a dark mode. Each mode is its own theme file on contract v1; grouping the
   pair as one theme behind a user-facing switch is later registry work, not a contract change.

@@ -19,7 +19,8 @@ None of the three has a row yet, because adding one widens the guard's expected 
 row needs a captured mutation. Criterion 34's also has a constraint of its own: this file is
 inside the legacy-name scan, so a fenced hunk that plants a legacy name would itself fail the
 gate. The other route is to mutate the scanner itself so its self-test goes red, and that
-needs a maintainer's go-ahead before anyone edits a gate script. Do not add a row for one of those on the strength of a test that happens to pass; the
+needs a maintainer's go-ahead before anyone edits a gate script. The rows are tracked as
+#120. Do not add a row for one of those on the strength of a test that happens to pass; the
 guard's per-file completeness check is what keeps the set exact, and widening the set is a
 decision, not a fix.
 
