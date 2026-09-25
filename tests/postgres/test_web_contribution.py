@@ -70,6 +70,12 @@ _ROUTE_LINE: Final = re.compile(
     r'\{ id: "([^"]+)", path: "[^"]*", '
     r"screen: recallatronWeb\.screens\.(\w+) \}"
 )
+_NAVIGATION_LINE: Final = re.compile(r'\{ id: "([^"]+)", label: ')
+_MODULE_BLOCK: Final = re.compile(
+    r'^  \{\n    id: "(?P<id>[^"]+)",\n.*?^  \},$', re.DOTALL | re.MULTILINE
+)
+"""One ``MODULES`` entry, from its opening brace to its closing ``},`` at the same
+indent. ``render()`` writes every entry this way (``web_compose._module``)."""
 
 
 @pytest.fixture(autouse=True)
@@ -108,6 +114,18 @@ def _live_pairs(status: WorkspaceStatus) -> list[tuple[str, str]]:
     return _pairs([module.model_dump(mode="json") for module in status.modules])
 
 
+def _module_block(text: str, module_id: str) -> str:
+    """``module_id``'s own ``MODULES`` entry, so a check of its contents cannot be
+    satisfied, or broken, by another discovered module's entries beside it."""
+    blocks = [
+        match.group(0)
+        for match in _MODULE_BLOCK.finditer(text)
+        if match.group("id") == module_id
+    ]
+    assert len(blocks) == 1, f"{module_id!r} has {len(blocks)} MODULES entries"
+    return blocks[0]
+
+
 # --- 1. the generated file: one artifact, checked once --------------------------------
 
 
@@ -126,15 +144,17 @@ def test_the_committed_composition_is_what_compose_renders() -> None:
 
 
 def test_the_composition_carries_recallatron_navigation_routes_and_recall() -> None:
-    """What the committed file composes for Recallatron, read off the file itself."""
+    """What the committed file composes for Recallatron, read off Recallatron's own
+    entry in it: every other discovered module's entry is ignored, so a second
+    module's navigation cannot change the comparison either way."""
     text = _GENERATED.read_text(encoding="utf-8")
-
     assert 'import * as recallatronWeb from "@rheo-stream/recallatron-web";' in text
-    assert f'id: "{RECALLATRON}",' in text
-    assert f'surface: "{RECALLATRON}",' in text
-    assert re.findall(r'\{ id: "([^"]+)", label: ', text) == _NAVIGATION_IDS
-    assert _ROUTE_LINE.findall(text) == _ROUTE_SCREENS
-    assert _RECALL_PROVIDER_LINE in text
+
+    block = _module_block(text, RECALLATRON)
+    assert f'surface: "{RECALLATRON}",' in block
+    assert _NAVIGATION_LINE.findall(block) == _NAVIGATION_IDS
+    assert _ROUTE_LINE.findall(block) == _ROUTE_SCREENS
+    assert _RECALL_PROVIDER_LINE in block
 
 
 def test_the_recall_provider_names_a_registered_read_operation(
