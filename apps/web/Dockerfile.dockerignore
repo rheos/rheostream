@@ -34,7 +34,10 @@
 **/.env.*
 **/.envrc*
 **/*.db
+**/*.db-*
 **/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3*
 **/*.log
 **/AGENTS.md
 **/AGENTS.override.md
@@ -58,6 +61,10 @@
 **/.git/**
 **/.venv
 **/.venv/**
+**/venv
+**/venv/**
+**/__pycache__
+**/__pycache__/**
 private
 **/private
 **/private/**

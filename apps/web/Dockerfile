@@ -1,3 +1,5 @@
+# Requires BuildKit: only its per-Dockerfile ignore file keeps this context to the web trees; the legacy builder would apply the root .dockerignore and `COPY modules ./modules` would pull in every Python module.
+#
 # The web shell's image. `apps/web` has never been containerized before this;
 # `make demo` still runs it on the host via `next start`. This image adds no
 # change under `apps/web`'s own source — `next.config.ts` is untouched and no

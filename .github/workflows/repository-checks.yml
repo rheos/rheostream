@@ -83,10 +83,11 @@ jobs:
       # shipped flagship image.
       - name: Dense retrieval is selectable, offline, in the flagship image (AC-10)
         run: |
+          # --no-sync tests the venv as built: plain `uv run` re-syncs and needs PyPI once uv's index cache ages (#152).
           docker run --rm --network none \
             -e RHEO__modules__installed=recallatron \
             -e RHEO__recallatron__embedding__provider=local \
-            rheo-flagship-core uv run python -c "
+            rheo-flagship-core uv run --no-sync python -c "
           from rheo_core.modules import register_module_settings
           from rheo_recallatron.embedding.local import LocalEmbeddingProvider
           from rheo_recallatron.embedding.registry import configured_provider_name, resolve_provider
