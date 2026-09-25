@@ -52,11 +52,11 @@ export interface SearchResultRow {
 }
 
 /**
- * What the screen says about how a search ran. It deliberately has no arm counts:
- * `recall` takes those before the permission walk, so a count can include memories
- * the caller cannot read, and on an empty result any non-zero count is exactly a
- * hidden memory. Only the strategy and whether meaning search was available reach
- * the view.
+ * What the screen says about how a search ran. It deliberately has no arm counts.
+ * `recall` once took them before the permission walk, so a count could include
+ * memories the caller cannot read (#121); it now counts returned items only, and the
+ * screen still leaves them out by choice. Only the strategy and whether meaning
+ * search was available reach the view.
  */
 export interface Provenance {
   strategy: string;

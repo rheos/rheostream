@@ -188,7 +188,10 @@ that did not run counts zero; and `dense_available`, whether a dense arm could c
 to this answer at all. The arm counts are taken after the walk, over the items alone: each
 arm's own list length before the walk includes memories the caller may not read, so a count
 of it beside an empty answer would say a hidden memory matched (#121). Those pre-walk lengths
-stay internal to the strategy. `score` is on the answering strategy's own scale and is
+stay internal to the strategy. A hidden memory is never itself counted, but under `hybrid`
+the dense arm is cut to `k × overfetch_multiplier` before the walk, so enough hidden rows
+nearer the query can push a readable item out of that arm, and it then counts under
+`lexical` alone. `score` is on the answering strategy's own scale and is
 comparable only among the items of one response: `ts_rank_cd` under `lexical`, cosine similarity under `dense`,
 and the fused sum `Σ 1 / (60 + rank)` under `hybrid`, at most `2/61`. A score compared across
 strategies, or stored and compared later, compares nothing. The candidate SQL and the link

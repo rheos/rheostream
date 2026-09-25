@@ -1641,6 +1641,9 @@ def test_recall_runs_the_strategy_the_registry_resolves(
 
     assert [request.query for request in spy.requests] == ["apples"]
     assert spy.requests[0].limit == CANDIDATE_SCAN_LIMIT
+    # ``k`` sets the hybrid dense arm's width; AC 9 reads that width from the
+    # strategy directly, so this is what proves ``recall()`` passes it through.
+    assert spy.requests[0].k == RECALL_K_DEFAULT
     assert [item.title for item in result.items] == ["pears"]
     assert [item.strategy for item in result.items] == ["spy"]
     assert result.items[0].score == 0.5

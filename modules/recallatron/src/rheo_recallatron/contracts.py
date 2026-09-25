@@ -332,7 +332,10 @@ class ArmCounts(Strict):
     returned items, counts zero.
 
     Counted after the permission walk, over the items only, so a memory the caller
-    may not read never changes either number. An empty answer always counts zero."""
+    may not read is never itself counted, and an empty answer always counts zero. One
+    residual: the hybrid dense arm is cut to ``k`` times the over-fetch multiplier
+    before the walk, so enough hidden rows nearer the query can push a readable item
+    out of that arm's list, and it then counts under lexical alone."""
 
     lexical: int
     dense: int

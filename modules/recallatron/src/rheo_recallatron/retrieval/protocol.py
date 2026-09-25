@@ -55,7 +55,7 @@ class Hit:
     ``arms`` names the arms whose ranked list held this hit: one for a single-arm
     strategy, one or both after fusion. ``recall()`` counts the caller-facing
     ``provenance.arms`` from this set over the items it returns, and never from
-    :class:`ArmProvenance`, so a hit the walk drops changes no count a caller sees.
+    :class:`ArmProvenance`, so a hit the walk drops is never counted.
     """
 
     ref: UUID
