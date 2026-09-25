@@ -346,7 +346,7 @@ def remove_mention(conn: Connection, memory_id: UUID, entity_id: UUID) -> bool:
     return True
 
 
-# --- the two service-only read operations ---------------------------------------------
+# --- the two read operations with no MCP tool -----------------------------------------
 
 
 def _denied(denied: Denied) -> OperationRefused:
@@ -443,9 +443,9 @@ ENTITY_GET_DECLARATION: Final = OperationDeclaration(
     idempotency=Idempotency.NONE,
     audit=None,
 )
-"""Service-only in release one: § A10's table marks both with no MCP tool, and the
-tool run registers none for them. They are operations a service or the interface can
-call, not a surface a model can reach."""
+"""No MCP tool in release one: § A10's table marks both with none, and the tool run
+registers none for them, so no model reaches them. They are reachable over the API by a
+token whose set holds them."""
 
 ENTITY_OPERATIONS: Final = (
     (ENTITY_LIST_DECLARATION, entity_list),

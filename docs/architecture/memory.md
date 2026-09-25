@@ -244,7 +244,7 @@ the entity's visibility follows the input checks directly, then the candidate sc
 window is the newest `min(total, 2·context + 1)` eligible members, with `target_position` null,
 `window_end` equal to `total` and `has_more` true exactly when older eligible members exist. An
 entity none of whose mentioning memories the caller may read is an empty window, not a refusal
-(up to the scan bound; see the accepted residual below).
+(up to the scan and reference bounds; see the accepted residual below).
 
 Entity visibility is decided by the same function that answers `recallatron.entity.get`, and
 always in `current` mode, whatever `include_invalidated` asks for, in both the targeted and the
@@ -264,13 +264,16 @@ carrying no target content, candidate count, eligible or hidden count, identity,
 total, bounds, `has_more` flag or partial item.
 
 > **Accepted residual: the targetless entity read.** A targetless `read` over an entity
-> container refuses `window_scan_limit` whenever more than 500 memories mention the entity and
-> pass the row-local prefilter, even when every one of those memories is unreadable to the
-> caller (for example, each is a `workspace`-audience memory whose `about` or `derived_from`
-> link the caller cannot read, which the prefilter keeps and only full eligibility removes). The
-> refusal is `window_scan_limit`'s existing fixed, content-free shape: no count, no name, no
-> title, no text, no reference. What leaks is only the fact that more than 500 mentions of this entity exist,
-> never anything about them.
+> container can refuse because of mentions the caller cannot read. There are two such
+> content-free bits. Each refusal keeps its existing fixed shape: no count, no name, no title,
+> no text, no reference, no partial content and no window metadata.
+>
+> **Bit 1: `window_scan_limit` past 500 mentions.** A targetless `read` refuses
+> `window_scan_limit` whenever more than 500 memories mention the entity and pass the row-local
+> prefilter, even when every one of those memories is unreadable to the caller (for example,
+> each is a `workspace`-audience memory whose `about` or `derived_from` link the caller cannot
+> read, which the prefilter keeps and only full eligibility removes). What leaks is only the
+> fact that more than 500 mentions of this entity exist, never anything about them.
 >
 > This differs from the ordinary `window_scan_limit` case described just above. There, the
 > refusal answers a caller who would otherwise see some readable content in a large window.
@@ -282,11 +285,29 @@ total, bounds, `has_more` flag or partial item.
 > the entity is mentioned by more than 500 memories. A targeted read cannot reach this state,
 > because its target has to be a readable member.
 >
-> This behaviour was reviewed during cold review of the built code and accepted as a maintainer
-> decision, not missed. It is not an open bug and no fix is deferred. Closing it would mean
-> fully evaluating every candidate's eligibility before the 500-row sentinel could apply, which
-> turns a bounded, fast-failing scan into an unbounded one for exactly the workspace shape the
-> sentinel exists to protect against.
+> **Bit 2: `reference_scan_limit` from invalidated mentions.** The entity's visibility is
+> decided in `current` mode only, as described above, so that check evaluates the entity's
+> current mentions and never looks at an invalidated or superseded one. A targetless read with
+> `include_invalidated = true` then takes its candidates in history mode, which adds the
+> retained invalidated and superseded mentions, and evaluates them against the same
+> request-wide budget of 4096 distinct references. A caller who sees the entity only through
+> its backing ref, and so can read none of its current mentions, can get `reference_scan_limit`
+> from those history mentions, which the visibility check never examined and which the caller
+> may not be able to read either. What leaks is only that evaluating the entity's history ran
+> past the reference budget.
+>
+> The web screens do not reach bit 2: the Browse screen never sends `include_invalidated`, so
+> its reads run in `current` mode. Neither bit is reachable through the MCP tool, which requires
+> a target. Both are reachable over the API by a token whose set holds `recallatron.memory.read`.
+>
+> Both bits were reviewed, bit 1 during cold review of the built code and bit 2 during the
+> final review of the whole change, and both were accepted as a maintainer decision, not
+> missed. Neither is an open bug and no fix is deferred. Closing bit 1 would mean fully
+> evaluating every candidate's eligibility before the 500-row sentinel could apply, which turns
+> a bounded, fast-failing scan into an unbounded one for exactly the workspace shape the
+> sentinel exists to protect against. Closing bit 2 would mean either deciding entity
+> visibility in history mode, which the `current`-mode rule above deliberately does not do, or
+> lifting the reference budget that keeps the scan bounded.
 
 **The tool requires a target; the operation does not.** The MCP tool `recallatron_read`
 validates against an input that always requires `target_ref`, so an agent's reach through the

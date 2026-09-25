@@ -9,16 +9,18 @@ nobody did.
 the two Postgres extensions its tables need, ``configuration_schema`` carries the
 module's settings keys, ``record_types`` declares the two addressable tables and
 carries the memory's own owned-delete pair, and ``operations``/``resolvers`` carry the
-read half, the write half, the two lifecycle changes, the two service-only entity
-reads, the service-only ``recallatron.memory.dedup_candidates`` read and the owner's
-long-running ``recallatron.embedding.rebuild``. ``events`` declares both ratified event
-types and ``audit_sink`` is installed, because the first ``mutate`` operation now
-exists and neither is optional for one: dispatch refuses every non-``READ`` call whose
-module has no sink. ``deletion_participants`` carries the other half of an erasure,
-``jobs`` and ``schedules`` carry the retention sweep and the daily row that enqueues it
-(``jobs`` also carries ``recallatron.embed``, the after-commit embed job a memory write
-enqueues, and ``recallatron.embedding_rebuild``, the one job the rebuild operation
-enqueues; nothing schedules either), and ``tools`` carries § A10's seven memory tools,
+read half, the write half, the two lifecycle changes, the two entity reads, the
+``recallatron.memory.dedup_candidates`` read (those three have no MCP tool, so no model
+reaches them; they are reachable over the API by a token whose set holds them) and the
+owner's long-running ``recallatron.embedding.rebuild``. ``events`` declares both
+ratified event types and ``audit_sink`` is installed, because the first ``mutate``
+operation now exists and neither is optional for one: dispatch refuses every
+non-``READ`` call whose module has no sink. ``deletion_participants`` carries the
+other half of an erasure, ``jobs`` and ``schedules`` carry the retention sweep and
+the daily row that enqueues it (``jobs`` also carries ``recallatron.embed``, the
+after-commit embed job a memory write enqueues, and ``recallatron.embedding_rebuild``,
+the one job the rebuild operation enqueues; nothing schedules either), and ``tools``
+carries § A10's seven memory tools,
 and ``export`` now carries the real exporter/importer pair with the JSON Schema that
 describes what they move. ``web`` declares the memory screens' contribution: the
 ``recallatron`` surface, four routes, three navigation entries and one search provider.
@@ -199,9 +201,10 @@ MANIFEST: Final = ModuleManifest(
     # § A10's seven, and no eighth. Six name this module's own operations; the
     # seventh names the owned-deletion coordinator, which the ratified module
     # contract permits precisely because its input restricts the reference to this
-    # module's own record type. The two entity reads stay service-only: § A10 gives
-    # them "none" in the MCP column, and a tool over them would be a second route to
-    # a vocabulary an entity is only ever reached through a readable mention.
+    # module's own record type. The two entity reads get no tool: § A10 gives them
+    # "none" in the MCP column, so no model reaches them, and a tool over them would be
+    # a second route to a vocabulary an entity is only ever reached through a readable
+    # mention. They are reachable over the API by a token whose set holds them.
     tools=TOOLS,
     # Both ratified event types, declared together because the manifest names them
     # together. ``recorded`` is published by this run's writes and by trusted

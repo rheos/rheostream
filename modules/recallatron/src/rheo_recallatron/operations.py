@@ -838,8 +838,10 @@ OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     *EMBEDDING_OPERATIONS,
 )
 """What the manifest declares: three memory reads (``recall``, ``read``, ``get``), two
-writes, the two lifecycle changes, the two service-only entity reads, the service-only
-dedup-candidate read and the owner's embedding rebuild and coverage. The record
+writes, the two lifecycle changes, the two entity reads, the dedup-candidate read and
+the owner's embedding rebuild and coverage. The entity reads and the dedup-candidate
+read have no MCP tool, so no model reaches them; they are reachable over the API by a
+token whose set holds them. The record
 resolver is declared beside this tuple on the manifest and shares the same eligibility
 function; erasure is not here at all,
 because a memory is erased through the core's own record-delete operation against the
