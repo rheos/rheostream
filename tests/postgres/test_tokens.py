@@ -84,6 +84,7 @@ READ_ONLY_OPERATIONS = frozenset(
         "core.audit.list",
         "core.operation.get",
         "core.operation.list",
+        "core.work.failure_summary",
         "core.work.failures",
         "core.workspace.digest",
         "core.workspace.status",
@@ -94,9 +95,10 @@ READ_ONLY_OPERATIONS = frozenset(
 
 0c2's C4 adds ``core.operation.get`` and ``core.operation.list`` and 0c2's C5 adds
 ``core.audit.list``; all three are ``READ``, so the ``read_only`` expansion picks them
-up on its own. ``core.operation.resolve`` is ``MUTATE`` and is correctly absent — do
-not add it, and if it ever appears here that is the defect this assertion exists to
-catch.
+up on its own, and issue #131's ``core.work.failure_summary`` is ``READ`` too.
+``core.operation.resolve`` is ``MUTATE`` and is correctly absent, as are #131's
+``core.work.retry``, ``.skip`` and ``.replay`` — do not add them, and if one ever
+appears here that is the defect this assertion exists to catch.
 
 **A literal, never a value derived from the registry.** Derived, this set would equal
 whatever the registry happened to hold and the assertion could not fail: an operation

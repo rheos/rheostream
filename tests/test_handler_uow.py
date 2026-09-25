@@ -131,6 +131,7 @@ def test_the_view_adds_nothing_to_the_pinned_unit_of_work_surface() -> None:
         "_operation_id",
         "_consumers",
         "_scheduled_execution",
+        "_due_mark_requested",
     )
     assert issubclass(HandlerUnitOfWork, UnitOfWork)
     assert {name for name in dir(UnitOfWork) if not name.startswith("_")} == {

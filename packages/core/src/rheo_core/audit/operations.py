@@ -35,6 +35,7 @@ from rheo_core.audit.tool_telemetry import (
     telemetry_horizon,
 )
 from rheo_core.storage.backend import UnitOfWork
+from rheo_core.tokens.policy import PERSON_HELD_TOKEN_KINDS
 
 if TYPE_CHECKING:  # pragma: no cover - see ``_deletions`` on why this is deferred
     from rheo_core.deletion.records import DeletionRecordRow
@@ -63,16 +64,6 @@ owner/operator-only ``audit.list`` opt-in ``deletions`` collection" — and thos
 are the closure size every other surface deliberately withholds, so the gate is at the
 point of disclosure here for the reason :data:`TELEMETRY_ROLES` gives: an operation
 whose own roles widen later must not widen this with them."""
-
-MODEL_HELD_TOKEN_KINDS: Final = frozenset({"mcp", "runtime"})
-"""Token kinds a model holds, which may not open either opt-in collection (#127).
-
-An ``mcp`` token is made for an MCP client and a ``runtime`` token is handed to one
-model run; both put this operation within a model's reach, the first on the ``api``
-surface as well as the ``mcp`` one, since the ``api`` surface accepts ``mcp`` tokens.
-``audit_list``, the tool, declares ``limit`` only, but a narrowed tool schema binds
-the tool call and nothing else, so the rule lives here, in the operation, where every
-surface meets it. A ``cli`` token and a person's session keep both opt-ins."""
 
 # See ``rheo_core.operations.core_ops`` for why ``ignore`` (the default) is stated.
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
@@ -342,12 +333,20 @@ def _telemetry(
 def _refuse_model_held_opt_ins(
     ctx: WorkspaceContext, model_input: AuditListInput
 ) -> None:
-    """Refuse ``operation_not_permitted`` when a model-held token asks for an opt-in.
+    """Refuse ``operation_not_permitted`` when a token that is not a person's asks for
+    an opt-in.
+
+    **An allow-list** (``tokens.policy.PERSON_HELD_TOKEN_KINDS``, which is ``cli``):
+    an ``mcp`` or ``runtime`` token is put within a model's reach, the first on the
+    ``api`` surface as well as the ``mcp`` one, and a kind added later is refused
+    until someone decides a person holds it. It began as a deny-list of the two model
+    kinds (#127), which would have admitted any third kind by default.
 
     The context names a token actor by id and not by kind, so the kind is read from
     the token's control-plane row, and only when an opt-in was actually asked for: a
     plain listing costs no extra read. A token row that is gone by now (a run's token
-    is deleted when the run ends) is treated as model-held, so the rule fails closed.
+    is deleted when the run ends) has no kind and is refused, so the rule fails closed.
+    A session and the operator CLI are not tokens and keep both opt-ins.
 
     Refused rather than answered with ``None``: ``None`` already means "not asked or
     not owner/operator", and a caller that is an owner's model should be told the
@@ -371,7 +370,7 @@ def _refuse_model_held_opt_ins(
         with get_backend().control_engine.connect() as connection:
             row = get_access_token(connection, ctx.actor.id)
         kind = None if row is None else row.kind
-    if kind is None or kind in MODEL_HELD_TOKEN_KINDS:
+    if kind not in PERSON_HELD_TOKEN_KINDS:
         raise OperationRefused(
             OPERATION_NOT_PERMITTED,
             "include_tool_telemetry and include_deletions are not available to an "

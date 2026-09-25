@@ -109,7 +109,9 @@ handler, so such a job waited for ``record_visit``'s floor —
 ``work.due_reconcile_seconds``, 900 s by default — to bring the workspace back round,
 and a long-running operation could sit that long before it started.
 :func:`_mark_workspace_due` closes that: one hook, on the success path, for every
-``long_running`` dispatch and no other, calling ``events/publish.py``'s
+``long_running`` dispatch and for any other whose handler asked for it through
+``HandlerUnitOfWork.request_due_mark`` (``core.work.retry`` and ``.replay``, which put
+deliveries back ``pending`` without a job), calling ``events/publish.py``'s
 ``mark_due_after_publish`` rather than a second function of the same shape. That
 placement is what makes it one mechanism instead of one per caller —
 ``tests/harness/registry.py``'s ``harness.note.schedule`` is the pattern a future
@@ -1081,11 +1083,10 @@ def dispatch(
             # caller's own consumer registry so a publishing handler reaches the one
             # every other caller reaches; ending the transaction is this function's
             # job, on the real ``uow``.
-            output = operation.handler(
-                ctx,
-                HandlerUnitOfWork(uow, operation_id=operation_id, consumers=consumers),
-                model_input,
+            view = HandlerUnitOfWork(
+                uow, operation_id=operation_id, consumers=consumers
             )
+            output = operation.handler(ctx, view, model_input)
             if not isinstance(output, declaration.output):
                 return _output_invalid(
                     ctx,
@@ -1183,13 +1184,21 @@ def dispatch(
                 error=OperationError(HANDLER_FAILED, type(exc).__name__),
                 operation_id=operation_id,
             )
+    # A handler that is not ``long_running`` but still made work due
+    # (``core.work.retry`` and ``.replay`` put deliveries back ``pending``) asked for
+    # the due mark through ``view.request_due_mark()``. It is written here, past the
+    # ``with uow:`` block, for the reason the ``long_running`` mark below is: after the
+    # commit, never before it. The ``operation_id is None`` half keeps a
+    # ``long_running`` call to the one mark below.
+    if operation_id is None and view.due_mark_requested:
+        _mark_workspace_due(ctx)
     # ``pending`` for a ``long_running`` declaration, and this function writes no
     # other state for one: the work runs as a job and the worker that finishes that
     # job is the only thing that moves the record out of ``pending``. Returning
     # ``succeeded`` here would claim the work was done at the moment it was merely
     # scheduled.
     #
-    # The due-work mark is written here and nowhere else: past the ``with uow:`` block,
+    # The ``long_running`` due-work mark is written here: past the ``with uow:`` block,
     # so the commit has happened and the job the handler queued is visible to any other
     # connection, and only on this branch, because ``operation_id is not None`` is
     # exactly "this was a ``long_running`` dispatch". Every path that reaches this line

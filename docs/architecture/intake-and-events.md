@@ -339,11 +339,25 @@ RETURNING d.event_id, d.consumer_id;
 A `failed` head therefore blocks every later delivery for its consumer and subject until a person
 acts: `core.work.retry(delivery)` resets attempts, or `core.work.skip(delivery)` (mutate, owner or
 operator, audited, with a note) sets it `skipped` and releases the queue. Order is never broken
-silently; `core.work.failures` is to show the blocked count behind each failed head. Across
-subjects there is no ordering promise. **Not built yet:** `retry` and `skip` have no handler
-([module contract](module-contract.md#operations-tools-events)), and `core.work.failures`
-lists each failed delivery (`event_id`, `consumer_id`, `attempts`, `last_error`) with no
-blocked count, so today nothing moves a delivery out of `failed` and its queue stays blocked.
+silently; `core.work.failures` lists each failed delivery (`event_id`, `consumer_id`,
+`attempts`, `last_error`, `completed_at`) with `blocked_count`, the later deliveries of the
+same consumer and subject it holds back. Across subjects there is no ordering promise.
+
+Both operations take the delivery's key, `(event_id, consumer_id)`, and act only on a `failed`
+row: anything else is refused `delivery_state` naming the state it is in, and an unknown pair
+is `not_found`. A `pending` delivery waiting behind a failed head is not skippable, because
+skipping the head is what releases it. **Retry** sets the row `pending` with `attempts = 0` and
+`next_attempt_at` now, keeps `last_error` until an attempt succeeds, and the whole
+`work.max_attempts` budget applies again. **Skip** requires a non-empty `note` and sets the row
+`skipped`. `event_delivery` has no note column, so `last_error` becomes `skipped: <note>`
+followed by the error the row failed with, the deviation `core.operation.resolve` makes for
+its own note. The row is the note's only readable home: the audit row keeps a digest of the
+request, which can confirm a note but not recover one, so replay (below) keeps `last_error`
+on the rows it resets. Neither names an audit `subject_ref`, because a delivery is not a
+record type. Both, and replay below, are refused to every token kind but `cli` (an
+allow-list: `mcp`, `runtime` and any later kind), and each has the dispatcher mark the
+workspace due after its commit so the worker takes the released rows on its next pass
+rather than at the reconcile floor.
 
 **Exactly-once effect.** A consumer handler runs inside a `UnitOfWork`; the worker inserts
 `consumer_processed` in that same transaction and commits. A redelivery after a crash hits the
@@ -353,15 +367,16 @@ not left to each handler.
 
 **Retry.** Attempts back off as `5s, 20s, 80s, 320s, 1280s` then cap at 3600s, with jitter, for
 `work.max_attempts` (default 8, about two and a half hours end to end). After the last attempt the delivery is `failed`
-with its error and appears in `core.work.failures` (criterion 12). An operator or owner is to
-be able to `retry` a failed delivery, which resets attempts (not built yet, as above).
+with its error and appears in `core.work.failures` (criterion 12). An operator or owner can
+`retry` a failed delivery, which resets attempts, as above. `retry` covers deliveries only; a
+failed job has no retry operation, and its way out is enqueuing the work again.
 
 **A failed head is surfaced, not merely recorded.** Head-of-line blocking is deliberate — order is
 never broken silently — but every route out of it needs a person, and a design where the only
 route *in* is a screen nobody has opened is a queue that stops for two and a half hours and then
 stays stopped. So the failure is pushed to the two places a person already is (neither is
-built yet: `core.work.failure_summary`, its cache setting and the banner do not exist, and
-the connection half waits on Leads):
+built yet: `core.work.failure_summary` is registered, but its cache setting and the banner
+do not exist, and the connection half waits on Leads):
 
 - **The shell.** `core.work.failure_summary` (read class, roles `owner`, `operator`) returns
   `{ failed_count, blocked_count, oldest_failed_at }` for the session's active workspace, and the
@@ -369,7 +384,10 @@ the connection half waits on Leads):
   `failed_count` is above zero, linking to the work-failures view. It is the shell's own surface,
   not a module contribution, so it is present in a workspace with no module enabled and it covers
   every consumer rather than only Leads. One read per navigation, cached for
-  `work.failure_summary_cache_seconds` (default 30).
+  `work.failure_summary_cache_seconds` (default 30). The operation is built: its three counts
+  are over deliveries, it adds `unresolved_count` (below) as a fourth field rather than
+  summing it in, and it counts no failed job, since a failed job blocks nothing. It is not
+  cached. The cache is the shell's, so the setting arrives with the banner.
 - **The connection.** `leads.connection.health` (FR 38) additionally reports
   `failed_delivery_count`, obtained by calling `core.work.failures` filtered to the receipts of
   that connection at read time. It is computed, not stored: there is no new column, no new
@@ -391,19 +409,54 @@ terminal record state that is an open item for a person, to be listed by `core.w
 `core.operation.resolve` call.
 
 **Replay.** `core.work.replay(consumer_id, from_position)` re-creates `pending` deliveries for a
-consumer from the outbox. It is not built yet; `replay_safe` is declared on every subscription
-and nothing reads it. Replay is permitted only for consumers whose subscription declares
+consumer from the outbox. Replay is permitted only for consumers whose subscription declares
 `replay_safe = true` (read-model builders, index maintainers). Consumers that cause external
 effects or create domain records declare `replay_safe = false` and the operation refuses to target
-them. Replay therefore rebuilds derived state and never resends anything (idea document).
+them (`replay_unsafe`). Replay therefore rebuilds derived state and never resends anything (idea
+document).
+
+It covers the retained outbox rows of the subscription's event type at or after
+`from_position`. An existing delivery that is `delivered`, `failed` or `skipped` is reset to
+`pending` with `attempts = 0` and its `last_error` kept (a skipped row's note with it) until
+an attempt succeeds; a `pending` one is left as it is; a retained event with no row for the
+consumer (published before its module was enabled, or before it existed) gets a new one.
+Rows are never duplicated, since the primary key allows one per event and consumer. The
+consumer's `consumer_processed` rows for every in-range event of its type are deleted in the
+same transaction, `pending` rows' included, or the worker would find them and mark a row
+`delivered` without running the handler. Each row keeps its event's position and subject, so
+the lease query delivers them in order exactly as the first time. It also refuses
+`consumer_unknown`, `consumer_not_enabled` (the consumer's module is not enabled here),
+`consumers_missing` (the dispatch carries no consumer registry) and `delivery_in_flight` (a
+delivery of the consumer at or after the position is leased).
+
+**Replay locks the delivery table.** Its first statement is `LOCK TABLE core.event_delivery
+IN SHARE ROW EXCLUSIVE MODE`, held until it commits. A row lock would not be enough: it
+covers only rows that exist, and a publish committing while the replay is open could fan out
+a later event for a subject whose earlier row the replay has reset but not yet committed. A
+worker would see the earlier row still `delivered`, lease the later one, and a second worker
+would then lease the earlier one after the commit: two in flight on one subject, applied out
+of order. The table lock blocks fan-out inserts and every lease, requeue and finish (all
+row-exclusive writes) while leaving reads alone, so the in-flight check and the writes see a
+table nothing else is changing. A worker blocked on it re-reads after the commit. The cost is
+that deliveries across the whole workspace pause for the length of one replay transaction,
+which is an operator's act and bounded by the retained outbox.
 
 **Retention.** Outbox rows and their deliveries are specified to be kept for
 `work.outbox_retention_days` (package default 30, floor `min`), after which older rows
 whose deliveries are all terminal would be removed. **That outbox sweep is unimplemented
 in release one** — no job, including `core.retention_sweep`, deletes those rows.
 Replay reaches back only as far as retained rows, and `replay` refuses a
-`from_position` older than the oldest retained row rather than replaying a gap. The outbox is
-outside the R5 cascade because of the rule below, not despite it.
+`from_position` older than the oldest retained row (`replay_gap`, naming that row's
+position) rather than replaying a gap. An empty outbox is refused the same way.
+
+**That check is sound only while nothing deletes outbox rows.** The specified sweep removes a
+row only once its deliveries are all terminal, so it would keep an old event whose delivery
+is stuck and delete newer ones around it: the oldest retained position would stay low while
+holes open above it, and `from_position >= min(position)` would let a replay start below a
+hole. When the sweep ships it must record the highest position it has deleted, and replay
+must gate on that recorded position rather than on the smallest one still present.
+
+The outbox is outside the R5 cascade because of the rule below, not despite it.
 
 **Cross-module reach, and what an event may carry.** An event carries references and
 non-personal facts, never a copy of a record and never a name, an address, a contact value, or

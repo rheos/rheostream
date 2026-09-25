@@ -1,6 +1,7 @@
 """Every read and write against ``core.event_delivery`` and
 ``core.consumer_processed``: the ordered lease, the three finishes, the requeue, the
-dedup ledger, and the two queries a deliverer and a failure list need.
+dedup ledger, the three writes a person makes (retry, skip, replay), and the reads a
+deliverer, the failure list and the failure summary need.
 
 Shaped after ``rheo_core.work.jobs`` function for function. Each function takes the
 caller's ``Connection`` and runs inside the caller's transaction, and **none of them
@@ -34,10 +35,12 @@ the *outcome* of a row its new owner now holds.
 Only the requeue branch of that race would be self-healing without the predicate — a
 row flipped back to ``pending`` is re-leased, the ledger is found, the handler is not
 re-run, and the extra attempt is absorbed. **The fail branch is not.** ``failed`` is not
-in :func:`lease_delivery`'s candidate set and nothing in this module moves a row out of
-it, so a lapsed owner's :func:`fail_delivery` would strand its whole
+in :func:`lease_delivery`'s candidate set, and the only writes that move a row out of
+it are a person's (:func:`retry_delivery`, :func:`skip_delivery` and
+:func:`replay_deliveries`, reached through ``core.work.retry``, ``.skip`` and
+``.replay``), so a lapsed owner's :func:`fail_delivery` would strand its whole
 ``(consumer_id, subject_ref)`` queue behind a head that was in fact processed exactly
-once — a permanent wrong state, not a window something later closes.
+once, until someone noticed and acted.
 
 Every write is predicated and returns whether it applied, exactly as ``jobs.py:40-46``
 requires: an unpredicated ``UPDATE`` here would move a delivery out from under the
@@ -47,12 +50,13 @@ worker that is running it.
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import (
     Connection,
     and_,
+    delete,
     func,
     insert,
     literal,
@@ -61,6 +65,7 @@ from sqlalchemy import (
     tuple_,
     update,
 )
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.sql.elements import ColumnElement
 
 from rheo_core.storage import work_tables as t
@@ -105,8 +110,9 @@ class LeasedDelivery:
 class FailedDeliveryRow:
     """One row of the delivery failure list, as the database holds it.
 
-    Five fields: the delivery's identity, its attempts, its error and its completion
-    instant. Deliberately **not** a field-for-field copy of
+    Six fields: the delivery's identity, its attempts, its error, its completion
+    instant, and how many later deliveries of the same consumer and subject it holds
+    back. Deliberately **not** a field-for-field copy of
     ``work.jobs.FailedJobRow`` — ``event_delivery`` has no ``max_attempts`` column,
     because a delivery's budget is the ``work.max_attempts`` setting rather than a
     per-row value.
@@ -117,6 +123,7 @@ class FailedDeliveryRow:
     attempts: int
     last_error: str | None
     completed_at: datetime | None
+    blocked_count: int
 
 
 def _row(event_id: UUID, consumer_id: str) -> ColumnElement[bool]:
@@ -308,11 +315,11 @@ def fail_delivery(
     stays behind until a person acts, and a deleted row would release the queue
     silently.
 
-    **The write :func:`_held` matters most for.** ``failed`` is the one state this
-    module never moves a row out of, and a failed head blocks every later delivery for
-    its consumer and subject. A worker whose lease lapsed mid-handler writing this
-    against the row its successor now holds would strand that queue permanently, on an
-    event that was in fact processed exactly once.
+    **The write :func:`_held` matters most for.** ``failed`` is the one state no worker
+    moves a row out of, and a failed head blocks every later delivery for its consumer
+    and subject until a person retries or skips it. A worker whose lease lapsed
+    mid-handler writing this against the row its successor now holds would strand that
+    queue behind an event that was in fact processed exactly once.
     """
     return _apply(
         conn,
@@ -325,8 +332,56 @@ def fail_delivery(
     )
 
 
-def skip_delivery(
+def retry_delivery(
     conn: Connection, *, event_id: UUID, consumer_id: str, now: datetime
+) -> bool:
+    """Put a ``failed`` delivery back ``pending`` with a fresh budget. Returns whether
+    it applied.
+
+    ``core.work.retry``'s write. ``attempts`` goes back to zero, which is what "resets
+    attempts" means (``intake-and-events.md`` § Retry): the next lease counts attempt
+    one, the backoff schedule starts again at its first step, and the pre-handler
+    budget gate in ``work/loop.py`` grants the whole ``work.max_attempts`` again.
+    ``next_attempt_at`` is ``now``, so the row is a lease candidate on the next visit
+    rather than after a backoff a person has already waited out.
+
+    **``last_error`` is kept.** It is the only evidence of why the row failed, and the
+    first attempt that succeeds clears it (:func:`mark_delivered`); a retry that fails
+    again overwrites it. ``completed_at`` is cleared because the row is no longer
+    terminal.
+
+    **Predicated on ``failed``**, for :func:`skip_delivery`'s reason: a ``pending`` or
+    ``leased`` row is already on its way, and resetting a ``leased`` row's attempts
+    would feed the worker running it a count that no longer matches its lease. A
+    ``delivered`` or ``skipped`` row is settled, and re-running one is replay's job,
+    which has its own gate.
+    """
+    return _apply(
+        conn,
+        and_(_row(event_id, consumer_id), t.event_delivery.c.state == FAILED),
+        state=PENDING,
+        attempts=0,
+        next_attempt_at=now,
+        lease_owner=None,
+        lease_until=None,
+        completed_at=None,
+    )
+
+
+SKIP_NOTE_PREFIX: Final = "skipped: "
+"""What a skipped row's ``last_error`` starts with; the person's note follows."""
+
+SKIP_PREVIOUS_ERROR: Final = "\nlast error: "
+"""The separator before the error the row failed with, when it had one."""
+
+
+def skip_delivery(
+    conn: Connection,
+    *,
+    event_id: UUID,
+    consumer_id: str,
+    now: datetime,
+    note: str | None = None,
 ) -> bool:
     """Release a ``failed`` head, setting it ``skipped``. Returns whether it applied.
 
@@ -344,22 +399,239 @@ def skip_delivery(
     than a worker — there is no lease to hold, and the ``failed`` predicate is what
     stands in its place.
 
-    ``event_delivery`` has no ``note`` column, so this takes none: the "with a note"
-    language in ``intake-and-events.md`` describes the audit trail of the future
-    operator-facing operation, not this repository row.
-
-    **This ships with no caller.** The operator-facing operation that releases a
-    blocked head is deferred to a later run; the function is where it belongs and is
-    registered as callerless by design rather than smuggled in.
+    **The note lands in ``last_error``, a recorded deviation of the same shape as
+    ``operations/records.py``'s ``resolve``.** ``event_delivery`` has no ``note``
+    column, and a migration for one is more than this write needs. So the column
+    becomes ``skipped: <note>`` followed by the error the row failed with, which is
+    kept rather than overwritten: a skipped row answers both "why did it fail" and "why
+    was it let go". **The row is the note's only readable home.** ``core.work.skip``'s
+    audit row keeps a digest of the request, which can confirm a note someone quotes
+    but cannot recover one, which is why :func:`replay_deliveries` keeps
+    ``last_error`` on the rows it resets. ``note`` is optional here only so the
+    repository tests can skip without one; the operation always passes it.
     """
+    values: dict[str, object] = {
+        "state": SKIPPED,
+        "completed_at": now,
+        "lease_owner": None,
+        "lease_until": None,
+    }
+    if note is not None:
+        values["last_error"] = func.concat(
+            literal(SKIP_NOTE_PREFIX + note),
+            func.coalesce(
+                literal(SKIP_PREVIOUS_ERROR) + t.event_delivery.c.last_error,
+                literal(""),
+            ),
+        )
     return _apply(
         conn,
         and_(_row(event_id, consumer_id), t.event_delivery.c.state == FAILED),
-        state=SKIPPED,
-        completed_at=now,
-        lease_owner=None,
-        lease_until=None,
+        **values,
     )
+
+
+def delivery_state(conn: Connection, *, event_id: UUID, consumer_id: str) -> str | None:
+    """The delivery's state, or ``None`` when there is no such row.
+
+    What lets ``core.work.retry`` and ``.skip`` tell "no such delivery" from "not
+    failed" in their refusals. The predicated write is still what makes the refusal
+    true; this read only names it.
+    """
+    value = conn.execute(
+        select(t.event_delivery.c.state).where(_row(event_id, consumer_id))
+    ).scalar_one_or_none()
+    return None if value is None else str(value)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayCounts:
+    """What :func:`replay_deliveries` did: rows put back, and rows made."""
+
+    reset: int
+    created: int
+
+
+def oldest_retained_position(conn: Connection) -> int | None:
+    """The smallest ``position`` still in ``core.outbox_event``, or ``None`` when the
+    outbox is empty.
+
+    Replay's horizon. Taken over every event type, because retention removes rows by
+    age and not by type, so the oldest row of any type is the point before which the
+    outbox can no longer be trusted to be whole.
+    """
+    value = conn.execute(select(func.min(t.outbox_event.c.position))).scalar_one()
+    return None if value is None else int(value)
+
+
+REPLAY_LOCK: Final = "LOCK TABLE core.event_delivery IN SHARE ROW EXCLUSIVE MODE"
+"""The table lock a replay takes before it reads or writes a delivery row."""
+
+
+def lock_for_replay(
+    conn: Connection, *, consumer_id: str, from_position: int
+) -> UUID | None:
+    """Lock ``core.event_delivery`` for the rest of the caller's transaction, then name
+    a delivery of ``consumer_id`` at or after ``from_position`` that is ``leased``, or
+    ``None`` when none is.
+
+    **A table lock, because a row lock covers only rows that already exist.** With row
+    locks alone, a publish that commits while the replay is open fans out a *later*
+    event for a subject whose earlier row the replay has reset but not committed; a
+    worker still sees that earlier row ``delivered``, leases the later one, and after
+    the replay commits a second worker leases the earlier one. Two deliveries of one
+    subject are then in flight and the older event is applied after the newer, which
+    is the one thing the ordering rule forbids.
+
+    ``SHARE ROW EXCLUSIVE`` conflicts with ``ROW EXCLUSIVE``, the lock every
+    ``INSERT``, ``UPDATE`` and ``DELETE`` takes, and with itself, and with nothing a
+    plain read takes. So until the replay commits: no fan-out insert, no lease, no
+    requeue and no finish lands anywhere in the table, a second replay waits, and
+    readers (the failure list, the summary) carry on. A blocked worker's statement
+    takes its snapshot after the lock is granted, so it sees the replay's rows. It
+    must be the transaction's first touch of the table, or a writer already holding
+    a row lock could deadlock against it; ``core.work.replay`` takes it first.
+
+    The cost is a workspace-wide pause of deliveries for one replay transaction, which
+    is an operator's act bounded by the retained outbox.
+
+    Once the lock is held nothing can lease a row, so the in-flight check below stays
+    true until the commit.
+    """
+    conn.exec_driver_sql(REPLAY_LOCK)
+    found = conn.execute(
+        select(t.event_delivery.c.event_id)
+        .where(
+            t.event_delivery.c.consumer_id == consumer_id,
+            t.event_delivery.c.position >= from_position,
+            t.event_delivery.c.state == LEASED,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    return None if found is None else UUID(str(found))
+
+
+def replay_deliveries(
+    conn: Connection,
+    *,
+    consumer_id: str,
+    event_type: str,
+    from_position: int,
+    now: datetime,
+) -> ReplayCounts:
+    """Re-create ``pending`` deliveries for one consumer from the outbox, from
+    ``from_position`` on. Does not commit.
+
+    ``core.work.replay``'s write; the gates (``replay_safe``, the enabled module, the
+    retention horizon, no lease in flight) are the operation's, and this function
+    assumes them and assumes the caller holds :func:`lock_for_replay`'s table lock.
+
+    **Existing rows are reset, never duplicated.** The primary key is
+    ``(event_id, consumer_id)``, so one event has at most one delivery per consumer
+    and a second row is not a thing that can exist. A ``delivered``, ``failed`` or
+    ``skipped`` row for a retained event of ``event_type`` at or after the position is
+    put back ``pending`` with ``attempts = 0`` and ``next_attempt_at = now``. A
+    ``pending`` row is left alone, because it is already going to be delivered, and a
+    ``leased`` one is the caller's refusal. A retained event with no row for this
+    consumer at all (it was published before the consumer's module was enabled, or
+    before the consumer existed) gets a new one, which is how a new read model is
+    built from history. ``ON CONFLICT DO NOTHING`` keeps a publish that fans out to
+    the same consumer concurrently from turning into a conflict.
+
+    **``last_error`` is kept on every reset row.** For a formerly ``skipped`` row it is
+    the person's note, and the row is its only readable home (the audit row keeps a
+    digest, which can confirm a note but not recover one); the first attempt that
+    succeeds clears it, as :func:`mark_delivered` always does.
+
+    **The dedup ledger rows for every in-range event of ``event_type`` are deleted**,
+    for this consumer only and in the same transaction: not only for the rows reset or
+    created, but for ``pending`` ones too, which a requeue after a lost finish can
+    leave with a ledger row. Without that the worker finds ``consumer_processed`` for
+    such a row, marks it ``delivered`` without running the handler, and the rebuild
+    silently skips it. Deleting them is what "replay" means for a
+    consumer that declared itself ``replay_safe``: its handler is run again, on
+    purpose, and it has promised that doing so only rebuilds derived state.
+
+    **Order is the lease query's, unchanged.** Each row keeps the event's own
+    ``position`` and ``subject_ref``, so within one subject the reset rows are leased
+    oldest first and a later row waits behind an earlier one exactly as it did the
+    first time.
+    """
+    settled_or_failed = (DELIVERED, FAILED, SKIPPED)
+    replayable = select(t.outbox_event.c.id).where(
+        t.outbox_event.c.type == event_type,
+        t.outbox_event.c.position >= from_position,
+    )
+    reset_ids = [
+        row.event_id
+        for row in conn.execute(
+            update(t.event_delivery)
+            .where(
+                t.event_delivery.c.consumer_id == consumer_id,
+                t.event_delivery.c.position >= from_position,
+                t.event_delivery.c.state.in_(settled_or_failed),
+                t.event_delivery.c.event_id.in_(replayable),
+            )
+            .values(
+                state=PENDING,
+                attempts=0,
+                next_attempt_at=now,
+                lease_owner=None,
+                lease_until=None,
+                completed_at=None,
+            )
+            .returning(t.event_delivery.c.event_id)
+        )
+    ]
+    missing = (
+        select(
+            t.outbox_event.c.id,
+            literal(consumer_id),
+            t.outbox_event.c.subject_ref,
+            t.outbox_event.c.position,
+            literal(PENDING),
+            literal(0),
+            literal(now),
+        )
+        .where(
+            t.outbox_event.c.type == event_type,
+            t.outbox_event.c.position >= from_position,
+            ~select(literal(1))
+            .where(
+                t.event_delivery.c.event_id == t.outbox_event.c.id,
+                t.event_delivery.c.consumer_id == consumer_id,
+            )
+            .exists(),
+        )
+        .order_by(t.outbox_event.c.position)
+    )
+    created_ids = [
+        row.event_id
+        for row in conn.execute(
+            pg_insert(t.event_delivery)
+            .from_select(
+                [
+                    "event_id",
+                    "consumer_id",
+                    "subject_ref",
+                    "position",
+                    "state",
+                    "attempts",
+                    "next_attempt_at",
+                ],
+                missing,
+            )
+            .on_conflict_do_nothing(index_elements=["event_id", "consumer_id"])
+            .returning(t.event_delivery.c.event_id)
+        )
+    ]
+    conn.execute(
+        delete(t.consumer_processed).where(
+            t.consumer_processed.c.consumer_id == consumer_id,
+            t.consumer_processed.c.event_id.in_(replayable),
+        )
+    )
+    return ReplayCounts(reset=len(reset_ids), created=len(created_ids))
 
 
 def record_processed(
@@ -403,21 +675,51 @@ def already_processed(conn: Connection, *, consumer_id: str, event_id: UUID) -> 
     )
 
 
+def _blocked_behind(head: Any) -> ColumnElement[bool]:
+    """Whether a delivery row is held back by ``head``, a ``failed`` row of the same
+    consumer and subject that comes before it.
+
+    Everything later in the queue that is not itself settled or failed: a row behind
+    a failed head is never leased, so it can only be ``pending`` (or ``leased`` from a
+    lease taken before the head failed, which the count still owes a person).
+    """
+    behind = t.event_delivery
+    return and_(
+        behind.c.consumer_id == head.c.consumer_id,
+        behind.c.subject_ref == head.c.subject_ref,
+        behind.c.position > head.c.position,
+        behind.c.state.not_in((*_SETTLED, FAILED)),
+    )
+
+
 def list_failed_deliveries(
     conn: Connection, *, limit: int
 ) -> tuple[FailedDeliveryRow, ...]:
     """The most recently failed deliveries, newest ``completed_at`` first, capped at
-    ``limit``."""
+    ``limit``, each with the number of deliveries it holds back.
+
+    ``blocked_count`` is a correlated count per listed head, so its cost is bounded by
+    ``limit`` heads, each read through the ``(consumer_id, subject_ref, position)``
+    ordering index.
+    """
+    head = t.event_delivery.alias("head")
+    blocked = (
+        select(func.count())
+        .select_from(t.event_delivery)
+        .where(_blocked_behind(head))
+        .scalar_subquery()
+    )
     rows = conn.execute(
         select(
-            t.event_delivery.c.event_id,
-            t.event_delivery.c.consumer_id,
-            t.event_delivery.c.attempts,
-            t.event_delivery.c.last_error,
-            t.event_delivery.c.completed_at,
+            head.c.event_id,
+            head.c.consumer_id,
+            head.c.attempts,
+            head.c.last_error,
+            head.c.completed_at,
+            blocked.label("blocked_count"),
         )
-        .where(t.event_delivery.c.state == FAILED)
-        .order_by(t.event_delivery.c.completed_at.desc())
+        .where(head.c.state == FAILED)
+        .order_by(head.c.completed_at.desc())
         .limit(limit)
     )
     return tuple(
@@ -427,8 +729,56 @@ def list_failed_deliveries(
             attempts=int(row.attempts),
             last_error=None if row.last_error is None else str(row.last_error),
             completed_at=row.completed_at,
+            blocked_count=int(row.blocked_count),
         )
         for row in rows
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryFailureCounts:
+    """The delivery half of ``core.work.failure_summary``: three numbers."""
+
+    failed_count: int
+    blocked_count: int
+    oldest_failed_at: datetime | None
+
+
+def delivery_failure_counts(conn: Connection) -> DeliveryFailureCounts:
+    """How many deliveries are ``failed``, how many they hold back, and when the
+    oldest of them failed.
+
+    Two aggregate statements and no rows returned, which is what makes the summary a
+    fixed-size read whatever the table holds. ``blocked_count`` counts a held-back row
+    once even when two failed heads sit in front of it, because the ``EXISTS`` asks
+    whether any does.
+    """
+    failed = conn.execute(
+        select(func.count(), func.min(t.event_delivery.c.completed_at)).where(
+            t.event_delivery.c.state == FAILED
+        )
+    ).one()
+    head = t.event_delivery.alias("head")
+    behind = t.event_delivery
+    blocked = conn.execute(
+        select(func.count())
+        .select_from(behind)
+        .where(
+            behind.c.state.not_in((*_SETTLED, FAILED)),
+            select(literal(1))
+            .where(
+                head.c.state == FAILED,
+                head.c.consumer_id == behind.c.consumer_id,
+                head.c.subject_ref == behind.c.subject_ref,
+                head.c.position < behind.c.position,
+            )
+            .exists(),
+        )
+    ).scalar_one()
+    return DeliveryFailureCounts(
+        failed_count=int(failed[0]),
+        blocked_count=int(blocked),
+        oldest_failed_at=failed[1],
     )
 
 

@@ -133,8 +133,8 @@ class _AuditListToolInput(BaseModel):
     with both at their ``False`` defaults. Each opens an owner/operator-only
     collection (§ A11's tool telemetry, § A8's deletion ledger with the exact
     closure counters every other surface withholds). The operation refuses both to
-    an ``mcp`` or ``runtime`` token on every surface as well
-    (``audit/operations.py``'s ``MODEL_HELD_TOKEN_KINDS``), because this narrowing
+    every token kind but ``cli`` on every surface as well
+    (``tokens.policy.PERSON_HELD_TOKEN_KINDS``), because this narrowing
     binds only the tool call and the ``api`` surface accepts ``mcp`` tokens. A person
     with the role still reaches both through a session or a ``cli`` token; a model
     reads the audit records alone, which are metadata (actor, operation name,
