@@ -326,9 +326,6 @@ def test_an_allowed_module_that_cannot_load_is_a_cli_refusal(
     assert err.count("\n") == 1
 
 
-# --- the worker's composition root ----------------------------------------------------
-
-
 # --- a genuinely cold interpreter -----------------------------------------------------
 #
 # Every case above runs in a process where pytest imported ``rheo_recallatron`` long
@@ -432,7 +429,14 @@ print("registered once")
 _COLD_IMPORT_THEN_USE = """
 import rheo_recallatron.embedding.registry as registry
 print("imported")
-registry.providers()
+for attempt in (1, 2):
+    try:
+        registry.providers()
+    except Exception as refusal:
+        message = str(refusal).replace("\\n", " ")
+        print(f"refused {attempt}: {type(refusal).__name__} {message}")
+    else:
+        print(f"returned {attempt}: {sorted(registry.PROVIDERS)}")
 """
 
 
@@ -450,10 +454,68 @@ def test_cold_registry_import_reads_no_deployment_layer_but_first_use_stays_stri
     tmp_path: Path,
 ) -> None:
     result = _cold_run(tmp_path, {PROVIDER_VARIABLE: "none"}, _COLD_IMPORT_THEN_USE)
-    assert result.stdout.strip() == "imported", result.stderr
-    assert result.returncode != 0
-    assert "SettingUndeclared" in result.stderr
-    assert PROVIDER_VARIABLE in result.stderr
+    assert result.returncode == 0, result.stderr
+    imported, first, second = result.stdout.strip().splitlines()
+    assert imported == "imported"
+    # A refused first use must not leave the registry marked done: the second use reads
+    # the strict layer again and refuses again, never returning an empty registry.
+    for attempt, line in ((1, first), (2, second)):
+        assert line.startswith(f"refused {attempt}: SettingUndeclared "), line
+        assert PROVIDER_VARIABLE in line
+
+
+# The production entry point is the first use: after the early hook, a cold
+# ``resolve_provider()`` with nothing else touching the registry registers the
+# built-ins and returns the configured one.
+_COLD_RESOLVE_FIRST = """
+from rheo_core.modules import register_module_settings
+register_module_settings()
+import rheo_recallatron.embedding.registry as registry
+assert registry.PROVIDERS == {}, sorted(registry.PROVIDERS)
+print(type(registry.resolve_provider()).__name__)
+"""
+
+
+def test_cold_resolve_provider_as_first_use_returns_the_configured_built_in(
+    tmp_path: Path,
+) -> None:
+    result = _cold_run(
+        tmp_path,
+        {
+            env_variable_names(ALLOWLIST_KEY)[0]: RECALLATRON,
+            env_variable_names(PROFILE_KEY)[0]: "test",
+            PROVIDER_VARIABLE: "fake",
+        },
+        _COLD_RESOLVE_FIRST,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "FakeEmbeddingProvider"
+
+
+# A same-named register_provider() before any other use replaces the built-in, and the
+# built-ins registering later on that same first use never overwrite it.
+_COLD_OVERRIDE_FIRST = """
+import rheo_recallatron.embedding.registry as registry
+from rheo_recallatron.embedding.fake import FakeEmbeddingProvider
+override = FakeEmbeddingProvider()
+registry.register_provider(registry.FAKE_PROVIDER, override)
+assert registry.providers()[registry.FAKE_PROVIDER] is override
+assert registry.providers()[registry.FAKE_PROVIDER] is override
+print("override kept")
+"""
+
+
+def test_cold_register_provider_as_first_use_overrides_the_built_in(
+    tmp_path: Path,
+) -> None:
+    result = _cold_run(
+        tmp_path, {env_variable_names(PROFILE_KEY)[0]: "test"}, _COLD_OVERRIDE_FIRST
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "override kept"
+
+
+# --- the worker's composition root ----------------------------------------------------
 
 
 class _ReachedModuleLoad(Exception):
