@@ -1227,7 +1227,9 @@ resolves to one" — and was the row's recorded hunk until a cold review pointed
 criterion's first sentence had none.
 
 **C5 AC 8 leak mutation (performed, not this row's hunk).** Concatenating
-`runtime.claude_cli.credential_ref` onto `RuntimeRequest.task` in `run_runtime_job` reddens
+`runtime.claude_cli.credential_ref` onto `RuntimeRequest.task` in `run_runtime_job`, after the
+task is masked for the model (#130 masks `secret://` references in the task, so the hunk now
+appends past that mask; re-performed 2026-09-25 with the same failure), reddens
 `test_model_credential_run_does_not_leak_secret_or_ref` at
 `E       AssertionError: assert 'secret reference' is None`. The hunk is registered at
 `tests/fixtures/ac8-credential-leak.diff` and `git apply --check`'d by

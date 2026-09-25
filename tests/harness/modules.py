@@ -37,14 +37,15 @@ overrides it with :data:`PROBE_CONTRACT_TESTS`.
 import itertools
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import EntryPoint
-from typing import Final
+from typing import Annotated, Final
 from uuid import UUID
 
 import pytest
 from alembic.script import ScriptDirectory
+from pydantic import BaseModel
 from rheo_contracts import WorkspaceContext
 from rheo_core.deletion import OwnedDeletionRegistry
 from rheo_core.events import ConsumerRegistry
@@ -52,10 +53,14 @@ from rheo_core.migrations.orchestrator import build_config
 from rheo_core.modules import (
     ENTRY_POINT_GROUP,
     Dependency,
+    EventDeclaration,
     ExportDeclaration,
     ModuleManifest,
+    RecordType,
     Schedule,
+    SensitivityTier,
     StorageDeclaration,
+    Tiered,
     discovered,
     load_modules,
     loaded_manifests,
@@ -70,6 +75,7 @@ from rheo_core.modules.operations import (
     run_module_install_job,
 )
 from rheo_core.operations import OperationRegistry, dispatch
+from rheo_core.redaction.registry import RenderingRegistry
 from rheo_core.refs.resolver import ResolverRegistry
 from rheo_core.settings import KeySpec, Scope, ValueType, env_variable_names
 from rheo_core.settings.schema import SettingsRegistry
@@ -371,6 +377,74 @@ refusal's own test asserts.
 """
 
 
+REDACTION_ID: Final = "redact_probe"
+REDACTION_TYPE: Final = "contact"
+REDACTION_UNTIERED_TYPE: Final = "tag"
+
+
+def _load_contact(*args: object) -> None:
+    """Never called: the loader registers the rendering and nothing renders it."""
+    return None
+
+
+def _record_type(name: str, **overrides: object) -> RecordType:
+    fields: dict[str, object] = {
+        "name": name,
+        "table": f"{REDACTION_ID}.{name}",
+        "deletable": False,
+        "delete_roles": frozenset(),
+        "exportable": False,
+        "audience_field": None,
+    }
+    fields.update(overrides)
+    return RecordType(**fields)
+
+
+REDACTION_MANIFEST: Final = manifest(
+    REDACTION_ID,
+    record_types=(
+        _record_type(REDACTION_TYPE, load_for_model=_load_contact),
+        _record_type(REDACTION_UNTIERED_TYPE),
+    ),
+    sensitivity={
+        REDACTION_TYPE: {
+            "label": SensitivityTier.PUBLIC,
+            "value": SensitivityTier.RESTRICTED,
+        }
+    },
+)
+"""Issue #130's loader fixture: one tiered record type and one untiered one.
+
+What loading it must do is register a model rendering for ``contact`` alone and
+declare ``redact_probe.redaction.exclude_types``; ``tests/test_redaction_manifest.py``
+reads both back off the local registries :func:`loaded_probe_modules` binds.
+"""
+
+
+class _RestrictedEventData(BaseModel):
+    party_ref: str
+    email: Annotated[str, Tiered(SensitivityTier.RESTRICTED)]
+
+
+UNCHECKED_ID: Final = "unchecked_probe"
+UNCHECKED_MANIFEST: Final = ModuleManifest.model_construct(
+    **{
+        **dict(manifest(UNCHECKED_ID)),
+        "events": (
+            EventDeclaration(
+                type=f"{UNCHECKED_ID}.party.changed",
+                schema_version=1,
+                data=_RestrictedEventData,
+            ),
+        ),
+    }
+)
+"""A manifest built with ``model_construct``, which skips every validator, carrying
+an event with a restricted field. The loader's own re-check (``_check_redaction``) is
+the only thing between it and the registries, which is what the test that loads it
+asserts."""
+
+
 def entry_point_for(module_manifest: ModuleManifest, attribute: str) -> EntryPoint:
     """A real entry point loading ``attribute`` from this module, under its own id."""
     return EntryPoint(
@@ -390,6 +464,8 @@ PROBE_ENTRY_POINTS: Final[dict[str, EntryPoint]] = {
         (OPTIONAL_DEPENDANT_MANIFEST, "OPTIONAL_DEPENDANT_MANIFEST"),
         (MISSING_TESTS_MANIFEST, "MISSING_TESTS_MANIFEST"),
         (CONFIG_MANIFEST, "CONFIG_MANIFEST"),
+        (REDACTION_MANIFEST, "REDACTION_MANIFEST"),
+        (UNCHECKED_MANIFEST, "UNCHECKED_MANIFEST"),
     )
 }
 """Every fixture module this file publishes, by id.
@@ -406,7 +482,7 @@ time with an ``AttributeError`` rather than at the assertion the test came for.
 
 @dataclass(frozen=True, slots=True)
 class LoadedSurfaces:
-    """The three local registries :func:`loaded_probe_modules` loaded into.
+    """The local registries :func:`loaded_probe_modules` loaded into.
 
     Yielded so a test can *drive* what it loaded: ``dispatch(ctx, name, payload,
     registry=loaded.operations)`` reaches a module's own operation, and
@@ -423,6 +499,13 @@ class LoadedSurfaces:
     operations: OperationRegistry
     resolvers: ResolverRegistry
     tools: ToolRegistry
+    renderings: RenderingRegistry = field(default_factory=RenderingRegistry)
+    """Where the loader put the loaded manifests' tiered record types (issue #130).
+
+    Local for the settings registry's reason below: ``loader.py``'s ``_register``
+    writes renderings into the process-global ``RENDERINGS`` unconditionally, and that
+    table publishes no unregister, so a probe type's rendering would otherwise outlive
+    the test and change what every later context build sends for that type."""
 
 
 @contextmanager
@@ -488,6 +571,7 @@ def loaded_probe_modules(
             resolvers=ResolverRegistry(),
             tools=ToolRegistry(),
         )
+        monkeypatch.setattr(loader_module, "RENDERINGS", surfaces.renderings)
         loaded = load_modules(
             registry=surfaces.operations,
             resolvers=surfaces.resolvers,

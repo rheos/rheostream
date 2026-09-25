@@ -68,7 +68,7 @@ that argument in full.
 | `connector_bindings` | list of `ConnectorBinding(transport, service_operation, route)` | Which of the module's operations a transport connector may call, and the HTTP route the binding registers on the `api` surface when the transport has one (`route` is null otherwise). No shipped manifest declares one yet; Leads is to declare three in phase three, one per transport, all naming `leads.intake.accept_delivery` ([the three bindings](intake-and-events.md#transports)). |
 | `health_checks` | list of callables | Run by the install job in every profile but `test` ([install](#install-and-enable-release-one-in-code) step 6). Nothing else calls them yet: `rheo doctor` and the workspace status operation are their planned later readers. |
 | `contract_tests` | path | The module's behavioural suite entry: a repo-relative directory. **Named deviation:** this row once said the suite is "run by the install path in test profile and by CI". Install **validates the path and does not run the suite** — see § Install step 6 for why — and CI runs it, through the `testpaths` widening that puts `modules/` in `make test`. The row is corrected here as well as there because it is the line a module author reads first, and leaving it would have this document asserting the superseded behaviour in its most-read table. |
-| `sensitivity` | mapping of record type to field tiers | Which fields are `public`, `internal`, `restricted` for the [redaction contract](runtime-and-mcp.md#the-redaction-contract). |
+| `sensitivity` | mapping of record type to field tiers | Which fields are `public`, `internal`, `restricted` for the [redaction contract](runtime-and-mcp.md#the-redaction-contract). Read by the context builder, through the rendering the loader registers for each tiered record type. The manifest refuses a key that is not one of its own record types, an empty tier map, a tiered type with no `load_for_model`, a `load_for_model` on an untiered type, an event whose `data` model (nested models included) marks a field `restricted`, and a `configuration_schema` key under `<module_id>.redaction.`, which the core declares (`exclude_types`). A model's fields (an event's `data`, an operation's output) are tiered with the `Tiered` marker rather than here; see [tiers](runtime-and-mcp.md#tiers). |
 | `audit_sink` | optional `AuditSink` | The writer for the module's own audit rows, installed under the module's id by `_register` in `packages/core/src/rheo_core/modules/loader.py`. **Not one of the twenty-three ratified fields**, and added because it is the only channel a module has: `rheo_core.operations.dispatch` resolves a sink by the *operation's* owning module and refuses every above-`READ` operation with `AUDIT_SINK_MISSING` when that module has none. Optional, because a module declaring only `READ` operations needs no sink. |
 
 The manifest is code, not a sidecar file: one source of truth, type-checked, no cross-validation
@@ -88,7 +88,22 @@ RecordType
   audience_field: str | None      # column holding the record's audience, when records carry one
   authorize_delete: DeleteAuthorizer | None   # (ctx, uow, ref, *, disposition) -> DeleteAuthorization | Refusal
   delete_owned: OwnedDeleter | None           # (ctx, uow, authorization) -> RemovedMemories
+  load_for_model: RecordLoader | None         # (ctx, uow, ref) -> fields | None
+  render_for_model: ModelRenderer | None      # (record, tier_policy) -> text | None
 ```
+
+**The model-rendering pair is the redaction contract's record half, added in issue #130.**
+`render_for_model(record, tier_policy)` is where the
+[redaction contract](runtime-and-mcp.md#the-context-builder) always put it; it is a field
+of `RecordType` rather than a manifest-level protocol for the owned-delete pair's reason,
+one declaration per type with nowhere to write a second.
+`load_for_model` is the half the ratified text left implicit: the resolver answers a head
+(reference, label, readability), and a tier map is about fields, so a tiered type also says
+how to read its fields under the caller's context. Both default to null. A type with a
+`sensitivity` entry or its own renderer must declare the loader, and a loader on a type with
+neither is refused as a declaration nothing reads. A type that declares no renderer gets the
+core's default, which applies its tier map field by field; the context builder masks whatever
+text either renderer returns.
 
 A record type appears in exactly one manifest. Two modules declaring the same
 `<module_id>.<name>` cannot happen because the module id is the prefix; two modules declaring a

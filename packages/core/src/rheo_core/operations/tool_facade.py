@@ -51,6 +51,7 @@ telemetry through this façade and still imports no storage package.
 
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Final
 
 from pydantic import BaseModel, ValidationError
@@ -100,12 +101,21 @@ from rheo_core.operations.registry import (
     _alias_names,
     module_id_for_origin,
 )
+from rheo_core.redaction.masking import mask_for_model, mask_tokens_in
+from rheo_core.redaction.policy import TierPolicy, policy_for
+
+# Re-exported for ``apps/mcp``'s transport, which may import ``rheo_core.operations``
+# but not ``rheo_core.redaction`` (``tests/test_mcp_boundary.py``).
+from rheo_core.redaction.render import WITHHELD_REASON as WITHHELD_REASON
+from rheo_core.redaction.render import render_output
 from rheo_core.tokens.sets import TOOL_REGISTRY, RegisteredTool, ToolRegistry
 
 __all__ = [
     "ConsumerRegistry",
     "TOOL_NOT_FOUND",
+    "WITHHELD_REASON",
     "call_registered_tool",
+    "for_model",
     "visible_tools",
 ]
 
@@ -389,10 +399,17 @@ def call_registered_tool(
     """
     registered = tools.lookup(name)
     if registered is None or not _available(ctx, registered, registry):
-        return _refused(TOOL_NOT_FOUND, f"{name!r} is not a tool available here")
+        return for_model(
+            _refused(TOOL_NOT_FOUND, f"{name!r} is not a tool available here"),
+            policy_for(ctx),
+        )
     declaration = registered.declaration
     started = time.monotonic()
     validated = _validated(declaration, arguments)
+    if not isinstance(validated, OperationOutcome):
+        refused_write = _mask_token_write(declaration, arguments)
+        if refused_write is not None:
+            validated = refused_write
     if isinstance(validated, OperationOutcome):
         outcome, model = validated, None
     else:
@@ -415,4 +432,68 @@ def call_registered_tool(
         query_length=_telemetry_query_length(declaration, model),
         argument_names=_telemetry_argument_names(declaration, arguments),
     )
-    return outcome
+    return for_model(outcome, policy_for(ctx))
+
+
+def _mask_token_write(
+    declaration: ToolDeclaration, arguments: Mapping[str, object]
+) -> OperationOutcome | None:
+    """``input_invalid`` for an above-``READ`` call whose input carries a mask token.
+
+    A model is shown ``[email withheld]`` where the real address was. If it could then
+    ``correct``, ``supersede`` or ``remember`` with that text, the mask would be
+    written over the value it hides, and the person would lose the real address to a
+    redaction artefact. So any write-class tool (every class above ``READ``) refuses
+    input containing one of :data:`~rheo_core.redaction.masking.MASK_TOKENS`, anywhere
+    in the arguments, before dispatch, matched case- and width-insensitively
+    (:func:`~rheo_core.redaction.masking.mask_tokens_in`). A read may carry one:
+    searching for the literal token writes nothing.
+
+    **The refusal text must not suggest omitting the masked part.** A correction and a
+    supersession restate the whole record, so "leave it out" would delete the value
+    the mask stands for; the text sends the change to a person or to the allowance.
+    """
+    if declaration.safety_class is SafetyClass.READ:
+        return None
+    found = sorted(set(mask_tokens_in(dict(arguments))))
+    if not found:
+        return None
+    return _refused(
+        INPUT_INVALID,
+        f"{declaration.name} input carries the redaction mask token(s) {found}. "
+        "The record holds a value the model was not shown, so a model cannot "
+        "correct, supersede or restate it without losing that value: ask a person "
+        "to make this change, or have the workspace enable "
+        "redaction.contact_points_to_model so the model sees the real value",
+    )
+
+
+def for_model(outcome: OperationOutcome, policy: TierPolicy) -> OperationOutcome:
+    """``outcome`` with the model-bound half filled in under ``policy``.
+
+    ``model_view`` is the result rendered by
+    :func:`~rheo_core.redaction.render.render_output`: every field whose
+    :class:`~rheo_core.redaction.tiers.Tiered` marker the policy does not allow is
+    removed, every string left is masked, and a record of an excluded type
+    (``<module>.redaction.exclude_types``) is dropped, or the whole result withheld
+    when it is one. The error text is masked too, because
+    it is sent to the same model and a handler's refusal detail is free text a
+    handler wrote.
+
+    **Why here and not in the transport.** ``runtime-and-mcp.md`` puts rendering in
+    "the facade", and this is the facade both the MCP transport and any later
+    model-facing surface call; a transport-side render would be a rule each surface
+    had to remember. ``result`` is left as the operation returned it, so an
+    in-process caller (a test comparing a tool call with a direct dispatch) still
+    holds the model; the transport sends ``model_view`` only.
+
+    The policy's settings read is lazy (``TierPolicy``), so a result with no
+    ``internal`` field and no contact value in it costs no settings resolution.
+    """
+    model_view = (
+        None if outcome.result is None else render_output(outcome.result, policy)
+    )
+    error = outcome.error
+    if error is not None:
+        error = replace(error, error_text=mask_for_model(error.error_text, policy))
+    return replace(outcome, model_view=model_view, error=error)

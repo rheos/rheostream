@@ -135,9 +135,10 @@ class _AuditListToolInput(BaseModel):
     closure counters every other surface withholds). The operation refuses both to
     every token kind but ``cli`` on every surface as well
     (``tokens.policy.PERSON_HELD_TOKEN_KINDS``), because this narrowing
-    binds only the tool call and the ``api`` surface accepts ``mcp`` tokens. A person
-    with the role still reaches both through a session or a ``cli`` token; a model
-    reads the audit records alone, which are metadata (actor, operation name,
+    binds only the tool call; since issue #130 the ``api`` surface also refuses
+    ``mcp`` tokens outright, and the operation's rule stays as the second layer. A
+    person with the role still reaches both through a session or a ``cli`` token; a
+    model reads the audit records alone, which are metadata (actor, operation name,
     subject reference, request digest, outcome) and carry no payload.
     """
 

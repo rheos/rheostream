@@ -441,13 +441,15 @@ relax the deployment value:
 | `subset` | the intersection | `approvals.standing_grant_classes` (package default `read, draft, mutate`; the operator may remove, a workspace may remove further, nobody may add) | see left |
 | `and` | both must be true | `redaction.contact_points_to_model` (package default `false`; a workspace can only keep it false unless the operator set true) | `false` |
 
-The resolver implements all four comparators, but as shipped only `min` and `subset` have
-declared keys: `min` on `runtime.max_deadline_seconds`, `runtime.max_context_bytes`,
+The resolver implements all four comparators, and each has a declared key: `min` on
+`runtime.max_deadline_seconds`, `runtime.max_context_bytes`,
 `runtime.transcript_retention_days`, `approvals.max_window_seconds`,
 `identity.token_max_days.*` and the two `telemetry.*` keys; `subset` on
-`runtime.allowed_runtimes` and `runtime.allowed_models`. The `union` and `and` example keys
-and `approvals.standing_grant_classes` are not declared yet; a standing grant's classes are
-fixed in code to read, draft and mutate.
+`runtime.allowed_runtimes`, `runtime.allowed_models` and `redaction.internal_purposes`;
+`and` on `redaction.contact_points_to_model`; `union` on `<module>.redaction.exclude_types`,
+which the module loader declares for every loaded module that owns a record type (issue
+#130). `approvals.confirm_operations` and `approvals.standing_grant_classes` are not declared
+yet; a standing grant's classes are fixed in code to read, draft and mutate.
 
 Enforcement is in two places on purpose: the settings write path validates against the resolved
 deployment value and refuses with the key named, and the read path clamps, so a row written before

@@ -46,7 +46,7 @@ from rheo_app_core.main import app, lifespan, public_app
 from rheo_app_core.mcp_mount import STATE_ATTRIBUTE, McpMount
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
-from rheo_core.boundary.context import TOKEN_MALFORMED, TOKEN_REVOKED
+from rheo_core.boundary.context import TOKEN_MALFORMED, TOKEN_REVOKED, TOKEN_WRONG_KIND
 from rheo_core.boundary.factories import context_from_token
 from rheo_core.operations import (
     AUDIT_LIST,
@@ -751,13 +751,15 @@ async def test_a_loopback_deployment_admits_any_loopback_port(
 # --- the audit opt-ins are closed to model-held tokens on every surface ------------
 
 
-async def test_an_mcp_token_cannot_open_the_audit_opt_ins_over_http(
+async def test_an_mcp_token_is_refused_by_the_api_surface(
     owner: WorkspaceContext,
 ) -> None:
-    """``core.audit.list`` is in ``agent_default`` and the ``api`` surface accepts
-    ``mcp`` tokens, so the tool's narrowing alone would leave both opt-ins one HTTP
-    call away. The operation refuses them to an ``mcp`` token; a plain listing still
-    works, and the owner's ``cli`` token keeps both (the control)."""
+    """Issue #130 (Robin's decision): an ``mcp`` token works on the ``mcp`` surface
+    only. Over ``POST /api/v1/operations/*`` it is refused at the surface with the
+    wrong-kind state, before any operation runs, so a model's token can never read an
+    operation's raw output past the tool facade's redaction; this is also what now
+    keeps ``core.audit.list``'s two opt-ins off HTTP for it. The owner's ``cli`` token
+    is the control and keeps both."""
     mcp_value, _ = _mint(owner)
     cli_value, _ = _mint(owner, kind="cli", set_name="cli_full")
     route = f"/api/v1/operations/{AUDIT_LIST}"
@@ -765,21 +767,23 @@ async def test_an_mcp_token_cannot_open_the_audit_opt_ins_over_http(
         transport=httpx2.ASGITransport(app=public_app), base_url="http://test"
     ) as http_client:
         mcp_headers = {"Authorization": f"Bearer {mcp_value}"}
-        plain = await http_client.post(route, headers=mcp_headers, json={"limit": 5})
         refused = [
-            await http_client.post(route, headers=mcp_headers, json={flag: True})
-            for flag in ("include_tool_telemetry", "include_deletions")
+            await http_client.post(route, headers=mcp_headers, json=payload)
+            for payload in (
+                {"limit": 5},
+                {"include_tool_telemetry": True},
+                {"include_deletions": True},
+            )
         ]
         control = await http_client.post(
             route,
             headers={"Authorization": f"Bearer {cli_value}"},
             json={"include_tool_telemetry": True, "include_deletions": True},
         )
-    assert plain.status_code == 200, plain.text
     for response in refused:
-        assert response.status_code == 403, response.text
+        assert response.status_code == 401, response.text
         body = response.json()
-        assert body["state"] == OPERATION_NOT_PERMITTED
+        assert body["state"] == TOKEN_WRONG_KIND
         assert "result" not in body
     assert control.status_code == 200, control.text
     assert control.json()["result"]["deletions"] is not None

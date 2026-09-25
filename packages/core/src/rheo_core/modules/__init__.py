@@ -55,6 +55,11 @@ from rheo_core.modules.manifest import (
     WebSurface,
 )
 
+# The field marker a module's event and output models declare a tier with, published
+# beside ``SensitivityTier`` so a module author writes both from the one package that
+# declares the module contract (``rheo_core/redaction/tiers.py`` carries the rule).
+from rheo_core.redaction.tiers import Tiered as Tiered
+
 # Re-exported explicitly (``X as X``), for the contract reason ``events/consumers.py``
 # re-exports ``HandlerUnitOfWork``: a module distribution may not import the core's
 # storage package — ``tests/postgres/test_module_storage_ownership.py`` scans
@@ -88,6 +93,7 @@ __all__ = [
     "Sensitivity",
     "SensitivityTier",
     "StorageDeclaration",
+    "Tiered",
     "WebContribution",
     "WebRoute",
     "WebSurface",

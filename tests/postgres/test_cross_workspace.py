@@ -67,10 +67,18 @@ def _owner_ctx(workspace_id: UUID, account_id: UUID) -> WorkspaceContext:
 
 
 def _mint_mcp_token(ctx: WorkspaceContext) -> str:
-    """An ``mcp``-kind, ``agent_default`` token -- valid on both bearer
-    surfaces (``api`` accepts ``cli``/``mcp``; ``mcp`` accepts ``mcp``/
-    ``runtime``)."""
+    """An ``mcp``-kind, ``agent_default`` token, for the MCP seam. Since issue #130
+    the ``api`` surface refuses ``mcp`` tokens, so the HTTP half uses
+    :func:`_mint_cli_token` for the same workspace instead."""
     outcome = dispatch(ctx, TOKEN_ISSUE, {"kind": "mcp", "set_name": "agent_default"})
+    assert outcome.ok, outcome
+    assert outcome.result is not None
+    return outcome.result.value  # type: ignore[attr-defined]
+
+
+def _mint_cli_token(ctx: WorkspaceContext) -> str:
+    """A ``cli``-kind token holding ``harness.note.get``: the HTTP credential."""
+    outcome = dispatch(ctx, TOKEN_ISSUE, {"kind": "cli", "operations": [NOTE_GET]})
     assert outcome.ok, outcome
     assert outcome.result is not None
     return outcome.result.value  # type: ignore[attr-defined]
@@ -111,7 +119,7 @@ async def test_cross_workspace_reference_refused_not_found_both_surfaces(
     b_value = _mint_mcp_token(b_ctx)
 
     # api surface
-    resp = await _post_note_get(b_value, ref)
+    resp = await _post_note_get(_mint_cli_token(b_ctx), ref)
     assert resp.status_code == 404
     assert resp.json()["state"] == "not_found"
 
@@ -138,7 +146,7 @@ async def test_same_reference_under_an_a_token_succeeds_both_surfaces(
     ref = _write_note(a_ctx, "workspace A's own note, read back")
     a_value = _mint_mcp_token(a_ctx)
 
-    resp = await _post_note_get(a_value, ref)
+    resp = await _post_note_get(_mint_cli_token(a_ctx), ref)
     assert resp.status_code == 200
     assert resp.json()["result"]["ref"] == ref
 

@@ -1,4 +1,5 @@
-"""DDL for the four runtime tables introduced by core revision 0006.
+"""DDL for the four runtime tables introduced by core revision 0006 (and 0009's two
+``runtime_session`` columns).
 
 Own ``MetaData(schema="core")``, not added to frozen ``core_tables.py:CORE_TABLES``.
 Column lists are verbatim from ``docs/architecture/runtime-and-mcp.md`` § What the
@@ -6,7 +7,7 @@ core records and § Native session handles, with ``runtime_session.native_handle
 required (``Text, nullable=False``).
 """
 
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy import (
     CheckConstraint,
@@ -95,21 +96,43 @@ runtime_transcript = Table(
     CheckConstraint(_in("kind", TRANSCRIPT_KINDS), name="runtime_transcript_kind"),
 )
 
+
+def _session_columns() -> list[Column[Any]]:
+    return [
+        Column("id", UUID(as_uuid=True), primary_key=True),
+        Column("runtime_id", Text, nullable=False),
+        Column("credential_scope", Text, nullable=False),
+        Column("actor_kind", Text, nullable=False),
+        Column("actor_id", UUID(as_uuid=True), nullable=False),
+        Column("audience_kind", Text, nullable=False),
+        Column("audience_id", UUID(as_uuid=True), nullable=False),
+        Column("native_handle", Text, nullable=False),
+        Column("created_at", _timestamptz(), nullable=False),
+        Column("last_used_at", _timestamptz(), nullable=False),
+        Column("expires_at", _timestamptz(), nullable=False),
+    ]
+
+
+runtime_session_0006 = Table("runtime_session", runtime_metadata, *_session_columns())
+"""``runtime_session`` exactly as revision ``0006_runtime`` creates it, frozen.
+
+That revision creates this module's ``runtime_metadata`` wholesale, so the columns
+revision ``0009_runtime_session_policy`` adds cannot live on this object without the
+old revision creating them too. Code reads and writes :data:`runtime_session`."""
+
+session_policy_metadata = MetaData(schema=CORE_SCHEMA)
+
 runtime_session = Table(
     "runtime_session",
-    runtime_metadata,
-    Column("id", UUID(as_uuid=True), primary_key=True),
-    Column("runtime_id", Text, nullable=False),
-    Column("credential_scope", Text, nullable=False),
-    Column("actor_kind", Text, nullable=False),
-    Column("actor_id", UUID(as_uuid=True), nullable=False),
-    Column("audience_kind", Text, nullable=False),
-    Column("audience_id", UUID(as_uuid=True), nullable=False),
-    Column("native_handle", Text, nullable=False),
-    Column("created_at", _timestamptz(), nullable=False),
-    Column("last_used_at", _timestamptz(), nullable=False),
-    Column("expires_at", _timestamptz(), nullable=False),
+    session_policy_metadata,
+    *_session_columns(),
+    # Revision 0009 (issue #130 review): the redaction policy a native session was
+    # built under. Nullable, because rows written before it have neither, and a row
+    # with either missing is never resumed (``runtime/operations.py``).
+    Column("purpose", Text, nullable=True),
+    Column("policy_digest", LargeBinary, nullable=True),
 )
+"""The live shape of ``core.runtime_session``: 0006's columns plus 0009's two."""
 
 RUNTIME_TABLES: Final[tuple[Table, ...]] = (
     runtime_request,
@@ -117,4 +140,5 @@ RUNTIME_TABLES: Final[tuple[Table, ...]] = (
     runtime_transcript,
     runtime_session,
 )
-"""The four tables revision ``0006_runtime`` creates, in dependency order."""
+"""The four runtime tables in dependency order, ``runtime_session`` in its live shape
+(0006 created the tables; 0009 added two session columns)."""

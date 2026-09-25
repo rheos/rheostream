@@ -192,6 +192,7 @@ from rheo_core.work.jobs import has_job_for_operation
 
 if TYPE_CHECKING:
     from rheo_core.events.consumers import ConsumerRegistry
+    from rheo_core.redaction.render import RenderedResult
 
 logger = logging.getLogger("rheo_core.operations")
 
@@ -274,6 +275,14 @@ class OperationOutcome:
     reason ``operation_id`` was appended after ``error``, and answering criterion
     19's "an approval-required state carrying an approval identifier": the identifier
     is a field of the outcome rather than something to parse out of the error text.
+
+    ``model_view`` is ``result`` as it may be sent to a model: the operation's
+    output rendered under the redaction contract's tier policy, with masked free
+    text and excluded record types dropped (``rheo_core/redaction/render.py``). Only
+    the tool facade sets it (``tool_facade.call_registered_tool``), and the MCP
+    transport sends it and never ``result``, which stays the operation's own model
+    for in-process callers. It is ``None`` from :func:`dispatch` itself and whenever
+    there is no ``result``. Appended last, for the reason the two ids were.
     """
 
     state: str
@@ -281,6 +290,7 @@ class OperationOutcome:
     error: OperationError | None = None
     operation_id: UUID | None = None
     approval_id: UUID | None = None
+    model_view: "RenderedResult | None" = None
 
     @property
     def ok(self) -> bool:

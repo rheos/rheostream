@@ -10,12 +10,12 @@ exactly as ``OperationRegistry.register(decl, handler, *, origin)`` already does
 The doc now names this module as the type's real home.
 
 **Every field is required unless it carries ``= None``**, and only ``web``,
-``agent_guidance`` and ``audit_sink`` do. Five required fields still have no
-consumer (``subscriptions``, ``jobs``, ``schedules``, ``connector_bindings``,
-``sensitivity``); ``record_types``, ``events`` and ``deletion_participants`` have
-since gained one. They stay required so a module author writes an empty ``()`` or
-``{}`` on purpose rather than by omission, and the run that builds the consumer
-reads a declaration rather than a default nobody chose.
+``agent_guidance`` and ``audit_sink`` do. Four required fields still have no
+consumer (``subscriptions``, ``jobs``, ``schedules``, ``connector_bindings``);
+``record_types``, ``events``, ``deletion_participants`` and, from issue #130,
+``sensitivity`` have since gained one. They stay required so a module author writes
+an empty ``()`` or ``{}`` on purpose rather than by omission, and the run that builds
+the consumer reads a declaration rather than a default nobody chose.
 
 **The owned-delete pair is the one addition since**, and it is a field of
 :class:`RecordType` rather than a twenty-fifth manifest field; that class's own
@@ -40,7 +40,6 @@ the manifest and the installer agree on what a sink is.
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Final, Protocol, Self, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -67,6 +66,10 @@ from rheo_core.deletion.registry import (
 )
 from rheo_core.events.consumers import ConsumerSubscription
 from rheo_core.operations.registry import Handler
+from rheo_core.redaction.render import ModelRenderer as _ModelRenderer
+from rheo_core.redaction.render import RecordLoader as _RecordLoader
+from rheo_core.redaction.tiers import SensitivityTier as SensitivityTier
+from rheo_core.redaction.tiers import restricted_fields
 from rheo_core.refs.resolver import RecordResolver
 from rheo_core.settings.schema import KeySpec
 from rheo_core.storage.backend import UnitOfWork
@@ -316,6 +319,86 @@ def _check_web_contribution(
             )
 
 
+_RESERVED_KEY_SEGMENT: Final = "redaction"
+"""``<module_id>.redaction.*`` is the core's: the loader declares
+``<module_id>.redaction.exclude_types`` for every module that owns a record type, so a
+module declaring a key there would either collide with it or read as a redaction
+control the core never consults."""
+
+
+def check_sensitivity(
+    *,
+    module_id: str,
+    record_types: Sequence["RecordType"],
+    sensitivity: Mapping[str, Mapping[str, SensitivityTier]],
+    events: Sequence["EventDeclaration"],
+    configuration_keys: Sequence[str],
+) -> None:
+    """The redaction contract's static rules, each refusal naming what it refused.
+
+    - A ``sensitivity`` key names one of this manifest's own record types, and its map
+      is not empty. A key for a type this module does not own tiers nothing the
+      context builder will ever render, and an empty map would declare a type tiered
+      while tiering no field, which the default renderer would answer by withholding
+      every field.
+    - A tiered record type (a ``sensitivity`` entry, or its own ``render_for_model``)
+      declares ``load_for_model``: without one the builder holds nothing but the
+      resolver's ``display`` label, whose tier nobody declared. A loader on an
+      untiered type is refused as a declaration with no reader.
+    - **No event's ``data`` model carries a ``restricted``-marked field**, nested
+      models included (``intake-and-events.md``: "a restricted-tier event field fails
+      registration"). An event is delivered to every subscribed consumer and kept in
+      the outbox outside the deletion cascade, so a restricted value in one would
+      outlive the record it was copied from.
+    - No ``configuration_schema`` key sits under ``<module_id>.redaction.``.
+
+    **What is not checked, and why.** A field named in a ``sensitivity`` map is not
+    checked against the record type's columns: ``RecordType`` declares no field list,
+    so the only reader of the names is the loader at run time, and the default
+    renderer withholds any field the map does not name.
+    """
+    by_name = {record.name: record for record in record_types}
+    for type_name, tiers in sensitivity.items():
+        if type_name not in by_name:
+            raise ValueError(
+                f"sensitivity: {type_name!r} is not one of module {module_id!r}'s "
+                "own record types"
+            )
+        if not tiers:
+            raise ValueError(
+                f"sensitivity: record type {type_name!r} has an empty tier map; "
+                "leave the entry out for an untiered type"
+            )
+    for record in record_types:
+        tiered = record.name in sensitivity or record.render_for_model is not None
+        if tiered and record.load_for_model is None:
+            raise ValueError(
+                f"record type {record.name!r} is tiered but declares no "
+                "load_for_model; the context builder would hold only its display "
+                "label, whose tier nobody declared"
+            )
+        if not tiered and record.load_for_model is not None:
+            raise ValueError(
+                f"record type {record.name!r} declares load_for_model but neither a "
+                "sensitivity entry nor render_for_model, so nothing reads it"
+            )
+    for event in events:
+        restricted = restricted_fields(event.data)
+        if restricted:
+            raise ValueError(
+                f"events: {event.type!r} declares restricted-tier field(s) "
+                f"{list(restricted)}; an event carries references and non-personal "
+                "facts, never a restricted value"
+            )
+    reserved = f"{module_id}.{_RESERVED_KEY_SEGMENT}."
+    for key in configuration_keys:
+        if key.startswith(reserved):
+            raise ValueError(
+                f"configuration_schema key {key!r} is under {reserved!r}, which the "
+                "core declares for every module"
+            )
+
+
 HealthCheck = Callable[[UnitOfWork], None]
 """``(uow) -> None``: one check install step 6 calls directly, so it is typed."""
 
@@ -373,6 +456,27 @@ keyword-only with no default; see :class:`~rheo_core.deletion.registry.Dispositi
 OwnedDeleter = Annotated[_OwnedDeleter | None, PlainValidator(_owned_delete_callable)]
 """``(ctx, uow, authorization) -> RemovedMemories``: remove the record and the rows the
 owner holds because of it."""
+
+
+def _model_rendering_callable(value: object) -> object:
+    """The duck check :class:`RecordType`'s model-rendering pair applies: ``None`` or
+    a callable, for the reason :func:`_owned_delete_callable` gives."""
+    if value is None or callable(value):
+        return value
+    raise ValueError("a model-rendering callable must be callable")
+
+
+RecordLoader = Annotated[
+    _RecordLoader | None, PlainValidator(_model_rendering_callable)
+]
+"""``(ctx, uow, ref) -> fields | None``: the record's fields for the context builder;
+see :class:`~rheo_core.redaction.render.RecordLoader`."""
+
+ModelRenderer = Annotated[
+    _ModelRenderer | None, PlainValidator(_model_rendering_callable)
+]
+"""``(record, tier_policy) -> text | None``: the ratified ``render_for_model``; see
+:class:`~rheo_core.redaction.render.ModelRenderer`."""
 
 
 def _export_callable(value: object) -> object:
@@ -434,14 +538,6 @@ unit of work and the already-validated rows, and returns the second pass core ru
 after the deletion evidence is in. It never commits: the whole restore is one
 transaction and a module ending it would take the rollback guarantee with it.
 """
-
-
-class SensitivityTier(StrEnum):
-    """The three redaction tiers a field can carry (``runtime-and-mcp.md``)."""
-
-    PUBLIC = "public"
-    INTERNAL = "internal"
-    RESTRICTED = "restricted"
 
 
 _V = TypeVar("_V")
@@ -558,6 +654,15 @@ class RecordType(BaseModel):
     a validation error rather than a registration the coordinator silently never
     makes. A pair is meaningful only on a ``deletable`` type, so one on a type that
     is not deletable is refused too.
+
+    **``load_for_model``/``render_for_model`` are the redaction contract's record
+    half**, added in issue #130 and defaulting to ``None`` for the same reason the
+    delete pair does. ``render_for_model`` is the ratified ``render_for_model(record,
+    tier_policy)``; ``load_for_model`` reads the record's fields for it, because a
+    resolver answers only a head. Which types need them is a manifest-level rule
+    (:func:`check_sensitivity`): a type with a tier map or its own renderer must
+    declare a loader, and a loader on a type with neither is refused as a declaration
+    nothing reads.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -570,6 +675,8 @@ class RecordType(BaseModel):
     audience_field: str | None
     authorize_delete: DeleteAuthorizer = None
     delete_owned: OwnedDeleter = None
+    load_for_model: RecordLoader = None
+    render_for_model: ModelRenderer = None
 
     @model_validator(mode="after")
     def _the_owned_delete_pair_is_whole(self) -> Self:
@@ -758,6 +865,12 @@ class ModuleManifest(BaseModel):
         register``, which the loader calls with ``origin = manifest.module_id``.
         Re-checking any of it here would be a second, weaker copy of a shipped gate.
 
+        **The redaction contract's static rules were added in issue #130** (see
+        :func:`check_sensitivity`), here for the web rules' reason: each reads this
+        manifest's own record types, events or keys. Here rather than in the loader
+        because a manifest that breaks one is malformed wherever it is read, including
+        by ``rheo web compose``, which never loads it.
+
         **The web contribution's ownership rules were added in run 1a3** (see
         :func:`_check_web_contribution`): they are here rather than on
         :class:`WebContribution` because each one reads this manifest's own id,
@@ -794,6 +907,13 @@ class ModuleManifest(BaseModel):
                     f"{dependency.version_range!r} for {dependency.module_id!r} "
                     "is not a PEP 440 specifier set"
                 ) from exc
+        check_sensitivity(
+            module_id=module_id,
+            record_types=self.record_types,
+            sensitivity=self.sensitivity,
+            events=self.events,
+            configuration_keys=[spec.key for spec in self.configuration_schema],
+        )
         if self.web is not None:
             _check_web_contribution(
                 self.web,

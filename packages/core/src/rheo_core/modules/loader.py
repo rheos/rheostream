@@ -10,13 +10,15 @@ the shipped registries with ``origin = manifest.module_id``, so every registrati
 check a hand-written registration faces (name grammar, origin/prefix agreement,
 reserved input fields, ``extra = "allow"``) applies unchanged.
 
-**Seven extension points, seven shipped registries, and no registry of this module's
+**Eight extension points, eight shipped registries, and no registry of this module's
 own.** ``_register`` attaches a manifest's operations (``OperationRegistry``),
 resolvers (``ResolverRegistry``), tools (``ToolRegistry``), job kinds
 (``JobKindRegistry``), subscriptions (``ConsumerRegistry``), deletion participants and
 each owned record type's own ``authorize_delete``/``delete_owned`` pair
-(``OwnedDeletionRegistry``) and ``configuration_schema`` keys
-(``settings.schema.REGISTRY``) — each through the same
+(``OwnedDeletionRegistry``), each tiered record type's model rendering
+(``redaction.registry.RENDERINGS``, plus the ``<module_id>.redaction.exclude_types``
+key the core declares for every module owning a record type) and
+``configuration_schema`` keys (``settings.schema.REGISTRY``) — each through the same
 public ``register`` the core's own startup calls, never a loader-local table. Declared
 **events** are the exception and deliberately so: ``rheo_core.events`` indexes
 subscriptions, not declarations, so there is nothing to populate and a declared event
@@ -109,8 +111,15 @@ from rheo_core.deletion.registry import (
     OwnedDeletionRegistry,
 )
 from rheo_core.events.consumers import ConsumerRegistry
-from rheo_core.modules.manifest import ManifestInvalid, ModuleManifest, WebSurface
+from rheo_core.modules.manifest import (
+    ManifestInvalid,
+    ModuleManifest,
+    WebSurface,
+    check_sensitivity,
+)
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
+from rheo_core.redaction.policy import exclude_types_spec
+from rheo_core.redaction.registry import RENDERINGS, ModelRendering
 from rheo_core.refs.resolver import RESOLVERS, ResolverRegistry
 from rheo_core.settings import resolve
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
@@ -353,6 +362,7 @@ def load_modules(
         manifests.append(load_entry_point(entry_point))
     _check_events(manifests)
     _check_subscriptions(manifests)
+    _check_redaction(manifests)
     loaded: list[str] = []
     for manifest in _dependency_order(manifests):
         _register(
@@ -407,6 +417,29 @@ def _check_events(manifests: Sequence[ModuleManifest]) -> None:
                     "declared by exactly one loaded manifest",
                 )
             declared_by[event.type] = manifest.module_id
+
+
+def _check_redaction(manifests: Sequence[ModuleManifest]) -> None:
+    """The redaction contract's static rules, again, over the loaded set.
+
+    The manifest's own validator already ran them, but
+    ``ModuleManifest.model_construct`` skips validators, and a manifest built that way
+    would otherwise carry a restricted event field or an unloadable tiered type
+    straight into the registries. Re-running the same function here, before anything
+    registers rather than inside ``_register``, keeps the "a refusal leaves every
+    registry untouched" promise :func:`load_modules` makes.
+    """
+    for manifest in manifests:
+        try:
+            check_sensitivity(
+                module_id=manifest.module_id,
+                record_types=manifest.record_types,
+                sensitivity=manifest.sensitivity,
+                events=manifest.events,
+                configuration_keys=[spec.key for spec in manifest.configuration_schema],
+            )
+        except ValueError as refusal:
+            raise ManifestInvalid(manifest.module_id, str(refusal)) from refusal
 
 
 def _check_subscriptions(manifests: Sequence[ModuleManifest]) -> None:
@@ -594,6 +627,38 @@ def _register(
             deletions.register_participant(
                 manifest.module_id, participant.record_types, participant.handler
             )
+    for owned_type in manifest.record_types:
+        # The redaction contract's record half, unconditional and on the process-global
+        # table for the owned-delete pair's reason: the context builder reads that one
+        # instance, and a tiered type it cannot find would go to a model as its raw
+        # ``display``. The manifest has already refused a tiered type with no loader
+        # (``check_sensitivity``), so ``load_for_model`` is set on every type that
+        # reaches the ``register`` call, and ``_check_redaction`` re-checks it for a
+        # manifest that skipped validation.
+        tiers = manifest.sensitivity.get(owned_type.name)
+        if tiers is None and owned_type.render_for_model is None:
+            continue
+        if owned_type.load_for_model is None:  # pragma: no cover - refused above
+            continue
+        RENDERINGS.register(
+            ModelRendering(
+                module_id=manifest.module_id,
+                record_type=owned_type.name,
+                tiers=tiers if tiers is not None else {},
+                load=owned_type.load_for_model,
+                render=owned_type.render_for_model,
+            ),
+            origin=manifest.module_id,
+        )
+    if manifest.record_types:
+        # ``<module_id>.redaction.exclude_types`` (``runtime-and-mcp.md`` § Retention
+        # and control): the core's key in every module's namespace, declared here
+        # because its shape is the core's and the manifest reserves the segment. One
+        # per module that owns a record type, since a module owning none has nothing to
+        # exclude. Identical on every load, so a second load is the registry's no-op.
+        SETTINGS_REGISTRY.register(
+            exclude_types_spec(manifest.module_id), origin=manifest.module_id
+        )
     for spec in manifest.configuration_schema:
         # The process-global settings registry, which is also what provisioning
         # reads — see this module's docstring for what that means for every

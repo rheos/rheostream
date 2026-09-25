@@ -462,16 +462,21 @@ def test_directly_inserted_row_with_approval_operation_refused_scope_invalid(
 # --- B6/B7: kind-for-surface -------------------------------------------------
 
 
-def test_cli_token_wrong_kind_on_mcp_and_mcp_token_ok_on_api(
+def test_each_surface_accepts_only_its_own_kinds(
     session_ctx: WorkspaceContext,
 ) -> None:
-    """B7, rows 22-23: a ``cli`` token on the MCP seam is ``token_wrong_kind``;
-    a ``mcp`` token on the ``api`` surface succeeds."""
-    cli_value, _, _ = _issue(session_ctx, kind="cli", set_name="read_only")
+    """B7, rows 22-23, as revised in issue #130: a ``cli`` token on the MCP seam and
+    an ``mcp`` token on the ``api`` surface are both ``token_wrong_kind``; each works
+    on its own surface. An ``mcp`` token over HTTP would receive raw operation output,
+    past the tool facade's redaction."""
+    cli_value, cli_id, _ = _issue(session_ctx, kind="cli", set_name="read_only")
     mcp_value, token_id, _ = _issue(session_ctx, kind="mcp", set_name="read_only")
-    wrong = context_from_token(cli_value, "mcp")
-    assert wrong == Refusal(TOKEN_WRONG_KIND)
-    ok = context_from_token(mcp_value, "api")
+    assert context_from_token(cli_value, "mcp") == Refusal(TOKEN_WRONG_KIND)
+    assert context_from_token(mcp_value, "api") == Refusal(TOKEN_WRONG_KIND)
+    on_api = context_from_token(cli_value, "api")
+    assert isinstance(on_api, WorkspaceContext)
+    assert on_api.actor.id == cli_id
+    ok = context_from_token(mcp_value, "mcp")
     assert isinstance(ok, WorkspaceContext)
     assert ok.actor.id == token_id
     assert ok.actor.id != session_ctx.actor.id
