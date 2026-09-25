@@ -7,7 +7,7 @@ dependencies = [
     "rheo-contracts",
     "rheo-app-mcp",
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.52.4",
+    "uvicorn[standard]>=0.53.0",
 ]
 
 [tool.uv.sources]
