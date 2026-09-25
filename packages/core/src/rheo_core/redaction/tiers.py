@@ -236,10 +236,24 @@ def nested_structured(annotation: object) -> Iterator[type]:
 
 
 _CARRIES: dict[type, bool] = {}
+"""Settled answers only. A ``False`` computed while the walk was inside a cycle through
+a class still being walked is provisional and never stored here; see
+:func:`class_carries_tiers`."""
 
 
 def class_carries_tiers(cls: type) -> bool:
     """Whether ``cls`` or anything its fields reach declares a tier.
+
+    **Cycles.** A recursive model (a tree, or ``A`` holding ``B`` holding ``A``) reaches
+    itself. The walk keeps the classes it is inside in an in-progress set and treats a
+    class met again as "nothing new found yet". A ``True`` is final the moment a tier is
+    found, and is cached. A ``False`` that leaned on an in-progress class is *not*
+    cached: in ``A{b: B, secret: R}`` / ``B{a: A}``, walking ``A`` first meets ``B``
+    before ``A``'s own restricted field, and a cached provisional ``False`` for ``B``
+    would have made every later question about ``B`` fail open (the second review's
+    finding). Only the root's answer is final when the whole cycle closes, because by
+    then every class it leaned on is the root itself or already settled. A recursive
+    untiered tree therefore still comes out ``False``.
 
     Fail closed: a class whose annotations cannot be resolved is treated as carrying
     tiers, since the renderer would otherwise send what it could not read.
@@ -247,15 +261,42 @@ def class_carries_tiers(cls: type) -> bool:
     cached = _CARRIES.get(cls)
     if cached is not None:
         return cached
-    _CARRIES[cls] = False  # a recursive class reaching itself adds nothing new
-    try:
-        fields = structured_fields(cls)
-    except UnresolvedModel:
-        _CARRIES[cls] = True
-        return True
-    carries = any(carries_tiers(annotation) for annotation in fields.values())
+    carries, _ = _carries(cls, set())
     _CARRIES[cls] = carries
     return carries
+
+
+def _carries(cls: type, in_progress: set[type]) -> tuple[bool, bool]:
+    """``(carries, provisional)``: ``provisional`` when a ``False`` leaned on a class
+    still in progress."""
+    cached = _CARRIES.get(cls)
+    if cached is not None:
+        return cached, False
+    if cls in in_progress:
+        return False, True
+    in_progress.add(cls)
+    try:
+        try:
+            fields = structured_fields(cls)
+        except UnresolvedModel:
+            _CARRIES[cls] = True
+            return True, False
+        provisional = False
+        for annotation in fields.values():
+            if annotation_tier(annotation) is not None:
+                _CARRIES[cls] = True
+                return True, False
+            for nested in nested_structured(annotation):
+                carries, leaned = _carries(nested, in_progress)
+                if carries:
+                    _CARRIES[cls] = True
+                    return True, False
+                provisional = provisional or leaned
+        if not provisional:
+            _CARRIES[cls] = False
+        return False, provisional
+    finally:
+        in_progress.discard(cls)
 
 
 def carries_tiers(annotation: object) -> bool:

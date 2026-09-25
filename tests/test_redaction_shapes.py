@@ -65,6 +65,7 @@ from rheo_core.redaction.render import render_output
 from rheo_core.redaction.tiers import (
     SensitivityTier,
     Tiered,
+    class_carries_tiers,
     restricted_fields,
     unrenderable_paths,
 )
@@ -666,3 +667,78 @@ def test_secret_references_mask_in_any_case() -> None:
 )
 def test_mask_tokens_are_matched_after_normalisation(text: str) -> None:
     assert list(mask_tokens_in({"body": text}))
+
+
+# --- cycles: a provisional answer is never cached (CodeRabbit on PR #147) ------------
+
+
+class CycleA(BaseModel):
+    b: "CycleB | None" = None
+    secret: Annotated[str, R] = SECRET
+
+
+class CycleB(BaseModel):
+    a: CycleA | None = None
+
+
+class OtherCycleA(BaseModel):
+    b: "OtherCycleB | None" = None
+    secret: Annotated[str, R] = SECRET
+
+
+class OtherCycleB(BaseModel):
+    a: OtherCycleA | None = None
+
+
+class SerializedCycleB(BaseModel):
+    """Serializes itself, and reaches a tiered class only through a cycle."""
+
+    a: "SerializedCycleA | None" = None
+
+    @model_serializer
+    def _text(self) -> str:
+        return "b"
+
+
+class SerializedCycleA(BaseModel):
+    b: SerializedCycleB | None = None
+    secret: Annotated[str, R] = SECRET
+
+
+class Tree(BaseModel):
+    label: str
+    children: list["Tree"] = []
+
+
+CycleA.model_rebuild()
+OtherCycleA.model_rebuild()
+SerializedCycleB.model_rebuild()
+Tree.model_rebuild()
+
+
+def test_a_cycle_queried_through_its_tiered_class_first_settles_both() -> None:
+    """``A`` first: ``B`` is met while ``A`` is in progress, and its provisional
+    ``False`` must not stick."""
+    assert class_carries_tiers(CycleA) is True
+    assert class_carries_tiers(CycleB) is True
+    rendered = render_output(CycleB(a=CycleA()), _policy())
+    assert SECRET not in json.dumps(rendered.value)
+
+
+def test_a_cycle_queried_through_its_untiered_class_first_settles_both() -> None:
+    assert class_carries_tiers(OtherCycleB) is True
+    assert class_carries_tiers(OtherCycleA) is True
+
+
+def test_the_unrenderable_check_sees_a_class_reaching_tiers_through_a_cycle() -> None:
+    assert class_carries_tiers(SerializedCycleA) is True
+    assert unrenderable_paths(SerializedCycleB)
+    rendered = render_output(SerializedCycleB(a=SerializedCycleA()), _policy())
+    assert rendered.withheld is True
+
+
+def test_a_recursive_untiered_tree_stays_untiered() -> None:
+    tree = Tree(label="root", children=[Tree(label="leaf")])
+    assert class_carries_tiers(Tree) is False
+    assert unrenderable_paths(Tree) == ()
+    assert render_output(tree, _policy()).value == tree.model_dump(mode="json")
