@@ -131,8 +131,8 @@ RECALL_TOOL: Final = ToolDeclaration(
         "Dense retrieval returns its nearest rows, not its relevant ones, so judge "
         "relevance yourself. A memory is a dated claim, not current truth: "
         "supersession corrects it, so prefer the most recent and check live state. "
-        "Read `provenance` before `items` — it says which arms ran and whether "
-        "dense was available at all."
+        "Read `provenance` before `items` — it says how many of the returned "
+        "items each arm found and whether dense was available at all."
     ),
 )
 

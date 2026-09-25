@@ -1239,6 +1239,32 @@ def _recall_under(
     return _recalled(ws.recall(**payload))
 
 
+def _arms_under(
+    ws: RetrievalWorkspace, strategy: str, *, query: str, k: int
+) -> ArmProvenance:
+    """The strategy's own pre-walk arm lengths, read the way ``recall()`` would ask.
+
+    Internal diagnostics: ``recall()``'s response counts only the returned items
+    (#121), so a test about an arm's width reads the strategy directly."""
+    ctx = ws.context()
+    with ws.reading() as uow:
+        return (
+            STRATEGY_REGISTRY[strategy]
+            .search(
+                ctx,
+                uow,
+                SearchRequest(
+                    query=query,
+                    mode=ReadMode.CURRENT,
+                    memory=_request(ctx, uow),
+                    limit=CANDIDATE_SCAN_LIMIT,
+                    k=k,
+                ),
+            )
+            .arms
+        )
+
+
 def _seed_ordered(ws: RetrievalWorkspace, *texts: tuple[str, str]) -> list[UUID]:
     """Like ``_seed``, with each row a second newer than the one before it."""
     with ws.unit() as uow:
@@ -1550,19 +1576,23 @@ def test_the_dense_arm_is_k_times_the_multiplier_wide_and_the_lexical_arm_is_not
         f"{len(above_floor)} rows clear the floor: availability, not the "
         f"multiplier, would decide an arm of {width}",
     )
-    lexical = _recall_under(retrieval, STRATEGY_LEXICAL, query="apples", k=_AC9_K)
+    lexical = _arms_under(retrieval, STRATEGY_LEXICAL, query="apples", k=_AC9_K)
     _gate(
-        lexical.provenance.arms.lexical > width,
-        f"lexical matches {lexical.provenance.arms.lexical}, too few to show a "
+        lexical.lexical > width,
+        f"lexical matches {lexical.lexical}, too few to show a "
         f"multiplied arm of {width}",
     )
 
+    arms = _arms_under(retrieval, STRATEGY_HYBRID, query="apples", k=_AC9_K)
     result = _recall_under(retrieval, STRATEGY_HYBRID, query="apples", k=_AC9_K)
 
+    assert arms.dense == width
+    assert arms.lexical == lexical.lexical
     assert result.provenance.dense_available is True
-    assert result.provenance.arms.dense == width
-    assert result.provenance.arms.lexical == lexical.provenance.arms.lexical
     assert len(result.items) == _AC9_K
+    # The response counts the two returned items, never the arms' widths (#121).
+    assert result.provenance.arms.lexical <= _AC9_K
+    assert result.provenance.arms.dense <= _AC9_K
 
 
 _WALK_K = 2
@@ -1636,10 +1666,14 @@ def test_hybrid_walks_as_far_as_lexical_when_the_top_of_the_order_is_denied(
         "lexical did not walk down to both readable rows",
     )
 
+    hybrid_arms = _arms_under(retrieval, STRATEGY_HYBRID, query="apples", k=_WALK_K)
     hybrid = _recall_under(retrieval, STRATEGY_HYBRID, query="apples", k=_WALK_K)
 
+    assert hybrid_arms.dense == width
     assert hybrid.provenance.dense_available is True
-    assert hybrid.provenance.arms.dense == width
+    # Only the lexical arm carries the readable rows, and the denied ones above them
+    # are counted nowhere a caller sees (#121).
+    assert hybrid.provenance.arms == ArmCounts(lexical=_WALK_K, dense=0)
     assert len(hybrid.items) == len(lexical.items)
     assert {item.ref for item in hybrid.items} == {item.ref for item in lexical.items}
 
@@ -1748,6 +1782,13 @@ def test_a_memory_whose_source_is_unreadable_is_reached_and_dropped(
     assert result.provenance.strategy == strategy
     assert result.provenance.dense_available is True
     assert [item.ref for item in result.items] == [memory_reference(readable)]
+    # #121: the denied memory is the dense arm's top candidate and counts nowhere.
+    # Each count is at most the one returned item, whichever arms ranked it.
+    assert result.provenance.arms.lexical <= 1
+    assert result.provenance.arms.dense <= 1
+    assert result.provenance.arms.dense == (
+        1 if readable in {hit.ref for hit in dense_arm.hits} else 0
+    )
 
 
 @pytest.mark.parametrize("change", ["correct", "supersede"])

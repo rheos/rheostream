@@ -182,11 +182,14 @@ suite under `lexical` and under `dense`. The two stages, in order:
 
 Each item carries `ref`, `kind`, `title`, `body`, `score`, `strategy`, `occurred_at`, and the
 resolved heads of its links. The response carries `provenance`: `strategy`, the strategy that
-answered, which every item's `strategy` equals; `arms.lexical` and `arms.dense`, the length of
-each arm's ranked list as it entered fusion, after the arm's own limit and before the walk,
-zero for an arm that did not run; and `dense_available`, whether a dense arm could contribute
-to this answer at all. `score` is on the answering strategy's own scale and is comparable only
-among the items of one response: `ts_rank_cd` under `lexical`, cosine similarity under `dense`,
+answered, which every item's `strategy` equals; `arms.lexical` and `arms.dense`, how many of
+the returned items each arm ranked, so a fused item both arms found counts in each and an arm
+that did not run counts zero; and `dense_available`, whether a dense arm could contribute
+to this answer at all. The arm counts are taken after the walk, over the items alone: each
+arm's own list length before the walk includes memories the caller may not read, so a count
+of it beside an empty answer would say a hidden memory matched (#121). Those pre-walk lengths
+stay internal to the strategy. `score` is on the answering strategy's own scale and is
+comparable only among the items of one response: `ts_rank_cd` under `lexical`, cosine similarity under `dense`,
 and the fused sum `Σ 1 / (60 + rank)` under `hybrid`, at most `2/61`. A score compared across
 strategies, or stored and compared later, compares nothing. The candidate SQL and the link
 check are strategy-independent; 1a1 owns the records, the eligibility rules both stages apply,

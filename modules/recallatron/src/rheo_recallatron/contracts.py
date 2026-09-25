@@ -327,9 +327,12 @@ class EntityHead(Strict):
 
 
 class ArmCounts(Strict):
-    """How many ranked candidates each retrieval arm contributed — the length of its
-    list as it entered fusion, after its own limit and before the permission walk.
-    An arm that did not run contributes zero."""
+    """How many of the **returned** items each retrieval arm ranked. A fused item both
+    arms found counts once in each; an arm that did not run, or found none of the
+    returned items, counts zero.
+
+    Counted after the permission walk, over the items only, so a memory the caller
+    may not read never changes either number. An empty answer always counts zero."""
 
     lexical: int
     dense: int

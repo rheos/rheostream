@@ -17,6 +17,7 @@ from rheo_recallatron.configuration import STRATEGY_LEXICAL
 from rheo_recallatron.eligibility import row_local_conditions
 from rheo_recallatron.retrieval.lexical_query import lexical_tsquery
 from rheo_recallatron.retrieval.protocol import (
+    ARM_LEXICAL,
     ArmProvenance,
     Hit,
     IndexItem,
@@ -53,7 +54,12 @@ class LexicalStrategy:
             .limit(request.limit)
         )
         hits = tuple(
-            Hit(ref=candidate, score=float(candidate_score), strategy=self.name)
+            Hit(
+                ref=candidate,
+                score=float(candidate_score),
+                strategy=self.name,
+                arms=frozenset({ARM_LEXICAL}),
+            )
             for candidate, candidate_score in uow.connection.execute(statement).all()
         )
         return SearchResult(
