@@ -7,6 +7,7 @@ signature carries the unit of work: a strategy cannot reach the database without
 and one that opened its own connection could disagree with what this transaction sees.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final, Protocol
 from uuid import UUID
@@ -28,6 +29,15 @@ class SearchRequest:
     ``k`` is how many items the caller asked ``recall()`` for, which ``limit`` does not
     say: the hybrid dense arm is ``k`` times the over-fetch multiplier wide, while every
     arm's ``limit`` on the way in is the scan bound.
+
+    ``admit`` is the caller's full eligibility decision for one candidate, when the
+    caller has one. A strategy whose scores depend on **rank** must count ranks over
+    admitted candidates only, or a score would encode how many hidden rows ranked
+    above it (#125). Only fusion does: a single arm's score is absolute
+    (``ts_rank_cd``, cosine) and needs no filtering. The strategy still decides nothing
+    itself; ``admit`` is ``recall()``'s decision, cached on the request, so the walk
+    that follows re-reads it for free. ``None`` ranks every candidate, which is only
+    for tests and diagnostics that read an arm directly.
     """
 
     query: str
@@ -35,6 +45,7 @@ class SearchRequest:
     memory: MemoryRequest
     limit: int
     k: int
+    admit: Callable[[UUID], bool] | None = None
 
 
 ARM_LEXICAL: Final = "lexical"

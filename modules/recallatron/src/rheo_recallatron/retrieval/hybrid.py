@@ -24,7 +24,7 @@ Fusion and rerank are written here by hand, a few lines each, and borrow from no
 """
 
 import dataclasses
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Final
 from uuid import UUID
@@ -123,6 +123,45 @@ def fuse(
     return [(ref, scores[ref]) for ref in ordered]
 
 
+def admitted_arms(
+    lexical: Sequence[UUID],
+    dense: Sequence[UUID],
+    *,
+    admit: Callable[[UUID], bool],
+    k: int,
+) -> tuple[list[UUID], list[UUID]]:
+    """Both arms cut to the candidates ``admit`` passes, in their own order, so the
+    ranks fusion counts are ranks among memories the caller may read (#125).
+
+    Fused over the unfiltered arms, a score ``1 / (60 + rank)`` gives away the rank,
+    and the rank counts every hidden row above it. Fused over these lists, every score
+    and the order of every returned item are what they would be if the hidden rows
+    did not exist. One residual stays: the dense arm is cut to its width before this
+    runs, so enough hidden rows nearer the query can still push a readable one out.
+
+    **The dense arm is decided in full**; it is at most ``k`` times the multiplier
+    long. **The lexical arm is decided only as deep as the answer needs:** past both
+    its ``k``-th admitted row and every admitted dense id it also holds. A row left
+    undecided is then in no admitted dense position, so its fused score is lexical
+    alone at an admitted rank above ``k``, at most ``1 / (61 + k)``, below each of the
+    ``k`` admitted rows already found. It cannot reach the top ``k`` that ``recall()``
+    takes, so nothing it could change is ever returned. The remaining positions of
+    the fused list are then approximate, and no caller reads past ``k``.
+    """
+    dense_kept = [ref for ref in dense if admit(ref)]
+    position = {ref: index for index, ref in enumerate(lexical)}
+    must_reach = max(
+        (position[ref] for ref in dense_kept if ref in position), default=-1
+    )
+    lexical_kept: list[UUID] = []
+    for index, ref in enumerate(lexical):
+        if len(lexical_kept) >= k and index > must_reach:
+            break
+        if admit(ref):
+            lexical_kept.append(ref)
+    return lexical_kept, dense_kept
+
+
 def _recorded_at(uow: UnitOfWork, ids: Collection[UUID]) -> dict[UUID, datetime]:
     """``recorded_at`` for every ranked id, in one statement. A ``Hit`` carries no
     timestamp, and the rerank needs one only for the ids that were ranked."""
@@ -173,19 +212,26 @@ class HybridStrategy:
         savepoint, so when it fails the lexical arm, the ``recorded_at`` read and the
         permission walk after it all run on the transaction that survived.
 
-        ``arms`` counts each arm's list as it entered fusion; ``dense_available`` is
-        the dense arm's own answer. Each hit's own ``arms`` is read from which arm's
-        list held its id, not from the arms' ``Hit.arms``, so a stand-in arm cannot
-        mislabel a fused hit.
+        With ``request.admit`` set, as ``recall()`` always sets it, both arms are cut
+        to admitted candidates before fusion (:func:`admitted_arms`), so no fused score
+        or position counts a memory the caller may not read (#125).
+
+        ``arms`` counts each arm's list as it came back, before that cut, and stays
+        internal; ``dense_available`` is the dense arm's own answer. Each hit's own
+        ``arms`` is read from which admitted list held its id, not from the arms'
+        ``Hit.arms``, so a stand-in arm cannot mislabel a fused hit.
         """
         width = min(request.k * overfetch_multiplier(ctx, uow), request.limit)
         dense = self._dense.search(ctx, uow, dataclasses.replace(request, limit=width))
         lexical = self._lexical.search(ctx, uow, request)
 
-        ranked = (
-            [hit.ref for hit in lexical.hits],
-            [hit.ref for hit in dense.hits],
-        )
+        lexical_ids = [hit.ref for hit in lexical.hits]
+        dense_ids = [hit.ref for hit in dense.hits]
+        if request.admit is not None:
+            lexical_ids, dense_ids = admitted_arms(
+                lexical_ids, dense_ids, admit=request.admit, k=request.k
+            )
+        ranked = (lexical_ids, dense_ids)
         fused = fuse(ranked, _recorded_at(uow, {ref for arm in ranked for ref in arm}))
         in_lexical, in_dense = (frozenset(arm) for arm in ranked)
         return SearchResult(

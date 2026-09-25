@@ -1791,6 +1791,85 @@ def test_a_memory_whose_source_is_unreadable_is_reached_and_dropped(
     )
 
 
+def test_hidden_memories_move_no_hybrid_score_or_position(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#125, under ``hybrid`` with a live dense arm. Mechanism (c).
+
+    Three readable memories answer ``apples``; the baseline is their items, scores,
+    order and provenance. Then three hidden ones are added: ``workspace``-audience,
+    so the row-local prefilter admits them, and linked to a source this caller cannot
+    read, so only full eligibility removes them. Their text is the query's own word,
+    so they top both arms, which is gated on the raw arms. The answer must not move by
+    one position or one digit of score: fused over the raw arms, each readable item
+    would sit three ranks lower and score less.
+
+    Fewer hidden rows than the dense arm is wide, so the documented arm-width
+    residual (enough hidden rows pushing a readable one out of that arm) is not what
+    this measures.
+    """
+    fake = _fake(monkeypatch)
+    with retrieval.unit() as uow:
+        readable = [
+            _write(uow, _row("apples", "apples and pears", recorded_at=_recent(10))),
+            _write(uow, _row("apple pie", "an apples recipe", recorded_at=_recent(11))),
+            _write(
+                uow, _row("orchard", "apples in the orchard", recorded_at=_recent(12))
+            ),
+        ]
+    _fill(retrieval, fake)
+    before = _recall_under(retrieval, STRATEGY_HYBRID, query="apples")
+    _gate(before.provenance.dense_available, "the dense arm is unavailable")
+    _gate(
+        {item.ref for item in before.items}
+        == {memory_reference(memory_id) for memory_id in readable},
+        "the baseline is not the three readable memories",
+    )
+    _gate(
+        before.provenance.arms.dense > 0 and before.provenance.arms.lexical > 0,
+        f"one arm contributed nothing: {before.provenance.arms}",
+    )
+
+    with retrieval.unit() as uow:
+        hidden = {
+            _write_linked(
+                uow,
+                _row("apples", "apples apples", recorded_at=_recent(n)),
+                _unreadable_source(),
+            )
+            for n in range(3)
+        }
+    _fill(retrieval, fake)
+    width = RECALL_K_DEFAULT * OVERFETCH_MULTIPLIER_DEFAULT
+    ctx = retrieval.context()
+    with retrieval.reading() as uow:
+        request = SearchRequest(
+            query="apples",
+            mode=ReadMode.CURRENT,
+            memory=_request(ctx, uow),
+            limit=CANDIDATE_SCAN_LIMIT,
+            k=RECALL_K_DEFAULT,
+        )
+        raw_lexical = LexicalStrategy().search(ctx, uow, request)
+        raw_dense = DenseStrategy().search(ctx, uow, request)
+    _gate(len(hidden) + len(readable) <= width, "the dense arm is too narrow")
+    _gate(
+        {hit.ref for hit in raw_lexical.hits[: len(hidden)]} == hidden,
+        "the hidden memories are not the top of the lexical arm",
+    )
+    _gate(
+        {hit.ref for hit in raw_dense.hits[: len(hidden)]} == hidden,
+        "the hidden memories are not the top of the dense arm",
+    )
+
+    after = _recall_under(retrieval, STRATEGY_HYBRID, query="apples")
+
+    assert [(item.ref, item.score) for item in after.items] == [
+        (item.ref, item.score) for item in before.items
+    ]
+    assert after.provenance == before.provenance
+
+
 @pytest.mark.parametrize("change", ["correct", "supersede"])
 def test_a_vector_written_by_index_goes_with_the_closure(
     retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch, change: str
