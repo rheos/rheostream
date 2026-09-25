@@ -12,6 +12,7 @@ import hashlib
 import json
 import shutil
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
@@ -53,7 +54,7 @@ from rheo_core.operations.records import (
 )
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.redaction.masking import mask_for_model
-from rheo_core.redaction.policy import TierPolicy, purpose_of
+from rheo_core.redaction.policy import TierPolicy, policy_digest, purpose_of
 from rheo_core.redaction.render import RenderedRecord, render_record
 from rheo_core.redaction.tiers import SensitivityTier
 from rheo_core.refs import uuid7
@@ -482,13 +483,35 @@ def _context_digest(items: Sequence[ContextItem]) -> bytes:
     return hashlib.sha256("".join(item.text for item in items).encode("utf-8")).digest()
 
 
+@dataclass(frozen=True, slots=True)
+class SessionPolicy:
+    """The redaction policy a run is rendered under, as a native session records it.
+
+    A continuation resumes only a session whose stored ``purpose`` and
+    ``policy_digest`` equal these (issue #130 review): a native session holds whatever
+    its earlier runs were shown, and nothing re-redacts it, so resuming one built under
+    a wider purpose or a looser policy would keep fields the current policy withholds.
+    A mismatch starts a fresh session rather than refusing the run.
+    """
+
+    purpose: str
+    digest: bytes
+
+
 def _lookup_continuation(
     uow: HandlerUnitOfWork,
     payload: RuntimeJobPayload,
     *,
     credential_scope: str,
     now: datetime,
+    policy: SessionPolicy,
 ) -> tuple[UUID | None, str | None]:
+    """The session to resume, or ``(None, None)`` for a fresh one.
+
+    The binding columns, the expiry, **and the policy**: ``purpose`` and
+    ``policy_digest`` must equal the run's. A row written before revision 0009 has
+    both null and matches nothing, so it is never resumed.
+    """
     if payload.continuation is None:
         return None, None
     if payload.actor_id is None or payload.audience_id is None:
@@ -503,6 +526,8 @@ def _lookup_continuation(
                 runtime_tables.runtime_session.c.actor_id == payload.actor_id,
                 runtime_tables.runtime_session.c.audience_kind == payload.audience_kind,
                 runtime_tables.runtime_session.c.audience_id == payload.audience_id,
+                runtime_tables.runtime_session.c.purpose == policy.purpose,
+                runtime_tables.runtime_session.c.policy_digest == policy.digest,
             )
         )
         .mappings()
@@ -527,6 +552,7 @@ def _write_session(
     credential_scope: str,
     now: datetime,
     ttl_hours: int,
+    policy: SessionPolicy,
 ) -> None:
     if not native_handle:
         return
@@ -541,6 +567,8 @@ def _write_session(
                 native_handle=native_handle,
                 last_used_at=now,
                 expires_at=expires_at,
+                purpose=policy.purpose,
+                policy_digest=policy.digest,
             )
         )
         return
@@ -557,6 +585,8 @@ def _write_session(
             created_at=now,
             last_used_at=now,
             expires_at=expires_at,
+            purpose=policy.purpose,
+            policy_digest=policy.digest,
         )
     )
 
@@ -599,6 +629,7 @@ def _poll_loop(
     credential_scope: str,
     ttl_hours: int,
     retention_days: int,
+    policy: SessionPolicy,
 ) -> None:
     ordinal = 1
     while True:
@@ -695,6 +726,7 @@ def _poll_loop(
                 credential_scope=credential_scope,
                 now=now,
                 ttl_hours=ttl_hours,
+                policy=policy,
             )
             uow.connection.execute(
                 update(runtime_tables.runtime_request)
@@ -882,11 +914,16 @@ def make_run_runtime_job(
                     [{"request_id": request_id, "ref": ref} for ref in payload.refs],
                 )
             credential_scope = _credential_scope(settings)
+            tier_policy = TierPolicy.from_settings(purpose_of(ctx), settings)
+            session_policy = SessionPolicy(
+                purpose=tier_policy.purpose.value, digest=policy_digest(tier_policy)
+            )
             matched_id, native_handle = _lookup_continuation(
                 uow,
                 payload,
                 credential_scope=credential_scope,
                 now=now,
+                policy=session_policy,
             )
             snapshot = _snapshot_operations(ctx, tools)
             if account_id is None:
@@ -931,6 +968,7 @@ def make_run_runtime_job(
                 credential_scope=credential_scope,
                 ttl_hours=settings.get_int("runtime.session_ttl_hours"),
                 retention_days=settings.get_int("runtime.transcript_retention_days"),
+                policy=session_policy,
             )
         finally:
             # However the loop ended (the deadline, a cancelled job raising out of

@@ -24,6 +24,7 @@ from rheo_contracts import (
     AdapterSpawn,
     AudienceKind,
     ContextItem,
+    ContextPurpose,
     FailureEvent,
     FailureKind,
     FinalOutputEvent,
@@ -42,6 +43,7 @@ from rheo_core.operations import records as operation_records
 from rheo_core.operations.core_ops import register_core_operations
 from rheo_core.redaction import registry as redaction_registry
 from rheo_core.redaction.masking import EMAIL_MASK, SECRET_MASK
+from rheo_core.redaction.policy import TierPolicy, policy_digest
 from rheo_core.refs import uuid7
 from rheo_core.runtime import (
     RUNTIME_RUN,
@@ -49,6 +51,8 @@ from rheo_core.runtime import (
     RuntimeJobPayload,
     make_run_runtime_job,
 )
+from rheo_core.settings import resolve
+from rheo_core.settings.storage_source import PostgresOverrideSource
 from rheo_core.storage import runtime_tables, work_tables
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import get_access_token
@@ -447,6 +451,10 @@ def test_runtime_continuation_puts_cli_native_handle_on_spawn_not_uuid(
     session_id = uuid7()
     engine = workspace_engine(cluster, workspace)
     now = datetime.now(UTC)
+    respond = TierPolicy.from_settings(
+        ContextPurpose.RESPOND,
+        resolve(workspace_id=workspace, source=PostgresOverrideSource()),
+    )
     with engine.begin() as connection:
         connection.execute(
             runtime_tables.runtime_session.insert().values(
@@ -461,6 +469,11 @@ def test_runtime_continuation_puts_cli_native_handle_on_spawn_not_uuid(
                 created_at=now,
                 last_used_at=now,
                 expires_at=now + timedelta(hours=72),
+                # Since issue #130 a session resumes only under the redaction policy
+                # it was built under, so the row records the policy a ``respond`` run
+                # has now (``test_runtime_continuation_binding.py`` covers mismatches).
+                purpose=respond.purpose.value,
+                policy_digest=policy_digest(respond),
             )
         )
     adapter = RecordingAdapter(native_handle="rotated-handle")

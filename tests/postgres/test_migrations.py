@@ -35,7 +35,7 @@ from rheo_core.migrations.orchestrator import (
     script_location,
 )
 from rheo_core.refs import uuid7
-from rheo_core.storage import control_tables
+from rheo_core.storage import control_tables, runtime_tables
 from rheo_core.storage.backend import (
     DATABASE_MISMATCH,
     SCHEMA_AHEAD,
@@ -47,7 +47,7 @@ from rheo_core.storage.control_tables import WORKSPACE_STATES, WorkspaceState
 from rheo_core.storage.postgres import advisory_lock
 from rheo_core.storage.provisioning import repair
 from rheo_core.storage.routing import active_workspace
-from sqlalchemy import Engine, text, update
+from sqlalchemy import Engine, inspect, text, update
 from sqlalchemy.exc import IntegrityError
 
 pytestmark = pytest.mark.postgres
@@ -182,7 +182,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
     # Every revision the script directory holds, not the one the database records:
-    # the control chain ships two files and the core chain eight, so these are all
+    # the control chain ships two files and the core chain nine, so these are all
     # the ids each carries.
     assert known_revisions(CONTROL_CHAIN) == {"0001_control_plane", "0002_work_index"}
     assert known_revisions(CORE_CHAIN) == {
@@ -194,6 +194,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
         "0006_runtime",
         "0007_record_deletion",
         "0008_tool_telemetry",
+        "0009_runtime_session_policy",
     }
 
 
@@ -221,7 +222,9 @@ def test_core_chain_creates_exactly_the_twenty_five_tables(
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CORE_CHAIN) == {"0008_tool_telemetry"}
+        assert recorded_revisions(connection, CORE_CHAIN) == {
+            "0009_runtime_session_policy"
+        }
 
 
 def test_migrate_control_is_idempotent_and_survives_an_existing_database(
@@ -336,7 +339,7 @@ def test_failing_core_revision_marks_unavailable_and_startup_completes(
     with broken_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO core.alembic_version_core (version_num) VALUES (:v)"),
-            {"v": "0008_tool_telemetry"},
+            {"v": "0009_runtime_session_policy"},
         )
     repair(broken)
     assert cluster.registry_row(broken).state is WorkspaceState.ACTIVE
@@ -374,7 +377,7 @@ def test_schema_ahead_marks_unavailable_and_refuses_repair(
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE core.alembic_version_core SET version_num = :v"),
-            {"v": "0008_tool_telemetry"},
+            {"v": "0009_runtime_session_policy"},
         )
     repair(workspace)
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE
@@ -553,3 +556,25 @@ def test_workspace_state_constraint_agrees_with_the_enum(
         assert isinstance(excinfo.value.orig, psycopg.errors.CheckViolation)
         connection.rollback()
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE
+
+
+def test_revision_0009_adds_the_session_policy_columns_nullable(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    """``0009_runtime_session_policy`` adds exactly ``purpose`` and ``policy_digest``
+    to ``core.runtime_session``, both nullable: a row written before it has neither
+    and is never resumed (``rheo_core/runtime/operations.py``)."""
+    _, engine = workspace_engine(cluster, workspace)
+    columns = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("runtime_session", schema="core")
+    }
+    assert {"purpose", "policy_digest"} <= set(columns)
+    assert columns["purpose"]["nullable"] is True
+    assert columns["policy_digest"]["nullable"] is True
+    assert set(columns) == {
+        column.name for column in runtime_tables.runtime_session.columns
+    }
+    assert set(columns) - {
+        column.name for column in runtime_tables.runtime_session_0006.columns
+    } == {"purpose", "policy_digest"}

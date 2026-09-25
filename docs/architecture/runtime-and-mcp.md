@@ -84,18 +84,20 @@ consumed the output checking its own record, not by the runtime.
 | `runtime_id`, `credential_scope text`, `actor_kind`, `actor_id`, `audience_kind`, `audience_id` | The binding. A lookup must supply all of them; there is no "latest". |
 | `native_handle text` | The adapter's own session id, opaque to the core. |
 | `created_at`, `last_used_at`, `expires_at` | Sessions expire with `runtime.session_ttl_hours` (default 72). |
+| `purpose text null`, `policy_digest bytea null` | The redaction policy the session was built under (core revision `0009_runtime_session_policy`): the run's purpose and a SHA-256 over the tier-policy inputs (purpose, effective `redaction.internal_purposes`, whether contact values are released, every module's effective `exclude_types`). Written on every run that records a session. Null on rows written before 0009, which are therefore never resumed. |
 
 Switching runtimes starts a new native session with the selected authorized context; nothing
 is carried across adapters. Completed effects are never replayed because effects are external
 actions with their own records, not part of the transcript.
 
-**The binding does not include the purpose.** A continuation is matched on the columns
-above, so a run under a narrower purpose (`share_with_referral`) can resume a native session
-first built under a wider one (`internal_analysis`), and the provider-side transcript of that
-session still holds whatever the wider run was shown. The new run's own context items are
-rendered under its own purpose; what the session already holds is not re-redacted. Adding
-`purpose` to the binding would close this; it is recorded here as a known gap of the
-redaction contract (issue #130 review).
+**The binding includes the redaction policy.** A continuation resumes only when the
+stored session's `purpose` and `policy_digest` equal the new run's, besides the binding
+columns and the expiry. A native session holds whatever its earlier runs were shown, and
+nothing re-redacts it, so resuming one built under a wider purpose (`internal_analysis`
+for a `share_with_referral` run) or a looser policy (before the workspace narrowed
+`redaction.internal_purposes`, excluded a record type or withdrew the contact allowance)
+would keep what the current policy withholds. Any mismatch, and any row written before
+revision 0009, starts a fresh session instead; the run itself is not refused.
 
 ### The run-scoped token
 

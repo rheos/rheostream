@@ -41,6 +41,8 @@ and the tool facade is on every MCP call, so the resolver runs the first time an
 answer depends on it and at most once per policy.
 """
 
+import hashlib
+import json
 from collections.abc import Callable
 from typing import Final
 
@@ -168,6 +170,32 @@ class TierPolicy:
         if key not in settings:
             return frozenset()
         return frozenset(settings.get_list(key))
+
+
+def policy_digest(policy: TierPolicy) -> bytes:
+    """A digest of every input that decides what ``policy`` lets through.
+
+    The purpose, the effective ``redaction.internal_purposes``, whether contact
+    values are released, and every module's effective ``exclude_types``. Two policies
+    with one digest render any record and any tool result identically, so a runtime
+    session built under one may be resumed under the other; any difference means a
+    fresh session (``rheo_core/runtime/operations.py``), because a native session
+    already holds whatever its earlier runs were shown and nothing re-redacts it.
+    """
+    settings = policy.settings()
+    exclusions = {
+        key: sorted(settings.get_list(key))
+        for key in sorted(settings)
+        if key.endswith(f".{EXCLUDE_TYPES_SUFFIX}")
+    }
+    inputs = {
+        "purpose": policy.purpose.value,
+        "internal_purposes": sorted(settings.get_list(INTERNAL_PURPOSES_KEY)),
+        "contact_points": policy.contact_points_allowed,
+        "exclude_types": exclusions,
+    }
+    encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).digest()
 
 
 def policy_for(ctx: WorkspaceContext) -> TierPolicy:
