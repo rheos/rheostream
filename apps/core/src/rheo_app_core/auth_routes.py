@@ -69,10 +69,22 @@ from rheo_core.storage.control_plane import SessionRow, get_session_by_secret_ha
 from rheo_core.storage.data_root import resolve_data_root
 from rheo_core.storage.postgres import get_backend
 
+from rheo_app_core.routing import routing_config
+
 router = APIRouter()
 
 _STATE_NONCE_BYTES = 24
 ORIGIN_NOT_ALLOWED = "origin_not_allowed"
+IDENTITY_PROVIDER_UNAVAILABLE = "identity_provider_unavailable"
+
+
+class IdentityProviderUnavailable(Exception):
+    """No identity provider is enabled, so ``/auth/login`` and ``/auth/callback``
+    have nothing to sign anyone in with.
+
+    A deployment state, not a bug: the flagship's first deploy runs with GitHub
+    disabled on purpose. :func:`identity_provider_unavailable_handler` turns it into
+    a typed ``503`` rather than letting FastAPI answer a bare ``500`` (issue #119)."""
 
 
 # --- shared helpers -----------------------------------------------------------------
@@ -108,7 +120,10 @@ def _identity_host(config: RoutingConfig) -> str:
 
 
 def _routing_config() -> RoutingConfig:
-    return RoutingConfig.from_settings(resolve())
+    """Module surfaces included: without them a module's host is not an
+    application host here, and ``/auth/continue`` refuses its ``return``
+    (issue #119)."""
+    return routing_config()
 
 
 def _return_host(return_target: str) -> str:
@@ -183,7 +198,7 @@ def resolve_identity_provider() -> Iterator[IdentityProvider]:
     and ``/auth/callback``."""
     settings = resolve()
     if not settings.get_bool("identity.providers.github.enabled"):
-        raise RuntimeError(
+        raise IdentityProviderUnavailable(
             "no identity provider is configured: "
             "identity.providers.github.enabled is false"
         )
@@ -208,6 +223,15 @@ def resolve_identity_provider() -> Iterator[IdentityProvider]:
 # FastAPI itself calls it once per request, but the annotated form sidesteps the
 # question entirely and is the form FastAPI's own docs recommend.
 IdentityProviderDep = Annotated[IdentityProvider, Depends(resolve_identity_provider)]
+
+
+def identity_provider_unavailable_handler(request: Request, exc: Exception) -> Response:
+    """``IdentityProviderUnavailable`` as the typed ``503`` refusal.
+
+    Registered on the app in ``main.py``: an ``APIRouter`` cannot hold exception
+    handlers. The dependency raises before its ``yield``, so the exception reaches
+    the app's handler like any route exception."""
+    return _refused(IDENTITY_PROVIDER_UNAVAILABLE, status_code=503)
 
 
 # --- GET /auth/login -------------------------------------------------------------

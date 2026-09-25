@@ -81,15 +81,14 @@ from typing import Final
 
 from fastapi import FastAPI
 from rheo_app_mcp.transport import MCP_PATH, build_mcp_app, transport_security_for
-from rheo_core.modules import module_surfaces
-from rheo_core.routing import RoutingConfig, RoutingMode, SurfaceConfig
+from rheo_core.routing import RoutingConfig, RoutingMode
 from rheo_core.routing.url_for import ROOT_PREFIXES, application_hosts
-from rheo_core.settings import resolve
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from rheo_app_core.auth_routes import normalize_host
+from rheo_app_core.routing import routing_config as shared_routing_config
 from rheo_app_core.startup import CONSUMERS
 
 STATE_ATTRIBUTE: Final = "mcp_mount"
@@ -175,15 +174,11 @@ def build_mcp_surface(config: RoutingConfig) -> Starlette:
 def routing_config() -> RoutingConfig:
     """This deployment's routing configuration, module surfaces included.
 
-    The modules are the ones startup loaded, converted exactly as
-    ``internal_routes.routing_config`` converts them, so the collision check in
+    The modules are the ones startup loaded, converted by the one helper every
+    routing call site in this app shares, so the collision check in
     :meth:`McpMount.for_config` sees every host the web tier will serve.
     """
-    modules = {
-        surface: SurfaceConfig(host=web.host, path=web.path)
-        for surface, web in module_surfaces().items()
-    }
-    return RoutingConfig.from_settings(resolve(), modules=modules)
+    return shared_routing_config()
 
 
 @dataclass(frozen=True, slots=True)

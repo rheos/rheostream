@@ -73,6 +73,10 @@ seams) — pick ``public_app`` in any new code, ``app`` only where an existing
 
 public_app.include_router(auth_routes.router)
 public_app.include_router(api_routes.router)
+public_app.add_exception_handler(
+    auth_routes.IdentityProviderUnavailable,
+    auth_routes.identity_provider_unavailable_handler,
+)
 
 
 @app.get("/healthz")

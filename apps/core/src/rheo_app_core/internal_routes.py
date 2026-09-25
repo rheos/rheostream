@@ -33,9 +33,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from rheo_core.boundary.context import SESSION_MISSING, Refusal
 from rheo_core.boundary.factories import context_from_session
-from rheo_core.modules import module_surfaces
 from rheo_core.operations import dispatch
-from rheo_core.routing import RoutingConfig, SurfaceConfig
 from rheo_core.secrets import SecretRef, SecretRefusal, SecretStore
 from rheo_core.settings import resolve
 from rheo_core.storage.control_plane import list_memberships
@@ -44,6 +42,7 @@ from rheo_core.storage.postgres import get_backend
 
 from rheo_app_core.api_routes import carries_result, envelope, outcome_status
 from rheo_app_core.auth_routes import normalize_host
+from rheo_app_core.routing import routing_config as shared_routing_config
 from rheo_app_core.startup import CONSUMERS
 
 SESSION_REFUSAL_STATUS = 401
@@ -94,19 +93,13 @@ def routing_config() -> dict[str, object]:
 
     The ``modules`` surfaces are not settings (no key backs them, D-6): they are
     whatever the modules this process loaded declared, which
-    ``rheo_core.modules.module_surfaces()`` kept from startup. The
-    ``WebSurface -> SurfaceConfig`` conversion happens **here, at the point of
-    use**, so ``rheo_core.modules`` never gains a dependency on
-    ``rheo_core.routing``. A deployment that loaded no module gets the same empty
-    mapping, and therefore the same bytes, it got before this argument existed.
+    ``rheo_core.modules.module_surfaces()`` kept from startup; the conversion is
+    :func:`rheo_app_core.routing.routing_config`'s, shared with the ``/auth/*``
+    routes and the ``mcp`` mount. A deployment that loaded no module gets the same
+    empty mapping, and therefore the same bytes, it got before that argument
+    existed.
     """
-    modules = {
-        surface: SurfaceConfig(host=web.host, path=web.path)
-        for surface, web in module_surfaces().items()
-    }
-    return RoutingConfig.from_settings(resolve(), modules=modules).model_dump(
-        mode="json"
-    )
+    return shared_routing_config().model_dump(mode="json")
 
 
 @router.get("/internal/v1/session")

@@ -26,6 +26,7 @@ import httpx
 import pytest
 from conftest import ClusterSession, MakeWorkspace
 from harness.identity import FIXED_PROVIDER_ID, FixedIdentityProvider
+from harness.modules import WEB_SURFACE_HOST, WEB_SURFACE_ID, loaded_probe_modules
 from rheo_app_cli.main import main as cli_main
 from rheo_app_core import auth_routes
 from rheo_app_core.main import internal_app, public_app
@@ -52,6 +53,7 @@ from rheo_core.sessions import (
     switch_workspace,
     write_grant,
 )
+from rheo_core.settings import env_variable_names
 from rheo_core.storage import control_tables
 from rheo_core.storage.control_plane import (
     get_session_by_secret_hash,
@@ -372,6 +374,87 @@ async def test_continue_refuses_invalid_return_in_path_mode_too(
         )
     assert resp.status_code == 400
     assert resp.json() == {"state": INVALID_RETURN}
+
+
+# --- #119: a disabled provider, and module hosts on the identity routes ---------
+
+MODULE_HOST = f"{WEB_SURFACE_HOST}.{BASE_HOST}"
+
+
+async def test_login_with_no_enabled_provider_is_a_typed_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flagship's first deploy runs with GitHub disabled on purpose, so
+    ``/auth/login`` must refuse cleanly rather than answer a bare 500. The real
+    dependency runs here: this module's default override is removed first."""
+    public_app.dependency_overrides.pop(auth_routes.resolve_identity_provider, None)
+    for variable in env_variable_names("identity.providers.github.enabled"):
+        monkeypatch.setenv(variable, "false")
+    _set_routing_mode(monkeypatch, "path")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=public_app, raise_app_exceptions=False),
+        follow_redirects=False,
+    ) as client:
+        resp = await client.get(f"https://{BASE_HOST}/auth/login")
+    assert resp.status_code == 503
+    assert resp.json() == {"state": "identity_provider_unavailable"}
+    assert resp.headers.get_list("set-cookie") == []
+
+
+async def test_continue_accepts_a_loaded_module_host_as_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A signed-out visitor on a module's host is sent to ``/auth/continue`` with
+    that host as ``return``; with the module loaded it must reach the login
+    redirect, not ``invalid_return``. A label nothing loaded is still refused."""
+    _set_routing_mode(monkeypatch, "subdomain")
+    with loaded_probe_modules(monkeypatch, WEB_SURFACE_ID):
+        async with _client() as client:
+            accepted = await client.get(
+                f"https://{IDENTITY_HOST}/auth/continue",
+                params={"return": f"https://{MODULE_HOST}/notes", "nonce": "x"},
+            )
+            unknown = await client.get(
+                f"https://{IDENTITY_HOST}/auth/continue",
+                params={"return": f"https://unloaded.{BASE_HOST}/notes", "nonce": "x"},
+            )
+    assert accepted.status_code == 302, accepted.text
+    assert urlsplit(accepted.headers["location"]).path.endswith("/login")
+    assert unknown.status_code == 400
+    assert unknown.json() == {"state": INVALID_RETURN}
+
+
+async def test_continue_refuses_a_module_host_when_the_module_is_not_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_routing_mode(monkeypatch, "subdomain")
+    async with _client() as client:
+        resp = await client.get(
+            f"https://{IDENTITY_HOST}/auth/continue",
+            params={"return": f"https://{MODULE_HOST}/notes", "nonce": "x"},
+        )
+    assert resp.status_code == 400
+    assert resp.json() == {"state": INVALID_RETURN}
+
+
+async def test_origin_check_follows_whether_the_module_surface_is_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/auth/logout`` on the module host with that host as ``Origin``: allowed
+    while the surface is loaded, ``origin_not_allowed`` once it is not."""
+    _set_routing_mode(monkeypatch, "subdomain")
+    headers = {"Origin": f"https://{MODULE_HOST}"}
+    async with _client() as client:
+        with loaded_probe_modules(monkeypatch, WEB_SURFACE_ID):
+            loaded = await client.post(
+                f"https://{MODULE_HOST}/auth/logout", headers=headers
+            )
+        unloaded = await client.post(
+            f"https://{MODULE_HOST}/auth/logout", headers=headers
+        )
+    assert loaded.status_code == 302, loaded.text
+    assert unloaded.status_code == 403
+    assert unloaded.json() == {"state": "origin_not_allowed"}
 
 
 # --- B18: the four invalid_grant cases ----------------------------------------
