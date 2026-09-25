@@ -244,7 +244,7 @@ the entity's visibility follows the input checks directly, then the candidate sc
 window is the newest `min(total, 2·context + 1)` eligible members, with `target_position` null,
 `window_end` equal to `total` and `has_more` true exactly when older eligible members exist. An
 entity none of whose mentioning memories the caller may read is an empty window, not a refusal
-(up to the scan and reference bounds; see the accepted residual below).
+(up to the scan and reference bounds; see the residuals below).
 
 Entity visibility is decided by the same function that answers `recallatron.entity.get`, and
 always in `current` mode, whatever `include_invalidated` asks for, in both the targeted and the
@@ -263,7 +263,7 @@ existence test only; past it the call refuses `window_scan_limit`, a fixed, cont
 carrying no target content, candidate count, eligible or hidden count, identity, position,
 total, bounds, `has_more` flag or partial item.
 
-> **Accepted residual: the targetless entity read.** A targetless `read` over an entity
+> **Residuals: the targetless entity read (bit 1 accepted, bit 2 documented).** A targetless `read` over an entity
 > container can refuse because of mentions the caller cannot read. There are two such
 > content-free bits. Each refusal keeps its existing fixed shape: no count, no name, no title,
 > no text, no reference, no partial content and no window metadata.
