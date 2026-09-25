@@ -5,6 +5,10 @@ FR 31 to FR 39, FR 46, R2, R4, and criteria 11 to 14 and 38 to 49. Answers idea-
 6 (event schemas, ordering, retry limits, replay) and fixes the intake contract's shapes.
 **Decisions:** A7 (intake lives in Leads; transports are connectors), A8 (outbox, envelope,
 worker, audit shapes). See the [decision list](README.md#architecture-decisions).
+**Built so far:** part two's outbox, jobs, worker, operations and audit, with the gaps
+marked where they fall. Part one, the external actions, and the contact permission records
+are phase three's design and are not built yet: `modules/leads` and `connectors/` are still
+placeholder packages, so no `leads.*` table, operation, event or transport exists.
 
 ## Part one: the intake contract
 
@@ -30,7 +34,7 @@ All in the `leads` schema. Every table has `id uuid` (UUIDv7) unless noted.
 | `funnel` | `name text`, `description text`, `created_at`, `archived_at null` | Acquisition context: a site, an event, a referral programme. |
 | `campaign` | `funnel_id`, `name text`, `created_at`, `archived_at null` | Optional refinement of a funnel. |
 | `intake_connection` | `name`, `transport text`, `source_namespace text unique`, `mapping_id`, `mapping_version integer`, `funnel_id null`, `campaign_id null`, `priority integer`, `subject_authenticated boolean`, `email_verified boolean`, `signing_secret_ref text null`, `signing_key_generation integer`, `previous_secret_ref text null`, `previous_valid_until timestamptz null`, `state text`, `created_at`, `revoked_at null` | `transport` in `webhook`, `import`, `manual`. `state` in `active`, `needs_credential`, `revoked`. `source_namespace` is a URI (`urn:rheo:connection:<uuid>`) used as the CloudEvents `source`. `funnel_id` is null only on the `manual` connection, where each capture names its funnel (check constraint). `subject_authenticated` and `email_verified` are the operator's declaration of what this source proves, which R4 needs. `signing_key_generation` starts at 1 and increments on every rotation; it is the only rotation mechanism (see [transports](#transports)). |
-| `connection_health` | `connection_id pk`, `last_accepted_at`, `last_processed_at`, `pending_count`, `unresolved_failures integer`, `last_error text null`, `last_error_at timestamptz null`, `last_unauthenticated_write_at timestamptz null`, `lag_seconds integer` | Maintained by the intake worker; read by `leads.connection.health` (FR 38). `last_error_at` is set by every path that records a failure. `last_unauthenticated_write_at` is written by the webhook receiver alone and is what bounds its pre-authentication write ([transports](#transports)); it is a separate column precisely so an authenticated path's write can never suppress the receiver's, which criterion 42 requires to be visible. The operation's `failed_delivery_count` is **not** a column here: it is computed at read time from `core.work.failures` ([retry](#retry)), so there is no second counter that could disagree with the delivery table. |
+| `connection_health` | `connection_id pk`, `last_accepted_at`, `last_processed_at`, `pending_count`, `unresolved_failures integer`, `last_error text null`, `last_error_at timestamptz null`, `last_unauthenticated_write_at timestamptz null`, `lag_seconds integer` | Maintained by the intake worker; read by `leads.connection.health` (FR 38). `last_error_at` is set by every path that records a failure. `last_unauthenticated_write_at` is written by the webhook receiver alone and is what bounds its pre-authentication write ([transports](#transports)); it is a separate column precisely so an authenticated path's write can never suppress the receiver's, which criterion 42 requires to be visible. The operation's `failed_delivery_count` is **not** a column here: it is computed at read time from `core.work.failures` ([retry](#events-and-the-outbox-fr-15)), so there is no second counter that could disagree with the delivery table. |
 | `field_mapping` | `id`, `version integer`, `name`, `source_kind text`, `state text` | `source_kind` in `json`, `csv`. Primary key `(id, version)`. Versions are immutable once a receipt pins them. |
 | `field_mapping_identity` | `mapping_id`, `version`, `event_id_path`, `occurred_at_path`, `subject_id_path null`, `verified_email_path null` | Where identity lives in a payload. Paths are JSON Pointers for JSON, column names for CSV. |
 | `field_mapping_rule` | `mapping_id`, `version`, `target text`, `source_path text`, `transform text null`, `transform_arg text null`, `required boolean`, `clear_on_null boolean` | `target` is a core fact name or `ext.<namespace>.<field>`. `transform` from a closed set: `trim`, `lower`, `email_normalize`, `phone_normalize`, `datetime(format)`, `const(value)`. |
@@ -297,11 +301,13 @@ All in the `core` schema of each workspace database.
 **Envelope.** The `EventEnvelope` in `packages/contracts` is the row above plus the delivery
 context, versioned by `schema_version` per event type. Producers may only add optional fields
 within a version; a removal or a meaning change is a new version and a consumer declares which
-versions it accepts. `correlation_id` is the originating operation's id; `causation_id` is the
-event that led to this one when there is one.
+versions it accepts (not built yet: a subscription today carries no accepted-versions field).
+`correlation_id` is the originating operation's id when the publish runs inside a
+`long_running` dispatch, which is the only case that mints an operation record, and the
+request id otherwise; `causation_id` is the event that led to this one when there is one.
 
 **Fan-out at write.** `rheo_core.events.publish(ctx, uow, event, *, now, consumers)` inserts the outbox row and one `event_delivery` row
-per consumer that is subscribed to `type` and belongs to a module enabled in the workspace at that moment. A consumer that is not
+per consumer that is subscribed to `type` and belongs to the core or to a module enabled in the workspace at that moment. A consumer that is not
 enabled gets no row and never sees the event. It is a free function rather than a method, because `UnitOfWork`'s public surface is a
 pinned boundary guard, and it takes an explicit `now`, because the two NOT NULL timestamp columns it writes must not come from the process clock.
 
@@ -333,8 +339,11 @@ RETURNING d.event_id, d.consumer_id;
 A `failed` head therefore blocks every later delivery for its consumer and subject until a person
 acts: `core.work.retry(delivery)` resets attempts, or `core.work.skip(delivery)` (mutate, owner or
 operator, audited, with a note) sets it `skipped` and releases the queue. Order is never broken
-silently; `core.work.failures` shows the blocked count behind each failed head. Across subjects
-there is no ordering promise.
+silently; `core.work.failures` is to show the blocked count behind each failed head. Across
+subjects there is no ordering promise. **Not built yet:** `retry` and `skip` have no handler
+([module contract](module-contract.md#operations-tools-events)), and `core.work.failures`
+lists each failed delivery (`event_id`, `consumer_id`, `attempts`, `last_error`) with no
+blocked count, so today nothing moves a delivery out of `failed` and its queue stays blocked.
 
 **Exactly-once effect.** A consumer handler runs inside a `UnitOfWork`; the worker inserts
 `consumer_processed` in that same transaction and commits. A redelivery after a crash hits the
@@ -344,13 +353,15 @@ not left to each handler.
 
 **Retry.** Attempts back off as `5s, 20s, 80s, 320s, 1280s` then cap at 3600s, with jitter, for
 `work.max_attempts` (default 8, about two and a half hours end to end). After the last attempt the delivery is `failed`
-with its error and appears in `core.work.failures` (criterion 12). An operator or owner may
-`retry` a failed delivery, which resets attempts.
+with its error and appears in `core.work.failures` (criterion 12). An operator or owner is to
+be able to `retry` a failed delivery, which resets attempts (not built yet, as above).
 
 **A failed head is surfaced, not merely recorded.** Head-of-line blocking is deliberate — order is
 never broken silently — but every route out of it needs a person, and a design where the only
 route *in* is a screen nobody has opened is a queue that stops for two and a half hours and then
-stays stopped. So the failure is pushed to the two places a person already is:
+stays stopped. So the failure is pushed to the two places a person already is (neither is
+built yet: `core.work.failure_summary`, its cache setting and the banner do not exist, and
+the connection half waits on Leads):
 
 - **The shell.** `core.work.failure_summary` (read class, roles `owner`, `operator`) returns
   `{ failed_count, blocked_count, oldest_failed_at }` for the session's active workspace, and the
@@ -374,11 +385,14 @@ reach a person who is *not* looking, and the escalation belongs there
 component release one would carry unused.
 
 The same summary counts operations in state `unresolved`, which has the identical shape: a
-terminal record state that is an open item for a person, listed by `core.work.failures`, and
-cleared only by an explicit `core.operation.resolve` call.
+terminal record state that is an open item for a person, to be listed by `core.work.failures`
+(today it lists failed jobs and deliveries only, and an `unresolved` record is read through
+`core.operation.list` and `core.operation.get`), and cleared only by an explicit
+`core.operation.resolve` call.
 
 **Replay.** `core.work.replay(consumer_id, from_position)` re-creates `pending` deliveries for a
-consumer from the outbox. It is permitted only for consumers whose subscription declares
+consumer from the outbox. It is not built yet; `replay_safe` is declared on every subscription
+and nothing reads it. Replay is permitted only for consumers whose subscription declares
 `replay_safe = true` (read-model builders, index maintainers). Consumers that cause external
 effects or create domain records declare `replay_safe = false` and the operation refuses to target
 them. Replay therefore rebuilds derived state and never resends anything (idea document).
@@ -412,7 +426,10 @@ their `data` fields, each declared as a model in the owning manifest:
 | `core.record.deleted` | `ref`, `deletion_record_ref` |
 
 A manifest whose event model declares a field of a `restricted` tier fails registration, which is
-the static half of the rule. Release one's only production consumer is `leads.process_delivery`;
+the static half of the rule (not built yet: nothing reads a manifest's `sensitivity`
+declaration today). Of the types above, only `recallatron.memory.recorded`, `.invalidated` and
+`core.record.deleted` are published today, and the worker registers no consumer at all until
+Leads ships. Release one's only production consumer is `leads.process_delivery`;
 the other types are published so that the phase-one deduplicating test consumer and the later
 modules (work-in-motion, channels) have real events to subscribe to, and an event with no enabled
 consumer is complete on commit with zero deliveries.
@@ -421,7 +438,7 @@ consumer is complete on commit with zero deliveries.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `job` | `id uuid`, `kind text`, `state text`, `input jsonb`, `operation_id uuid null`, `depends_on_ref text null`, `attempts`, `max_attempts`, `next_run_at`, `lease_owner null`, `lease_until null`, `cancel_requested boolean`, `last_error null`, `created_at`, `finished_at null` | `state` in `queued`, `leased`, `succeeded`, `failed`, `cancelled`. `input` is the job kind's declared model serialised and never queried. `depends_on_ref` lets the deletion coordinator cancel dependents. |
+| `job` | `id uuid`, `kind text`, `state text`, `input jsonb`, `operation_id uuid null`, `depends_on_ref text null`, `attempts`, `max_attempts`, `next_run_at`, `lease_owner null`, `lease_until null`, `cancel_requested boolean`, `last_error null`, `created_at`, `finished_at null` | `state` in `queued`, `leased`, `succeeded`, `failed`, `cancelled`. `input` is the job kind's declared model serialised and never queried. `depends_on_ref` lets the deletion coordinator cancel dependents (not built yet: that cancellation is criterion 65's work). |
 | `schedule` | `id`, `module_id`, `name`, `job_kind`, `cron text`, `enabled`, `last_run_at null`, `next_run_at` | Created at module enable from the manifest. |
 
 Discovery is the control plane's due-work index, `control.workspace_work_due`, read through
@@ -440,8 +457,10 @@ workspace in the registry in turn, with a one-second idle interval:
    fires ends `cancelled`, not succeeded and not retried (criterion 12).
 4. Success sets `succeeded`; an exception sets `queued` with backoff or `failed` when the budget
    is spent.
-5. Schedules: a due `schedule` enqueues its job kind and advances `next_run_at`; a job already
-   queued for the same schedule is not duplicated.
+5. Schedules: a due `schedule` enqueues its job kind and advances `next_run_at` by one day.
+   Release one does not parse the stored `cron`. Only `recallatron.retention_sweep` is
+   coalesced: its row is not enqueued again while one of its jobs is still queued or leased.
+   Every other kind is enqueued on each due tick whatever is already queued.
 
 The same loop serves event deliveries, using the delivery table instead of the job table.
 Restart recovery is the expired-lease path and nothing else.
@@ -472,13 +491,16 @@ write commit together, which is what makes a delivery exactly-once rather than
 at-least-once. Nothing on that side has a cancellation checkpoint, so there is no fourth.
 
 The core declares one scheduled job of its own: `core.retention_sweep` (daily), which removes
-runtime transcripts past `runtime.transcript_retention_days` and regular `ClaudeCliRuntime`
-session files under that workspace configuration directory's `projects/` subtree. Outbox
+runtime transcripts past their `retention_until`, tool telemetry rows older than
+`telemetry.tool_retention_days`, and regular `ClaudeCliRuntime` session files older than
+`runtime.transcript_retention_days` under that workspace configuration directory's
+`projects/` subtree. Outbox
 retention named under [Events and the outbox](#events-and-the-outbox-fr-15) is unimplemented
 and is not part of that handler. Each workspace is provisioned a
 `core.schedule` row at migrate time; the worker's schedule ticker enqueues
 `RetentionSweepPayload(workspace_id)` when the row is due
-([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep` is a job kind and never a schedule: the
+([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep`, not
+built yet (no such job kind is registered), is a job kind and never a schedule: the
 deletion coordinator enqueues it when an artifact could not be removed
 ([deletion](deletion-export-migration.md#the-cascade)), and the job table's attempts and backoff
 are its retry. Module sweeps (the memory retention sweep) are the module's own schedules.
@@ -500,8 +522,10 @@ are its retry. Module sweeps (the memory retention sweep) are the module's own s
 
 `unresolved` is a terminal state for the operation record and an open item for the person: it is
 set when an external effect's outcome is unknown after a timeout and the provider offers neither
-idempotency nor status lookup. It is listed by `core.work.failures` and cleared only by
-`core.operation.resolve` with an explicit outcome and a note, which is audited.
+idempotency nor status lookup. It is read through `core.operation.list` and `.get` (and is to
+be listed by `core.work.failures`, which does not list operations yet) and cleared only by
+`core.operation.resolve` with an explicit outcome and a note, which is audited. Nothing sets
+it today: release one has no external effect whose outcome can be unknown yet.
 
 ### Audit (FR 18)
 

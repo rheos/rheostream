@@ -56,8 +56,8 @@ that argument in full.
 | `operations` | list of `OperationDeclaration` | Name, safety class, input and output models, idempotency, audit subject, guards. See [operations](#operations-tools-events). |
 | `tools` | list of `ToolDeclaration` | MCP tools, each naming an operation and restating its class. |
 | `events` | list of `EventDeclaration(type, schema_version, data)` | Events the module publishes. **Named deviation:** the third field is `data`, not the `data_model` this row once printed — the shorter name is what the code carries, what every later run types, and what the namespacing check reads past, so the row was corrected to the code rather than the other way round. |
-| `subscriptions` | list of `Subscription(event_type, consumer_id, replay_safe)` | Events the module consumes. |
-| `jobs` | list of `JobKind(name, input_model, handler, max_attempts, cancellable)` | Background work kinds. **Named deviation:** this row once omitted `input_model`. `JobKindRegistry.register(kind, input_model, handler)` (`packages/core/src/rheo_core/work/kinds.py`) takes exactly those three positional arguments, so a `JobKind` carrying no input model could not be registered at all; the row gained the field rather than the registry losing it. **`max_attempts` and `cancellable` are carried on the declaration and read by nothing in release one:** the loader passes the registry only the three arguments it takes, and widening a shipped signature for a caller that does not exist is what this deliberately does not do. Each has a named future reader — an enqueue call site for `max_attempts` (today `work.max_attempts` supplies the budget and the job row's own column is the authority from then on), and Disable for `cancellable`, whose contract below already says each job kind's flag decides which queued jobs are cancelled and which drain. |
+| `subscriptions` | list of `ConsumerSubscription(consumer_id, event_type, module_id, replay_safe, handler)` | Events the module consumes. The type is `rheo_core.events.consumers.ConsumerSubscription`: the ratified three fields plus the `module_id` fan-out needs and the handler the deliverer runs. |
+| `jobs` | list of `JobKind(name, input_model, handler, max_attempts, cancellable)` | Background work kinds. **Named deviation:** this row once omitted `input_model`. `JobKindRegistry.register(kind, input_model, handler)` (`packages/core/src/rheo_core/work/kinds.py`) takes exactly those three positional arguments, so a `JobKind` carrying no input model could not be registered at all; the row gained the field rather than the registry losing it. **`max_attempts` and `cancellable` are carried on the declaration and read by nothing in release one:** the loader passes the registry only the three arguments it takes, and widening a shipped signature for a caller that does not exist is what this deliberately does not do. Each has a named future reader — an enqueue call site for `max_attempts` (today each enqueue call site names its own budget, Recallatron's passing the same constants its declarations carry, and the core's `enqueue` falls back to `work.max_attempts` when a call names none; the job row's own column is the authority from then on), and Disable for `cancellable`, whose contract below already says each job kind's flag decides which queued jobs are cancelled and which drain. |
 | `schedules` | list of `Schedule(name, job_kind, cron, enabled_by_default)` | Per-workspace schedules created at enable. |
 | `resolvers` | mapping of record type to resolver | One per owned record type ([identifiers](identifiers.md#resolution-under-permission)). |
 | `deletion_participants` | list of `DeletionParticipant(record_types, handler)` | Hooks the [deletion coordinator](deletion-export-migration.md#the-cascade) calls. `handler` was narrowed in run 1a1 from an untyped callable to `(ctx, uow, ref, *, disposition) -> RemovedMemories`, read off its first real caller rather than guessed. A participant that raises aborts the whole deletion, so a handler has no refusal channel of its own and needs none; `disposition` is keyword-only, so a handler that ignores it still reads as one that was offered it. |
@@ -65,8 +65,8 @@ that argument in full.
 | `web` | optional `WebContribution(surface, package_name, navigation, routes, record_views, forms, search_providers)` | The TypeScript contribution composed into `apps/web` ([extension points](#extension-points)). `package_name` starts with `@rheo-stream/`; `navigation` is `NavigationEntry(id, label, path, roles)`, `routes` is `WebRoute(id, path, screen)`, `record_views` is `RecordView(record_type, component)`, `forms` is `FormDeclaration(operation, component)`, `search_providers` is `SearchProvider(id, operation)`. The manifest refuses, by name, a duplicate id or route path, two record views for one record type, two forms for one operation, a navigation entry whose `path` no route declares, a form or search provider naming an operation this manifest does not declare, a search provider whose operation is not `READ`-class, and a record view of a type that is not `<module_id>.<name>` for one of this manifest's own record types. `screen` and `component` are TypeScript identifiers because the generated file emits them as property accesses. **Two named deviations:** `surface` (a `WebSurface`: surface name, host label, path prefix) is not in the ratified field list and is added because the internal listener's `routing_config()` (`apps/core/src/rheo_app_core/internal_routes.py`) is a live consumer of the module's surface with no other source; and a navigation entry carries `path` and no per-entry `surface`, because a module contributes navigation only under its own single surface. |
 | `agent_guidance` | optional path | Text a runtime may include as tool guidance. It describes use; it grants nothing (idea document). |
 | `secret_scopes` | list of scope prefixes | Empty for domain modules in release one. Only components that present secrets declare any. |
-| `connector_bindings` | list of `ConnectorBinding(transport, service_operation, route)` | Which of the module's operations a transport connector may call, and the HTTP route the binding registers on the `api` surface when the transport has one (`route` is null otherwise). Leads declares three, one per transport, all naming `leads.intake.accept_delivery` ([the three bindings](intake-and-events.md#transports)). |
-| `health_checks` | list of callables | Run by `rheo doctor` and the workspace status operation. |
+| `connector_bindings` | list of `ConnectorBinding(transport, service_operation, route)` | Which of the module's operations a transport connector may call, and the HTTP route the binding registers on the `api` surface when the transport has one (`route` is null otherwise). No shipped manifest declares one yet; Leads is to declare three in phase three, one per transport, all naming `leads.intake.accept_delivery` ([the three bindings](intake-and-events.md#transports)). |
+| `health_checks` | list of callables | Run by the install job in every profile but `test` ([install](#install-and-enable-release-one-in-code) step 6). Nothing else calls them yet: `rheo doctor` and the workspace status operation are their planned later readers. |
 | `contract_tests` | path | The module's behavioural suite entry: a repo-relative directory. **Named deviation:** this row once said the suite is "run by the install path in test profile and by CI". Install **validates the path and does not run the suite** — see § Install step 6 for why — and CI runs it, through the `testpaths` widening that puts `modules/` in `make test`. The row is corrected here as well as there because it is the line a module author reads first, and leaving it would have this document asserting the superseded behaviour in its most-read table. |
 | `sensitivity` | mapping of record type to field tiers | Which fields are `public`, `internal`, `restricted` for the [redaction contract](runtime-and-mcp.md#the-redaction-contract). |
 | `audit_sink` | optional `AuditSink` | The writer for the module's own audit rows, installed under the module's id by `_register` in `packages/core/src/rheo_core/modules/loader.py`. **Not one of the twenty-three ratified fields**, and added because it is the only channel a module has: `rheo_core.operations.dispatch` resolves a sink by the *operation's* owning module and refuses every above-`READ` operation with `AUDIT_SINK_MISSING` when that module has none. Optional, because a module declaring only `READ` operations needs no sink. |
@@ -168,15 +168,21 @@ zero by construction rather than by coincidence.
 OperationDeclaration
   name: "<module_id>.<noun>.<verb>"
   safety_class: SafetyClass                 # exactly one of the six (R3, FR 24)
-  input: type[BaseModel]                    # may not declare workspace_id, actor_id, tenant, database, schema, connection fields
+  input_model: type[BaseModel]              # may not declare workspace_id, actor_id, tenant, database, schema, connection fields
   output: type[BaseModel]
-  handler: Callable[[WorkspaceContext, UnitOfWork, input], output]
+  handler: Callable[[WorkspaceContext, UnitOfWork, input], output]   # travels beside the declaration, not in it
   roles: set[Role]                          # who may call; Role in {owner, member, operator, service}; default {owner, member}
   idempotency: Idempotency                  # NONE | NATURAL(unique index); KEYED arrives with phase five
   audit: AuditSpec | None                   # required unless safety_class is READ
-  guards: list[ExecutionGuard]              # domain rechecks added to the core's, for DESTRUCTIVE, EXTERNAL, FINANCIAL
+  guards: list[ExecutionGuard]              # domain rechecks added to the core's; not declared yet
   long_running: bool                        # returns an operation id and runs as a job
 ```
+
+The shipped `rheo_contracts.OperationDeclaration` carries neither `handler` nor `guards`. The
+handler is the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the
+reason [the manifest](#the-manifest) gives. `guards` has no field yet: the core's own guards are
+attached by `core_guards_for` (`packages/core/src/rheo_core/approvals/guards.py`), and the first
+module that needs a domain guard adds the field.
 
 `roles` is checked by the dispatcher against `ctx.role` on every call. `service` is the role a
 `connection` actor at `entry = intake` and a `system` actor at `entry = job` carry
@@ -189,54 +195,68 @@ The release-one operations and their roles are listed in the document that owns 
 | Core operation | Class | Roles |
 | --- | --- | --- |
 | `core.workspace.status`, `core.operation.get`, `.list` | read | owner, member, operator |
-| `core.workspace.create` | mutate, long-running | operator, and any account when `identity.allow_workspace_create` (deployment, default `true`); the creator becomes owner |
+| `core.workspace.create` | mutate, long-running | operator, and any account when `identity.allow_workspace_create` (deployment, default `false`); the creator becomes owner. **Not registered yet:** today a workspace is provisioned by the operator CLI (`rheo workspace create --owner`), which calls the provisioning state machine directly. |
 | `core.module.install`, `.enable` | mutate | owner, operator |
 | `core.settings.set` (workspace keys), `core.settings.set_member` (member keys) | mutate | owner; owner, member |
 | `core.token.issue` (for the calling account), `.revoke` | mutate | owner, member (a token never exceeds its account's role and never exceeds its issuer's own permitted set); operator for another account. Non-token-issuable: no token can issue or revoke a token ([tokens](identity-and-topology.md#what-a-token-can-never-carry-and-what-it-holds-for-a-gated-operation)). |
 | `core.approval.approve`, `.refuse` | mutate | owner, member. Non-token-issuable, so reachable only from a web session in release one: the only contexts that carry one of those roles and hold the operation. |
 | `core.standing_grant.create`, `.revoke` | mutate | owner. Non-token-issuable. |
 | `core.audit.list`, `core.work.failures` | read | owner, operator |
-| `core.work.failure_summary` | read | owner, operator. The counts the shell's banner reads ([retry](intake-and-events.md#retry)); a summary rather than a listing so the layout costs one bounded read. |
+| `core.work.failure_summary` | read | owner, operator. The counts the shell's banner reads ([events and the outbox](intake-and-events.md#events-and-the-outbox-fr-15)); a summary rather than a listing so the layout costs one bounded read. **Not built yet:** neither the operation nor the banner exists. |
 | `core.operation.resolve` | mutate | owner, operator |
 | `core.work.retry`, `.skip`, `.replay` | mutate | owner, operator — **declared here and built nowhere.** As of run 0c3 no handler, declaration or registration for these three names exists anywhere in `packages/`, so nothing in a running system answers them, and they are split out of `core.operation.resolve`'s row above — which is registered — rather than sharing one that reads as though all four were live (issue #65). They stay open for a future run to build. `core.retention_sweep`, named as a daily core schedule under [jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16), is a job kind rather than an operation: it is registered on the worker, provisioned as a daily `core.schedule` row per workspace, and ticked by `run_due_schedules`. It does not share this unbuilt row. |
 | `core.workspace.export`, `.digest` | mutate, long-running; read | owner, operator |
-| `core.workspace.restore` | mutate, long-running | operator, or an account restoring into a workspace the control plane does not yet know |
-| `core.record.delete` | destructive | the record type's `delete_roles`: owner for `leads.observation`, `leads.opportunity`, `relationships.party`; owner, member for `recallatron.memory` |
+| `core.workspace.restore` | mutate, long-running | owner, operator. A restore into a workspace the control plane does not yet know goes through the operator CLI, `rheo workspace restore <artifact>`, which provisions the artifact's recorded workspace |
+| `core.runtime.run` | mutate, long-running | owner, member, operator ([runtime](runtime-and-mcp.md#runtime-contract-version-1)) |
+| `core.record.delete` | destructive | the record type's `delete_roles`: owner, member for `recallatron.memory`; owner for `leads.observation`, `leads.opportunity`, `relationships.party` once phase three ships them |
 
 Registration rules the core enforces at startup (criterion 18, criterion 14, criterion 6):
 
 - No `safety_class`: refused, naming the operation.
 - Class above `READ` with `audit = None`: refused, naming the operation.
 - Class in `DESTRUCTIVE`, `EXTERNAL`, `FINANCIAL`: the core attaches `ActorPermissionGuard`,
-  `WindowGuard`, and, when the input names a `subject_ref`, `RecordStateGuard`; the module's
-  `guards` list adds domain guards and may be empty
+  `WindowGuard`, and, when the declaration's `AuditSpec` names a subject field (this tree's
+  spelling of "the input names a `subject_ref`"), `RecordStateGuard`; a module `guards` list is
+  to add domain guards once the field exists
   ([confirmation](confirmation-and-safety.md#execution-guards)). There is no "no guards" refusal,
   because the core's guards make that state unreachable.
 - An input model with a reserved field name (`workspace_id`, `workspace`, `actor_id`, `actor`,
   `tenant_id`, `database`, `schema`, `connection_string`, `dsn`, `sql`, `table_name`,
-  `statement`): refused. The last three make criterion 20's "accepts no SQL, table name, or query
-  fragment" a mechanical check over the registered input models. The one workspace-taking
+  `statement`, `principal`), or one that sets `extra = "allow"`: refused. The single list is
+  `RESERVED_INPUT_FIELDS` in `rheo_contracts.manifest`. `sql`, `table_name` and `statement` make
+  criterion 20's "accepts no SQL, table name, or query fragment" a mechanical check over the
+  registered input models. The one workspace-taking
   endpoint, the session's active-workspace switch, is not a registered operation
   ([identity](identity-and-topology.md#accounts-sessions-and-the-active-workspace)).
 - `NATURAL` idempotency names the unique index that makes a repeat the same row; the operation's
   handler is what returns the existing row on a repeat, and the declaration exists so the
-  registry can assert the index is present in the module's schema at install. Release one has no
+  registry can assert the index is present in the module's schema at install. That assertion is
+  not written yet: `Idempotency.NATURAL` carries no index name, and registration accepts it
+  without checking any schema. Release one has no
   keyed idempotency and no stored-result table; the first operation that must return a created
   reference on a retry is phase five's ([idempotency](intake-and-events.md#idempotency)).
 - A tool registered by a module may name a core operation (the deletion tools do) only when its
-  input restricts the reference to the module's own record types.
+  input restricts the reference to the module's own record types. This one is a contract rule
+  rather than a registration check: the tool's own narrower `input_model` is what carries the
+  restriction (`recallatron_forget` accepts a memory reference only).
 
 ```text
 ToolDeclaration
-  name: "<module_id>_<verb>[_<noun>]"       # MCP-safe characters only
+  name: "<module_id>_<verb>[_<noun>]"       # MCP-safe characters only; grammar not enforced
   operation: str                            # the operation it calls; nothing else
-  safety_class: SafetyClass                 # must equal the operation's, or registration fails
+  safety_class: SafetyClass                 # required; equality with the operation's is not checked
   description: str
-  input_schema: derived from the operation's input model
+  input_model: type[BaseModel]              # the narrower shape a caller of the tool may send
 ```
 
 A tool is a name and a description over an operation. It has no handler of its own, so it cannot
-reach storage except through the operation (FR 22, criterion 20).
+reach storage except through the operation (FR 22, criterion 20). A call is validated against
+the tool's `input_model` and then again against the operation's. `ToolRegistry.register`
+(`packages/core/src/rheo_core/tokens/sets.py`) refuses a missing safety class, a reserved input
+field, `extra = "allow"`, the `test_harness` origin outside the test profile, and a tool naming a
+non-token-issuable operation. It does not check the name grammar or the module prefix, and it
+does not compare the tool's class with the operation's, because a tool may register before its
+operation does.
 
 ```text
 EventDeclaration
@@ -322,10 +342,14 @@ At process start, in `core` and `worker` alike:
    registered" are both unreachable rather than refused. `tests/test_module_registration.py` pins
    the property instead of building a second mechanism for it. A future run that lets a module
    supply registration code of its own is the run that has to build the check.
-5. The production-profile assertion runs (criterion 18): under `RHEO_PROFILE=production` the
-   registry must contain no item whose `origin` is `test_harness` and no operation in the
-   `EXTERNAL` or `FINANCIAL` classes. Test fixtures register with `origin=test_harness` through a
-   harness-only entry point that the production profile does not load.
+5. The production-profile rule (criterion 18): under `RHEO_PROFILE=production` the registry
+   must contain no item whose `origin` is `test_harness` and no operation in the `EXTERNAL` or
+   `FINANCIAL` classes. At runtime the only gate is the first half: every registry refuses the
+   `test_harness` origin unless the profile is `test`. The whole assertion is a CI check,
+   `tests/test_production_registration.py`, which starts a real production-profile process and
+   enumerates what it registered; no startup code refuses an `EXTERNAL` or `FINANCIAL`
+   operation. Test fixtures register with `origin=test_harness` by calling the harness's own
+   `register_harness()` (`tests/harness/`), which no production process imports.
 
 The registry is global to the process. Per-workspace activation is applied at every boundary by
 `WorkspaceContext.enabled_modules`, so a tool listing, a route resolution, an event fan-out, a
@@ -468,10 +492,12 @@ never installed. Structurally that holds because:
 - The composition root reads `modules.installed` from configuration. The absence proof compares
   two configurations node by node: Recallatron remains installed on disk while the setting is
   empty, then a detached checkout removes the distribution before syncing and running the same
-  phase-one demonstrators. `relationships`, `leads`, and `current` are placeholder directories,
-  not distributions, so naming them would be equivalent to naming no installed module here.
-- `leads` declares `recallatron` as an optional dependency and calls it only through
-  `ctx.enabled_modules` checks around a registered operation name, never an import.
+  phase-one demonstrators. `relationships`, `leads`, and `current` are placeholder
+  distributions that publish no `rheo.modules` entry point, so naming them would be equivalent
+  to naming no installed module here.
+- `leads`, once phase three builds it, declares `recallatron` as an optional dependency and
+  calls it only through `ctx.enabled_modules` checks around a registered operation name, never
+  an import.
 - Event fan-out at write time consults the workspace's enabled consumers, so an event nobody
   subscribes to is written to the outbox with zero deliveries and is complete on commit.
 
