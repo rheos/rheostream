@@ -621,7 +621,21 @@ def digest_categories(
     }
 
 
+_UNLOADED_FORMAT_VERSION: Final = 1
+"""What the manifest records for a module this workspace installed but this process has
+not loaded. No exporter ran for it, so the artifact holds none of its rows; restore
+refuses such a module anyway unless the restoring host loads it (or it is the test
+harness under the ``test`` profile), and then imports nothing for it."""
+
+
 def _module_manifest(connection: Connection) -> list[dict[str, object]]:
+    """One entry per installed module. ``export_format_version`` is the **loaded
+    manifest's own** ``export.format_version``, the same value restore compares
+    against (#129): a constant here would pass today and refuse every artifact of a
+    module the day it moves past version 1."""
+    from rheo_core.modules.loader import loaded_manifests
+
+    loaded = loaded_manifests()
     latest = {
         row.module_id: row.schema_version
         for row in repositories.list_module_schema_versions(connection)
@@ -632,7 +646,11 @@ def _module_manifest(connection: Connection) -> list[dict[str, object]]:
             "package_version": row.package_version,
             "state": row.state,
             "schema_version": latest.get(row.module_id),
-            "export_format_version": 1,
+            "export_format_version": (
+                loaded[row.module_id].export.format_version
+                if row.module_id in loaded
+                else _UNLOADED_FORMAT_VERSION
+            ),
         }
         for row in repositories.list_module_states(connection)
         if row.state != "removed"
