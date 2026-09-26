@@ -86,8 +86,8 @@ describe("fetchSession mapping", () => {
     "session_missing",
     "session_expired",
     "session_revoked",
-    "workspace_unselected",
     "membership_missing",
+    "workspace_unavailable",
   ])("maps the %s refusal to unauthenticated", async (refusal) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse({ state: refusal })));
 
@@ -95,6 +95,17 @@ describe("fetchSession mapping", () => {
       state: "unauthenticated",
       refusal,
     });
+  });
+
+  it("maps workspace_unselected to no-workspace, a live session carrying no account", async () => {
+    // #157: core only reaches this refusal after the session itself checked out,
+    // so it is not "signed out". It still carries no actor, role or memberships.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(okResponse({ state: "workspace_unselected" })),
+    );
+
+    await expect(callFetchSession()).resolves.toEqual({ state: "no-workspace" });
   });
 
   it("refuses a body that claims ok without the fields", async () => {

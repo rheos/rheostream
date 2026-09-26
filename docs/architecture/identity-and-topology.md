@@ -65,7 +65,12 @@ host ([below](#sessions-and-cookies)), of which the control plane stores only th
 `control.session_secret`. The cookie and the internal `X-Rheo-Session` header carry the secret;
 the database holds the hash, the same rule the token and grant tables follow. The session's
 `active_workspace_id` is the only source of "which
-workspace" for a web request. The workspace switcher calls `POST /auth/session/workspace` with
+workspace" for a web request. A new session starts in a default workspace, chosen in the same
+transaction as the insert: the one the account's earlier sessions were most recently used in,
+if the membership still exists and the workspace is `active`; else the oldest membership whose
+workspace is `active`; else none. A session with none refuses `workspace_unselected`, and the
+web shows a signed-in "no workspace yet" state with sign-out rather than the signed-out page
+(issue #157). The workspace switcher calls `POST /auth/session/workspace` with
 `target_workspace_id`: a control-plane session endpoint served by the core's identity routes,
 **outside the operation registry**, which is why the registry's reserved-field rule
 ([module contract](module-contract.md#operations-tools-events)) does not apply to it. It checks

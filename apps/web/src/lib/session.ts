@@ -14,8 +14,9 @@ import {
  * `state: "ok"` is a 200 whose body passes the guard below with its own
  * `state === "ok"`. A refusal, a network error, a 401 from the shared-secret
  * check, a body that does not parse, a body of the wrong shape, or an unset
- * environment variable all resolve to "unauthenticated" or "unavailable". None of
- * them can produce an account.
+ * environment variable all resolve to "unauthenticated" or "unavailable" (or, for
+ * `workspace_unselected` alone, "no-workspace"). None of them can produce an
+ * account.
  *
  * The three request headers are the contract 08 publishes and this file consumes;
  * they are not interchangeable and are not ours to rename.
@@ -48,11 +49,24 @@ export type SessionResult =
       role: string;
       memberships: Membership[];
     }
+  | { state: "no-workspace" }
   | { state: "unauthenticated"; refusal: string }
   | { state: "unavailable" };
 
 /** The refusal the listener itself returns when either header is absent. */
 const SESSION_MISSING = "session_missing";
+
+/**
+ * The one refusal that means "signed in, but in no workspace" (#157).
+ *
+ * `core` checks the session's own validity first (missing, expired, revoked) and
+ * only then whether it points at a workspace, so a `workspace_unselected` answer
+ * already says the session is live. Since `create_session` defaults every session
+ * with an active membership, this is an account with no workspace to be in yet.
+ * It still carries no account and unlocks nothing: it is a distinct state so the
+ * page can say "no workspace yet" and offer sign-out, not "sign in".
+ */
+const WORKSPACE_UNSELECTED = "workspace_unselected";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -148,6 +162,9 @@ export async function fetchSession(options: {
         role: body.role,
         memberships: body.memberships,
       };
+    }
+    if (isRecord(body) && body.state === WORKSPACE_UNSELECTED) {
+      return { state: "no-workspace" };
     }
     if (isRecord(body) && typeof body.state === "string" && body.state !== "ok") {
       return { state: "unauthenticated", refusal: body.state };

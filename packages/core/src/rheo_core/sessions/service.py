@@ -13,18 +13,24 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from sqlalchemy import Connection
+
 from rheo_core.boundary.context import NOT_A_MEMBER, SESSION_MISSING, Refusal
 from rheo_core.settings import resolve
 from rheo_core.storage.control_plane import (
     SessionRow,
     get_membership,
     get_session,
+    get_workspace,
     insert_session,
     insert_session_secret,
+    list_memberships,
+    list_recent_session_workspaces,
     revoke_session,
     set_active_workspace,
     touch_session,
 )
+from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.postgres import get_backend
 
 logger = logging.getLogger("rheo_core.sessions")
@@ -62,8 +68,43 @@ def _compute_expiry(*, now: datetime, created_at: datetime) -> datetime:
     return min(idle_deadline, absolute_deadline)
 
 
+def _is_active_workspace(connection: Connection, workspace_id: UUID) -> bool:
+    """The workspace-active check ``context_from_session`` will run on this session's
+    first request (``boundary.factories._active_workspace_modules``): the registry row
+    exists and its state is ``active``."""
+    row = get_workspace(connection, workspace_id)
+    return row is not None and row.state is WorkspaceState.ACTIVE
+
+
+def _default_workspace(connection: Connection, account_id: UUID) -> UUID | None:
+    """The workspace a new session for ``account_id`` starts in (issue #157).
+
+    The last-used workspace first: the one an earlier session of this account was most
+    recently pointed at, where the membership still exists and the workspace is still
+    active. Failing that, the oldest membership whose workspace is active. With
+    neither, ``None``: the session starts unselected, and the web shows a signed-in
+    "no workspace yet" state. Everything is read on the caller's connection, so the
+    membership and state checks share the session insert's transaction.
+    """
+    for workspace_id in list_recent_session_workspaces(
+        connection, account_id=account_id
+    ):
+        if _is_active_workspace(connection, workspace_id):
+            return workspace_id
+    for membership in list_memberships(connection, account_id=account_id):
+        if _is_active_workspace(connection, membership.workspace_id):
+            return membership.workspace_id
+    return None
+
+
 def create_session(account_id: UUID) -> SessionRow:
-    """A fresh session for ``account_id``, with no active workspace yet.
+    """A fresh session for ``account_id``, pointed at its default workspace.
+
+    The default is ``_default_workspace``'s: last used, else the oldest active
+    membership, else none (``active_workspace_id`` stays NULL and
+    ``context_from_session`` refuses ``workspace_unselected``). Before #157 every
+    session started unselected, and since the switcher only renders inside a
+    signed-in shell, a fresh sign-in could never reach one.
 
     ``insert_session`` writes a placeholder ``expires_at`` (its own docstring says
     why); this immediately supersedes it, in the same transaction, with the real
@@ -72,11 +113,17 @@ def create_session(account_id: UUID) -> SessionRow:
     """
     backend = get_backend()
     with backend.control_engine.begin() as connection:
+        # Chosen before the insert so the new, still-unselected row can never be
+        # its own "last used" candidate.
+        default_workspace_id = _default_workspace(connection, account_id)
         row = insert_session(connection, account_id)
         expiry = _compute_expiry(now=row.created_at, created_at=row.created_at)
         touch_session(
             connection, row.id, last_seen_at=row.created_at, expires_at=expiry
         )
+        if default_workspace_id is not None:
+            set_active_workspace(connection, row.id, default_workspace_id)
+            row = get_session(connection, row.id) or row
     return replace(row, last_seen_at=row.created_at, expires_at=expiry)
 
 
