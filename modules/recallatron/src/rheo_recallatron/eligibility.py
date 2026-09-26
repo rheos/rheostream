@@ -739,18 +739,26 @@ def eligible_link_container(
     ``container_membership_required`` into ``not_found``, which is what an unknown
     entity container already answered.
 
+    **The container is decided on a budget of its own**, with the request's frozen
+    clock and retention. The caller chooses the target, and the target's own link
+    graph is charged first; on the shared budget a caller could spend it down to the
+    edge and then tell a container denied by one of its links
+    (``reference_scan_limit`` part-way through that walk) from one that does not
+    exist (``not_found``). On its own budget the answer depends on the container
+    alone, and is exactly what ``memory.get`` of the same reference already says.
+    The cost is bounded by one more allowance of § A13's size.
+
     An entity container is not handled here; ``visible_entity`` decides it.
     """
+    own = MemoryRequest(ctx, now=request.now, retention=request.retention)
     if is_memory_ref(container):
-        decision = eligible_memory(ctx, uow, container.id, mode=mode, request=request)
+        decision = eligible_memory(ctx, uow, container.id, mode=mode, request=own)
         return decision if isinstance(decision, Denied) else None
-    reference = container.format()
-    if not request.budget.charge(reference):
-        return Denied(REFERENCE_SCAN_LIMIT)
+    # One reference on a fresh allowance cannot overflow it, so nothing is charged.
     resolved = resolve_in(container, ctx, uow)
     if isinstance(resolved, Unavailable) or not _readable(resolved):
         return Denied(NOT_FOUND)
-    if not contact_permitted(ctx, uow, container, RELATION_ABOUT, request=request):
+    if not contact_permitted(ctx, uow, container, RELATION_ABOUT, request=own):
         return Denied(NOT_FOUND)
     return None
 

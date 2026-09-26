@@ -274,11 +274,17 @@ function in the read's own mode, so a superseded predecessor the caller may read
 heirs' window to a `history` read and to no `current` read. Any other record reference must
 resolve through the core record resolver, live and readable to this caller, and pass the
 contact check an `about` link would. A container that fails is `not_found` with the same words
-as a container that never existed, and a spent reference budget is `reference_scan_limit`. For
-an ordinary link an eligible target has already met this rule, because eligibility resolves
-every link the target carries. The case the check exists for is a marked lineage link, which
-eligibility never resolves: without it, a readable heir would open a window over a predecessor
-the caller may not see, listing and counting every other heir (#112). Without a target, which only an entity container allows,
+as a container that never existed. The container is decided on a reference budget of its own,
+with the request's frozen clock and retention, so its answer depends on the container alone and
+matches what `recallatron.memory.get` says of the same reference: on the shared budget, a caller
+could spend the allowance with its own target and then tell a container denied by one of its
+links (`reference_scan_limit` part-way through that walk) from one that does not exist. For an
+ordinary link an eligible target has already met this rule, because eligibility resolves every
+link the target carries. There are two exceptions. A marked lineage link is never resolved, and
+it is the case the check exists for: without it, a readable heir would open a window over a
+predecessor the caller may not see, listing and counting every other heir (#112). And a party
+named through `derived_from` skips the contact check that the container step applies, so a
+bound caller whose contact with that party is withdrawn cannot open a window on the party. Without a target, which only an entity container allows,
 the entity's visibility follows the input checks directly, then the candidate scan, and the
 window is the newest `min(total, 2·context + 1)` eligible members, with `target_position` null,
 `window_end` equal to `total` and `has_more` true exactly when older eligible members exist. An

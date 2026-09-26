@@ -137,6 +137,7 @@ from rheo_recallatron.eligibility import (
     begin_request,
     contact_permitted,
     effective_retention,
+    eligible_link_container,
     eligible_memory,
     expire_by_age_enabled,
     memory_reference,
@@ -1325,6 +1326,48 @@ def test_a_link_container_the_caller_may_not_see_refuses_as_an_unknown_one(
         # One answer for all of them: the hidden container is indistinguishable from
         # the unknown one by its words as well as by its state.
         assert len(texts) == 1, texts
+
+
+def test_a_spent_budget_cannot_tell_a_hidden_container_from_an_unknown_one(
+    memory: MemoryWorkspace,
+) -> None:
+    """The container is decided on its own reference budget (cold review of #112).
+
+    The caller picks the target, and the target's links are charged first. On the
+    shared budget a caller could spend it to the edge with its own target and then
+    watch the container check: a workspace-audience memory denied only by one of its
+    links walks those links and overflows (``reference_scan_limit``), while a
+    container that does not exist is ``not_found`` after one charge. Deciding the
+    container on its own allowance makes both ``not_found``.
+    """
+    with memory.unit() as uow:
+        # Hidden only by a link: workspace audience, but it links a record nobody
+        # here can read.
+        linked_away = _write(
+            uow.connection,
+            _row(title="hidden by its link"),
+            links=((f"harness.note:{uuid7()}", "about", False),),
+        )
+
+    owner = memory.context()
+    with memory.reading() as uow:
+        for container in (memory_reference(linked_away.id), memory_reference(uuid7())):
+            spent = MemoryRequest(
+                owner,
+                now=datetime.now(UTC),
+                retention=RetentionPolicy.unbounded(),
+                budget=ReferenceBudget(limit=1),
+            )
+            # The caller's target has already used the whole shared allowance.
+            assert spent.budget.charge(memory_reference(uuid7()))
+            decision = eligible_link_container(
+                owner,
+                uow,
+                RecordRef.parse(container),
+                mode=ReadMode.CURRENT,
+                request=spent,
+            )
+            assert decision == Denied("not_found"), (container, decision)
 
 
 def test_a_readable_link_container_still_opens_its_window(
