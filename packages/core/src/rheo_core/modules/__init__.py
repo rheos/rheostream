@@ -9,7 +9,8 @@ itself, and the allowlist that decides whether it loads at all.
   ``allowed_module_ids()`` over the ``modules.installed`` setting,
   ``load_entry_point()`` (one entry point through the three load gates),
   ``load_modules()``, ``register_module_settings()`` (the settings-only early hook),
-  ``loaded_manifests()``, ``loaded_in_dependency_order()`` and ``module_surfaces()``.
+  ``loaded_manifests()``, ``loaded_in_dependency_order()``, ``module_surfaces()`` and
+  ``check_web_surfaces()`` (the surface-name uniqueness check compose shares).
 
 **No lifecycle.** Install, enable and disable are phase 2's; nothing in release one can
 install a module, and the ``core.module_state`` row a workspace needs is written by
@@ -19,6 +20,7 @@ hand (run 0v's finding F15). Nothing here writes one.
 from rheo_core.modules.loader import (
     ENTRY_POINT_GROUP,
     allowed_module_ids,
+    check_web_surfaces,
     discovered,
     load_entry_point,
     load_modules,
@@ -99,6 +101,7 @@ __all__ = [
     "WebRoute",
     "WebSurface",
     "allowed_module_ids",
+    "check_web_surfaces",
     "discovered",
     "load_entry_point",
     "load_modules",

@@ -78,7 +78,15 @@ from rheo_core.work.kinds import JobHandler
 if TYPE_CHECKING:  # pragma: no cover - see ``Exporter`` on why this cannot be runtime
     from rheo_core.exports.artifact import ExportSnapshot
 
-_SEGMENT_MESSAGE: Final = "a module id is a lowercase identifier"
+_MODULE_ID: Final = re.compile(r"[a-z][a-z0-9_]{0,31}")
+"""``identifiers.md``'s configuration-identifier grammar, which module ids follow.
+
+Stricter than the ``isidentifier()`` plus lowercase test it replaced (issue #132): that
+admitted a leading underscore, non-ASCII letters and any length."""
+
+_SEGMENT_MESSAGE: Final = (
+    "a module id is a lowercase identifier matching [a-z][a-z0-9_]{0,31}"
+)
 
 
 class ManifestInvalid(Exception):
@@ -799,6 +807,64 @@ class ConnectorBinding(BaseModel):
     route: str | None
 
 
+def check_name_prefixes(
+    *,
+    module_id: str,
+    tools: Sequence[ToolDeclaration],
+    jobs: Sequence[JobKind],
+    subscriptions: Sequence[ConsumerSubscription],
+) -> None:
+    """``identifiers.md``'s name-prefix rule for the three names no registry checks.
+
+    A tool name is ``<module_id>_<verb>[_<noun>]``, a job kind ``<module_id>.<name>``
+    and a consumer id ``<module_id>.<handler>`` (``identifiers.md`` § Namespaces in
+    one place). ``OperationRegistry``, ``ResolverRegistry``, the settings registry and
+    the loader's event check already hold operations, resolvers, keys and event types
+    to the module's id; these three had no gate (issue #132), and the two registries
+    that store job kinds and consumers are last-writer-wins, so a module declaring
+    ``core.retention_sweep`` would have replaced the core's own handler.
+
+    **Checked here, over the manifest, and not in the registries.** The core's own
+    tools carry no ``core_`` prefix (``workspace_status``), so ``ToolRegistry`` cannot
+    apply the rule to every origin; and a manifest breaking it is malformed wherever it
+    is read. The loader re-runs this before anything registers, for a manifest built
+    with ``model_construct``.
+
+    The prefix must be followed by a non-empty remainder: a bare ``recallatron`` is not
+    a job kind any more than ``recallatron.`` is. Raises ``ValueError`` naming the
+    first offending name.
+    """
+    tool_prefix = f"{module_id}_"
+    dotted_prefix = f"{module_id}."
+    for tool in tools:
+        if not (
+            tool.name.startswith(tool_prefix) and len(tool.name) > len(tool_prefix)
+        ):
+            raise ValueError(
+                f"tools: tool name {tool.name!r} does not start with {tool_prefix!r}; "
+                f"a module's tool is named '<module_id>_<verb>[_<noun>]'"
+            )
+    for job in jobs:
+        if not (
+            job.name.startswith(dotted_prefix) and len(job.name) > len(dotted_prefix)
+        ):
+            raise ValueError(
+                f"jobs: job kind {job.name!r} does not start with {dotted_prefix!r}; "
+                "a module's job kind is named '<module_id>.<name>'"
+            )
+    for subscription in subscriptions:
+        consumer_id = subscription.consumer_id
+        if not (
+            consumer_id.startswith(dotted_prefix)
+            and len(consumer_id) > len(dotted_prefix)
+        ):
+            raise ValueError(
+                f"subscriptions: consumer id {consumer_id!r} does not start with "
+                f"{dotted_prefix!r}; a module's consumer id is named "
+                "'<module_id>.<handler>'"
+            )
+
+
 def _audit_sink(value: object) -> object:
     """The duck check ``install_sink`` applies, as a pydantic validator.
 
@@ -871,6 +937,10 @@ class ModuleManifest(BaseModel):
         because a manifest that breaks one is malformed wherever it is read, including
         by ``rheo web compose``, which never loads it.
 
+        **The name-prefix rule for tools, job kinds and consumer ids was added in
+        issue #132** (see :func:`check_name_prefixes`), here for the same reason, along
+        with the configuration-identifier grammar for ``module_id`` itself.
+
         **The web contribution's ownership rules were added in run 1a3** (see
         :func:`_check_web_contribution`): they are here rather than on
         :class:`WebContribution` because each one reads this manifest's own id,
@@ -879,7 +949,7 @@ class ModuleManifest(BaseModel):
         manifest.
         """
         module_id = self.module_id
-        if not module_id.isidentifier() or module_id != module_id.lower():
+        if not _MODULE_ID.fullmatch(module_id):
             raise ValueError(f"module_id {module_id!r}: {_SEGMENT_MESSAGE}")
         if is_reserved_module(module_id):
             raise ValueError(
@@ -898,6 +968,12 @@ class ModuleManifest(BaseModel):
                     f"configuration_schema key {spec.key!r} does not start with "
                     f"{module_id + '.'!r}"
                 )
+        check_name_prefixes(
+            module_id=module_id,
+            tools=self.tools,
+            jobs=self.jobs,
+            subscriptions=self.subscriptions,
+        )
         for dependency in self.dependencies:
             try:
                 SpecifierSet(dependency.version_range)

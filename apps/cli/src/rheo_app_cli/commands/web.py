@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from typing import Final
 
+from rheo_core.modules import ManifestInvalid
+
 from rheo_app_cli.web_compose import (
     MissingWebPackage,
     check_web_dependencies,
@@ -55,8 +57,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[
 
 
 def web_compose(args: argparse.Namespace) -> int:
-    manifests = installed_manifests()
-    text = render(manifests)
+    try:
+        manifests = installed_manifests()
+        text = render(manifests)
+    except ManifestInvalid as refusal:
+        # The loader's own refusal (a duplicate module id, a web surface two modules
+        # claim, a per-manifest gate), as one line and exit 1 rather than a traceback:
+        # the same ``module_invalid`` state the bootstrapping commands print.
+        print(f"module_invalid: {refusal}", file=sys.stderr)
+        return 1
     if args.out == STDOUT_TARGET:
         sys.stdout.write(text)
         return 0

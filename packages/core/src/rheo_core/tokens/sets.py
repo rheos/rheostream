@@ -278,12 +278,13 @@ class ToolRegistry:
       operation ("the deletion tools do"), so that check would refuse something the
       ratified contract allows.
 
-    **So the residual gap, stated rather than left for a reader to find: nothing here
-    binds a tool's name to the origin that registered it.** A module may register a
-    tool under any name not already taken. Closing that needs a ratified rule about
-    tool-name prefixes that ``module-contract.md`` does not currently give -- the
-    grammar is stated but no registration rule enforces it, and the core's own tools
-    are the counterexample to the obvious reading.
+    **So nothing here binds a tool's name to the origin that registered it; the
+    module side does (issue #132).** ``identifiers.md`` gives module tools the
+    ``<module_id>_`` prefix, and ``ModuleManifest``'s validator
+    (``rheo_core.modules.manifest.check_name_prefixes``) plus the loader's re-check
+    refuse a module tool outside it before this registry is ever called. The rule
+    stays off this registry because the core's own tools are the counterexample: they
+    carry no prefix, and a registry-level check would have to exempt ``core`` by name.
     """
 
     def __init__(self) -> None:
