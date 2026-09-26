@@ -44,6 +44,7 @@ from rheo_core.modules import (
     reset_surfaces,
 )
 from rheo_core.modules.loader import ALLOWLIST_KEY
+from rheo_core.redaction.policy import exclude_types_key
 from rheo_core.refs import uuid7
 from rheo_core.settings import (
     PROFILE_KEY,
@@ -69,6 +70,8 @@ from rheo_recallatron.configuration import (
 RECALLATRON = "recallatron"
 PROVIDER_VARIABLE = env_variable_names(EMBEDDING_PROVIDER_KEY)[0]
 STRAY_VARIABLE = "RHEO__recallatron__no_such_key"
+EXCLUDE_TYPES_KEY = exclude_types_key(RECALLATRON)
+EXCLUDE_TYPES_VARIABLE = env_variable_names(EXCLUDE_TYPES_KEY)[0]
 
 ABSENT_ID = "absent_probe"
 ABSENT_KEY = f"{ABSENT_ID}.flag"
@@ -161,6 +164,20 @@ def test_an_allowed_modules_environment_setting_resolves() -> None:
     assert resolve().get_str(EMBEDDING_PROVIDER_KEY) == "local"
     # Idempotent.
     assert register_module_settings() == (RECALLATRON,)
+
+
+def test_an_allowed_modules_redaction_exclude_types_resolves_after_register(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#130: ``_register_settings()`` declares ``<module_id>.redaction.exclude_types``
+    for every module that owns a record type, Recallatron included -- the same early
+    hook and the same before/after shape as any other module settings key."""
+    install(monkeypatch, RECALLATRON)
+    monkeypatch.setenv(EXCLUDE_TYPES_VARIABLE, "memory,duplicate")
+    with pytest.raises(SettingUndeclared):
+        resolve()
+    assert register_module_settings() == (RECALLATRON,)
+    assert resolve().get_list(EXCLUDE_TYPES_KEY) == ["memory", "duplicate"]
 
 
 def test_an_allowed_modules_deployment_toml_setting_resolves(
