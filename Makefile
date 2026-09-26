@@ -49,7 +49,7 @@ down:
 
 # Prompt 5: the flagship deployment overlay (deploy/compose.flagship.yaml), separate
 # from the dev stack above. `flagship-config` renders the resolved config against the
-# committed placeholder env file — a syntax/interpolation proof, not a real deploy.
+# committed placeholder env file: a syntax/interpolation proof, not a real deploy.
 flagship-config:
 	docker compose -f deploy/compose.flagship.yaml --env-file deploy/.env.flagship.example config --quiet
 
@@ -58,7 +58,7 @@ flagship-config:
 # either fail loudly on FQDN mismatches or, worse, run with placeholder values.
 flagship-up:
 	@if [ -z "$$FLAGSHIP_ENV" ] || [ ! -f "$$FLAGSHIP_ENV" ]; then \
-		echo "FAIL  FLAGSHIP_ENV must name an existing env file (see deploy/.env.flagship.example) — e.g. make flagship-up FLAGSHIP_ENV=/path/to/real.env"; \
+		echo "FAIL  FLAGSHIP_ENV must name an existing env file (see deploy/.env.flagship.example), e.g. make flagship-up FLAGSHIP_ENV=/path/to/real.env"; \
 		exit 1; \
 	fi
 	docker compose -p rheo-stream-flagship -f deploy/compose.flagship.yaml --env-file "$$FLAGSHIP_ENV" up -d --build
@@ -70,7 +70,7 @@ flagship-up:
 # routine stop/restart.
 flagship-down:
 	@if [ -z "$$FLAGSHIP_ENV" ] || [ ! -f "$$FLAGSHIP_ENV" ]; then \
-		echo "FAIL  FLAGSHIP_ENV must name an existing env file (see deploy/.env.flagship.example) — e.g. make flagship-down FLAGSHIP_ENV=/path/to/real.env"; \
+		echo "FAIL  FLAGSHIP_ENV must name an existing env file (see deploy/.env.flagship.example), e.g. make flagship-down FLAGSHIP_ENV=/path/to/real.env"; \
 		exit 1; \
 	fi
 	docker compose -p rheo-stream-flagship -f deploy/compose.flagship.yaml --env-file "$$FLAGSHIP_ENV" down

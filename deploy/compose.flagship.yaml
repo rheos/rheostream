@@ -6,7 +6,7 @@
 # Build context is the checkout root, mirroring the `context: ..` convention of
 # `deploy/compose.yaml`; this file sits one level down, in `deploy/`.
 #
-# The Coolify (4.3.23) Application that deploys this file needs four settings.
+# The Coolify (4.3.23) Application that deploys this file needs six settings.
 # Each one is load-bearing:
 # - base_directory=/deploy. Coolify passes it to docker compose as
 #   --project-directory, so `context: ..` resolves to the checkout root. Left at
@@ -22,10 +22,25 @@
 #   adds an ARG line for each of those variables, secrets included, to every
 #   Dockerfile it builds. The one build arg these images need is set below in
 #   `build.args`.
+# - No domain configured on any compose service. Setting a domain on a service
+#   makes Coolify generate its own router (and its own sslip.io FQDN) for that
+#   host, which would collide with the Traefik labels this file already carries.
+# - connect_to_docker_network off. When it is on, this app's `postgres`, `core`
+#   and `web` service names join the shared Coolify network directly, where they
+#   can collide with same-named services from another stack, and the DSN host
+#   (`postgres`) becomes ambiguous between stacks.
 #
 # Coolify also attaches its generated `.env` to every service as `env_file`, so
 # under Coolify each container sees every application variable, secrets
-# included, whatever the per-service `environment:` blocks below say.
+# included, whatever the per-service `environment:` blocks below say. One
+# consequence: the same-key entries `RHEO_INTERNAL_SECRET` (core, web) and
+# `RHEO_GITHUB_CLIENT_SECRET` (core) are, under Coolify, replaced with whatever
+# value is stored for that key, or an empty string if the variable was never
+# created there, so the `${VAR:?}` guard below never sees a missing value and
+# cannot catch it. `core` fails closed on an empty internal secret, but the
+# deploy procedure must still check that both `RHEO_INTERNAL_SECRET` and
+# `RHEO_GITHUB_CLIENT_SECRET` are non-empty before deploying, rather than
+# relying on `:?` to catch it.
 name: rheo-stream-flagship
 
 x-rheo-settings: &rheo-settings
