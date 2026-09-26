@@ -166,18 +166,46 @@ def test_an_allowed_modules_environment_setting_resolves() -> None:
     assert register_module_settings() == (RECALLATRON,)
 
 
+_COLD_EXCLUDE_TYPES = """
+from rheo_core.redaction.policy import exclude_types_key
+from rheo_core.settings import resolve
+from rheo_core.settings.schema import SettingUndeclared
+key = exclude_types_key("recallatron")
+try:
+    resolve()
+except SettingUndeclared:
+    print("refused")
+else:
+    print("resolved unexpectedly")
+from rheo_core.modules import register_module_settings
+register_module_settings()
+print(",".join(resolve().get_list(key)))
+"""
+
+
 def test_an_allowed_modules_redaction_exclude_types_resolves_after_register(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """#130: ``_register_settings()`` declares ``<module_id>.redaction.exclude_types``
     for every module that owns a record type, Recallatron included -- the same early
-    hook and the same before/after shape as any other module settings key."""
-    install(monkeypatch, RECALLATRON)
-    monkeypatch.setenv(EXCLUDE_TYPES_VARIABLE, "memory,duplicate")
-    with pytest.raises(SettingUndeclared):
-        resolve()
-    assert register_module_settings() == (RECALLATRON,)
-    assert resolve().get_list(EXCLUDE_TYPES_KEY) == ["memory", "duplicate"]
+    hook and the same before/after shape as any other module settings key.
+
+    Run in a genuinely cold interpreter, like the #108 cases further down: the
+    in-process form left ``exclude_types`` registered on the shared process-wide
+    ``SETTINGS_REGISTRY`` for every later test in this file, so its "before
+    register" refusal passed only when this test ran before the others that
+    register Recallatron -- a test-order dependency, not a real assertion.
+    """
+    result = _cold_run(
+        tmp_path,
+        {
+            env_variable_names(ALLOWLIST_KEY)[0]: RECALLATRON,
+            EXCLUDE_TYPES_VARIABLE: "memory,duplicate",
+        },
+        _COLD_EXCLUDE_TYPES,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "refused\nmemory,duplicate"
 
 
 def test_an_allowed_modules_deployment_toml_setting_resolves(
