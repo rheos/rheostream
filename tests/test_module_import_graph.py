@@ -30,6 +30,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_module_migrations.py",
     "tests/postgres/test_module_storage_ownership.py",
     "tests/postgres/test_tool_telemetry.py",
+    "tests/test_flagship_overlay.py",
     "tests/test_module_import_graph.py",
     "tests/test_module_settings_order.py",
 }
@@ -58,9 +59,12 @@ over that same index under Recallatron's own eligibility —
 ``test_memory_browse.py`` drives the entity-container read, ``memory.get`` and the
 operation inventory the memory screens depend on, all under that same eligibility — and
 ``test_module_lifecycle.py`` reads a real module's package and schema versions back
-through ``core.workspace.status``, and ``test_module_settings_order.py`` (#108)
+through ``core.workspace.status``, ``test_module_settings_order.py`` (#108)
 resolves a real module's own deployment key and writes its per-workspace defaults
-through its real ``rheo.modules`` entry point; none has a substitute,
+through its real ``rheo.modules`` entry point, and ``test_flagship_overlay.py``
+checks the flagship deploy overlay, which installs Recallatron, and its Traefik host
+set must equal the application hosts with Recallatron's real web surface present —
+a fixture module would not prove the deployed host set; none has a substitute,
 because a fixture module has no migration chain, no owned-delete declaration and no
 installed distribution metadata to report.
 
