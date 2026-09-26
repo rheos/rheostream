@@ -63,10 +63,17 @@ flagship-up:
 	fi
 	docker compose -p rheo-stream-flagship -f deploy/compose.flagship.yaml --env-file "$$FLAGSHIP_ENV" up -d --build
 
+# Refuses instead of silently falling back to the placeholder example, same as
+# flagship-up: without the deploy env file, interpolation of the required vars
+# fails anyway, so fail early with the remedy instead of a raw compose error.
 # Never `-v`: this stack's named volumes hold real data and must survive a
 # routine stop/restart.
 flagship-down:
-	docker compose -p rheo-stream-flagship -f deploy/compose.flagship.yaml down
+	@if [ -z "$$FLAGSHIP_ENV" ] || [ ! -f "$$FLAGSHIP_ENV" ]; then \
+		echo "FAIL  FLAGSHIP_ENV must name an existing env file (see deploy/.env.flagship.example) — e.g. make flagship-down FLAGSHIP_ENV=/path/to/real.env"; \
+		exit 1; \
+	fi
+	docker compose -p rheo-stream-flagship -f deploy/compose.flagship.yaml --env-file "$$FLAGSHIP_ENV" down
 
 migrate:
 	uv run rheo migrate
