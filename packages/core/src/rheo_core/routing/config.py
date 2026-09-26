@@ -25,13 +25,14 @@ exactly) and the internal listener passes what ``rheo_core.modules.module_surfac
 kept from startup (run 0v, D-6).
 """
 
+import re
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from rheo_core.settings import ResolvedSettings
+from rheo_core.settings import ResolvedSettings, SettingsError
 
 
 class RoutingMode(StrEnum):
@@ -61,6 +62,56 @@ PUBLIC_HOST_KEY: Final = f"{KEY_PREFIX}.public_host"
 def surface_key(surface: str, field: str) -> str:
     """The settings key for one surface's field (``routing.shell.host``)."""
     return f"{KEY_PREFIX}.{surface}.{field}"
+
+
+IDENTITY_PATH_KEY: Final = surface_key(IDENTITY, "path")
+
+_CANONICAL_PREFIX: Final = re.compile(r"(?:/[A-Za-z0-9._~-]+)+")
+"""One or more ``/segment`` parts of RFC 3986 unreserved characters, nothing else.
+
+That excludes the empty string, a lone ``/``, a trailing slash, a doubled slash, a
+missing leading slash, and anything a browser or proxy would re-encode or interpret
+(``%``, ``?``, ``#``, ``\\``, whitespace). ``.`` and ``..`` segments match the character
+class, so :func:`check_identity_path` refuses them separately."""
+
+
+class IdentityPathInvalid(SettingsError):
+    """``routing.identity.path`` is not a canonical, non-root path prefix (#155)."""
+
+    state = "routing_identity_path_invalid"
+
+
+def check_identity_path(value: str) -> str:
+    """Return ``value`` when it is a canonical identity prefix; raise otherwise.
+
+    ``routing.identity.path`` is operator-settable with no closed choice set, and the
+    registry's ``choices`` mechanism cannot express "any canonical non-root prefix". A
+    root or empty prefix leaves nothing to tell ``/auth/*`` apart from application
+    routes: the web middleware then matches no identity path at all, and the
+    ``/auth/*`` redirect loop from #119 comes back in the browser. A non-canonical one
+    (``/auth/``, ``//auth``, ``/a/../auth``) splits the prefix that ``url_for``,
+    ``identity_path`` and the web tier's matcher each derive from it. Refusing here,
+    where the settings become a :class:`RoutingConfig`, turns either misconfiguration
+    into a startup failure: the ``mcp`` mount builds this object during the lifespan.
+
+    The value itself is echoed on purpose. A path prefix is not a secret, and naming
+    it is what lets an operator find the typo.
+    """
+    problem: str | None = None
+    if value in ("", "/"):
+        problem = "is the root; the identity surface needs its own prefix"
+    elif not _CANONICAL_PREFIX.fullmatch(value):
+        problem = (
+            "is not canonical; use one or more /segment parts with no trailing or "
+            "doubled slash (for example /auth)"
+        )
+    elif any(segment in (".", "..") for segment in value.split("/")):
+        problem = "contains a . or .. segment"
+    if problem is not None:
+        raise IdentityPathInvalid(
+            f"{IDENTITY_PATH_KEY} {value!r} {problem}", key=IDENTITY_PATH_KEY
+        )
+    return value
 
 
 class SurfaceConfig(BaseModel):
@@ -158,7 +209,8 @@ class RoutingConfig(BaseModel):
         """Build the configuration from the seventeen resolved ``routing.*`` keys.
 
         No database and no secret store: the routing configuration is deployment
-        settings and nothing else.
+        settings and nothing else. Raises :class:`IdentityPathInvalid` when
+        ``routing.identity.path`` is root, empty or non-canonical (#155).
 
         ``modules`` is the one part that does not come from settings — no key backs
         it, because the surfaces a deployment has are the ones its loaded modules
@@ -178,10 +230,12 @@ class RoutingConfig(BaseModel):
                     host=settings.get_str(surface_key(SHELL, "host")),
                     path=settings.get_str(surface_key(SHELL, "path")),
                 ),
-                # fixed_path is not a setting: see the module docstring.
+                # fixed_path is not a setting: see the module docstring. The path is
+                # checked here rather than on the model, so a fixture that relocates
+                # it to "/" can still exercise the URL builders' defensive join.
                 identity=SurfaceConfig(
                     host=settings.get_str(surface_key(IDENTITY, "host")),
-                    path=settings.get_str(surface_key(IDENTITY, "path")),
+                    path=check_identity_path(settings.get_str(IDENTITY_PATH_KEY)),
                     fixed_path=True,
                 ),
                 api=SurfaceConfig(

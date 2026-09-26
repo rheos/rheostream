@@ -5,8 +5,8 @@ import { isRoutingConfig, type RoutingConfig } from "@/lib/routing/config";
  *
  * Mirrors `core-health.ts:41`'s `fetchCoreHealth` exactly: one `try`, a narrowing
  * guard, and a single "unavailable" sentinel for every failure — a rejected fetch,
- * a non-200, an unparseable or mis-shaped body, **and an unset environment
- * variable**. It never throws, so no page has to catch.
+ * a timeout (`ROUTING_FETCH_TIMEOUT_MS`), a non-200, an unparseable or mis-shaped
+ * body, **and an unset environment variable**. It never throws, so no page has to catch.
  *
  * Two environment variables, both required, neither interchangeable:
  *
@@ -122,6 +122,20 @@ export function corePublicBaseUrl(): string | null {
   return process.env.RHEO_CORE_PUBLIC_URL || null;
 }
 
+/**
+ * How long the routing fetch may take, headers and body together, in milliseconds
+ * (#155).
+ *
+ * The middleware awaits this fetch on every navigation until the first success, so
+ * a slow or hung `core` would otherwise hang every page render with it. The
+ * internal listener answers from settings alone, with no database and no secret
+ * store, so a healthy one replies in milliseconds; two seconds is generous for a
+ * cold container and short enough that a hung one degrades to the existing
+ * "unavailable" path instead of a spinner. The same signal covers `response.json()`,
+ * so a body that stalls mid-stream is bounded too.
+ */
+export const ROUTING_FETCH_TIMEOUT_MS = 2000;
+
 let cached: RoutingConfig | null = null;
 
 export async function loadRoutingConfig(): Promise<RoutingConfigResult> {
@@ -132,12 +146,14 @@ export async function loadRoutingConfig(): Promise<RoutingConfigResult> {
   if (credentials === null) {
     return { state: "unavailable" };
   }
+  const signal = AbortSignal.timeout(ROUTING_FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(
       `${credentials.baseUrl}${INTERNAL_ROUTING_PATH}`,
       {
         cache: "no-store",
         headers: { [INTERNAL_SECRET_HEADER]: credentials.secret },
+        signal,
       },
     );
     if (!response.ok) {
@@ -150,6 +166,14 @@ export async function loadRoutingConfig(): Promise<RoutingConfigResult> {
     cached = body;
     return { state: "ok", config: body };
   } catch {
+    if (signal.aborted) {
+      // The one failure worth a log line: every other one is visible in core's own
+      // logs, but a hang is only visible from this side. No URL or secret in it.
+      console.warn(
+        `routing configuration fetch timed out after ${ROUTING_FETCH_TIMEOUT_MS}ms; ` +
+          "treating routing as unavailable",
+      );
+    }
     return { state: "unavailable" };
   }
 }
