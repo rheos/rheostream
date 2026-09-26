@@ -156,7 +156,7 @@ services:
       dockerfile: Dockerfile
       args:
         UV_SYNC_ARGS: "--extra local-embeddings"
-    command: ["uv", "run", "python", "-m", "rheo_app_worker.main"]
+    command: ["/app/.venv/bin/python", "-m", "rheo_app_worker.main"]
     depends_on:
       postgres:
         condition: service_healthy

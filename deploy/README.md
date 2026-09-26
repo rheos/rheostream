@@ -38,8 +38,9 @@ has no port, so its loop touches a heartbeat file (`RHEO_WORKER_HEARTBEAT_FILE`)
 once per iteration and the probe (`python -m rheo_app_worker.heartbeat`) fails
 once that file is more than ten minutes old. A worker waiting out a database outage
 still counts as healthy; `postgres` has its own `pg_isready` check. `core` gets a
-300-second start period, because a cold start re-syncs the virtualenv (issue #152)
-and runs migrations before it listens.
+300-second start period, because a cold start runs migrations before it listens.
+That figure was sized when every start also re-synced the virtualenv; the image no
+longer does (issue #152), so it can shrink.
 
 The **0b1 operator sequence**, run against a freshly migrated cluster, in this exact
 order:
@@ -180,8 +181,8 @@ application and attaches its own proxy to.
 
 A Coolify-hosted deploy also needs the Application settings listed in the header
 comment of `deploy/compose.flagship.yaml`: see that header for the exact list,
-not repeated here. The image also currently needs network access to PyPI at
-container start (issue #152).
+not repeated here. The image starts from the virtualenv built into it and needs no
+network access to PyPI at container start (issue #152).
 
 Provisioning order, with no real ids below (placeholders only):
 
