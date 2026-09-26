@@ -42,10 +42,16 @@ because each of those refusals is answered by an earlier step. An implementation
 reordered these would still pass a test suite that only checked each refusal in
 isolation, which is why the paired small-container/over-cap-container cases exist.
 
-**An entity container adds one step and may drop two.** Its membership is a mention
+**Every container's own eligibility sits between steps 2 and 3.** For a link container
+it is :func:`~rheo_recallatron.eligibility.eligible_link_container`, in the requested
+mode (#112): the one link target eligibility never resolves is a marked lineage link,
+so without it a readable heir would open a window on a predecessor the caller may not
+see. A failure is the ``not_found`` an unknown container gets.
+
+**An entity container swaps that step and may drop two.** Its membership is a mention
 rather than a link, and its own visibility — ``entity.get``'s answer, always in
-``current`` mode — is checked after step 2 and before step 3. Named with no target, it
-skips steps 2 and 3 and answers its newest eligible members.
+``current`` mode — is the container step instead. Named with no target, it skips steps
+2 and 3 and answers its newest eligible members.
 
 **Refusals are raised, not returned.** The dispatcher turns
 :class:`~rheo_core.operations.refusals.OperationRefused` into an outcome whose state is
@@ -107,6 +113,7 @@ from rheo_recallatron.eligibility import (
     MemoryRequest,
     ReadMode,
     container_candidates,
+    eligible_link_container,
     eligible_memory,
     evaluate_all,
     is_container_member,
@@ -508,10 +515,12 @@ def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> Read
     """A bounded window over one container: centred on an authorized, proven-member
     target, or — for an entity container named with no target — its newest members.
 
-    The five numbered steps of this module's docstring, in that order, with one step
-    inserted for an entity container: **its visibility, decided by the function behind
-    ``entity.get`` and always in ``current`` mode**, after the target's own
-    authorization and before membership. A read can open a window over an entity
+    The five numbered steps of this module's docstring, in that order, with the
+    container's own eligibility inserted after the target's authorization and before
+    membership. For a link container that is ``eligible_link_container`` in the
+    requested mode (#112). For an entity container it is **its visibility, decided by
+    the function behind ``entity.get`` and always in ``current`` mode**. A read can
+    open a window over an entity
     exactly when ``entity.get`` would answer for it, whatever ``include_invalidated``
     asks for, so an entity reachable only through retained history is ``not_found``
     here in both modes. Without a target there is no step 2 or 3: visibility, then the
@@ -524,7 +533,8 @@ def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> Read
     evaluation, so a count taken one step early would report its existence.
     """
     # 1. Input, target type, purpose binding, retention. Before any container is named.
-    container = _canonical(model_input.container_ref).format()
+    parsed_container = _canonical(model_input.container_ref)
+    container = parsed_container.format()
     entity_id = entity_container(container)
     target = (
         None
@@ -553,6 +563,15 @@ def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> Read
         visible = visible_entity(ctx, uow, entity_id, request=request)
         if isinstance(visible, Denied):
             raise _refuse(visible)
+    else:
+        # 2b. A link container's own eligibility (#112), in the read's own mode, with
+        # the same ``not_found`` an unknown container gets. Before membership, so a
+        # readable target cannot open a window on a container the caller may not see.
+        denied = eligible_link_container(
+            ctx, uow, parsed_container, mode=mode, request=request
+        )
+        if denied is not None:
+            raise _refuse(denied)
 
     # 3. Exact stored membership, as an existence check, before any neighbour.
     if target is not None and not is_container_member(uow, target.id, container):

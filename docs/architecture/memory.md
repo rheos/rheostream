@@ -262,12 +262,23 @@ Its precedence is fixed. Input (the references, the target's type, the context w
 mode), the purpose binding and the retention policy come first, so `input_invalid`,
 `purpose_mismatch` and `retention_unavailable` all land before any container is looked at.
 With a target, the target's eligibility in the requested mode is decided next (missing,
-cross-workspace, expired or ineligible is `not_found`, whatever the container holds); then, for
-an entity container only, the entity's own visibility; then membership: an authorized target
-that is not a member of the named container refuses `container_membership_required` before a
-single neighbour is selected, so a caller cannot learn a container's population through a
-target that does not belong to it. A link container's own eligibility check is not yet
-implemented and is tracked as #112; today its only container check is membership. Without a target, which only an entity container allows,
+cross-workspace, expired or ineligible is `not_found`, whatever the container holds); then the
+container's own eligibility; then membership: an authorized target that is not a member of the
+named container refuses `container_membership_required` before a single neighbour is selected,
+so a caller cannot learn a container's population through a target that does not belong to it.
+
+The container's eligibility is decided by its shape. An entity container is visible when
+`entity.get` would answer for it (below). A link container is eligible by the rule a memory's
+own link to the same record would meet. A memory reference is decided by the eligibility
+function in the read's own mode, so a superseded predecessor the caller may read opens its
+heirs' window to a `history` read and to no `current` read. Any other record reference must
+resolve through the core record resolver, live and readable to this caller, and pass the
+contact check an `about` link would. A container that fails is `not_found` with the same words
+as a container that never existed, and a spent reference budget is `reference_scan_limit`. For
+an ordinary link an eligible target has already met this rule, because eligibility resolves
+every link the target carries. The case the check exists for is a marked lineage link, which
+eligibility never resolves: without it, a readable heir would open a window over a predecessor
+the caller may not see, listing and counting every other heir (#112). Without a target, which only an entity container allows,
 the entity's visibility follows the input checks directly, then the candidate scan, and the
 window is the newest `min(total, 2·context + 1)` eligible members, with `target_position` null,
 `window_end` equal to `total` and `has_more` true exactly when older eligible members exist. An

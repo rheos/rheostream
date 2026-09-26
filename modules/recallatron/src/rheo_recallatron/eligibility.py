@@ -77,7 +77,7 @@ from rheo_recallatron.configuration import (
     RETENTION_EXPIRE_BY_AGE_SPEC,
     RetentionPolicy,
 )
-from rheo_recallatron.references import entity_container
+from rheo_recallatron.references import entity_container, is_memory_ref
 from rheo_recallatron.refusals import NOT_FOUND, REFERENCE_SCAN_LIMIT
 from rheo_recallatron.storage import tables as t
 from rheo_recallatron.storage.repository import (
@@ -706,6 +706,53 @@ def _resolved_link(
 
 def _readable(head: RecordHead) -> bool:
     return head.readable and head.state == LIVE
+
+
+def eligible_link_container(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    container: RecordRef,
+    *,
+    mode: ReadMode,
+    request: MemoryRequest,
+) -> Denied | None:
+    """May this caller open a window on this link container at all? (#112.)
+
+    ``None`` when it may; otherwise the same ``Denied`` an unknown container gets. The
+    rule is the one :func:`_links` applies to a link naming the same record, so a
+    container is visible exactly when a memory linking to it through an ordinary
+    link could be read for that link's sake:
+
+    - **A memory** is decided by :func:`eligible_memory` in the read's own mode. A
+      superseded predecessor is visible to a ``history`` read the caller may make of
+      it, and to no ``current`` read, exactly as it would be as a memory source.
+    - **Any other record** resolves through the core's record resolver under the
+      caller's own permission, must be live and readable, and must pass the contact
+      seam as an ``about`` link would: a window keyed on a party is a window about
+      that party.
+
+    Target eligibility already implies this for every ordinary link, because an
+    eligible target has resolved each of its own links. The case it does not cover,
+    and the reason this check exists, is a **marked lineage link**: it is never
+    resolved, so a readable heir is a readable, proven member of a predecessor the
+    caller may not see. It also turns an unknown container from
+    ``container_membership_required`` into ``not_found``, which is what an unknown
+    entity container already answered.
+
+    An entity container is not handled here; ``visible_entity`` decides it.
+    """
+    if is_memory_ref(container):
+        decision = eligible_memory(ctx, uow, container.id, mode=mode, request=request)
+        return decision if isinstance(decision, Denied) else None
+    reference = container.format()
+    if not request.budget.charge(reference):
+        return Denied(REFERENCE_SCAN_LIMIT)
+    resolved = resolve_in(container, ctx, uow)
+    if isinstance(resolved, Unavailable) or not _readable(resolved):
+        return Denied(NOT_FOUND)
+    if not contact_permitted(ctx, uow, container, RELATION_ABOUT, request=request):
+        return Denied(NOT_FOUND)
+    return None
 
 
 def contact_permitted(
