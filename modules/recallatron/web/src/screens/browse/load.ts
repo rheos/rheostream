@@ -21,6 +21,18 @@ import { ENTITY_GET, ENTITY_LIST, READ } from "../../operations";
  * is in the query string (`kind`, `entity`, `around`), so every selection is a link.
  */
 
+/**
+ * The detail pane's element id. Choosing an entity, or moving Older/Newer through its
+ * memories, links to `#entity-detail`, so a phone, where the panes stack, lands on the
+ * pane that changed rather than at the top of the list (#116).
+ */
+export const DETAIL_ID = "entity-detail";
+
+/** `href` with the detail pane as its fragment target. */
+function toDetail(href: string): string {
+  return `${href}#${DETAIL_ID}`;
+}
+
 /** The closed entity vocabulary, in the order the kind filter shows it. */
 export const ENTITY_KINDS = [
   "person",
@@ -118,7 +130,7 @@ async function loadList(
       kind: item.kind,
       name: item.name,
       mentionCount: item.mention_count,
-      href: shell.href("browse", { kind, entity: item.ref }),
+      href: toDetail(shell.href("browse", { kind, entity: item.ref })),
       current: item.ref === selected,
     }));
 
@@ -220,7 +232,7 @@ async function loadDetail(
   const first = items[0];
   const last = items[items.length - 1];
   const recentre = (ref: string) =>
-    shell.href("browse", { kind, entity: entityRef, around: ref });
+    toDetail(shell.href("browse", { kind, entity: entityRef, around: ref }));
   return {
     state: "window",
     entity: entity.value,

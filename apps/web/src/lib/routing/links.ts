@@ -29,6 +29,14 @@ export function postLoginReturn(config: RoutingConfig): string {
 }
 
 /**
+ * Home, for the header's brand link (#116): the shell's root, absolute, so a
+ * module's own host in subdomain mode links back to the shell host.
+ */
+export function homeHref(config: RoutingConfig): string {
+  return urlFor(config, SHELL, "/");
+}
+
+/**
  * The sign-in entry point: `/auth/login` on the identity surface, carrying the
  * shell root as its `return`. The host of that `return` is validated against
  * `application_hosts()` by the route itself, so this builder can never widen it.

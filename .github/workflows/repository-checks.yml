@@ -102,22 +102,34 @@ jobs:
       # against its own committed placeholder env file.
       - name: Flagship compose overlay resolves (make flagship-config)
         run: make flagship-config
+      # #152: the image starts from the venv as built, with no network. An empty
+      # uv cache stands in for one that has aged past uv's index TTL (about 10
+      # minutes), which is when a start-up re-sync used to need PyPI for
+      # hatchling. Checks the core and worker entry modules import, the `rheo`
+      # CLI runs from PATH, a `uv run` inside the container does not sync, and
+      # the alembic console script the build removed is still absent.
+      - name: The image starts offline from the built venv (#152)
+        run: |
+          docker run --rm --network none -e UV_CACHE_DIR=/tmp/empty-uv-cache \
+            rheo-flagship-core sh -euc '
+              python -c "import rheo_app_core.serve, rheo_app_worker.main"
+              rheo --help >/dev/null
+              uv run python -c "print(\"uv run did not sync\")"
+              test ! -e /app/.venv/bin/alembic
+              echo "offline start OK"
+            '
       # AC-10: the flagship image installs the local embedding runtime and can
-      # select it offline, no database and no network. `--no-sync` below means
-      # this tests the venv as it was actually built into the image (#152) —
-      # not "the same `uv run` entry the `core` and `worker` services use",
-      # since those run plain `uv run`, which re-syncs the workspace at
-      # container start and needs network (a known, accepted gap, #152).
+      # select it offline, no database and no network. This runs the venv the
+      # `core` and `worker` services start from (#152).
       # `register_module_settings()` is #108's early hook; `configured_provider_name()`
       # reads back the deployment-scoped key it declares. Proves #108 end to end
       # inside the shipped flagship image.
       - name: Dense retrieval is selectable, offline, in the flagship image (AC-10)
         run: |
-          # --no-sync tests the venv as built: plain `uv run` re-syncs and needs PyPI once uv's index cache ages (#152).
           docker run --rm --network none \
             -e RHEO__modules__installed=recallatron \
             -e RHEO__recallatron__embedding__provider=local \
-            rheo-flagship-core uv run --no-sync python -c "
+            rheo-flagship-core python -c "
           from rheo_core.modules import register_module_settings
           from rheo_recallatron.embedding.local import LocalEmbeddingProvider
           from rheo_recallatron.embedding.registry import configured_provider_name, resolve_provider

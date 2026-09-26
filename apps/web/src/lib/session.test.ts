@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchSession } from "@/lib/session";
+import { activeWorkspaceName, fetchSession } from "@/lib/session";
 
 /**
  * The `/internal/v1/session` client: exact header construction, and a mapping
@@ -27,7 +27,11 @@ const OK_BODY = {
   active_workspace_id: "01912d1e-0000-7000-8000-000000000002",
   role: "owner",
   memberships: [
-    { workspace_id: "01912d1e-0000-7000-8000-000000000002", role: "owner" },
+    {
+      workspace_id: "01912d1e-0000-7000-8000-000000000002",
+      display_name: "north-desk",
+      role: "owner",
+    },
   ],
 };
 
@@ -119,6 +123,22 @@ describe("fetchSession mapping", () => {
     ["a non-string workspace id", { ...OK_BODY, active_workspace_id: 7 }],
     ["memberships that are not a list", { ...OK_BODY, memberships: {} }],
     ["a membership of the wrong shape", { ...OK_BODY, memberships: [{ role: "owner" }] }],
+    [
+      "a membership with no display name (#115)",
+      {
+        ...OK_BODY,
+        memberships: [{ workspace_id: OK_BODY.active_workspace_id, role: "owner" }],
+      },
+    ],
+    [
+      "a membership with a non-string display name",
+      {
+        ...OK_BODY,
+        memberships: [
+          { workspace_id: OK_BODY.active_workspace_id, display_name: 7, role: "owner" },
+        ],
+      },
+    ],
   ])("refuses %s", async (_label, body) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse(body)));
 
@@ -189,4 +209,23 @@ describe("fetchSession short circuits", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("activeWorkspaceName (#115)", () => {
+  const memberships = [
+    { workspace_id: "ws-alpha", display_name: "Alpha Desk", role: "owner" },
+    { workspace_id: "ws-beta", display_name: "Beta Desk", role: "member" },
+  ];
+
+  it("names the active workspace by its display name, not its id", () => {
+    expect(activeWorkspaceName({ activeWorkspaceId: "ws-beta", memberships })).toBe(
+      "Beta Desk",
+    );
+  });
+
+  it("falls back to the id only when the active workspace is not listed", () => {
+    expect(activeWorkspaceName({ activeWorkspaceId: "ws-gamma", memberships })).toBe(
+      "ws-gamma",
+    );
+  });
 });

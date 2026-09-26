@@ -318,13 +318,13 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 | `mcp.rheo.stream` | MCP facade | `core`, token auth |
 | `docs.rheo.stream` | Documentation | Not the application. |
 | `tuttle.rheo.stream` | Reserved for the back-office integration surface | Not the application; nothing in release one. |
-| `app.rheo.stream` | Kept in reserve as a permanent redirect to `circuit.` | Reverse-proxy configuration, not part of this specification's application routing. Not configured yet: the flagship overlay has no rule for it (issue #174). |
+| `app.rheo.stream` | Kept in reserve as a permanent redirect to the same path and query on `circuit.` | Reverse-proxy configuration in `deploy/compose.flagship.yaml`, not part of this specification's application routing. Not an application host (issue #174). |
 | `recallatron.rheo.stream` | Permanent redirect to the same path and query on `recall.` | Reverse-proxy configuration in `deploy/compose.flagship.yaml`. Not an application host: nothing the application generates links to it (issue #158). |
 
 **What the flagship serves today.** Run 0d deployed the reference instance with
 `deploy/compose.flagship.yaml` (PR #144). It routes `circuit.`, `auth.`, `recall.`, `api.` and
-`mcp.`, plus the `recallatron.` redirect. `leads.`, `current.` and `relationships.` have no
-module behind them yet, so the overlay routes none of them; `docs.` and `app.` are not configured
+`mcp.`, plus the `recallatron.` and `app.` redirects. `leads.`, `current.` and `relationships.`
+have no module behind them yet, so the overlay routes none of them; `docs.` is not configured
 either. The apex serves the project page from elsewhere.
 
 Subdomain mode needs wildcard DNS (`*.rheo.stream` to the proxy) and a wildcard certificate for

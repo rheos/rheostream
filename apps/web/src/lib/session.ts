@@ -33,6 +33,8 @@ export const HOST_HEADER = "X-Rheo-Host";
 
 export interface Membership {
   workspace_id: string;
+  /** The workspace's registry display name (#115): what the UI shows, never the id. */
+  display_name: string;
   role: string;
 }
 
@@ -52,6 +54,21 @@ export type SessionResult =
   | { state: "no-workspace" }
   | { state: "unauthenticated"; refusal: string }
   | { state: "unavailable" };
+
+/**
+ * The active workspace's display name, for Home and anywhere else a person reads it
+ * (#115). `core` lists every membership, the active one included, so the id
+ * fallback only shows if that invariant ever breaks; it never hides the page.
+ */
+export function activeWorkspaceName(session: {
+  activeWorkspaceId: string;
+  memberships: readonly Membership[];
+}): string {
+  const active = session.memberships.find(
+    (membership) => membership.workspace_id === session.activeWorkspaceId,
+  );
+  return active?.display_name ?? session.activeWorkspaceId;
+}
 
 /** The refusal the listener itself returns when either header is absent. */
 const SESSION_MISSING = "session_missing";
@@ -76,6 +93,7 @@ function isMembership(value: unknown): value is Membership {
   return (
     isRecord(value) &&
     typeof value.workspace_id === "string" &&
+    typeof value.display_name === "string" &&
     typeof value.role === "string"
   );
 }

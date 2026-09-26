@@ -137,6 +137,7 @@ from rheo_recallatron.eligibility import (
     begin_request,
     contact_permitted,
     effective_retention,
+    eligible_link_container,
     eligible_memory,
     expire_by_age_enabled,
     memory_reference,
@@ -1255,6 +1256,267 @@ def test_eligibility_admits_a_lineage_link_without_resolving_the_predecessor(
     )
     lineage = [link for link in window.items[0].links if link.supersession_lineage]
     assert [(link.ref, link.display) for link in lineage] == [(gone, None)]
+
+
+def test_a_link_container_the_caller_may_not_see_refuses_as_an_unknown_one(
+    memory: MemoryWorkspace,
+) -> None:
+    """#112: ``read`` decides the caller's eligibility on a link container itself,
+    between the target's eligibility and membership.
+
+    A marked lineage link is the one link target eligibility never resolves, so a
+    readable heir of a predecessor the caller may not read is a readable, proven
+    member of a container the caller may not see. Without the container check that
+    heir opens a window over the hidden predecessor: every other heir, and a total
+    that counts them. With it, each hidden container answers exactly as a container
+    that never existed does, in both read modes, whether or not the target is a
+    member.
+    """
+    with memory.unit() as uow:
+        # Somebody else's member-private memory: the owner may not read it in any
+        # mode. Two readable heirs name it through marked lineage.
+        theirs = _write(
+            uow.connection,
+            _row(title="theirs", audience_kind="member", audience_id=uuid7()),
+        )
+        hidden = memory_reference(theirs.id)
+        heir = _write(
+            uow.connection,
+            _row(title="first heir", recorded_at=_recent(1)),
+            links=((hidden, "derived_from", True),),
+        )
+        _write(
+            uow.connection,
+            _row(title="second heir", recorded_at=_recent(2)),
+            links=((hidden, "derived_from", True),),
+        )
+        # An erased predecessor: a reference to a memory that no longer exists.
+        erased = memory_reference(uuid7())
+        orphan = _write(
+            uow.connection,
+            _row(title="heir of the erased"),
+            links=((erased, "derived_from", True),),
+        )
+        outsider = _write(uow.connection, _row(title="readable, links nothing"))
+
+    owner = memory.context()
+    unknown_memory = memory_reference(uuid7())
+    # A record of a module this workspace has not enabled: unreadable to everyone.
+    unknown_record = f"harness.note:{uuid7()}"
+    cases = (
+        (hidden, heir),
+        (hidden, outsider),
+        (erased, orphan),
+        (erased, outsider),
+        (unknown_memory, heir),
+        (unknown_record, heir),
+    )
+    for include_invalidated in (False, True):
+        texts: set[str] = set()
+        for container, target in cases:
+            outcome = memory.read(
+                owner,
+                container_ref=container,
+                target_ref=memory_reference(target.id),
+                include_invalidated=include_invalidated,
+            )
+            _refused(outcome, "not_found")
+            assert outcome.error is not None
+            texts.add(outcome.error.error_text)
+        # One answer for all of them: the hidden container is indistinguishable from
+        # the unknown one by its words as well as by its state.
+        assert len(texts) == 1, texts
+
+
+def test_a_spent_budget_cannot_tell_a_hidden_container_from_an_unknown_one(
+    memory: MemoryWorkspace,
+) -> None:
+    """The container is decided on its own reference budget (cold review of #112).
+
+    The caller picks the target, and the target's links are charged first. On the
+    shared budget a caller could spend it to the edge with its own target and then
+    watch the container check: a workspace-audience memory denied only by one of its
+    links walks those links and overflows (``reference_scan_limit``), while a
+    container that does not exist is ``not_found`` after one charge. Deciding the
+    container on its own allowance makes both ``not_found``.
+    """
+    with memory.unit() as uow:
+        # Hidden only by a link: workspace audience, but it links a record nobody
+        # here can read.
+        linked_away = _write(
+            uow.connection,
+            _row(title="hidden by its link"),
+            links=((f"harness.note:{uuid7()}", "about", False),),
+        )
+
+    owner = memory.context()
+    with memory.reading() as uow:
+        for container in (memory_reference(linked_away.id), memory_reference(uuid7())):
+            spent = MemoryRequest(
+                owner,
+                now=datetime.now(UTC),
+                retention=RetentionPolicy.unbounded(),
+                budget=ReferenceBudget(limit=1),
+            )
+            # The caller's target has already used the whole shared allowance.
+            assert spent.budget.charge(memory_reference(uuid7()))
+            decision = eligible_link_container(
+                owner,
+                uow,
+                RecordRef.parse(container),
+                mode=ReadMode.CURRENT,
+                request=spent,
+            )
+            assert decision == Denied("not_found"), (container, decision)
+
+
+def test_a_readable_link_container_still_opens_its_window(
+    memory: MemoryWorkspace,
+) -> None:
+    """The control for #112: the container check denies only what the caller may
+    not see. A superseded predecessor the caller may read opens its heirs' window in
+    ``history`` mode, which is the mode that admits it; in ``current`` mode it is not
+    a current record, so it refuses as the same ``not_found``. A readable container
+    with a non-member target still refuses ``container_membership_required``: the
+    container check comes before membership and does not replace it."""
+    with memory.unit() as uow:
+        replacement = _write(uow.connection, _row(title="replacement"))
+        predecessor = _write(
+            uow.connection,
+            _row(
+                title="predecessor",
+                invalidation_reason="source_superseded",
+                superseded_by_id=replacement.id,
+            ),
+        )
+        reference = memory_reference(predecessor.id)
+        heir = _write(
+            uow.connection,
+            _row(title="heir", recorded_at=_recent(1)),
+            links=((reference, "derived_from", True),),
+        )
+        outsider = _write(uow.connection, _row(title="readable, links nothing"))
+        live_container = _write(uow.connection, _row(title="live container"))
+
+    owner = memory.context()
+    window = _window(
+        memory.read(
+            owner,
+            container_ref=reference,
+            target_ref=memory_reference(heir.id),
+            include_invalidated=True,
+        )
+    )
+    assert [item.title for item in window.items] == ["heir"]
+    _refused(
+        memory.read(
+            owner, container_ref=reference, target_ref=memory_reference(heir.id)
+        ),
+        "not_found",
+    )
+    for include_invalidated in (False, True):
+        _refused(
+            memory.read(
+                owner,
+                container_ref=memory_reference(live_container.id),
+                target_ref=memory_reference(outsider.id),
+                include_invalidated=include_invalidated,
+            ),
+            "container_membership_required",
+        )
+
+
+def test_a_readable_non_memory_link_container_opens_its_window(
+    memory: MemoryWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The non-memory half of #112's control: a record the resolver answers live and
+    readable is a container the caller may open. The resolver is synthetic because
+    this repository ships no module whose records a memory can link to yet; it
+    answers one reference and delegates every other one to the real resolver."""
+    record = RecordRef.parse(f"harness.note:{uuid7()}")
+    real = memory_eligibility.resolve_in
+
+    def resolve(
+        ref: RecordRef, ctx: WorkspaceContext, uow: UnitOfWork
+    ) -> RecordHead | Unavailable:
+        if ref.format() == record.format():
+            return RecordHead(ref, "a note", True, "live", 1)
+        return real(ref, ctx, uow)
+
+    monkeypatch.setattr(memory_eligibility, "resolve_in", resolve)
+    with memory.unit() as uow:
+        member = _write(
+            uow.connection,
+            _row(title="about the note"),
+            links=((record.format(), "about", False),),
+        )
+    window = _window(
+        memory.read(
+            memory.context(),
+            container_ref=record.format(),
+            target_ref=memory_reference(member.id),
+        )
+    )
+    assert [item.title for item in window.items] == ["about the note"]
+
+
+def test_a_party_container_passes_the_contact_seam_before_its_window_opens(
+    memory: MemoryWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#112 for a party: a window keyed on a party is a window about it.
+
+    The target links the party as ``derived_from``, which the contact seam does not
+    gate, so the target is readable to a bound caller whatever the party's contact
+    answer. The container check applies the seam as an ``about`` link would: a
+    withdrawn contact refuses as ``not_found``, the same as an unknown container, and
+    a permitted one opens the window."""
+    party = RecordRef.parse(f"relationships.party:{uuid7()}")
+    real = memory_eligibility.resolve_in
+
+    def resolve(
+        ref: RecordRef, ctx: WorkspaceContext, uow: UnitOfWork
+    ) -> RecordHead | Unavailable:
+        if ref.format() == party.format():
+            return RecordHead(ref, "a party", True, "live", 1)
+        return real(ref, ctx, uow)
+
+    monkeypatch.setattr(memory_eligibility, "resolve_in", resolve)
+    with memory.unit() as uow:
+        insert_module_state(
+            uow.connection,
+            module_id="leads",
+            package_version="0",
+            state="enabled",
+            installed_at=datetime.now(UTC),
+            enabled_at=datetime.now(UTC),
+        )
+        member = _write(
+            uow.connection,
+            _row(title="made from the party"),
+            links=((party.format(), "derived_from", False),),
+        )
+
+    bound = memory.bound_context(_RESPOND)
+    target = memory_reference(member.id)
+    monkeypatch.setattr(
+        memory_eligibility, "CONTACT_LOOKUP", _contact_registry("withdrawn")
+    )
+    withdrawn = memory.read(bound, container_ref=party.format(), target_ref=target)
+    _refused(withdrawn, "not_found")
+    unknown = memory.read(
+        bound, container_ref=memory_reference(uuid7()), target_ref=target
+    )
+    _refused(unknown, "not_found")
+    assert withdrawn.error is not None and unknown.error is not None
+    assert withdrawn.error.error_text == unknown.error.error_text
+
+    monkeypatch.setattr(
+        memory_eligibility, "CONTACT_LOOKUP", _contact_registry("permitted")
+    )
+    window = _window(
+        memory.read(bound, container_ref=party.format(), target_ref=target)
+    )
+    assert [item.title for item in window.items] == ["made from the party"]
 
 
 def test_eligibility_applies_a_bound_purpose_gate(memory: MemoryWorkspace) -> None:

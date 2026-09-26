@@ -287,6 +287,21 @@ def list_workspaces(
     return tuple(_workspace(row) for row in conn.execute(statement).mappings())
 
 
+def workspace_display_names(
+    conn: Connection, workspace_ids: Iterable[UUID]
+) -> dict[UUID, str]:
+    """``display_name`` for each of ``workspace_ids`` that has a registry row, in one
+    query. An id with no row is simply absent from the result; the caller decides
+    what to show for it (issue #115)."""
+    ids = list(workspace_ids)
+    if not ids:
+        return {}
+    statement = select(t.workspace.c.id, t.workspace.c.display_name).where(
+        t.workspace.c.id.in_(ids)
+    )
+    return {row.id: row.display_name for row in conn.execute(statement)}
+
+
 def set_workspace_state(
     conn: Connection,
     workspace_id: UUID,

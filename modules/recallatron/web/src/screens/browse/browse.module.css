@@ -69,6 +69,20 @@
   border-radius: var(--rs-radius-md);
 }
 
+/* The fragment target for an entity choice (#116). Stacked, the page lands on this
+   pane with a little room above it. Side by side, the pane already shares the list's
+   top, so a margin of a whole viewport clamps the jump to the top of the page and
+   the screen opens as it always did, heading and filters in view. */
+.detailPane {
+  scroll-margin-block-start: var(--rs-space-4);
+}
+
+@media (min-width: 56rem) {
+  .detailPane {
+    scroll-margin-block-start: 100vh;
+  }
+}
+
 .notice {
   margin-block: 0 var(--rs-space-3);
   font-size: var(--rs-font-size-sm);

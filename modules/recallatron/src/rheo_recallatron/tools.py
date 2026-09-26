@@ -148,7 +148,7 @@ READ_TOOL: Final = ToolDeclaration(
         "required through this tool. Refuses input_invalid for an unparseable "
         "reference or a missing target, purpose_mismatch when the stated purpose "
         "is not this context's binding, not_found when the target is missing or "
-        "not yours to read, or when the container is an entity you cannot see, "
+        "not yours to read, or when the container is missing or not yours to see, "
         "container_membership_required when the target is not a member of that "
         "container, window_scan_limit when the container holds more members than "
         "a read scans, and reference_scan_limit when the window exhausts its "
