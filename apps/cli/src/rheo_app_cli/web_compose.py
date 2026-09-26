@@ -28,6 +28,7 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Final
 
+from rheo_contracts import SafetyClass
 from rheo_core.modules import (
     ManifestInvalid,
     ModuleManifest,
@@ -100,11 +101,13 @@ def check_web_dependencies(
 def render(manifests: Iterable[ModuleManifest]) -> str:
     """The generated TypeScript for ``manifests``: banner, imports, ``MODULES``."""
     composed: dict[str, WebContribution] = {}
+    reads: dict[str, tuple[str, ...]] = {}
     for manifest in manifests:
         if manifest.module_id in composed:
             raise ValueError(f"module {manifest.module_id!r} is composed twice")
         if manifest.web is not None:
             composed[manifest.module_id] = manifest.web
+            reads[manifest.module_id] = read_operations(manifest)
     bindings: dict[str, str] = {}
     for module_id in sorted(composed):
         binding = _binding(module_id)
@@ -126,9 +129,30 @@ def render(manifests: Iterable[ModuleManifest]) -> str:
     ]
     lines += ["", "export const MODULES = ["]
     for module_id in sorted(composed):
-        lines += _module(module_id, composed[module_id], bindings[module_id])
+        lines += _module(
+            module_id, composed[module_id], bindings[module_id], reads[module_id]
+        )
     lines.append("] as const satisfies readonly ComposedModule[];")
     return "\n".join(lines) + "\n"
+
+
+def read_operations(manifest: ModuleManifest) -> tuple[str, ...]:
+    """The operations a screen of this module may call: its own ``READ``-class
+    declarations, sorted (#122).
+
+    The web shell refuses any other name at runtime, before the call leaves the web
+    tier, so this list is the allowlist rather than a hint. It comes from the same
+    declarations the core registers and dispatches, so a screen cannot widen it: the
+    only way onto it is an operation of this module that the core itself treats as a
+    read. Another module's operations and the core's own are never on it.
+    """
+    return tuple(
+        sorted(
+            declaration.name
+            for declaration, _ in manifest.operations
+            if declaration.safety_class is SafetyClass.READ
+        )
+    )
 
 
 def _binding(module_id: str) -> str:
@@ -157,7 +181,9 @@ def _array(name: str, items: list[str], depth: int) -> list[str]:
     ]
 
 
-def _module(module_id: str, web: WebContribution, binding: str) -> list[str]:
+def _module(
+    module_id: str, web: WebContribution, binding: str, reads: tuple[str, ...]
+) -> list[str]:
     pad = _INDENT * 2
     navigation = [
         _object(
@@ -221,5 +247,6 @@ def _module(module_id: str, web: WebContribution, binding: str) -> list[str]:
         *_array("recordViews", record_views, 2),
         *_array("forms", forms, 2),
         *_array("searchProviders", search_providers, 2),
+        *_array("readOperations", [_literal(name) for name in reads], 2),
         f"{_INDENT}}},",
     ]

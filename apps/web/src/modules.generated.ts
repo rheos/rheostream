@@ -22,5 +22,14 @@ export const MODULES = [
     searchProviders: [
       { id: "recall", operation: "recallatron.memory.recall" },
     ],
+    readOperations: [
+      "recallatron.embedding.coverage",
+      "recallatron.entity.get",
+      "recallatron.entity.list",
+      "recallatron.memory.dedup_candidates",
+      "recallatron.memory.get",
+      "recallatron.memory.read",
+      "recallatron.memory.recall",
+    ],
   },
 ] as const satisfies readonly ComposedModule[];

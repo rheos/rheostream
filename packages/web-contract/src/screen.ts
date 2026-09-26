@@ -57,4 +57,11 @@ export interface ComposedModule {
   recordViews: readonly { recordType: string; component: unknown }[];
   forms: readonly { operation: string; component: unknown }[];
   searchProviders: readonly { id: string; operation: string }[];
+  /**
+   * The only operations this module's screens may call through `ShellApi.call`:
+   * the module's own READ-class declarations, written by `rheo web compose` from
+   * the manifest (#122). The shell refuses any other name before it leaves the web
+   * tier; core still enforces roles and token sets on every call that does.
+   */
+  readOperations: readonly string[];
 }

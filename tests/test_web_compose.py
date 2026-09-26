@@ -187,6 +187,7 @@ export const MODULES = [
     recordViews: [],
     forms: [],
     searchProviders: [],
+    readOperations: [],
   },
   {
     id: "compose_probe",
@@ -207,6 +208,9 @@ export const MODULES = [
     ],
     searchProviders: [
       { id: "find", operation: "compose_probe.note.find" },
+    ],
+    readOperations: [
+      "compose_probe.note.find",
     ],
   },
 ] as const satisfies readonly ComposedModule[];
@@ -230,6 +234,36 @@ FUTURE_ENTRY_POINT = _entry_point(FUTURE_ID, "FUTURE_MANIFEST")
 
 def test_render_matches_the_golden_output() -> None:
     assert render([QUIET_MANIFEST, COMPOSE_MANIFEST, ANOTHER_MANIFEST]) == GOLDEN
+
+
+def test_read_operations_are_the_module_s_own_read_class_declarations() -> None:
+    """#122: the web shell refuses, at runtime, any screen call not listed here, so
+    this list must be exactly the module's READ-class declarations, sorted.
+
+    Every other class is left out: ``compose_probe.note.add`` is ``MUTATE`` and a
+    form names it, and neither makes it callable from a screen. A module with no
+    READ operation gets an empty list, which refuses every screen call.
+    """
+    mixed = _manifest(
+        "mixed_probe",
+        operations=(
+            (_operation("mixed_probe.z.find", SafetyClass.READ), _handler),
+            (_operation("mixed_probe.a.find", SafetyClass.READ), _handler),
+            (_operation("mixed_probe.b.add", SafetyClass.MUTATE), _handler),
+            (_operation("mixed_probe.c.drop", SafetyClass.DESTRUCTIVE), _handler),
+        ),
+        web=ANOTHER_MANIFEST.web,
+    )
+    rendered = render([mixed])
+    assert (
+        "    readOperations: [\n"
+        '      "mixed_probe.a.find",\n'
+        '      "mixed_probe.z.find",\n'
+        "    ],\n"
+    ) in rendered
+    for excluded in ("mixed_probe.b.add", "mixed_probe.c.drop"):
+        assert excluded not in rendered
+    assert "readOperations: []," in render([ANOTHER_MANIFEST])
 
 
 def test_render_is_byte_stable_under_any_input_order() -> None:

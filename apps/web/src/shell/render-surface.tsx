@@ -26,6 +26,7 @@ import {
   type VisibilityOptions,
 } from "@/shell/compose";
 import panel from "@/shell/panel.module.css";
+import { screenCall } from "@/shell/screen-call";
 import { ShellFrame, type ShellAccount, type ShellNavigationItem } from "@/shell/ShellFrame";
 
 /**
@@ -351,7 +352,10 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
   const { owner, screen } = decision;
   const shell: ShellApi = {
     role: session.role,
-    call: (operation, input) => callOperation(operation, input, identity),
+    // #122: only the owning module's READ-class operations, refused before core.
+    call: screenCall(owner.readOperations, (operation, input) =>
+      callOperation(operation, input, identity),
+    ),
     href: (routeId, query) => moduleHref(config, owner, routeId, query),
   };
   return (
