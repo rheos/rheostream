@@ -211,6 +211,42 @@ describe("module screens through the real composition", () => {
   });
 });
 
+/** #157: a live session for an account with no workspace is not "signed out". */
+describe("a signed-in session with no workspace", () => {
+  beforeEach(() => {
+    seams.session = { state: "no-workspace" };
+  });
+
+  it("says no workspace yet and offers sign-out, not sign-in", async () => {
+    const html = await render(SHELL_REQUEST);
+    expect(html).toContain("No workspace yet");
+    expect(html).toContain("session: signed in, no workspace");
+    expect(html).toContain(">Sign out</button>");
+    expect(html).not.toContain("Sign in");
+    expect(html).not.toContain("signed out");
+  });
+
+  it("offers no switcher, navigation or module screen", async () => {
+    for (const request of [SHELL_REQUEST, moduleRequest("/search")]) {
+      const html = await render(request);
+      expect(html).not.toContain("Active workspace");
+      expect(html).not.toMatch(NAV);
+      expect(html).not.toContain('type="search"');
+      expect(html).toContain("No workspace yet");
+    }
+  });
+
+  it("is its own decision on both the shell and a module path", async () => {
+    expect((await decideSurface(SHELL_REQUEST.host, SHELL_REQUEST.pathname)).kind).toBe(
+      "no-workspace",
+    );
+    const onModule = moduleRequest("/search");
+    expect((await decideSurface(onModule.host, onModule.pathname)).kind).toBe(
+      "no-workspace",
+    );
+  });
+});
+
 /**
  * The one decision both the catch-all layout (`ensureServed`) and the page
  * (`renderSurface`) act on, so they cannot disagree about 404 versus render.
