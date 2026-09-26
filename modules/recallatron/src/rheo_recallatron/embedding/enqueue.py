@@ -99,8 +99,9 @@ def _request_due_mark(uow: UnitOfWork) -> None:
     control-plane connection to mark the due-work index with, so without this a new
     memory's embed job waited for the reconcile floor (``work.due_reconcile_seconds``,
     900 s by default) before any worker looked at it (#118). The request is the
-    established post-commit hook (``HandlerUnitOfWork.request_due_mark``, the one
-    ``core.work.retry`` and ``.replay`` use): a dispatch that rolls back writes no mark.
+    established post-commit hook (``HandlerUnitOfWork.request_due_mark``, the one the
+    core's delivery retry and replay operations use): a dispatch that rolls back writes
+    no mark.
 
     A plain ``UnitOfWork`` has no dispatcher to ask. That is the rebuild's case: it runs
     as a worker job, inside the visit to this same workspace, and the visit's own
