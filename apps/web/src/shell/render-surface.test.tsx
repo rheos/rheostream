@@ -31,7 +31,7 @@ const ROUTED: RoutingConfig = {
   ...BASE,
   surfaces: {
     ...BASE.surfaces,
-    modules: { recallatron: { host: "recallatron", path: "/recallatron" } },
+    modules: { recallatron: { host: "recall", path: "/recallatron" } },
   },
 };
 const STATUS = {
@@ -86,7 +86,7 @@ const SIGNED_IN: SessionResult = {
 function moduleRequest(subPath: string, query: Record<string, string> = {}) {
   return MODE === "path"
     ? { host: "example.test", pathname: `/recallatron${subPath}`, query }
-    : { host: "recallatron.example.test", pathname: subPath, query };
+    : { host: "recall.example.test", pathname: subPath, query };
 }
 
 const SHELL_REQUEST = {
@@ -175,6 +175,22 @@ describe("module screens through the real composition", () => {
   it("serves the module's root route", async () => {
     const html = await render(moduleRequest("/"));
     expect(html).toMatch(/<a[^>]*aria-current="page"[^>]*>Memory<\/a>/);
+  });
+
+  // Issue #158: the old `recallatron.` host is a proxy redirect for old or external
+  // links only. No link this application renders may point at it.
+  it("never links to the legacy recallatron host", async () => {
+    for (const request of [SHELL_REQUEST, moduleRequest("/"), moduleRequest("/search")]) {
+      const html = await render(request);
+      const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((match) => match[1]);
+      expect(hrefs.length).toBeGreaterThan(0);
+      for (const href of hrefs) {
+        expect(href).not.toMatch(/\/\/recallatron\./);
+      }
+    }
+    if (MODE === "subdomain") {
+      expect(urlFor(ROUTED, "recallatron", "/")).toBe("https://recall.example.test/");
+    }
   });
 
   it("reaches core through the operation client for the screen's reads", async () => {

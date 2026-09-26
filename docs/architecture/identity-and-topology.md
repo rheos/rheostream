@@ -254,7 +254,7 @@ RoutingConfig
     mcp:      { host: "mcp",     path: "/mcp" }
     docs:     { host: "docs",    external: true }
     integration: { host: "tuttle", external: true, reserved: true }
-    modules:  { recallatron: { host: "recallatron", path: "/recallatron" }, ... }  # loaded manifests
+    modules:  { recallatron: { host: "recall", path: "/recallatron" }, ... }  # loaded manifests
 ```
 
 Both the Python core and the web tier expose one function, `url_for(config, surface, path)`
@@ -301,12 +301,13 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 | apex `rheo.stream` | Project and marketing page | Not the application. Never receives the session cookie. |
 | `circuit.rheo.stream` | The application shell and the workspace switcher | `web` |
 | `auth.rheo.stream` | Login, the OAuth callback, the session grant | `core` |
-| `leads.`, `current.`, `recallatron.`, `relationships.` | Module surfaces | `web` |
+| `leads.`, `current.`, `recall.`, `relationships.` | Module surfaces | `web` |
 | `api.rheo.stream` | HTTP API and intake | `core`, token auth |
 | `mcp.rheo.stream` | MCP facade | `core`, token auth |
 | `docs.rheo.stream` | Documentation | Not the application. |
 | `tuttle.rheo.stream` | Reserved for the back-office integration surface | Not the application; nothing in release one. |
 | `app.rheo.stream` | Kept in reserve as a permanent redirect to `circuit.` | Reverse-proxy configuration, implemented in the deployment phase; not part of this specification's application routing. |
+| `recallatron.rheo.stream` | Permanent redirect to the same path and query on `recall.` | Reverse-proxy configuration in `deploy/compose.flagship.yaml`. Not an application host: nothing the application generates links to it (issue #158). |
 
 Subdomain mode needs wildcard DNS (`*.rheo.stream` to the proxy) and a wildcard certificate for
 one label; the proxy terminates TLS for every host in the table. Single-host path mode needs one

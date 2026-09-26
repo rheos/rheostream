@@ -213,7 +213,7 @@ def test_enabling_recallatron_in_a_fresh_workspace_reports_it_enabled_and_routed
     assert isinstance(surfaces, dict), routing
     modules = surfaces["modules"]
     assert set(modules) == {RECALLATRON}, modules
-    assert modules[RECALLATRON]["host"] == "recallatron"
+    assert modules[RECALLATRON]["host"] == "recall"
     assert modules[RECALLATRON]["path"] == "/recallatron"
 
     live = _live_pairs(status)
