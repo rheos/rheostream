@@ -12,9 +12,9 @@ startup sequence through the FastAPI lifespan.
 - ``workspace create`` prints exactly the id; ``list``, ``status`` (JSON through the
   registry under an operator context), ``repair``, ``migrate`` and ``doctor``
   return ``0``; a refusal prints its state name on stderr and returns ``1``.
-- ``doctor``'s connection-budget line reads ``warn`` on a stock cluster and says why:
-  86 connections per process against a ``max_connections`` of 100 carries one process
-  and not the two release one ends up with. That is the truthful reading of the
+- ``doctor``'s connection-budget line reads ``ok`` on a stock cluster and says why:
+  36 connections per process, 72 for core and worker together, inside 80% of a
+  ``max_connections`` of 100 (issue #162). That is the truthful reading of the
   shipped defaults, not a fixture to size around.
 - ``doctor``'s reconcile-interval line names both keys and both resolved values, which
   is the half of AC 18 a packaged-defaults assertion cannot reach: either key can be
@@ -297,16 +297,17 @@ def test_migrate_and_doctor_return_zero(
     # The connection budget, asserted on both halves. The level is the half a
     # hard-coded ``"ok"`` would pass silently through, and it is a checkable fact on
     # these exact numbers rather than a value chosen to make the test pass: the
-    # shipped defaults put one process at 16 * 5 + 6 = 86, a stock cluster allows
-    # 100, so one process fits and two (core and worker, from 0c1) do not.
+    # shipped defaults put one process at 6 * 5 + 6 = 36, so two (core and worker,
+    # from 0c1) take 72 of a stock cluster's 100, inside the 80 target (issue #162).
     (budget,) = [line for line in report if "connection budget:" in line]
     assert "cluster max_connections = 100" in budget, (
         "this cluster is not stock; the level below is asserted against 100",
         budget,
     )
-    assert budget.startswith("warn "), budget
-    assert "16 * 5 + 6 = 86 per process" in budget, budget
-    assert "2 processes configured = 172" in budget, budget
+    assert budget.startswith("ok   "), budget
+    assert "6 * 5 + 6 = 36 per process" in budget, budget
+    assert "2 processes configured = 72" in budget, budget
+    assert "target <= 80" in budget, budget
     assert "serialized maintenance" in budget, budget
     assert "held now =" in budget, budget
     # The detail names every lever an operator could move, not merely a number.

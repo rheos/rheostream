@@ -289,19 +289,20 @@ def test_close_idle_is_callable_without_asking_for_an_engine() -> None:
 def test_pooled_connections_counts_the_reserved_engine_too() -> None:
     """The arithmetic an operator compares with the cluster's own ``max_connections``.
 
-    The shipped defaults are ``cache_size`` 16 and ``pool_max_connections`` 5. The
+    The shipped defaults are ``cache_size`` 6 and ``pool_max_connections`` 5. The
     backend reserves 5 for its control engine plus 1 for serialized maintenance:
-    16 * 5 + 6 = 86 per process. Core and worker are separate processes each holding
-    their own, so a stock ``max_connections`` of 100 carries one and not two.
+    6 * 5 + 6 = 36 per process. Core and worker are separate processes each holding
+    their own, so the pair is 72 against a stock ``max_connections`` of 100, inside
+    the 80% ``rheo doctor`` asks for (issue #162).
     """
-    p = pool(cache_size=16, reserved_connections=6)
-    assert p.cache_size == 16
+    p = pool(cache_size=6, reserved_connections=6)
+    assert p.cache_size == 6
     assert p.pool_size == 5
     assert p.reserved_connections == 6
-    assert p.pooled_connections == 86
+    assert p.pooled_connections == 36
     assert p.held_connections == 6
     # The reservation is additive, not decorative: drop it and the figure moves.
-    assert pool(cache_size=16, reserved_connections=0).pooled_connections == 80
+    assert pool(cache_size=6, reserved_connections=0).pooled_connections == 30
     # The old name claimed a ceiling the figure was not, and must not come back as an
     # alias beside the new one — two names for one number is how the wrong one
     # survives a rename.

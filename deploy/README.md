@@ -187,6 +187,20 @@ skips the deploy job. A green `deploy` job means Coolify accepted and queued the
 deploy request, not that the deploy finished; check the deployment's own status in
 Coolify.
 
+### Connection budget
+
+The flagship runs the packaged pool defaults, so it needs no pool setting of its
+own: `storage.pool_cache_size` 6 and `storage.pool_max_connections` 5 give each
+process 6 * 5 + 6 = 36 connections (six cached workspace engines, the control
+engine, one maintenance connection). Core and worker make 72 against the overlay
+postgres's stock `max_connections` of 100. `rheo doctor` reads `ok` while the pair
+stays within 80 (80%); the remaining 28 cover an operator's `rheo` command, which
+is a third process with engines of its own (the phase-1b migration run is one),
+plus `psql` and the superuser-reserved slots. To move a number, set
+`RHEO__storage__pool_cache_size` or `RHEO__storage__pool_max_connections` in the
+application's environment, or raise `max_connections` on the postgres service,
+then re-run `rheo doctor` (issue #162).
+
 ### Rollback
 
 1. **Fast path:** pin the deploy platform's app to the last known-good `main`
