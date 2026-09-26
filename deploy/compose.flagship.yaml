@@ -97,6 +97,27 @@ services:
       # same reason deploy/compose.yaml:113 gives.
       - rheodata:/var/lib/rheo-stream
     restart: unless-stopped
+    # Health checks on core, worker and web (#156): without them Coolify reports
+    # `running:unknown` forever and never `running:healthy`. Each uses a tool the
+    # image already has (python3 here, node in web), not curl.
+    #
+    # start_period covers a cold start: `uv run` re-syncs the venv (#152), then the
+    # lifespan runs the control-chain and per-workspace migrations before uvicorn
+    # listens. Failures inside it do not count, and the first success ends it, so a
+    # long value costs nothing on a fast start. start_interval probes every 5 s
+    # meanwhile, so a deploy turns healthy within seconds of the service being up.
+    # /healthz makes no database call, so a slow query never fails it.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
+      start_interval: 5s
     labels:
       - traefik.enable=true
       - traefik.docker.network=${RHEO_TRAEFIK_NETWORK:?}
@@ -144,9 +165,24 @@ services:
       # worker's startup resolves a secret (apps/worker/src/rheo_app_worker/main.py:
       # 114-129), so every operator `rheo …` command runs in `core`, never here.
       <<: *rheo-settings
+      # The loop touches this file every iteration; the health check below reads
+      # it (apps/worker/src/rheo_app_worker/heartbeat.py). Container-local /tmp,
+      # not the shared rheodata volume, so core never sees the worker's beat.
+      RHEO_WORKER_HEARTBEAT_FILE: /tmp/rheo-worker-heartbeat
     volumes:
       - rheodata:/var/lib/rheo-stream
     restart: unless-stopped
+    # Liveness, not database health (#156): healthy while the loop's heartbeat is
+    # under 10 minutes old. The loop beats before every pass, failed passes
+    # included, and waits at most 60 s between passes. The venv's python runs the
+    # stdlib-only probe directly, skipping `uv run`'s start-up sync.
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-m", "rheo_app_worker.heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+      start_interval: 5s
 
   web:
     build:
@@ -160,6 +196,20 @@ services:
       RHEO_CORE_INTERNAL_API_URL: http://core:8100
       RHEO_CORE_INTERNAL_URL: http://core:8000
     restart: unless-stopped
+    # Liveness (#156): apps/web/src/app/healthz/route.ts answers 200 without
+    # calling core, and the middleware matcher skips it, so the probe is never
+    # redirected to sign in. The image has node and no curl.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz', {signal: AbortSignal.timeout(4000)}).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
     labels:
       - traefik.enable=true
       - traefik.docker.network=${RHEO_TRAEFIK_NETWORK:?}

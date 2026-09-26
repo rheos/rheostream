@@ -1320,8 +1320,14 @@ def worker_loop(
     max_passes: int | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     jitter: random.Random | None = None,
+    heartbeat: Callable[[], None] | None = None,
 ) -> None:
     """Run passes until the stop event is set or ``max_passes`` is exhausted.
+
+    ``heartbeat``, when given, is called once at the top of every iteration, before
+    the pass, so it keeps beating through failed passes and their back-off. The
+    worker's composition root passes one that touches the file the container health
+    check reads (``rheo_app_worker.heartbeat``, #156). It must not raise.
 
     ``stop`` and ``max_passes`` exist so a test drives a bounded number of passes
     without a thread or an infinite loop; when the caller passes neither, the loop
@@ -1357,6 +1363,8 @@ def worker_loop(
         if max_passes is not None and passes >= max_passes:
             break
         passes += 1
+        if heartbeat is not None:
+            heartbeat()
         now = clock()
         reconcile_seconds = resolve().get_int("work.due_reconcile_seconds")
         try:

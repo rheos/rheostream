@@ -173,6 +173,195 @@ def test_workers_build_block_equals_cores() -> None:
     assert "image" not in WORKER
 
 
+# --- health checks (#156) ---------------------------------------------------------
+
+
+LOCAL_COMPOSE = yaml.safe_load(
+    (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
+)["services"]
+
+
+def _duration_seconds(value: str) -> int:
+    match = re.fullmatch(r"(\d+)s", value)
+    assert match, f"expected a whole-second duration: {value!r}"
+    return int(match.group(1))
+
+
+def test_every_service_has_a_health_check() -> None:
+    """Coolify reports `running:unknown` for a service with no health check, so
+    every service needs one for the application to read `running:healthy`."""
+    for name, service in SERVICES.items():
+        assert "healthcheck" in service, f"{name} has no healthcheck"
+        test = service["healthcheck"]["test"]
+        assert test[0] in ("CMD", "CMD-SHELL"), f"{name}: {test!r}"
+
+
+@pytest.mark.parametrize("name", ["core", "worker", "web"])
+def test_app_health_checks_leave_room_for_a_cold_start(name: str) -> None:
+    """A cold start re-syncs the venv and runs migrations before anything listens;
+    a start_period shorter than that would count those minutes as failures."""
+    check = SERVICES[name]["healthcheck"]
+    start_period = _duration_seconds(check["start_period"])
+    assert start_period >= (300 if name in ("core", "worker") else 120)
+    assert _duration_seconds(check["start_interval"]) <= 10
+    assert _duration_seconds(check["timeout"]) < _duration_seconds(check["interval"])
+    assert check["retries"] >= 3
+
+
+def test_core_and_web_probe_their_own_healthz_without_curl() -> None:
+    """Each probe uses the interpreter its image ships: python3 for core, node for
+    web (whose image has no curl). Both hit a route that calls nothing else."""
+    core_test = CORE["healthcheck"]["test"]
+    assert core_test[:3] == ["CMD", "python3", "-c"]
+    assert "http://127.0.0.1:8000/healthz" in core_test[3]
+    web_test = WEB["healthcheck"]["test"]
+    assert web_test[:3] == ["CMD", "node", "-e"]
+    assert "http://127.0.0.1:3000/healthz" in web_test[3]
+    assert (ROOT / "apps" / "web" / "src" / "app" / "healthz" / "route.ts").is_file()
+
+
+def test_worker_health_check_reads_the_heartbeat_the_loop_writes() -> None:
+    from rheo_app_worker.heartbeat import HEARTBEAT_FILE_VARIABLE
+
+    assert WORKER["healthcheck"]["test"] == [
+        "CMD",
+        "/app/.venv/bin/python",
+        "-m",
+        "rheo_app_worker.heartbeat",
+    ]
+    heartbeat_file = WORKER["environment"][HEARTBEAT_FILE_VARIABLE]
+    assert heartbeat_file.startswith("/tmp/")
+    assert not heartbeat_file.startswith(ANCHOR["RHEO_DATA_ROOT"])
+    assert HEARTBEAT_FILE_VARIABLE not in CORE["environment"]
+
+
+def test_the_core_probe_answers_zero_against_a_real_healthz() -> None:
+    """Run the overlay's own core probe command against a stand-in server that
+    answers /healthz the way core does, then against one that answers 503."""
+    import http.server
+    import threading
+
+    statuses = iter([200, 503])
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the stdlib's method name
+            code = next(statuses) if self.path == "/healthz" else 404
+            self.send_response(code)
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        code = CORE["healthcheck"]["test"][3].replace(
+            "127.0.0.1:8000", f"127.0.0.1:{port}"
+        )
+        results = [
+            subprocess.run(
+                [sys.executable, "-c", code], capture_output=True, timeout=30
+            ).returncode
+            for _ in range(2)
+        ]
+    finally:
+        server.shutdown()
+    assert results[0] == 0
+    assert results[1] != 0
+
+
+def test_local_compose_uses_the_same_core_and_worker_health_checks() -> None:
+    for name in ("core", "worker"):
+        assert LOCAL_COMPOSE[name]["healthcheck"] == SERVICES[name]["healthcheck"]
+    assert (
+        LOCAL_COMPOSE["worker"]["environment"]["RHEO_WORKER_HEARTBEAT_FILE"]
+        == WORKER["environment"]["RHEO_WORKER_HEARTBEAT_FILE"]
+    )
+
+
+# --- data root mode (#161) --------------------------------------------------------
+
+
+DOCKERFILE_TEXT = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+ENTRYPOINT_PATH = ROOT / "deploy" / "core-entrypoint.sh"
+
+
+def test_the_image_creates_the_data_root_owner_only() -> None:
+    """The in-image data root is 0700 (Docker copies it into a fresh named
+    volume), and every container start re-tightens an older, wider volume."""
+    data_root = ANCHOR["RHEO_DATA_ROOT"]
+    assert f"RUN install -d -m 0700 {data_root}\n" in DOCKERFILE_TEXT
+    assert not re.search(rf"mkdir[^\n]*{re.escape(data_root)}", DOCKERFILE_TEXT)
+    assert re.search(
+        r"^COPY --chmod=0755 deploy/core-entrypoint\.sh "
+        r"/usr/local/bin/rheo-core-entrypoint$",
+        DOCKERFILE_TEXT,
+        re.MULTILINE,
+    )
+    assert re.search(
+        r'^ENTRYPOINT \["/usr/local/bin/rheo-core-entrypoint"\]$',
+        DOCKERFILE_TEXT,
+        re.MULTILINE,
+    )
+    assert "\nUSER " not in DOCKERFILE_TEXT, (
+        "the entrypoint's chmod assumes the process user owns the data root"
+    )
+
+
+def _run_entrypoint(tmp_path: Path, root: Path) -> subprocess.CompletedProcess[str]:
+    script = ENTRYPOINT_PATH.read_text(encoding="utf-8").replace(
+        "root=/var/lib/rheo-stream", f"root={root}"
+    )
+    assert f"root={root}" in script
+    patched = tmp_path / "entrypoint.sh"
+    patched.write_text(script, encoding="utf-8")
+    return subprocess.run(
+        ["/bin/sh", str(patched), "sh", "-c", "echo ran:$0", "arg0"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def test_the_entrypoint_tightens_a_wide_root_and_runs_the_command(
+    tmp_path: Path,
+) -> None:
+    import stat
+
+    assert "root=/var/lib/rheo-stream\n" in ENTRYPOINT_PATH.read_text(encoding="utf-8")
+    root = tmp_path / "rheo-stream"
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+    result = _run_entrypoint(tmp_path, root)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ran:arg0"
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+
+
+def test_the_entrypoint_leaves_a_symlink_or_missing_root_alone(
+    tmp_path: Path,
+) -> None:
+    import stat
+
+    target = tmp_path / "elsewhere"
+    target.mkdir(mode=0o755)
+    target.chmod(0o755)
+    link = tmp_path / "rheo-stream"
+    link.symlink_to(target)
+    result = _run_entrypoint(tmp_path, link)
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+
+    missing = tmp_path / "missing"
+    result = _run_entrypoint(tmp_path, missing)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ran:arg0"
+    assert not missing.exists()
+
+
 # --- routing: the identity path clause, and no bare PathPrefix -------------------
 
 

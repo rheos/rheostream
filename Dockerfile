@@ -56,8 +56,17 @@ RUN uv sync --frozen $UV_SYNC_ARGS \
 
 # The in-image data root (rheo_core.storage.data_root reads RHEO_IN_CONTAINER to
 # pick it) and the flag that makes that branch live rather than dead code.
-RUN mkdir -p /var/lib/rheo-stream
+# Mode 0700, owner root (the process user; the image sets no USER), because the
+# data root holds secrets/ and config/deployment.toml (#161). Docker copies this
+# mode into a named volume the first time it mounts an empty one;
+# deploy/core-entrypoint.sh tightens a volume created before this line existed.
+RUN install -d -m 0700 /var/lib/rheo-stream
 ENV RHEO_IN_CONTAINER=1
 
+COPY --chmod=0755 deploy/core-entrypoint.sh /usr/local/bin/rheo-core-entrypoint
+
 EXPOSE 8000
+# The entrypoint only fixes the data root's mode and then execs its arguments, so
+# `worker`'s `command:` override and a `docker run ... <cmd>` both still run as given.
+ENTRYPOINT ["/usr/local/bin/rheo-core-entrypoint"]
 CMD ["uv", "run", "python", "-m", "rheo_app_core.serve"]
