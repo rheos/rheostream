@@ -4,10 +4,11 @@ operation.
 **The one subcommand that does not call** :func:`~rheo_app_cli.context.bootstrap`.
 It opens no database and migrates nothing: the document is built from the registry
 alone, and registration reaches ``current_profile()`` only for the ``test_harness``
-origin, which neither the core operations nor a real module use. It does resolve
-settings, because ``load_modules()`` reads the ``modules.installed`` allowlist — so
-it resolves a data root far enough to read ``<data_root>/config/deployment.toml``
-when one is there, and reads the ``RHEO__*`` environment. Both are reads: neither
+origin, which neither the core operations nor a real module use. It does not
+resolve settings in full. ``load_modules()`` reads one key, the ``modules.installed``
+allowlist, through ``read_deployment_value()``: that resolves a data root far enough
+to read ``<data_root>/config/deployment.toml`` when one is there, and reads that one
+key from the ``RHEO__*`` environment. Both are reads: neither
 creates anything, and an absent ``deployment.toml`` is simply an empty layer.
 The CI regeneration diff stays environment-independent because the emitted bytes
 depend on exactly two things, the installed distributions and the resolved
