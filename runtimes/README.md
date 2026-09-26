@@ -1,7 +1,9 @@
 # Agent runtimes
 
-Reserved for replaceable adapters that manage model conversation mechanics.
-Runtime implementations do not own domain data, permissions, or durable work state.
+Replaceable adapters that manage model conversation mechanics. Runtime
+implementations do not own domain data, permissions, or durable work state. One
+adapter is built: `rheo_runtimes.claude_cli.ClaudeCliRuntime`, which spawns the
+configured Claude CLI (`claude -p`).
 
 The [idea document](../docs/ideas/rheo-stream-idea.md#rheo-agent-and-interaction-model)
 requires configurable Claude CLI (`claude -p`) and OpenRouter execution, and identifies
@@ -15,6 +17,6 @@ capabilities and preserve scoped sessions, action approval, cancellation/failure
 states, and durable operation identity; native sessions are not interchangeable.
 
 Private configuration selects adapters, models, provider policies, and credential
-references. No runtime implementation, credentials, or subscription access ships in
-this directory. A documented CLI capability does not establish that its rheo adapter
-is implemented or suitable for every hosted workflow.
+references. No credentials or subscription access ship in this directory. The
+OpenRouter and Codex CLI adapters are not built yet, and a documented CLI capability
+does not establish that its rheo adapter is suitable for every hosted workflow.

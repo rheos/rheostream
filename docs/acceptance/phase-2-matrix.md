@@ -484,7 +484,8 @@ pass refuses any other provider. A test that pins its own workspace's strategy r
 strategy in both passes; the rest run under the pass's. The dense pass is a harness claim with
 two stated limits: it selects the provider by rebinding
 `embedding_registry.configured_provider_name`, not through the
-`recallatron.embedding.provider` setting a real deployment cannot set yet (issue #108), and
+`recallatron.embedding.provider` setting, which a real deployment could not set when this row
+was captured (issue #108, since fixed), and
 it fills every live memory synchronously with the rebuild's own fill step after each commit
 point, so it proves the steady state and not a memory written moments before its embed job
 runs. One assertion holds only when the

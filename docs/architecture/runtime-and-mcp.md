@@ -234,13 +234,15 @@ Recallatron's manifest declares an empty `sensitivity`, so no memory field carri
 the release-one provider runs in process and sends nothing anywhere, and a remote provider
 would have to route its input through the renderer before it could ship.
 
-**Known limit, issue #108.** A real deployment cannot set `recallatron.embedding.provider` yet.
-The module loader resolves deployment settings, to read `modules.installed`, before any
-module's keys are registered, so the key fails startup with `SettingUndeclared` whether it comes
-from `RHEO__recallatron__embedding__provider` or from `deployment.toml`. The container image
-also installs without the `local-embeddings` extra. Both are deferred to run 0d, and until they
-land a deployment runs with no provider: no embed job is enqueued, the `hybrid` default answers
-lexical results with `dense_available = false`, and `recallatron.embedding.rebuild` refuses.
+**Setting the provider in a deployment (issue #108, fixed in run 0d).** Core startup, the
+worker and every CLI command call `register_module_settings()` before their first strict
+resolve. It reads `modules.installed` on its own and registers the allowlisted modules'
+settings, so `RHEO__recallatron__embedding__provider` or the same key in `deployment.toml`
+resolves instead of failing with `SettingUndeclared`. The default image still installs without
+the `local-embeddings` extra; the build argument `UV_SYNC_ARGS="--extra local-embeddings"` adds
+it, and the flagship overlay sets both that argument and provider `local`. A deployment that
+sets no provider runs with none: no embed job is enqueued, the `hybrid` default answers lexical
+results with `dense_available = false`, and `recallatron.embedding.rebuild` refuses.
 
 ## The MCP facade
 
@@ -522,6 +524,5 @@ still run in full.
   tiering, for tiered and untiered types alike. The loader declares the key for every loaded
   module that owns a record type, and the manifest reserves `<module_id>.redaction.*` to the
   core so no module declares a key there itself. An operator value for it in the environment
-  or `deployment.toml` fails startup with `SettingUndeclared` until issue #108 lands, for that
-  issue's reason (deployment settings resolve before any module key is registered); a
-  workspace row is unaffected.
+  or `deployment.toml` resolves, because module settings are registered before the first strict
+  resolve (issue #108).

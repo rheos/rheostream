@@ -20,52 +20,59 @@ routing inquiries from its own websites and forms. Job search is one optional
 workflow; a workspace can feed Leads from its own funnels and referral partners
 and never touch a job board.
 
-**Status: the walking skeleton is built.** A Python core (FastAPI)
-and a Next.js web shell run against Postgres, one database per workspace.
-Identity sign-in is GitHub OAuth behind a pluggable provider boundary;
-sessions are host-only cookies with a one-time identity-host grant; the
-core issues its own tokens under a non-token-issuable rule enforced at both
-ends; routing supports path-based and subdomain topologies from one config;
-an operator CLI (`rheo account`, `workspace`, `member`, `token`, `routing`,
-`doctor`) and the first seam of the MCP façade both exist. Durable background
-work now runs: a worker leases jobs with `SKIP LOCKED`, runs the handler, and
-applies retry with backoff, terminal failure, or cancellation — surviving the
-process dying mid-job, because a lease expires rather than a crash losing the
-work. A state change and its outgoing event now commit in one transaction, the
-worker redelivers after a crash between the commit and the delivery, and the
-consumer deduplicates, so an event arrives exactly once as the consumer
-observes it. Every long-running operation returns an identifier before it
-finishes and reports one of a fixed set of terminal statuses, including an
-explicit unresolved. Every mutating operation writes an audit record naming
-actor, workspace, operation, and time, and an operation registered with no
-audit path fails registration at startup rather than quietly writing nothing.
-Enqueueing is still not atomic end to end: the job row lands in the workspace
-database and its due mark in the control database, with no transaction
-spanning the two, so a crash between them leaves a job undue until
-reconciliation. The reference compose topology runs that worker as its own
-service. **Recallatron is the first product module underway.** Memory records exist
-with `remember`, `derive`, `correct`, and `supersede`, plus retention and
-eligibility rules, and export/restore. Recall now selects between lexical,
-dense, and hybrid retrieval strategies — hybrid is the default, fusing lexical
-and dense results, and degrades cleanly to lexical-only when no embedding
-provider is configured. Embeddings run in-process (fastembed MiniLM-L6-v2),
-with no credential and no network call. A read-only `dedup_candidates`
-operation proposes near-duplicate memory pairs. A real deployment cannot yet
-configure the embedding provider — a core settings-load-order defect keeps
-production on lexical-only until that's fixed. Leads and Current are still
-empty stubs, and the durable layer is still not finished: there are no
-scheduled jobs. The module-manifest design is settled;
-disable, remove, purge, and restore are not built. The license is AGPL-3.0.
-Directory names under `modules/`, `connectors/`, `channels/`, `runtimes/`,
-and `packs/` still mark intended boundaries, not implemented features; `apps/`
-and `packages/` no longer do.
+## Status
+
+**Release one is two phases in, and the reference instance is live.** Phase one (the
+walking skeleton) and phase two's Recallatron work are merged. Phase two's last piece,
+migrating the predecessor memory service into Recallatron and cutting over (run 1b), has
+not started. The license is AGPL-3.0.
+
+**The flagship runs on `rheo.stream`.** One Coolify-managed server hosts it in subdomain
+mode, with a Let's Encrypt wildcard certificate: `circuit.` (the shell), `auth.` (GitHub
+sign-in), `recall.` (Recallatron's screens), `api.` and `mcp.`. The old `recallatron.` host
+301-redirects to `recall.`. A green push to `main` redeploys it once every CI workflow on
+that commit has passed. [deploy/README.md](deploy/README.md) covers the topology, rollback,
+the connection budget and the nightly backups.
+
+**What the framework does today.**
+
+- A Python core (FastAPI), a durable worker and a Next.js web shell, on Postgres with one
+  database per workspace.
+- GitHub OAuth behind a pluggable provider boundary, host-only session cookies with a
+  one-time identity-host grant, and core-issued `cli`, `mcp` and `runtime` tokens. A new
+  session opens in the workspace the account used last.
+- Path-based and subdomain routing from one configuration.
+- An operator CLI: `rheo account`, `workspace`, `member`, `token`, `routing`, `doctor`.
+- The MCP facade, mounted in core over streamable HTTP.
+- Durable work: leased jobs with retry, cancellation and scheduled jobs; a transactional
+  outbox with consumer deduplication; retry, skip and replay for failed deliveries.
+- An operation record with a terminal status for every long-running call, and an audit
+  record for every mutating one.
+- Redaction on everything bound for a model, by field sensitivity tier.
+- Module install and enable, a web contribution contract, and a declarative theme
+  contract with one seed dark theme.
+- Workspace export and restore.
+- A Claude CLI runtime adapter.
+
+**Recallatron** is the first product module. Memory records support `remember`, `derive`,
+`correct` and `supersede`, with audience and purpose rules and opt-in retention. Recall is
+lexical, dense or hybrid (the default), with in-process embeddings (fastembed
+MiniLM-L6-v2) that need no credential or network call. The flagship runs the local
+embedding provider. Read-only screens cover browse, search, item detail and possible
+duplicates.
+
+**Not built yet.** Leads, Current and Relationships are stubs. Module disable, remove and
+purge are designed but not built. Enqueueing a job still spans two databases (the job row
+in the workspace database, its due mark in the control database), so a crash between them
+leaves the job waiting for the reconcile pass. `connectors/`, `channels/` and `packs/` mark
+intended boundaries with no implementation behind them.
 
 Start with the [idea document](docs/ideas/rheo-stream-idea.md). It sets out the
 product thesis, the architecture direction, and a decision ledger that keeps
 settled choices separate from open questions. The
 [requirements and scope](docs/requirements/requirements-and-scope.md) and the
-[build plan](docs/requirements/build-plan.md) propose what the first release
-does and in what order.
+[build plan](docs/requirements/build-plan.md) set out what the first release
+does and in what order; both are accepted.
 
 ## Why this exists
 
@@ -87,8 +94,8 @@ against the caller's workspace and permissions. Actions that affect the outside
 world (sending, submitting, paying) require explicit policy and leave an audit
 trail.
 
-Agent execution is a replaceable adapter. Claude Code in print mode and the
-OpenRouter API are the planned runtimes, with Codex CLI as a further target; no
+Agent execution is a replaceable adapter. The Claude Code print-mode adapter is
+built; the OpenRouter API is the next planned runtime, with Codex CLI as a further target; no
 module may assume a particular model or vendor.
 
 ```text
@@ -108,7 +115,7 @@ docs/                      Idea, requirements, and architecture records
 examples/                  Synthetic examples only
 tests/                     Contract, integration, and acceptance tests
 scripts/                   Repository checks and development tooling
-deploy/                    Generic deployment templates; compose topology
+deploy/                    Local compose stack, flagship overlay, backup script
 ```
 
 The preferred starting implementation is a modular monolith: logical boundaries
