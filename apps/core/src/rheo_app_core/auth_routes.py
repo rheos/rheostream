@@ -225,7 +225,9 @@ def resolve_identity_provider() -> Iterator[IdentityProvider]:
 IdentityProviderDep = Annotated[IdentityProvider, Depends(resolve_identity_provider)]
 
 
-_HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+# ``text/html`` alone: the page is served as ``text/html``, so a client accepting only
+# XHTML would be handed a type it never asked for; it keeps the JSON answer.
+_HTML_MEDIA_TYPE = "text/html"
 
 # A constant, not a template: nothing from the request or the deployment reaches it,
 # so there is nothing to escape, and it names no settings key, host or secret.
@@ -249,7 +251,7 @@ enabled.</p>
 
 
 def _prefers_html(request: Request) -> bool:
-    """True when the ``Accept`` header ranks an HTML type above ``application/json``.
+    """True when the ``Accept`` header ranks ``text/html`` above ``application/json``.
 
     A browser navigation lists ``text/html`` explicitly; an API client sends
     ``application/json``, ``*/*`` or nothing. Wildcards count for neither side, so
@@ -266,7 +268,7 @@ def _prefers_html(request: Request) -> bool:
                 except ValueError:
                     quality = 0.0
         media = media.lower()
-        if media in _HTML_MEDIA_TYPES:
+        if media == _HTML_MEDIA_TYPE:
             html = max(html, quality)
         elif media == "application/json":
             json = max(json, quality)

@@ -399,8 +399,14 @@ async def _login_with_no_enabled_provider(
 
 @pytest.mark.parametrize(
     "accept",
-    [None, "application/json", "*/*", "text/html;q=0.5, application/json"],
-    ids=["httpx-default", "json", "wildcard", "json-ranked-higher"],
+    [
+        None,
+        "application/json",
+        "*/*",
+        "text/html;q=0.5, application/json",
+        "application/xhtml+xml",
+    ],
+    ids=["httpx-default", "json", "wildcard", "json-ranked-higher", "xhtml-only"],
 )
 async def test_login_with_no_enabled_provider_is_a_typed_503(
     monkeypatch: pytest.MonkeyPatch, accept: str | None
