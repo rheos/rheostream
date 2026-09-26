@@ -108,6 +108,8 @@ PUBLIC_PATHS = (
     ".nvmrc",
     "apps/web/package.json",
     "deploy/compose.yaml",
+    "deploy/compose.flagship.yaml",
+    "deploy/.env.flagship.example",
     "Dockerfile",
     "apps/web/Dockerfile",
     "apps/web/Dockerfile.dockerignore",

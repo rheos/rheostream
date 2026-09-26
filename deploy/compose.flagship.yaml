@@ -1,0 +1,152 @@
+# The flagship deployment overlay: what Coolify 4.3.23's Docker Compose build pack
+# builds and runs on the target box from `main`. Separate from `deploy/compose.yaml`
+# (local dev — untouched by this file): no dev credentials, no host-published ports,
+# subdomain Traefik routing instead of `make demo`'s single-host path mode.
+#
+# Build context is the checkout root, mirroring `deploy/compose.yaml`'s own
+# `context: ..` convention (this file sits one level down, in `deploy/`) — see
+# `"$RUN_DIR"/log.md`'s "Coolify 4.3.23 compose build-pack findings" for how that
+# resolves once Coolify runs this file (`--project-directory` follows the Coolify
+# Application's own `base_directory` setting, not this file's own folder; EA-4/EA-6
+# must configure `base_directory=/deploy`, `docker_compose_location=/compose.flagship.yaml`).
+name: rheo-stream-flagship
+
+x-rheo-settings: &rheo-settings
+  RHEO_PROFILE: production
+  RHEO_IN_CONTAINER: "1"
+  RHEO_DATA_ROOT: /var/lib/rheo-stream
+  # Compose-network DSN, mirroring deploy/compose.yaml's pattern: `postgres` is this
+  # network's DNS name for the service above, always port 5432 here.
+  RHEO_CLUSTER_DSN: postgresql://rheo:${RHEO_PG_PASSWORD:?}@postgres:5432/postgres
+  RHEO__routing__mode: subdomain
+  RHEO__routing__scheme: https
+  RHEO__routing__base_host: ${RHEO_BASE_HOST:?}
+  RHEO__identity__providers__github__enabled: ${RHEO_GITHUB_ENABLED:?}
+  RHEO__identity__providers__github__client_id: ${RHEO_GITHUB_CLIENT_ID:?}
+  RHEO__identity__providers__github__client_secret_ref: secret://env/RHEO_GITHUB_CLIENT_SECRET
+  RHEO__internal__secret_ref: secret://env/RHEO_INTERNAL_SECRET
+  RHEO__modules__installed: recallatron
+  RHEO__recallatron__embedding__provider: local
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      # The DSN's user (`RHEO_CLUSTER_DSN` above): without this the image creates
+      # only a `postgres` superuser and every `rheo` connect fails — same reason
+      # deploy/compose.yaml:14 sets it.
+      POSTGRES_USER: rheo
+      POSTGRES_PASSWORD: ${RHEO_PG_PASSWORD:?}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rheo -d rheo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  core:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        UV_SYNC_ARGS: "--extra local-embeddings"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *rheo-settings
+      RHEO_INTERNAL_SECRET: ${RHEO_INTERNAL_SECRET:?}
+      RHEO_GITHUB_CLIENT_SECRET: ${RHEO_GITHUB_CLIENT_SECRET:?}
+    volumes:
+      # The in-image data root: the fastembed model cache, secrets/, and
+      # config/deployment.toml. Named volume, never a bind mount — same reason
+      # deploy/compose.yaml:113 gives.
+      - rheodata:/var/lib/rheo-stream
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${RHEO_TRAEFIK_NETWORK:?}
+      - traefik.http.services.rheostream-core.loadbalancer.server.port=8000
+      # /auth/* is served by core on every application host (identity's fixed_path,
+      # packages/core/src/rheo_core/routing/config.py), so this router must win over
+      # rheostream-web's plain host match on the same three hosts — hence the
+      # explicit priority above it, since a Traefik rule-length heuristic would not
+      # reliably rank a path-qualified rule above a host-only one across all three.
+      - traefik.http.routers.rheostream-auth.rule=(Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recallatron.${RHEO_BASE_HOST:?}`)) && (Path(`/auth`) || PathPrefix(`/auth/`))
+      - traefik.http.routers.rheostream-auth.entrypoints=https
+      - traefik.http.routers.rheostream-auth.tls=true
+      - traefik.http.routers.rheostream-auth.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
+      - traefik.http.routers.rheostream-auth.tls.domains[0].main=*.${RHEO_BASE_HOST:?}
+      - traefik.http.routers.rheostream-auth.priority=100
+      - traefik.http.routers.rheostream-auth.service=rheostream-core
+      - traefik.http.routers.rheostream-api.rule=Host(`api.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-api.entrypoints=https
+      - traefik.http.routers.rheostream-api.tls=true
+      - traefik.http.routers.rheostream-api.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
+      - traefik.http.routers.rheostream-api.tls.domains[0].main=*.${RHEO_BASE_HOST:?}
+      - traefik.http.routers.rheostream-api.service=rheostream-core
+      - traefik.http.routers.rheostream-mcp.rule=Host(`mcp.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-mcp.entrypoints=https
+      - traefik.http.routers.rheostream-mcp.tls=true
+      - traefik.http.routers.rheostream-mcp.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
+      - traefik.http.routers.rheostream-mcp.tls.domains[0].main=*.${RHEO_BASE_HOST:?}
+      - traefik.http.routers.rheostream-mcp.service=rheostream-core
+
+  worker:
+    # Same image as `core` — the `build:` block is repeated in full (never a bare
+    # `image:` tag, which can make compose try a registry pull) — same reason
+    # deploy/compose.yaml:118-122 repeats it for its own `worker`.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        UV_SYNC_ARGS: "--extra local-embeddings"
+    command: ["uv", "run", "python", "-m", "rheo_app_worker.main"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # No RHEO_INTERNAL_SECRET / RHEO_GITHUB_CLIENT_SECRET here: nothing in the
+      # worker's startup resolves a secret (apps/worker/src/rheo_app_worker/main.py:
+      # 114-129), so every operator `rheo …` command runs in `core`, never here.
+      <<: *rheo-settings
+    volumes:
+      - rheodata:/var/lib/rheo-stream
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    depends_on:
+      - core
+    environment:
+      RHEO_PROFILE: production
+      RHEO_INTERNAL_SECRET: ${RHEO_INTERNAL_SECRET:?}
+      RHEO_CORE_INTERNAL_API_URL: http://core:8100
+      RHEO_CORE_INTERNAL_URL: http://core:8000
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${RHEO_TRAEFIK_NETWORK:?}
+      - traefik.http.services.rheostream-web.loadbalancer.server.port=3000
+      - traefik.http.routers.rheostream-web.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recallatron.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-web.entrypoints=https
+      - traefik.http.routers.rheostream-web.tls=true
+      - traefik.http.routers.rheostream-web.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
+      - traefik.http.routers.rheostream-web.tls.domains[0].main=*.${RHEO_BASE_HOST:?}
+      - traefik.http.routers.rheostream-web.priority=90
+      - traefik.http.routers.rheostream-web.service=rheostream-web
+      # Redirect-only: http -> https for all five application hosts. No TLS labels.
+      - traefik.http.routers.rheostream-http.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recallatron.${RHEO_BASE_HOST:?}`) || Host(`api.${RHEO_BASE_HOST:?}`) || Host(`mcp.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-http.entrypoints=http
+      - traefik.http.routers.rheostream-http.middlewares=rheostream-https-redirect
+      - traefik.http.routers.rheostream-http.service=rheostream-web
+      - traefik.http.middlewares.rheostream-https-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.rheostream-https-redirect.redirectscheme.permanent=true
+
+volumes:
+  pgdata:
+  rheodata:

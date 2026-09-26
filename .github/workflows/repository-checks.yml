@@ -75,12 +75,19 @@ jobs:
           [ "$ok" = "1" ]
       - name: Build the flagship core image (local-embeddings extra)
         run: docker build --build-arg UV_SYNC_ARGS="--extra local-embeddings" -t rheo-flagship-core -f Dockerfile .
+      # Prompt 5: the flagship compose overlay resolves and interpolates cleanly
+      # against its own committed placeholder env file.
+      - name: Flagship compose overlay resolves (make flagship-config)
+        run: make flagship-config
       # AC-10: the flagship image installs the local embedding runtime and can
-      # select it offline, no database and no network, through the same `uv
-      # run` entry the `core` and `worker` services use. `register_module_settings()`
-      # is #108's early hook; `configured_provider_name()` reads back the
-      # deployment-scoped key it declares. Proves #108 end to end inside the
-      # shipped flagship image.
+      # select it offline, no database and no network. `--no-sync` below means
+      # this tests the venv as it was actually built into the image (#152) —
+      # not "the same `uv run` entry the `core` and `worker` services use",
+      # since those run plain `uv run`, which re-syncs the workspace at
+      # container start and needs network (a known, accepted gap, #152).
+      # `register_module_settings()` is #108's early hook; `configured_provider_name()`
+      # reads back the deployment-scoped key it declares. Proves #108 end to end
+      # inside the shipped flagship image.
       - name: Dense retrieval is selectable, offline, in the flagship image (AC-10)
         run: |
           # --no-sync tests the venv as built: plain `uv run` re-syncs and needs PyPI once uv's index cache ages (#152).
