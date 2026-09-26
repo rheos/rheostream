@@ -285,7 +285,7 @@ def _install(
 ) -> None:
     """Register a provider the built-ins cannot produce, removed again at teardown;
     ``register_provider`` applies the width check a real registration gets."""
-    monkeypatch.setitem(registry.PROVIDERS, name, provider)
+    monkeypatch.setitem(registry.providers(), name, provider)
     registry.register_provider(name, provider)
 
 

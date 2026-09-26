@@ -182,7 +182,7 @@ def test_an_undeclared_provider_key_reads_as_no_provider_without_raising(
     # Positive control: the one mechanism a test selects a provider by reaches the
     # resolver, so the ``None`` above is the reader's answer and not an empty registry.
     monkeypatch.setitem(
-        registry.PROVIDERS, registry.FAKE_PROVIDER, FakeEmbeddingProvider()
+        registry.providers(), registry.FAKE_PROVIDER, FakeEmbeddingProvider()
     )
     monkeypatch.setattr(registry, "configured_provider_name", lambda: "fake")
     assert isinstance(registry.resolve_provider(), FakeEmbeddingProvider)

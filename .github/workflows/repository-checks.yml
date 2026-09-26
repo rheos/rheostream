@@ -50,6 +50,65 @@ jobs:
           persist-credentials: false
       - name: Build the core/worker image
         run: docker build -f Dockerfile .
+      - name: Build the web image
+        run: docker build -t rheo-web -f apps/web/Dockerfile .
+      # A web image that builds is not yet one that serves: `next start` must
+      # find the production build from the image's runtime directory. Start it
+      # detached and poll for HTTP 200 (bounded at about 60 s), printing the
+      # container's logs if it never answers.
+      - name: The web image serves HTTP 200
+        run: |
+          docker run -d --name rheo-web-check -p 3000:3000 rheo-web
+          ok=0
+          for _ in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/ || true)" = "200" ]; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "web image did not answer HTTP 200 within about 60 s" >&2
+            docker logs rheo-web-check >&2 || true
+          fi
+          docker rm -f rheo-web-check >/dev/null
+          [ "$ok" = "1" ]
+      - name: Build the flagship core image (local-embeddings extra)
+        run: docker build --build-arg UV_SYNC_ARGS="--extra local-embeddings" -t rheo-flagship-core -f Dockerfile .
+      # Prompt 5: the flagship compose overlay resolves and interpolates cleanly
+      # against its own committed placeholder env file.
+      - name: Flagship compose overlay resolves (make flagship-config)
+        run: make flagship-config
+      # AC-10: the flagship image installs the local embedding runtime and can
+      # select it offline, no database and no network. `--no-sync` below means
+      # this tests the venv as it was actually built into the image (#152) —
+      # not "the same `uv run` entry the `core` and `worker` services use",
+      # since those run plain `uv run`, which re-syncs the workspace at
+      # container start and needs network (a known, accepted gap, #152).
+      # `register_module_settings()` is #108's early hook; `configured_provider_name()`
+      # reads back the deployment-scoped key it declares. Proves #108 end to end
+      # inside the shipped flagship image.
+      - name: Dense retrieval is selectable, offline, in the flagship image (AC-10)
+        run: |
+          # --no-sync tests the venv as built: plain `uv run` re-syncs and needs PyPI once uv's index cache ages (#152).
+          docker run --rm --network none \
+            -e RHEO__modules__installed=recallatron \
+            -e RHEO__recallatron__embedding__provider=local \
+            rheo-flagship-core uv run --no-sync python -c "
+          from rheo_core.modules import register_module_settings
+          from rheo_recallatron.embedding.local import LocalEmbeddingProvider
+          from rheo_recallatron.embedding.registry import configured_provider_name, resolve_provider
+
+          register_module_settings()
+          provider = configured_provider_name()
+          assert provider == 'local', f'expected local, got {provider!r}'
+          resolved = resolve_provider()
+          assert isinstance(resolved, LocalEmbeddingProvider), f'expected LocalEmbeddingProvider, got {resolved!r}'
+
+          import fastembed  # noqa: F401 -- proves the extra's runtime is importable offline
+
+          print(f'AC-10 OK: configured_provider_name() == {provider!r}; resolve_provider() is LocalEmbeddingProvider; fastembed imported')
+          "
 
   python:
     name: Python checks

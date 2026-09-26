@@ -17,9 +17,18 @@ the registry are read when :func:`resolve_provider` runs, never captured at impo
 a test that rebinds :func:`configured_provider_name` or edits :data:`PROVIDERS` changes
 what every reader in the process gets — the enqueue helper, the embed job, the rebuild
 and the dense strategy alike.
+
+**The built-ins register on first use, never at import.** Registering reads the
+deployment profile, and that read is strict: it refuses every ``RHEO__`` variable no
+schema declares. The loader's early hook imports this module (through the entry point)
+before it declares the module's own keys, so an import-time read refused the module's
+legitimate variables, such as ``RHEO__recallatron__embedding__provider``, on every
+cold start. The first :func:`providers`, :func:`register_provider` or
+:func:`resolve_provider` call registers them, once, by then after the keys exist.
 """
 
 import importlib.util
+import threading
 from typing import Final
 
 from rheo_core.modules.operations import TEST_PROFILE
@@ -41,8 +50,42 @@ LOCAL_EMBEDDINGS_EXTRA: Final = "fastembed"
 """The import the ``local-embeddings`` extra makes available."""
 
 PROVIDERS: Final[dict[str, EmbeddingProvider]] = {}
-"""Registry name to provider. Filled once at import by
-:func:`register_builtin_providers`."""
+"""Registry name to provider. Empty until first use, when
+:func:`register_builtin_providers` fills it once; read it through :func:`providers`."""
+
+_builtins_lock: Final = threading.Lock()
+_builtins_registered = False
+
+
+def _ensure_builtin_providers() -> None:
+    """Register the built-ins the first time anything uses the registry, then never.
+
+    Marked done only after registration returns, so a strict profile read that raises
+    raises again on the next use instead of leaving a silently empty registry.
+    """
+    global _builtins_registered
+    if _builtins_registered:
+        return
+    with _builtins_lock:
+        if _builtins_registered:
+            return
+        register_builtin_providers()
+        _builtins_registered = True
+
+
+def providers() -> dict[str, EmbeddingProvider]:
+    """The registry, with the built-ins registered."""
+    _ensure_builtin_providers()
+    return PROVIDERS
+
+
+def _add(name: str, provider: EmbeddingProvider) -> None:
+    if provider.dimensions != EMBEDDING_DIMENSIONS:
+        raise ValueError(
+            f"embedding provider {name!r} declares {provider.dimensions} dimensions; "
+            f"the stored column holds {EMBEDDING_DIMENSIONS}"
+        )
+    PROVIDERS[name] = provider
 
 
 def register_provider(name: str, provider: EmbeddingProvider) -> None:
@@ -51,13 +94,12 @@ def register_provider(name: str, provider: EmbeddingProvider) -> None:
     Raises ``ValueError`` when its width is not :data:`EMBEDDING_DIMENSIONS`: the column
     is ``vector(384)``, so such a provider could only ever fail at insert, and that is a
     packaging error worth stopping on rather than an operator's to discover.
+
+    The built-ins register first, so a provider registered under a built-in's name
+    replaces it, as it did when the built-ins registered at import.
     """
-    if provider.dimensions != EMBEDDING_DIMENSIONS:
-        raise ValueError(
-            f"embedding provider {name!r} declares {provider.dimensions} dimensions; "
-            f"the stored column holds {EMBEDDING_DIMENSIONS}"
-        )
-    PROVIDERS[name] = provider
+    _ensure_builtin_providers()
+    _add(name, provider)
 
 
 def register_builtin_providers() -> None:
@@ -70,9 +112,9 @@ def register_builtin_providers() -> None:
     degrades instead of writing meaningless vectors.
     """
     if importlib.util.find_spec(LOCAL_EMBEDDINGS_EXTRA) is not None:
-        register_provider(LOCAL_PROVIDER, LocalEmbeddingProvider())
+        _add(LOCAL_PROVIDER, LocalEmbeddingProvider())
     if current_profile() == TEST_PROFILE:
-        register_provider(FAKE_PROVIDER, FakeEmbeddingProvider())
+        _add(FAKE_PROVIDER, FakeEmbeddingProvider())
 
 
 def configured_provider_name() -> str:
@@ -95,7 +137,4 @@ def resolve_provider() -> EmbeddingProvider | None:
     name = configured_provider_name()
     if name == EMBEDDING_PROVIDER_NONE:
         return None
-    return PROVIDERS.get(name)
-
-
-register_builtin_providers()
+    return providers().get(name)

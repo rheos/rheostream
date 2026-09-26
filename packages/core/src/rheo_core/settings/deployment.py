@@ -120,6 +120,43 @@ def deployment_layer(
     return layer
 
 
+def read_deployment_value(
+    key: str, *, environ: Mapping[str, str] | None = None
+) -> FrozenValue | None:
+    """The one declared *core* key's typed value from deployment.toml + the
+    environment, using deployment_layer's own precedence and coercion. Returns
+    None when the key is set nowhere. Never raises SettingUndeclared for any
+    key OTHER than the one asked about, and never reads a key this function
+    was not asked about.
+
+    For the one read that has to happen before module settings exist: the loader
+    reads ``modules.installed`` here to decide which modules' ``configuration_schema``
+    keys to register, and a full :func:`deployment_layer` read at that point would
+    refuse those very keys as strays. Every other TOML key and ``RHEO__*`` variable is
+    left alone, so the strict undeclared-key rule still fires on the first full
+    :func:`deployment_layer` read, exactly as before.
+    """
+    spec = REGISTRY.lookup(key)
+    if spec is None:
+        raise SettingUndeclared(f"{key} is not a declared settings key", key=key)
+    env = os.environ if environ is None else environ
+    value: FrozenValue | None = None
+    path = deployment_toml_path(_data_root_for(env))
+    if path.is_file():
+        with path.open("rb") as handle:
+            table = tomllib.load(handle)
+        flattened = flatten_table(table)
+        if key in flattened:
+            value = check_value(spec, flattened[key], source=str(path))
+    for name in env_variable_names(key):
+        if name in env:
+            value = decode_text(spec, env[name], source=name)
+            break
+    if key == PROFILE_KEY and PROFILE_VARIABLE in env:
+        value = decode_text(spec, env[PROFILE_VARIABLE], source=PROFILE_VARIABLE)
+    return value
+
+
 def current_profile(*, environ: Mapping[str, str] | None = None) -> str:
     """The deployment-resolved ``profile``, for the harness registration gate.
 

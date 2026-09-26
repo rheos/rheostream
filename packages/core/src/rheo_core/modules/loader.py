@@ -76,10 +76,22 @@ is not ``production``. So the gate is an explicit allowlist on the deployment's 
 (run 0v's finding **F5**; **F17** on installed-versus-loaded), and a discovered id the
 list does not name is simply not loaded — no exception, and no refusal to start.
 
-**Read through the typed accessor, not a subscript.** ``ResolvedSettings.get_list``
-returns ``list[str]`` and raises ``SettingTypeMismatch`` if ``modules.installed`` is
-ever redeclared at another ``ValueType``; a bare subscript hands back the
-``FrozenValue`` union, which would take a wrongly-typed key without a word.
+**Read the one key, typed, before anything else resolves.** ``allowed_module_ids``
+reads ``modules.installed`` alone through ``read_deployment_value`` rather than a full
+``resolve()``, because it runs before any module's ``configuration_schema`` exists and
+a full resolve would refuse the allowed modules' own variables as strays (#108). It
+still raises ``SettingTypeMismatch`` if the key is ever redeclared at another
+``ValueType``, the guarantee ``ResolvedSettings.get_list`` gave it before.
+:func:`register_module_settings` is the early hook every composition root calls
+first; every later ``resolve()`` is exactly as strict as it was.
+
+**One command no longer rejects a stray early.** Before #108 the ``rheo openapi``
+subcommand reached the allowlist through ``load_modules()`` and a full ``resolve()``,
+so a stray ``RHEO__*`` variable in its environment raised ``SettingUndeclared``
+there. It now reads only ``modules.installed`` and ignores such a variable (and it is
+in the CLI's ``NO_BOOTSTRAP_COMMANDS``, so no full resolve runs at all). That is
+deliberate: ``make codegen`` runs it with no deployment. ``core`` and the worker
+still refuse the stray at their own later ``resolve()``.
 
 **Three sets, three names, and no function here answers for two of them.**
 :func:`discovered` is "installed on this host"; :func:`allowed_module_ids` and
@@ -121,8 +133,9 @@ from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.redaction.policy import exclude_types_spec
 from rheo_core.redaction.registry import RENDERINGS, ModelRendering
 from rheo_core.refs.resolver import RESOLVERS, ResolverRegistry
-from rheo_core.settings import resolve
+from rheo_core.settings.deployment import read_deployment_value
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
+from rheo_core.settings.schema import SettingTypeMismatch, ValueType
 from rheo_core.tokens.sets import TOOL_REGISTRY, ToolRegistry
 from rheo_core.work.kinds import JobKindRegistry
 
@@ -147,8 +160,33 @@ def discovered() -> tuple[EntryPoint, ...]:
 
 
 def allowed_module_ids() -> frozenset[str]:
-    """The module ids ``modules.installed`` names; the empty set when it names none."""
-    return frozenset(resolve().get_list(ALLOWLIST_KEY))
+    """The module ids ``modules.installed`` names; the empty set when it names none.
+
+    Read through :func:`~rheo_core.settings.deployment.read_deployment_value`, not a
+    full ``resolve()``, because this runs before any module's ``configuration_schema``
+    is registered (:func:`register_module_settings` calls it to decide which to
+    register), and a full resolve at that point refuses the allowed modules' own
+    ``RHEO__<module>__*`` variables as strays (#108).
+    """
+    spec = SETTINGS_REGISTRY.get(ALLOWLIST_KEY)
+    if spec.type is not ValueType.STR_LIST:
+        raise SettingTypeMismatch(
+            f"{ALLOWLIST_KEY} is declared {spec.type.value}, not "
+            f"{ValueType.STR_LIST.value}",
+            key=ALLOWLIST_KEY,
+        )
+    value = read_deployment_value(ALLOWLIST_KEY)
+    if value is None:
+        value = spec.default
+    if not isinstance(value, tuple):
+        # Unreachable while the declaration check above holds: the deployment
+        # layer's coercion returns a tuple for a STR_LIST key. A typed refusal
+        # rather than an assert, which ``python -O`` would strip.
+        raise SettingTypeMismatch(
+            f"{ALLOWLIST_KEY} resolved to {type(value).__name__}, not a list",
+            key=ALLOWLIST_KEY,
+        )
+    return frozenset(str(item) for item in value)
 
 
 def loaded_manifests() -> Mapping[str, ModuleManifest]:
@@ -376,6 +414,64 @@ def load_modules(
         )
         loaded.append(manifest.module_id)
     return tuple(sorted(loaded))
+
+
+def register_module_settings() -> tuple[str, ...]:
+    """For every module_id `allowed_module_ids()` names, load its entry point
+    through `load_entry_point()` and call `_register_settings()` for it,
+    registering ONLY that module's configuration_schema keys into
+    SETTINGS_REGISTRY, under that module's own origin. Idempotent: calling it
+    again, or calling the full `load_modules()` afterward, re-registers the
+    same specs and the registry treats that as a no-op. Returns the module ids
+    it registered, sorted. Never installs operations, resolvers, tools, job
+    kinds, consumers, deletion participants or an audit sink: settings only.
+
+    The early hook (#108): each composition root calls this before its first
+    ``resolve()``, so a deployment-scoped ``RHEO__<module>__*`` variable of an
+    allowed module is a declared key by the time anything reads the environment
+    in full. A discoverable module the allowlist does not name is never loaded
+    here, so its variables stay strays and still raise ``SettingUndeclared``.
+
+    **All or nothing over the loader's own refusals.** Every permitted manifest is
+    loaded and gated first, and ``_register_settings()`` runs only once all of them
+    have: a later entry point that fails to import or raises ``ManifestInvalid``
+    propagates unchanged and leaves ``SETTINGS_REGISTRY`` as it found it, rather than
+    holding an earlier module's keys behind the refusal. The bound is the one
+    :func:`load_modules` states: the registry's own ``SettingRedeclared`` can still
+    land part-way through.
+    """
+    permitted = allowed_module_ids()
+    manifests = [
+        load_entry_point(entry_point)
+        for entry_point in discovered()
+        if entry_point.name in permitted
+    ]
+    for manifest in manifests:
+        _register_settings(manifest)
+    return tuple(sorted(manifest.module_id for manifest in manifests))
+
+
+def _register_settings(manifest: ModuleManifest) -> None:
+    """One manifest's settings keys (``<module_id>.redaction.exclude_types`` and its
+    ``configuration_schema``), under its own origin.
+
+    Shared by :func:`_register` and the early :func:`register_module_settings`, so a
+    loader-declared settings key added here lands for both at once.
+    """
+    if manifest.record_types:
+        # ``<module_id>.redaction.exclude_types`` (``runtime-and-mcp.md`` § Retention
+        # and control): the core's key in every module's namespace, declared here
+        # because its shape is the core's and the manifest reserves the segment. One
+        # per module that owns a record type, since a module owning none has nothing to
+        # exclude. Identical on every load, so a second load is the registry's no-op.
+        SETTINGS_REGISTRY.register(
+            exclude_types_spec(manifest.module_id), origin=manifest.module_id
+        )
+    for spec in manifest.configuration_schema:
+        # The process-global settings registry, which is also what provisioning
+        # reads — see this module's docstring for what that means for every
+        # workspace provisioned after a module loads.
+        SETTINGS_REGISTRY.register(spec, origin=manifest.module_id)
 
 
 def _check_events(manifests: Sequence[ModuleManifest]) -> None:
@@ -650,20 +746,7 @@ def _register(
             ),
             origin=manifest.module_id,
         )
-    if manifest.record_types:
-        # ``<module_id>.redaction.exclude_types`` (``runtime-and-mcp.md`` § Retention
-        # and control): the core's key in every module's namespace, declared here
-        # because its shape is the core's and the manifest reserves the segment. One
-        # per module that owns a record type, since a module owning none has nothing to
-        # exclude. Identical on every load, so a second load is the registry's no-op.
-        SETTINGS_REGISTRY.register(
-            exclude_types_spec(manifest.module_id), origin=manifest.module_id
-        )
-    for spec in manifest.configuration_schema:
-        # The process-global settings registry, which is also what provisioning
-        # reads — see this module's docstring for what that means for every
-        # workspace provisioned after a module loads.
-        SETTINGS_REGISTRY.register(spec, origin=manifest.module_id)
+    _register_settings(manifest)
     if manifest.audit_sink is not None:
         # Under the manifest's own module id, and never any other key — the
         # dispatcher resolves a sink by the *operation's* owning module, so a sink

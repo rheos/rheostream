@@ -29,7 +29,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from rheo_core.boundary.context import (
     INVALID_GRANT,
@@ -69,10 +69,22 @@ from rheo_core.storage.control_plane import SessionRow, get_session_by_secret_ha
 from rheo_core.storage.data_root import resolve_data_root
 from rheo_core.storage.postgres import get_backend
 
+from rheo_app_core.routing import routing_config
+
 router = APIRouter()
 
 _STATE_NONCE_BYTES = 24
 ORIGIN_NOT_ALLOWED = "origin_not_allowed"
+IDENTITY_PROVIDER_UNAVAILABLE = "identity_provider_unavailable"
+
+
+class IdentityProviderUnavailable(Exception):
+    """No identity provider is enabled, so ``/auth/login`` and ``/auth/callback``
+    have nothing to sign anyone in with.
+
+    A deployment state, not a bug: the flagship's first deploy runs with GitHub
+    disabled on purpose. :func:`identity_provider_unavailable_handler` turns it into
+    a typed ``503`` rather than letting FastAPI answer a bare ``500`` (issue #119)."""
 
 
 # --- shared helpers -----------------------------------------------------------------
@@ -108,7 +120,10 @@ def _identity_host(config: RoutingConfig) -> str:
 
 
 def _routing_config() -> RoutingConfig:
-    return RoutingConfig.from_settings(resolve())
+    """Module surfaces included: without them a module's host is not an
+    application host here, and ``/auth/continue`` refuses its ``return``
+    (issue #119)."""
+    return routing_config()
 
 
 def _return_host(return_target: str) -> str:
@@ -183,7 +198,7 @@ def resolve_identity_provider() -> Iterator[IdentityProvider]:
     and ``/auth/callback``."""
     settings = resolve()
     if not settings.get_bool("identity.providers.github.enabled"):
-        raise RuntimeError(
+        raise IdentityProviderUnavailable(
             "no identity provider is configured: "
             "identity.providers.github.enabled is false"
         )
@@ -208,6 +223,75 @@ def resolve_identity_provider() -> Iterator[IdentityProvider]:
 # FastAPI itself calls it once per request, but the annotated form sidesteps the
 # question entirely and is the form FastAPI's own docs recommend.
 IdentityProviderDep = Annotated[IdentityProvider, Depends(resolve_identity_provider)]
+
+
+# ``text/html`` alone: the page is served as ``text/html``, so a client accepting only
+# XHTML would be handed a type it never asked for; it keeps the JSON answer.
+_HTML_MEDIA_TYPE = "text/html"
+
+# A constant, not a template: nothing from the request or the deployment reaches it,
+# so there is nothing to escape, and it names no settings key, host or secret.
+_IDENTITY_PROVIDER_UNAVAILABLE_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign-in unavailable</title>
+</head>
+<body data-state="identity_provider_unavailable">
+<main>
+<h1>Sign-in is not available</h1>
+<p>Sign-in is not available on this deployment because no identity provider is
+enabled.</p>
+<p><small>Error code: identity_provider_unavailable</small></p>
+</main>
+</body>
+</html>
+"""
+
+
+def _prefers_html(request: Request) -> bool:
+    """True when the ``Accept`` header ranks ``text/html`` above ``application/json``.
+
+    A browser navigation lists ``text/html`` explicitly; an API client sends
+    ``application/json``, ``*/*`` or nothing. Wildcards count for neither side, so
+    ``*/*`` alone, a missing header and a tie all keep the JSON answer."""
+    html = json = 0.0
+    for part in request.headers.get("accept", "").split(","):
+        media, *params = (piece.strip() for piece in part.split(";"))
+        quality = 1.0
+        for param in params:
+            name, _, value = param.partition("=")
+            if name.strip().lower() == "q":
+                try:
+                    quality = float(value)
+                except ValueError:
+                    quality = 0.0
+        media = media.lower()
+        if media == _HTML_MEDIA_TYPE:
+            html = max(html, quality)
+        elif media == "application/json":
+            json = max(json, quality)
+    return html > json
+
+
+def identity_provider_unavailable_handler(request: Request, exc: Exception) -> Response:
+    """``IdentityProviderUnavailable`` as the typed ``503`` refusal.
+
+    A browser navigation (``Accept`` preferring HTML, see :func:`_prefers_html`)
+    gets a small readable page saying sign-in is unavailable (#119 item 2); every
+    other client keeps the typed JSON body. Both carry ``Vary: Accept``.
+
+    Registered on the app in ``main.py``: an ``APIRouter`` cannot hold exception
+    handlers. The dependency raises before its ``yield``, so the exception reaches
+    the app's handler like any route exception."""
+    response: Response
+    if _prefers_html(request):
+        response = HTMLResponse(_IDENTITY_PROVIDER_UNAVAILABLE_PAGE, status_code=503)
+    else:
+        response = _refused(IDENTITY_PROVIDER_UNAVAILABLE, status_code=503)
+    response.headers["vary"] = "Accept"
+    return response
 
 
 # --- GET /auth/login -------------------------------------------------------------

@@ -1,0 +1,70 @@
+# Web-only build context for apps/web/Dockerfile (context: repository root).
+# BuildKit's per-Dockerfile ignore file (`<dockerfile>.dockerignore`, beside
+# the Dockerfile) REPLACES the root `.dockerignore` for this build; nothing
+# from the root file applies here. This file stands alone.
+#
+# It admits only the pnpm workspace root manifests and the three
+# pnpm-workspace.yaml package trees: apps/web, packages/web-contract and
+# modules/*/web. There are deliberately no parent re-includes (`!apps/`,
+# `!modules/`, ...): Docker matches every pattern against each of a path's
+# parent directories too, so re-including a parent re-includes its whole
+# subtree, and that would pull every Python app, package and module back in.
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!apps/web
+!apps/web/**
+!packages/web-contract
+!packages/web-contract/**
+!modules/*/web
+!modules/*/web/**
+
+# Re-exclude private artifacts, local dependencies and build output inside the
+# allowed trees (last match wins). Directory names are excluded at the
+# directory level as well as by contents, so the directory entry itself never
+# reaches the context either (`**/x/**` alone still leaves an empty `x`).
+**/node_modules
+**/node_modules/**
+**/.next
+**/.next/**
+**/*.tsbuildinfo
+**/next-env.d.ts
+**/.env
+**/.env.*
+**/.envrc*
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3*
+**/*.log
+**/AGENTS.md
+**/AGENTS.override.md
+**/CLAUDE.md
+**/CLAUDE.local.md
+**/.mcp.json
+**/rheo.local.*
+**/.claude
+**/.claude/**
+**/.codex
+**/.codex/**
+**/.bureau
+**/.bureau/**
+**/.bureau-worktrees
+**/.bureau-worktrees/**
+**/.secrets
+**/.secrets/**
+**/.rheo-local
+**/.rheo-local/**
+**/.git
+**/.git/**
+**/.venv
+**/.venv/**
+**/venv
+**/venv/**
+**/__pycache__
+**/__pycache__/**
+private
+**/private
+**/private/**

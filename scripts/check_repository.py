@@ -108,7 +108,11 @@ PUBLIC_PATHS = (
     ".nvmrc",
     "apps/web/package.json",
     "deploy/compose.yaml",
+    "deploy/compose.flagship.yaml",
+    "deploy/.env.flagship.example",
     "Dockerfile",
+    "apps/web/Dockerfile",
+    "apps/web/Dockerfile.dockerignore",
     # 0b1: the packaged settings defaults and the core Alembic chain's first
     # revision are public source, not runtime data.
     "packages/core/src/rheo_core/config/defaults.toml",

@@ -61,6 +61,8 @@ from rheo_core.modules import (
     SensitivityTier,
     StorageDeclaration,
     Tiered,
+    WebContribution,
+    WebSurface,
     discovered,
     load_modules,
     loaded_manifests,
@@ -445,6 +447,29 @@ the only thing between it and the registries, which is what the test that loads 
 asserts."""
 
 
+WEB_SURFACE_ID: Final = "webhost_probe"
+WEB_SURFACE_HOST: Final = "webhost"
+WEB_SURFACE_MANIFEST: Final = manifest(
+    WEB_SURFACE_ID,
+    web=WebContribution(
+        surface=WebSurface(
+            surface=WEB_SURFACE_ID, host=WEB_SURFACE_HOST, path="/webhost-probe"
+        ),
+        package_name="@rheo-stream/webhost-probe-web",
+        navigation=(),
+        routes=(),
+        record_views=(),
+        forms=(),
+        search_providers=(),
+    ),
+)
+"""A module that declares a web surface and nothing else (issue #119).
+
+Loading it puts :data:`WEB_SURFACE_HOST` into ``module_surfaces()``, which is what
+the ``/auth/*`` routes' ``invalid_return`` and ``Origin`` checks must then accept in
+subdomain mode. No screens: those checks read the surface's host alone."""
+
+
 def entry_point_for(module_manifest: ModuleManifest, attribute: str) -> EntryPoint:
     """A real entry point loading ``attribute`` from this module, under its own id."""
     return EntryPoint(
@@ -466,6 +491,7 @@ PROBE_ENTRY_POINTS: Final[dict[str, EntryPoint]] = {
         (CONFIG_MANIFEST, "CONFIG_MANIFEST"),
         (REDACTION_MANIFEST, "REDACTION_MANIFEST"),
         (UNCHECKED_MANIFEST, "UNCHECKED_MANIFEST"),
+        (WEB_SURFACE_MANIFEST, "WEB_SURFACE_MANIFEST"),
     )
 }
 """Every fixture module this file publishes, by id.

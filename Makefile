@@ -12,7 +12,7 @@
 # (tests/conftest.py, pytest.exit) with a message naming the remedy — it never
 # skips, because a skipped `postgres` marker would pass this gate vacuously.
 
-.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts
+.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts flagship-config flagship-up flagship-down
 
 ABSENCE_PROOF_CONFIG := $(shell git rev-parse --git-path rheo-absence-config.json)
 ABSENCE_PROOF_CHECKOUT := $(shell git rev-parse --git-path rheo-absence-checkout.json)
@@ -46,6 +46,34 @@ up:
 
 down:
 	docker compose -f deploy/compose.yaml down
+
+# Prompt 5: the flagship deployment overlay (deploy/compose.flagship.yaml), separate
+# from the dev stack above. `flagship-config` renders the resolved config against the
+# committed placeholder env file: a syntax/interpolation proof, not a real deploy.
+flagship-config:
+	docker compose -f deploy/compose.flagship.yaml --env-file deploy/.env.flagship.example config --quiet
+
+# Refuses instead of silently falling back to the placeholder example: a real
+# deploy env carries real secrets, and defaulting to the committed example would
+# either fail loudly on FQDN mismatches or, worse, run with placeholder values.
+flagship-up:
+	@if [ -z "$$FLAGSHIP_ENV" ] || [ ! -f "$$FLAGSHIP_ENV" ]; then \
+		echo "FAIL  FLAGSHIP_ENV must name an existing env file (see deploy/.env.flagship.example), e.g. make flagship-up FLAGSHIP_ENV=/path/to/real.env"; \
+		exit 1; \
+	fi
+	docker compose -p rheo-stream-flagship -f deploy/compose.flagship.yaml --env-file "$$FLAGSHIP_ENV" up -d --build
+
+# Refuses instead of silently falling back to the placeholder example, same as
+# flagship-up: without the deploy env file, interpolation of the required vars
+# fails anyway, so fail early with the remedy instead of a raw compose error.
+# Never `-v`: this stack's named volumes hold real data and must survive a
+# routine stop/restart.
+flagship-down:
+	@if [ -z "$$FLAGSHIP_ENV" ] || [ ! -f "$$FLAGSHIP_ENV" ]; then \
+		echo "FAIL  FLAGSHIP_ENV must name an existing env file (see deploy/.env.flagship.example), e.g. make flagship-down FLAGSHIP_ENV=/path/to/real.env"; \
+		exit 1; \
+	fi
+	docker compose -p rheo-stream-flagship -f deploy/compose.flagship.yaml --env-file "$$FLAGSHIP_ENV" down
 
 migrate:
 	uv run rheo migrate
