@@ -431,16 +431,24 @@ def register_module_settings() -> tuple[str, ...]:
     allowed module is a declared key by the time anything reads the environment
     in full. A discoverable module the allowlist does not name is never loaded
     here, so its variables stay strays and still raise ``SettingUndeclared``.
+
+    **All or nothing over the loader's own refusals.** Every permitted manifest is
+    loaded and gated first, and ``_register_settings()`` runs only once all of them
+    have: a later entry point that fails to import or raises ``ManifestInvalid``
+    propagates unchanged and leaves ``SETTINGS_REGISTRY`` as it found it, rather than
+    holding an earlier module's keys behind the refusal. The bound is the one
+    :func:`load_modules` states: the registry's own ``SettingRedeclared`` can still
+    land part-way through.
     """
     permitted = allowed_module_ids()
-    registered: list[str] = []
-    for entry_point in discovered():
-        if entry_point.name not in permitted:
-            continue
-        manifest = load_entry_point(entry_point)
+    manifests = [
+        load_entry_point(entry_point)
+        for entry_point in discovered()
+        if entry_point.name in permitted
+    ]
+    for manifest in manifests:
         _register_settings(manifest)
-        registered.append(manifest.module_id)
-    return tuple(sorted(registered))
+    return tuple(sorted(manifest.module_id for manifest in manifests))
 
 
 def _register_settings(manifest: ModuleManifest) -> None:

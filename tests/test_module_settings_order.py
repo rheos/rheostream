@@ -38,6 +38,7 @@ from rheo_app_core.main import app, lifespan
 from rheo_app_worker import main as worker_main_module
 from rheo_core.modules import (
     ENTRY_POINT_GROUP,
+    ManifestInvalid,
     allowed_module_ids,
     discovered,
     register_module_settings,
@@ -101,6 +102,27 @@ WRONG_CONTRACT_ENTRY_POINT = EntryPoint(
     name=WRONG_CONTRACT_ID,
     value=f"{__name__}:WRONG_CONTRACT_MANIFEST",
     group=ENTRY_POINT_GROUP,
+)
+
+# Allowlisted and loadable, with a key of its own: the earlier half of the
+# all-or-nothing case, published ahead of the wrong-contract module.
+ATOMIC_ID = "atomic_probe"
+ATOMIC_KEY = f"{ATOMIC_ID}.flag"
+ATOMIC_MANIFEST = manifest(
+    ATOMIC_ID,
+    configuration_schema=(
+        KeySpec(
+            key=ATOMIC_KEY,
+            type=ValueType.BOOL,
+            scope=Scope.DEPLOYMENT,
+            floor=None,
+            explicit_per_workspace=False,
+            default=False,
+        ),
+    ),
+)
+ATOMIC_ENTRY_POINT = EntryPoint(
+    name=ATOMIC_ID, value=f"{__name__}:ATOMIC_MANIFEST", group=ENTRY_POINT_GROUP
 )
 UNIMPORTABLE_ID = "unimportable_probe"
 UNIMPORTABLE_ENTRY_POINT = EntryPoint(
@@ -250,6 +272,19 @@ def test_a_discoverable_module_not_in_the_allowlist_stays_undeclared(
     with pytest.raises(SettingUndeclared) as refused:
         resolve()
     assert ABSENT_VARIABLE in str(refused.value)
+
+
+def test_a_later_refused_manifest_registers_no_earlier_modules_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All or nothing: the first permitted module loads cleanly and the second is
+    refused, so neither module's keys may be left behind in the registry."""
+    publish(monkeypatch, ATOMIC_ENTRY_POINT, WRONG_CONTRACT_ENTRY_POINT)
+    install(monkeypatch, ATOMIC_ID, WRONG_CONTRACT_ID)
+    with pytest.raises(ManifestInvalid) as refused:
+        register_module_settings()
+    assert WRONG_CONTRACT_ID in str(refused.value)
+    assert ATOMIC_KEY not in SETTINGS_REGISTRY
 
 
 # --- the composition roots ------------------------------------------------------------
