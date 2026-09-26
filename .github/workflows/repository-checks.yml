@@ -54,7 +54,10 @@ jobs:
   python:
     name: Python checks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # A green run takes 11-12 min and grows with the suite (8 min on 2026-09-24).
+    # The old 15-min cap cancelled two passing runs on PR #144 (#151). 30 leaves
+    # headroom; the pytest step prints its slowest tests so creep shows early.
+    timeout-minutes: 30
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -102,7 +105,7 @@ jobs:
           path: ${{ env.RHEO_TEST_MODEL_CACHE }}
           key: test-models-sentence-transformers/all-MiniLM-L6-v2
       - name: Pytest
-        run: uv run pytest
+        run: uv run pytest --durations=20
       # Project criterion 31: Recallatron's behavioural suite under `lexical`, then
       # under `dense` against the real local model. The dense pass reads the artifact
       # the cache step above restores, so a cold runner that cannot fetch it reds a
