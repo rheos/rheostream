@@ -96,6 +96,7 @@ from rheo_core.settings import resolve
 from rheo_core.storage import work_tables as t
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.postgres import PostgresBackend, get_backend
+from rheo_core.storage.provisioning import database_name_for
 from rheo_core.storage.routing import active_workspace
 from rheo_core.storage.work_index import (
     DueWorkspace,
@@ -1225,6 +1226,27 @@ def visit_workspace(
         )
 
 
+def cache_hits_first(
+    due: tuple[DueWorkspace, ...], *, cached: tuple[str, ...]
+) -> tuple[DueWorkspace, ...]:
+    """``due`` reordered so workspaces whose engine is already cached come first.
+
+    Stable within each half, so the index's oldest-first order still decides who goes
+    first among the hits and among the misses. Which workspaces a pass visits is
+    unchanged; only the order inside the pass moves. ``run_one_pass`` says why.
+
+    The database name is derived from the workspace id
+    (``provisioning.database_name_for``, the only source of that name) and used as a
+    hint for ordering and nothing else. The visit still routes through the registry
+    row, so a name that ever stopped matching would cost an engine, never a wrong
+    database.
+    """
+    hot = frozenset(cached)
+    hits = tuple(w for w in due if database_name_for(w.workspace_id) in hot)
+    misses = tuple(w for w in due if database_name_for(w.workspace_id) not in hot)
+    return hits + misses
+
+
 def run_one_pass(
     *,
     kinds: JobKindRegistry,
@@ -1255,9 +1277,21 @@ def run_one_pass(
     **The limit is the engine cache's own size**, so a pass never asks for more
     workspace engines than the cache can hold — the connection-budget argument made
     operational with no new settings key.
+
+    **The visits run cached-engines-first** (:func:`cache_hits_first`), because the
+    limit alone does not stop the LRU from working against the index (issue #12).
+    The index hands back workspaces oldest ``due_at`` first, and a visit pushes its
+    workspace's ``due_at`` to the back, so with more busy workspaces than the cache
+    holds a pass opens with the ones the *previous* pass could not reach. Visited in
+    that order, each of those cache misses evicts the least recently used engine —
+    which is the next workspace in the same pass — and past the cap every visit
+    misses. Touching the hits first leaves only engines this pass does not need at the
+    LRU end, so a pass of at most ``cache_size`` workspaces never evicts one it is
+    about to visit, and it pays one engine per workspace that genuinely was not cached.
     """
     with backend.control_engine.begin() as control:
         due = workspaces_with_due_work(control, now=now, limit=backend.pools.cache_size)
+    due = cache_hits_first(due, cached=backend.pools.cached())
 
     jobs_acquired = 0
     deliveries_acquired = 0

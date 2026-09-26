@@ -68,7 +68,12 @@ What it costs, and how the cost is bounded:
   it visits the workspaces the control plane's due-work index (`control.workspace_work_due`)
   reports as due, not every active workspace, so an idle workspace costs no engine at all. A
   worker that polled all of them would hold every pool hot and put the count cap back in charge.
-  `work.due_reconcile_seconds` (default 900) has to stay above `pool_idle_close_seconds` for the
+  When more workspaces are busy than the cache holds, the count cap does bind, so a pass is
+  capped at `pool_cache_size` workspaces and visits the ones whose engine is already cached
+  before the ones that are not (issue #12). In the index's oldest-first order the misses come
+  first, and each would evict the engine the same pass visits next; hits first means a pass never
+  evicts an engine it is about to use, and it opens one engine per workspace that genuinely was
+  not cached. `work.due_reconcile_seconds` (default 900) has to stay above `pool_idle_close_seconds` for the
   same reason: a reconcile pass arriving inside the idle window would re-touch every cached
   engine, and nothing would ever be reclaimed by idleness. `rheo doctor` checks that relation on
   the resolved settings, since both keys are deployment-scope. Release one runs one human's
