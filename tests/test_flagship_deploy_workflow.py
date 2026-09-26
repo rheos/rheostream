@@ -9,7 +9,11 @@ Seams under test, on the parsed workflow:
   workflow on the SHA before it sets `ready`.
 - A green run means deployed (issue #154): the deploy step polls the Coolify
   deployment it started until `finished`, fails on `failed`/`cancelled*`, and has
-  a deadline.
+  a deadline. A refused poll (401/403) fails at once and names the missing `read`
+  ability (issue #172); 429 and 5xx stay transient.
+- Preview deployments off (issue #164): before deploying, the job reads the
+  application and refuses unless `settings.is_preview_deployments_enabled` is
+  exactly false.
 - Public logs: the base URL, the host and the deployment id stay out of them.
 """
 
@@ -280,7 +284,7 @@ def test_deploy_polls_the_started_deployment_until_it_finishes() -> None:
 
 
 def test_deploy_poll_has_a_deadline_inside_the_job_timeout() -> None:
-    step = _all_steps(DEPLOY)[0]
+    step = _step(DEPLOY, "deploy")
     wait = int(step["env"]["DEPLOY_WAIT_SECONDS"])
     assert "deadline" in DEPLOY_RUN
     # Room for the 60 s deploy request and one last 30 s poll.
@@ -290,6 +294,226 @@ def test_deploy_poll_has_a_deadline_inside_the_job_timeout() -> None:
 def test_deploy_poll_tolerates_transient_errors() -> None:
     assert 'state="transient: curl exit $curl_exit"' in DEPLOY_RUN
     assert 'state="transient: status $code"' in DEPLOY_RUN
+
+
+# --- running the deploy job's steps against a stubbed Coolify ----------------------
+
+# Stub curl: answers by URL, records each request's method and path (never a
+# header), and replays a scripted list of status codes for the status poll.
+_CURL_STUB = """#!/usr/bin/env bash
+out=""; url=""; method=GET
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -w|-H|--connect-timeout|--max-time) shift ;;
+    -X) method="$2"; shift ;;
+    -*) ;;
+    *) url="$1" ;;
+  esac
+  shift
+done
+echo "$method ${url#*://*/}" >> "$CURL_LOG"
+case "$url" in
+  */api/v1/deploy\\?uuid=*)
+    code=200
+    body='{"deployments":[{"deployment_uuid":"deployment-example"}]}'
+    ;;
+  */api/v1/applications/*)
+    code="$APP_CODE"
+    body="$APP_BODY"
+    ;;
+  */api/v1/deployments/*)
+    n=$(( $(cat "$POLL_COUNT" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$POLL_COUNT"
+    code=$(echo "$POLL_CODES" | awk -v n="$n" '{print (n <= NF) ? $n : $NF}')
+    body='{"message":"no"}'
+    if [ "$code" = 200 ]; then body='{"status":"finished"}'; fi
+    ;;
+  *)
+    code=404
+    body='{}'
+    ;;
+esac
+printf '%s' "$body" > "$out"
+printf '%s' "$code"
+"""
+
+_EXAMPLE_BASE_URL = "https://coolify.example.org"
+_EXAMPLE_APP_ID = "app-example"
+
+
+def _run_deploy_step(
+    tmp_path: Path, step_id: str, extra_env: dict[str, str]
+) -> tuple[int, str, list[str]]:
+    """Run one deploy-job step against the stub curl.
+
+    Returns (exit code, combined output, the requests the stub saw)."""
+    bash, jq = shutil.which("bash"), shutil.which("jq")
+    assert bash and jq, "bash and jq are needed to exercise the deploy steps"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(_CURL_STUB, encoding="utf-8")
+    curl.chmod(0o755)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    curl_log = tmp_path / "curl.log"
+    curl_log.touch()
+    script = tmp_path / f"{step_id}.sh"
+    script.write_text(_step(DEPLOY, step_id)["run"], encoding="utf-8")
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "RUNNER_TEMP": str(runner_temp),
+        "CURL_LOG": str(curl_log),
+        "POLL_COUNT": str(tmp_path / "poll-count"),
+        "COOLIFY_TOKEN": "token-example",
+        "COOLIFY_BASE_URL": _EXAMPLE_BASE_URL,
+        "COOLIFY_APP_UUID": _EXAMPLE_APP_ID,
+        "DEPLOY_WAIT_SECONDS": "20",
+        "DEPLOY_POLL_SECONDS": "0",
+        **extra_env,
+    }
+    proc = subprocess.run(
+        [bash, str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    log = proc.stdout + proc.stderr
+    # The ::add-mask:: lines name the host on purpose; Actions hides them.
+    unmasked = "\n".join(
+        line for line in log.splitlines() if not line.startswith("::add-mask::")
+    )
+    assert "token-example" not in log
+    assert "example.org" not in unmasked
+    assert _EXAMPLE_APP_ID not in unmasked
+    return proc.returncode, log, curl_log.read_text().splitlines()
+
+
+@pytest.mark.parametrize("code", ["401", "403"])
+def test_a_refused_status_poll_fails_at_once_naming_the_read_ability(
+    tmp_path: Path, code: str
+) -> None:
+    exit_code, log, requests = _run_deploy_step(
+        tmp_path, "deploy", {"POLL_CODES": f"{code} 200"}
+    )
+    assert exit_code == 1, log
+    assert f"::error::Coolify refused the status poll (status {code})" in log
+    assert "'read' ability" in log
+    # One poll, no retry: the scripted 200 after it was never asked for.
+    polls = [line for line in requests if line.startswith("GET api/v1/deployments/")]
+    assert len(polls) == 1, requests
+    assert "Deployment finished" not in log
+
+
+@pytest.mark.parametrize("code", ["429", "500", "502", "503"])
+def test_rate_limits_and_server_errors_stay_transient(
+    tmp_path: Path, code: str
+) -> None:
+    exit_code, log, requests = _run_deploy_step(
+        tmp_path, "deploy", {"POLL_CODES": f"{code} {code} 200"}
+    )
+    assert exit_code == 0, log
+    assert f"Deployment: transient: status {code}" in log
+    assert "Deployment finished" in log
+    assert "::error::" not in log
+    polls = [line for line in requests if line.startswith("GET api/v1/deployments/")]
+    assert len(polls) == 3, requests
+
+
+# --- issue #164: preview deployments must be off before a deploy ------------------
+
+
+def test_the_preview_check_runs_before_the_deploy_step() -> None:
+    ids = [step.get("id") for step in _all_steps(DEPLOY)]
+    assert ids == ["preview", "deploy"]
+    preview = _step(DEPLOY, "preview")
+    assert "if" not in preview  # never skipped
+    assert '"$base/api/v1/applications/$COOLIFY_APP_UUID"' in preview["run"]
+    # Read-only: a plain GET, no method override.
+    assert "-X" not in preview["run"]
+    assert "is_preview_deployments_enabled" in preview["run"]
+
+
+def _app_body(settings: object) -> str:
+    return json.dumps({"name": "example", "settings": settings})
+
+
+def test_the_preview_check_passes_only_when_the_setting_is_false(
+    tmp_path: Path,
+) -> None:
+    exit_code, log, requests = _run_deploy_step(
+        tmp_path,
+        "preview",
+        {
+            "APP_CODE": "200",
+            "APP_BODY": _app_body({"is_preview_deployments_enabled": False}),
+        },
+    )
+    assert exit_code == 0, log
+    assert "Preview deployments are off" in log
+    assert requests == [f"GET api/v1/applications/{_EXAMPLE_APP_ID}"]
+
+
+def test_the_preview_check_refuses_when_preview_deployments_are_on(
+    tmp_path: Path,
+) -> None:
+    exit_code, log, _ = _run_deploy_step(
+        tmp_path,
+        "preview",
+        {
+            "APP_CODE": "200",
+            "APP_BODY": _app_body({"is_preview_deployments_enabled": True}),
+        },
+    )
+    assert exit_code == 1, log
+    assert "::error::preview deployments are enabled" in log
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _app_body({}),
+        _app_body({"is_preview_deployments_enabled": None}),
+        _app_body({"is_preview_deployments_enabled": 0}),
+        _app_body({"is_preview_deployments_enabled": "false"}),
+        _app_body(None),
+        json.dumps({"name": "example"}),
+        "not json",
+    ],
+)
+def test_the_preview_check_fails_closed_when_it_cannot_confirm(
+    tmp_path: Path, body: str
+) -> None:
+    exit_code, log, _ = _run_deploy_step(
+        tmp_path, "preview", {"APP_CODE": "200", "APP_BODY": body}
+    )
+    assert exit_code == 1, log
+    assert "::error::could not confirm preview deployments are off" in log
+    assert "Preview deployments are off" not in log
+
+
+@pytest.mark.parametrize("code", ["401", "403"])
+def test_the_preview_check_names_the_read_ability_when_refused(
+    tmp_path: Path, code: str
+) -> None:
+    exit_code, log, _ = _run_deploy_step(
+        tmp_path, "preview", {"APP_CODE": code, "APP_BODY": "{}"}
+    )
+    assert exit_code == 1, log
+    assert f"(status {code})" in log
+    assert "'read' ability" in log
+
+
+@pytest.mark.parametrize("code", ["404", "429", "500"])
+def test_the_preview_check_fails_on_any_other_error(tmp_path: Path, code: str) -> None:
+    exit_code, log, _ = _run_deploy_step(
+        tmp_path, "preview", {"APP_CODE": code, "APP_BODY": "{}"}
+    )
+    assert exit_code == 1, log
+    assert f"::error::application settings request failed (status {code})" in log
 
 
 # --- curl lives only in deploy, never in gate ---------------------------------------
