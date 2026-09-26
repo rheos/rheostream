@@ -293,10 +293,11 @@ MANIFEST: Final = ModuleManifest(
     # The memory screens. ``/item`` has no navigation entry on purpose: it is reached
     # only by a link from browse, search or the duplicates list. The search provider
     # names the module's own read-class recall, which the manifest validator checks.
+    # The subdomain host is ``recall`` (issue #158); the surface name and the path-mode
+    # path keep the module id. The old ``recallatron.`` host is only a redirect at the
+    # reverse proxy, never a host this application serves or links to.
     web=WebContribution(
-        surface=WebSurface(
-            surface="recallatron", host="recallatron", path="/recallatron"
-        ),
+        surface=WebSurface(surface="recallatron", host="recall", path="/recallatron"),
         package_name="@rheo-stream/recallatron-web",
         routes=(
             WebRoute(id="browse", path="/", screen="browse"),

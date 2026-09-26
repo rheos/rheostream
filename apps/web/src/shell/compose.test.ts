@@ -33,7 +33,7 @@ const ENABLED = enabledModuleIds(status("enabled"));
 const ABSENT = enabledModuleIds(status("absent"));
 
 /** The routing config's module surfaces, as `routing_config()` would carry them. */
-const ROUTED = { recallatron: { host: "recallatron", path: "/recallatron" } };
+const ROUTED = { recallatron: { host: "recall", path: "/recallatron" } };
 
 const ROUTES = ["/", "/search", "/item", "/duplicates"] as const;
 

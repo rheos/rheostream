@@ -27,6 +27,7 @@ from rheo_core.routing import (
     RoutingMode,
     SurfaceConfig,
     application_hosts,
+    is_application_host,
     url_for,
 )
 from rheo_core.settings import resolve
@@ -94,6 +95,33 @@ assert DSN_USER_MATCH, (
     f"could not parse a user out of the anchor DSN: {ANCHOR['RHEO_CLUSTER_DSN']!r}"
 )
 DSN_USER = DSN_USER_MATCH.group(1)
+
+
+# Issue #158: Recallatron's subdomain moved from `recallatron.` to `recall.`. The
+# old host survives only as a permanent redirect at the proxy.
+LEGACY_RECALLATRON_HOST = f"recallatron.{EXAMPLE_BASE_HOST}"
+LEGACY_REDIRECT_ROUTERS = frozenset(
+    {"rheostream-recallatron", "rheostream-recallatron-http"}
+)
+LEGACY_REDIRECT_MIDDLEWARE = "rheostream-recall-redirect"
+
+
+def _resolve_base_host(value: str) -> str:
+    """The labels carry the un-interpolated `${RHEO_BASE_HOST:?}` placeholder
+    (docker compose resolves it at deploy time, not something this parse does);
+    substitute the example file's own value to compare against resolved routing."""
+    return value.replace("${RHEO_BASE_HOST:?}", EXAMPLE_BASE_HOST)
+
+
+def _router_rules() -> dict[str, str]:
+    """Router name to its rule, across both labelled services."""
+    rules: dict[str, str] = {}
+    for service in (CORE, WEB):
+        for key, value in _labels_as_dict(service).items():
+            match = re.fullmatch(r"traefik\.http\.routers\.([^.]+)\.rule", key)
+            if match is not None:
+                rules[match.group(1)] = value
+    return rules
 
 
 def _recallatron_surface_config() -> SurfaceConfig:
@@ -230,20 +258,26 @@ def test_resolved_routing_matches_the_anchors_declared_topology(
 def test_router_host_set_matches_application_hosts_plus_api_and_mcp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Every host a router actually serves (sends to core or web rather than
+    redirecting) is an application host, `api.` or `mcp.`, and every one of those
+    is served. The legacy redirect routers are the only exception, and they
+    carry the legacy host alone."""
     config = _resolved_routing_config(monkeypatch)
     expected = application_hosts(config) | {
         f"api.{EXAMPLE_BASE_HOST}",
         f"mcp.{EXAMPLE_BASE_HOST}",
     }
-    found: set[str] = set()
-    for service in (CORE, WEB):
-        for value in _labels_as_dict(service).values():
-            found.update(HOST_RULE_RE.findall(value))
-    # The labels carry the un-interpolated `${RHEO_BASE_HOST:?}` placeholder
-    # (docker compose resolves it at deploy time, not something this parse does);
-    # substitute the example file's own value to compare against resolved routing.
-    found = {host.replace("${RHEO_BASE_HOST:?}", EXAMPLE_BASE_HOST) for host in found}
-    assert found == expected
+    served: set[str] = set()
+    redirected: set[str] = set()
+    for router, rule in _router_rules().items():
+        hosts = {_resolve_base_host(host) for host in HOST_RULE_RE.findall(rule)}
+        if router in LEGACY_REDIRECT_ROUTERS:
+            redirected |= hosts
+        else:
+            served |= hosts
+    assert served == expected
+    assert redirected == {LEGACY_RECALLATRON_HOST}
+    assert LEGACY_RECALLATRON_HOST not in application_hosts(config)
 
 
 # --- traefik: only core/web labelled, service/port/network wiring ----------------
@@ -316,6 +350,7 @@ def test_https_routers_carry_tls_and_http_router_redirects() -> None:
         "rheostream-api",
         "rheostream-mcp",
         "rheostream-web",
+        "rheostream-recallatron",
     }
     for router in https_routers:
         assert all_labels[f"traefik.http.routers.{router}.entrypoints"] == "https"
@@ -340,6 +375,120 @@ def test_https_routers_carry_tls_and_http_router_redirects() -> None:
     assert not any(
         key.startswith("traefik.http.routers.rheostream-http.tls") for key in web_labels
     )
+
+
+# --- issue #158: the legacy `recallatron.` host redirects to `recall.` ------------
+
+
+def _redirect_target(labels: dict[str, str], url: str) -> str:
+    """What Traefik's redirectregex does with ``url``: Go's ``ReplaceAllString``
+    over the raw request URL (scheme, authority, request URI), after the compose
+    interpolation of the replacement. The regex is RE2-compatible and anchored,
+    so Python's ``re.sub`` gives the same result."""
+    prefix = f"traefik.http.middlewares.{LEGACY_REDIRECT_MIDDLEWARE}.redirectregex"
+    regex = labels[f"{prefix}.regex"]
+    replacement = _resolve_base_host(labels[f"{prefix}.replacement"])
+    assert re.match(regex, url), f"{regex!r} does not match {url!r}"
+    return re.sub(regex, replacement, url)
+
+
+def test_the_legacy_recallatron_host_permanently_redirects_to_recall() -> None:
+    web_labels = _labels_as_dict(WEB)
+    prefix = f"traefik.http.middlewares.{LEGACY_REDIRECT_MIDDLEWARE}.redirectregex"
+    assert web_labels[f"{prefix}.permanent"] == "true"
+    # Coolify's label escaping is off, so compose interpolates every dollar sign;
+    # the replacement must carry none beyond the required base-host interpolation,
+    # or a capture-group reference would be eaten (or fail) at deploy time.
+    assert web_labels[f"{prefix}.replacement"] == "https://recall.${RHEO_BASE_HOST:?}"
+    assert "$" not in web_labels[f"{prefix}.regex"]
+
+    for router in LEGACY_REDIRECT_ROUTERS:
+        assert (
+            web_labels[f"traefik.http.routers.{router}.rule"]
+            == "Host(`recallatron.${RHEO_BASE_HOST:?}`)"
+        )
+        assert (
+            web_labels[f"traefik.http.routers.{router}.middlewares"]
+            == LEGACY_REDIRECT_MIDDLEWARE
+        )
+    assert web_labels["traefik.http.routers.rheostream-recallatron.tls"] == "true"
+    assert (
+        web_labels["traefik.http.routers.rheostream-recallatron-http.entrypoints"]
+        == "http"
+    )
+    assert not any(
+        key.startswith("traefik.http.routers.rheostream-recallatron-http.tls")
+        for key in web_labels
+    )
+
+    # Path and query carry over, and plain http lands on https in one hop.
+    for scheme in ("https", "http"):
+        assert (
+            _redirect_target(
+                web_labels, f"{scheme}://{LEGACY_RECALLATRON_HOST}/x?q=a%20b&k=1"
+            )
+            == f"https://recall.{EXAMPLE_BASE_HOST}/x?q=a%20b&k=1"
+        )
+        assert (
+            _redirect_target(web_labels, f"{scheme}://{LEGACY_RECALLATRON_HOST}/")
+            == f"https://recall.{EXAMPLE_BASE_HOST}/"
+        )
+
+
+def test_no_generated_url_uses_the_legacy_recallatron_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every link, redirect and callback goes through ``url_for`` with the real
+    manifest's host, so none of them may name `recallatron.`: the redirect is for
+    old or external links only. Recallatron's own screens land on `recall.`, and
+    the legacy host is not an application host, so a return or continue URL
+    naming it is refused rather than followed."""
+    config = _resolved_routing_config(monkeypatch)
+    web = RECALLATRON_MANIFEST.web
+    assert web is not None
+    assert web.surface.host == "recall"
+    assert web.surface.path == "/recallatron"
+    module_paths = {route.path for route in web.routes} | {
+        entry.path for entry in web.navigation
+    }
+    for path in module_paths:
+        url = url_for(config, web.surface.surface, path)
+        assert url.startswith(f"https://recall.{EXAMPLE_BASE_HOST}/"), url
+
+    surfaces = [
+        name
+        for name, spec in config.surfaces.named().items()
+        if not (spec.external or spec.reserved)
+    ] + list(config.surfaces.modules)
+    generated = [url_for(config, name, "/") for name in surfaces]
+    generated.append(url_for(config, IDENTITY, "/callback"))
+    generated.extend(application_hosts(config))
+    for value in generated:
+        assert "recallatron." not in value, value
+    assert not is_application_host(config, LEGACY_RECALLATRON_HOST)
+
+
+def test_the_redirect_target_is_served_not_redirected_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No loop: the target host is an application host, and no router that
+    carries a redirect middleware matches it."""
+    config = _resolved_routing_config(monkeypatch)
+    target_host = f"recall.{EXAMPLE_BASE_HOST}"
+    assert target_host in application_hosts(config)
+    labels = {**_labels_as_dict(CORE), **_labels_as_dict(WEB)}
+    https_routers_for_target = []
+    for router, rule in _router_rules().items():
+        hosts = {_resolve_base_host(host) for host in HOST_RULE_RE.findall(rule)}
+        if target_host not in hosts:
+            continue
+        assert router not in LEGACY_REDIRECT_ROUTERS
+        middlewares = labels.get(f"traefik.http.routers.{router}.middlewares", "")
+        entrypoints = labels[f"traefik.http.routers.{router}.entrypoints"]
+        if entrypoints == "https":
+            assert middlewares == "", f"{router} redirects the redirect target"
+            https_routers_for_target.append(router)
+    assert sorted(https_routers_for_target) == ["rheostream-auth", "rheostream-web"]
 
 
 # --- AC-7: `rheo routing hosts`, run for real -------------------------------------

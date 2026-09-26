@@ -136,10 +136,18 @@ package needs its own content review. No deployment runs from the initial CI.
 The overlay is `deploy/compose.flagship.yaml`; every variable it interpolates is
 documented in `deploy/.env.flagship.example` (not re-listed here).
 
-It routes five application hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth`
-and `recallatron` reach `web` for everything except `/auth/*`, which core serves
-on all three of those hosts; `api` and `mcp` each reach `core` directly, over
-token auth. The apex host is not routed by this overlay.
+It routes five hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth` and
+`recall` (Recallatron's screens) reach `web` for everything except `/auth/*`,
+which core serves on all three of those hosts; `api` and `mcp` each reach `core`
+directly, over token auth. The apex host is not routed by this overlay.
+
+Recallatron's host was `recallatron` until issue #158. That name is now
+redirect-only: `recallatron.${RHEO_BASE_HOST}`, over https or plain http, gets a
+permanent redirect straight to `https://recall.${RHEO_BASE_HOST}` with the same
+path and query. Traefik answers 301 to a GET and 308 to any other method. The
+existing wildcard record and certificate cover both names. Nothing the
+application generates links to the old host, which exists only for old or
+external links.
 
 The wildcard certificate needs a DNS-01 resolver configured on the operator's own
 reverse proxy, named by `RHEO_TLS_CERTRESOLVER`; the overlay only references that

@@ -125,6 +125,8 @@ Likely public endpoints, when they are needed, include:
 - `circuit.rheo.stream` — the application shell (originally `app.`; see the recorded
   change of direction in the decision ledger)
 - `auth.rheo.stream` — login and the OAuth callback
+- `recall.rheo.stream` — Recallatron's screens (originally `recallatron.`, which now
+  redirects here; see the recorded change of direction in the decision ledger)
 - `docs.rheo.stream` — documentation
 - `api.rheo.stream` — public application API
 - `mcp.rheo.stream` — MCP endpoint
@@ -1819,6 +1821,12 @@ The following changes are recorded here.
     [theme contract](../architecture/theme-contract.md) as architecture decision A18; D8, the
     phase-two scope bullet and criteria 34 and 37 carry an amendment note pointing to the theme
     contract, and D8's note also points here.
+15. **Recallatron's host is `recall.`, not `recallatron.`** Renamed at the maintainer's
+    request on 2026-09-26 (issue #158). Only the subdomain changes: the module id, its
+    schema, its package names and its single-host path `/recallatron` stay as they
+    were. The reference deployment keeps `recallatron.rheo.stream` as a permanent
+    redirect to the same path on `recall.`, for old and external links only; it is not
+    an application host, and nothing the application generates points at it.
 
 ### Preferred but still to validate
 

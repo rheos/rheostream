@@ -171,14 +171,14 @@ def test_normalize_host_strips_port_case_and_trailing_dots() -> None:
     assert normalize_host("localhost:3000") == "localhost"
 
 
-@pytest.mark.parametrize("label", ["", "   ", "circuit", "auth", "api", "recallatron"])
+@pytest.mark.parametrize("label", ["", "   ", "circuit", "auth", "api", "recall"])
 def test_a_subdomain_mcp_label_that_collides_or_is_empty_is_refused(label: str) -> None:
     """Empty, or the shell, identity, api or a loaded module's host: the router would
     take that host's routes away, so the mount refuses at startup."""
     config = _config(
         "subdomain",
         mcp_host=label,
-        modules={"recallatron": {"host": "recallatron", "path": "/recallatron"}},
+        modules={"recallatron": {"host": "recall", "path": "/recallatron"}},
     )
     with pytest.raises(ValueError, match="routing.mcp.host"):
         McpMount.for_config(config, app=object())  # type: ignore[arg-type]
@@ -187,7 +187,7 @@ def test_a_subdomain_mcp_label_that_collides_or_is_empty_is_refused(label: str) 
 def test_a_distinct_subdomain_mcp_label_is_accepted() -> None:
     config = _config(
         "subdomain",
-        modules={"recallatron": {"host": "recallatron", "path": "/recallatron"}},
+        modules={"recallatron": {"host": "recall", "path": "/recallatron"}},
     )
     mount = McpMount.for_config(config, app=object())  # type: ignore[arg-type]
     assert mount.host == "mcp.example.test"

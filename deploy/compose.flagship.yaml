@@ -106,7 +106,7 @@ services:
       # rheostream-web's plain host match on the same three hosts. Hence the
       # explicit priority above it, since a Traefik rule-length heuristic would not
       # reliably rank a path-qualified rule above a host-only one across all three.
-      - traefik.http.routers.rheostream-auth.rule=(Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recallatron.${RHEO_BASE_HOST:?}`)) && (Path(`/auth`) || PathPrefix(`/auth/`))
+      - traefik.http.routers.rheostream-auth.rule=(Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`)) && (Path(`/auth`) || PathPrefix(`/auth/`))
       - traefik.http.routers.rheostream-auth.entrypoints=https
       - traefik.http.routers.rheostream-auth.tls=true
       - traefik.http.routers.rheostream-auth.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
@@ -164,20 +164,43 @@ services:
       - traefik.enable=true
       - traefik.docker.network=${RHEO_TRAEFIK_NETWORK:?}
       - traefik.http.services.rheostream-web.loadbalancer.server.port=3000
-      - traefik.http.routers.rheostream-web.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recallatron.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-web.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`)
       - traefik.http.routers.rheostream-web.entrypoints=https
       - traefik.http.routers.rheostream-web.tls=true
       - traefik.http.routers.rheostream-web.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
       - traefik.http.routers.rheostream-web.tls.domains[0].main=*.${RHEO_BASE_HOST:?}
       - traefik.http.routers.rheostream-web.priority=90
       - traefik.http.routers.rheostream-web.service=rheostream-web
-      # Redirect-only: http -> https for all five application hosts. No TLS labels.
-      - traefik.http.routers.rheostream-http.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recallatron.${RHEO_BASE_HOST:?}`) || Host(`api.${RHEO_BASE_HOST:?}`) || Host(`mcp.${RHEO_BASE_HOST:?}`)
+      # Redirect-only: http -> https for all five routed hosts. No TLS labels.
+      - traefik.http.routers.rheostream-http.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`) || Host(`api.${RHEO_BASE_HOST:?}`) || Host(`mcp.${RHEO_BASE_HOST:?}`)
       - traefik.http.routers.rheostream-http.entrypoints=http
       - traefik.http.routers.rheostream-http.middlewares=rheostream-https-redirect
       - traefik.http.routers.rheostream-http.service=rheostream-web
       - traefik.http.middlewares.rheostream-https-redirect.redirectscheme.scheme=https
       - traefik.http.middlewares.rheostream-https-redirect.redirectscheme.permanent=true
+      # Legacy host (issue #158): Recallatron's screens moved from `recallatron.` to
+      # `recall.`. The old host is redirect-only, over https and plain http alike, in
+      # one hop straight to https on `recall.`; it is not an application host, so no
+      # router here sends it to core or web. The regex replaces only the scheme and
+      # authority, so path and query carry over unchanged. It contains no dollar
+      # sign on purpose: with Coolify's label escaping off, docker compose would
+      # still interpolate one, and every dollar sign in this file must open a
+      # required interpolation (tests/test_flagship_overlay.py checks this).
+      # Traefik's permanent redirect answers 301 to GET and 308 to other methods.
+      - traefik.http.routers.rheostream-recallatron.rule=Host(`recallatron.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-recallatron.entrypoints=https
+      - traefik.http.routers.rheostream-recallatron.tls=true
+      - traefik.http.routers.rheostream-recallatron.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
+      - traefik.http.routers.rheostream-recallatron.tls.domains[0].main=*.${RHEO_BASE_HOST:?}
+      - traefik.http.routers.rheostream-recallatron.middlewares=rheostream-recall-redirect
+      - traefik.http.routers.rheostream-recallatron.service=rheostream-web
+      - traefik.http.routers.rheostream-recallatron-http.rule=Host(`recallatron.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-recallatron-http.entrypoints=http
+      - traefik.http.routers.rheostream-recallatron-http.middlewares=rheostream-recall-redirect
+      - traefik.http.routers.rheostream-recallatron-http.service=rheostream-web
+      - traefik.http.middlewares.rheostream-recall-redirect.redirectregex.regex=^https?://[^/]+
+      - traefik.http.middlewares.rheostream-recall-redirect.redirectregex.replacement=https://recall.${RHEO_BASE_HOST:?}
+      - traefik.http.middlewares.rheostream-recall-redirect.redirectregex.permanent=true
 
 volumes:
   pgdata:
