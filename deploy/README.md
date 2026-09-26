@@ -183,9 +183,13 @@ token for the `mcp` host, which refuses a `cli` token as `token_wrong_kind`.
 Pushes to `main` redeploy only once the three repository secrets `COOLIFY_TOKEN`,
 `COOLIFY_BASE_URL` and `COOLIFY_APP_UUID` exist; until then
 `.github/workflows/deploy-flagship.yml` is a green no-op that logs a notice and
-skips the deploy job. A green `deploy` job means Coolify accepted and queued the
-deploy request, not that the deploy finished; check the deployment's own status in
-Coolify.
+skips the deploy job. The workflow starts when Repository checks completes on a
+`main` push, and deploys only if every push-event CI workflow on that commit
+succeeded and the commit is still the tip of `main` (Coolify builds the branch tip,
+so an older commit steps aside for the newer one's own run). A green `deploy` job
+means the Coolify deployment reached `finished`; a `failed` or `cancelled`
+deployment, or one still running after 30 minutes, fails the job. The log carries
+only HTTP codes and the deployment status, so read the build output in Coolify.
 
 ### Connection budget
 
