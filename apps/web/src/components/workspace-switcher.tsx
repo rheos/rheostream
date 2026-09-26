@@ -74,9 +74,11 @@ export function WorkspaceSwitcher({
         value={target}
         onChange={(event) => setTarget(event.target.value)}
       >
+        {/* The name is what a person reads; the id stays the submitted value, since
+            that is what the switch route takes (#115). */}
         {memberships.map((membership) => (
           <option key={membership.workspace_id} value={membership.workspace_id}>
-            {membership.workspace_id} ({membership.role})
+            {membership.display_name} ({membership.role})
           </option>
         ))}
       </select>

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CoreHealthResult } from "@/lib/core-health";
 import type { RoutingConfig } from "@/lib/routing/config";
-import { loginHref, logoutAction, switcherAction } from "@/lib/routing/links";
+import { homeHref, loginHref, logoutAction, switcherAction } from "@/lib/routing/links";
 import type { RoutingConfigResult } from "@/lib/routing/load";
 import type { SessionResult } from "@/lib/session";
 
@@ -80,7 +80,7 @@ const SIGNED_IN: SessionResult = {
   actor: { kind: "account", id: "acct-synthetic" },
   activeWorkspaceId: "ws-alpha",
   role: "owner",
-  memberships: [{ workspace_id: "ws-alpha", role: "owner" }],
+  memberships: [{ workspace_id: "ws-alpha", display_name: "Alpha Desk", role: "owner" }],
 };
 
 async function render(): Promise<string> {
@@ -147,11 +147,31 @@ describe("shell home page", () => {
   it("renders a signed-in account with the switcher and logout on the built actions", async () => {
     const html = await render();
     expect(html).toContain("account: account acct-synthetic");
-    expect(html).toContain("workspace: ws-alpha (owner)");
+    // The display name, not the id (#115); the id still reaches the switcher.
+    expect(html).toContain("workspace: Alpha Desk (owner)");
+    expect(html).not.toContain("workspace: ws-alpha");
     expect(html).toContain(`data-switcher-action="${switcherAction(CONFIG)}"`);
     expect(html).toContain('data-active-workspace="ws-alpha"');
     const logout = new RegExp(`<form[^>]* action="${escapeRegExp(logoutAction(CONFIG))}"[^>]*>`);
     expect(logout.exec(html)?.[0]).toContain('method="post"');
+  });
+
+  it.each([
+    ["signed in", SIGNED_IN],
+    ["signed out", { state: "unauthenticated", refusal: "session_expired" } as SessionResult],
+  ])("links the brand to Home when %s (#116)", async (_label, session) => {
+    seams.session = session;
+    const html = await render();
+    expect(html).toMatch(
+      new RegExp(`<a [^>]*href="${escapeRegExp(homeHref(CONFIG))}"[^>]*>rheoStream</a>`),
+    );
+  });
+
+  it("leaves the brand as plain text when routing is down and no URL can be built", async () => {
+    seams.routing = { state: "unavailable" };
+    const html = await render();
+    expect(html).toMatch(/<p [^>]*>rheoStream<\/p>/);
+    expect(html).not.toMatch(/<a [^>]*>rheoStream<\/a>/);
   });
 
   it("resolves the session from the request cookie and forwarded host", async () => {

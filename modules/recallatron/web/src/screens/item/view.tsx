@@ -77,12 +77,18 @@ function Memory({ item }: { item: ItemDetail }) {
   );
 }
 
-/** A page with no memory to show still has a heading, so it has an outline. */
-function Unavailable({ children }: { children: ReactNode }) {
+/**
+ * A page with no memory to show still has a heading, so it has an outline, and a
+ * link back to Browse, so it is never a dead end (#116).
+ */
+function Unavailable({ backHref, children }: { backHref: string; children: ReactNode }) {
   return (
     <div className={styles.state}>
       <h1 className={styles.stateTitle}>Memory</h1>
       {children}
+      <a className={styles.back} href={backHref}>
+        Back to Memory
+      </a>
     </div>
   );
 }
@@ -93,7 +99,7 @@ export function ItemView({ state }: { state: ItemState }) {
       return <Memory item={state.item} />;
     case "not-found":
       return (
-        <Unavailable>
+        <Unavailable backHref={state.backHref}>
           <StateMessage name="memory-not-found">
             <p className={styles.stateText}>This memory is unavailable.</p>
           </StateMessage>
@@ -101,7 +107,7 @@ export function ItemView({ state }: { state: ItemState }) {
       );
     case "error":
       return (
-        <Unavailable>
+        <Unavailable backHref={state.backHref}>
           <GenericError />
         </Unavailable>
       );

@@ -83,6 +83,15 @@
   margin: 0;
 }
 
+/* The way back from a failure state (#116): a plain link at the control height, so
+   it is an easy target on a phone, sitting under the message it answers. */
+.back {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  min-block-size: var(--rs-size-control);
+}
+
 @media (max-width: 40rem) {
   .article {
     padding: var(--rs-space-4);

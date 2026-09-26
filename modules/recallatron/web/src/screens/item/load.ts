@@ -32,10 +32,16 @@ export interface ItemDetail {
   links: ItemLink[];
 }
 
+/**
+ * The failure states carry `backHref`, Browse, so a reader who reached a memory that
+ * is gone or failed to load always has a way back (#116). Browse rather than the
+ * referring page: every screen that links to Item sits one step from it, and a
+ * server-rendered screen with no client script cannot read history.
+ */
 export type ItemState =
   | { state: "item"; item: ItemDetail }
-  | { state: "not-found" }
-  | { state: "error" };
+  | { state: "not-found"; backHref: string }
+  | { state: "error"; backHref: string };
 
 type Query = Readonly<Record<string, string | undefined>>;
 
@@ -44,17 +50,18 @@ function stamp(iso: string): Stamp {
 }
 
 export async function loadItem(shell: ShellApi, query: Query): Promise<ItemState> {
+  const backHref = shell.href("browse");
   const ref = query.ref?.trim();
   if (!ref) {
     // Nothing to look up is the same answer as a reference that resolves to nothing.
-    return { state: "not-found" };
+    return { state: "not-found", backHref };
   }
   const called = await callChecked(shell, GET, { ref }, isMemoryItem);
   if (called.state === "refused" && called.code === NOT_FOUND) {
-    return { state: "not-found" };
+    return { state: "not-found", backHref };
   }
   if (called.state !== "ok") {
-    return { state: "error" };
+    return { state: "error", backHref };
   }
   const memory = called.value;
   return {

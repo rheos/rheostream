@@ -59,6 +59,21 @@
   color: var(--rs-color-ink);
 }
 
+/* The brand as Home's link (#116): it keeps the brand's look at rest, sits at the
+   control height so it is an easy target, and takes the nav's hover edge. */
+.brandLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
+  text-decoration: none;
+  border-block-end: medium solid transparent;
+}
+
+.brandLink:hover {
+  color: var(--rs-color-ink);
+  border-block-end-color: var(--rs-color-hairline);
+}
+
 .nav {
   display: flex;
   min-inline-size: 0;

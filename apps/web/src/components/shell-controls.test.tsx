@@ -22,8 +22,8 @@ describe("WorkspaceSwitcher", () => {
     <WorkspaceSwitcher
       action="/switch-target"
       memberships={[
-        { workspace_id: "ws-alpha", role: "owner" },
-        { workspace_id: "ws-beta", role: "member" },
+        { workspace_id: "ws-alpha", display_name: "Alpha Desk", role: "owner" },
+        { workspace_id: "ws-beta", display_name: "Beta Desk", role: "member" },
       ]}
       activeWorkspaceId="ws-beta"
     />,
@@ -32,9 +32,18 @@ describe("WorkspaceSwitcher", () => {
   it("keeps the labelled select with every membership and the active one selected", () => {
     expect(html).toContain('for="rheo-workspace"');
     expect(html).toContain('<select id="rheo-workspace" name="target_workspace_id">');
-    expect(html).toContain('<option value="ws-alpha">ws-alpha (owner)</option>');
-    expect(html).toContain('<option value="ws-beta" selected="">ws-beta (member)</option>');
+    expect(html).toContain('<option value="ws-alpha">Alpha Desk (owner)</option>');
+    expect(html).toContain('<option value="ws-beta" selected="">Beta Desk (member)</option>');
     expect(html).toContain('<button type="submit">Switch</button>');
+  });
+
+  it("labels each option with the display name, keeping the id as its value only (#115)", () => {
+    const options = html.match(/<option[^>]*>[^<]*<\/option>/g) ?? [];
+    expect(options).toHaveLength(2);
+    for (const option of options) {
+      const label = />([^<]*)</.exec(option)?.[1] ?? "";
+      expect(label).not.toContain("ws-");
+    }
   });
 
   it("puts no workspace identifier or action in the form's markup", () => {

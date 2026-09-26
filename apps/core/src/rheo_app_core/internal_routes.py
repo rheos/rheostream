@@ -36,7 +36,10 @@ from rheo_core.boundary.factories import context_from_session
 from rheo_core.operations import dispatch
 from rheo_core.secrets import SecretRef, SecretRefusal, SecretStore
 from rheo_core.settings import resolve
-from rheo_core.storage.control_plane import list_memberships
+from rheo_core.storage.control_plane import (
+    list_memberships,
+    workspace_display_names,
+)
 from rheo_core.storage.data_root import resolve_data_root
 from rheo_core.storage.postgres import get_backend
 
@@ -126,13 +129,23 @@ def session_info(
     backend = get_backend()
     with backend.control_engine.connect() as connection:
         memberships = list_memberships(connection, account_id=ctx.actor.id)
+        names = workspace_display_names(
+            connection, (row.workspace_id for row in memberships)
+        )
+    # Each membership carries its workspace's display name (#115) so the web tier
+    # never has to show a raw id. The membership foreign key guarantees a registry
+    # row, so the id fallback is defensive only.
     return {
         "state": "ok",
         "actor": {"kind": ctx.actor.kind.value, "id": str(ctx.actor.id)},
         "active_workspace_id": str(ctx.workspace_id),
         "role": ctx.role.value,
         "memberships": [
-            {"workspace_id": str(row.workspace_id), "role": row.role.value}
+            {
+                "workspace_id": str(row.workspace_id),
+                "display_name": names.get(row.workspace_id, str(row.workspace_id)),
+                "role": row.role.value,
+            }
             for row in memberships
         ],
     }

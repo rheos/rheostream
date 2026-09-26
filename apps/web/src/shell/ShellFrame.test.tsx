@@ -14,8 +14,8 @@ import { ShellFrame, type ShellAccount } from "@/shell/ShellFrame";
 const HEALTHY: CoreHealthResult = { status: "ok", contractVersion: 7 };
 const ACCOUNT: ShellAccount = {
   memberships: [
-    { workspace_id: "ws-alpha", role: "owner" },
-    { workspace_id: "ws-beta", role: "member" },
+    { workspace_id: "ws-alpha", display_name: "Alpha Desk", role: "owner" },
+    { workspace_id: "ws-beta", display_name: "Beta Desk", role: "member" },
   ],
   activeWorkspaceId: "ws-alpha",
   switcherAction: "/switch-target",
@@ -82,6 +82,21 @@ describe("ShellFrame", () => {
     expect(html).toMatch(/<a[^>]*href="\/one-target">One<\/a>/);
     expect(html).toMatch(/<a[^>]*href="\/two-target" aria-current="page">Two<\/a>/);
     expect(html.match(/aria-current/g)).toHaveLength(1);
+  });
+
+  it("makes the brand a link to Home when given one (#116)", () => {
+    const html = renderToStaticMarkup(
+      <ShellFrame health={HEALTHY} account={ACCOUNT} homeHref="/home-target">
+        <p>page body</p>
+      </ShellFrame>,
+    );
+    expect(html).toMatch(/<header[^>]*><a [^>]*href="\/home-target"[^>]*>rheoStream<\/a>/);
+  });
+
+  it("keeps the brand as plain text with no Home to link to", () => {
+    const html = render(HEALTHY, ACCOUNT);
+    expect(html).toMatch(/<p [^>]*>rheoStream<\/p>/);
+    expect(html).not.toMatch(/<a [^>]*>rheoStream<\/a>/);
   });
 
   it("renders no nav element when nothing is composed", () => {

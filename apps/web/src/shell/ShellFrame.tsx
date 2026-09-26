@@ -58,11 +58,17 @@ export function ShellFrame({
   health,
   account,
   navigation = [],
+  homeHref,
   children,
 }: {
   health: CoreHealthResult;
   account?: ShellAccount | null;
   navigation?: readonly ShellNavigationItem[];
+  /**
+   * Home, from `homeHref` (#116). Absent only when routing is unavailable and no
+   * URL can be built; the brand then renders as plain text rather than a guess.
+   */
+  homeHref?: string;
   children: ReactNode;
 }) {
   return (
@@ -74,7 +80,13 @@ export function ShellFrame({
         Skip to content
       </a>
       <header className={styles.header}>
-        <p className={styles.brand}>rheoStream</p>
+        {homeHref === undefined ? (
+          <p className={styles.brand}>rheoStream</p>
+        ) : (
+          <a className={`${styles.brand} ${styles.brandLink}`} href={homeHref}>
+            rheoStream
+          </a>
+        )}
         {navigation.length > 0 ? (
           <nav className={styles.nav} aria-label="Workspace">
             <ul className={styles.navList}>

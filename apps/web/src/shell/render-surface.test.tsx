@@ -79,7 +79,7 @@ const SIGNED_IN: SessionResult = {
   actor: { kind: "account", id: "acct-synthetic" },
   activeWorkspaceId: "ws-alpha",
   role: "member",
-  memberships: [{ workspace_id: "ws-alpha", role: "member" }],
+  memberships: [{ workspace_id: "ws-alpha", display_name: "Alpha Desk", role: "member" }],
 };
 
 /** The request for `subPath` on the recallatron surface, in this mode. */
@@ -147,7 +147,14 @@ describe("ShellFrame through the real composition", () => {
     const html = await render(SHELL_REQUEST);
     expect(html).not.toMatch(NAV);
     expect(html).not.toContain("Memory");
-    expect(html).toContain("workspace: ws-alpha (member)");
+    expect(html).toContain("workspace: Alpha Desk (member)");
+  });
+
+  it("links the brand on a module screen back to the shell's Home (#116)", async () => {
+    const html = await render(moduleRequest("/"));
+    // Absolute, so in subdomain mode it leaves the module's host for the shell's.
+    const home = urlFor(ROUTED, "shell", "/");
+    expect(html).toContain(`href="${home}">rheoStream</a>`);
   });
 
   it("offers no navigation when enabled but the deployment does not route it", async () => {

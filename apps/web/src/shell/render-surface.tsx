@@ -13,11 +13,11 @@ import {
   type WorkspaceStatusResult,
 } from "@/lib/operations";
 import type { RoutingConfig } from "@/lib/routing/config";
-import { loginHref, logoutAction, switcherAction } from "@/lib/routing/links";
+import { homeHref, loginHref, logoutAction, switcherAction } from "@/lib/routing/links";
 import { loadRoutingConfig } from "@/lib/routing/load";
 import { normalizePath, resolveRequest, type ResolvedRequest } from "@/lib/routing/resolve";
 import { urlFor } from "@/lib/routing/url-for";
-import type { SessionResult } from "@/lib/session";
+import { activeWorkspaceName, type SessionResult } from "@/lib/session";
 import { MODULES } from "@/modules.generated";
 import {
   composeNavigation,
@@ -291,7 +291,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
       return notFound();
     case "signed-out":
       return (
-        <ShellFrame health={health}>
+        <ShellFrame health={health} homeHref={homeHref(decision.config)}>
           <StatusPanel heading={decision.resolved.kind === "shell" ? "Home" : "Workspace"}>
             {sessionStatus(decision.config, decision.session)}
           </StatusPanel>
@@ -299,7 +299,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
       );
     case "no-workspace":
       return (
-        <ShellFrame health={health}>
+        <ShellFrame health={health} homeHref={homeHref(decision.config)}>
           <StatusPanel heading="No workspace yet">
             <p className={panel.line}>session: signed in, no workspace</p>
             <p className={panel.detail}>
@@ -314,6 +314,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
 
   const { config, resolved, session } = decision;
   const account = accountOf(config, session);
+  const home = homeHref(config);
   const navigation = navigationItems(config, resolved, {
     ...decision.visibility,
     role: session.role,
@@ -321,13 +322,13 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
 
   if (decision.kind === "shell") {
     return (
-      <ShellFrame health={health} account={account} navigation={navigation}>
+      <ShellFrame health={health} account={account} navigation={navigation} homeHref={home}>
         <StatusPanel heading="Home">
           <p className={panel.line}>
             account: {session.actor.kind} {session.actor.id}
           </p>
           <p className={panel.line}>
-            workspace: {session.activeWorkspaceId} ({session.role})
+            workspace: {activeWorkspaceName(session)} ({session.role})
           </p>
           {decision.workspace.state === "ok" ? null : (
             <p className={panel.line}>modules: unavailable</p>
@@ -339,7 +340,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
 
   if (decision.kind === "modules-unavailable") {
     return (
-      <ShellFrame health={health} account={account} navigation={navigation}>
+      <ShellFrame health={health} account={account} navigation={navigation} homeHref={home}>
         <StatusPanel heading="Workspace">
           <p className={panel.line}>modules: unavailable</p>
         </StatusPanel>
@@ -355,7 +356,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
     href: (routeId, query) => moduleHref(config, owner, routeId, query),
   };
   return (
-    <ShellFrame health={health} account={account} navigation={navigation}>
+    <ShellFrame health={health} account={account} navigation={navigation} homeHref={home}>
       {await screen({ shell, query: request.query })}
     </ShellFrame>
   );

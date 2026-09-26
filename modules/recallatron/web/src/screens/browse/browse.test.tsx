@@ -9,7 +9,7 @@ import { EMBEDDING_COVERAGE, ENTITY_GET, ENTITY_LIST, READ } from "../../operati
 import { callsOutside, fakeShell, type Responder } from "../../testing/fake-shell";
 import { field, fixture, ok, refusal, refused } from "../../testing/fixtures";
 import { render, textOf } from "../../testing/markup";
-import { LIST_LIMIT, LIST_RETRY_LIMIT, loadBrowse, READ_CONTEXT } from "./load";
+import { DETAIL_ID, LIST_LIMIT, LIST_RETRY_LIMIT, loadBrowse, READ_CONTEXT } from "./load";
 import { BrowseView } from "./view";
 
 const ENTITY = field("entity-item.json", "ref");
@@ -106,6 +106,27 @@ describe("Browse list pane", () => {
     expect(markup).toContain('aria-current="true"');
   });
 
+  it("links each entity to the detail pane, so a phone lands on it (#116)", async () => {
+    const { state, markup } = await browseText({});
+    expect(state.list.state).toBe("full");
+    const rows = state.list.state === "full" ? state.list.entities : [];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.href).toBe(
+        `/browse?${new URLSearchParams({ entity: row.ref }).toString()}#${DETAIL_ID}`,
+      );
+    }
+    expect(markup).toMatch(new RegExp(`<section id="${DETAIL_ID}"[^>]*aria-label="Selected entity"`));
+  });
+
+  it("keeps the kind filters free of the fragment: they change the list, not the detail", async () => {
+    const { state } = await browseText({ entity: ENTITY });
+    expect(state.kinds.length).toBeGreaterThan(0);
+    for (const kind of state.kinds) {
+      expect(kind.href).not.toContain("#");
+    }
+  });
+
   it("says when the list stops at the operation's maximum", async () => {
     const one = (fixture("entity-list.json") as { items: unknown[] }).items[0];
     const full = { items: Array.from({ length: LIST_LIMIT }, () => one) };
@@ -170,8 +191,8 @@ describe("Browse detail pane", () => {
     const last = field("read-window.json", "items", 4, "ref");
     const query = (ref: string) =>
       new URLSearchParams({ entity: ENTITY, around: ref }).toString().replace(/&/g, "&amp;");
-    expect(markup).toContain(`href="/browse?${query(first)}">Older</a>`);
-    expect(markup).toContain(`href="/browse?${query(last)}">Newer</a>`);
+    expect(markup).toContain(`href="/browse?${query(first)}#${DETAIL_ID}">Older</a>`);
+    expect(markup).toContain(`href="/browse?${query(last)}#${DETAIL_ID}">Newer</a>`);
   });
 
   it("renders the empty window as an empty state, not an error", async () => {
