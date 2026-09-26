@@ -25,7 +25,21 @@ compose stack must write nothing into the tracked tree (criterion 2), and a bind
 mount would do exactly that. Set `RHEO_DATA_ROOT` to point `core` at a different
 path instead (e.g. for a host-side operator command sharing the container's data);
 `RHEO_IN_CONTAINER=1` is what makes `/var/lib/rheo-stream` the in-image default when
-`RHEO_DATA_ROOT` is unset.
+`RHEO_DATA_ROOT` is unset. The image creates that directory at mode 0700, and its
+entrypoint, `deploy/core-entrypoint.sh`, re-applies 0700 at every container start,
+because a volume created by an older image keeps its old mode (issue #161). It
+touches only the in-image path; a root moved with `RHEO_DATA_ROOT` is the operator's
+to lock down, and the application warns if it is wider than 0700.
+
+**Health checks.** Both compose files give `core`, `worker` and `postgres` a health
+check, and the flagship overlay gives `web` one too (issue #156). `core` probes its
+own `/healthz` and `web` its own `/healthz`; neither calls the database. `worker`
+has no port, so its loop touches a heartbeat file (`RHEO_WORKER_HEARTBEAT_FILE`)
+once per iteration and the probe (`python -m rheo_app_worker.heartbeat`) fails
+once that file is more than ten minutes old. A worker waiting out a database outage
+still counts as healthy; `postgres` has its own `pg_isready` check. `core` gets a
+300-second start period, because a cold start re-syncs the virtualenv (issue #152)
+and runs migrations before it listens.
 
 The **0b1 operator sequence**, run against a freshly migrated cluster, in this exact
 order:
@@ -129,12 +143,14 @@ generic per ratified decision D10.
 Templates contain placeholders and secret references only. Runtime workspace data
 belongs in private databases and volumes, outside source and image build contexts.
 The root `.dockerignore` is a source-only starting policy; every future image and
-package needs its own content review. No deployment runs from the initial CI.
+package needs its own content review. The only deployment CI triggers is the
+flagship's, described [below](#flagship-subdomain-mode-deployment).
 
 ## Flagship (subdomain mode) deployment
 
 The overlay is `deploy/compose.flagship.yaml`; every variable it interpolates is
-documented in `deploy/.env.flagship.example` (not re-listed here).
+documented in `deploy/.env.flagship.example` (not re-listed here). The reference
+instance at `rheo.stream` runs this overlay under Coolify, with GitHub sign-in on.
 
 It routes five hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth` and
 `recall` (Recallatron's screens) reach `web` for everything except `/auth/*`,
@@ -190,6 +206,12 @@ so an older commit steps aside for the newer one's own run). A green `deploy` jo
 means the Coolify deployment reached `finished`; a `failed` or `cancelled`
 deployment, or one still running after 30 minutes, fails the job. The log carries
 only HTTP codes and the deployment status, so read the build output in Coolify.
+
+`COOLIFY_TOKEN` needs two Coolify API abilities: `deploy` to start the deployment
+and `read` to poll its status. `read` does not expose secret values
+(`read:sensitive` would). With `deploy` alone the deploy starts, but every status
+poll answers 403, and the job currently treats that as transient and keeps polling
+until the 30-minute limit fails it (issue #172).
 
 ### Connection budget
 

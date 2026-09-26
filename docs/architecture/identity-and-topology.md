@@ -274,6 +274,13 @@ is `https://auth.example.test/auth/callback` in one mode and `https://example.te
 in the other (criterion 22). A route string that names a host or a topology-specific prefix
 anywhere else is a lint failure in both codebases.
 
+Building the object validates `routing.identity.path`: an empty or root path, or one that is
+not canonical (no leading slash, a trailing or doubled slash, a `.` or `..` segment, a character
+outside RFC 3986's unreserved set), raises `IdentityPathInvalid` naming that key, so a bad value
+fails startup instead of sending the browser round an `/auth/*` loop (issue #155). The web
+tier's routing fetch times out after 2 seconds; a timeout takes the same "routing unavailable"
+path as any other failure, logs one warning, and is not cached, so the next request tries again.
+
 ### The routing table
 
 The reverse proxy's rules are the same in both modes; only the host matching changes:
@@ -311,8 +318,14 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 | `mcp.rheo.stream` | MCP facade | `core`, token auth |
 | `docs.rheo.stream` | Documentation | Not the application. |
 | `tuttle.rheo.stream` | Reserved for the back-office integration surface | Not the application; nothing in release one. |
-| `app.rheo.stream` | Kept in reserve as a permanent redirect to `circuit.` | Reverse-proxy configuration, implemented in the deployment phase; not part of this specification's application routing. |
+| `app.rheo.stream` | Kept in reserve as a permanent redirect to `circuit.` | Reverse-proxy configuration, not part of this specification's application routing. Not configured yet: the flagship overlay has no rule for it (issue #174). |
 | `recallatron.rheo.stream` | Permanent redirect to the same path and query on `recall.` | Reverse-proxy configuration in `deploy/compose.flagship.yaml`. Not an application host: nothing the application generates links to it (issue #158). |
+
+**What the flagship serves today.** Run 0d deployed the reference instance with
+`deploy/compose.flagship.yaml` (PR #144). It routes `circuit.`, `auth.`, `recall.`, `api.` and
+`mcp.`, plus the `recallatron.` redirect. `leads.`, `current.` and `relationships.` have no
+module behind them yet, so the overlay routes none of them; `docs.` and `app.` are not configured
+either. The apex serves the project page from elsewhere.
 
 Subdomain mode needs wildcard DNS (`*.rheo.stream` to the proxy) and a wildcard certificate for
 one label; the proxy terminates TLS for every host in the table. Single-host path mode needs one
