@@ -207,8 +207,9 @@ def test_every_service_has_a_health_check() -> None:
 
 @pytest.mark.parametrize("name", ["core", "worker", "web"])
 def test_app_health_checks_leave_room_for_a_cold_start(name: str) -> None:
-    """A cold start re-syncs the venv and runs migrations before anything listens;
-    a start_period shorter than that would count those minutes as failures."""
+    """A cold start runs migrations before anything listens; a start_period
+    shorter than that would count those minutes as failures. (The figures were
+    sized for the start-up venv re-sync #152 removed, so they can shrink.)"""
     check = SERVICES[name]["healthcheck"]
     start_period = _duration_seconds(check["start_period"])
     assert start_period >= (300 if name in ("core", "worker") else 120)
@@ -369,6 +370,41 @@ def test_the_entrypoint_leaves_a_symlink_or_missing_root_alone(
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ran:arg0"
     assert not missing.exists()
+
+
+# --- start from the built venv, no network (#152) ---------------------------------
+
+
+def _compose_worker_commands() -> dict[str, list[str]]:
+    base = yaml.safe_load(
+        (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
+    )
+    return {
+        "compose.yaml": base["services"]["worker"]["command"],
+        "compose.flagship.yaml": WORKER["command"],
+    }
+
+
+def test_the_image_starts_from_the_built_venv_without_a_sync() -> None:
+    """A plain `uv run` re-syncs the workspace at every start and needs PyPI once
+    uv's index cache ages (#152). The image's default command and both worker
+    `command:` lines call the venv's python directly, and UV_NO_SYNC=1 keeps any
+    `uv run` typed inside the container from syncing either."""
+    assert re.search(
+        r'^CMD \["/app/\.venv/bin/python", "-m", "rheo_app_core\.serve"\]$',
+        DOCKERFILE_TEXT,
+        re.MULTILINE,
+    )
+    assert re.search(r"^ENV UV_NO_SYNC=1\b", DOCKERFILE_TEXT, re.MULTILINE)
+    assert 'PATH="/app/.venv/bin:$PATH"' in DOCKERFILE_TEXT
+    # The build-time sync stays reproducible: the frozen lockfile, nothing else.
+    assert re.search(r"^RUN uv sync --frozen ", DOCKERFILE_TEXT, re.MULTILINE)
+    for name, command in _compose_worker_commands().items():
+        assert command == [
+            "/app/.venv/bin/python",
+            "-m",
+            "rheo_app_worker.main",
+        ], f"{name}: {command!r}"
 
 
 # --- routing: the identity path clause, and no bare PathPrefix -------------------

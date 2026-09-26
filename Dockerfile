@@ -54,6 +54,17 @@ ARG UV_SYNC_ARGS=""
 RUN uv sync --frozen $UV_SYNC_ARGS \
     && rm -f /app/.venv/bin/alembic
 
+# Start from the venv exactly as built above, with no network (#152). A plain
+# `uv run` re-syncs every workspace member at each container start, and once uv's
+# cached index ages that rebuild fetches hatchling from PyPI, so an offline or
+# egress-restricted host could not start the image. The default command and the
+# compose `command:` lines call the venv's python directly; UV_NO_SYNC=1 covers
+# anyone who still types `uv run` inside the container; and the venv's bin on
+# PATH makes `rheo …` work as-is in `docker compose exec core`. No sync at start
+# also means the alembic script removed above never comes back.
+ENV UV_NO_SYNC=1 \
+    PATH="/app/.venv/bin:$PATH"
+
 # The in-image data root (rheo_core.storage.data_root reads RHEO_IN_CONTAINER to
 # pick it) and the flag that makes that branch live rather than dead code.
 # Mode 0700, owner root (the process user; the image sets no USER), because the
@@ -69,4 +80,4 @@ EXPOSE 8000
 # The entrypoint only fixes the data root's mode and then execs its arguments, so
 # `worker`'s `command:` override and a `docker run ... <cmd>` both still run as given.
 ENTRYPOINT ["/usr/local/bin/rheo-core-entrypoint"]
-CMD ["uv", "run", "python", "-m", "rheo_app_core.serve"]
+CMD ["/app/.venv/bin/python", "-m", "rheo_app_core.serve"]

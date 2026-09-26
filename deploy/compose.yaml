@@ -138,7 +138,7 @@ services:
     # picks up the same interpreter and dependency set the image already has
     # — no second Dockerfile and no image change, only the command differs
     # from `core`'s image default.
-    command: ["uv", "run", "python", "-m", "rheo_app_worker.main"]
+    command: ["/app/.venv/bin/python", "-m", "rheo_app_worker.main"]
     # A worker publishes nothing to the host or the compose network — no
     # `ports:`, and the image's own `EXPOSE` is for `core`'s listeners, not
     # this service.
