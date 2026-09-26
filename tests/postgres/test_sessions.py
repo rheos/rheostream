@@ -381,12 +381,11 @@ async def test_continue_refuses_invalid_return_in_path_mode_too(
 MODULE_HOST = f"{WEB_SURFACE_HOST}.{BASE_HOST}"
 
 
-async def test_login_with_no_enabled_provider_is_a_typed_503(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The flagship's first deploy runs with GitHub disabled on purpose, so
-    ``/auth/login`` must refuse cleanly rather than answer a bare 500. The real
-    dependency runs here: this module's default override is removed first."""
+async def _login_with_no_enabled_provider(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> httpx.Response:
+    """``/auth/login`` through the real dependency (this module's default override
+    is removed first) with GitHub sign-in off."""
     public_app.dependency_overrides.pop(auth_routes.resolve_identity_provider, None)
     for variable in env_variable_names("identity.providers.github.enabled"):
         monkeypatch.setenv(variable, "false")
@@ -395,9 +394,46 @@ async def test_login_with_no_enabled_provider_is_a_typed_503(
         transport=httpx.ASGITransport(app=public_app, raise_app_exceptions=False),
         follow_redirects=False,
     ) as client:
-        resp = await client.get(f"https://{BASE_HOST}/auth/login")
+        return await client.get(f"https://{BASE_HOST}/auth/login", headers=headers)
+
+
+@pytest.mark.parametrize(
+    "accept",
+    [None, "application/json", "*/*", "text/html;q=0.5, application/json"],
+    ids=["httpx-default", "json", "wildcard", "json-ranked-higher"],
+)
+async def test_login_with_no_enabled_provider_is_a_typed_503(
+    monkeypatch: pytest.MonkeyPatch, accept: str | None
+) -> None:
+    """The flagship's first deploy runs with GitHub disabled on purpose, so
+    ``/auth/login`` must refuse cleanly rather than answer a bare 500. An API
+    client keeps the typed JSON body exactly."""
+    headers = {} if accept is None else {"accept": accept}
+    resp = await _login_with_no_enabled_provider(monkeypatch, headers)
     assert resp.status_code == 503
+    assert resp.headers["content-type"] == "application/json"
     assert resp.json() == {"state": "identity_provider_unavailable"}
+    assert resp.headers.get_list("set-cookie") == []
+
+
+async def test_login_with_no_enabled_provider_shows_a_browser_a_readable_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#119 item 2: a browser navigation gets a plain HTML refusal page, not JSON.
+    It names no settings key or host, and keeps the error code greppable."""
+    browser_accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    resp = await _login_with_no_enabled_provider(
+        monkeypatch, {"accept": browser_accept}
+    )
+    assert resp.status_code == 503
+    assert resp.headers["content-type"].startswith("text/html")
+    assert resp.headers["vary"] == "Accept"
+    page = resp.text
+    assert "Sign-in is not available on this deployment" in page
+    assert "no identity provider is" in page
+    assert 'data-state="identity_provider_unavailable"' in page
+    assert "identity.providers" not in page
+    assert BASE_HOST not in page
     assert resp.headers.get_list("set-cookie") == []
 
 

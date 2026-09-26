@@ -29,7 +29,8 @@ not begin in this browser creates no session. Domain modules import neither the 
 nor the boundary; a CI check asserts it (criterion 8). The test double is a provider that
 completes with a fixed synthetic identity, registered by the test harness only. A request that
 needs a disabled identity provider (for example `/auth/login` with GitHub sign-in off) is refused
-503 `{"state": "identity_provider_unavailable"}`, alongside `invalid_state` above and the other
+503 `{"state": "identity_provider_unavailable"}` (a browser whose `Accept` prefers HTML gets a
+plain 503 page saying sign-in is unavailable instead), alongside `invalid_state` above and the other
 `/auth` refusal states this document lists.
 
 An account is not a workspace. Membership is many-to-many with a role (R1), and every context
