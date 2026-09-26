@@ -166,15 +166,35 @@ def test_the_auth_router_path_clause_matches_resolved_routing(
 # --- secrets: interpolated, never literal -----------------------------------------
 
 
-def test_every_secret_bearing_value_is_a_required_interpolation() -> None:
-    for var in (
-        "RHEO_PG_PASSWORD",
-        "RHEO_INTERNAL_SECRET",
-        "RHEO_GITHUB_CLIENT_SECRET",
-    ):
-        assert f"${{{var}:?}}" in RAW_TEXT, f"{var} is not interpolated as ${{{var}:?}}"
-        # never the bare, non-required form
-        assert f"${{{var}}}" not in RAW_TEXT
+REQUIRED_INTERPOLATION_RE = re.compile(r"\$\{[A-Z][A-Z0-9_]*:\?\}")
+
+
+def test_every_interpolation_in_the_file_is_the_required_form() -> None:
+    """Every ``$`` in the file opens a ``${NAME:?}``: no ``:-`` or ``-`` default,
+    no bare ``${NAME}``, no brace-less ``$NAME``. A missing value must fail the
+    deploy loudly, never fall back to a default or an empty string."""
+    required = REQUIRED_INTERPOLATION_RE.findall(RAW_TEXT)
+    assert required, "the overlay interpolates nothing, which cannot be right"
+    offenders = [
+        RAW_TEXT[match.start() : match.start() + 40].splitlines()[0]
+        for match in re.finditer(r"\$", RAW_TEXT)
+        if not REQUIRED_INTERPOLATION_RE.match(RAW_TEXT, match.start())
+    ]
+    assert not offenders, f"non-required interpolations: {offenders}"
+    assert len(required) == RAW_TEXT.count("$")
+
+
+def test_every_secret_bearing_value_is_exactly_its_required_interpolation() -> None:
+    assert POSTGRES["environment"]["POSTGRES_PASSWORD"] == "${RHEO_PG_PASSWORD:?}"
+    for service in (CORE, WEB):
+        assert (
+            service["environment"]["RHEO_INTERNAL_SECRET"]
+            == "${RHEO_INTERNAL_SECRET:?}"
+        )
+    assert (
+        CORE["environment"]["RHEO_GITHUB_CLIENT_SECRET"]
+        == "${RHEO_GITHUB_CLIENT_SECRET:?}"
+    )
     dsn_password = re.search(
         r"^postgresql://[^:@]+:([^@]+)@", ANCHOR["RHEO_CLUSTER_DSN"]
     )
