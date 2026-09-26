@@ -188,6 +188,8 @@ logs a notice and skips the deploy job.
 3. **Failed build:** the previous containers keep running; this is the platform's
    default.
 4. **Limit:** migrations are forward-only. Rolling back across a migration
-   boundary means restoring the most recent database backup, not reverting code.
+   boundary means restoring a verified backup taken before the incompatible
+   migration, not reverting code — not simply the most recent backup, which may
+   postdate it. Any write made after that backup's point is lost on restore.
 5. **Proxy change:** the shared-proxy resolver has its own rollback; rolling back
    the app never needs it, since an unused resolver is inert.

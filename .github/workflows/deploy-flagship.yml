@@ -46,5 +46,6 @@ jobs:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
           COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
         run: |
-          curl --fail-with-body -sS -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
+          curl --fail-with-body -sS --connect-timeout 10 --max-time 60 -X POST \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
             "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_APP_UUID"
