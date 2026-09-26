@@ -129,11 +129,16 @@ Public endpoints (as of 2026-09-26, "live" means the reference instance serves i
   redirects here, see the recorded change of direction in the decision ledger)
 - `api.rheo.stream`: public application API (live)
 - `mcp.rheo.stream`: MCP endpoint (live)
-- `docs.rheo.stream`: documentation (not set up yet)
+- `docs.rheo.stream`: documentation (planned; the reference deployment names it, but no
+  router serves it yet)
+- `leads.rheo.stream`: Leads screens (planned; configured when the Leads module ships)
+- `current.rheo.stream`: Current screens (planned; configured when the Current module ships)
+- `relationships.rheo.stream`: Relationships screens (planned; configured once the module
+  contributes web screens)
 
 This list first said individual module subdomains were unnecessary. The decision ledger
-later settled on one subdomain per module surface in subdomain mode, so `leads.`,
-`current.` and `relationships.` join the list when those modules ship.
+later settled on one subdomain per module surface in subdomain mode, which is why the module
+hosts above appear here.
 
 ### rheo
 
