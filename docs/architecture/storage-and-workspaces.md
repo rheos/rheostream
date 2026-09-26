@@ -33,17 +33,20 @@ What it costs, and how the cost is bounded:
 
 - **One connection pool per workspace, bounded by idle close and then by a count cap.** An
   engine untouched for `storage.pool_idle_close_seconds` (default 300) is disposed on the next
-  call; `storage.pool_cache_size` (default 16) is the hard ceiling behind that, evicting
+  call; `storage.pool_cache_size` (default 6) is the hard ceiling behind that, evicting
   least-recently-used; each pool is capped at `storage.pool_max_connections` (default 5).
 
   **Two bounds, because the scarce resource is connections and not pools.** A process's
   **pooled** figure is `pool_cache_size * pool_max_connections` for the cached engines, plus the
   connections it reserves outside the cache — its control-plane engine, itself sized at
-  `pool_max_connections`, and one serialized maintenance connection — so **16 * 5 + 6 = 86** on
+  `pool_max_connections`, and one serialized maintenance connection — so **6 * 5 + 6 = 36** on
   the defaults. The core and the worker are separate processes each holding their own, so a
-  deployment's pooled figure is **172**, against a stock Postgres `max_connections` of 100: a
-  stock cluster carries one process and not two. An earlier default pair of 32 and 5 put a
-  single process at 165, over-subscribing that cluster before the cache ever filled, which is
+  deployment's pooled figure is **72**, against a stock Postgres `max_connections` of 100.
+  `rheo doctor` reads `ok` only while that pair stays within 80% of `max_connections`; the rest
+  is for what the pair does not count, chiefly an operator's `rheo` command (a migration or
+  import run is a third process with its own engines), `psql` sessions, and the
+  superuser-reserved slots. Earlier default pairs of 32 and 5 (165 per process) and 16 and 5
+  (86 per process, 172 for two, issue #162) both over-subscribed a stock cluster, which is
   why the figure is stated here as arithmetic an operator can check rather than as a number in
   isolation. `rheo doctor` reports it and names the three levers — `max_connections`,
   `storage.pool_cache_size`, `storage.pool_max_connections`.

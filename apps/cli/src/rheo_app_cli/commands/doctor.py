@@ -41,6 +41,14 @@ from rheo_app_cli.context import data_root
 EXTENSIONS: Final = ("vector", "pg_trgm")
 RECONCILE_KEY: Final = "work.due_reconcile_seconds"
 IDLE_CLOSE_KEY: Final = "storage.pool_idle_close_seconds"
+CONFIGURED_PROCESSES: Final = 2
+"""The long-running processes that each hold a full engine budget: core and worker."""
+BUDGET_HEADROOM_PERCENT: Final = 80
+"""The share of ``max_connections`` the long-running processes may claim for ``ok``.
+
+The rest is for connections the two-process figure does not count: an operator's
+``rheo`` command (this one included, and a migration or import run) is a third
+process with its own engines, ``psql`` sessions, and the superuser-reserved slots."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,11 +143,12 @@ def _check_control_plane(backend: PostgresBackend) -> Check:
 def _check_connection_budget(backend: PostgresBackend) -> Check:
     """This process's pooled connection count against the cluster's own ceiling.
 
-    Three tiers, because the honest answer on a correct fresh install is not "ok":
-    ``FAIL`` when this one process alone cannot fit, ``warn`` when the cluster cannot
-    carry two, ``ok`` otherwise. Two is the number that matters — the core and the
-    worker are separate processes, each holding its own engine cache and its own
-    control engine against the same ``max_connections``.
+    Three tiers: ``FAIL`` when this one process alone cannot fit, ``warn`` when two
+    of them take more than :data:`BUDGET_HEADROOM_PERCENT` of the cluster, ``ok``
+    otherwise. Two is the number that matters — the core and the worker are separate
+    processes, each holding its own engine cache and its own control engine against
+    the same ``max_connections`` — and the headroom is for the operator commands and
+    sessions that come and go beside them (issue #162).
 
     The detail always states the arithmetic and names all three levers, because the
     level on its own tells an operator nothing about which number to move.
@@ -157,12 +166,17 @@ def _check_connection_budget(backend: PostgresBackend) -> Check:
     pooled = pools.pooled_connections
     held = pools.held_connections
     process = max(pooled, held)
+    target = ceiling * BUDGET_HEADROOM_PERCENT // 100
+    configured = pooled * CONFIGURED_PROCESSES
+    effective = process * CONFIGURED_PROCESSES
     detail = (
         f"{pools.cache_size} * {pools.pool_size} + {pools.reserved_connections} = "
         f"{pooled} per process from the engine pools (control plus one serialized "
-        f"maintenance connection); 2 processes configured = {pooled * 2}"
-        f"{'' if process == pooled else f', effective {process * 2}'}; "
-        f"cluster max_connections = {ceiling}; held now = {held}. "
+        f"maintenance connection); {CONFIGURED_PROCESSES} processes configured = "
+        f"{configured}{'' if effective == configured else f', effective {effective}'}; "
+        f"cluster max_connections = {ceiling}, target <= {target} "
+        f"({BUDGET_HEADROOM_PERCENT}%, the rest for operator commands); "
+        f"held now = {held}. "
         f"Busy engines are not evicted, so the cache may briefly exceed "
         f"cache_size until those connections return. Levers: raise "
         f"max_connections, or lower storage.pool_cache_size, or lower "
@@ -170,7 +184,7 @@ def _check_connection_budget(backend: PostgresBackend) -> Check:
     )
     if process > ceiling:
         return Check(name, "FAIL", detail)
-    if process * 2 > ceiling:
+    if effective > target:
         return Check(name, "warn", detail)
     return Check(name, "ok", detail)
 
