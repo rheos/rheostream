@@ -222,3 +222,116 @@ then re-run `rheo doctor` (issue #162).
    postdate it. Any write made after that backup's point is lost on restore.
 5. **Proxy change:** the shared-proxy resolver has its own rollback; rolling back
    the app never needs it, since an unused resolver is inert.
+
+### Backups
+
+A host cron job runs `deploy/backup/rheostream-pgdumpall.sh` once a night. It
+dumps every database in the flagship Postgres with `pg_dumpall` (one database per
+workspace, so a single-database dump would miss workspaces), then applies
+retention. Coolify's own scheduled backups cover Coolify-managed database
+resources, not a Postgres service inside a compose application, which is why this
+is a host cron job.
+
+Each run:
+
+1. Finds exactly one running container with the compose labels
+   `com.docker.compose.project=$RHEO_BACKUP_COMPOSE_PROJECT` and
+   `com.docker.compose.service=postgres`, and refuses zero or several.
+2. Pipes `pg_dumpall` through `gzip` into a hidden `.partial` file under
+   `set -o pipefail`, so a failing `pg_dumpall` fails the run even though `gzip`
+   succeeded.
+3. Verifies the file: the gzip stream tests clean, it is at least
+   `RHEO_BACKUP_MIN_BYTES` (1000) bytes, and it ends with pg_dumpall's
+   "cluster dump complete" line, which a cut-off dump lacks.
+4. Renames it to `pgdumpall-YYYYMMDDTHHMMSSZ.sql.gz` (UTC) in
+   `RHEO_BACKUP_DIR` (`/root/rheostream-backups`), readable by root only.
+5. Applies retention. A run that failed at any earlier step exits non-zero
+   before this, so a failed dump never deletes an older one.
+
+Retention keeps the newest dump from each of the 14 most recent days that have
+one, plus the newest dump from each of the 8 most recent Sundays (UTC) that have
+one. The two sets overlap, so a steady nightly schedule holds about 20 files.
+Retention counts dumps and never compares a dump's date with the clock, so a
+clock that jumps forward or back cannot age out the real dumps. On top of that it
+never deletes the dump the run just wrote, the newest good dump by name, or the
+most recently modified dump when it verifies. If no dump verifies, it deletes
+nothing and exits 3. Files not named like a dump are never touched.
+
+Log lines go to syslog under the tag `rheostream-pgdumpall`
+(`journalctl -t rheostream-pgdumpall`), and errors also go to stderr. Set
+`RHEO_BACKUP_LOG=stderr` to log to stderr only, or `RHEO_BACKUP_LOG_FILE` to
+append to a file as well. The script's header lists every setting.
+
+Dumps stay on the same host as the database. Copying them off the host is not
+set up yet.
+
+The script also has `prune [--dry-run] [--keep FILE]` (retention only) and
+`verify FILE`. `tests/test_backup_retention.py` runs the retention and
+failure paths against fake dump files, with no Postgres or Docker.
+
+#### Install or update on the host
+
+Run as root on the host. Pin `SHA` to the `main` commit that carries the version
+you want, and compare the checksum with the same file in your own checkout
+(`git show "$SHA:deploy/backup/rheostream-pgdumpall.sh" | sha256sum`).
+
+```sh
+set -euo pipefail
+SHA=<main commit sha>
+CRON=/etc/cron.d/rheostream-pgdumpall
+# 1. Keep the current cron file outside /etc/cron.d for the undo.
+[ -e "$CRON" ] && cp -p "$CRON" /root/rheostream-pgdumpall.cron.bak
+# 2. Fetch the pinned script, check it, install it.
+curl -fsSL -o /root/rheostream-pgdumpall.new \
+  "https://raw.githubusercontent.com/rheos/rheostream/$SHA/deploy/backup/rheostream-pgdumpall.sh"
+sha256sum /root/rheostream-pgdumpall.new      # must match your checkout
+install -o root -g root -m 755 /root/rheostream-pgdumpall.new /usr/local/sbin/rheostream-pgdumpall
+rm -f /root/rheostream-pgdumpall.new
+# 3. The compose project label. On an update, reuse the one the cron file has;
+#    on a first install, set it to the application's compose project.
+PROJECT=$(grep -oE '(com\.docker\.compose\.project=|RHEO_BACKUP_COMPOSE_PROJECT=)[A-Za-z0-9_-]+' "$CRON" | head -1 | cut -d= -f2)
+[ -n "$PROJECT" ]
+# 4. See what retention would delete before anything is deleted.
+RHEO_BACKUP_LOG=stderr /usr/local/sbin/rheostream-pgdumpall prune --dry-run
+# 5. Write the cron file (the name must stay dot-free or cron ignores it).
+umask 022
+printf 'SHELL=/bin/bash\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nRHEO_BACKUP_COMPOSE_PROJECT=%s\n15 3 * * * root /usr/local/sbin/rheostream-pgdumpall\n' \
+  "$PROJECT" > /root/rheostream-pgdumpall.cron.new
+install -o root -g root -m 644 /root/rheostream-pgdumpall.cron.new "$CRON"
+rm -f /root/rheostream-pgdumpall.cron.new
+# 6. Run it once in cron's environment and check the result.
+env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin SHELL=/bin/bash HOME=/root \
+  RHEO_BACKUP_COMPOSE_PROJECT="$PROJECT" RHEO_BACKUP_LOG=stderr /usr/local/sbin/rheostream-pgdumpall
+ls -la /root/rheostream-backups
+journalctl -t rheostream-pgdumpall -n 20 --no-pager
+```
+
+The job runs at 03:15 in the host's local time zone, while dump names use UTC.
+Step 6 writes a second dump for the current UTC day, so retention removes the
+earlier dump from that day. That is expected.
+
+**Undo.** This puts the previous cron job back and removes the script. Dumps
+already on disk stay, but retention deletions cannot be undone, which is what
+step 4's dry run is for.
+
+```sh
+set -eu
+install -o root -g root -m 644 /root/rheostream-pgdumpall.cron.bak /etc/cron.d/rheostream-pgdumpall
+rm -f /usr/local/sbin/rheostream-pgdumpall
+```
+
+#### Restore
+
+A `pg_dumpall` file recreates roles and databases, so restore it into an empty
+cluster, for example a Postgres container started on a new, empty volume. On a
+cluster that already has the databases, the `CREATE` statements fail.
+
+```sh
+gzip -t pgdumpall-YYYYMMDDTHHMMSSZ.sql.gz
+gzip -dc pgdumpall-YYYYMMDDTHHMMSSZ.sql.gz | docker exec -i <postgres container> psql -U rheo -d postgres -v ON_ERROR_STOP=0
+```
+
+Read the `psql` output. Errors saying the `rheo` role and the `rheo` database
+already exist are expected, since the image creates both at first start (the
+database takes its name from `POSTGRES_USER` when `POSTGRES_DB` is unset), and the
+dump then restores into that empty database. Any other error needs a look.
