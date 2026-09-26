@@ -166,6 +166,10 @@ existing wildcard record and certificate cover both names. Nothing the
 application generates links to the old host, which exists only for old or
 external links.
 
+`app.${RHEO_BASE_HOST}` is reserved the same way (issue #174): over https or plain
+http it gets a permanent redirect to `https://circuit.${RHEO_BASE_HOST}` with the
+same path and query. It is not an application host either.
+
 The wildcard certificate needs a DNS-01 resolver configured on the operator's own
 reverse proxy, named by `RHEO_TLS_CERTRESOLVER`; the overlay only references that
 name, it does not define the resolver. On a Coolify-fronted proxy, add the
@@ -208,11 +212,18 @@ means the Coolify deployment reached `finished`; a `failed` or `cancelled`
 deployment, or one still running after 30 minutes, fails the job. The log carries
 only HTTP codes and the deployment status, so read the build output in Coolify.
 
-`COOLIFY_TOKEN` needs two Coolify API abilities: `deploy` to start the deployment
-and `read` to poll its status. `read` does not expose secret values
-(`read:sensitive` would). With `deploy` alone the deploy starts, but every status
-poll answers 403, and the job currently treats that as transient and keeps polling
-until the 30-minute limit fails it (issue #172).
+`COOLIFY_TOKEN` needs two Coolify API abilities: `deploy` to start the deployment,
+and `read` to check the application's settings and poll the deployment's status.
+`read` does not expose secret values (`read:sensitive` would). A 401 or 403 from
+either read fails the job at once with a message naming the missing `read`
+ability (issue #172); a 429 or 5xx from the status poll is treated as transient
+and retried until the 30-minute limit.
+
+Before it starts a deployment, the job reads the application and refuses to deploy
+unless `settings.is_preview_deployments_enabled` is `false` (issue #164). Coolify
+keeps a separate preview copy of every application variable, and the flagship's
+preview copies of its secrets are empty, so a preview deployment would start
+without them. Keep preview deployments off.
 
 ### Connection budget
 

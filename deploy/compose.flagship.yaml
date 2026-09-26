@@ -30,6 +30,12 @@
 #   can collide with same-named services from another stack, and the DSN host
 #   (`postgres`) becomes ambiguous between stacks.
 #
+# Preview deployments must also stay off (is_preview_deployments_enabled false,
+# issue #164). Coolify keeps a separate preview copy of every application
+# variable, and on the flagship the preview copies of the secrets are empty, so a
+# preview deploy would start without them. `.github/workflows/deploy-flagship.yml`
+# reads the setting before every deploy and refuses to deploy while it is on.
+#
 # Coolify also attaches its generated `.env` to every service as `env_file`, so
 # under Coolify each container sees every application variable, secrets
 # included, whatever the per-service `environment:` blocks below say. One
@@ -251,6 +257,24 @@ services:
       - traefik.http.middlewares.rheostream-recall-redirect.redirectregex.regex=^https?://[^/]+
       - traefik.http.middlewares.rheostream-recall-redirect.redirectregex.replacement=https://recall.${RHEO_BASE_HOST:?}
       - traefik.http.middlewares.rheostream-recall-redirect.redirectregex.permanent=true
+      # Reserved host (issue #174): the requirements keep `app.` as a permanent
+      # redirect to the shell on `circuit.`. Same shape as the `recallatron.`
+      # redirect above: redirect-only, https and plain http, one hop to https, path
+      # and query unchanged, no dollar sign in the regex.
+      - traefik.http.routers.rheostream-app.rule=Host(`app.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-app.entrypoints=https
+      - traefik.http.routers.rheostream-app.tls=true
+      - traefik.http.routers.rheostream-app.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
+      - traefik.http.routers.rheostream-app.tls.domains[0].main=*.${RHEO_BASE_HOST:?}
+      - traefik.http.routers.rheostream-app.middlewares=rheostream-circuit-redirect
+      - traefik.http.routers.rheostream-app.service=rheostream-web
+      - traefik.http.routers.rheostream-app-http.rule=Host(`app.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-app-http.entrypoints=http
+      - traefik.http.routers.rheostream-app-http.middlewares=rheostream-circuit-redirect
+      - traefik.http.routers.rheostream-app-http.service=rheostream-web
+      - traefik.http.middlewares.rheostream-circuit-redirect.redirectregex.regex=^https?://[^/]+
+      - traefik.http.middlewares.rheostream-circuit-redirect.redirectregex.replacement=https://circuit.${RHEO_BASE_HOST:?}
+      - traefik.http.middlewares.rheostream-circuit-redirect.redirectregex.permanent=true
 
 volumes:
   pgdata:
