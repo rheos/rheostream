@@ -187,8 +187,9 @@ reverse proxy cannot strip what is sent to a different server. This specificatio
   redirects to `<return host>/auth/continue?code=<code>&return=<return url>`. Without a cookie, it
   starts the login flow and returns here afterward.
 - The reverse proxy routes only the hosts the routing configuration names. The template for
-  `deploy/` exists (`deploy/compose.flagship.yaml`) and enumerates them from the same
-  configuration; it never routes a bare `*.<base_host>` wildcard to the application, so a
+  `deploy/` exists (`deploy/compose.flagship.yaml`) and hard-codes the flagship host set in its
+  router labels, so that set must be kept in step with the hosts `rheo routing hosts` reports;
+  it never routes a bare `*.<base_host>` wildcard to the application, so a
   label nobody configured reaches no listener and can neither receive a cookie nor complete a
   grant.
 - `/auth/continue` on the application host: the core (which serves `/auth/*` on every
