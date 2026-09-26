@@ -63,7 +63,7 @@ PRODUCTION_KEYS = {
     "storage.cluster_dsn_ref": "secret://env/RHEO_CLUSTER_DSN",
     "storage.control_database": "rheo_control",
     "storage.template_database": "template1",
-    "storage.pool_cache_size": 16,
+    "storage.pool_cache_size": 6,
     "storage.pool_max_connections": 5,
     "storage.pool_idle_close_seconds": 300,
     "profile": "development",
@@ -550,7 +550,7 @@ def test_deployment_scope_row_is_ignored_and_logged(
 ) -> None:
     caplog.set_level(logging.WARNING, logger="rheo_core.settings")
     rows = Rows(workspace={"storage.pool_cache_size": "1"})
-    assert resolve(workspace_id=WORKSPACE, source=rows)["storage.pool_cache_size"] == 16
+    assert resolve(workspace_id=WORKSPACE, source=rows)["storage.pool_cache_size"] == 6
     [record] = ignored_records(caplog)
     assert record.setting_key == "storage.pool_cache_size"  # type: ignore[attr-defined]
     assert record.state == "setting_scope"  # type: ignore[attr-defined]
@@ -718,7 +718,7 @@ def test_resolved_settings_is_a_frozen_typed_mapping(data_root: Path) -> None:
     handed_out.append("mutated")
     assert resolved[HARNESS_FLOOR_UNION] == ["harness.confirm"]
 
-    assert resolved.get_int("storage.pool_cache_size") == 16
+    assert resolved.get_int("storage.pool_cache_size") == 6
     assert resolved.get_str("profile") == "test"
     assert resolved.get_bool(HARNESS_FLOOR_AND) is False
     assert resolved.get_list(HARNESS_FLOOR_UNION) == ["harness.confirm"]
