@@ -91,6 +91,9 @@ jobs:
           while :; do
             if runs="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/runs" \
                 -f head_sha="$sha" -f event=push -f per_page=100 --jq "$query")"; then
+              # Only `success` passes. A failed, cancelled or timed-out run fails
+              # the gate loudly; a skipped or neutral one proves nothing about the
+              # commit, so the deploy steps aside with a notice instead.
               failed="$(jq -r '.[] | select(.status == "completed"
                         and (.conclusion | IN("success", "skipped", "neutral") | not))
                         | "\(.path) (\(.conclusion))"' <<<"$runs")"
@@ -99,11 +102,21 @@ jobs:
                 echo "$failed"
                 exit 1
               fi
+              unproven="$(jq -r '.[] | select(.status == "completed"
+                          and (.conclusion | IN("skipped", "neutral")))
+                          | "\(.path) (\(.conclusion))"' <<<"$runs")"
+              if [ -n "$unproven" ]; then
+                echo "::notice::deploy skipped: CI on $sha was skipped or neutral, not success"
+                echo "$unproven"
+                echo "passed=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               pending="$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")"
               has_checks="$(jq '[.[] | select(.path | startswith(".github/workflows/repository-checks.yml"))] | length' <<<"$runs")"
               if [ "$has_checks" -gt 0 ] && [ "$pending" -eq 0 ]; then
                 echo "All CI workflows on $sha succeeded:"
                 jq -r '.[] | "  \(.path): \(.conclusion)"' <<<"$runs"
+                echo "passed=true" >> "$GITHUB_OUTPUT"
                 break
               fi
               report="pending=$pending repository-checks-present=$has_checks"
@@ -126,7 +139,7 @@ jobs:
       # triggers its own deploy, so this run steps aside instead.
       - name: Check the commit is still the tip of main
         id: tip
-        if: steps.ci.outcome == 'success'
+        if: steps.ci.outputs.passed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.ci.outputs.sha }}

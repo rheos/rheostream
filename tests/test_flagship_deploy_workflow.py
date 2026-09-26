@@ -15,10 +15,15 @@ Seams under test, on the parsed workflow:
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,9 +140,115 @@ def test_gate_waits_for_every_push_ci_workflow_on_the_sha() -> None:
     assert int(ci["env"]["CI_WAIT_SECONDS"]) < GATE["timeout-minutes"] * 60
 
 
+_CI_SHA = "0123456789abcdef0123456789abcdef01234567"
+_GH_STUB = """#!/usr/bin/env bash
+# Stub gh: apply the --jq filter to the fixture file.
+q=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--jq" ]; then q="$2"; shift; fi
+  shift
+done
+exec jq -c "$q" "$GH_FIXTURE"
+"""
+
+
+def _run_ci_gate(tmp_path: Path, conclusions: dict[str, str]) -> tuple[int, str, str]:
+    """Run the gate's CI step against a stubbed `gh` returning completed runs.
+
+    Returns (exit code, combined output, contents of $GITHUB_OUTPUT)."""
+    bash, jq = shutil.which("bash"), shutil.which("jq")
+    assert bash and jq, "bash and jq are needed to exercise the CI gate script"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(_GH_STUB, encoding="utf-8")
+    gh.chmod(0o755)
+    runs = [
+        {
+            "id": 100 + index,
+            "workflow_id": index + 1,
+            "path": f".github/workflows/{name}",
+            "status": "completed",
+            "conclusion": conclusion,
+        }
+        for index, (name, conclusion) in enumerate(conclusions.items())
+    ]
+    fixture = tmp_path / "runs.json"
+    fixture.write_text(json.dumps({"workflow_runs": runs}), encoding="utf-8")
+    output = tmp_path / "github_output"
+    output.touch()
+    script = tmp_path / "ci.sh"
+    script.write_text(_step(GATE, "ci")["run"], encoding="utf-8")
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "GH_FIXTURE": str(fixture),
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_REPOSITORY": "example/repo",
+        "EVENT_NAME": "workflow_run",
+        "RUN_HEAD_SHA": _CI_SHA,
+        "CI_WAIT_SECONDS": "2",
+        "CI_POLL_SECONDS": "1",
+    }
+    proc = subprocess.run(
+        [bash, str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return proc.returncode, proc.stdout + proc.stderr, output.read_text()
+
+
+def test_ci_gate_passes_only_when_every_workflow_succeeded(tmp_path: Path) -> None:
+    code, log, outputs = _run_ci_gate(
+        tmp_path, {"repository-checks.yml": "success", "other-ci.yml": "success"}
+    )
+    assert code == 0, log
+    assert "passed=true" in outputs
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "neutral"])
+def test_ci_gate_steps_aside_quietly_on_skipped_or_neutral(
+    tmp_path: Path, conclusion: str
+) -> None:
+    """A skipped or neutral CI run proves nothing about the commit: no deploy,
+    but a notice rather than a red run."""
+    code, log, outputs = _run_ci_gate(
+        tmp_path, {"repository-checks.yml": "success", "other-ci.yml": conclusion}
+    )
+    assert code == 0, log
+    assert "passed=true" not in outputs
+    assert "passed=false" in outputs
+    assert "::notice::deploy skipped" in log
+    assert "::error::" not in log
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "neutral"])
+def test_ci_gate_steps_aside_when_repository_checks_itself_is_not_success(
+    tmp_path: Path, conclusion: str
+) -> None:
+    code, log, outputs = _run_ci_gate(tmp_path, {"repository-checks.yml": conclusion})
+    assert code == 0, log
+    assert "passed=true" not in outputs
+    assert "::notice::deploy skipped" in log
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
+def test_ci_gate_fails_loudly_on_a_failed_workflow(
+    tmp_path: Path, conclusion: str
+) -> None:
+    code, log, outputs = _run_ci_gate(
+        tmp_path, {"repository-checks.yml": "success", "other-ci.yml": conclusion}
+    )
+    assert code == 1, log
+    assert "passed=true" not in outputs
+    assert "::error::CI did not succeed" in log
+
+
 def test_gate_steps_aside_when_main_has_moved_on() -> None:
     tip = _step(GATE, "tip")
-    assert tip["if"] == "steps.ci.outcome == 'success'"
+    assert tip["if"] == "steps.ci.outputs.passed == 'true'"
     assert "commits/main" in tip["run"]
     assert GATE["outputs"]["ready"] == "${{ steps.tip.outputs.ready }}"
 
