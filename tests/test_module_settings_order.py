@@ -22,6 +22,7 @@ originals come back afterwards; environment variables go through ``monkeypatch``
 """
 
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -382,11 +383,10 @@ def test_a_malformed_allowlist_is_a_cli_refusal_not_a_traceback(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["doctor"],
         ["migrate"],
         ["token", "revoke", "00000000-0000-7000-8000-000000000000"],
     ],
-    ids=["doctor", "migrate", "token-revoke"],
+    ids=["migrate", "token-revoke"],
 )
 def test_an_allowed_module_that_cannot_load_is_a_cli_refusal(
     monkeypatch: pytest.MonkeyPatch,
@@ -404,6 +404,66 @@ def test_an_allowed_module_that_cannot_load_is_a_cli_refusal(
     assert err.startswith(f"{state}: "), err
     assert entry_point.name in err or "rheo_no_such_distribution_probe" in err
     assert err.count("\n") == 1
+
+
+# --- doctor reports the registration as a check of its own ----------------------------
+
+_DATA_ROOT_LINE = re.compile(r"^(ok|warn|FAIL) +data root: ", re.MULTILINE)
+
+
+@pytest.mark.parametrize(
+    ("entry_point", "state", "named"),
+    [
+        (None, SettingTypeMismatch.state, ALLOWLIST_KEY),
+        (WRONG_CONTRACT_ENTRY_POINT, "module_invalid", WRONG_CONTRACT_ID),
+        (UNIMPORTABLE_ENTRY_POINT, "module_load_failed", "ModuleNotFoundError"),
+    ],
+    ids=["malformed-allowlist", "wrong-contract", "unimportable"],
+)
+def test_doctor_reports_a_refused_registration_and_keeps_checking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    entry_point: EntryPoint | None,
+    state: str,
+    named: str,
+) -> None:
+    """The refusal is doctor's own ``FAIL`` line, not a stop before the report:
+    the data-root check, which needs no module, still runs and reports."""
+    if entry_point is None:
+        install(monkeypatch)
+        monkeypatch.setenv("RHEO_DATA_ROOT", str(tmp_path))
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "deployment.toml").write_text(
+            "[modules]\ninstalled = 5\n", encoding="utf-8"
+        )
+    else:
+        publish(monkeypatch, entry_point)
+        install(monkeypatch, entry_point.name)
+    capsys.readouterr()
+    assert cli_main_module.main(["doctor"]) == 1
+    out, err = capsys.readouterr()
+    (line,) = [row for row in out.splitlines() if " module settings: " in row]
+    assert line.startswith(f"FAIL module settings: {state}: "), line
+    assert named in line
+    assert _DATA_ROOT_LINE.search(out), out
+    assert "Traceback" not in out + err
+    assert err == ""
+
+
+@pytest.mark.usefixtures("provider_in_environment")
+def test_doctor_registers_allowed_module_settings_before_resolving(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#108's invariant inside doctor: the allowed module's variable is a declared
+    key by the time the settings check resolves, so no stray refusal appears."""
+    capsys.readouterr()
+    cli_main_module.main(["doctor"])
+    out, _ = capsys.readouterr()
+    assert f"ok   module settings: registered: {RECALLATRON}\n" in out, out
+    assert re.search(r"^ok   settings: ", out, re.MULTILINE), out
+    assert SettingUndeclared.state not in out
+    assert PROVIDER_VARIABLE not in out
 
 
 # --- a genuinely cold interpreter -----------------------------------------------------

@@ -12,7 +12,8 @@ The no-subcommand path bootstraps nothing: no settings resolution, no data root,
 no database. Every other subcommand first registers the allowed modules' own settings
 keys (``register_module_settings()``, #108, in :func:`run_command`), then settings
 and the backend are bootstrapped inside its own handler (``context.py``); ``openapi``
-and ``web`` skip that registration (``NO_BOOTSTRAP_COMMANDS``). Commands at this
+and ``web`` skip that registration (``NO_BOOTSTRAP_COMMANDS``), and ``doctor`` runs it
+as its own first check (``SELF_REGISTERING_COMMANDS``). Commands at this
 run's merge SHA: ``migrate``, ``account create``,
 ``workspace create|repair|list|status``, ``doctor``, ``routing hosts``,
 ``member add``, ``token issue|revoke``, ``openapi`` (run 0v's) and ``web compose``
@@ -22,9 +23,10 @@ run's merge SHA: ``migrate``, ``account create``,
 A module the early registration cannot load (its entry point fails to import, or the
 loader refuses its manifest, say over ``core_contract_versions``) is a refusal like
 any other: ``module_invalid: <detail>`` or ``module_load_failed: <detail>`` on stderr
-and exit ``1``, for every bootstrapping command including ``doctor``, ``migrate`` and
-``token revoke``. ``doctor`` does not report it as one of its own ``FAIL`` lines: the
-registration runs before any handler does.
+and exit ``1``, for every bootstrapping command including ``migrate`` and
+``token revoke``. ``doctor`` is the exception: it reports the same state and detail
+as its ``module settings`` check's ``FAIL`` line, runs its remaining checks, and exits
+``1`` as it does for any failed check.
 
 **One side effect worth knowing about.** Because the allowed modules' keys are in the
 settings registry before the handler runs, ``workspace create`` now writes an allowed
@@ -62,6 +64,12 @@ Handler = Callable[[argparse.Namespace], int]
 NO_BOOTSTRAP_COMMANDS: Final = frozenset({"openapi", "web"})
 """Subcommands that bootstrap nothing, so :func:`run_command` skips the early module
 settings registration for them: ``make codegen`` runs both, with no deployment."""
+
+SELF_REGISTERING_COMMANDS: Final = frozenset({"doctor"})
+"""Subcommands that run the early module settings registration themselves, so
+:func:`run_command` skips it for them. ``doctor`` reports it as its first check: a
+refused registration is then one ``FAIL`` line among the rest of the report, not a
+refusal that stops the diagnosis before it starts."""
 
 
 class ModuleSettingsRefusal(Exception):
@@ -137,11 +145,15 @@ def run_command(handler: Handler, args: argparse.Namespace) -> int:
 
     Registers the allowed modules' settings keys first (#108), inside the ``try`` so a
     refusal it raises prints and exits like any other, except for the commands in
-    :data:`NO_BOOTSTRAP_COMMANDS`. A module that cannot load is a
-    :class:`ModuleSettingsRefusal`, printed the same way.
+    :data:`NO_BOOTSTRAP_COMMANDS` and :data:`SELF_REGISTERING_COMMANDS`. A module that
+    cannot load is a :class:`ModuleSettingsRefusal`, printed the same way.
     """
+    command = getattr(args, "command", None)
     try:
-        if getattr(args, "command", None) not in NO_BOOTSTRAP_COMMANDS:
+        if (
+            command not in NO_BOOTSTRAP_COMMANDS
+            and command not in SELF_REGISTERING_COMMANDS
+        ):
             register_allowed_module_settings()
         return handler(args)
     except (

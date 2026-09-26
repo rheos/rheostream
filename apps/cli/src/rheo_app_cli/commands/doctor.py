@@ -1,4 +1,5 @@
-"""``rheo doctor``: data-root validity, cluster reachability, the control-plane head,
+"""``rheo doctor``: the allowed modules' settings registration, data-root validity,
+cluster reachability, the control-plane head,
 the connection budget, the reconcile interval, per-workspace state, and the
 ``CREATE EXTENSION`` privilege report for ``vector`` and ``pg_trgm``.
 
@@ -25,6 +26,7 @@ from rheo_core.migrations.orchestrator import (
     known_revisions,
     recorded_revisions,
 )
+from rheo_core.modules import ManifestInvalid, register_module_settings
 from rheo_core.secrets import SecretRefusal, check_env_references
 from rheo_core.settings import PROFILE_KEY, SettingsError, resolve
 from rheo_core.storage.backend import StorageRefusal
@@ -54,6 +56,32 @@ class Check:
 def add_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
     parser = subparsers.add_parser("doctor", help="diagnose the deployment")
     parser.set_defaults(handler=doctor)
+
+
+def _check_module_settings() -> Check:
+    """The early module settings registration (#108), as ``doctor``'s first check.
+
+    ``run_command`` skips its own registration for ``doctor``
+    (``SELF_REGISTERING_COMMANDS``), so this runs it instead, ahead of every check
+    that resolves settings in full: an allowed module's ``RHEO__<module>__*``
+    variables are then declared keys, not strays. A refusal becomes this check's
+    ``FAIL`` line with the same state and detail ``run_command`` prints for every
+    other command (``main.register_allowed_module_settings``), and the report goes
+    on. ``Exception`` because importing an entry point runs that module's own import
+    code, which can raise anything.
+    """
+    name = "module settings"
+    try:
+        registered = register_module_settings()
+    except SettingsError as refusal:
+        return Check(name, "FAIL", f"{refusal.state}: {refusal.detail}")
+    except ManifestInvalid as invalid:
+        return Check(name, "FAIL", f"module_invalid: {invalid}")
+    except Exception as failure:
+        return Check(
+            name, "FAIL", f"module_load_failed: {type(failure).__name__}: {failure}"
+        )
+    return Check(name, "ok", f"registered: {', '.join(registered) or 'none'}")
 
 
 def _check_data_root() -> Check:
@@ -230,7 +258,12 @@ def _check_extensions(backend: PostgresBackend) -> Iterator[Check]:
 
 
 def doctor(args: argparse.Namespace) -> int:
-    checks: list[Check] = [_check_data_root(), _check_settings()]
+    # Registration first: every later check that resolves settings needs it (#108).
+    checks: list[Check] = [
+        _check_module_settings(),
+        _check_data_root(),
+        _check_settings(),
+    ]
     cluster, backend = _check_cluster()
     checks.append(cluster)
     if backend is not None:
