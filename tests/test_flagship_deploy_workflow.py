@@ -63,9 +63,10 @@ def test_concurrency_group_prevents_overlapping_deploys() -> None:
 
 def test_deploy_needs_gate_and_requires_ready_true() -> None:
     assert DEPLOY["needs"] == "gate"
-    condition = DEPLOY["if"]
-    assert "github.repository == 'rheos/rheostream'" in condition
-    assert "needs.gate.outputs.ready == 'true'" in condition
+    condition = " ".join(DEPLOY["if"].split())
+    assert condition == (
+        "github.repository == 'rheos/rheostream' && needs.gate.outputs.ready == 'true'"
+    )
 
 
 def test_gate_guards_on_the_repository_too() -> None:

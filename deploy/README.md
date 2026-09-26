@@ -145,8 +145,8 @@ The wildcard certificate needs a DNS-01 resolver configured on the operator's ow
 reverse proxy, named by `RHEO_TLS_CERTRESOLVER`; the overlay only references that
 name, it does not define the resolver. On a Coolify-fronted proxy, add the
 resolver through Coolify's own proxy-configuration mechanism, never by hand-editing
-the proxy's compose file directly — Coolify's database copy is the primary source
-and overwrites the file on the proxy's next start. Supply the DNS provider token to
+the proxy's compose file directly. Coolify's database copy is the primary source,
+and it overwrites the file on the proxy's next start. Supply the DNS provider token to
 the proxy container by a `*_FILE` path, never as a plain environment value. Re-add
 the resolver after any "Reset configuration" action in the proxy admin UI, which
 regenerates the proxy's defaults and drops custom resolvers.
@@ -155,7 +155,7 @@ regenerates the proxy's defaults and drops custom resolvers.
 application and attaches its own proxy to.
 
 A Coolify-hosted deploy also needs the Application settings listed in the header
-comment of `deploy/compose.flagship.yaml` — see that header for the exact list,
+comment of `deploy/compose.flagship.yaml`: see that header for the exact list,
 not repeated here. The image also currently needs network access to PyPI at
 container start (issue #152).
 
@@ -170,11 +170,14 @@ Provisioning order, with no real ids below (placeholders only):
 7. Install and enable the modules the deployment needs, through the API.
 
 Two token kinds: a `cli`-kind token for API/CLI work, and a separate `mcp`-kind
-token for the `mcp` host — which refuses a `cli` token as `token_wrong_kind`.
+token for the `mcp` host, which refuses a `cli` token as `token_wrong_kind`.
 
-Pushes to `main` redeploy only once the three repository secrets described below
-exist; until then `.github/workflows/deploy-flagship.yml` is a green no-op that
-logs a notice and skips the deploy job.
+Pushes to `main` redeploy only once the three repository secrets `COOLIFY_TOKEN`,
+`COOLIFY_BASE_URL` and `COOLIFY_APP_UUID` exist; until then
+`.github/workflows/deploy-flagship.yml` is a green no-op that logs a notice and
+skips the deploy job. A green `deploy` job means Coolify accepted and queued the
+deploy request, not that the deploy finished; check the deployment's own status in
+Coolify.
 
 ### Rollback
 
@@ -189,7 +192,7 @@ logs a notice and skips the deploy job.
    default.
 4. **Limit:** migrations are forward-only. Rolling back across a migration
    boundary means restoring a verified backup taken before the incompatible
-   migration, not reverting code — not simply the most recent backup, which may
+   migration, not reverting code, and not simply the most recent backup, which may
    postdate it. Any write made after that backup's point is lost on restore.
 5. **Proxy change:** the shared-proxy resolver has its own rollback; rolling back
    the app never needs it, since an unused resolver is inert.

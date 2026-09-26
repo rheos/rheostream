@@ -46,6 +46,15 @@ jobs:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
           COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
         run: |
-          curl --fail-with-body -sS --connect-timeout 10 --max-time 60 -X POST \
+          status="$(curl -s -o "$RUNNER_TEMP/deploy-response.json" -w '%{http_code}' \
+            --connect-timeout 10 --max-time 60 -X POST \
             -H "Authorization: Bearer $COOLIFY_TOKEN" \
-            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_APP_UUID"
+            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_APP_UUID")" || curl_exit=$?
+          if [ -n "${curl_exit:-}" ]; then
+            echo "::error::deploy request failed (curl exit $curl_exit)"
+            exit 1
+          fi
+          if [ "${status:0:1}" != "2" ]; then
+            echo "::error::deploy request failed (status $status)"
+            exit 1
+          fi
