@@ -57,6 +57,7 @@ from rheo_core.settings import env_variable_names
 from rheo_core.storage import control_tables
 from rheo_core.storage.control_plane import (
     get_session_by_secret_hash,
+    get_workspace,
     insert_account,
     insert_identity,
     insert_session_grant,
@@ -994,7 +995,9 @@ async def test_internal_session_lists_memberships_across_both_workspaces(
     for the same reason.
     """
     _set_routing_mode(monkeypatch, "path")
-    second_workspace = make_workspace(owner=owner_account_id)
+    # An explicit slug, so the display name the switcher shows (#115) is a known
+    # value rather than one derived from the id.
+    second_workspace = make_workspace(owner=owner_account_id, slug="second-desk")
 
     with cluster.backend.control_engine.connect() as connection:
         rows = list_memberships(connection, account_id=owner_account_id)
@@ -1022,8 +1025,16 @@ async def test_internal_session_lists_memberships_across_both_workspaces(
     assert body["state"] == "ok"
     assert body["active_workspace_id"] == str(workspace)
     assert body["memberships"] == [
-        {"workspace_id": str(workspace), "role": "owner"},
-        {"workspace_id": str(second_workspace), "role": "owner"},
+        {
+            "workspace_id": str(workspace),
+            "display_name": _display_name(cluster, workspace),
+            "role": "owner",
+        },
+        {
+            "workspace_id": str(second_workspace),
+            "display_name": "second-desk",
+            "role": "owner",
+        },
     ]
 
 
@@ -1053,8 +1064,22 @@ async def test_internal_session_lists_exactly_one_membership_when_only_one(
         )
     assert resp.status_code == 200
     assert resp.json()["memberships"] == [
-        {"workspace_id": str(workspace), "role": "owner"}
+        {
+            "workspace_id": str(workspace),
+            "display_name": _display_name(cluster, workspace),
+            "role": "owner",
+        }
     ]
+
+
+def _display_name(cluster: ClusterSession, workspace_id: UUID) -> str:
+    """The registry's display name for ``workspace_id`` (#115), which the session
+    response must carry. The fixture workspace has no explicit slug, so its name is
+    the id-shaped default ``provision`` gives it."""
+    with cluster.backend.control_engine.connect() as connection:
+        row = get_workspace(connection, workspace_id)
+    assert row is not None
+    return row.display_name
 
 
 # --- the production/https startup invariant --------------------------------

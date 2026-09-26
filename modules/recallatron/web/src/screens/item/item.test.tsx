@@ -92,6 +92,20 @@ describe("Item", () => {
     expect(markup).toMatch(/<h1\b[^>]*>Memory<\/h1>/);
   });
 
+  it.each([
+    ["no ref", "   ", ok("memory-item.json")],
+    ["unavailable (not found)", REF, refusal(NOT_FOUND)],
+    ["error", REF, { state: "unavailable" } as const],
+  ] as const)("links back to Browse from the %s state (#116)", async (_label, ref, get) => {
+    const { markup } = await itemFor(ref, get);
+    expect(markup).toMatch(/<a [^>]*href="\/browse"[^>]*>Back to Memory<\/a>/);
+  });
+
+  it("shows no back link beside a memory that loaded", async () => {
+    const { markup } = await itemFor(REF);
+    expect(markup).not.toContain("Back to Memory");
+  });
+
   it("falls back to the generic error otherwise", async () => {
     const { text } = await itemFor(REF, { state: "unavailable" });
     expect(text).toContain("Memory is unavailable right now.");

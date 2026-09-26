@@ -2,7 +2,7 @@ import { CoverageFigure } from "../../components/coverage";
 import { GenericError, StateMessage } from "../../components/state-message";
 import type { EntityItem } from "../../guards";
 import type { BrowseState, DetailState, EntityRow, KindFilter, ListState } from "./load";
-import { LIST_LIMIT } from "./load";
+import { DETAIL_ID, LIST_LIMIT } from "./load";
 import styles from "./browse.module.css";
 
 /**
@@ -219,7 +219,7 @@ export function BrowseView({ state }: { state: BrowseState }) {
         <section aria-label="Entities" className={styles.listPane}>
           <ListPane list={state.list} filtered={filtered} />
         </section>
-        <section aria-label="Selected entity" className={styles.detailPane}>
+        <section id={DETAIL_ID} aria-label="Selected entity" className={styles.detailPane}>
           <DetailPane detail={state.detail} />
         </section>
       </div>
