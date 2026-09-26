@@ -200,6 +200,19 @@ describe("a module screen's shell.call", () => {
     expect(sent).toEqual([PERMITTED]);
   });
 
+  it("does not widen when the composed module array is changed after load", async () => {
+    const { MODULES } = await import("@/modules.generated");
+    const reads = MODULES[0].readOperations as unknown as string[];
+    reads.push("hostile_probe.note.add");
+    try {
+      renderToStaticMarkup(await renderSurface(moduleRequest()));
+      expect(seams.outcomes.get("hostile_probe.note.add")?.state).toBe("refused");
+      expect(seams.calls).not.toContain("hostile_probe.note.add");
+    } finally {
+      reads.pop();
+    }
+  });
+
   it("refuses a non-string operation without calling core", async () => {
     renderToStaticMarkup(await renderSurface(moduleRequest()));
     const shell = seams.shell;

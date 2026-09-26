@@ -266,6 +266,22 @@ def test_read_operations_are_the_module_s_own_read_class_declarations() -> None:
     assert "readOperations: []," in render([ANOTHER_MANIFEST])
 
 
+def test_a_read_operation_outside_the_module_prefix_is_refused_by_name() -> None:
+    """Compose never registers what it reads, so the registry's prefix rule has not
+    run yet. A READ declaration named for the core or another module would otherwise
+    land on this module's screen allowlist."""
+    foreign = _manifest(
+        "foreign_probe",
+        operations=(
+            (_operation("foreign_probe.note.find", SafetyClass.READ), _handler),
+            (_operation("core.token.issue", SafetyClass.READ), _handler),
+        ),
+        web=ANOTHER_MANIFEST.web,
+    )
+    with pytest.raises(ValueError, match="core.token.issue"):
+        render([foreign])
+
+
 def test_render_is_byte_stable_under_any_input_order() -> None:
     forward = render([ANOTHER_MANIFEST, COMPOSE_MANIFEST, QUIET_MANIFEST])
     backward = render([QUIET_MANIFEST, COMPOSE_MANIFEST, ANOTHER_MANIFEST])

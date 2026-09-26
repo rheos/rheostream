@@ -297,9 +297,11 @@ is composed, and the package exports the screens and components the declarations
 | `searchProviders` | `{ id, operation }` naming a read-class search operation | enabled modules |
 
 Compose adds one field the package does not export: `readOperations`, the sorted names of the
-module's own `READ`-class operation declarations. It is the runtime allowlist for the module's
-screens. The shell's `ShellApi.call` refuses any other name with `operation_not_permitted`
-before the call leaves the web tier, so a screen cannot call a mutating operation, another
+module's own `READ`-class operation declarations. Compose refuses, by name, a `READ` declaration
+outside the module's own prefix. It is the runtime allowlist for the module's screens, and the
+shell copies it once at load, so changing the array later does not widen it. The shell's
+`ShellApi.call` refuses any other name with `operation_not_permitted` before the call leaves
+the web tier, so a screen cannot call a mutating operation, another
 module's operation, or a core operation however its package is written. Core still checks roles
 and token sets on every call that passes. The allowlist does not contain module web code that
 skips `ShellApi` entirely, because that code runs inside the web tier's own process (#122).

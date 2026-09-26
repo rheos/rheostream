@@ -144,15 +144,24 @@ def read_operations(manifest: ModuleManifest) -> tuple[str, ...]:
     tier, so this list is the allowlist rather than a hint. It comes from the same
     declarations the core registers and dispatches, so a screen cannot widen it: the
     only way onto it is an operation of this module that the core itself treats as a
-    read. Another module's operations and the core's own are never on it.
+    read. Another module's operations and the core's own are never on it: a READ
+    declaration named outside ``<module_id>.`` is refused here, by name, rather than
+    trusted to the registry's own prefix rule, because compose reads manifests it
+    never registers.
     """
-    return tuple(
-        sorted(
-            declaration.name
-            for declaration, _ in manifest.operations
-            if declaration.safety_class is SafetyClass.READ
-        )
+    prefix = f"{manifest.module_id}."
+    names = sorted(
+        declaration.name
+        for declaration, _ in manifest.operations
+        if declaration.safety_class is SafetyClass.READ
     )
+    foreign = [name for name in names if not name.startswith(prefix)]
+    if foreign:
+        raise ValueError(
+            f"module {manifest.module_id!r} declares read operations outside its own "
+            f"prefix: {', '.join(foreign)}"
+        )
+    return tuple(names)
 
 
 def _binding(module_id: str) -> str:
