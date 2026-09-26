@@ -303,8 +303,8 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
           <StatusPanel heading="No workspace yet">
             <p className={panel.line}>session: signed in, no workspace</p>
             <p className={panel.detail}>
-              This account is not a member of any available workspace. A workspace owner
-              can add you.
+              This session has no active workspace. Once a workspace owner adds you, sign
+              out and sign in again to open it.
             </p>
             <LogoutForm action={logoutAction(decision.config)} />
           </StatusPanel>
