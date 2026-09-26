@@ -480,9 +480,11 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
     # outside the cache (its control engine, itself sized at
     # ``storage.pool_max_connections``, and one serialized maintenance connection),
     # is this process's configured budget, and core and worker are separate
-    # processes each holding their own: the default pair is 16 * 5 + 6 = 86 per
-    # process. The previous default of 32 put that at 165 against a stock Postgres
-    # ``max_connections`` of 100 (issue #12). Busy engines are not evicted (issue
+    # processes each holding their own: the default pair is 6 * 5 + 6 = 36 per
+    # process, 72 for the two, which leaves a stock Postgres ``max_connections`` of
+    # 100 more than the 20% headroom ``rheo doctor`` asks for (issue #162). Earlier
+    # defaults of 32 (165 per process, issue #12) and then 16 (86 per process, 172
+    # for two) both over-subscribed that cluster. Busy engines are not evicted (issue
     # #62), so the cache may briefly exceed this cap.
     KeySpec(
         key="storage.pool_cache_size",
@@ -490,7 +492,7 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         scope=Scope.DEPLOYMENT,
         floor=None,
         explicit_per_workspace=False,
-        default=16,
+        default=6,
     ),
     # The bound that normally binds. An engine untouched this long is disposed, so a
     # caller that walks every workspace reclaims what nobody wanted rather than

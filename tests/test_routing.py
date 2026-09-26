@@ -32,17 +32,20 @@ from rheo_core.routing import (
     API,
     DOCS,
     IDENTITY,
+    IDENTITY_PATH_KEY,
     INTEGRATION,
     MCP,
     SHELL,
+    IdentityPathInvalid,
     RoutingConfig,
     RoutingMode,
     application_hosts,
+    check_identity_path,
     identity_path,
     is_application_host,
     url_for,
 )
-from rheo_core.settings import resolve
+from rheo_core.settings import SettingsError, resolve
 
 FIXTURES = Path(__file__).parent / "fixtures" / "routing"
 MODES = ("path", "subdomain")
@@ -379,3 +382,60 @@ def test_identity_is_the_only_fixed_path_surface() -> None:
     surfaces = RoutingConfig.from_settings(resolve()).surfaces
     fixed = {name for name, surface in surfaces.named().items() if surface.fixed_path}
     assert fixed == {IDENTITY}
+
+
+# --- routing.identity.path is validated when settings become a config (#155) --------
+
+IDENTITY_PATH_VARIABLE = "RHEO__routing__identity__path"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("/", id="root"),
+        pytest.param("/auth/", id="trailing-slash"),
+        pytest.param("//auth", id="leading-double-slash"),
+        pytest.param("/id//auth", id="inner-double-slash"),
+        pytest.param("auth", id="no-leading-slash"),
+        pytest.param("/id/../auth", id="dot-dot-segment"),
+        pytest.param("/..", id="dot-dot-only"),
+        pytest.param("/./auth", id="dot-segment"),
+        pytest.param("/auth?x=1", id="query"),
+        pytest.param("/auth#frag", id="fragment"),
+        pytest.param("/au th", id="space"),
+        pytest.param("/auth%2F", id="percent-encoded"),
+        pytest.param("\\auth", id="backslash"),
+    ],
+)
+def test_a_root_empty_or_non_canonical_identity_path_is_refused(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Root or empty re-opens the #119 ``/auth/*`` redirect loop in the browser; a
+    non-canonical prefix splits the one the URL builders and the web matcher derive.
+    Either one must fail when settings resolve into a config, naming the key."""
+    monkeypatch.setenv(IDENTITY_PATH_VARIABLE, value)
+    with pytest.raises(IdentityPathInvalid) as excinfo:
+        RoutingConfig.from_settings(resolve())
+    assert isinstance(excinfo.value, SettingsError)
+    assert excinfo.value.key == IDENTITY_PATH_KEY == "routing.identity.path"
+    assert "routing.identity.path" in str(excinfo.value)
+    assert excinfo.value.state == "routing_identity_path_invalid"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["/auth", "/identity", "/id/auth", "/sign-in", "/a_b.c~d", "/v1.2/auth"],
+)
+def test_ordinary_identity_prefixes_still_resolve(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(IDENTITY_PATH_VARIABLE, value)
+    config = RoutingConfig.from_settings(resolve())
+    assert config.surfaces.identity.path == value
+    assert identity_path(config, "/continue") == f"{value}/continue"
+
+
+def test_the_package_default_identity_path_passes_the_check() -> None:
+    """The check must not refuse the default a fresh install resolves."""
+    assert check_identity_path(resolve().get_str(IDENTITY_PATH_KEY)) == "/auth"

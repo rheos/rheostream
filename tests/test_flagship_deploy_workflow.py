@@ -1,17 +1,29 @@
-"""The flagship deploy workflow (Prompt 6): `.github/workflows/deploy-flagship.yml`.
+"""The flagship deploy workflow: `.github/workflows/deploy-flagship.yml`.
 
-Seams under test: the parsed workflow's inert-until-secrets structure — the
-job-level `needs`/`if` guard on `deploy`, and that the only `curl` in the file
-lives in `deploy`, never `gate`. This is the shape the workflow must keep so
-that, absent the three repository secrets, every run is a green no-op.
+Seams under test, on the parsed workflow:
+
+- Inert until secrets: `deploy` needs `gate` and runs only on its `ready`
+  output, and the only `curl` in the file lives in `deploy`, never `gate`.
+- CI first (issue #154): the workflow runs after "Repository checks" completes
+  on main, never on a bare push, and the gate waits for every push-event CI
+  workflow on the SHA before it sets `ready`.
+- A green run means deployed (issue #154): the deploy step polls the Coolify
+  deployment it started until `finished`, fails on `failed`/`cancelled*`, and has
+  a deadline.
+- Public logs: the base URL, the host and the deployment id stay out of them.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,17 +51,44 @@ def _step_runs(job: dict[str, Any]) -> list[str]:
     return [step["run"] for step in _all_steps(job) if "run" in step]
 
 
+def _step(job: dict[str, Any], step_id: str) -> dict[str, Any]:
+    matches = [step for step in _all_steps(job) if step.get("id") == step_id]
+    assert len(matches) == 1, f"expected one step with id {step_id!r}"
+    return matches[0]
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+DEPLOY_RUN = "\n".join(_step_runs(DEPLOY))
+LEAKY_VARS = ("$COOLIFY_BASE_URL", "$base", "$COOLIFY_APP_UUID", "$COOLIFY_TOKEN")
+
+
 # --- triggers, permissions, concurrency --------------------------------------------
 
 
-def test_triggers_are_exactly_push_to_main_and_workflow_dispatch() -> None:
+def test_triggers_are_ci_completion_on_main_and_workflow_dispatch() -> None:
     on = WORKFLOW[True]  # PyYAML: the bare `on:` key parses as boolean True
-    assert set(on.keys()) == {"push", "workflow_dispatch"}
-    assert on["push"] == {"branches": ["main"]}
+    assert set(on.keys()) == {"workflow_run", "workflow_dispatch"}
+    assert on["workflow_run"] == {
+        "workflows": ["Repository checks"],
+        "types": ["completed"],
+        "branches": ["main"],
+    }
 
 
-def test_permissions_are_contents_read_only() -> None:
+def test_the_triggering_workflow_name_matches_repository_checks() -> None:
+    """A renamed CI workflow would silently stop every deploy."""
+    checks_path = ROOT / ".github" / "workflows" / "repository-checks.yml"
+    checks = yaml.safe_load(checks_path.read_text(encoding="utf-8"))
+    assert checks["name"] in WORKFLOW[True]["workflow_run"]["workflows"]
+
+
+def test_permissions_are_contents_read_only_at_the_top() -> None:
     assert WORKFLOW["permissions"] == {"contents": "read"}
+    assert GATE["permissions"] == {"actions": "read", "contents": "read"}
+    assert "permissions" not in DEPLOY
 
 
 def test_concurrency_group_prevents_overlapping_deploys() -> None:
@@ -58,23 +97,199 @@ def test_concurrency_group_prevents_overlapping_deploys() -> None:
     assert concurrency["cancel-in-progress"] is False
 
 
+def test_jobs_that_read_the_secrets_use_the_production_environment() -> None:
+    assert GATE["environment"] == "production"
+    assert DEPLOY["environment"] == "production"
+
+
+# --- gate: only a successful CI run for a push to this repository's main ---------
+
+
+def test_gate_runs_only_for_successful_push_ci_on_main_or_dispatch_on_main() -> None:
+    condition = _squash(GATE["if"])
+    assert "github.repository == 'rheos/rheostream'" in condition
+    assert (
+        "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')"
+        in condition
+    )
+    for clause in (
+        "github.event_name == 'workflow_run'",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.head_branch == 'main'",
+        "github.event.workflow_run.head_repository.full_name == github.repository",
+    ):
+        assert clause in condition, clause
+
+
+def test_gate_waits_for_every_push_ci_workflow_on_the_sha() -> None:
+    ci = _step(GATE, "ci")
+    assert ci["if"] == "steps.secrets.outputs.set == 'true'"
+    run = ci["run"]
+    assert ci["env"]["RUN_HEAD_SHA"] == "${{ github.event.workflow_run.head_sha }}"
+    assert "actions/runs" in run
+    assert "-f head_sha=" in run
+    assert "-f event=push" in run
+    # Fails on any completed run that did not succeed, waits for pending ones,
+    # requires Repository checks itself, and gives up at a deadline.
+    assert 'IN("success", "skipped", "neutral") | not' in run
+    assert "exit 1" in run
+    assert 'select(.status != "completed")' in run
+    assert "repository-checks.yml" in run
+    assert "deadline" in run
+    assert int(ci["env"]["CI_WAIT_SECONDS"]) < GATE["timeout-minutes"] * 60
+
+
+_CI_SHA = "0123456789abcdef0123456789abcdef01234567"
+_GH_STUB = """#!/usr/bin/env bash
+# Stub gh: apply the --jq filter to the fixture file.
+q=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--jq" ]; then q="$2"; shift; fi
+  shift
+done
+exec jq -c "$q" "$GH_FIXTURE"
+"""
+
+
+def _run_ci_gate(tmp_path: Path, conclusions: dict[str, str]) -> tuple[int, str, str]:
+    """Run the gate's CI step against a stubbed `gh` returning completed runs.
+
+    Returns (exit code, combined output, contents of $GITHUB_OUTPUT)."""
+    bash, jq = shutil.which("bash"), shutil.which("jq")
+    assert bash and jq, "bash and jq are needed to exercise the CI gate script"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(_GH_STUB, encoding="utf-8")
+    gh.chmod(0o755)
+    runs = [
+        {
+            "id": 100 + index,
+            "workflow_id": index + 1,
+            "path": f".github/workflows/{name}",
+            "status": "completed",
+            "conclusion": conclusion,
+        }
+        for index, (name, conclusion) in enumerate(conclusions.items())
+    ]
+    fixture = tmp_path / "runs.json"
+    fixture.write_text(json.dumps({"workflow_runs": runs}), encoding="utf-8")
+    output = tmp_path / "github_output"
+    output.touch()
+    script = tmp_path / "ci.sh"
+    script.write_text(_step(GATE, "ci")["run"], encoding="utf-8")
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "GH_FIXTURE": str(fixture),
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_REPOSITORY": "example/repo",
+        "EVENT_NAME": "workflow_run",
+        "RUN_HEAD_SHA": _CI_SHA,
+        "CI_WAIT_SECONDS": "2",
+        "CI_POLL_SECONDS": "1",
+    }
+    proc = subprocess.run(
+        [bash, str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return proc.returncode, proc.stdout + proc.stderr, output.read_text()
+
+
+def test_ci_gate_passes_only_when_every_workflow_succeeded(tmp_path: Path) -> None:
+    code, log, outputs = _run_ci_gate(
+        tmp_path, {"repository-checks.yml": "success", "other-ci.yml": "success"}
+    )
+    assert code == 0, log
+    assert "passed=true" in outputs
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "neutral"])
+def test_ci_gate_steps_aside_quietly_on_skipped_or_neutral(
+    tmp_path: Path, conclusion: str
+) -> None:
+    """A skipped or neutral CI run proves nothing about the commit: no deploy,
+    but a notice rather than a red run."""
+    code, log, outputs = _run_ci_gate(
+        tmp_path, {"repository-checks.yml": "success", "other-ci.yml": conclusion}
+    )
+    assert code == 0, log
+    assert "passed=true" not in outputs
+    assert "passed=false" in outputs
+    assert "::notice::deploy skipped" in log
+    assert "::error::" not in log
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "neutral"])
+def test_ci_gate_steps_aside_when_repository_checks_itself_is_not_success(
+    tmp_path: Path, conclusion: str
+) -> None:
+    code, log, outputs = _run_ci_gate(tmp_path, {"repository-checks.yml": conclusion})
+    assert code == 0, log
+    assert "passed=true" not in outputs
+    assert "::notice::deploy skipped" in log
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
+def test_ci_gate_fails_loudly_on_a_failed_workflow(
+    tmp_path: Path, conclusion: str
+) -> None:
+    code, log, outputs = _run_ci_gate(
+        tmp_path, {"repository-checks.yml": "success", "other-ci.yml": conclusion}
+    )
+    assert code == 1, log
+    assert "passed=true" not in outputs
+    assert "::error::CI did not succeed" in log
+
+
+def test_gate_steps_aside_when_main_has_moved_on() -> None:
+    tip = _step(GATE, "tip")
+    assert tip["if"] == "steps.ci.outputs.passed == 'true'"
+    assert "commits/main" in tip["run"]
+    assert GATE["outputs"]["ready"] == "${{ steps.tip.outputs.ready }}"
+
+
 # --- job-level guard: deploy needs gate and checks its ready output ----------------
 
 
 def test_deploy_needs_gate_and_requires_ready_true() -> None:
     assert DEPLOY["needs"] == "gate"
-    condition = " ".join(DEPLOY["if"].split())
-    assert condition == (
+    assert _squash(DEPLOY["if"]) == (
         "github.repository == 'rheos/rheostream' && needs.gate.outputs.ready == 'true'"
     )
 
 
-def test_gate_guards_on_the_repository_too() -> None:
-    assert "github.repository == 'rheos/rheostream'" in GATE["if"]
+# --- deploy: poll the deployment to a final status ----------------------------------
 
 
-def test_gate_exposes_a_ready_output() -> None:
-    assert "ready" in GATE["outputs"]
+def test_deploy_polls_the_started_deployment_until_it_finishes() -> None:
+    assert "/api/v1/deploy?uuid=" in DEPLOY_RUN
+    assert ".deployments[0].deployment_uuid" in DEPLOY_RUN
+    assert '/api/v1/deployments/$deployment"' in DEPLOY_RUN
+    assert "finished)" in DEPLOY_RUN
+    assert "failed|cancelled*)" in DEPLOY_RUN
+    # The success exit sits under `finished`, the failure exit under failed/cancelled.
+    finished = DEPLOY_RUN.index("finished)")
+    failed = DEPLOY_RUN.index("failed|cancelled*)")
+    assert DEPLOY_RUN.index("exit 0", finished) < failed
+    assert DEPLOY_RUN.index("exit 1", failed) < DEPLOY_RUN.index("queued|in_progress)")
+
+
+def test_deploy_poll_has_a_deadline_inside_the_job_timeout() -> None:
+    step = _all_steps(DEPLOY)[0]
+    wait = int(step["env"]["DEPLOY_WAIT_SECONDS"])
+    assert "deadline" in DEPLOY_RUN
+    # Room for the 60 s deploy request and one last 30 s poll.
+    assert wait + 120 < DEPLOY["timeout-minutes"] * 60
+
+
+def test_deploy_poll_tolerates_transient_errors() -> None:
+    assert 'state="transient: curl exit $curl_exit"' in DEPLOY_RUN
+    assert 'state="transient: status $code"' in DEPLOY_RUN
 
 
 # --- curl lives only in deploy, never in gate ---------------------------------------
@@ -84,15 +299,47 @@ def test_the_only_curl_in_the_file_is_in_the_deploy_job() -> None:
     assert not any("curl" in run for run in _step_runs(GATE))
     deploy_runs = _step_runs(DEPLOY)
     assert any("curl" in run for run in deploy_runs)
-    assert RAW_TEXT.count("curl") == sum(run.count("curl") for run in deploy_runs)
+    code_lines = [
+        line for line in RAW_TEXT.splitlines() if not line.lstrip().startswith("#")
+    ]
+    assert sum(line.count("curl") for line in code_lines) == sum(
+        run.count("curl") for run in deploy_runs
+    )
+
+
+# --- public logs: no URL, host, deployment id or response body ---------------------
+
+
+def test_deploy_masks_the_host_and_the_deployment_id() -> None:
+    assert 'echo "::add-mask::$host"' in DEPLOY_RUN
+    assert 'echo "::add-mask::${host%%:*}"' in DEPLOY_RUN  # the hostname without a port
+    assert 'echo "::add-mask::$deployment"' in DEPLOY_RUN
+    assert DEPLOY_RUN.index("::add-mask::$host") < DEPLOY_RUN.index("curl ")
+
+
+def test_deploy_never_echoes_the_url_host_id_or_response_body() -> None:
+    assert "set -x" not in RAW_TEXT
+    # `-S` would print curl's own error text, which names the host.
+    assert not re.search(r"curl\s+-\w*S", DEPLOY_RUN)
+    for line in DEPLOY_RUN.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("echo"):
+            continue
+        for leak in LEAKY_VARS:
+            assert leak not in stripped, f"echo prints {leak}: {stripped}"
+        if "::add-mask::" not in stripped:
+            assert "$host" not in stripped
+            assert "$deployment" not in stripped
+    assert "cat " not in DEPLOY_RUN
+    assert 'cat "$resp"' not in DEPLOY_RUN
+    # Only status-shaped characters of the deployment status reach the log.
+    assert "tr -cd 'a-z_-'" in DEPLOY_RUN
 
 
 def test_gate_pulls_the_secret_value_only_through_env() -> None:
     """`secrets.COOLIFY_BASE_URL` (the actual secret expression) is read into an
     `env:` mapping and nowhere else — never inlined into a job-level `if:` or a
-    bare `run:` string. The plain word `COOLIFY_BASE_URL` still appears in the
-    gate step's shell (as a naked env-var reference and in its notice text);
-    it is the *secret expression* this test confines to `env:`."""
+    bare `run:` string."""
     secret_expr = "secrets.COOLIFY_BASE_URL"
     for job_name, job in JOBS.items():
         assert secret_expr not in job.get("if", ""), (
