@@ -130,3 +130,64 @@ Templates contain placeholders and secret references only. Runtime workspace dat
 belongs in private databases and volumes, outside source and image build contexts.
 The root `.dockerignore` is a source-only starting policy; every future image and
 package needs its own content review. No deployment runs from the initial CI.
+
+## Flagship (subdomain mode) deployment
+
+The overlay is `deploy/compose.flagship.yaml`; every variable it interpolates is
+documented in `deploy/.env.flagship.example` (not re-listed here).
+
+It routes five application hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth`
+and `recallatron` reach `web` for everything except `/auth/*`, which core serves
+on all three of those hosts; `api` and `mcp` each reach `core` directly, over
+token auth. The apex host is not routed by this overlay.
+
+The wildcard certificate needs a DNS-01 resolver configured on the operator's own
+reverse proxy, named by `RHEO_TLS_CERTRESOLVER`; the overlay only references that
+name, it does not define the resolver. On a Coolify-fronted proxy, add the
+resolver through Coolify's own proxy-configuration mechanism, never by hand-editing
+the proxy's compose file directly — Coolify's database copy is the primary source
+and overwrites the file on the proxy's next start. Supply the DNS provider token to
+the proxy container by a `*_FILE` path, never as a plain environment value. Re-add
+the resolver after any "Reset configuration" action in the proxy admin UI, which
+regenerates the proxy's defaults and drops custom resolvers.
+
+`RHEO_TRAEFIK_NETWORK` is the Docker network the deploy platform creates for this
+application and attaches its own proxy to.
+
+A Coolify-hosted deploy also needs the Application settings listed in the header
+comment of `deploy/compose.flagship.yaml` — see that header for the exact list,
+not repeated here. The image also currently needs network access to PyPI at
+container start (issue #152).
+
+Provisioning order, with no real ids below (placeholders only):
+
+1. First deploy runs with GitHub sign-in disabled.
+2. Create the owner's account by their numeric provider-subject id.
+3. Create the owner's workspace.
+4. Enable GitHub sign-in.
+5. The owner signs in.
+6. Issue operator tokens.
+7. Install and enable the modules the deployment needs, through the API.
+
+Two token kinds: a `cli`-kind token for API/CLI work, and a separate `mcp`-kind
+token for the `mcp` host — which refuses a `cli` token as `token_wrong_kind`.
+
+Pushes to `main` redeploy only once the three repository secrets described below
+exist; until then `.github/workflows/deploy-flagship.yml` is a green no-op that
+logs a notice and skips the deploy job.
+
+### Rollback
+
+1. **Fast path:** pin the deploy platform's app to the last known-good `main`
+   commit SHA and redeploy. This rebuilds a known commit from source, so it needs
+   no retained image. **Then unpin:** once the fix (or the revert in step 2) is on
+   `main`, set the app back to tracking `main` HEAD and redeploy. A pinned app
+   keeps rebuilding the pinned SHA, so later pushes would not ship.
+2. **Durable path:** `git revert` the bad merge on `main`; the push redeploys the
+   reverted state (after unpinning, if step 1 was used).
+3. **Failed build:** the previous containers keep running; this is the platform's
+   default.
+4. **Limit:** migrations are forward-only. Rolling back across a migration
+   boundary means restoring the most recent database backup, not reverting code.
+5. **Proxy change:** the shared-proxy resolver has its own rollback; rolling back
+   the app never needs it, since an unused resolver is inert.
