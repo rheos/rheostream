@@ -22,7 +22,7 @@ from uuid import UUID
 
 import psycopg.errors
 from rheo_contracts import Role
-from sqlalchemy import Connection, delete, insert, select, update
+from sqlalchemy import Connection, delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
@@ -422,6 +422,38 @@ def list_memberships(
         .order_by(t.membership.c.created_at, t.membership.c.workspace_id)
     )
     return tuple(_membership(row) for row in conn.execute(statement).mappings())
+
+
+def list_recent_session_workspaces(
+    conn: Connection, *, account_id: UUID
+) -> tuple[UUID, ...]:
+    """The workspaces ``account_id``'s earlier sessions were pointed at, most recently
+    used first, keeping only those where the account still holds a membership.
+
+    "Used" is a session's ``last_seen_at``: a workspace's rank is the latest
+    ``last_seen_at`` of any session of this account whose ``active_workspace_id`` is
+    that workspace (ties broken by ``workspace_id`` so the order is deterministic).
+    Revoked and expired sessions count, because signing out is exactly how the last
+    one used usually ends. The membership join runs in the caller's transaction, so a
+    membership removed since is not returned. Workspace state is **not** filtered
+    here; the caller applies the same ``active`` check every context factory does.
+    Issue #157: ``create_session`` picks its default workspace from this list.
+    """
+    last_used = func.max(t.session.c.last_seen_at)
+    statement = (
+        select(t.session.c.active_workspace_id)
+        .select_from(
+            t.session.join(
+                t.membership,
+                (t.membership.c.account_id == t.session.c.account_id)
+                & (t.membership.c.workspace_id == t.session.c.active_workspace_id),
+            )
+        )
+        .where(t.session.c.account_id == account_id)
+        .group_by(t.session.c.active_workspace_id)
+        .order_by(last_used.desc(), t.session.c.active_workspace_id)
+    )
+    return tuple(row.active_workspace_id for row in conn.execute(statement))
 
 
 # --- session (C7a, run 0b2) -------------------------------------------------------

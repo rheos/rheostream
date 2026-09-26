@@ -2,6 +2,7 @@ import type { ComposedModule, Screen, ShellApi } from "@rheo-stream/web-contract
 import { notFound } from "next/navigation";
 import { cache, type ReactNode } from "react";
 
+import { LogoutForm } from "@/components/logout-form";
 import { fetchCoreHealth, type CoreHealthResult } from "@/lib/core-health";
 import {
   callOperation,
@@ -45,6 +46,7 @@ export interface SurfaceRequest {
 
 type Query = Readonly<Record<string, string | undefined>>;
 type SignedIn = Extract<SessionResult, { state: "ok" }>;
+type SignedOut = Exclude<SessionResult, { state: "ok" } | { state: "no-workspace" }>;
 type ModuleRequest = Extract<ResolvedRequest, { kind: "module" }>;
 
 /**
@@ -59,7 +61,16 @@ export type SurfaceDecision =
       kind: "signed-out";
       config: RoutingConfig;
       resolved: Exclude<ResolvedRequest, { kind: "not-found" }>;
-      session: Exclude<SessionResult, { state: "ok" }>;
+      session: SignedOut;
+    }
+  | {
+      /**
+       * A live session in no workspace (#157): an account with no membership yet.
+       * Sign-out only; no account details, no switcher, no module screen.
+       */
+      kind: "no-workspace";
+      config: RoutingConfig;
+      resolved: Exclude<ResolvedRequest, { kind: "not-found" }>;
     }
   | {
       kind: "shell";
@@ -124,6 +135,9 @@ export const decideSurface = cache(
       currentSession(),
       currentWorkspaceStatus(),
     ]);
+    if (session.state === "no-workspace") {
+      return { kind: "no-workspace", config, resolved };
+    }
     if (session.state !== "ok") {
       return { kind: "signed-out", config, resolved, session };
     }
@@ -225,10 +239,7 @@ function StatusPanel({ heading, children }: { heading: string; children: ReactNo
   );
 }
 
-function sessionStatus(
-  config: RoutingConfig,
-  session: Exclude<SessionResult, { state: "ok" }>,
-): ReactNode {
+function sessionStatus(config: RoutingConfig, session: SignedOut): ReactNode {
   if (session.state === "unavailable") {
     return <p className={panel.line}>session: unavailable</p>;
   }
@@ -283,6 +294,19 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
         <ShellFrame health={health}>
           <StatusPanel heading={decision.resolved.kind === "shell" ? "Home" : "Workspace"}>
             {sessionStatus(decision.config, decision.session)}
+          </StatusPanel>
+        </ShellFrame>
+      );
+    case "no-workspace":
+      return (
+        <ShellFrame health={health}>
+          <StatusPanel heading="No workspace yet">
+            <p className={panel.line}>session: signed in, no workspace</p>
+            <p className={panel.detail}>
+              This session has no active workspace. Once a workspace owner adds you, sign
+              out and sign in again to open it.
+            </p>
+            <LogoutForm action={logoutAction(decision.config)} />
           </StatusPanel>
         </ShellFrame>
       );

@@ -74,6 +74,7 @@ from rheo_core.sessions import (
     switch_workspace,
 )
 from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.control_plane import insert_account
 
 pytestmark = pytest.mark.postgres
 
@@ -138,15 +139,23 @@ async def _post(
         )
 
 
-def _session_for(account_id: UUID, workspace_id: UUID | None) -> str:
-    """A hex session secret bound to ``BASE_HOST``, optionally already pointed at a
-    workspace. ``workspace_id is None`` is the ``workspace_unselected`` case every
-    browser session starts in (CF1)."""
+def _session_for(account_id: UUID, workspace_id: UUID) -> str:
+    """A hex session secret bound to ``BASE_HOST``, switched into ``workspace_id``
+    (whatever default ``create_session`` picked, #157)."""
     row = create_session(account_id)
     secret = mint_host_secret(row.id, BASE_HOST)
-    if workspace_id is not None:
-        assert switch_workspace(row.id, workspace_id) is None
+    assert switch_workspace(row.id, workspace_id) is None
     return secret.hex()
+
+
+def _unselected_session(cluster: ClusterSession) -> str:
+    """A hex session secret for a fresh account with no membership at all: the one
+    case ``create_session`` still leaves ``active_workspace_id`` NULL (#157)."""
+    with cluster.backend.control_engine.begin() as connection:
+        account_id = insert_account(connection, display_name="no-workspace").id
+    row = create_session(account_id)
+    assert row.active_workspace_id is None
+    return mint_host_secret(row.id, BASE_HOST).hex()
 
 
 def _member_session(cluster: ClusterSession, workspace_id: UUID, label: str) -> str:
@@ -291,12 +300,12 @@ async def test_a_revoked_session_is_401_session_revoked(
 
 
 async def test_a_session_with_no_workspace_is_401_workspace_unselected(
-    harness_workspace: UUID, owner_account_id: UUID
+    cluster: ClusterSession, harness_workspace: UUID
 ) -> None:
-    """Every browser session is created with ``active_workspace_id = NULL`` and only
-    ``switch_workspace`` ever sets it (CF1, a ratified scope cut). The route refuses
+    """A session for an account with no membership starts with
+    ``active_workspace_id = NULL`` (#157 defaults every other one). The route refuses
     that session by name rather than dispatching into a missing workspace."""
-    session_value = _session_for(owner_account_id, None)
+    session_value = _unselected_session(cluster)
     response = await _post(NOTE_WRITE, session_value, {"body": "x"})
     assert response.status_code == 401
     assert response.json()["state"] == WORKSPACE_UNSELECTED
@@ -304,8 +313,8 @@ async def test_a_session_with_no_workspace_is_401_workspace_unselected(
 
 async def test_a_session_refusal_never_reaches_the_dispatcher(
     monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
     harness_workspace: UUID,
-    owner_account_id: UUID,
     owner_session: str,
 ) -> None:
     """FR 2's real claim, asserted against the dispatcher rather than inferred from
@@ -324,7 +333,7 @@ async def test_a_session_refusal_never_reaches_the_dispatcher(
 
     monkeypatch.setattr(internal_routes, "dispatch", _spy)
 
-    for session_value in (None, "not-hex", _session_for(owner_account_id, None)):
+    for session_value in (None, "not-hex", _unselected_session(cluster)):
         response = await _post(NOTE_WRITE, session_value, {"body": "x"})
         assert response.status_code == 401
         # The boundary factory's own state, never the dispatcher's.
