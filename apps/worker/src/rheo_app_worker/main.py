@@ -56,6 +56,8 @@ from rheo_core.work.schedules import (
 )
 from rheo_runtimes import ClaudeCliRuntime
 
+from rheo_app_worker.heartbeat import heartbeat_from_env
+
 JOB_KINDS = JobKindRegistry()
 """The process-wide job-kind registry.
 
@@ -162,7 +164,13 @@ def main() -> None:
     stop = threading.Event()
     install_stop_signals(stop)
     try:
-        worker_loop(kinds=JOB_KINDS, consumers=CONSUMERS, backend=backend, stop=stop)
+        worker_loop(
+            kinds=JOB_KINDS,
+            consumers=CONSUMERS,
+            backend=backend,
+            stop=stop,
+            heartbeat=heartbeat_from_env(),
+        )
     finally:
         # In a ``finally`` so a loop that exits on its stop signal and one that raises
         # both dispose the backend's engines on the way out.

@@ -71,10 +71,33 @@ jobs:
             echo "web image did not answer HTTP 200 within about 60 s" >&2
             docker logs rheo-web-check >&2 || true
           fi
+          # The compose health check's own command (#156), run inside the image:
+          # /healthz must answer 200 past the middleware, with no session cookie.
+          if [ "$ok" = "1" ] && ! docker exec rheo-web-check node -e \
+            "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"; then
+            echo "web /healthz did not answer 200 inside the container" >&2
+            ok=0
+          fi
           docker rm -f rheo-web-check >/dev/null
           [ "$ok" = "1" ]
       - name: Build the flagship core image (local-embeddings extra)
         run: docker build --build-arg UV_SYNC_ARGS="--extra local-embeddings" -t rheo-flagship-core -f Dockerfile .
+      # #161: the data root is 0700 in a fresh volume, and the entrypoint tightens
+      # an older, non-empty volume that is wider (Docker copies the image's mode
+      # only into an empty volume, so the flagship's existing one kept 0755).
+      - name: The data root is owner-only (0700)
+        run: |
+          img=rheo-flagship-core
+          vol=rheo-data-root-check
+          run() { docker run --rm --network none -v "$vol:/var/lib/rheo-stream" "$@"; }
+          fresh=$(run --entrypoint stat "$img" -c %a /var/lib/rheo-stream)
+          run --entrypoint mkdir "$img" /var/lib/rheo-stream/config
+          run --entrypoint chmod "$img" 0755 /var/lib/rheo-stream
+          wide=$(run --entrypoint stat "$img" -c %a /var/lib/rheo-stream)
+          tightened=$(run "$img" stat -c %a /var/lib/rheo-stream)
+          docker volume rm "$vol" >/dev/null
+          echo "fresh=$fresh widened=$wide after-entrypoint=$tightened"
+          [ "$fresh" = "700" ] && [ "$wide" = "755" ] && [ "$tightened" = "700" ]
       # Prompt 5: the flagship compose overlay resolves and interpolates cleanly
       # against its own committed placeholder env file.
       - name: Flagship compose overlay resolves (make flagship-config)

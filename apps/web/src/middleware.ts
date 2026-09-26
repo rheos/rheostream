@@ -123,6 +123,10 @@ export const config = {
   // Deny by default: every request is protected except Next's own build output.
   // `login` is excluded because the sign-in page is the one place an unsigned-in
   // browser is meant to land — without the exclusion it would bounce straight
-  // through `/auth/continue` to the provider and never render.
-  matcher: ["/((?!login(?:/|$)|_next/static|_next/image|favicon.ico).*)"],
+  // through `/auth/continue` to the provider and never render. `healthz` is
+  // excluded so the container health check (#156) reaches its route handler
+  // instead of being redirected to sign in.
+  matcher: [
+    "/((?!login(?:/|$)|healthz$|_next/static|_next/image|favicon.ico).*)",
+  ],
 };
