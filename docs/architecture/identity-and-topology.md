@@ -27,7 +27,10 @@ host-only cookie (`rheo_oauth_state`, ten-minute expiry) before redirecting; `/a
 cookie to the returned `state` and refuses `invalid_state` on a mismatch, so a callback that did
 not begin in this browser creates no session. Domain modules import neither the providers package
 nor the boundary; a CI check asserts it (criterion 8). The test double is a provider that
-completes with a fixed synthetic identity, registered by the test harness only.
+completes with a fixed synthetic identity, registered by the test harness only. A request that
+needs a disabled identity provider (for example `/auth/login` with GitHub sign-in off) is refused
+503 `{"state": "identity_provider_unavailable"}`, alongside `invalid_state` above and the other
+`/auth` refusal states this document lists.
 
 An account is not a workspace. Membership is many-to-many with a role (R1), and every context
 carries the role read from `control.membership` at request time, never cached in the session.
@@ -183,9 +186,9 @@ reverse proxy cannot strip what is sent to a different server. This specificatio
   return URL's host, the SHA-256 of the nonce in `nonce_hash`, 60-second expiry, single use) and
   redirects to `<return host>/auth/continue?code=<code>&return=<return url>`. Without a cookie, it
   starts the login flow and returns here afterward.
-- The reverse proxy routes only the hosts the routing configuration names. The template planned
-  for `deploy/` (not written yet; `rheo routing hosts` prints the list today) enumerates them from
-  the same configuration; it never routes a bare `*.<base_host>` wildcard to the application, so a
+- The reverse proxy routes only the hosts the routing configuration names. The template for
+  `deploy/` exists (`deploy/compose.flagship.yaml`) and enumerates them from the same
+  configuration; it never routes a bare `*.<base_host>` wildcard to the application, so a
   label nobody configured reaches no listener and can neither receive a cookie nor complete a
   grant.
 - `/auth/continue` on the application host: the core (which serves `/auth/*` on every
