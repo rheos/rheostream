@@ -81,12 +81,17 @@ class NewEvidence:
 class RecordAttempt:
     """What one attempt did with each record, as native keys and nothing else.
 
-    - ``accepted``: held as a ``pending`` row, whether this attempt wrote it or an
-      earlier one already had (the caller need not resend either way);
+    - ``accepted``: its sanitized text fits, so it is held as a ``pending`` row;
     - ``deferred``: past this attempt's record or byte budget, no row; resend it later;
     - ``gapped``: its sanitized text alone exceeds the byte budget, so it is held as a
       content-free ``gap/oversize`` row and will never be extracted;
     - ``dropped``: sanitation left nothing, or found an injection marker; no row.
+
+    **One rule for a key that is already held**, in both branches: the record is
+    reported by this attempt's own classification of it, ``accepted`` or ``gapped``,
+    and the held row is left exactly as it is (``ON CONFLICT DO NOTHING``, first
+    clock wins). Either tuple means "held, do not resend". A held key is never
+    *inserted*, so it never triggers the recorded event or becomes its subject.
     """
 
     accepted: tuple[str, ...]

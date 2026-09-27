@@ -365,6 +365,15 @@ def test_a_body_over_the_byte_budget_alone_is_a_settled_oversize_gap(
     assert unit.body is None
     assert unit.settled_at == now
 
+    # Held already: reported as gapped again, row untouched, nothing published.
+    before = len(_events(recording))
+    again, due = _record(recording, [oversize], now=now + timedelta(minutes=5))
+    assert again.gapped == (oversize.native_key,)
+    [still] = _units(recording)
+    assert still.id == unit.id and still.settled_at == now
+    assert len(_events(recording)) == before
+    assert due is False
+
 
 def test_a_record_that_sanitizes_to_nothing_is_dropped_without_a_row(
     recording: EvidenceWorkspace,
