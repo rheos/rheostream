@@ -563,7 +563,12 @@ The core declares one scheduled job of its own: `core.retention_sweep` (daily), 
 runtime transcripts past their `retention_until`, tool telemetry rows older than
 `telemetry.tool_retention_days`, and regular `ClaudeCliRuntime` session files older than
 `runtime.transcript_retention_days` under that workspace configuration directory's
-`projects/` subtree. Outbox
+`projects/` subtree. It also ages `pending` evidence units past their `source_expires_at`
+into content-free `gap/expired_pending` rows, skipping any row a drain holds locked rather
+than waiting on it, and deletes settled and gap evidence rows older than
+`runtime.transcript_retention_days`. Both evidence steps run before the session-file walk,
+which returns early on a workspace with no CLI configuration directory, so they run on
+every workspace, including the ones nothing drains. Outbox
 retention named under [Events and the outbox](#events-and-the-outbox-fr-15) is unimplemented
 and is not part of that handler. Each workspace is provisioned a
 `core.schedule` row at migrate time; the worker's schedule ticker enqueues

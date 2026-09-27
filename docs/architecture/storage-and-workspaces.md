@@ -461,6 +461,8 @@ limits (`automatic_memory.max_bytes_per_attempt`, `automatic_memory.max_records_
 `<module>.redaction.exclude_types`, which the module loader declares for every loaded module
 that owns a record type (issue #130). `automatic_memory.extraction.provider` is a
 deployment-only key with no floor, default `"none"`, that selects the extraction provider.
+The evidence-unit retention sweep declares no key of its own: it deletes settled and gap
+`core.evidence_unit` rows older than `runtime.transcript_retention_days`.
 `approvals.confirm_operations` and `approvals.standing_grant_classes` are not declared
 yet; a standing grant's classes are fixed in code to read, draft and mutate.
 

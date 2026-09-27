@@ -328,7 +328,7 @@ def run_retention_sweep(
     payload: BaseModel,
     token: CancellationToken,
 ) -> None:
-    """Delete expired transcripts and telemetry, and unlink expired session files.
+    """Purge expired transcripts, telemetry and evidence; unlink expired session files.
 
     **The telemetry purge is this sweep's, and only this sweep's** (§ A11): the
     telemetry insert path attempts no age pruning at all, so that an ordinary MCP call
@@ -336,8 +336,16 @@ def run_retention_sweep(
     range, during the idle window the daily schedule already owns. It runs before the
     session-file walk below, which returns early on a workspace with no CLI config
     directory — a purge placed after that return would silently never run for most
-    workspaces.
+    workspaces. The evidence purge (``rheo_core.evidence.retention``) sits beside it
+    for the same reason: it ages undrained ``pending`` evidence into content-free gaps
+    and deletes old settled rows, and the workspaces nothing drains are exactly the
+    ones that must not miss it.
     """
+    # Deferred, the approvals/gate.py:524 pattern: rheo_core.work imports this module
+    # at package import, so once rheo_core.evidence re-exports its drain service
+    # (which imports rheo_core.work.backoff) a module-level import here is a cycle.
+    from rheo_core.evidence.retention import purge_evidence
+
     assert isinstance(payload, RetentionSweepPayload)
     token.checkpoint()
     now = datetime.now(UTC)
@@ -347,12 +355,13 @@ def run_retention_sweep(
     settings = resolve(
         workspace_id=payload.workspace_id, source=PostgresOverrideSource()
     )
+    retention_days = settings.get_int("runtime.transcript_retention_days")
+    horizon = now - timedelta(days=retention_days)
     purge_expired_tool_telemetry(
         uow.connection,
         not_before=now - timedelta(days=settings.get_int(TOOL_RETENTION_DAYS_KEY)),
     )
-    retention_days = settings.get_int("runtime.transcript_retention_days")
-    horizon = now - timedelta(days=retention_days)
+    purge_evidence(uow.connection, now=now, settled_before=horizon)
     config_dir = (
         workspace_dir_for(payload.workspace_id, Purpose.SCRATCH) / _CLI_CONFIG_DIR
     )
