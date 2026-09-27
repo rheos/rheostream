@@ -46,6 +46,7 @@ from sqlalchemy import insert, select, update
 
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_from_operation
+from rheo_core.evidence.record import NewEvidence, record_evidence, recording_allowed
 from rheo_core.operations.records import (
     finish_cancelled,
     finish_failed,
@@ -441,14 +442,20 @@ def _credential_scope(settings: ResolvedSettings) -> str:
     return "api_key"
 
 
-def _job_account_id(payload: RuntimeJobPayload) -> UUID | None:
+def _job_account_id(payload: RuntimeJobPayload) -> tuple[UUID | None, str | None]:
+    """The run's backing account, and the presenting token's ``access_token.kind``.
+
+    The kind is ``None`` for an account actor, and for a token row that no longer
+    exists. One control-plane read serves both: the account refusal and the evidence
+    hook's attribution check (``rheo_core.evidence.record.recording_allowed``).
+    """
     if payload.actor_kind == ActorKind.ACCOUNT.value:
-        return payload.actor_id
+        return payload.actor_id, None
     if payload.actor_kind == ActorKind.TOKEN.value and payload.actor_id is not None:
         with get_backend().control_engine.connect() as connection:
             row = get_access_token(connection, payload.actor_id)
-        return None if row is None else row.account_id
-    return None
+        return (None, None) if row is None else (row.account_id, row.kind)
+    return None, None
 
 
 def _fail(
@@ -797,7 +804,7 @@ def make_run_runtime_job(
                     error_text=str(ctx),
                 )
                 return
-            account_id = _job_account_id(payload)
+            account_id, token_kind = _job_account_id(payload)
             adapter = registry.lookup(payload.runtime_id)
             if adapter is None:
                 _fail(
@@ -934,6 +941,36 @@ def make_run_runtime_job(
                     request_id=request_id,
                 )
                 return
+            # The automatic-memory hook: the person's own task, recorded before the
+            # adapter starts, so a run that later fails still records what they said.
+            # A run that raises rolls the row back with this transaction, and the
+            # retry records it again, idempotent on the native key.
+            if recording_allowed(ctx, uow, token_kind=token_kind, settings=settings):
+                bound_purpose = ctx.principal.bound_purpose
+                assert bound_purpose is not None  # condition 5, just checked
+                recorded_at = clock()
+                record_evidence(
+                    ctx,
+                    uow,
+                    [
+                        NewEvidence(
+                            producer_kind="rheo_runtime",
+                            authority_id=payload.operation_id,
+                            native_key=f"turn:{payload.operation_id}",
+                            speaker_account_id=account_id,
+                            # Every runtime run is account-backed and purpose-bound,
+                            # so its ceiling is the speaker's member audience, never
+                            # workspace.
+                            audience_kind="member",
+                            audience_id=account_id,
+                            # Verbatim, never re-bound.
+                            purpose=bound_purpose,
+                            recorded_at=recorded_at,
+                            raw_text=payload.task,
+                        )
+                    ],
+                    now=recorded_at,
+                )
             expires_at = now + timedelta(seconds=deadline)
             token_id, run_token = issue_runtime_token(
                 account_id=account_id,

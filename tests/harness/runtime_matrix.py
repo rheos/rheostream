@@ -185,11 +185,14 @@ def visit(
     cluster: Any,
     workspace_id: UUID,
     job_kinds: JobKindRegistry,
+    *,
+    consumers: ConsumerRegistry | None = None,
 ) -> None:
+    """One worker visit. ``consumers`` defaults to an empty registry, as before."""
     visit_workspace(
         DueWorkspace(workspace_id=workspace_id, observed_due_at=None),
         kinds=job_kinds,
-        consumers=ConsumerRegistry(),
+        consumers=consumers or ConsumerRegistry(),
         backend=cluster.backend,
         owner=OWNER,
         clock=lambda: datetime.now(UTC) + timedelta(seconds=1),
