@@ -35,6 +35,11 @@
     "how": "hand-authored core.workspace.status result with the memory module enabled"
   },
   {
+    "path": "modules/recallatron/tests/fixtures/migration/synthetic_graph.jsonl",
+    "origin": "synthetic",
+    "how": "hand-authored ontology patch log with invented ids, labels and timestamps from the \"sample garden\" scenario"
+  },
+  {
     "path": "modules/recallatron/web/fixtures/coverage-no-provider.json",
     "origin": "synthetic",
     "how": "hand-authored null-provider embedding.coverage response shape"
