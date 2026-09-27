@@ -137,7 +137,7 @@ describe("ShellFrame through the real composition", () => {
     expect(html).toMatch(NAV);
     const memory = urlFor(ROUTED, "recallatron", "/");
     expect(html).toContain(`href="${memory}">Memory</a>`);
-    expect(html).toContain(`href="${urlFor(ROUTED, "recallatron", "/search")}">Search memory</a>`);
+    expect(html).toContain(`href="${urlFor(ROUTED, "recallatron", "/search")}">Search</a>`);
     expect(html).not.toContain('aria-current="page"');
     expect(html).toContain("core: ok (contract v1)");
   });
@@ -175,7 +175,7 @@ describe("module screens through the real composition", () => {
   it("renders the matched screen in the frame, with its entry marked current", async () => {
     const html = await render(moduleRequest("/search"));
     expect(html).toMatch(NAV);
-    expect(html).toMatch(/<a[^>]*aria-current="page"[^>]*>Search memory<\/a>/);
+    expect(html).toMatch(/<a[^>]*aria-current="page"[^>]*>Search<\/a>/);
     expect(html).toContain('type="search"');
   });
 

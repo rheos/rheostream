@@ -18,6 +18,7 @@ def test_round_trip_preserves_history_metadata() -> None:
     units = [
         HistoryExtractUnit(
             external_source_key="store.conversation:1",
+            source_reference="store.conversation:1",
             kind="conversation",
             status="turn",
             title="Conversation turn",

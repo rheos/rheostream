@@ -47,7 +47,7 @@ def _values(unit: HistoryExtractUnit) -> dict[str, object]:
     return {
         "source_namespace": SOURCE_NAMESPACE,
         "external_source_key": opaque_history_source_key(unit.external_source_key),
-        "source_reference": unit.external_source_key,
+        "source_reference": unit.source_reference,
         "kind": unit.kind,
         "status": unit.status,
         "title": unit.title,

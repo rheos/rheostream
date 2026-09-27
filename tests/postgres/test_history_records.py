@@ -35,6 +35,7 @@ from rheo_recallatron.migration.history_extract import (
     parse_history_extract,
 )
 from rheo_recallatron.migration.history_import import (
+    HistoryImportRefusal,
     import_history,
     opaque_history_source_key,
 )
@@ -174,6 +175,7 @@ def test_history_import_replay_does_not_duplicate_or_resurrect(
     at = datetime.now(UTC)
     unit = HistoryExtractUnit(
         external_source_key="store.procedural_note:7",
+        source_reference="store.procedural_note:7",
         kind="procedural_note",
         status="unconfirmed",
         title="Procedural note",
@@ -193,6 +195,18 @@ def test_history_import_replay_does_not_duplicate_or_resurrect(
         second = import_history(uow.connection, extract, imported_at=at)
         uow.commit()
     assert (second.inserted, second.identical, second.erased) == (0, 1, 0)
+
+    changed = parse_history_extract(
+        dump_history_extract(
+            [unit.model_copy(update={"body": "changed-private-value"})],
+            source_sha256="a" * 64,
+            unresolved_count=0,
+        )
+    )
+    with UnitOfWork(engine, database_name) as uow:
+        with pytest.raises(HistoryImportRefusal) as refusal:
+            import_history(uow.connection, changed, imported_at=at)
+    assert "changed-private-value" not in str(refusal.value)
 
     with UnitOfWork(engine, database_name) as uow:
         uow.connection.execute(

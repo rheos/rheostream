@@ -47,6 +47,7 @@ class HistoryExtractHeader(_Frozen):
 
 class HistoryExtractUnit(_Frozen):
     external_source_key: Annotated[str, Field(min_length=3, max_length=400)]
+    source_reference: Annotated[str | None, Field(max_length=400)] = None
     kind: Literal[
         "conversation",
         "procedural_note",
