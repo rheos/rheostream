@@ -6,6 +6,10 @@ real, role-checked path -- ``context_for_operator`` -> ``registry.authorize``
 -> ``dispatch`` -- exactly like ``rheo workspace status``, never a handler
 call that bypasses ``authorize()``.
 
+``issue`` loads the deployment's allowed modules first (issue #117), so a token's
+named set is expanded against the same operation and tool inventory the ``core``
+process serves; see :func:`load_operation_inventory`.
+
 ``revoke`` takes only a token id (no ``--workspace``): a token's own workspace
 is looked up first (``get_access_token`` by id, a plain control-plane read),
 and the operator context is built for *that* workspace -- the only way this
@@ -24,9 +28,12 @@ import sys
 from uuid import UUID
 
 from rheo_core.boundary import Refusal, context_for_operator
+from rheo_core.modules import ManifestInvalid, load_modules
 from rheo_core.operations import dispatch
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
+from rheo_core.operations.refusals import RegistrationRefused
 from rheo_core.storage.control_plane import get_access_token
+from rheo_core.tokens.sets import register_core_tools
 
 from rheo_app_cli.context import bootstrap
 
@@ -52,8 +59,43 @@ def _print_outcome_error(state: str, error_text: str | None) -> None:
     print(f"{state}: {error_text}" if error_text else state, file=sys.stderr)
 
 
+def load_operation_inventory() -> str | None:
+    """Register what ``core`` registers on top of the core operations, or say why not.
+
+    ``core.token.issue`` expands a named set against the live registries: ``cli_full``
+    and ``read_only`` read ``REGISTRY``, ``agent_default`` reads ``TOOL_REGISTRY``.
+    :func:`~rheo_app_cli.context.bootstrap` registers the core operations only, so
+    before issue #117 a CLI-issued token could never hold a module operation, and an
+    ``mcp`` token's ``agent_default`` named no tool at all. This runs the same two
+    calls ``apps/core``'s startup makes after ``register_core_operations()``:
+    ``register_core_tools()`` and ``load_modules()`` under the deployment's
+    ``modules.installed`` allowlist. It passes no job-kind, consumer or deletion
+    registry, because issuing a token runs none of them.
+
+    Returns ``None`` on success, or the ``module_invalid: <detail>`` line to print when
+    the loader, or a registry it calls, refuses the allowed set (``ManifestInvalid``
+    or ``RegistrationRefused``). A conflicting settings key is a ``SettingsError``,
+    which ``run_command`` already prints and exits ``1`` on.
+    """
+    register_core_tools()
+    try:
+        load_modules()
+    except ManifestInvalid as invalid:
+        return f"module_invalid: {invalid}"
+    except RegistrationRefused as refusal:
+        # A shipped registry refusing one of the loaded module's declarations (a
+        # tool naming a non-token-issuable operation, say), which the loader cannot
+        # run ahead of registration. The same operator fact, so the same state.
+        return f"module_invalid: {refusal}"
+    return None
+
+
 def issue_token(args: argparse.Namespace) -> int:
     bootstrap()
+    refusal = load_operation_inventory()
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
     ctx = context_for_operator(args.workspace)
     if isinstance(ctx, Refusal):
         print(ctx, file=sys.stderr)

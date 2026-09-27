@@ -33,6 +33,7 @@ from rheo_core.modules import (
     ManifestInvalid,
     ModuleManifest,
     WebContribution,
+    check_web_surfaces,
     discovered,
     load_entry_point,
 )
@@ -77,7 +78,11 @@ def installed_manifests() -> tuple[ModuleManifest, ...]:
                 loaded.module_id, "is published by two installed distributions"
             )
         manifests[loaded.module_id] = loaded
-    return tuple(manifests[module_id] for module_id in sorted(manifests))
+    ordered = tuple(manifests[module_id] for module_id in sorted(manifests))
+    # The loader's own set-level surface check (#123), so compose cannot emit two
+    # contributions under one surface name that the runtime would route as one.
+    check_web_surfaces(ordered)
+    return ordered
 
 
 def check_web_dependencies(
@@ -100,6 +105,7 @@ def check_web_dependencies(
 
 def render(manifests: Iterable[ModuleManifest]) -> str:
     """The generated TypeScript for ``manifests``: banner, imports, ``MODULES``."""
+    manifests = tuple(manifests)
     composed: dict[str, WebContribution] = {}
     reads: dict[str, tuple[str, ...]] = {}
     for manifest in manifests:
@@ -108,6 +114,10 @@ def render(manifests: Iterable[ModuleManifest]) -> str:
         if manifest.web is not None:
             composed[manifest.module_id] = manifest.web
             reads[manifest.module_id] = read_operations(manifest)
+    # Again here, not only in ``installed_manifests``: ``render`` takes manifests from
+    # any caller, and a surface-name collision it rendered would be a file the
+    # runtime's ``module_surfaces()`` could not agree with (#123).
+    check_web_surfaces(manifests)
     bindings: dict[str, str] = {}
     for module_id in sorted(composed):
         binding = _binding(module_id)

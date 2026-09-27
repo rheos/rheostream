@@ -21,7 +21,7 @@ to tables that live and die in one database; these do not.
 | Event identifier | UUID version 7 | The outbox writer | One per outbox row. Distinct from the source event identifier below. |
 | Operation, approval, job, session, token identifiers | UUID version 7 | The core | Same type everywhere, so a caller cannot tell a workspace record from a control-plane record by shape, and neither leaks routing. |
 | Source event identifier | Opaque text, at most 512 bytes | The external source, or the transport connector when the source supplies none | Unique only within `(connection, source_event_id)`. Never a UUID by contract; never used as a primary key. |
-| Configuration identifier | Slug `[a-z][a-z0-9_]{0,31}` | A person or a package author | Module ids, record type names, stage ids, field names, mapping ids, operation-set names. Human-chosen, immutable once referenced. |
+| Configuration identifier | Slug `[a-z][a-z0-9_]{0,31}` | A person or a package author | Module ids, record type names, stage ids, field names, mapping ids, operation-set names. Human-chosen, immutable once referenced. `ModuleManifest` enforces the grammar for module ids (issue #132). |
 | Workspace slug | Lowercase letters, digits, and hyphens, at most 63 characters; unique in the control plane | The workspace creator (the workspace's UUID string when none is given) | Display and switcher label only. Never used for storage routing; the UUID is. |
 | Outbox position | `bigint` sequence, per workspace database | Postgres | Total order of events inside one database. Local, never exported as identity. |
 
@@ -115,7 +115,20 @@ aliases; a module that wants "the canonical reference" offers a read operation f
 | Secret scope | `<component>[.<name>]` | `runtime.claude_cli`, `identity.github`, `storage` |
 
 The registry refuses any registration whose name does not start with the registering module's id
-(or `core`), which is what keeps the namespaces from colliding without a central list. Today that
-check covers operations, record resolvers, configuration keys, and event types. Tool names, job
-kinds, and consumer ids are not yet prefix-checked (a module's job kind or consumer id can replace
-a core one), so for those three the rule is a convention until the check lands.
+(or `core`), which is what keeps the namespaces from colliding without a central list. That check
+covers operations, record resolvers, configuration keys, event types and, since issue #132, tool
+names, job kinds and consumer ids. The last three are checked on the module's manifest
+(`rheo_core.modules.manifest.check_name_prefixes`, re-run by the loader before anything
+registers) rather than in their registries: a module's tool must start with `<module>_`, its job
+kind and consumer id with `<module>.`, each followed by a non-empty remainder. Because a module id
+can never be `core`, a module can no longer replace a core job kind or consumer. The loader also
+re-checks the module id itself (grammar and the reserved `core`) for a manifest that skipped
+validation, and refuses any module tool, job kind or consumer id that is already registered with a
+different declaration: a module registration refuses, it never replaces.
+
+**Named deviation: the core's own tools carry no prefix.** `workspace_status`, `operations_get`,
+`operations_list`, `audit_list` and `harness_get_note` are registered under the `core` origin
+without a `core_` prefix, so the rule is enforced for modules only. A module whose id is the first
+word of a core tool (a module named `workspace` declaring `workspace_status`) passes the prefix
+check and is then refused by the tool registry as a duplicate name, loudly, rather than replacing
+the core's tool.

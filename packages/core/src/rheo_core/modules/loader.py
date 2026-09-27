@@ -26,29 +26,28 @@ is read back from ``loaded_manifests()[module_id].events``. What the loader does
 events instead is refuse them — a type not namespaced under its declaring module, or
 a type two loaded manifests both declare.
 
-**The residual gap, stated rather than left for a reader to find: a module's job kind
-or consumer id can silently replace the core's, and nothing here refuses it.**
+**Job kinds, consumer ids and tool names carry the module's prefix (issue #132).**
 ``JobKindRegistry`` and ``ConsumerRegistry`` are last-writer-wins by design, and each
 documents that as safe on the grounds that the composition root is its only writer
-and populates it once at import. This module makes a module a *second* writer. A
-loaded manifest declaring ``JobKind(name="core.retention_sweep", ...)`` therefore
-replaces the production handler and input model for that kind with its own, refused
-by nothing — not the registry, not ``_register``, not the manifest model — and a
-``ConsumerSubscription`` reusing a core ``consumer_id`` displaces that consumer the
-same way.
+and populates it once at import. This module makes a module a *second* writer, so
+before #132 a loaded manifest declaring ``JobKind(name="core.retention_sweep", ...)``
+replaced the production handler for that kind, and a ``ConsumerSubscription`` reusing
+a core ``consumer_id`` displaced that consumer. ``identifiers.md`` § Namespaces in one
+place states the grammar for all three (``<module>.<name>``, ``<module>.<handler>``,
+``<module>_<verb>[_<noun>]``), so the manifest now refuses a name outside its own
+module's prefix (``manifest.check_name_prefixes``) and :func:`_check_name_prefixes`
+re-runs that before anything registers. A module id can never be ``core``, so no
+module job kind or consumer id can land on a core one. The registries themselves stay
+unchanged: the core's own tools carry no ``core_`` prefix (``workspace_status``), so the
+rule is a module rule and lives on the module's side. That also means a module whose
+id is ``workspace`` could still name a tool ``workspace_status``; ``ToolRegistry``
+refuses the duplicate loudly rather than replacing the core's, so it is a clash at
+startup and not a silent takeover.
 
-That is an asymmetry with the two guards above rather than an oversight, and the
-reason is what is missing from the contract. Events get a namespacing rule because
-``module-contract.md`` ratifies the grammar ``<module_id>.<record_type>.<verb>`` for
-them; subscriptions get an ownership check because a ``ConsumerSubscription`` carries
-the ``module_id`` there is something to check it against. Neither holds for a job-kind
-name: the contract states no prefix rule for one, so a guard here would have to invent
-the grammar it enforced, which is a ratification and not an implementation. Closing it
-waits on that rule — the position ``tokens/sets.py`` already records for tool names
-(nothing binds a tool's name to its registering origin, for want of a ratified prefix
-rule), and the deferral the plan already applies to an event registry and a
-``publish()`` gate over undeclared types. Nothing in the checkout declares a job kind
-or a subscription today, so this is a contract gap and not a live exposure.
+**Web surface names are unique across modules (issue #123).** :func:`check_web_surfaces`
+refuses two manifests claiming one ``WebSurface.surface``, from :func:`load_modules`
+and from ``rheo web compose``, so the generated file and :func:`module_surfaces` cannot
+disagree about which module owns a surface.
 
 **Loading a module widens every workspace provisioned afterwards, and that is not a
 bug to fix here.** ``settings.schema.REGISTRY`` is process-global, and
@@ -108,7 +107,7 @@ with the name it was found under, because otherwise the allowlist would gate one
 while a different one registered.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from graphlib import CycleError, TopologicalSorter
 from importlib.metadata import EntryPoint, entry_points
 from typing import Final
@@ -122,11 +121,13 @@ from rheo_core.deletion.registry import (
     OwnedDeletion,
     OwnedDeletionRegistry,
 )
-from rheo_core.events.consumers import ConsumerRegistry
+from rheo_core.events.consumers import ConsumerRegistry, ConsumerUnknown
 from rheo_core.modules.manifest import (
     ManifestInvalid,
     ModuleManifest,
     WebSurface,
+    check_module_id,
+    check_name_prefixes,
     check_sensitivity,
 )
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
@@ -372,8 +373,9 @@ def load_modules(
     **No manifest is registered until the whole loaded set has passed every check
     this module makes.** The permitted manifests are collected first, each gated on
     the entry-point name and on the contract version; then the set's event
-    declarations, subscription ownership, dependency ranges and dependency graph are
-    checked; and only then is anything registered, in dependency-sorted order. So a
+    declarations, subscription ownership, name prefixes, web surface names,
+    dependency ranges and dependency graph are checked; and only then is anything
+    registered, in dependency-sorted order. So a
     ``ManifestInvalid`` raised here leaves every registry as it found it rather than
     stranding half a set behind the manifest that failed — which matters most on a
     multi-module load, where the alternative is an earlier module fully registered
@@ -400,7 +402,21 @@ def load_modules(
         manifests.append(load_entry_point(entry_point))
     _check_events(manifests)
     _check_subscriptions(manifests)
+    _check_name_prefixes(manifests)
     _check_redaction(manifests)
+    # Against what this process already loaded as well as the incoming set:
+    # ``module_surfaces()`` reads the accumulated ``_LOADED`` table, so a surface an
+    # earlier load registered is one this load must not collide with. A manifest
+    # arriving again under the same id replaces its earlier self and is not counted
+    # twice.
+    incoming = {manifest.module_id for manifest in manifests}
+    check_web_surfaces(
+        (
+            *(m for module_id, m in _LOADED.items() if module_id not in incoming),
+            *manifests,
+        )
+    )
+    _check_no_replacement(manifests, tools=tools, kinds=kinds, consumers=consumers)
     loaded: list[str] = []
     for manifest in _dependency_order(manifests):
         _register(
@@ -573,6 +589,137 @@ def _check_subscriptions(manifests: Sequence[ModuleManifest]) -> None:
                     f"declares subscription {subscription.consumer_id!r} owned by "
                     f"module {subscription.module_id!r}",
                 )
+
+
+def _check_name_prefixes(manifests: Sequence[ModuleManifest]) -> None:
+    """The name-prefix rule for tools, job kinds and consumer ids, again (#132).
+
+    The manifest's own validator already ran
+    :func:`~rheo_core.modules.manifest.check_name_prefixes`; this re-runs it before
+    anything registers, for :func:`_check_redaction`'s reason — a manifest built with
+    ``model_construct`` skips validators, and a job kind named ``core.retention_sweep``
+    reaching ``JobKindRegistry`` would replace the core's handler without a word.
+    """
+    for manifest in manifests:
+        try:
+            # The id first: every prefix below is derived from it, so a manifest
+            # claiming the reserved ``core`` (or any id outside the grammar) would
+            # otherwise pass the prefix rule for ``core.retention_sweep``.
+            check_module_id(manifest.module_id)
+            check_name_prefixes(
+                module_id=manifest.module_id,
+                tools=manifest.tools,
+                jobs=manifest.jobs,
+                subscriptions=manifest.subscriptions,
+            )
+        except ValueError as refusal:
+            raise ManifestInvalid(manifest.module_id, str(refusal)) from refusal
+
+
+def _check_no_replacement(
+    manifests: Sequence[ModuleManifest],
+    *,
+    tools: ToolRegistry,
+    kinds: JobKindRegistry | None,
+    consumers: ConsumerRegistry | None,
+) -> None:
+    """Refuse a module tool, job kind or consumer id that would replace one already
+    registered, or that another manifest in this set also declares.
+
+    ``JobKindRegistry`` and ``ConsumerRegistry`` are last-writer-wins, so without this
+    a module's registration would silently displace the core's (or another module's)
+    handler. ``ToolRegistry`` already refuses a duplicate, but only part-way through
+    registration; checking here keeps the "a refusal leaves every registry untouched"
+    promise :func:`load_modules` makes. The prefix rule makes a collision with a core
+    name impossible for a validated manifest; this is the second layer, keyed on what
+    the registries actually hold rather than on the name's spelling.
+
+    **An identical re-registration by the same module is not a replacement**:
+    ``apps/core``'s lifespan loads more than once per process, and every registry
+    treats that as a no-op. Identical means the same declaration (tools, with the same
+    origin), the same input model and handler (job kinds), or an equal subscription
+    (consumers).
+    """
+    claimed: dict[str, str] = {}
+
+    def claim(kind: str, name: str, module_id: str) -> None:
+        owner = claimed.get(f"{kind}:{name}")
+        if owner is not None:
+            raise ManifestInvalid(
+                module_id,
+                f"declares {kind} {name!r}, which module {owner!r} also declares; "
+                "a module may not replace a registered name",
+            )
+        claimed[f"{kind}:{name}"] = module_id
+
+    for manifest in manifests:
+        module_id = manifest.module_id
+        for tool in manifest.tools:
+            claim("tool", tool.name, module_id)
+            existing_tool = tools.lookup(tool.name)
+            if existing_tool is not None and (
+                existing_tool.declaration != tool or existing_tool.origin != module_id
+            ):
+                raise ManifestInvalid(
+                    module_id,
+                    f"declares tool {tool.name!r}, which is already registered "
+                    f"(origin {existing_tool.origin!r}); a module may not replace "
+                    "a registered name",
+                )
+        for job in manifest.jobs:
+            claim("job kind", job.name, module_id)
+            if kinds is not None and job.name in kinds.names():
+                if kinds.lookup(job.name) != (job.input_model, job.handler):
+                    raise ManifestInvalid(
+                        module_id,
+                        f"declares job kind {job.name!r}, which is already "
+                        "registered with another handler; a module may not replace "
+                        "a registered name",
+                    )
+        for subscription in manifest.subscriptions:
+            claim("consumer id", subscription.consumer_id, module_id)
+            if consumers is None:
+                continue
+            try:
+                existing_subscription = consumers.lookup(subscription.consumer_id)
+            except ConsumerUnknown:
+                continue
+            if existing_subscription != subscription:
+                raise ManifestInvalid(
+                    module_id,
+                    f"declares consumer id {subscription.consumer_id!r}, which is "
+                    f"already registered by module "
+                    f"{existing_subscription.module_id!r}; a module may not replace "
+                    "a registered name",
+                )
+
+
+def check_web_surfaces(manifests: Iterable[ModuleManifest]) -> None:
+    """Refuse two manifests whose web contributions claim one surface name (#123).
+
+    :func:`module_surfaces` keys by ``WebSurface.surface`` and keeps one entry per
+    name, while ``rheo web compose`` emits every contribution. Two modules sharing a
+    surface name would therefore compose both sets of screens and route only one, so
+    the generated file and the runtime routing configuration would disagree. The one
+    check runs from both paths — :func:`load_modules` before anything registers, and
+    ``rheo web compose``'s ``installed_manifests()`` — so neither can admit a set the
+    other refuses.
+
+    The refusal names both module ids and the surface.
+    """
+    claimed_by: dict[str, str] = {}
+    for manifest in manifests:
+        if manifest.web is None:
+            continue
+        surface = manifest.web.surface.surface
+        owner = claimed_by.get(surface)
+        if owner is not None:
+            raise ManifestInvalid(
+                manifest.module_id,
+                f"declares web surface {surface!r}, which module {owner!r} already "
+                "declares; one surface name belongs to exactly one module",
+            )
+        claimed_by[surface] = manifest.module_id
 
 
 def _dependency_order(
