@@ -310,6 +310,27 @@ def test_denylist_drops_an_exempt_line_that_differs_only_in_case_and_spacing(
     )
 
 
+@pytest.mark.parametrize("shape", ["not-utf8", "directory"])
+def test_an_unreadable_exempt_file_is_a_refusal_that_never_quotes_it(
+    private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], shape: str
+) -> None:
+    out = private_root / "denylist-out"
+    out.mkdir()
+    exempt = out / cli.EXEMPT_FILE_NAME
+    if shape == "directory":
+        exempt.mkdir()
+    else:
+        exempt.write_bytes(b"synthetic exempt line \xff\xfe\n")
+
+    assert _run(tmp_path, out) == 1
+
+    assert not (out / cli.DENYLIST_FILE_NAME).exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"{cli.INPUT_UNREADABLE}: ")
+    assert "synthetic exempt line" not in captured.err
+
+
 def test_denylist_refuses_an_out_dir_outside_the_private_root(
     private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

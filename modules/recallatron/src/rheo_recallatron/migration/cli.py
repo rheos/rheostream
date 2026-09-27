@@ -107,7 +107,12 @@ def read_harvest_queries(path: Path) -> list[str]:
 def _read_exempt(path: Path) -> list[str]:
     if not path.exists():
         return []
-    return path.read_text(encoding="utf-8").splitlines()
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as error:
+        raise InputRefusal(
+            INPUT_UNREADABLE, f"cannot read the exempt file {path}"
+        ) from error
 
 
 def _write_private_lines(path: Path, lines: Sequence[str]) -> None:
