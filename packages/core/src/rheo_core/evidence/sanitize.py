@@ -38,6 +38,16 @@ grouping fix in the ``disregard`` pattern (commented where it sits); the unancho
 ones are matched against the segment with its whitespace collapsed, so a line break
 inside a phrase does not hide it. The list is a floor, not the guarantee: the
 guarantees are structural (spec Technical Risks R2).
+
+**Known gap, accepted for 1a4a only; close it before any real extraction provider is
+enabled (1a4b, gate B).** Payload removal works on whole segments. A JSON object or
+array, or an XML or ``<tool_use>`` block, on the line directly after a prose line
+inside the same segment is not the whole segment, so it survives as kept text. The
+same holds for CRLF-joined text: ``_SEGMENT_BREAK`` matches only ``\\n``-separated
+blank lines, so a ``\\r\\n\\r\\n`` break leaves the text as one segment and the
+whole-segment rules never see its parts. This is acceptable today only because the
+production provider is ``"none"``, so no kept text reaches a model. A test pins the
+current behaviour (``test_known_residual_payload_after_prose_line_survives``).
 """
 
 import json

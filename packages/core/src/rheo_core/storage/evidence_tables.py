@@ -121,6 +121,12 @@ evidence_unit = Table(
         "(state = 'pending') = (outcome IS NULL)",
         name="evidence_unit_outcome_pairing",
     ),
+    # The retention sweep deletes on settled_at, so a non-pending row without one
+    # would never be purged.
+    CheckConstraint(
+        "(state = 'pending') = (settled_at IS NULL)",
+        name="evidence_unit_settled_pairing",
+    ),
     # The unit identity, and the ON CONFLICT target the recorder names.
     Index(
         "evidence_unit_native_key",

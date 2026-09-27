@@ -49,6 +49,7 @@ CHECK_CONSTRAINTS = {
     "evidence_unit_state",
     "evidence_unit_body_pairing",
     "evidence_unit_outcome_pairing",
+    "evidence_unit_settled_pairing",
 }
 INDEXES = {
     "evidence_unit_pkey",
@@ -63,7 +64,11 @@ def _engine(cluster: ClusterSession, workspace_id: UUID) -> tuple[str, Engine]:
 
 
 def _row(**overrides: Any) -> dict[str, Any]:
-    """A valid pending unit; each probe overrides the columns it attacks."""
+    """A valid pending unit; each probe overrides the columns it attacks.
+
+    A probe that moves ``state`` off ``pending`` gets a ``settled_at`` too, unless it
+    names one itself, so each probe attacks only the pairing it means to.
+    """
     now = datetime.now(tz=UTC)
     operation_id = uuid7()
     values: dict[str, Any] = {
@@ -84,6 +89,8 @@ def _row(**overrides: Any) -> dict[str, Any]:
         "created_at": now,
         "settled_at": None,
     }
+    if overrides.get("state", "pending") != "pending" and "settled_at" not in overrides:
+        values["settled_at"] = now
     values.update(overrides)
     return values
 
@@ -264,6 +271,31 @@ def test_outcome_is_null_exactly_while_pending(
     )
 
 
+def test_settled_at_is_null_exactly_while_pending(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    """The sweep deletes on ``settled_at``; a non-pending row without one never goes."""
+    _, engine = _engine(cluster, workspace)
+    now = datetime.now(tz=UTC)
+    _refused(engine, "evidence_unit_settled_pairing", state="pending", settled_at=now)
+    _refused(
+        engine,
+        "evidence_unit_settled_pairing",
+        state="settled",
+        body=None,
+        outcome="active",
+        settled_at=None,
+    )
+    _refused(
+        engine,
+        "evidence_unit_settled_pairing",
+        state="gap",
+        body=None,
+        outcome="expired_pending",
+        settled_at=None,
+    )
+
+
 def test_producer_kind_and_native_key_length_are_bounded(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
@@ -349,6 +381,8 @@ def test_migration_downgrade_path_leaves_nothing_behind_and_upgrades_again(
     with engine.connect() as connection:
         assert recorded_revisions(connection, CORE_CHAIN) == {HEAD}
         assert _catalog(connection) == present
+        # Every named CHECK comes back, the settled_at pairing included.
+        assert present["constraints"] >= CHECK_CONSTRAINTS
     _admitted(engine)
 
 
