@@ -44,5 +44,6 @@ export const refusesMissingScreen = [
     recordViews: [],
     forms: [],
     searchProviders: [],
+    readOperations: [],
   },
 ] as const satisfies readonly ComposedModule[];

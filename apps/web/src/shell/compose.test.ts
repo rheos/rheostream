@@ -111,6 +111,7 @@ describe("the role filter, over an injected module", () => {
       recordViews: [],
       forms: [],
       searchProviders: [],
+      readOperations: [],
     },
   ];
   const options = { routingModules: { ledger: {} }, enabledModuleIds: ["ledger"] };
