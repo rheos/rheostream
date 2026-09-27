@@ -4,7 +4,9 @@ Seams: ``rheo_core.settings.resolve()`` (three-source precedence; undeclared key
 refused at every source; env coercion for the four value types, the uppercased
 variant and the ``RHEO_PROFILE`` special case), the registry/``defaults.toml``
 identity check, and the harness registration gate. The floor comparators and the
-write path are in ``test_settings_floor.py``.
+write path are in ``test_settings_floor.py``; the ``automatic_memory.*`` block below
+proves its two floors (``and`` on ``enabled`` with the explicit-row half, ``min`` on
+``max_pending_hours``) on the production keys themselves.
 
 No test here builds a ``WorkspaceContext``: ``resolve`` takes ids, not a context.
 """
@@ -35,24 +37,38 @@ from rheo_core.settings import (
     FrozenValue,
     KeySpec,
     Scope,
+    SettingAccepted,
     SettingOriginRefused,
     SettingRedeclared,
+    SettingRefusal,
     SettingsDeclarationMismatch,
     SettingTypeMismatch,
     SettingUndeclared,
     ValueType,
     assert_registry_matches,
     deployment_toml_path,
+    encode_text,
     env_variable_names,
     load_package_defaults,
     register,
     resolve,
     spec_for,
+    validate_override,
 )
 from rheo_core.settings.schema import check_value, decode_text
 
 WORKSPACE = UUID("018f0000-0000-7000-8000-000000000001")
 ACCOUNT = UUID("018f0000-0000-7000-8000-000000000002")
+
+AUTOMATIC_ENABLED = "automatic_memory.enabled"
+AUTOMATIC_PENDING_HOURS = "automatic_memory.max_pending_hours"
+AUTOMATIC_LIMITS = (
+    "automatic_memory.max_bytes_per_attempt",
+    "automatic_memory.max_records_per_attempt",
+    "automatic_memory.max_units_per_job",
+    AUTOMATIC_PENDING_HOURS,
+)
+AUTOMATIC_PROVIDER = "automatic_memory.extraction.provider"
 
 # The third copy of the production key set, and the reason a key lands in three files
 # at once: ``schema.py`` declares it, ``config/defaults.toml`` carries its value, and
@@ -115,6 +131,12 @@ PRODUCTION_KEYS = {
     "telemetry.tool_max_rows": 10000,
     "redaction.internal_purposes": ("respond", "follow_up", "internal_analysis"),
     "redaction.contact_points_to_model": False,
+    "automatic_memory.enabled": False,
+    "automatic_memory.max_bytes_per_attempt": 1048576,
+    "automatic_memory.max_records_per_attempt": 1000,
+    "automatic_memory.max_units_per_job": 64,
+    "automatic_memory.max_pending_hours": 24,
+    "automatic_memory.extraction.provider": "none",
 }
 
 FLOORED_KEYS = frozenset(
@@ -131,6 +153,11 @@ FLOORED_KEYS = frozenset(
         "telemetry.tool_max_rows",
         "redaction.internal_purposes",
         "redaction.contact_points_to_model",
+        "automatic_memory.enabled",
+        "automatic_memory.max_bytes_per_attempt",
+        "automatic_memory.max_records_per_attempt",
+        "automatic_memory.max_units_per_job",
+        "automatic_memory.max_pending_hours",
     }
 )
 """The production keys a workspace may override, each with a floor.
@@ -250,6 +277,28 @@ def test_the_registry_declares_every_production_key_and_its_shape() -> None:
             assert spec_for(key).scope is Scope.DEPLOYMENT
             assert spec_for(key).floor is None
     assert spec_for("profile").choices == ("production", "development", "test")
+    enabled = spec_for(AUTOMATIC_ENABLED)
+    assert (enabled.scope, enabled.floor, enabled.type) == (
+        Scope.WORKSPACE,
+        Floor.AND,
+        ValueType.BOOL,
+    )
+    for key in AUTOMATIC_LIMITS:
+        limit = spec_for(key)
+        assert (limit.scope, limit.floor, limit.type, limit.minimum) == (
+            Scope.WORKSPACE,
+            Floor.MIN,
+            ValueType.INT,
+            1,
+        ), key
+    provider = spec_for(AUTOMATIC_PROVIDER)
+    assert (provider.scope, provider.floor, provider.type) == (
+        Scope.DEPLOYMENT,
+        None,
+        ValueType.STR,
+    )
+    for key in (AUTOMATIC_ENABLED, *AUTOMATIC_LIMITS, AUTOMATIC_PROVIDER):
+        assert spec_for(key).explicit_per_workspace is False, key
 
 
 def test_defaults_toml_loads_from_the_installed_package() -> None:
@@ -259,6 +308,118 @@ def test_defaults_toml_loads_from_the_installed_package() -> None:
         for key, value in loaded.items()
     }
     assert frozen == PRODUCTION_KEYS
+
+
+# --- automatic_memory.* (run 1a4, FR 9) -----------------------------------------------
+
+
+def _workspace_rows(**rows: object) -> Rows:
+    return Rows(
+        workspace={
+            key: encode_text(spec_for(key), value)  # type: ignore[arg-type]
+            for key, value in rows.items()
+        }
+    )
+
+
+def _automatic_memory_on(rows: Rows) -> bool:
+    """The recorder's condition-1 predicate over resolved settings.
+
+    ``Floor.AND`` gives the operator's permission; the explicit-row half is what
+    makes "no workspace row" mean off, exactly as ``TierPolicy.contact_points_allowed``
+    reads ``redaction.contact_points_to_model``.
+    """
+    settings = resolve(workspace_id=WORKSPACE, source=rows)
+    return settings.set_by_workspace(AUTOMATIC_ENABLED) and settings.get_bool(
+        AUTOMATIC_ENABLED
+    )
+
+
+@pytest.mark.parametrize(
+    ("operator", "workspace", "expected"),
+    [
+        (None, None, False),  # the package default, no row
+        (None, True, False),  # a workspace cannot switch on what the operator did not
+        ("false", True, False),
+        ("true", None, False),  # the operator's permission alone is not an opt-in
+        ("true", False, False),  # a workspace may keep it off
+        ("true", True, True),  # the only on state
+    ],
+)
+def test_automatic_memory_is_on_only_with_operator_and_explicit_workspace_row(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operator: str | None,
+    workspace: bool | None,
+    expected: bool,
+) -> None:
+    if operator is not None:
+        monkeypatch.setenv("RHEO__automatic_memory__enabled", operator)
+    rows = (
+        _workspace_rows()
+        if workspace is None
+        else _workspace_rows(**{AUTOMATIC_ENABLED: workspace})
+    )
+    assert _automatic_memory_on(rows) is expected
+
+
+@pytest.mark.parametrize("operator", [None, "false"])
+def test_a_workspace_true_under_an_operator_false_is_refused_and_resolves_false(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch, operator: str | None
+) -> None:
+    if operator is not None:
+        monkeypatch.setenv("RHEO__automatic_memory__enabled", operator)
+    deployment = resolve()[AUTOMATIC_ENABLED]
+    assert deployment is False
+    refusal = validate_override(AUTOMATIC_ENABLED, True, deployment)
+    assert isinstance(refusal, SettingRefusal), refusal
+    assert refusal.state == "setting_floor_violation"
+    assert AUTOMATIC_ENABLED in refusal.detail
+    # A stored row that got past the write path is clamped by the floor on read.
+    rows = _workspace_rows(**{AUTOMATIC_ENABLED: True})
+    assert resolve(workspace_id=WORKSPACE, source=rows)[AUTOMATIC_ENABLED] is False
+    assert _automatic_memory_on(rows) is False
+
+
+def test_a_workspace_may_lower_max_pending_hours(data_root: Path) -> None:
+    deployment = resolve()[AUTOMATIC_PENDING_HOURS]
+    assert deployment == 24
+    accepted = validate_override(AUTOMATIC_PENDING_HOURS, 6, deployment)
+    assert isinstance(accepted, SettingAccepted), accepted
+    rows = Rows(workspace={AUTOMATIC_PENDING_HOURS: accepted.encoded})
+    assert resolve(workspace_id=WORKSPACE, source=rows)[AUTOMATIC_PENDING_HOURS] == 6
+
+
+def test_a_workspace_may_not_raise_max_pending_hours(data_root: Path) -> None:
+    deployment = resolve()[AUTOMATIC_PENDING_HOURS]
+    refusal = validate_override(AUTOMATIC_PENDING_HOURS, 48, deployment)
+    assert isinstance(refusal, SettingRefusal), refusal
+    assert refusal.state == "setting_floor_violation"
+    assert AUTOMATIC_PENDING_HOURS in refusal.detail
+    # A stored raising row is clamped to the deployment value and left in place.
+    rows = _workspace_rows(**{AUTOMATIC_PENDING_HOURS: 48})
+    assert resolve(workspace_id=WORKSPACE, source=rows)[AUTOMATIC_PENDING_HOURS] == 24
+    assert rows.workspace == {AUTOMATIC_PENDING_HOURS: "48"}
+
+
+def test_the_operator_raises_max_pending_hours_through_the_deployment_layer(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Raising the bound is a deployment write; AC 6's fixture relies on this path."""
+    monkeypatch.setenv("RHEO__automatic_memory__max_pending_hours", "48")
+    assert resolve()[AUTOMATIC_PENDING_HOURS] == 48
+    assert resolve(workspace_id=WORKSPACE, source=Rows())[AUTOMATIC_PENDING_HOURS] == 48
+
+
+def test_the_extraction_provider_is_none_and_has_no_workspace_override(
+    data_root: Path,
+) -> None:
+    assert resolve()[AUTOMATIC_PROVIDER] == "none"
+    refusal = validate_override(AUTOMATIC_PROVIDER, "fake", "none")
+    assert isinstance(refusal, SettingRefusal), refusal
+    assert refusal.state == "setting_scope"
+    rows = _workspace_rows(**{AUTOMATIC_PROVIDER: "fake"})
+    assert resolve(workspace_id=WORKSPACE, source=rows)[AUTOMATIC_PROVIDER] == "none"
 
 
 def test_the_reconcile_floor_exceeds_the_pool_idle_window() -> None:

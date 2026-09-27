@@ -29,7 +29,15 @@ from sqlalchemy.dialects.postgresql import UUID
 from rheo_core.storage.core_tables import CORE_SCHEMA
 
 EVIDENCE_PRODUCER_KINDS: Final = ("rheo_runtime",)
-"""Producers this revision admits. 1a4b's own migration widens it."""
+"""Frozen at revision ``0010_evidence_unit``'s set; do not edit this tuple.
+
+0010 builds ``core.evidence_unit`` from this module via ``create_all``, so changing the
+tuple would change what 0010 creates. A later producer (1a4b) is admitted through its
+own migration plus a live-shape sibling object, the ``runtime_tables.py`` pattern
+(``runtime_session_0006`` frozen, ``runtime_session`` live, revision 0009). The same
+holds for ``EVIDENCE_PURPOSES`` below, derived from ``ContextPurpose``: a new purpose
+needs its own migration, not an edit that changes what 0010 creates.
+"""
 EVIDENCE_AUDIENCE_KINDS: Final = ("workspace", "member")
 EVIDENCE_PURPOSES: Final = tuple(purpose.value for purpose in ContextPurpose)
 EVIDENCE_STATES: Final = ("pending", "settled", "gap")

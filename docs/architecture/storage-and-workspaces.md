@@ -453,11 +453,15 @@ relax the deployment value:
 The resolver implements all four comparators, and each has a declared key: `min` on
 `runtime.max_deadline_seconds`, `runtime.max_context_bytes`,
 `runtime.transcript_retention_days`, `approvals.max_window_seconds`,
-`identity.token_max_days.*` and the two `telemetry.*` keys; `subset` on
+`identity.token_max_days.*`, the two `telemetry.*` keys and the four automatic-memory
+limits (`automatic_memory.max_bytes_per_attempt`, `automatic_memory.max_records_per_attempt`,
+`automatic_memory.max_units_per_job`, `automatic_memory.max_pending_hours`); `subset` on
 `runtime.allowed_runtimes`, `runtime.allowed_models` and `redaction.internal_purposes`;
-`and` on `redaction.contact_points_to_model`; `union` on `<module>.redaction.exclude_types`,
-which the module loader declares for every loaded module that owns a record type (issue
-#130). `approvals.confirm_operations` and `approvals.standing_grant_classes` are not declared
+`and` on `redaction.contact_points_to_model` and `automatic_memory.enabled`; `union` on
+`<module>.redaction.exclude_types`, which the module loader declares for every loaded module
+that owns a record type (issue #130). `automatic_memory.extraction.provider` is a
+deployment-only key with no floor, default `"none"`, that selects the extraction provider.
+`approvals.confirm_operations` and `approvals.standing_grant_classes` are not declared
 yet; a standing grant's classes are fixed in code to read, draft and mutate.
 
 Enforcement is in two places on purpose: the settings write path validates against the resolved
