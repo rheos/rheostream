@@ -10,18 +10,21 @@ This is a route through the code that exists today. The
 
 ## Follow a request
 
-```mermaid
-flowchart TD
-    Web[Next.js web shell] --> Core[FastAPI core]
-    Agent[Agent / MCP client] --> MCP[MCP facade mounted in core]
-    MCP --> Core
-    Core --> Context[Server-resolved workspace context]
-    Context --> Dispatch[Authorize and dispatch operation]
-    Dispatch --> Module[Recallatron or core handler]
-    Module --> Workspace[(Workspace database)]
-    Worker[Durable worker] --> Workspace
-    Worker --> Control[(Control database: workspace registry and due-work index)]
-    Context --> Control
+```text
+Next.js web shell                  Agent / MCP client
+        |                                  |
+        +----------> FastAPI core <--------+
+                     (MCP mounted here)
+                              |
+                  Server-resolved context ----> Control database
+                              |                 registry + due index
+                  Authorize and dispatch                 ^
+                              |                          |
+                   Core / Recallatron handler      Durable worker
+                              |                          |
+                              v                          v
+                       Workspace database <--------------+
+                       records, audit, jobs, outbox
 ```
 
 The web shell calls core's internal API. MCP is mounted in the core process.
