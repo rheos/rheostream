@@ -1715,7 +1715,7 @@ registry would not catch a harness consumer there either`. Reverted.
 diff --git a/packages/core/src/rheo_core/approvals/gate.py b/packages/core/src/rheo_core/approvals/gate.py
 --- a/packages/core/src/rheo_core/approvals/gate.py
 +++ b/packages/core/src/rheo_core/approvals/gate.py
-@@ -421,16 +421,6 @@ def execute_approved(
+@@ -457,16 +457,6 @@ def execute_approved(
      # only a rebuild failure they did *not* catch — a tampered ``purpose`` column, a
      # missing provenance row — reaches the raise below, where a rollback is the right
      # answer because nothing was decided.
@@ -1731,7 +1731,7 @@ diff --git a/packages/core/src/rheo_core/approvals/gate.py b/packages/core/src/r
 -        return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)
      if isinstance(held_caller, Refusal):
          raise OperationRefused(held_caller.state, str(held_caller))
-     output = operation.handler(
+     held_view = HandlerUnitOfWork(
 ```
 
 **Cost:**
@@ -1740,9 +1740,14 @@ diff --git a/packages/core/src/rheo_core/approvals/gate.py b/packages/core/src/r
 - `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_token_refuses_approved_execution` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
 - `pytest:tests/postgres/test_approvals.py::test_a_refusing_guard_stops_the_effect_and_a_permitting_one_does_not` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
 
-4 failed, 41 passed across `tests/postgres/test_approvals.py` and `tests/postgres/test_standing_grants.py`.
+4 failed, 43 passed across `tests/postgres/test_approvals.py` and `tests/postgres/test_standing_grants.py` (41 passed at the 1a1 recapture; the two files have gained tests since).
 
-**Performed by:** C6 (2026-09-16), C7 (2026-09-17), 1a1 P1 (2026-09-20)
+**Performed by:** C6 (2026-09-16), C7 (2026-09-17), 1a1 P1 (2026-09-20), #180 (2026-09-26)
+
+**Recaptured again for #180.** That fix keeps the held handler's view in a local so the gate
+can pass its due-mark request up to the approve dispatch, which changed the hunk's last context
+line and moved it 36 lines down. The removed lines are the same ten, byte for byte, and the same
+four nodes redden.
 
 **What the hunk attacks, and why this one.** It deletes the guard-check step from
 `execute_approved` — the `run_guards` call and the branch that records its refusal — leaving the
