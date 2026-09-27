@@ -14,7 +14,7 @@ import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
@@ -442,20 +442,35 @@ def _credential_scope(settings: ResolvedSettings) -> str:
     return "api_key"
 
 
-def _job_account_id(payload: RuntimeJobPayload) -> tuple[UUID | None, str | None]:
-    """The run's backing account, and the presenting token's ``access_token.kind``.
+class JobActor(NamedTuple):
+    """Who a runtime job acts for, as read once from the stored caller.
 
-    The kind is ``None`` for an account actor, and for a token row that no longer
-    exists. One control-plane read serves both: the account refusal and the evidence
-    hook's attribution check (``rheo_core.evidence.record.recording_allowed``).
+    ``token_kind`` is the presenting token's ``access_token.kind``: ``None`` for an
+    account actor, and for a token row that no longer exists.
+    """
+
+    account_id: UUID | None
+    token_kind: str | None
+
+
+_NO_ACTOR: Final = JobActor(account_id=None, token_kind=None)
+
+
+def _job_actor(payload: RuntimeJobPayload) -> JobActor:
+    """The run's backing account and token kind, from one control-plane read.
+
+    That one read serves both the account refusal and the evidence hook's
+    attribution check (``rheo_core.evidence.record.recording_allowed``).
     """
     if payload.actor_kind == ActorKind.ACCOUNT.value:
-        return payload.actor_id, None
+        return JobActor(account_id=payload.actor_id, token_kind=None)
     if payload.actor_kind == ActorKind.TOKEN.value and payload.actor_id is not None:
         with get_backend().control_engine.connect() as connection:
             row = get_access_token(connection, payload.actor_id)
-        return (None, None) if row is None else (row.account_id, row.kind)
-    return None, None
+        if row is None:
+            return _NO_ACTOR
+        return JobActor(account_id=row.account_id, token_kind=row.kind)
+    return _NO_ACTOR
 
 
 def _fail(
@@ -804,7 +819,7 @@ def make_run_runtime_job(
                     error_text=str(ctx),
                 )
                 return
-            account_id, token_kind = _job_account_id(payload)
+            account_id, token_kind = _job_actor(payload)
             adapter = registry.lookup(payload.runtime_id)
             if adapter is None:
                 _fail(
