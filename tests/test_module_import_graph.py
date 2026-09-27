@@ -31,6 +31,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_module_storage_ownership.py",
     "tests/postgres/test_tool_telemetry.py",
     "tests/test_flagship_overlay.py",
+    "tests/test_migration_private_paths.py",
     "tests/test_module_import_graph.py",
     "tests/test_module_name_prefixes.py",
     "tests/test_module_settings_order.py",
@@ -70,7 +71,10 @@ checks the flagship deploy overlay, which installs Recallatron, and its Traefik 
 set must equal the application hosts with Recallatron's real web surface present —
 a fixture module would not prove the deployed host set; none has a substitute,
 because a fixture module has no migration chain, no owned-delete declaration and no
-installed distribution metadata to report.
+installed distribution metadata to report, and ``test_migration_private_paths.py``
+(FR 18) drives the private-output allowlist guard through the real
+``rheo_recallatron.migration.private_paths`` module — a fixture module has no
+migration package for it to guard.
 
 ``tests/postgres/test_workspace_status.py`` was in this set and is deliberately not any
 more: it carries four phase-one acceptance demonstrators, and being *allowed* to name

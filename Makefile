@@ -12,7 +12,7 @@
 # (tests/conftest.py, pytest.exit) with a message naming the remedy — it never
 # skips, because a skipped `postgres` marker would pass this gate vacuously.
 
-.PHONY: install test test-fast test-pg-up test-pg-down lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts module-web-boundary flagship-config flagship-up flagship-down
+.PHONY: install test test-fast test-pg-up test-pg-down lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts module-web-boundary migration-output-gate flagship-config flagship-up flagship-down
 
 ABSENCE_PROOF_CONFIG := $(shell git rev-parse --git-path rheo-absence-config.json)
 ABSENCE_PROOF_CHECKOUT := $(shell git rev-parse --git-path rheo-absence-checkout.json)
@@ -260,6 +260,7 @@ check:
 	python3 scripts/check_search_boundary.py
 	python3 scripts/check_workspace_scripts.py
 	python3 scripts/check_module_web_boundary.py
+	python3 scripts/check_migration_outputs.py
 
 # Criterion 34: no predecessor-product name or generalized source-product-prefix
 # compound identifier in any tracked path, or in any tracked file's text outside
@@ -304,6 +305,14 @@ workspace-scripts:
 # it as its own step. Self-tests itself before scanning the real tree.
 module-web-boundary:
 	python3 scripts/check_module_web_boundary.py
+
+# FR 18 / AC 17: no tracked path matches a migration-output filename pattern (the
+# path gate, always active). CI never sets RHEO_PRIVATE_DENYLIST, so this recipe
+# never runs the optional leak-scan half locally described in the script's own
+# docstring — that half is invoked directly with the relevant CLI flag from Phase
+# 1R onward. Self-tests itself before scanning the real tree.
+migration-output-gate:
+	python3 scripts/check_migration_outputs.py
 
 # The tree must be committed first because checkout builds its comparison from HEAD.
 absence-proof:
