@@ -254,6 +254,181 @@ def test_the_loader_refuses_an_unvalidated_manifest_before_registering_anything(
     assert loaded_manifests() == {}
 
 
+# --- the loader re-checks the module id itself ----------------------------------------
+
+
+def _unvalidated_as(module_id: str, **overrides: object) -> ModuleManifest:
+    """``_unvalidated`` under another module id, storage renamed to match."""
+    return _unvalidated(
+        module_id=module_id,
+        storage=StorageDeclaration(
+            schema_name=module_id, migrations_path="m", required_extensions=()
+        ),
+        **overrides,
+    )
+
+
+RESERVED_ID_MANIFEST = _unvalidated_as("core", jobs=(_job("core.retention_sweep"),))
+"""The attack the reserved-id recheck exists for: ``core`` owns the ``core.`` prefix,
+so without the recheck this job kind passes the prefix rule and replaces the core's
+handler in the last-writer-wins registry."""
+
+BAD_GRAMMAR_MANIFEST = _unvalidated_as("_probe")
+
+
+@pytest.mark.parametrize(
+    ("module_id", "attribute", "expected"),
+    [
+        (
+            "core",
+            "RESERVED_ID_MANIFEST",
+            "core: module_id 'core' is the segment reserved for core records",
+        ),
+        (
+            "_probe",
+            "BAD_GRAMMAR_MANIFEST",
+            "_probe: module_id '_probe': a module id is a lowercase identifier "
+            "matching [a-z][a-z0-9_]{0,31}",
+        ),
+    ],
+    ids=["reserved-core", "outside-grammar"],
+)
+def test_the_loader_rechecks_the_module_id_of_an_unvalidated_manifest(
+    monkeypatch: pytest.MonkeyPatch, module_id: str, attribute: str, expected: str
+) -> None:
+    publish(
+        monkeypatch,
+        EntryPoint(
+            name=module_id, value=f"{__name__}:{attribute}", group=ENTRY_POINT_GROUP
+        ),
+    )
+    install(monkeypatch, module_id)
+    kinds = JobKindRegistry()
+
+    with pytest.raises(ManifestInvalid) as excinfo:
+        load_modules(
+            registry=OperationRegistry(),
+            resolvers=ResolverRegistry(),
+            tools=ToolRegistry(),
+            kinds=kinds,
+        )
+
+    assert str(excinfo.value) == expected
+    assert kinds.names() == frozenset()
+    assert loaded_manifests() == {}
+
+
+# --- no module replaces a name the registries already hold ----------------------------
+
+
+def _core_job_handler(*args: object) -> None:
+    """The handler already registered, which a module must not displace."""
+    return None
+
+
+class _CoreJobInput(BaseModel):
+    note: str
+
+
+FULL_MANIFEST = manifest(
+    MODULE_ID,
+    tools=(_tool(f"{MODULE_ID}_get_note"),),
+    jobs=(_job(f"{MODULE_ID}.reindex"),),
+    subscriptions=(_subscription(f"{MODULE_ID}.note.indexer"),),
+)
+FULL_ENTRY_POINT = EntryPoint(
+    name=MODULE_ID, value=f"{__name__}:FULL_MANIFEST", group=ENTRY_POINT_GROUP
+)
+
+
+def _load_full(
+    monkeypatch: pytest.MonkeyPatch,
+    tools: ToolRegistry,
+    kinds: JobKindRegistry,
+    consumers: ConsumerRegistry,
+) -> None:
+    publish(monkeypatch, FULL_ENTRY_POINT)
+    install(monkeypatch, MODULE_ID)
+    load_modules(
+        registry=OperationRegistry(),
+        resolvers=ResolverRegistry(),
+        tools=tools,
+        kinds=kinds,
+        consumers=consumers,
+    )
+
+
+def test_a_registered_job_kind_is_not_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools, kinds, consumers = ToolRegistry(), JobKindRegistry(), ConsumerRegistry()
+    kinds.register(f"{MODULE_ID}.reindex", _CoreJobInput, _core_job_handler)
+
+    with pytest.raises(ManifestInvalid) as excinfo:
+        _load_full(monkeypatch, tools, kinds, consumers)
+
+    assert str(excinfo.value) == (
+        "prefix_probe: declares job kind 'prefix_probe.reindex', which is already "
+        "registered with another handler; a module may not replace a registered name"
+    )
+    assert kinds.lookup(f"{MODULE_ID}.reindex") == (_CoreJobInput, _core_job_handler)
+    assert tools.names() == frozenset()
+
+
+def test_a_registered_consumer_is_not_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools, kinds, consumers = ToolRegistry(), JobKindRegistry(), ConsumerRegistry()
+    original = ConsumerSubscription(
+        consumer_id=f"{MODULE_ID}.note.indexer",
+        event_type="core.record.deleted",
+        module_id="core",
+        replay_safe=True,
+        handler=_core_job_handler,
+    )
+    consumers.register(original)
+
+    with pytest.raises(ManifestInvalid) as excinfo:
+        _load_full(monkeypatch, tools, kinds, consumers)
+
+    assert str(excinfo.value) == (
+        "prefix_probe: declares consumer id 'prefix_probe.note.indexer', which is "
+        "already registered by module 'core'; a module may not replace a registered "
+        "name"
+    )
+    assert consumers.lookup(f"{MODULE_ID}.note.indexer") is original
+    assert kinds.names() == frozenset()
+
+
+def test_a_registered_tool_is_refused_before_anything_registers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ToolRegistry`` refuses a duplicate itself, but part-way through a load; the
+    loader's check refuses it before the job kind or consumer land."""
+    tools, kinds, consumers = ToolRegistry(), JobKindRegistry(), ConsumerRegistry()
+    tools.register(_tool(f"{MODULE_ID}_get_note"), origin="core")
+
+    with pytest.raises(ManifestInvalid) as excinfo:
+        _load_full(monkeypatch, tools, kinds, consumers)
+
+    assert str(excinfo.value) == (
+        "prefix_probe: declares tool 'prefix_probe_get_note', which is already "
+        "registered (origin 'core'); a module may not replace a registered name"
+    )
+    assert kinds.names() == frozenset()
+
+
+def test_an_identical_reload_is_not_a_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``apps/core``'s lifespan loads twice per process under test."""
+    tools, kinds, consumers = ToolRegistry(), JobKindRegistry(), ConsumerRegistry()
+    _load_full(monkeypatch, tools, kinds, consumers)
+    _load_full(monkeypatch, tools, kinds, consumers)
+    assert kinds.names() == frozenset({f"{MODULE_ID}.reindex"})
+    assert tools.names() == frozenset({f"{MODULE_ID}_get_note"})
+
+
 # --- the shipped module passes --------------------------------------------------------
 
 

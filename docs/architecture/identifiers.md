@@ -121,7 +121,10 @@ names, job kinds and consumer ids. The last three are checked on the module's ma
 (`rheo_core.modules.manifest.check_name_prefixes`, re-run by the loader before anything
 registers) rather than in their registries: a module's tool must start with `<module>_`, its job
 kind and consumer id with `<module>.`, each followed by a non-empty remainder. Because a module id
-can never be `core`, a module can no longer replace a core job kind or consumer.
+can never be `core`, a module can no longer replace a core job kind or consumer. The loader also
+re-checks the module id itself (grammar and the reserved `core`) for a manifest that skipped
+validation, and refuses any module tool, job kind or consumer id that is already registered with a
+different declaration: a module registration refuses, it never replaces.
 
 **Named deviation: the core's own tools carry no prefix.** `workspace_status`, `operations_get`,
 `operations_list`, `audit_list` and `harness_get_note` are registered under the `core` origin

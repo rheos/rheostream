@@ -31,6 +31,7 @@ from rheo_core.boundary import Refusal, context_for_operator
 from rheo_core.modules import ManifestInvalid, load_modules
 from rheo_core.operations import dispatch
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
+from rheo_core.operations.refusals import RegistrationRefused
 from rheo_core.storage.control_plane import get_access_token
 from rheo_core.tokens.sets import register_core_tools
 
@@ -72,13 +73,20 @@ def load_operation_inventory() -> str | None:
     registry, because issuing a token runs none of them.
 
     Returns ``None`` on success, or the ``module_invalid: <detail>`` line to print when
-    the loader refuses the allowed set.
+    the loader, or a registry it calls, refuses the allowed set (``ManifestInvalid``
+    or ``RegistrationRefused``). A conflicting settings key is a ``SettingsError``,
+    which ``run_command`` already prints and exits ``1`` on.
     """
     register_core_tools()
     try:
         load_modules()
     except ManifestInvalid as invalid:
         return f"module_invalid: {invalid}"
+    except RegistrationRefused as refusal:
+        # A shipped registry refusing one of the loaded module's declarations (a
+        # tool naming a non-token-issuable operation, say), which the loader cannot
+        # run ahead of registration. The same operator fact, so the same state.
+        return f"module_invalid: {refusal}"
     return None
 
 

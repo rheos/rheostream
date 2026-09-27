@@ -807,6 +807,23 @@ class ConnectorBinding(BaseModel):
     route: str | None
 
 
+def check_module_id(module_id: object) -> None:
+    """The module id's own two rules: the configuration-identifier grammar, and not
+    the reserved ``core`` segment.
+
+    A function rather than inline in the validator so the loader can re-run it for a
+    manifest built with ``model_construct``: every other name check keys on the
+    module id, so a manifest claiming ``core`` would otherwise pass the prefix rule for
+    ``core.retention_sweep`` and reach the job-kind registry. Raises ``ValueError``.
+    """
+    if not isinstance(module_id, str) or not _MODULE_ID.fullmatch(module_id):
+        raise ValueError(f"module_id {module_id!r}: {_SEGMENT_MESSAGE}")
+    if is_reserved_module(module_id):
+        raise ValueError(
+            f"module_id {module_id!r} is the segment reserved for core records"
+        )
+
+
 def check_name_prefixes(
     *,
     module_id: str,
@@ -949,12 +966,7 @@ class ModuleManifest(BaseModel):
         manifest.
         """
         module_id = self.module_id
-        if not _MODULE_ID.fullmatch(module_id):
-            raise ValueError(f"module_id {module_id!r}: {_SEGMENT_MESSAGE}")
-        if is_reserved_module(module_id):
-            raise ValueError(
-                f"module_id {module_id!r} is the segment reserved for core records"
-            )
+        check_module_id(module_id)
         if self.storage.schema_name != module_id:
             # One module owns one schema, named for it: the resolver, the audit sink
             # and the migration all address the same place without being told twice.

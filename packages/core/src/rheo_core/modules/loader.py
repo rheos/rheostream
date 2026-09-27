@@ -121,11 +121,12 @@ from rheo_core.deletion.registry import (
     OwnedDeletion,
     OwnedDeletionRegistry,
 )
-from rheo_core.events.consumers import ConsumerRegistry
+from rheo_core.events.consumers import ConsumerRegistry, ConsumerUnknown
 from rheo_core.modules.manifest import (
     ManifestInvalid,
     ModuleManifest,
     WebSurface,
+    check_module_id,
     check_name_prefixes,
     check_sensitivity,
 )
@@ -415,6 +416,7 @@ def load_modules(
             *manifests,
         )
     )
+    _check_no_replacement(manifests, tools=tools, kinds=kinds, consumers=consumers)
     loaded: list[str] = []
     for manifest in _dependency_order(manifests):
         _register(
@@ -600,6 +602,10 @@ def _check_name_prefixes(manifests: Sequence[ModuleManifest]) -> None:
     """
     for manifest in manifests:
         try:
+            # The id first: every prefix below is derived from it, so a manifest
+            # claiming the reserved ``core`` (or any id outside the grammar) would
+            # otherwise pass the prefix rule for ``core.retention_sweep``.
+            check_module_id(manifest.module_id)
             check_name_prefixes(
                 module_id=manifest.module_id,
                 tools=manifest.tools,
@@ -608,6 +614,84 @@ def _check_name_prefixes(manifests: Sequence[ModuleManifest]) -> None:
             )
         except ValueError as refusal:
             raise ManifestInvalid(manifest.module_id, str(refusal)) from refusal
+
+
+def _check_no_replacement(
+    manifests: Sequence[ModuleManifest],
+    *,
+    tools: ToolRegistry,
+    kinds: JobKindRegistry | None,
+    consumers: ConsumerRegistry | None,
+) -> None:
+    """Refuse a module tool, job kind or consumer id that would replace one already
+    registered, or that another manifest in this set also declares.
+
+    ``JobKindRegistry`` and ``ConsumerRegistry`` are last-writer-wins, so without this
+    a module's registration would silently displace the core's (or another module's)
+    handler. ``ToolRegistry`` already refuses a duplicate, but only part-way through
+    registration; checking here keeps the "a refusal leaves every registry untouched"
+    promise :func:`load_modules` makes. The prefix rule makes a collision with a core
+    name impossible for a validated manifest; this is the second layer, keyed on what
+    the registries actually hold rather than on the name's spelling.
+
+    **An identical re-registration by the same module is not a replacement**:
+    ``apps/core``'s lifespan loads more than once per process, and every registry
+    treats that as a no-op. Identical means the same declaration (tools, with the same
+    origin), the same input model and handler (job kinds), or an equal subscription
+    (consumers).
+    """
+    claimed: dict[str, str] = {}
+
+    def claim(kind: str, name: str, module_id: str) -> None:
+        owner = claimed.get(f"{kind}:{name}")
+        if owner is not None:
+            raise ManifestInvalid(
+                module_id,
+                f"declares {kind} {name!r}, which module {owner!r} also declares; "
+                "a module may not replace a registered name",
+            )
+        claimed[f"{kind}:{name}"] = module_id
+
+    for manifest in manifests:
+        module_id = manifest.module_id
+        for tool in manifest.tools:
+            claim("tool", tool.name, module_id)
+            existing_tool = tools.lookup(tool.name)
+            if existing_tool is not None and (
+                existing_tool.declaration != tool or existing_tool.origin != module_id
+            ):
+                raise ManifestInvalid(
+                    module_id,
+                    f"declares tool {tool.name!r}, which is already registered "
+                    f"(origin {existing_tool.origin!r}); a module may not replace "
+                    "a registered name",
+                )
+        for job in manifest.jobs:
+            claim("job kind", job.name, module_id)
+            if kinds is not None and job.name in kinds.names():
+                if kinds.lookup(job.name) != (job.input_model, job.handler):
+                    raise ManifestInvalid(
+                        module_id,
+                        f"declares job kind {job.name!r}, which is already "
+                        "registered with another handler; a module may not replace "
+                        "a registered name",
+                    )
+        for subscription in manifest.subscriptions:
+            claim("consumer id", subscription.consumer_id, module_id)
+            if consumers is None:
+                continue
+            try:
+                existing_subscription = consumers.lookup(subscription.consumer_id)
+            except ConsumerUnknown:
+                continue
+            if existing_subscription != subscription:
+                raise ManifestInvalid(
+                    module_id,
+                    f"declares consumer id {subscription.consumer_id!r}, which is "
+                    f"already registered by module "
+                    f"{existing_subscription.module_id!r}; a module may not replace "
+                    "a registered name",
+                )
 
 
 def check_web_surfaces(manifests: Iterable[ModuleManifest]) -> None:
