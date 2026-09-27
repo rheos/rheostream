@@ -6,7 +6,8 @@ Seams:
 - the four refusal words, each by its own case: ``producer_mismatch``,
   ``source_unavailable`` (a settled row, a gap row, a missing row),
   ``speaker_mismatch`` and ``membership_revoked``;
-- the pending-only rule: only a ``pending`` row verifies;
+- the pending-only rule: only a ``pending`` row verifies, and the row is read ``FOR
+  SHARE`` in the caller's transaction;
 - the grant is the row's: principal, audience ceiling and ``bound_purpose`` come from
   core's row, never from the unit, for ``internal_analysis`` and
   ``share_with_referral`` alike;
@@ -52,7 +53,7 @@ from rheo_core.storage.evidence_tables import (
     STATE_SETTLED,
     evidence_unit,
 )
-from sqlalchemy import delete, update
+from sqlalchemy import delete, event, update
 
 pytestmark = pytest.mark.postgres
 
@@ -108,8 +109,13 @@ def _unit(
     producer_kind: ProducerKind = "rheo_runtime",
     principal_account_id: UUID | None = None,
     bound_purpose: ContextPurpose | None = None,
+    workspace_audience: bool = False,
 ) -> TrustedSourceUnit:
-    """The unit a drain would build for ``record``, with any one field overridden."""
+    """The unit a drain would build for ``record``, with any one field overridden.
+
+    ``workspace_audience`` makes the unit claim the ``workspace`` ceiling (null
+    ``audience_id``) whatever ceiling the row was recorded under.
+    """
     return TrustedSourceUnit(
         producer_kind=producer_kind,
         authority_id=record.authority_id,
@@ -118,8 +124,8 @@ def _unit(
             if principal_account_id is None
             else principal_account_id
         ),
-        audience_kind=record.audience_kind,
-        audience_id=record.audience_id,
+        audience_kind="workspace" if workspace_audience else record.audience_kind,
+        audience_id=None if workspace_audience else record.audience_id,
         bound_purpose=record.purpose if bound_purpose is None else bound_purpose,
         source_recorded_at=record.recorded_at,
         source_expires_at=record.recorded_at + timedelta(hours=24),
@@ -214,6 +220,47 @@ def test_the_grant_purpose_is_the_rows_not_the_units(
     )
     assert isinstance(grant, AuthorityGrant), grant
     assert grant.bound_purpose is ContextPurpose.INTERNAL_ANALYSIS
+
+
+def test_the_grant_audience_is_the_rows_not_the_units(
+    recording: EvidenceWorkspace,
+) -> None:
+    """A unit claiming the wider ``workspace`` ceiling still gets the row's ``member``
+    ceiling: the seam compares the two and refuses the unit, never widens it."""
+    record = _record(recording, recording.context(ContextPurpose.INTERNAL_ANALYSIS))
+    grant = _verify(recording, _unit(record, workspace_audience=True))
+    assert isinstance(grant, AuthorityGrant), grant
+    assert grant.audience_kind == "member"
+    assert grant.audience_id == recording.owner_account_id
+
+
+def test_verify_reads_the_row_for_share_in_the_callers_transaction(
+    recording: EvidenceWorkspace,
+) -> None:
+    """The row lock: the evidence read carries ``FOR SHARE``, so a row the drain is
+    about to settle cannot move under the check."""
+    record = _record(recording, recording.context(ContextPurpose.INTERNAL_ANALYSIS))
+    executed: list[str] = []
+
+    def capture(
+        conn: Any, cursor: Any, statement: str, *args: Any, **kwargs: Any
+    ) -> None:
+        executed.append(statement)
+
+    with recording.unit_of_work() as uow:
+        event.listen(uow.connection, "before_cursor_execute", capture)
+        try:
+            grant = RuntimeEvidenceAuthority(uow).verify(
+                _unit(record),
+                workspace_id=recording.workspace_id,
+                now=datetime.now(UTC),
+            )
+        finally:
+            event.remove(uow.connection, "before_cursor_execute", capture)
+    assert isinstance(grant, AuthorityGrant), grant
+    reads = [sql for sql in executed if "core.evidence_unit" in sql]
+    assert len(reads) == 1, executed
+    assert reads[0].rstrip().endswith("FOR SHARE"), reads[0]
 
 
 # --- source_unavailable: pending only -------------------------------------------------
