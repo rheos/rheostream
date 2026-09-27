@@ -469,31 +469,34 @@ def execute_approved(
         return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)
     if isinstance(held_caller, Refusal):
         raise OperationRefused(held_caller.state, str(held_caller))
-    output = operation.handler(
-        held_caller,
-        HandlerUnitOfWork(
-            uow,
-            operation_id=approval.operation_id,
-            # Carried through from the view ``core.approval.approve``'s own dispatch
-            # built, so a gated handler that publishes reaches the composition root's
-            # one registry rather than finding ``None`` and refusing
-            # ``consumers_missing``. ``dispatch()`` threads it into the approve
-            # operation's view; without this line the thread stops one frame short of
-            # the operation that actually has an event to publish.
-            consumers=uow.consumers if isinstance(uow, HandlerUnitOfWork) else None,
-            # Carried through for the same reason and in the same shape, and
-            # **carried through only**: this function never produces one. No approval
-            # reaches here from the worker's leased-job path today, so the value is
-            # ``None`` in every execution release one can run — but "a capability
-            # travels with the view rather than being rebuilt at each frame" is the
-            # rule that has to hold everywhere, because the frame that rebuilds one is
-            # the frame that could invent one.
-            scheduled_execution=(
-                uow.scheduled_execution if isinstance(uow, HandlerUnitOfWork) else None
-            ),
+    held_view = HandlerUnitOfWork(
+        uow,
+        operation_id=approval.operation_id,
+        # Carried through from the view ``core.approval.approve``'s own dispatch
+        # built, so a gated handler that publishes reaches the composition root's
+        # one registry rather than finding ``None`` and refusing
+        # ``consumers_missing``. ``dispatch()`` threads it into the approve
+        # operation's view; without this line the thread stops one frame short of
+        # the operation that actually has an event to publish.
+        consumers=uow.consumers if isinstance(uow, HandlerUnitOfWork) else None,
+        # Carried through for the same reason and in the same shape, and
+        # **carried through only**: this function never produces one. No approval
+        # reaches here from the worker's leased-job path today, so the value is
+        # ``None`` in every execution release one can run — but "a capability
+        # travels with the view rather than being rebuilt at each frame" is the
+        # rule that has to hold everywhere, because the frame that rebuilds one is
+        # the frame that could invent one.
+        scheduled_execution=(
+            uow.scheduled_execution if isinstance(uow, HandlerUnitOfWork) else None
         ),
-        model_input,
     )
+    output = operation.handler(held_caller, held_view, model_input)
+    # A gated handler that made work due (a publish that wrote a delivery row, #180)
+    # asked on ``held_view``, which no dispatcher reads. ``core.approval.approve``'s
+    # own dispatch reads the view it built, so the request is passed up to that one
+    # and written after the approve commit like any other; a rollback writes none.
+    if held_view.due_mark_requested and isinstance(uow, HandlerUnitOfWork):
+        uow.request_due_mark()
     if not isinstance(output, declaration.output):
         raise OperationRefused(
             OUTPUT_INVALID,
