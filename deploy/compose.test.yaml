@@ -38,8 +38,10 @@ services:
       - synchronous_commit=off
       - -c
       - full_page_writes=off
+    # Loopback only: the password is the documented dev placeholder, so the
+    # cluster must not be reachable from another host.
     ports:
-      - "${RHEO_TEST_PG_PORT:-5434}:5432"
+      - "127.0.0.1:${RHEO_TEST_PG_PORT:-5434}:5432"
     volumes:
       - testpgdata:/var/lib/postgresql/data
     # Over TCP, not the socket: during first-boot init the entrypoint runs a

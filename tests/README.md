@@ -49,7 +49,7 @@ another port; the compose project is named after the port
 (`rheo-stream-test-<port>`), so parallel sessions on different ports never share or
 stop each other's cluster, and none of them touches the `rheo-stream` project that
 `make up` and `make down` manage. To point a plain `uv run pytest` at it, set
-`RHEO_TEST_CLUSTER_DSN=postgresql://rheo:rheo_dev_only@localhost:5434/postgres`.
+`RHEO_TEST_CLUSTER_DSN=postgresql://rheo:rheo_dev_only@127.0.0.1:5434/postgres`.
 
 `make test` and every default are unchanged: `tests/conftest.py`'s
 `DEFAULT_TEST_CLUSTER_DSN` and `.env.example` still name port 5432, the compose

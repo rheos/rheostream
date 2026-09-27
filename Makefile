@@ -41,7 +41,7 @@ RHEO_TEST_PG_PORT ?= 5434
 TEST_PG_TMPFS ?=
 TEST_PG_BASE := docker compose -p rheo-stream-test-$(RHEO_TEST_PG_PORT) -f deploy/compose.test.yaml
 TEST_PG_COMPOSE := $(TEST_PG_BASE) $(if $(TEST_PG_TMPFS),-f deploy/compose.test.tmpfs.yaml)
-TEST_PG_DSN := postgresql://rheo:rheo_dev_only@localhost:$(RHEO_TEST_PG_PORT)/postgres
+TEST_PG_DSN := postgresql://rheo:rheo_dev_only@127.0.0.1:$(RHEO_TEST_PG_PORT)/postgres
 PYTEST_ARGS ?=
 
 test-pg-up:
