@@ -109,6 +109,10 @@ def publish(
     **An event nobody consumes is not an error.** It still writes its one outbox row
     and completes with zero delivery rows: the outbox is the record of what happened,
     and what happened does not depend on who was listening.
+
+    **At least one delivery row asks for a post-commit due mark** (#180), so the
+    worker finds it on its next pass rather than at the reconcile floor. See
+    :func:`_request_due_mark`.
     """
     connection = uow.connection
     event_id = uuid7()
@@ -159,7 +163,29 @@ def publish(
     ]
     if deliveries:
         connection.execute(insert(t.event_delivery), deliveries)
+        _request_due_mark(uow)
     return event_id
+
+
+def _request_due_mark(uow: UnitOfWork) -> None:
+    """Ask ``dispatch()`` to mark the workspace due once the publisher has committed.
+
+    The delivery rows land in this transaction, where there is no control-plane
+    connection to mark the due-work index with, so without this a subscribed
+    consumer's delivery waited for the reconcile floor (``work.due_reconcile_seconds``,
+    900 s by default) before any worker looked at it (#180). The request is the #146
+    post-commit hook, ``HandlerUnitOfWork.request_due_mark``: a dispatch that rolls
+    back writes no mark, and a publish that wrote no delivery row asks for none.
+
+    A plain ``UnitOfWork`` has no dispatcher to ask. Its publishers today run inside a
+    worker visit to this same workspace (a scheduled expiry, a consumer handler), and
+    the visit drains deliveries after jobs and reads the remaining due instant after
+    both, so the rows written here are already seen. A worker-built
+    ``HandlerUnitOfWork`` records the request and nothing reads it, for the same
+    reason.
+    """
+    if isinstance(uow, HandlerUnitOfWork):
+        uow.request_due_mark()
 
 
 def mark_due_after_publish(workspace_id: UUID, at: datetime) -> None:
@@ -169,7 +195,9 @@ def mark_due_after_publish(workspace_id: UUID, at: datetime) -> None:
     workspace database and the mark lands in the control database; no transaction
     spans the two (``storage/work_index.py``'s own docstring makes the same point), so
     a publisher commits its own transaction first and calls this afterwards, exactly
-    as ``work.jobs.enqueue`` does. A crash between them loses the mark, which is
+    as ``work.jobs.enqueue`` does. Inside a dispatch, :func:`publish` asks for that
+    through ``HandlerUnitOfWork.request_due_mark`` and ``dispatch()`` calls this once
+    it has committed (#180). A crash between them loses the mark, which is
     bounded by the reconcile floor rather than fixed by a transaction that cannot
     exist.
 
