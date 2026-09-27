@@ -77,8 +77,13 @@ _DATABASE_MODULES = frozenset(
 _DSN_PREFIXES = ("postgresql://", "postgresql+")
 # The one named exemption from the raw database scan (see the module docstring): the
 # predecessor snapshot is a read-only external input, not platform storage, so its
-# reader may call ``sqlite3.connect``. One file (a path relative to the module's
-# ``src``), one qualified call name, nothing wider.
+# reader may open it. One file (a path relative to the module's ``src``), and in it
+# at most ONE ``sqlite3.connect`` call, and only one passing ``uri=True`` (keyword,
+# literal ``True``): the audited read-only open. A second connect in the reader, or
+# one without ``uri=True``, is reported. The URI string's own contents
+# (``mode=ro&immutable=1``) are built at runtime and are not provable from the AST;
+# the pinned-URI unit test in ``tests/test_migration_predecessor_reader.py`` covers
+# them.
 _SNAPSHOT_READER = "rheo_recallatron/migration/predecessor/sqlite_source.py"
 _SNAPSHOT_READER_CALL = "sqlite3.connect"
 
@@ -458,17 +463,25 @@ def _scan_sources(root: Path, matcher: object) -> tuple[int, dict[str, list[str]
 
 
 def _exempt_sites(relative: str, tree: ast.AST) -> Counter[str]:
-    """The sites the one named exemption covers in ``relative``: a
-    ``sqlite3.connect`` call, and only in the snapshot reader's own file."""
+    """The sites the one named exemption covers in ``relative``: the first
+    ``sqlite3.connect(..., uri=True)`` call in the snapshot reader's own file, and
+    nothing else (see ``_SNAPSHOT_READER``'s comment)."""
     if relative != _SNAPSHOT_READER:
         return Counter()
     aliases = _import_aliases(tree)
-    return Counter(
-        f"call connect@{node.lineno}"
+    audited = sorted(
+        (node.lineno, node.col_offset)
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and _qualified_name(node.func, aliases) == _SNAPSHOT_READER_CALL
+        and any(
+            keyword.arg == "uri"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in node.keywords
+        )
     )
+    return Counter(f"call connect@{line}" for line, _ in audited[:1])
 
 
 def _raw_database_violations(root: Path) -> tuple[int, dict[str, list[str]]]:
@@ -527,7 +540,7 @@ def test_the_snapshot_reader_exemption_covers_one_file_and_one_call(
         _SNAPSHOT_READER: (
             "import sqlite3\n"
             "import psycopg\n"
-            "sqlite3.connect(path)\n"
+            "sqlite3.connect(uri, uri=True)\n"
             "psycopg.connect(url)\n"
             'dsn = "postgresql://probe.invalid/db"\n'
         ),
@@ -547,6 +560,33 @@ def test_the_snapshot_reader_exemption_covers_one_file_and_one_call(
         "rheo_recallatron/migration/cli.py": ["call connect@2"],
         "rheo_recallatron/sqlite_source.py": ["call connect@2"],
     }
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "import sqlite3\n"
+            "sqlite3.connect(uri, uri=True)\n"
+            "sqlite3.connect(other, uri=True)\n",
+            ["call connect@3"],
+        ),
+        ("import sqlite3\nsqlite3.connect(path)\n", ["call connect@2"]),
+        ("import sqlite3\nsqlite3.connect(path, uri=False)\n", ["call connect@2"]),
+        ("import sqlite3\nsqlite3.connect(path, uri=flag)\n", ["call connect@2"]),
+    ],
+    ids=["second-connect", "no-uri", "uri-false", "uri-not-literal"],
+)
+def test_the_snapshot_reader_exemption_covers_only_one_uri_open(
+    tmp_path: Path, source: str, expected: list[str]
+) -> None:
+    """Inside the exempt file itself: a second ``sqlite3.connect``, or one that does
+    not pass the literal ``uri=True``, is still reported."""
+    probe = tmp_path / _SNAPSHOT_READER
+    probe.parent.mkdir(parents=True)
+    probe.write_text(source, encoding="utf-8")
+
+    assert _raw_database_violations(tmp_path) == (1, {_SNAPSHOT_READER: expected})
 
 
 @pytest.mark.parametrize(
