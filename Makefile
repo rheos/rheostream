@@ -12,7 +12,7 @@
 # (tests/conftest.py, pytest.exit) with a message naming the remedy — it never
 # skips, because a skipped `postgres` marker would pass this gate vacuously.
 
-.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts flagship-config flagship-up flagship-down
+.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts module-web-boundary flagship-config flagship-up flagship-down
 
 ABSENCE_PROOF_CONFIG := $(shell git rev-parse --git-path rheo-absence-config.json)
 ABSENCE_PROOF_CHECKOUT := $(shell git rev-parse --git-path rheo-absence-checkout.json)
@@ -225,6 +225,7 @@ check:
 	python3 scripts/check_fixture_provenance.py
 	python3 scripts/check_search_boundary.py
 	python3 scripts/check_workspace_scripts.py
+	python3 scripts/check_module_web_boundary.py
 
 # Criterion 34: no predecessor-product name or generalized source-product-prefix
 # compound identifier in any tracked path, or in any tracked file's text outside
@@ -261,6 +262,14 @@ search-boundary:
 # Self-tests itself before checking the real tree.
 workspace-scripts:
 	python3 scripts/check_workspace_scripts.py
+
+# #183: a module web package reaches core only through the ShellApi its screens are
+# handed. Everything its entry points load may import only relative files inside the
+# package, `react` and web-contract exports, and may not call fetch or another network
+# API, read process.env or cookies, or declare "use server". Part of `check`; CI runs
+# it as its own step. Self-tests itself before scanning the real tree.
+module-web-boundary:
+	python3 scripts/check_module_web_boundary.py
 
 # The tree must be committed first because checkout builds its comparison from HEAD.
 absence-proof:

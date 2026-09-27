@@ -63,6 +63,20 @@ render the frame in each account state and assert the output has no
 silently. Runs in `make check`. Self-tests itself on every run before checking the real
 tree.
 
+`python3 scripts/check_module_web_boundary.py` fails when a module web package can
+reach core without the `ShellApi` its screens are handed (#183). It follows every
+`modules/*/web` package's entry points through their imports, into
+`packages/web-contract` too, and refuses any import other than a relative file inside
+the package, `react`, or a web-contract export. That shuts out the `@/` alias into
+apps/web, `next/headers`, `next/server`, Node built-ins and every other package. It
+also refuses a free `fetch` or other network API, `process`, `globalThis`, `eval`,
+`Function`, `import.meta`, `.cookie`, a non-member use of `window`/`self`/`global`, a
+non-literal dynamic `import()`, `require(`, and `"use server"`. Test files the entry
+points never import are out of scope. It fails when no module web package exists, or
+when one has no `package.json` or entry point. Runs in `make check`. Self-tests itself
+on every run before scanning the real tree. Known limit: it reads source text, so a
+name assembled at runtime and passed through an allowed object is out of its sight.
+
 Each gate is a standalone, stdlib-only `python3` script with no import from
 anywhere else in the repository, so it runs from a bare checkout before any
 dependency is installed. That is why the quote-aware `_strip_ts_comments` helper, and

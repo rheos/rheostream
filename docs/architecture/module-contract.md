@@ -308,8 +308,12 @@ shell copies it once at load, so changing the array later does not widen it. The
 `ShellApi.call` refuses any other name with `operation_not_permitted` before the call leaves
 the web tier, so a screen cannot call a mutating operation, another
 module's operation, or a core operation however its package is written. Core still checks roles
-and token sets on every call that passes. The allowlist does not contain module web code that
-skips `ShellApi` entirely, because that code runs inside the web tier's own process (#122).
+and token sets on every call that passes. The allowlist alone does not contain module web code
+that skips `ShellApi` entirely, because that code runs inside the web tier's own process (#122).
+`scripts/check_module_web_boundary.py` closes that path statically (#183): everything a module
+web package's entry points load may import only its own files, `react` and web-contract exports,
+and may not call `fetch` or another network API, read `process.env` or cookies, or declare
+`"use server"`.
 
 **A route is an exact path with no parameters**: `/` or `/segment(/segment)*`, each segment
 `[a-z0-9-]+`. Parameters travel in the query string, so one path names one screen and nothing
