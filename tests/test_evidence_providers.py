@@ -112,3 +112,17 @@ def test_the_fake_is_deterministic_and_records_what_it_saw() -> None:
     assert fake.extract(batch) == first
     assert fake.calls == [batch, batch]
     assert fake.name == "fake"
+
+
+def test_the_registered_fake_can_be_reset_between_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The registered fake lives for the process; a test clears what earlier ones
+    recorded instead of reading their calls (challenger-6 W4)."""
+    monkeypatch.setenv(PROVIDER_ENV, "fake")
+    fake = resolve_provider()
+    assert isinstance(fake, FakeExtractionProvider)
+    fake.extract(_Batch(items=(_Item("u1", "left over"),)))
+    fake.reset_calls()
+    assert fake.calls == []
+    assert resolve_provider() is fake

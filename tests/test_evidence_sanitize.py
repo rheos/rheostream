@@ -38,6 +38,13 @@ PAYLOADS = {
     "python frame alone": '  File "/srv/app/worker.py", line 88, in run',
     "javascript frame": "    at Object.handler (/srv/app/index.js:12:5)",
     "jvm frame": "    at com.example.Service.run(Service.java:42)",
+    # A path line above a payload must not shield it (challenger-6 p03-b1).
+    "json behind a path line": '/srv/app/x.toml\n{"a": 1}',
+    "xml behind a path line": "/srv/app/x.toml\n<tool>ls</tool>",
+    "trace behind a path line": (
+        '/srv/app/x.toml\n  File "app.py", line 3, in <module>\nValueError: boom'
+    ),
+    "indented hunk header": "  @@ -1 +1 @@ keep this",
 }
 
 
@@ -216,6 +223,15 @@ IDEMPOTENCE_SAMPLE = (
     f"{KEPT}\n\n{PAYLOADS['python traceback']}\n\n{PAYLOADS['json object']}",
     "  indented\n  prose\n\n  with   gaps  ",
     '{"a": "x\ny"}\n\nkept text',
+    *(
+        f"{KEPT}\n\n{PAYLOADS[name]}"
+        for name in (
+            "json behind a path line",
+            "xml behind a path line",
+            "trace behind a path line",
+            "indented hunk header",
+        )
+    ),
     *NEGATIVE_CONTROLS,
 )
 

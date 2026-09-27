@@ -12,11 +12,12 @@ The steps, in this order (spec Architecture, System Components item 1):
    contact value they typed is theirs to have remembered.
 2. **Remove tool and file payloads.** Fenced code blocks go first, over the whole text,
    because a fence may hold blank lines; each becomes a segment break. The rest is
-   split into blank-line-separated segments, and a segment is removed when it is a
-   unified-diff hunk (with any directly following segments made only of diff body
-   lines), an
+   split into blank-line-separated segments. In each, a line that is only a filesystem
+   path is removed first; what is left is then removed whole when it is a unified-diff
+   hunk (with any directly following segments made only of diff body lines), an
    XML/HTML-tag block spanning the whole segment, a JSON object or array, or part of a
-   stack trace. Within a kept segment, a line that is only a filesystem path is removed.
+   stack trace. No step may expose a payload an earlier step passed over, so one pass
+   removes everything a second pass would: ``sanitize(sanitize(x)) == sanitize(x)``.
 3. **Drop the whole unit** (``None``) when any remaining segment carries an injection
    marker from the closed list below. A turn carrying an attempt to steer the model
    that reads it is not trustworthy evidence as a whole, so the unit goes, not the
@@ -97,10 +98,12 @@ nothing but whitespace after it on the line."""
 _SEGMENT_BREAK: Final = re.compile(r"\n[ \t]*\n")
 
 _DIFF_HEADER_LINES: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE),
-    re.compile(r"^diff --git ", re.MULTILINE),
-    re.compile(r"^--- \S.*\n\+\+\+ \S", re.MULTILINE),
+    re.compile(r"^[ \t]*@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE),
+    re.compile(r"^[ \t]*diff --git ", re.MULTILINE),
+    re.compile(r"^[ \t]*--- \S.*\n[ \t]*\+\+\+ \S", re.MULTILINE),
 )
+"""Indentation allowed: the last step strips it, so a header matched only at column 0
+would pass once indented and be caught on a second pass instead of the first."""
 _DIFF_BODY_LINE: Final = re.compile(r"^(?:[+\- ]|\\ No newline)")
 """A line a hunk's body is made of: added, removed, context, or the no-newline note."""
 
@@ -190,10 +193,21 @@ def _is_stack_trace(segment: str) -> bool:
 
 
 def _kept_segments(text: str) -> list[str]:
-    """Step 2: the segments left once every tool and file payload is removed."""
+    """Step 2: the segments left once every tool and file payload is removed.
+
+    Path-only lines go first, and every whole-segment test runs on what is left. The
+    other order let a path line shield a payload behind it (``/srv/x.toml`` above a
+    JSON object): the segment failed the JSON test, lost its path line, and the object
+    came out as kept text, to be caught only by a second pass the runtime never runs.
+    """
     kept: list[str] = []
     in_diff = False
-    for segment in _SEGMENT_BREAK.split(_without_fenced_blocks(text)):
+    for raw in _SEGMENT_BREAK.split(_without_fenced_blocks(text)):
+        lines = [line for line in raw.split("\n") if not _PATH_LINE.match(line)]
+        segment = "\n".join(lines)
+        if not segment.strip():
+            in_diff = False
+            continue
         if _is_diff(segment):
             in_diff = True
             continue
@@ -202,10 +216,7 @@ def _kept_segments(text: str) -> list[str]:
         in_diff = False
         if _is_xml_block(segment) or _is_json(segment) or _is_stack_trace(segment):
             continue
-        lines = [line for line in segment.split("\n") if not _PATH_LINE.match(line)]
-        remaining = "\n".join(lines)
-        if remaining.strip():
-            kept.append(remaining)
+        kept.append(segment)
     return kept
 
 

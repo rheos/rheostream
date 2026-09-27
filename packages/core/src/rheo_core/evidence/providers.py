@@ -62,7 +62,9 @@ class FakeExtractionProvider:
     and answers ``{"items": [{"item": <id>, "memory": <candidate or None>}, ...]}``: a
     ``note`` built from the text when it contains :data:`FAKE_EXTRACTION_MARKER`, and
     ``None`` otherwise. Every batch it was called with is kept in :attr:`calls`, so a
-    test can assert on exactly what the model would have seen.
+    test can assert on exactly what the model would have seen. The registered instance
+    lives for the whole process, so a test starts from :meth:`reset_calls` (or
+    registers a fresh instance) rather than reading calls an earlier test made.
 
     Registered only under the test profile. It lives in the package rather than under
     the test harness for the reason the embedding fake does: the registry registers it,
@@ -75,6 +77,10 @@ class FakeExtractionProvider:
     @property
     def name(self) -> str:
         return FAKE_PROVIDER
+
+    def reset_calls(self) -> None:
+        """Forget every recorded batch."""
+        self.calls.clear()
 
     def extract(self, batch: Any) -> Mapping[str, object]:
         self.calls.append(batch)
