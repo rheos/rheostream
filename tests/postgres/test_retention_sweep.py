@@ -4,22 +4,41 @@ Seams: ``run_due_schedules`` due-row enqueue with
 ``RetentionSweepPayload(workspace_id)`` (never ``{}``), ``run_retention_sweep``
 transcript DELETE, and ``projects/`` subtree unlink only — the login seed at the
 Claude CLI config-dir root survives.
+
+Evidence retention (spec FR 10, § Architecture component 10): the sweep ages expired
+``pending`` evidence to ``gap/expired_pending`` and deletes ``settled``/``gap`` rows
+older than ``runtime.transcript_retention_days``. Two seams: it does so on a workspace
+with no CLI config directory (the early return below the purge), and it skips a row
+another transaction holds instead of waiting on it. Every text is synthetic.
 """
 
 from __future__ import annotations
 
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
 from conftest import ClusterSession, MakeWorkspace
+from harness.evidence import (
+    EvidenceWorkspace,
+    enable_recording,
+    handler_uow,
+    probe_registry,
+)
 from pydantic import ValidationError
+from rheo_contracts import ContextPurpose
 from rheo_core.events import ConsumerRegistry
+from rheo_core.evidence import retention
+from rheo_core.evidence.record import MAX_BYTES_KEY, NewEvidence, record_evidence
+from rheo_core.evidence.retention import EvidencePurge, purge_evidence
 from rheo_core.refs import uuid7
 from rheo_core.storage import runtime_tables, work_tables
 from rheo_core.storage.data_root import Purpose, workspace_dir_for
+from rheo_core.storage.evidence_tables import evidence_unit
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.work.jobs import enqueue_job
 from rheo_core.work.kinds import JobKindRegistry
@@ -30,7 +49,7 @@ from rheo_core.work.schedules import (
     run_due_schedules,
     run_retention_sweep,
 )
-from sqlalchemy import Connection, Engine, func, insert, select, update
+from sqlalchemy import Connection, Engine, func, insert, select, text, update
 
 pytestmark = pytest.mark.postgres
 
@@ -309,3 +328,237 @@ def test_visit_folds_enabled_schedule_into_next_due_at(
         ).scalar_one()
     assert result.jobs_acquired == 0
     assert result.next_due_at == scheduled
+
+
+# --- evidence retention ------------------------------------------------------------
+
+TURN = "Please move the Thursday planning session to the small meeting room."
+_LOCK_TIMEOUT = "2s"
+_LOCK_TIMEOUT_SECONDS = 2.0
+
+
+@pytest.fixture
+def recording(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> EvidenceWorkspace:
+    """The shared recording fixture on ``workspace``, which has no CLI config dir."""
+    ev = EvidenceWorkspace(cluster, workspace, owner_account_id)
+    enable_recording(monkeypatch, ev)
+    return ev
+
+
+class _NeverCancelled:
+    """A cancellation token that never fires; the sweep only calls ``checkpoint``."""
+
+    def checkpoint(self) -> None:
+        return None
+
+
+def _evidence(
+    ev: EvidenceWorkspace, *, recorded_at: datetime, raw_text: str = TURN
+) -> NewEvidence:
+    authority_id = uuid7()
+    return NewEvidence(
+        producer_kind="rheo_runtime",
+        authority_id=authority_id,
+        native_key=f"turn:{authority_id}",
+        speaker_account_id=ev.owner_account_id,
+        audience_kind="member",
+        audience_id=ev.owner_account_id,
+        purpose=ContextPurpose.RESPOND,
+        recorded_at=recorded_at,
+        raw_text=raw_text,
+    )
+
+
+def _record(ev: EvidenceWorkspace, record: NewEvidence, *, now: datetime) -> str:
+    """Record one turn through ``record_evidence``; its native key."""
+    with ev.handler(probe_registry()) as uow:
+        record_evidence(ev.context(), uow, [record], now=now)
+    return record.native_key
+
+
+def _settle(ev: EvidenceWorkspace, native_key: str, *, settled_at: datetime) -> None:
+    """Stand in for the drain: settle a recorded ``pending`` row at ``settled_at``."""
+    with ev.unit_of_work() as uow:
+        uow.connection.execute(
+            update(evidence_unit)
+            .where(evidence_unit.c.native_key == native_key)
+            .values(state="settled", outcome="active", body=None, settled_at=settled_at)
+        )
+        uow.commit()
+
+
+def _units(ev: EvidenceWorkspace) -> dict[str, Any]:
+    with ev.unit_of_work() as uow:
+        rows = uow.connection.execute(select(evidence_unit)).all()
+    return {row.native_key: row for row in rows}
+
+
+def _sweep(ev: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch) -> EvidencePurge:
+    """One ``run_retention_sweep`` call; what its evidence purge reported.
+
+    Bounded so a lock wait fails instead of hangs: ``lock_timeout`` turns a blocking
+    ``FOR UPDATE`` into an error after two seconds, and ``statement_timeout`` caps any
+    statement, so a sweep that waits on a held row reds the test rather than stalling
+    the suite. The purge is wrapped, not replaced, so the counts are the ones the real
+    call returned inside the real sweep; the sweep imports it at call time, so the
+    wrapper is what it finds.
+    """
+    reports: list[EvidencePurge] = []
+
+    def spy(conn: Connection, *, now: datetime, settled_before: datetime) -> Any:
+        report = purge_evidence(conn, now=now, settled_before=settled_before)
+        reports.append(report)
+        return report
+
+    monkeypatch.setattr(retention, "purge_evidence", spy)
+    with ev.unit_of_work() as uow:
+        uow.connection.execute(text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'"))
+        uow.connection.execute(text("SET LOCAL statement_timeout = '10s'"))
+        run_retention_sweep(
+            handler_uow(uow, None),
+            RetentionSweepPayload(workspace_id=ev.workspace_id),
+            _NeverCancelled(),
+        )
+        uow.commit()
+    assert len(reports) == 1, "the sweep ran its evidence purge exactly once"
+    return reports[0]
+
+
+def test_the_sweep_ages_expired_pending_evidence_on_a_workspace_with_no_cli_dir(
+    recording: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression this purge's placement exists to prevent.
+
+    The workspace has no CLI config directory, so the sweep returns before its
+    session-file walk. The evidence purge sits above that return and still runs.
+    """
+    now = _now()
+    assert not _config_dir(recording.workspace_id).exists()
+    # Past the 24 h pending window, and still inside it.
+    expired = _record(
+        recording, _evidence(recording, recorded_at=now - timedelta(hours=25)), now=now
+    )
+    fresh = _record(recording, _evidence(recording, recorded_at=now), now=now)
+
+    assert _sweep(recording, monkeypatch) == EvidencePurge(aged=1, deleted=0)
+
+    assert not _config_dir(recording.workspace_id).exists()
+    units = _units(recording)
+    aged = units[expired]
+    assert (aged.state, aged.outcome, aged.body) == ("gap", "expired_pending", None)
+    assert aged.settled_at is not None and aged.settled_at >= now
+    kept = units[fresh]
+    assert (kept.state, kept.outcome, kept.body) == ("pending", None, TURN)
+    assert kept.settled_at is None
+
+
+def test_the_sweep_deletes_old_settled_and_gap_evidence_and_keeps_recent(
+    recording: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = _now()
+    old_settled = _record(recording, _evidence(recording, recorded_at=now), now=now)
+    recent_settled = _record(recording, _evidence(recording, recorded_at=now), now=now)
+    _settle(recording, old_settled, settled_at=now - _OLD)
+    _settle(recording, recent_settled, settled_at=now - _RECENT)
+    # A gap/expired_pending row the sweep itself aged long ago.
+    old_gap = _record(
+        recording,
+        _evidence(recording, recorded_at=now - _OLD - timedelta(days=2)),
+        now=now - _OLD - timedelta(days=2),
+    )
+    with recording.unit_of_work() as uow:
+        uow.connection.execute(
+            update(evidence_unit)
+            .where(evidence_unit.c.native_key == old_gap)
+            .values(
+                state="gap",
+                outcome="expired_pending",
+                body=None,
+                settled_at=now - _OLD,
+            )
+        )
+        uow.commit()
+
+    assert _sweep(recording, monkeypatch) == EvidencePurge(aged=0, deleted=2)
+
+    units = _units(recording)
+    assert old_settled not in units
+    assert old_gap not in units
+    assert units[recent_settled].state == "settled"
+
+
+def test_an_old_oversize_gap_is_deleted_like_any_settled_row(
+    recording: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``record_evidence`` stamps ``settled_at`` on a ``gap/oversize`` row at insert."""
+    recording.set_workspace(MAX_BYTES_KEY, 100)
+    now = _now()
+    old_at = now - _OLD
+    old_oversize = _record(
+        recording,
+        _evidence(recording, recorded_at=old_at, raw_text="e" * 150),
+        now=old_at,
+    )
+    recent_oversize = _record(
+        recording,
+        _evidence(recording, recorded_at=now, raw_text="f" * 150),
+        now=now - _RECENT,
+    )
+    before = _units(recording)
+    assert (before[old_oversize].state, before[old_oversize].outcome) == (
+        "gap",
+        "oversize",
+    )
+    assert before[old_oversize].settled_at == old_at
+
+    assert _sweep(recording, monkeypatch) == EvidencePurge(aged=0, deleted=1)
+
+    units = _units(recording)
+    assert old_oversize not in units
+    assert units[recent_oversize].outcome == "oversize"
+
+
+def test_the_sweep_skips_a_pending_row_another_transaction_holds(
+    recording: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drain may hold a row's lock across a model call; the sweep must not wait.
+
+    Both rows are past their window. One is held ``FOR UPDATE`` by another open
+    transaction; the sweep ages the other, leaves the held one ``pending``, and
+    returns well inside its ``lock_timeout``. A sweep that waited would raise
+    ``LockNotAvailable`` after two seconds instead.
+    """
+    now = _now()
+    held = _record(
+        recording, _evidence(recording, recorded_at=now - timedelta(hours=25)), now=now
+    )
+    free = _record(
+        recording, _evidence(recording, recorded_at=now - timedelta(hours=25)), now=now
+    )
+    engine = recording.cluster.backend.pools.engine_for(recording.database_name)
+    with engine.connect() as holder:
+        holder.begin()
+        holder.execute(text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'"))
+        holder.execute(
+            select(evidence_unit.c.id)
+            .where(evidence_unit.c.native_key == held)
+            .with_for_update()
+        ).one()
+        try:
+            started = time.monotonic()
+            report = _sweep(recording, monkeypatch)
+            elapsed = time.monotonic() - started
+        finally:
+            holder.rollback()
+
+    assert elapsed < _LOCK_TIMEOUT_SECONDS
+    assert report == EvidencePurge(aged=1, deleted=0)
+    units = _units(recording)
+    assert units[held].state == "pending"
+    assert units[held].body == TURN
+    assert (units[free].state, units[free].outcome) == ("gap", "expired_pending")
