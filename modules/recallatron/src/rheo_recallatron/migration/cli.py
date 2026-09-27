@@ -105,7 +105,13 @@ def read_harvest_queries(path: Path) -> list[str]:
             raise InputRefusal(
                 HARVEST_UNREADABLE, f"expected a .json or .csv harvest: {path}"
             )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, csv.Error) as error:
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        csv.Error,
+        RecursionError,  # a pathologically nested .json harvest
+    ) as error:
         raise InputRefusal(HARVEST_UNREADABLE, f"cannot read {path}") from error
     queries = [value for value in values if isinstance(value, str) and value.strip()]
     if not queries:

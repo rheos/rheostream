@@ -33,6 +33,7 @@ SELECTABLE_TABLES: Final = frozenset({"memory_items"})
 SNAPSHOT_MODE_REFUSED = "snapshot_mode_refused"
 SNAPSHOT_URI_REFUSED = "snapshot_uri_refused"
 SNAPSHOT_MISSING = "snapshot_missing"
+SNAPSHOT_UNREADABLE = "snapshot_unreadable"
 TABLE_NEVER_SELECTED = "table_never_selected"
 TABLE_NOT_SELECTABLE = "table_not_selectable"
 COLUMN_UNKNOWN = "column_unknown"
@@ -98,7 +99,12 @@ def open_snapshot(
         raise SnapshotRefusal(SNAPSHOT_MISSING, f"not a regular file: {resolved}")
     # as_uri() percent-encodes '?' and '#', so the path cannot extend the query.
     uri = f"{resolved.as_uri()}?mode=ro&immutable=1"
-    return sqlite3.connect(uri, uri=True)
+    try:
+        return sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as error:
+        raise SnapshotRefusal(
+            SNAPSHOT_UNREADABLE, f"cannot open the snapshot {resolved}"
+        ) from error
 
 
 def schema_objects(connection: sqlite3.Connection) -> list[SchemaObject]:

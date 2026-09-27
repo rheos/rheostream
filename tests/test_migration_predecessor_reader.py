@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 from urllib.parse import parse_qs, urlsplit
@@ -85,11 +86,39 @@ def _snapshot(tmp_path: Path, *, wal: bool = False) -> Path:
     return path
 
 
-def _ontology(tmp_path: Path) -> Path:
+def _ontology(tmp_path: Path, extra_records: Sequence[object] = ()) -> Path:
+    """The committed fixture, with ``extra_records`` appended as JSON lines."""
     directory = tmp_path / "inputs" / "ontology"
     directory.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(_GRAPH_FIXTURE, directory / graph_source.GRAPH_FILE_NAME)
+    target = directory / graph_source.GRAPH_FILE_NAME
+    shutil.copyfile(_GRAPH_FIXTURE, target)
+    with target.open("a", encoding="utf-8") as handle:
+        for record in extra_records:
+            handle.write(json.dumps(record) + "\n")
     return directory
+
+
+def _fact(entity_id: str, label: str, superseded_by: str | None) -> dict[str, object]:
+    return {
+        "id": entity_id,
+        "type": "Fact",
+        "label": label,
+        "properties": {},
+        "valid_from": "2026-01-14T00:00:00.000Z",
+        "valid_until": None,
+        "confidence": 0.7,
+        "source": "manual",
+        "superseded_by": superseded_by,
+        "confirmed": False,
+    }
+
+
+# The last record for ent-007 carries ``superseded_by`` itself and no supersede op
+# names it: only the record's own field says it is not live.
+_SELF_SUPERSEDED = [
+    _fact("ent-007", "Retired Watering Schedule", None),
+    _fact("ent-007", "Retired Watering Schedule", "ent-004"),
+]
 
 
 _HARVEST_QUERIES: list[str | None] = [
@@ -132,15 +161,20 @@ def private_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 
 def _run(
-    tmp_path: Path, out: Path, suffix: str = ".json", harvest: Path | None = None
+    tmp_path: Path,
+    out: Path,
+    suffix: str = ".json",
+    harvest: Path | None = None,
+    snapshot: Path | None = None,
+    extra_records: Sequence[object] = (),
 ) -> int:
     return cli.main(
         [
             "denylist",
             "--snapshot",
-            str(_snapshot(tmp_path)),
+            str(snapshot if snapshot is not None else _snapshot(tmp_path)),
             "--ontology",
-            str(_ontology(tmp_path)),
+            str(_ontology(tmp_path, extra_records)),
             "--harvest",
             str(harvest if harvest is not None else _harvest(tmp_path, suffix)),
             "--out",
@@ -353,6 +387,53 @@ def test_denylist_writes_normalized_deduplicated_lines_and_drops_short_ones(
     assert captured.out == "denylist: written=8 short_dropped=3 exempted=0\n"
     assert captured.err == ""
     assert (out / cli.DENYLIST_FILE_NAME).stat().st_mode & 0o777 == 0o600
+
+
+def test_a_record_whose_own_superseded_by_is_set_is_not_live(
+    private_root: Path, tmp_path: Path
+) -> None:
+    parsed = graph_source.read_graph(_ontology(tmp_path, _SELF_SUPERSEDED))
+    assert "Retired Watering Schedule" not in graph_source.live_entity_labels(parsed)
+
+    out = private_root / "denylist-out"
+    assert _run(tmp_path, out, extra_records=_SELF_SUPERSEDED) == 0
+    assert _written(out) == _EXPECTED_WITHOUT_EXEMPTIONS
+
+
+def test_an_unreadable_snapshot_is_a_refusal_not_a_traceback(
+    private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    out = private_root / "denylist-out"
+    snapshot.chmod(0)
+    try:
+        assert _run(tmp_path, out, snapshot=snapshot) == 1
+    finally:
+        snapshot.chmod(0o600)
+
+    assert not (out / cli.DENYLIST_FILE_NAME).exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"{sqlite_source.SNAPSHOT_UNREADABLE}: ")
+    assert _SECRET_VALUE not in captured.err
+
+
+def test_a_deeply_nested_json_harvest_is_a_refusal_not_a_traceback(
+    private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    harvest = tmp_path / "inputs" / "synthetic-harvest-nested.json"
+    harvest.parent.mkdir(parents=True, exist_ok=True)
+    depth = 200_000
+    harvest.write_text("[" * depth + '"synthetic nested"' + "]" * depth)
+    out = private_root / "denylist-out"
+
+    assert _run(tmp_path, out, harvest=harvest) == 1
+
+    assert not (out / cli.DENYLIST_FILE_NAME).exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"{cli.HARVEST_UNREADABLE}: ")
+    assert "synthetic nested" not in captured.err
 
 
 def test_the_floor_drops_four_characters_and_keeps_five(
