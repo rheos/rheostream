@@ -724,7 +724,7 @@ def test_historical_evidence_and_erasure_tombstone_round_trip(
     cluster: ClusterSession,
 ) -> None:
     at = datetime.now(UTC)
-    live_id, erased_id = uuid7(), uuid7()
+    live_id, erased_id, profile_id = uuid7(), uuid7(), uuid7()
     with source.unit() as uow:
         uow.connection.execute(
             insert(memory_tables.history_record),
@@ -773,6 +773,28 @@ def test_historical_evidence_and_erasure_tombstone_round_trip(
                     "superseded_by_source_key": None,
                     "erased_at": at,
                 },
+                {
+                    "id": profile_id,
+                    "source_namespace": "synthetic",
+                    "external_source_key": opaque_history_source_key(
+                        "profile.synth:item:1"
+                    ),
+                    "source_reference": "profile.synth.json:item:1",
+                    "kind": "profile_item",
+                    "status": "summary",
+                    "title": "Synthesized profile item",
+                    "body": "A synthetic garden project summary.",
+                    "occurred_at": at,
+                    "imported_at": at,
+                    "session_key": None,
+                    "chat_key": None,
+                    "source_role": None,
+                    "source_category": "work",
+                    "source_created_at": None,
+                    "confirmed_at": None,
+                    "superseded_by_source_key": None,
+                    "erased_at": None,
+                },
             ],
         )
     artifact = _export(source)
@@ -786,11 +808,13 @@ def test_historical_evidence_and_erasure_tombstone_round_trip(
             row.id: row
             for row in uow.connection.execute(select(memory_tables.history_record))
         }
-    assert set(rows) == {live_id, erased_id}
+    assert set(rows) == {live_id, erased_id, profile_id}
     assert rows[live_id].body == "Synthetic garden evidence."
     assert rows[live_id].source_reference == "store.conversation:1"
     assert rows[erased_id].body == "" and rows[erased_id].erased_at is not None
     assert rows[erased_id].source_reference is None
+    assert rows[profile_id].kind == "profile_item"
+    assert rows[profile_id].body == "A synthetic garden project summary."
 
 
 def test_retained_history_and_every_receipt_state_round_trip(
