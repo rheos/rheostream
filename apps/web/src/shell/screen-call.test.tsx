@@ -115,7 +115,7 @@ const SIGNED_IN: SessionResult = {
   actor: { kind: "account", id: "acct-synthetic" },
   activeWorkspaceId: "ws-alpha",
   role: "owner",
-  memberships: [{ workspace_id: "ws-alpha", role: "owner" }],
+  memberships: [{ workspace_id: "ws-alpha", role: "owner", display_name: "Alpha" }],
 };
 
 const STATUS = {
