@@ -5,7 +5,14 @@
 #   same credentials, so the suite sees the same server it sees on GitHub.
 # - Durability off (fsync, synchronous_commit, full_page_writes). The suite creates
 #   and drops databases constantly and never needs a commit to survive a crash.
-# - Data dir on tmpfs, never a volume: `down` or a Docker restart throws it away.
+# - Data dir on the named volume `testpgdata`, which compose scopes to this
+#   project (`rheo-stream-test-<port>_testpgdata`) and `make test-pg-down` removes
+#   (`down -v`). Named rather than anonymous so it carries the project label and
+#   can never be mistaken for, or outlive, anything else. Not tmpfs by default: the full suite keeps every workspace
+#   database it creates until session teardown, about 8.6 MB each and roughly
+#   2,000 of them, so a tmpfs data dir would hold ~19 GB of the Docker VM's memory,
+#   which every other container on the machine shares. `compose.test.tmpfs.yaml`
+#   adds tmpfs for narrow runs (`TEST_PG_TMPFS=1`).
 #
 # Never point anything but tests at this cluster. A crash of this container can
 # corrupt its data, which is fine only because the data is disposable.
@@ -33,10 +40,8 @@ services:
       - full_page_writes=off
     ports:
       - "${RHEO_TEST_PG_PORT:-5434}:5432"
-    # tmpfs replaces the image's VOLUME for the data dir, so no anonymous volume
-    # is created either. The container's memory holds the whole cluster.
-    tmpfs:
-      - /var/lib/postgresql/data
+    volumes:
+      - testpgdata:/var/lib/postgresql/data
     # Over TCP, not the socket: during first-boot init the entrypoint runs a
     # temporary socket-only server, and a socket probe can pass before the real
     # server is listening.
@@ -45,3 +50,6 @@ services:
       interval: 1s
       timeout: 5s
       retries: 30
+
+volumes:
+  testpgdata:

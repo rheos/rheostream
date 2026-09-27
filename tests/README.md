@@ -26,13 +26,23 @@ sessions at once. For local test runs, use the test-only cluster in
 make test-fast                 # start the test cluster if needed, then run make test against it
 make test-fast PYTEST_ARGS=tests/postgres/test_provisioning.py   # narrow the pytest half
 make test-pg-up                # just start it (idempotent)
-make test-pg-down              # throw it away
+make test-pg-down              # throw it away, data volume included
 ```
 
 It runs the same image as CI (`pgvector/pgvector:pg16`) with the same credentials,
-but with `fsync`, `synchronous_commit` and `full_page_writes` off and its data dir on
-tmpfs. Nothing survives `make test-pg-down` or a Docker restart, which is the point.
-Never use it for anything but tests.
+but with `fsync`, `synchronous_commit` and `full_page_writes` off, on a fresh data
+volume that `make test-pg-down` deletes. Never use it for anything but tests.
+
+Most of the gain is isolation and freshness, not durability. On a long-lived dev
+cluster, leftover `ws_*` databases from interrupted sessions pile up (thousands, tens
+of GB), and each new database gets slower to create. Throw the test cluster away
+now and then (`make test-pg-down`) to keep that from happening here.
+
+`TEST_PG_TMPFS=1` puts the data dir on an 8 GB tmpfs, which is faster again, but
+only for a narrow `PYTEST_ARGS` run. The suite keeps every workspace database it
+creates until session teardown, roughly 2,000 of them at about 8.6 MB each, so a
+full run needs about 19 GB. On tmpfs that sits in the Docker VM's memory, which
+every other container shares; the cap makes an oversized run fail instead.
 
 It listens on host port 5434 by default. Set `RHEO_TEST_PG_PORT` to run your own on
 another port; the compose project is named after the port

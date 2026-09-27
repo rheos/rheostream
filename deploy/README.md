@@ -10,8 +10,9 @@ answers on `8000` and `postgres` on `5432` inside the compose network regardless
 of a host-side remap. `make down` tears the stack down.
 
 The **test-only cluster** (`deploy/compose.test.yaml`) is separate from all of the
-above: a single throwaway `postgres` with durability off and its data on tmpfs, for
-`make test-fast` only. It runs in its own compose project per host port
+above: a single throwaway `postgres` with durability off and a disposable data
+volume (tmpfs through the `compose.test.tmpfs.yaml` overlay), for `make test-fast`
+only. It runs in its own compose project per host port
 (`rheo-stream-test-<port>`, default 5434), so it never shares state with `make up`'s
 stack. See [tests/README.md](../tests/README.md).
 

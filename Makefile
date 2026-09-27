@@ -26,27 +26,34 @@ test:
 	pnpm -r test
 
 # Issue #148: a fast, throwaway, test-only Postgres (deploy/compose.test.yaml):
-# durability off, data on tmpfs, same image as CI. Opt-in; `make test` and every
-# default DSN are unchanged. The compose project is named after the host port, so
-# a second session can take its own port (`RHEO_TEST_PG_PORT=5435 make test-fast`)
-# and neither can stop the other's cluster or the `make up` dev stack.
+# durability off, same image as CI. Opt-in; `make test` and every default DSN are
+# unchanged. The compose project is named after the host port, so a second
+# session can take its own port (`RHEO_TEST_PG_PORT=5435 make test-fast`) and
+# neither can stop the other's cluster or the `make up` dev stack.
 #
 # `test-fast` starts the cluster if it is not running (a no-op if it is), then
 # runs `make test`'s two commands against it. The cluster stays up for the next
 # run; `test-pg-down` throws it away. PYTEST_ARGS narrows the pytest half, e.g.
 # `make test-fast PYTEST_ARGS=tests/postgres/test_provisioning.py`.
+# TEST_PG_TMPFS=1 adds deploy/compose.test.tmpfs.yaml (data dir on an 8g tmpfs);
+# only for narrow runs, see that file.
 RHEO_TEST_PG_PORT ?= 5434
-TEST_PG_COMPOSE := docker compose -p rheo-stream-test-$(RHEO_TEST_PG_PORT) -f deploy/compose.test.yaml
+TEST_PG_TMPFS ?=
+TEST_PG_BASE := docker compose -p rheo-stream-test-$(RHEO_TEST_PG_PORT) -f deploy/compose.test.yaml
+TEST_PG_COMPOSE := $(TEST_PG_BASE) $(if $(TEST_PG_TMPFS),-f deploy/compose.test.tmpfs.yaml)
 TEST_PG_DSN := postgresql://rheo:rheo_dev_only@localhost:$(RHEO_TEST_PG_PORT)/postgres
 PYTEST_ARGS ?=
 
 test-pg-up:
 	RHEO_TEST_PG_PORT=$(RHEO_TEST_PG_PORT) $(TEST_PG_COMPOSE) up -d --wait
 
-# `-v` is safe here: the project owns no named volume, and the name scopes it to
-# this port's test cluster only.
+# `-v` is safe here: it removes the cluster's own `testpgdata` volume, and the
+# project name scopes it to this port's test cluster only, never `rheo-stream`.
+# Always the base file alone, never the tmpfs overlay: the overlay drops the
+# service's volume mount, and `down -v` then skips a volume left over from an
+# earlier disk-backed run.
 test-pg-down:
-	RHEO_TEST_PG_PORT=$(RHEO_TEST_PG_PORT) $(TEST_PG_COMPOSE) down -v
+	RHEO_TEST_PG_PORT=$(RHEO_TEST_PG_PORT) $(TEST_PG_BASE) down -v
 
 test-fast: test-pg-up
 	RHEO_TEST_CLUSTER_DSN=$(TEST_PG_DSN) uv run pytest $(PYTEST_ARGS)

@@ -1,0 +1,11 @@
+# Overlay for deploy/compose.test.yaml: put the test cluster's data dir on tmpfs
+# (`make test-fast TEST_PG_TMPFS=1`). For a narrow PYTEST_ARGS run only. The full
+# suite keeps every workspace database until session teardown (~19 GB), and a
+# tmpfs holds that in the Docker VM's memory; the 8g cap turns an oversized run
+# into a failed test run instead of memory pressure on every other container.
+services:
+  postgres:
+    # `!reset` drops the base file's named-volume mount at the same path.
+    volumes: !reset []
+    tmpfs:
+      - /var/lib/postgresql/data:size=8g

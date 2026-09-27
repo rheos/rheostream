@@ -110,6 +110,7 @@ PUBLIC_PATHS = (
     "deploy/compose.yaml",
     "deploy/compose.flagship.yaml",
     "deploy/compose.test.yaml",
+    "deploy/compose.test.tmpfs.yaml",
     "deploy/.env.flagship.example",
     "Dockerfile",
     "apps/web/Dockerfile",
