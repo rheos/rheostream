@@ -593,7 +593,10 @@ def _validate_histories(parsed: _Parsed) -> None:
     for row in parsed.histories:
         if not row["source_namespace"] or not row["external_source_key"]:
             raise ArtifactRowInvalid("history source identity is empty")
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", row["external_source_key"]):
+        source_key = row["external_source_key"]
+        if not isinstance(source_key, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", source_key
+        ):
             raise ArtifactRowInvalid("history source identity is not opaque")
         if (
             row["kind"] not in t.HISTORY_KINDS

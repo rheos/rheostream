@@ -75,6 +75,21 @@
     "how": "hand-authored entity.list response from the invented \"sample garden\" scenario"
   },
   {
+    "path": "modules/recallatron/web/fixtures/history-item.json",
+    "origin": "synthetic",
+    "how": "hand-authored historical-record detail from the invented sample garden scenario"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/history-search-empty.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty owner history-search response"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/history-search-populated.json",
+    "origin": "synthetic",
+    "how": "hand-authored owner history-search response from the invented sample garden scenario"
+  },
+  {
     "path": "modules/recallatron/web/fixtures/memory-item.json",
     "origin": "synthetic",
     "how": "hand-authored MemoryItem shape from the invented \"sample garden\" scenario"
