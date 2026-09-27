@@ -14,7 +14,6 @@ import importlib.util
 import json
 import shutil
 import sqlite3
-import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -22,6 +21,8 @@ from types import ModuleType
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from harness.migration_inputs import SECRET_VALUE as _SECRET_VALUE
+from harness.migration_inputs import new_snapshot, use_private_root
 from rheo_recallatron.migration import cli, private_paths
 from rheo_recallatron.migration.predecessor import graph_source, sqlite_source
 from rheo_recallatron.migration.predecessor.sqlite_source import SnapshotRefusal
@@ -53,7 +54,6 @@ CREATE TABLE memory_items (
 );
 CREATE TABLE app_secret (name text PRIMARY KEY, value text NOT NULL);
 """
-_SECRET_VALUE = "synthetic-secret-value-0000"
 # "Kale" (4 characters) and "Beets" (5) pin the floor from both sides.
 _MEMORY_LABELS = [
     "Seed Library Hours",
@@ -66,21 +66,13 @@ _MEMORY_LABELS = [
 
 
 def _snapshot(tmp_path: Path, *, wal: bool = False) -> Path:
-    path = tmp_path / "inputs" / "synthetic-snapshot.db"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    if wal:
-        connection.execute("PRAGMA journal_mode=WAL")
-    connection.executescript(_DDL)
+    path, connection = new_snapshot(tmp_path, _DDL, wal=wal)
     connection.executemany(
         "INSERT INTO memory_items (type, label, properties, ts, superseded_by) "
         "VALUES ('fact', ?, '{}', '2026-01-01T00:00:00.000Z', NULL)",
         [(label,) for label in _MEMORY_LABELS],
     )
     connection.execute("UPDATE memory_items SET superseded_by = 1 WHERE id = 2")
-    connection.execute(
-        "INSERT INTO app_secret VALUES ('synthetic-key', ?)", (_SECRET_VALUE,)
-    )
     connection.commit()
     connection.close()
     return path
@@ -143,21 +135,9 @@ def _harvest(tmp_path: Path, suffix: str) -> Path:
     return path
 
 
-def _ignored_root(tmp_path: Path) -> Path:
-    repo = tmp_path / "private-home"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    (repo / ".gitignore").write_text("private/\n")
-    root = repo / "private"
-    root.mkdir()
-    return root
-
-
 @pytest.fixture
 def private_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    root = _ignored_root(tmp_path)
-    monkeypatch.setenv(private_paths.PRIVATE_ROOT_VARIABLE, str(root))
-    return root
+    return use_private_root(monkeypatch, tmp_path, private_paths.PRIVATE_ROOT_VARIABLE)
 
 
 def _run(

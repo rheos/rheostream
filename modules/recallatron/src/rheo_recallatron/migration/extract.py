@@ -6,17 +6,19 @@ one :class:`ExtractUnit`. Every model is frozen with extra fields forbidden.
 
 Bounds come from the destination's own constants (``SOURCE_KEY_MAX_LENGTH`` from the
 contracts package, title/body/name/role bounds from this module's configuration)
-rather than restated numbers, so a unit that validates here fits the tables the
-importer writes.
+rather than restated numbers. The title and body rules mirror the destination's
+write validators (trimmed 1-200 character title; non-blank, byte-bounded body), so a
+unit that validates here passes the checks the importer's write applies.
 
 :func:`parse_extract` refuses with a ``<state>: <detail>`` refusal naming the line
-number and the failing field locations only, never a value: a validation error's own
-message quotes the input, and the input is real predecessor content.
+number and the failing field locations only, never a value (a validation error's own
+message quotes the input, and the input is real predecessor content) and never an
+unknown key's name, which prints as :data:`EXTRA_FIELD_PLACEHOLDER`.
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Final, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import (
     AwareDatetime,
@@ -71,11 +73,45 @@ class _Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def _trimmed_title(value: str) -> str:
+    """Mirrors ``rheo_recallatron.contracts._trimmed_title`` (private there, so not
+    imported; ``tests/test_migration_extract.py`` holds the two in parity): the
+    trimmed value is what is kept, and it must be 1-200 characters."""
+    trimmed = value.strip()
+    if not TITLE_MIN_LENGTH <= len(trimmed) <= TITLE_MAX_LENGTH:
+        raise ValueError(
+            f"title must be {TITLE_MIN_LENGTH}-{TITLE_MAX_LENGTH} trimmed characters"
+        )
+    return trimmed
+
+
+def _bounded_body(value: str) -> str:
+    """Mirrors ``rheo_recallatron.contracts._bounded_body``: not blank, at most
+    ``BODY_MAX_BYTES`` UTF-8 bytes, and never trimmed."""
+    if not value.strip():
+        raise ValueError("body must not be blank")
+    if len(value.encode("utf-8")) > BODY_MAX_BYTES:
+        raise ValueError(f"body must be at most {BODY_MAX_BYTES} UTF-8 bytes")
+    return value
+
+
+#: A JSON ``true`` is not a count (lax mode would read it as 1).
+_Count = Annotated[NonNegativeInt, Field(strict=True)]
+
+
 class ExtractHeader(_Frozen):
     format: Literal["rheo.migration.extract"]
     version: Literal[1]
-    unit_count: NonNegativeInt
-    unresolved_count: NonNegativeInt
+    unit_count: _Count
+    unresolved_count: _Count
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _version_is_an_integer(cls, value: object) -> object:
+        # A Literal cannot be marked strict, and lax mode matches true == 1.
+        if type(value) is not int:
+            raise ValueError("version must be the integer 1")
+        return value
 
 
 class ExtractMention(_Frozen):
@@ -95,11 +131,10 @@ class ExtractMention(_Frozen):
 class ExtractUnit(_Frozen):
     external_source_key: SourceKey
     kind: MemoryKind
-    title: Annotated[
-        str, Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH)
-    ]
+    title: str
     body: str
-    confidence: float | None = Field(ge=0, le=1)
+    #: Strict: a JSON ``true`` is not a confidence. An integer 0 or 1 still is.
+    confidence: float | None = Field(ge=0, le=1, strict=True)
     recorded_at: AwareDatetime
     mentions: tuple[ExtractMention, ...]
 
@@ -108,12 +143,15 @@ class ExtractUnit(_Frozen):
     def _key_shape(cls, value: str) -> str:
         return _source_key(value)
 
+    @field_validator("title")
+    @classmethod
+    def _title_is_trimmed_and_bounded(cls, value: str) -> str:
+        return _trimmed_title(value)
+
     @field_validator("body")
     @classmethod
-    def _body_bytes(cls, value: str) -> str:
-        if len(value.encode("utf-8")) > BODY_MAX_BYTES:
-            raise ValueError(f"body must be at most {BODY_MAX_BYTES} UTF-8 bytes")
-        return value
+    def _body_is_nonblank_and_bounded(cls, value: str) -> str:
+        return _bounded_body(value)
 
     @model_validator(mode="after")
     def _one_mention_per_entity_key(self) -> "ExtractUnit":
@@ -142,10 +180,23 @@ def dump_extract(units: Sequence[ExtractUnit], *, unresolved_count: int) -> list
     return [header.model_dump_json(), *(unit.model_dump_json() for unit in units)]
 
 
+#: Printed in place of an unknown field's name: the key came from the input, so it
+#: is input too.
+EXTRA_FIELD_PLACEHOLDER: Final = "<extra>"
+
+
+def _location(item: Mapping[str, Any]) -> str:
+    parts = [str(part) for part in item["loc"]]
+    if item["type"] == "extra_forbidden" and parts:
+        parts[-1] = EXTRA_FIELD_PLACEHOLDER
+    return ".".join(parts) or "<line>"
+
+
 def _locations(error: ValidationError) -> str:
-    """Field locations and error types only; never ``input`` or ``msg``."""
+    """Field locations and error types only; never ``input``, ``msg`` or an
+    unknown key's name."""
     return ", ".join(
-        f"{'.'.join(str(part) for part in item['loc']) or '<line>'}={item['type']}"
+        f"{_location(item)}={item['type']}"
         for item in error.errors(include_url=False, include_input=False)
     )
 

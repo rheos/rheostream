@@ -13,13 +13,14 @@ private root is a temp directory an unrelated temp repo ignores.
 import json
 import shutil
 import sqlite3
-import subprocess
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from harness.migration_inputs import SECRET_VALUE, new_snapshot, use_private_root
 from pydantic import ValidationError
 from rheo_contracts.source_units import SOURCE_KEY_MAX_LENGTH
+from rheo_recallatron import contracts as destination
 from rheo_recallatron.migration import cli, extract, inventory, private_paths
 from rheo_recallatron.migration.extract import ExtractMention, ExtractUnit
 from rheo_recallatron.migration.predecessor import graph_source, sqlite_source
@@ -161,15 +162,91 @@ def test_a_value_past_the_extraction_instant_plus_a_day_is_in_the_future() -> No
         False,
         float("nan"),
         float("inf"),
-        10**30,
+        float("-inf"),
         {"ts": "2026-01-01"},
         ["2026-01-01"],
+        b"2026-01-01",
+        # Rule 3 is exactly YYYY-MM-DD, and a date-time needs hours and minutes:
+        "20260101",
+        "2026-W01-1",
+        "2026-001",
+        "2026-01-02T03",
+        "20260102T030405Z",
+        "2026-01-02T03:04:05+25:00",
     ],
 )
 def test_garbage_is_unparseable(raw: object) -> None:
     assert parse_source_time(raw, extracted_at=_EXTRACTED_AT) == UnresolvedTime(
         TIMESTAMP_UNPARSEABLE
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "code"),
+    [
+        (10**400, TIMESTAMP_IN_FUTURE),  # past float's and datetime's range
+        (10**30, TIMESTAMP_IN_FUTURE),
+        (1e300, TIMESTAMP_IN_FUTURE),
+        (-(10**400), TIMESTAMP_UNPARSEABLE),
+        (-1e300, TIMESTAMP_UNPARSEABLE),
+        # The offset pushes each instant out of datetime's range when made UTC:
+        ("0001-01-01T00:00:00+01:00", TIMESTAMP_UNPARSEABLE),
+        ("9999-12-31T23:59:59-01:00", TIMESTAMP_IN_FUTURE),
+    ],
+)
+def test_a_value_beyond_datetimes_range_is_placed_not_raised(
+    raw: object, code: str
+) -> None:
+    assert parse_source_time(raw, extracted_at=_EXTRACTED_AT) == UnresolvedTime(code)
+
+
+_HOSTILE_VALUES: list[object] = [
+    True,
+    False,
+    float("nan"),
+    float("inf"),
+    float("-inf"),
+    -0.0,
+    10**400,
+    -(10**400),
+    10**11,
+    2**63,
+    -(2**63),
+    1e308,
+    -1e308,
+    5e-324,
+    b"2026-01-01",
+    bytearray(b"\x00\xff"),
+    "",
+    " \t\n\r\x0b\x0c　",
+    "\x00",
+    "0001-01-01",
+    "0000-01-01",
+    "9999-12-31",
+    "9999-12-31T23:59:59.999999+14:00",
+    "9999-12-31T23:59:59-23:59",
+    "0001-01-01T00:00:00+23:59",
+    "2026-01-02T03:04:05+99:99",
+    "2026-01-02T03:04:05-24:00",
+    "2026-01-02T24:00:00",
+    "2026-01-02T03:04:05." + "9" * 400,
+    "9" * 5000,
+    object(),
+    (),
+    {},
+]
+
+
+@pytest.mark.parametrize(
+    "extracted_at",
+    [_EXTRACTED_AT, datetime.max.replace(tzinfo=UTC), datetime(1970, 1, 1, tzinfo=UTC)],
+)
+def test_no_hostile_value_raises(extracted_at: datetime) -> None:
+    for raw in _HOSTILE_VALUES:
+        result = parse_source_time(raw, extracted_at=extracted_at)
+        assert isinstance(result, SourceTime | UnresolvedTime), repr(raw)
+        if isinstance(result, SourceTime):
+            assert result.value.tzinfo is UTC, repr(raw)
 
 
 def test_a_naive_extraction_instant_is_a_programming_error() -> None:
@@ -294,6 +371,101 @@ def test_the_extract_model_admits_its_own_bounds_exactly() -> None:
     assert len(unit.body.encode("utf-8")) == 65536
 
 
+_TITLE_CASES = [
+    "",
+    " ",
+    "\t\n",
+    "  New Greenhouse Rota  ",
+    "t" * 200,
+    " " + "t" * 200,
+    "t" * 201,
+    "é" * 200,
+]
+_BODY_CASES = ["", " ", "\n\t ", "  indented body", "é" * 32768, "é" * 32769, "x"]
+
+
+def _outcome(check: object, value: str) -> str | None:
+    try:
+        return check(value)  # type: ignore[operator, no-any-return]
+    except ValueError:
+        return None
+
+
+@pytest.mark.parametrize("title", _TITLE_CASES)
+def test_the_title_rule_matches_the_destinations_write_validator(title: str) -> None:
+    """``extract._trimmed_title`` mirrors ``contracts._trimmed_title`` (private
+    there): same accept/refuse decision, same kept value."""
+    expected = _outcome(destination._trimmed_title, title)
+    assert _outcome(extract._trimmed_title, title) == expected
+    if expected is None:
+        with pytest.raises(ValidationError) as excinfo:
+            ExtractUnit.model_validate(_unit(title=title))
+        assert _locations(excinfo) == [("title",)]
+    else:
+        assert ExtractUnit.model_validate(_unit(title=title)).title == expected
+
+
+@pytest.mark.parametrize("body", _BODY_CASES)
+def test_the_body_rule_matches_the_destinations_write_validator(body: str) -> None:
+    expected = _outcome(destination._bounded_body, body)
+    assert _outcome(extract._bounded_body, body) == expected
+    if expected is None:
+        with pytest.raises(ValidationError) as excinfo:
+            ExtractUnit.model_validate(_unit(body=body))
+        assert _locations(excinfo) == [("body",)]
+    else:
+        assert ExtractUnit.model_validate(_unit(body=body)).body == body
+
+
+@pytest.mark.parametrize("value", ["true", "false", '"0.5"'])
+def test_confidence_is_strict_in_json(value: str) -> None:
+    line = ExtractUnit.model_validate(_unit()).model_dump_json()
+    replaced = line.replace('"confidence":0.7', f'"confidence":{value}')
+    assert replaced != line
+    with pytest.raises(extract.ExtractRefusal) as excinfo:
+        extract.parse_extract([_header(unit_count=1), replaced])
+    assert excinfo.value.detail.startswith("line 2: confidence=")
+
+
+def test_an_integer_confidence_is_still_a_confidence() -> None:
+    line = ExtractUnit.model_validate(_unit()).model_dump_json()
+    parsed = extract.parse_extract(
+        [_header(unit_count=1), line.replace('"confidence":0.7', '"confidence":1')]
+    )
+    assert parsed.units[0].confidence == 1.0
+
+
+@pytest.mark.parametrize("field", ["version", "unit_count", "unresolved_count"])
+@pytest.mark.parametrize("value", ["true", '"1"', "1.0"])
+def test_header_numbers_are_strict_in_json(field: str, value: str) -> None:
+    header = json.loads(_header(unit_count=1))
+    header[field] = "__placeholder__"
+    line = json.dumps(header).replace('"__placeholder__"', value)
+    with pytest.raises(extract.ExtractRefusal) as excinfo:
+        extract.parse_extract([line])
+    assert excinfo.value.state == extract.EXTRACT_HEADER_INVALID
+    assert excinfo.value.detail.startswith(f"line 1: {field}=")
+
+
+def test_an_unknown_field_prints_a_placeholder_never_its_key() -> None:
+    secret_key = "synthetic_api_key_sk_live_0000"
+    unit = json.loads(ExtractUnit.model_validate(_unit()).model_dump_json())
+    unit[secret_key] = "x"
+    unit["mentions"][0][secret_key] = "x"
+    header = json.loads(_header(unit_count=1))
+    header[secret_key] = 1
+    with pytest.raises(extract.ExtractRefusal) as unit_refusal:
+        extract.parse_extract([_header(unit_count=1), json.dumps(unit)])
+    assert unit_refusal.value.detail == (
+        "line 2: <extra>=extra_forbidden, mentions.0.<extra>=extra_forbidden"
+    )
+    with pytest.raises(extract.ExtractRefusal) as header_refusal:
+        extract.parse_extract([json.dumps(header)])
+    assert header_refusal.value.detail == "line 1: <extra>=extra_forbidden"
+    for refusal in (unit_refusal, header_refusal):
+        assert secret_key not in str(refusal.value)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -416,7 +588,7 @@ def test_a_refused_line_never_quotes_its_content() -> None:
     unit["title"] = "synthetic private phrase " * 10
     with pytest.raises(extract.ExtractRefusal) as excinfo:
         extract.parse_extract([header, json.dumps(unit)])
-    assert excinfo.value.detail == "line 2: title=string_too_long"
+    assert excinfo.value.detail == "line 2: title=value_error"
     assert "synthetic private phrase" not in str(excinfo.value)
     assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
 
@@ -445,8 +617,10 @@ CREATE TABLE session_digest (
 );
 CREATE TABLE app_secret (name text PRIMARY KEY, value text NOT NULL);
 CREATE TABLE tool_call_log (id integer PRIMARY KEY, tool text NOT NULL);
-CREATE TABLE __synthetic_migrations (id integer PRIMARY KEY, hash text);
+CREATE TABLE __drizzle_migrations (id integer PRIMARY KEY, hash text);
+CREATE TABLE migrations_archive (id integer PRIMARY KEY, hash text);
 CREATE TABLE mystery_table (id integer PRIMARY KEY);
+CREATE TABLE synthetic_index_node (nodeno INTEGER PRIMARY KEY, data BLOB);
 CREATE VIEW live_items AS
     SELECT id, label FROM memory_items WHERE superseded_by IS NULL;
 CREATE TABLE entity_vec_rowids (
@@ -458,11 +632,16 @@ CREATE TABLE entity_vec_chunks (
 """
 # sqlite-vec is never loaded, so the vec0 table's own definition is planted in the
 # schema directly, exactly as a snapshot opened without the extension presents it.
-_VEC0_DEFINITION = (
-    "CREATE VIRTUAL TABLE entity_vec USING vec0("
-    "entity_id TEXT PRIMARY KEY, embedding FLOAT[4])"
-)
-_SECRET_VALUE = "synthetic-secret-value-0000"
+# The second is a virtual table of a module the inventory does not know.
+_VIRTUAL_DEFINITIONS = {
+    "entity_vec": (
+        "CREATE VIRTUAL TABLE entity_vec USING vec0("
+        "entity_id TEXT PRIMARY KEY, embedding FLOAT[4])"
+    ),
+    "synthetic_index": (
+        "CREATE VIRTUAL TABLE synthetic_index USING synthetic_module(a, b)"
+    ),
+}
 
 # Live graph entities in the fixture: ent-001, ent-002, ent-004, ent-005, ent-006.
 _VEC_IDS = ["ent-001", "ent-002", "ent-003", "ent-099", "ent-004"]  # 2 ghosts
@@ -479,10 +658,7 @@ _DIGEST_SESSIONS = ["s1", "s4"]  # s2 and s3 have turns and no digest
 
 
 def _snapshot(tmp_path: Path) -> Path:
-    path = tmp_path / "inputs" / "synthetic-snapshot.db"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.executescript(_DDL)
+    path, connection = new_snapshot(tmp_path, _DDL)
     connection.executemany(
         "INSERT INTO memory_items (type, label, ts, superseded_by) "
         "VALUES ('fact', ?, '2026-01-01 00:00:00', ?)",
@@ -496,19 +672,16 @@ def _snapshot(tmp_path: Path) -> Path:
         "INSERT INTO session_digest (session_id, summary) VALUES (?, 'synthetic')",
         [(s,) for s in _DIGEST_SESSIONS],
     )
-    connection.execute(
-        "INSERT INTO app_secret VALUES ('synthetic-key', ?)", (_SECRET_VALUE,)
-    )
     connection.executemany(
         "INSERT INTO entity_vec_rowids (id, chunk_id, chunk_offset) VALUES (?, 1, 0)",
         [(i,) for i in _VEC_IDS],
     )
     connection.execute("INSERT INTO entity_vec_chunks (size) VALUES (1024)")
     connection.execute("PRAGMA writable_schema=ON")
-    connection.execute(
+    connection.executemany(
         "INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql) "
-        "VALUES ('table', 'entity_vec', 'entity_vec', 0, ?)",
-        (_VEC0_DEFINITION,),
+        "VALUES ('table', ?, ?, 0, ?)",
+        [(name, name, sql) for name, sql in _VIRTUAL_DEFINITIONS.items()],
     )
     connection.execute("PRAGMA writable_schema=OFF")
     connection.commit()
@@ -535,14 +708,7 @@ def _ontology(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def private_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    repo = tmp_path / "private-home"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    (repo / ".gitignore").write_text("private/\n")
-    root = repo / "private"
-    root.mkdir()
-    monkeypatch.setenv(private_paths.PRIVATE_ROOT_VARIABLE, str(root))
-    return root
+    return use_private_root(monkeypatch, tmp_path, private_paths.PRIVATE_ROOT_VARIABLE)
 
 
 def _run_inventory(tmp_path: Path, out: Path) -> int:
@@ -571,10 +737,10 @@ def test_inventory_writes_both_files_into_a_new_out_directory(
     for path in out.iterdir():
         assert path.stat().st_mode & 0o777 == 0o600
         text = path.read_text()
-        assert _SECRET_VALUE not in text
+        assert SECRET_VALUE not in text
         assert "synthetic turn" not in text
     captured = capsys.readouterr()
-    assert captured.out == "inventory: objects=12 ontology_files=4\n"
+    assert captured.out == "inventory: objects=15 ontology_files=4\n"
     assert captured.err == ""
 
 
@@ -592,7 +758,7 @@ def test_inventory_counts_the_synthetic_fixtures(
     assert report["sessions_without_digest"] == 2
 
     assert {name: entry["row_count"] for name, entry in objects.items()} == {
-        "__synthetic_migrations": 0,
+        "__drizzle_migrations": 0,
         "app_secret": 1,
         "conversation": 5,
         "entity_vec": 5,
@@ -600,16 +766,19 @@ def test_inventory_counts_the_synthetic_fixtures(
         "entity_vec_rowids": 5,
         "live_items": 4,
         "memory_items": 5,
+        "migrations_archive": 0,
         "mystery_table": 0,
         "session_digest": 2,
         "sqlite_sequence": 5,
+        "synthetic_index": None,
+        "synthetic_index_node": 0,
         "tool_call_log": 0,
     }
     assert {
         name: (entry["ledger_scope"], entry["scope_reason"])
         for name, entry in objects.items()
     } == {
-        "__synthetic_migrations": ("inventory_only", "schema_metadata"),
+        "__drizzle_migrations": ("inventory_only", "schema_metadata"),
         "app_secret": ("inventory_only", "counted_never_selected"),
         "conversation": ("in_scope", "ledger_rows"),
         "entity_vec": ("inventory_only", "derived_index"),
@@ -617,11 +786,18 @@ def test_inventory_counts_the_synthetic_fixtures(
         "entity_vec_rowids": ("inventory_only", "derived_index"),
         "live_items": ("unclassified", "not_in_spec"),
         "memory_items": ("in_scope", "ledger_rows"),
+        # A "migrations" name alone is not schema metadata:
+        "migrations_archive": ("unclassified", "not_in_spec"),
         "mystery_table": ("unclassified", "not_in_spec"),
         "session_digest": ("in_scope", "ledger_rows"),
         "sqlite_sequence": ("inventory_only", "schema_metadata"),
+        # Neither vec0 nor fts5, so neither it nor its shadow is a derived index:
+        "synthetic_index": ("unclassified", "unknown_virtual_module"),
+        "synthetic_index_node": ("unclassified", "unknown_virtual_module"),
         "tool_call_log": ("inventory_only", "telemetry_harvested_separately"),
     }
+    assert objects["synthetic_index"]["virtual_module"] == "synthetic_module"
+    assert objects["synthetic_index_node"]["shadow_of"] == "synthetic_index"
 
     vec = objects["entity_vec"]
     assert (vec["type"], vec["virtual_module"], vec["columns"]) == (

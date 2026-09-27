@@ -56,9 +56,15 @@ _INVENTORY_ONLY_TABLES: Final = {
     "app_secret": "counted_never_selected",
     "vec_meta": "derived_index",
     "sqlite_sequence": "schema_metadata",
+    # The predecessor's ORM migration journal. Its second bookkeeping table carries
+    # the predecessor's own name, which stays out of public code (spec § Data Models,
+    # inventory-only): it lands ``unclassified`` and is named only in private output.
+    "__drizzle_migrations": "schema_metadata",
 }
 _OUT_OF_SCOPE_PREFIX: Final = "ticket_fts"
-_MIGRATION_BOOKKEEPING_MARKER: Final = "migrations"
+#: The virtual-table modules whose tables (and shadow tables) are derived indexes:
+#: sqlite-vec and SQLite full-text search. Any other module is ``unclassified``.
+_DERIVED_INDEX_MODULES: Final = frozenset({"vec0", "fts5"})
 
 _PROFILE_PREFIX: Final = "profile.synth."
 _MAINTAINER_STATUS: Final = "maintainer-status.json"
@@ -138,17 +144,19 @@ class Inventory:
     sessions_without_digest: int | None
 
 
-def _table_scope(name: str, shadow_of: str | None) -> tuple[str, str]:
+def _table_scope(name: str, index_module: str | None) -> tuple[str, str]:
+    """``index_module`` is the virtual module of the table itself, or of the virtual
+    table it is a shadow of; ``None`` for an ordinary table or view."""
     if name.startswith(_OUT_OF_SCOPE_PREFIX):
         return INVENTORY_ONLY, "out_of_scope"
-    if shadow_of is not None:
-        return INVENTORY_ONLY, "derived_index"
+    if index_module is not None:
+        if index_module in _DERIVED_INDEX_MODULES:
+            return INVENTORY_ONLY, "derived_index"
+        return UNCLASSIFIED, "unknown_virtual_module"
     if name in _LEDGER_TABLES:
         return IN_SCOPE, "ledger_rows"
     if name in _INVENTORY_ONLY_TABLES:
         return INVENTORY_ONLY, _INVENTORY_ONLY_TABLES[name]
-    if _MIGRATION_BOOKKEEPING_MARKER in name:
-        return INVENTORY_ONLY, "schema_metadata"
     return UNCLASSIFIED, "not_in_spec"
 
 
@@ -164,7 +172,12 @@ def _schema_entries(connection: sqlite3.Connection) -> tuple[SchemaEntry, ...]:
         for obj in sqlite_source.schema_objects(connection)
         if obj.type in ("table", "view")
     ]
-    virtual_names = [obj.name for obj in objects if obj.virtual_module is not None]
+    modules = {
+        obj.name: obj.virtual_module
+        for obj in objects
+        if obj.virtual_module is not None
+    }
+    virtual_names = list(modules)
     shadows = {
         obj.name: owner
         for obj in objects
@@ -187,12 +200,11 @@ def _schema_entries(connection: sqlite3.Connection) -> tuple[SchemaEntry, ...]:
             for shadow, owner in sorted(shadows.items())
             if owner == obj.name
         }
+        owner = shadows.get(obj.name)
+        scope = _table_scope(
+            obj.name, obj.virtual_module or (modules[owner] if owner else None)
+        )
         if virtual:
-            scope: tuple[str, str] = (
-                (INVENTORY_ONLY, "out_of_scope")
-                if obj.name.startswith(_OUT_OF_SCOPE_PREFIX)
-                else (INVENTORY_ONLY, "derived_index")
-            )
             columns: tuple[ColumnInfo, ...] | None = None
             keys: tuple[ForeignKeyInfo, ...] = ()
             rowids = f"{obj.name}_rowids"
@@ -200,7 +212,6 @@ def _schema_entries(connection: sqlite3.Connection) -> tuple[SchemaEntry, ...]:
                 shadow_counts.get(rowids) if obj.virtual_module == _VEC0 else None
             )
         else:
-            scope = _table_scope(obj.name, shadows.get(obj.name))
             try:
                 columns = tuple(
                     ColumnInfo(c.name, c.declared_type, c.not_null, c.primary_key)
