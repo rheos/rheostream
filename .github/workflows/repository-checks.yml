@@ -28,6 +28,8 @@ jobs:
         run: make search-boundary
       - name: Check every web workspace package declares lint/typecheck/test
         run: make workspace-scripts
+      - name: Check module web packages reach core only through ShellApi (#183)
+        run: make module-web-boundary
 
   # The container image had no gate anywhere until this job (issue #49). The host
   # half of `make build` stalls on a credential helper reaching ghcr.io, which the
