@@ -19,6 +19,11 @@ A line shorter than :data:`MIN_LINE_LENGTH` characters is dropped (a short token
 match everywhere), and so is a line equal, after the same normalization, to a line of
 ``<out>/denylist-exempt.txt`` when that file exists. The output path passes
 :func:`require_private_output` before any input is read.
+
+``inventory`` (spec § System Components 2) takes ``--out`` as a directory, creates it
+if absent, and writes ``<out>/inventory.json`` and ``<out>/inventory.md`` in the one
+invocation; each full path passes :func:`require_private_output` before any input is
+read.
 """
 
 import argparse
@@ -33,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from rheo_recallatron.migration import inventory
 from rheo_recallatron.migration.predecessor import graph_source, sqlite_source
 from rheo_recallatron.migration.private_paths import (
     PrivateOutputRefusal,
@@ -132,14 +138,27 @@ def _read_exempt(path: Path) -> list[str]:
         ) from error
 
 
-def _write_private_lines(path: Path, lines: Sequence[str]) -> None:
+def _write_private_text(path: Path, text: str) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
     try:
         descriptor = os.open(path, flags, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write("".join(f"{line}\n" for line in lines))
+            handle.write(text)
     except OSError as error:
         raise InputRefusal(OUTPUT_UNWRITABLE, f"cannot write {path}") from error
+
+
+def _write_private_lines(path: Path, lines: Sequence[str]) -> None:
+    _write_private_text(path, "".join(f"{line}\n" for line in lines))
+
+
+def _read_graph(ontology: str) -> graph_source.ParsedGraph:
+    try:
+        return graph_source.read_graph(ontology)
+    except (OSError, UnicodeDecodeError) as error:
+        raise InputRefusal(
+            INPUT_UNREADABLE, f"cannot read the ontology graph under {ontology}"
+        ) from error
 
 
 def _run_denylist(args: argparse.Namespace) -> int:
@@ -155,12 +174,7 @@ def _run_denylist(args: argparse.Namespace) -> int:
         ) from error
     finally:
         connection.close()
-    try:
-        graph = graph_source.read_graph(args.ontology)
-    except (OSError, UnicodeDecodeError) as error:
-        raise InputRefusal(
-            INPUT_UNREADABLE, f"cannot read the ontology graph under {args.ontology}"
-        ) from error
+    graph = _read_graph(args.ontology)
     queries = read_harvest_queries(Path(args.harvest))
 
     denylist = build_denylist(
@@ -171,6 +185,37 @@ def _run_denylist(args: argparse.Namespace) -> int:
     print(
         f"denylist: written={len(denylist.lines)} "
         f"short_dropped={denylist.short_dropped} exempted={denylist.exempted}"
+    )
+    return 0
+
+
+def _run_inventory(args: argparse.Namespace) -> int:
+    out_dir = Path(args.out)
+    json_target = require_private_output(out_dir / inventory.INVENTORY_JSON_NAME)
+    markdown_target = require_private_output(
+        out_dir / inventory.INVENTORY_MARKDOWN_NAME
+    )
+
+    graph = _read_graph(args.ontology)
+    connection = sqlite_source.open_snapshot(args.snapshot)
+    try:
+        result = inventory.build_inventory(connection, graph, args.ontology)
+    except sqlite3.DatabaseError as error:
+        raise InputRefusal(
+            INPUT_UNREADABLE, f"cannot read the snapshot {args.snapshot}"
+        ) from error
+    except OSError as error:
+        raise InputRefusal(
+            INPUT_UNREADABLE, f"cannot list the ontology directory {args.ontology}"
+        ) from error
+    finally:
+        connection.close()
+
+    _write_private_text(json_target, inventory.render_json(result))
+    _write_private_text(markdown_target, inventory.render_markdown(result))
+    print(
+        f"inventory: objects={len(result.objects)} "
+        f"ontology_files={len(result.ontology_files)}"
     )
     return 0
 
@@ -191,6 +236,22 @@ def _parser() -> argparse.ArgumentParser:
         "--out", required=True, help="output directory inside the private root"
     )
     denylist.set_defaults(handler=_run_denylist)
+    inventory_parser = subcommands.add_parser(
+        "inventory",
+        help="write <out>/inventory.json and <out>/inventory.md (FR 1)",
+    )
+    inventory_parser.add_argument(
+        "--snapshot", required=True, help="the SQLite snapshot"
+    )
+    inventory_parser.add_argument(
+        "--ontology", required=True, help="the ontology directory"
+    )
+    inventory_parser.add_argument(
+        "--out",
+        required=True,
+        help="output directory inside the private root; created if absent",
+    )
+    inventory_parser.set_defaults(handler=_run_inventory)
     return parser
 
 

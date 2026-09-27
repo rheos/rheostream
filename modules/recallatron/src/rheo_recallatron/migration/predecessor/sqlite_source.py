@@ -16,7 +16,9 @@ Schema introspection (``sqlite_master``, ``pragma_table_info``,
 """
 
 import os
+import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -27,8 +29,13 @@ READ_ONLY_MODE: Final = "ro"
 #: never selected").
 NEVER_SELECTED_TABLE: Final = "app_secret"
 
-#: The tables a row reader may select from. Only what a mapping step needs today.
-SELECTABLE_TABLES: Final = frozenset({"memory_items"})
+#: The tables a row reader may select from. Only what a mapping or inventory step
+#: needs today: ``conversation`` and ``session_digest`` for their ``session_id``
+#: (sessions with turns and no digest), and ``entity_vec_rowids`` (the ``entity_vec``
+#: vec0 table's own shadow) for the entity ids behind its ghost rows.
+SELECTABLE_TABLES: Final = frozenset(
+    {"memory_items", "conversation", "session_digest", "entity_vec_rowids"}
+)
 
 SNAPSHOT_MODE_REFUSED = "snapshot_mode_refused"
 SNAPSHOT_URI_REFUSED = "snapshot_uri_refused"
@@ -37,6 +44,10 @@ SNAPSHOT_UNREADABLE = "snapshot_unreadable"
 TABLE_NEVER_SELECTED = "table_never_selected"
 TABLE_NOT_SELECTABLE = "table_not_selectable"
 COLUMN_UNKNOWN = "column_unknown"
+
+_VIRTUAL_TABLE = re.compile(
+    r"\s*CREATE\s+VIRTUAL\s+TABLE\s+.*?\bUSING\s+(\w+)", re.IGNORECASE | re.DOTALL
+)
 
 
 class SnapshotRefusal(Exception):
@@ -53,6 +64,10 @@ class SchemaObject:
     type: str
     name: str
     table_name: str
+    #: The module a ``CREATE VIRTUAL TABLE ... USING <module>`` names (``vec0``,
+    #: ``fts5``), else ``None``. A virtual table is never queried directly: its
+    #: module (sqlite-vec) is not loaded, so it is counted through its shadows.
+    virtual_module: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,11 +124,32 @@ def open_snapshot(
 
 def schema_objects(connection: sqlite3.Connection) -> list[SchemaObject]:
     rows = connection.execute(
-        "SELECT type, name, tbl_name FROM sqlite_master ORDER BY type, name"
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
     ).fetchall()
-    return [
-        SchemaObject(str(kind), str(name), str(table)) for kind, name, table in rows
+    objects = []
+    for kind, name, table, sql in rows:
+        match = _VIRTUAL_TABLE.match(sql) if isinstance(sql, str) else None
+        module = match.group(1).lower() if match else None
+        objects.append(SchemaObject(str(kind), str(name), str(table), module))
+    return objects
+
+
+def row_count(connection: sqlite3.Connection, table: str) -> int:
+    """``count(*)`` of a table or view: a count, never a value, so it covers
+    ``app_secret`` too. Refuses a virtual table, whose module may not be loaded."""
+    matches = [
+        obj
+        for obj in schema_objects(connection)
+        if obj.name == table and obj.type in ("table", "view")
     ]
+    if not matches:
+        raise SnapshotRefusal(TABLE_NOT_SELECTABLE, f"no table named {table!r}")
+    if matches[0].virtual_module is not None:
+        raise SnapshotRefusal(
+            TABLE_NOT_SELECTABLE, f"{table!r} is virtual; count its shadow tables"
+        )
+    (count,) = connection.execute(f"SELECT count(*) FROM {_quoted(table)}").fetchone()
+    return int(count)
 
 
 def _require_table(connection: sqlite3.Connection, table: str) -> None:
@@ -151,10 +187,10 @@ def _quoted(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def select_column(
-    connection: sqlite3.Connection, table: str, column: str
-) -> list[object]:
-    """Every value of ``table.column``, in rowid order, from a selectable table."""
+def select_columns(
+    connection: sqlite3.Connection, table: str, columns: Sequence[str]
+) -> list[tuple[object, ...]]:
+    """Every row's ``columns``, in rowid order, from a selectable table."""
     if table == NEVER_SELECTED_TABLE:
         raise SnapshotRefusal(
             TABLE_NEVER_SELECTED, f"{NEVER_SELECTED_TABLE} is counted, never selected"
@@ -163,12 +199,24 @@ def select_column(
         raise SnapshotRefusal(
             TABLE_NOT_SELECTABLE, f"{table!r} is not a table any mapping step reads"
         )
-    if column not in {col.name for col in table_columns(connection, table)}:
-        raise SnapshotRefusal(COLUMN_UNKNOWN, f"{table}.{column} does not exist")
+    if not columns:
+        raise SnapshotRefusal(COLUMN_UNKNOWN, f"no column named for {table}")
+    known = {col.name for col in table_columns(connection, table)}
+    for column in columns:
+        if column not in known:
+            raise SnapshotRefusal(COLUMN_UNKNOWN, f"{table}.{column} does not exist")
+    selected = ", ".join(_quoted(column) for column in columns)
     rows = connection.execute(
-        f"SELECT {_quoted(column)} FROM {_quoted(table)} ORDER BY rowid"
+        f"SELECT {selected} FROM {_quoted(table)} ORDER BY rowid"
     ).fetchall()
-    return [value for (value,) in rows]
+    return [tuple(row) for row in rows]
+
+
+def select_column(
+    connection: sqlite3.Connection, table: str, column: str
+) -> list[object]:
+    """Every value of ``table.column``, in rowid order, from a selectable table."""
+    return [value for (value,) in select_columns(connection, table, (column,))]
 
 
 def memory_item_labels(connection: sqlite3.Connection) -> list[str]:
