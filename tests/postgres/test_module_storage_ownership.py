@@ -3,12 +3,22 @@
 The live object diff and the two source scans are deliberately independent of the
 ``WorkspaceContext`` and ``SecretScope`` construction gates.  Each mechanism has a
 positive control so an empty walk or a matcher that no longer matches cannot pass.
+
+AC 3 is about **platform storage**: the workspace database the core owns. The raw
+database scan has exactly one named exemption, and it is not platform storage: the
+migration groundwork's predecessor snapshot reader,
+``rheo_recallatron/migration/predecessor/sqlite_source.py``, opens a read-only
+external input (a local SQLite snapshot file, ``mode=ro&immutable=1``). Only a
+``sqlite3.connect`` call in that one file is exempt; every other raw call in it, and
+``sqlite3.connect`` anywhere else in the module, is still a violation (see
+:func:`_raw_database_violations` and its controls).
 """
 
 from __future__ import annotations
 
 import ast
 import re
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID
@@ -65,6 +75,12 @@ _DATABASE_MODULES = frozenset(
     {"sqlalchemy", "psycopg", "psycopg2", "asyncpg", "pg8000", "sqlite3"}
 )
 _DSN_PREFIXES = ("postgresql://", "postgresql+")
+# The one named exemption from the raw database scan (see the module docstring): the
+# predecessor snapshot is a read-only external input, not platform storage, so its
+# reader may call ``sqlite3.connect``. One file (a path relative to the module's
+# ``src``), one qualified call name, nothing wider.
+_SNAPSHOT_READER = "rheo_recallatron/migration/predecessor/sqlite_source.py"
+_SNAPSHOT_READER_CALL = "sqlite3.connect"
 
 
 @pytest.fixture
@@ -441,6 +457,33 @@ def _scan_sources(root: Path, matcher: object) -> tuple[int, dict[str, list[str]
     return len(files), violations
 
 
+def _exempt_sites(relative: str, tree: ast.AST) -> Counter[str]:
+    """The sites the one named exemption covers in ``relative``: a
+    ``sqlite3.connect`` call, and only in the snapshot reader's own file."""
+    if relative != _SNAPSHOT_READER:
+        return Counter()
+    aliases = _import_aliases(tree)
+    return Counter(
+        f"call connect@{node.lineno}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _qualified_name(node.func, aliases) == _SNAPSHOT_READER_CALL
+    )
+
+
+def _raw_database_violations(root: Path) -> tuple[int, dict[str, list[str]]]:
+    scanned, violations = _scan_sources(root, _raw_database_sites)
+    remaining: dict[str, list[str]] = {}
+    for relative, sites in violations.items():
+        tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+        # Counter subtraction removes one site per exempt call, so a second raw call
+        # on the same line (say a psycopg.connect) is still reported.
+        kept = sorted((Counter(sites) - _exempt_sites(relative, tree)).elements())
+        if kept:
+            remaining[relative] = kept
+    return scanned, remaining
+
+
 def test_recallatron_names_no_foreign_storage(tmp_path: Path) -> None:
     scanned, violations = _scan_sources(_MODULE_SRC, _foreign_storage_sites)
     assert scanned, "no Recallatron Python files scanned"
@@ -454,9 +497,13 @@ def test_recallatron_names_no_foreign_storage(tmp_path: Path) -> None:
 
 
 def test_recallatron_constructs_no_raw_database_access(tmp_path: Path) -> None:
-    scanned, violations = _scan_sources(_MODULE_SRC, _raw_database_sites)
+    scanned, violations = _raw_database_violations(_MODULE_SRC)
     assert scanned, "no Recallatron Python files scanned"
     assert not violations, f"Recallatron constructs raw database access: {violations}"
+    # The exemption is in use: without it the real tree would report the reader.
+    assert _scan_sources(_MODULE_SRC, _raw_database_sites)[1].keys() == {
+        _SNAPSHOT_READER
+    }
 
     probe = tmp_path / "probe.py"
     probe.write_text(
@@ -468,6 +515,38 @@ def test_recallatron_constructs_no_raw_database_access(tmp_path: Path) -> None:
     control_scanned, control = _scan_sources(tmp_path, _raw_database_sites)
     assert control_scanned == 1
     assert control == {"probe.py": ["call create_engine@3", "dsn@2"]}
+
+
+def test_the_snapshot_reader_exemption_covers_one_file_and_one_call(
+    tmp_path: Path,
+) -> None:
+    """Positive controls for the one named exemption: a ``sqlite3.connect`` in any
+    other file (a sibling in ``migration/``, or a same-named file elsewhere) is still
+    reported, and so is any other raw call inside the exempt file itself."""
+    probes = {
+        _SNAPSHOT_READER: (
+            "import sqlite3\n"
+            "import psycopg\n"
+            "sqlite3.connect(path)\n"
+            "psycopg.connect(url)\n"
+            'dsn = "postgresql://probe.invalid/db"\n'
+        ),
+        "rheo_recallatron/migration/cli.py": "import sqlite3\nsqlite3.connect(path)\n",
+        "rheo_recallatron/sqlite_source.py": "import sqlite3\nsqlite3.connect(path)\n",
+    }
+    for relative, source in probes.items():
+        probe = tmp_path / relative
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text(source, encoding="utf-8")
+
+    scanned, violations = _raw_database_violations(tmp_path)
+
+    assert scanned == 3
+    assert violations == {
+        _SNAPSHOT_READER: ["call connect@4", "dsn@5"],
+        "rheo_recallatron/migration/cli.py": ["call connect@2"],
+        "rheo_recallatron/sqlite_source.py": ["call connect@2"],
+    }
 
 
 @pytest.mark.parametrize(
