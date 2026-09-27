@@ -205,6 +205,7 @@ this is the inventory.
 | `approval`, `approval_payload`, `standing_grant`, `standing_grant_operation`, `external_action` (not built yet) | [confirmation and safety](confirmation-and-safety.md) |
 | `runtime_request`, `runtime_request_context`, `runtime_session`, `runtime_transcript` | [runtime and MCP](runtime-and-mcp.md) |
 | `tool_telemetry` | [runtime and MCP](runtime-and-mcp.md#the-mcp-facade) |
+| `evidence_unit` | [runtime and MCP](runtime-and-mcp.md) |
 | `deletion_record`, `export_record`, `export_record_ref`, `migration_verification` (the last not built yet) | [deletion, export, migration](deletion-export-migration.md) |
 
 ### Composition and schema versions (FR 9)
