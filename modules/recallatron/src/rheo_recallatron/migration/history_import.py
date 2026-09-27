@@ -59,7 +59,11 @@ def _values(unit: HistoryExtractUnit) -> dict[str, object]:
         "source_category": unit.source_category,
         "source_created_at": unit.source_created_at,
         "confirmed_at": unit.confirmed_at,
-        "superseded_by_source_key": unit.superseded_by_source_key,
+        "superseded_by_source_key": (
+            opaque_history_source_key(unit.superseded_by_source_key)
+            if unit.superseded_by_source_key is not None
+            else None
+        ),
     }
 
 

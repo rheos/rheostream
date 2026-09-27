@@ -230,6 +230,32 @@ def test_history_import_replay_does_not_duplicate_or_resurrect(
     assert (third.inserted, third.identical, third.erased) == (0, 0, 1)
 
 
+def test_history_import_obscures_supersession_source_identity(
+    history_workspace: tuple,
+) -> None:
+    _owner, _member, _operations, database_name, engine = history_workspace
+    at = datetime.now(UTC)
+    successor = "graph.entity:synthetic-successor"
+    unit = HistoryExtractUnit(
+        external_source_key="graph.entity:synthetic-earlier",
+        kind="graph_entity",
+        status="superseded",
+        title="Earlier garden record",
+        body="A synthetic earlier garden record.",
+        occurred_at=at,
+        superseded_by_source_key=successor,
+    )
+    extract = parse_history_extract(
+        dump_history_extract([unit], source_sha256="a" * 64, unresolved_count=0)
+    )
+    with UnitOfWork(engine, database_name) as uow:
+        report = import_history(uow.connection, extract, imported_at=at)
+        stored = uow.connection.execute(select(history_record)).one()
+        uow.commit()
+    assert report.inserted == 1
+    assert stored.superseded_by_source_key == opaque_history_source_key(successor)
+
+
 def test_curated_import_uses_migrated_origin_and_stable_receipt(
     history_workspace: tuple,
 ) -> None:
