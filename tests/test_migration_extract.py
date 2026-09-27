@@ -607,7 +607,7 @@ CREATE TABLE memory_items (
 );
 CREATE TABLE conversation (
     id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-    session_id text NOT NULL,
+    session_id text,
     content text NOT NULL
 );
 CREATE TABLE session_digest (
@@ -653,7 +653,8 @@ _MEMORY_ITEMS = [
     ("Sample Gardener North", None),  # overlaps ent-002 after whitespace collapse
     ("Seed Library Hours", None),  # no graph twin
 ]
-_TURN_SESSIONS = ["s1", "s1", "s2", "s3", "s3"]
+# A NULL and an empty session_id name no session and must not be counted.
+_TURN_SESSIONS = ["s1", "s1", "s2", "s3", "s3", None, ""]
 _DIGEST_SESSIONS = ["s1", "s4"]  # s2 and s3 have turns and no digest
 
 
@@ -760,7 +761,7 @@ def test_inventory_counts_the_synthetic_fixtures(
     assert {name: entry["row_count"] for name, entry in objects.items()} == {
         "__drizzle_migrations": 0,
         "app_secret": 1,
-        "conversation": 5,
+        "conversation": 7,
         "entity_vec": 5,
         "entity_vec_chunks": 1,
         "entity_vec_rowids": 5,

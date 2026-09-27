@@ -321,11 +321,13 @@ def _sessions_without_digest(
 ) -> int | None:
     if not {"conversation", "session_digest"} <= tables:
         return None
-    turns = set(sqlite_source.select_column(connection, "conversation", "session_id"))
-    digests = set(
-        sqlite_source.select_column(connection, "session_digest", "session_id")
-    )
-    return len(turns - digests)
+
+    def sessions(table: str) -> set[object]:
+        # A NULL or empty session_id names no session, so it is never counted.
+        values = sqlite_source.select_column(connection, table, "session_id")
+        return {value for value in values if value is not None and value != ""}
+
+    return len(sessions("conversation") - sessions("session_digest"))
 
 
 def build_inventory(
