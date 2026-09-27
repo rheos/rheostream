@@ -8,9 +8,11 @@ id of its own; an entity record's native id is its ``id``.
 This module is the parser scaffold and the op-line / full-record split, plus the live
 entity fold the denylist needs. The edge fold (``fold_edges``) is a later phase's.
 
-Liveness follows the predecessor's own load and default search: the last full record
-per ``id`` wins, a ``supersede`` op naming an id as ``old`` supersedes it wherever in
-the file it sits, and a live record has ``superseded_by`` and ``valid_until`` both null.
+Liveness is supersession only ("only live heads migrate", spec § Data Models): the
+last full record per ``id`` wins, a ``supersede`` op naming an id as ``old``
+supersedes it wherever in the file it sits, and a live head has ``superseded_by``
+null. ``valid_until`` does not decide liveness here: a deadline record carries one and
+still migrates, so its label belongs in the denylist.
 """
 
 import json
@@ -100,9 +102,7 @@ def live_entities(parsed: ParsedGraph) -> list[EntityLine]:
     return [
         head
         for entity_id, head in heads.items()
-        if entity_id not in superseded
-        and head.record.get("superseded_by") is None
-        and head.record.get("valid_until") is None
+        if entity_id not in superseded and head.record.get("superseded_by") is None
     ]
 
 

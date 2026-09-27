@@ -44,7 +44,9 @@ EXEMPT_FILE_NAME: Final = "denylist-exempt.txt"
 MIN_LINE_LENGTH: Final = 5
 
 HARVEST_UNREADABLE = "harvest_unreadable"
+HARVEST_EMPTY = "harvest_empty"
 INPUT_UNREADABLE = "input_unreadable"
+OUTPUT_UNWRITABLE = "output_unwritable"
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -82,7 +84,11 @@ def build_denylist(sources: Iterable[str], exempt: Iterable[str]) -> Denylist:
 
 def read_harvest_queries(path: Path) -> list[str]:
     """Every non-empty ``query`` value of a harvested ``tool_call_log`` export, a
-    ``.json`` list of row objects or a ``.csv`` with a ``query`` column."""
+    ``.json`` list of row objects or a ``.csv`` with a ``query`` column.
+
+    A harvest that yields no query string at all is refused: the real harvest has
+    query text, so an empty result means the file is not the shape this reads, and a
+    denylist silently missing every query would pass the leak scan it feeds."""
     try:
         if path.suffix == ".json":
             rows = json.loads(path.read_text(encoding="utf-8"))
@@ -99,9 +105,14 @@ def read_harvest_queries(path: Path) -> list[str]:
             raise InputRefusal(
                 HARVEST_UNREADABLE, f"expected a .json or .csv harvest: {path}"
             )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, csv.Error) as error:
         raise InputRefusal(HARVEST_UNREADABLE, f"cannot read {path}") from error
-    return [value for value in values if isinstance(value, str) and value.strip()]
+    queries = [value for value in values if isinstance(value, str) and value.strip()]
+    if not queries:
+        raise InputRefusal(
+            HARVEST_EMPTY, f"no query string in {len(values)} harvest rows: {path}"
+        )
+    return queries
 
 
 def _read_exempt(path: Path) -> list[str]:
@@ -117,9 +128,12 @@ def _read_exempt(path: Path) -> list[str]:
 
 def _write_private_lines(path: Path, lines: Sequence[str]) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write("".join(f"{line}\n" for line in lines))
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write("".join(f"{line}\n" for line in lines))
+    except OSError as error:
+        raise InputRefusal(OUTPUT_UNWRITABLE, f"cannot write {path}") from error
 
 
 def _run_denylist(args: argparse.Namespace) -> int:

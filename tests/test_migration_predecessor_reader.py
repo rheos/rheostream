@@ -10,11 +10,15 @@ unrelated temp repo ignores, the same pattern as ``test_migration_private_paths.
 """
 
 import hashlib
+import importlib.util
 import json
 import shutil
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from rheo_recallatron.migration import cli, private_paths
@@ -31,6 +35,7 @@ _GRAPH_FIXTURE = (
     / "migration"
     / "synthetic_graph.jsonl"
 )
+_LEAK_SCAN_SCRIPT = _REPO_ROOT / "scripts" / "check_migration_outputs.py"
 
 # A subset of the predecessor's real `memory_items` columns, plus an `app_secret`
 # table whose one synthetic value must never be selected.
@@ -48,18 +53,23 @@ CREATE TABLE memory_items (
 CREATE TABLE app_secret (name text PRIMARY KEY, value text NOT NULL);
 """
 _SECRET_VALUE = "synthetic-secret-value-0000"
+# "Kale" (4 characters) and "Beets" (5) pin the floor from both sides.
 _MEMORY_LABELS = [
     "Seed Library Hours",
     "tea",
     "EXAMPLE widget   co",
     "  Compost   Rota  ",
+    "Kale",
+    "Beets",
 ]
 
 
-def _snapshot(tmp_path: Path) -> Path:
+def _snapshot(tmp_path: Path, *, wal: bool = False) -> Path:
     path = tmp_path / "inputs" / "synthetic-snapshot.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
+    if wal:
+        connection.execute("PRAGMA journal_mode=WAL")
     connection.executescript(_DDL)
     connection.executemany(
         "INSERT INTO memory_items (type, label, properties, ts, superseded_by) "
@@ -94,6 +104,7 @@ _HARVEST_QUERIES: list[str | None] = [
 
 def _harvest(tmp_path: Path, suffix: str) -> Path:
     path = tmp_path / "inputs" / f"synthetic-harvest{suffix}"
+    path.parent.mkdir(parents=True, exist_ok=True)
     rows = [{"tool": "entity_search", "query": query} for query in _HARVEST_QUERIES]
     if suffix == ".json":
         path.write_text(json.dumps(rows))
@@ -120,7 +131,9 @@ def private_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return root
 
 
-def _run(tmp_path: Path, out: Path, suffix: str = ".json") -> int:
+def _run(
+    tmp_path: Path, out: Path, suffix: str = ".json", harvest: Path | None = None
+) -> int:
     return cli.main(
         [
             "denylist",
@@ -129,11 +142,15 @@ def _run(tmp_path: Path, out: Path, suffix: str = ".json") -> int:
             "--ontology",
             str(_ontology(tmp_path)),
             "--harvest",
-            str(_harvest(tmp_path, suffix)),
+            str(harvest if harvest is not None else _harvest(tmp_path, suffix)),
             "--out",
             str(out),
         ]
     )
+
+
+def _written(out: Path) -> list[str]:
+    return (out / cli.DENYLIST_FILE_NAME).read_text().splitlines()
 
 
 # --- sqlite_source: read-only immutable open -----------------------------------------
@@ -162,6 +179,31 @@ def test_a_missing_snapshot_is_refused_and_not_created(tmp_path: Path) -> None:
     assert not missing.exists()
 
 
+def test_the_exact_read_only_immutable_uri_reaches_sqlite(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    calls: list[tuple[str, bool]] = []
+    real_connect = sqlite3.connect
+
+    def spy(database: str, *, uri: bool = False) -> sqlite3.Connection:
+        calls.append((database, uri))
+        return real_connect(database, uri=uri)
+
+    monkeypatch.setattr(sqlite_source.sqlite3, "connect", spy)
+    sqlite_source.open_snapshot(snapshot).close()
+
+    ((database, uri),) = calls
+    assert uri is True
+    assert database == f"{snapshot.resolve().as_uri()}?mode=ro&immutable=1"
+    parts = urlsplit(database)
+    assert (parts.scheme, parts.path) == ("file", str(snapshot.resolve()))
+    assert parse_qs(parts.query, strict_parsing=True) == {
+        "mode": ["ro"],
+        "immutable": ["1"],
+    }
+
+
 def test_the_open_connection_cannot_write_and_leaves_no_side_files(
     tmp_path: Path,
 ) -> None:
@@ -176,6 +218,27 @@ def test_the_open_connection_cannot_write_and_leaves_no_side_files(
         connection.close()
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == before
     assert sorted(p.name for p in snapshot.parent.iterdir()) == [snapshot.name]
+
+
+def test_a_wal_mode_snapshot_is_read_without_wal_or_shm_side_files(
+    tmp_path: Path,
+) -> None:
+    """A plain ``mode=ro`` open of a WAL database creates ``-wal`` and ``-shm``
+    beside it; ``immutable=1`` must not, while the connection is open or after."""
+    snapshot = _snapshot(tmp_path, wal=True)
+    assert snapshot.read_bytes()[18:20] == b"\x02\x02"  # the file is in WAL mode
+    assert sorted(p.name for p in snapshot.parent.iterdir()) == [snapshot.name]
+    before = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+
+    connection = sqlite_source.open_snapshot(snapshot)
+    try:
+        assert sqlite_source.memory_item_labels(connection) == _MEMORY_LABELS
+        assert sorted(p.name for p in snapshot.parent.iterdir()) == [snapshot.name]
+    finally:
+        connection.close()
+
+    assert sorted(p.name for p in snapshot.parent.iterdir()) == [snapshot.name]
+    assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == before
 
 
 def test_schema_introspection_reads_tables_columns_and_foreign_keys(
@@ -241,22 +304,27 @@ def test_the_graph_parser_splits_op_lines_from_full_records(tmp_path: Path) -> N
     assert parsed.malformed_line_numbers == (15,)
 
 
-def test_live_labels_take_the_last_record_and_skip_superseded_and_expired(
+def test_live_labels_take_the_last_record_and_skip_only_superseded_ones(
     tmp_path: Path,
 ) -> None:
+    """ent-003 is named ``old`` by a supersede op, so it is not live; ent-006 has a
+    ``valid_until`` but is a live head (liveness is supersession only)."""
     parsed = graph_source.read_graph(_ontology(tmp_path))
     assert graph_source.live_entity_labels(parsed) == [
         "Example Widget Co",
         "Sample  Gardener North",
         "New Greenhouse Rota",
         "Tea",
+        "Draft Seed Order",
     ]
 
 
 # --- the denylist subcommand ---------------------------------------------------------
 
 _EXPECTED_WITHOUT_EXEMPTIONS = [
+    "beets",
     "compost rota",
+    "draft seed order",
     "example widget co",
     "greenhouse",
     "new greenhouse rota",
@@ -272,19 +340,43 @@ def test_denylist_writes_normalized_deduplicated_lines_and_drops_short_ones(
     capsys: pytest.CaptureFixture[str],
     suffix: str,
 ) -> None:
-    """ "tea" (graph and memory_items) and "ph" (harvest) are the two distinct lines
-    under five characters: dropped, and only their count is printed."""
+    """ "tea" (graph and memory_items), "kale" (memory_items) and "ph" (harvest) are
+    the three distinct lines under five characters: dropped, and only their count is
+    printed."""
     out = private_root / "denylist-out"
 
     assert _run(tmp_path, out, suffix) == 0
 
-    written = (out / cli.DENYLIST_FILE_NAME).read_text().splitlines()
-    assert written == _EXPECTED_WITHOUT_EXEMPTIONS
+    assert _written(out) == _EXPECTED_WITHOUT_EXEMPTIONS
     assert _SECRET_VALUE not in (out / cli.DENYLIST_FILE_NAME).read_text()
     captured = capsys.readouterr()
-    assert captured.out == "denylist: written=6 short_dropped=2 exempted=0\n"
+    assert captured.out == "denylist: written=8 short_dropped=3 exempted=0\n"
     assert captured.err == ""
     assert (out / cli.DENYLIST_FILE_NAME).stat().st_mode & 0o777 == 0o600
+
+
+def test_the_floor_drops_four_characters_and_keeps_five(
+    private_root: Path, tmp_path: Path
+) -> None:
+    out = private_root / "denylist-out"
+
+    assert _run(tmp_path, out) == 0
+
+    written = _written(out)
+    assert "kale" not in written
+    assert "beets" in written
+
+
+def test_a_live_head_with_valid_until_set_is_in_the_denylist(
+    private_root: Path, tmp_path: Path
+) -> None:
+    """The fixture's deadline record (ent-006) carries a non-null ``valid_until``
+    and is never superseded, so it migrates and its label must be denied."""
+    out = private_root / "denylist-out"
+
+    assert _run(tmp_path, out) == 0
+
+    assert "draft seed order" in _written(out)
 
 
 def test_denylist_drops_an_exempt_line_that_differs_only_in_case_and_spacing(
@@ -296,17 +388,19 @@ def test_denylist_drops_an_exempt_line_that_differs_only_in_case_and_spacing(
 
     assert _run(tmp_path, out) == 0
 
-    written = (out / cli.DENYLIST_FILE_NAME).read_text().splitlines()
+    written = _written(out)
     assert "example widget co" not in written
     assert "compost rota" not in written
     assert written == [
+        "beets",
+        "draft seed order",
         "greenhouse",
         "new greenhouse rota",
         "sample gardener north",
         "seed library hours",
     ]
     assert capsys.readouterr().out == (
-        "denylist: written=4 short_dropped=2 exempted=2\n"
+        "denylist: written=6 short_dropped=3 exempted=2\n"
     )
 
 
@@ -329,6 +423,60 @@ def test_an_unreadable_exempt_file_is_a_refusal_that_never_quotes_it(
     assert captured.out == ""
     assert captured.err.startswith(f"{cli.INPUT_UNREADABLE}: ")
     assert "synthetic exempt line" not in captured.err
+
+
+def test_a_harvest_with_no_query_strings_is_refused(
+    private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rows that carry no top-level ``query`` (the wrong export shape) must not
+    silently yield a denylist with every harvested query missing."""
+    harvest = tmp_path / "inputs" / "synthetic-harvest-shape.json"
+    harvest.parent.mkdir(parents=True, exist_ok=True)
+    harvest.write_text(
+        json.dumps([{"tool": "entity_search", "args": {"query": "hidden phrase"}}] * 3)
+    )
+    out = private_root / "denylist-out"
+
+    assert _run(tmp_path, out, harvest=harvest) == 1
+
+    assert not (out / cli.DENYLIST_FILE_NAME).exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"{cli.HARVEST_EMPTY}: no query string in 3 ")
+    assert "hidden phrase" not in captured.err
+
+
+def test_a_malformed_csv_harvest_is_a_refusal_not_a_traceback(
+    private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A field over the csv module's size limit raises ``csv.Error``."""
+    harvest = tmp_path / "inputs" / "synthetic-harvest-oversize.csv"
+    harvest.parent.mkdir(parents=True, exist_ok=True)
+    oversized = "synthetic" * 20_000
+    harvest.write_text(f"tool,query\nentity_search,{oversized}\n")
+    out = private_root / "denylist-out"
+
+    assert _run(tmp_path, out, harvest=harvest) == 1
+
+    assert not (out / cli.DENYLIST_FILE_NAME).exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"{cli.HARVEST_UNREADABLE}: ")
+    assert "synthetic" * 3 not in captured.err
+
+
+def test_an_unwritable_denylist_path_is_a_refusal_not_a_traceback(
+    private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = private_root / "denylist-out"
+    (out / cli.DENYLIST_FILE_NAME).mkdir(parents=True)
+
+    assert _run(tmp_path, out) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"{cli.OUTPUT_UNWRITABLE}: ")
+    assert "greenhouse" not in captured.err
 
 
 def test_denylist_refuses_an_out_dir_outside_the_private_root(
@@ -354,6 +502,42 @@ def test_denylist_refuses_when_no_private_root_is_set(
 
     assert not out.exists()
     assert capsys.readouterr().err.startswith(f"{private_paths.PRIVATE_ROOT_UNSET}: ")
+
+
+# --- normalizer parity with the leak scan --------------------------------------------
+
+
+def _load_leak_scan() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "check_migration_outputs", _LEAK_SCAN_SCRIPT
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Example Widget Co",
+        "  EXAMPLE\twidget\n\nco  ",
+        "tab\tseparated\tlabel",
+        "line\r\nbreaks\vand\fform feeds",
+        "non breaking em　ideographic line sep",
+        "\x1cfile\x1dgroup\x1erecord\x1funit separators",
+        "  leading and trailing  ",
+        "Straße ǅemal ΣΊΣΥΦΟΣ",
+        "",
+        " \t\n ",
+    ],
+)
+def test_the_denylist_normalizer_matches_the_leak_scans(text: str) -> None:
+    """The leak scan is the reference: a denylist line and a scanned line must be
+    put through the same normalization, or an exempt or denied line can miss."""
+    leak_scan = _load_leak_scan()
+    assert cli.normalize(text) == leak_scan._normalize(text)
 
 
 def test_the_console_script_is_declared_in_the_recallatron_distribution() -> None:
