@@ -67,9 +67,10 @@ def _git_path(start: Path, *args: str) -> Path | None:
 
 def _public_checkouts(start: Path) -> tuple[Path, ...]:
     """The public checkout(s) ``start`` belongs to, independent of the working
-    directory: the work tree containing ``start`` itself, plus that repository's
-    main work tree (the parent of its common git directory), which differs when
-    ``start`` sits in a linked ``git worktree``.
+    directory: the work tree containing ``start`` itself, then every work tree
+    of that repository as ``git worktree list --porcelain -z`` reports it (the
+    main checkout and each linked worktree, siblings included), so a root inside
+    or around any of them is refused.
 
     The lookup starts from this module's own file, never from the process's cwd,
     so the overlap rule gives the same answer wherever a tool is launched from.
@@ -77,21 +78,35 @@ def _public_checkouts(start: Path) -> tuple[Path, ...]:
     stop at the nearest ``pyproject.toml``, which is the module's own package
     directory, not the checkout.) Fails closed: when ``start`` is not inside any
     git work tree, the checkout cannot be located and every private root is
-    refused rather than waved through.
+    refused rather than waved through. A failed or unparseable worktree listing
+    fails closed the same way.
     """
+    unknown = PrivateOutputRefusal(
+        PUBLIC_CHECKOUT_UNKNOWN,
+        f"cannot locate the public checkout from {start}; refusing every "
+        "private root rather than guessing",
+    )
     toplevel = _git_path(start, "--show-toplevel")
-    common_dir = _git_path(start, "--path-format=absolute", "--git-common-dir")
-    if toplevel is None or common_dir is None:
-        raise PrivateOutputRefusal(
-            PUBLIC_CHECKOUT_UNKNOWN,
-            f"cannot locate the public checkout from {start}; refusing every "
-            "private root rather than guessing",
-        )
+    if toplevel is None:
+        raise unknown
+    listing = subprocess.run(
+        ["git", "-C", str(start), "worktree", "list", "--porcelain", "-z"],
+        capture_output=True,
+        text=True,
+    )
+    if listing.returncode != 0:
+        raise unknown
+    # -z: every attribute line ends in NUL; a record ends with an extra NUL.
+    listed = [
+        Path(field.removeprefix("worktree ")).resolve()
+        for field in listing.stdout.split("\0")
+        if field.startswith("worktree ")
+    ]
+    if toplevel not in listed:
+        raise unknown  # a listing that omits our own tree is not trusted
     checkouts = [toplevel]
-    main_worktree = common_dir.parent
-    if main_worktree != toplevel:
-        checkouts.append(main_worktree)
-    return tuple(checkouts)
+    checkouts.extend(path for path in listed if path != toplevel)
+    return tuple(dict.fromkeys(checkouts))
 
 
 def _resolved_private_root() -> Path:
@@ -209,12 +224,12 @@ def require_loopback_dsn(dsn: str) -> str:
     """
     try:
         params = conninfo_to_dict(dsn)
-    except Exception as error:  # a DSN libpq itself can't parse is never loopback
-        # A fixed message: psycopg's parse error can quote DSN fragments (a
-        # password among them), so its text stays only on the chained cause.
+    except Exception:  # a DSN libpq itself can't parse is never loopback
+        # A fixed message and no chained cause: psycopg's parse error can quote
+        # DSN fragments (a password among them), and a traceback would print it.
         raise PrivateOutputRefusal(
             DSN_NOT_LOOPBACK, "refusing an unparseable DSN"
-        ) from error
+        ) from None
 
     if params.get("service"):
         raise PrivateOutputRefusal(

@@ -37,7 +37,10 @@ pieces:
      silently diverge from the leak scan it is exempting against.
 
    **Output discipline (load-bearing):** on a match, only
-   ``<path or commit sha>:<line number>: denylist line <n>`` is printed. The
+   ``<path>:<line>: denylist line <n>`` (default, ``--text``),
+   ``<sha>:<path>:<new-file line>: denylist line <n>`` (``--diff``; ``STAGED`` in
+   place of the sha for the staged diff) or ``<sha>:<message line>: denylist line
+   <n>`` (``--commits``) is printed, ``<n>`` being the denylist file's own line. The
    matched text and the denylist line's own content are never printed — printing
    either would defeat the mechanism by leaking the thing it caught into a
    terminal or log capture that this very script would then have to catch again.
@@ -206,27 +209,54 @@ def _commit_shas(range_spec: str, cwd: Path) -> list[str]:
     return [line for line in output.splitlines() if line]
 
 
-def _added_lines(diff_text: str) -> str:
-    """The added lines of a ``git show`` / ``git diff`` patch.
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _added_lines(diff_text: str) -> list[tuple[str, int, str]]:
+    """The added lines of a ``git show`` / ``git diff`` patch, each as
+    ``(new-file path, new-file 1-based line number, text)``.
 
     Tracks position rather than guessing from a line's prefix: a file's header
     (``diff --git``, ``index``, ``---``, ``+++``) runs from its ``diff --git`` line
     to its first ``@@`` hunk header, and only lines inside a hunk are content. So
     an added content line that itself begins ``++`` (shown as ``+++...``) is kept,
-    while the ``+++ b/<path>`` file header is not. Inside a hunk every line starts
-    with `` ``, ``+``, ``-`` or ``\\``, so a ``diff --git`` line there is always a
-    real file boundary.
+    while the ``+++ b/<path>`` file header is not (it names the path instead).
+    Inside a hunk every line starts with `` ``, ``+``, ``-`` or ``\\``, so a
+    ``diff --git`` line there is always a real file boundary. The new-file line
+    number starts at the hunk header's ``+<start>`` and advances on every context
+    and added line, never on a removed one.
     """
-    added: list[str] = []
+    added: list[tuple[str, int, str]] = []
     in_hunk = False
+    path = "?"
+    new_line = 0
     for line in diff_text.splitlines():
         if line.startswith("diff --git "):
             in_hunk = False
+            path = "?"
+        elif not in_hunk and line.startswith("+++ "):
+            target = line[4:]
+            path = target[2:] if target.startswith("b/") else target
         elif line.startswith("@@"):
-            in_hunk = True
+            match = _HUNK_HEADER.match(line)
+            in_hunk = match is not None
+            new_line = int(match.group(1)) if match else 0
         elif in_hunk and line.startswith("+"):
-            added.append(line[1:])
-    return "\n".join(added)
+            added.append((path, new_line, line[1:]))
+            new_line += 1
+        elif in_hunk and line.startswith(" "):
+            new_line += 1
+    return added
+
+
+def _scan_added(source_id: str, diff_text: str, needles: Sequence[str]) -> list[str]:
+    """``<source>:<path>:<new-file line>: denylist line <k>`` for every added line
+    a needle matches — through the one shared matcher, one added line at a time."""
+    findings: list[str] = []
+    for path, new_line, text in _added_lines(diff_text):
+        for _lineno, index in match_denylist(text, needles):
+            findings.append(f"{source_id}:{path}:{new_line}: denylist line {index}")
+    return findings
 
 
 def scan_default(
@@ -244,12 +274,9 @@ def scan_diff(needles: Sequence[str], range_spec: str, cwd: Path = ROOT) -> list
         diff_text = _run_git(
             ["show", "--no-color", "--first-parent", sha], cwd=cwd
         ).stdout
-        added = _added_lines(diff_text)
-        findings.extend(_format_hits(sha, match_denylist(added, needles)))
+        findings.extend(_scan_added(sha, diff_text, needles))
     staged = _run_git(["diff", "--no-color", "--cached"], cwd=cwd).stdout
-    staged_added = _added_lines(staged)
-    if staged_added:
-        findings.extend(_format_hits("STAGED", match_denylist(staged_added, needles)))
+    findings.extend(_scan_added("STAGED", staged, needles))
     return findings
 
 
@@ -401,13 +428,33 @@ def _self_test() -> str | None:
         _run_git(["add", "-A"], cwd=repo)
         _run_git(["commit", "-q", "-m", "add a file"], cwd=repo)
         base = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
-        (repo / "diffed.txt").write_text("Acme Regional Hospital, briefly\n")
+        (repo / "diffed.txt").write_text(
+            "before\nkeep\nAcme Regional Hospital, briefly\n"
+        )
         _run_git(["commit", "-aq", "-m", "leak the name"], cwd=repo)
+        leak_sha = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
         (repo / "diffed.txt").write_text("redacted\n")
         _run_git(["commit", "-aq", "-m", "revert the name"], cwd=repo)
         diff_findings = scan_diff(needles, f"{base}..HEAD", cwd=repo)
-        if not any("denylist line 1" in f for f in diff_findings):
-            return "self-test FAILED: --diff mode missed a leak a later commit reverted"
+        # The finding names the commit, the file, and the new-file line number
+        # (line 3: after the unchanged context line and an added "keep").
+        if diff_findings != [f"{leak_sha}:diffed.txt:3: denylist line 1"]:
+            return (
+                "self-test FAILED: --diff mode missed a leak a later commit "
+                f"reverted, or named the wrong file/line: {diff_findings!r}"
+            )
+
+        # --- mode 2, staged half: a staged leak is reported as STAGED.
+        (repo / "staged.txt").write_text("fine\nAcme Regional Hospital\n")
+        _run_git(["add", "staged.txt"], cwd=repo)
+        staged_findings = scan_diff(needles, "HEAD..HEAD", cwd=repo)
+        _run_git(["reset", "-q", "staged.txt"], cwd=repo)
+        (repo / "staged.txt").unlink()
+        if staged_findings != ["STAGED:staged.txt:2: denylist line 1"]:
+            return (
+                "self-test FAILED: --diff mode missed a staged leak or named the "
+                f"wrong file/line: {staged_findings!r}"
+            )
 
         # --- mode 2, continued: an added content line that itself begins "++"
         # shows as "+++..." in the patch and must still be scanned, while the
@@ -427,12 +474,24 @@ def _self_test() -> str | None:
         _run_git(["add", "-A"], cwd=repo)
         commit_base = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
         _run_git(
-            ["commit", "-q", "-m", "mentions Acme Regional Hospital in the message"],
+            [
+                "commit",
+                "-q",
+                "-m",
+                "a subject line",
+                "-m",
+                "mentions Acme Regional Hospital in the body",
+            ],
             cwd=repo,
         )
+        message_sha = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
         commits_findings = scan_commits(needles, f"{commit_base}..HEAD", cwd=repo)
-        if not commits_findings:
-            return "self-test FAILED: --commits mode missed a leak in a commit message"
+        # Line 3 of the message itself: subject, blank separator, body.
+        if commits_findings != [f"{message_sha}:3: denylist line 1"]:
+            return (
+                "self-test FAILED: --commits mode missed a leak in a commit "
+                f"message or named the wrong line: {commits_findings!r}"
+            )
 
         # --- mode 4: --text, an arbitrary file (used for a gated issue/PR body).
         text_file = tmp / "candidate-body.txt"

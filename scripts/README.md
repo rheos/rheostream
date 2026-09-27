@@ -93,9 +93,12 @@ environment variable, naming a file outside the repository, additionally enables
 case-insensitive, whitespace-normalized leak scan of tracked content in one of five
 modes selected by CLI flag (`--diff <range>`, `--commits <range>`, `--text
 <file>...`, `--triage-exempt <ref> --out <dir>`, or no flag for tracked text at
-`HEAD`); CI never sets this variable. On a match, only
-`<path or commit sha>:<line number>: denylist line <n>` is printed — never the
-matched text or the denylist line's own content. Self-tests itself on every run
+`HEAD`); CI never sets this variable. On a match, only a location is printed:
+`<path>:<line>: denylist line <n>` for tracked or `--text` files,
+`<sha>:<path>:<new-file line>: denylist line <n>` for `--diff` (`STAGED` in place
+of the sha for the staged diff), and `<sha>:<message line>: denylist line <n>` for
+`--commits`, where `<n>` is the denylist file's own line number. The matched text
+and the denylist line's own content are never printed. Self-tests itself on every run
 before scanning the real tree.
 
 Each gate is a standalone, stdlib-only `python3` script with no import from

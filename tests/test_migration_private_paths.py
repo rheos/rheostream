@@ -212,6 +212,67 @@ def test_a_root_in_the_main_checkouts_ignored_dir_is_refused_from_a_worktree(
         )
 
 
+@pytest.fixture
+def two_linked_worktrees(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A synthetic main checkout with two sibling linked worktrees under one
+    parent, each ignoring ``scratch/``. Returns (main, worktree a, worktree b)."""
+    main = _git_repo(tmp_path, "main-checkout")
+    (main / ".gitignore").write_text("scratch/\n")
+    _git(["add", "-A"], cwd=main)
+    _git(["commit", "-q", "-m", "seed"], cwd=main)
+    siblings = tmp_path / "worktrees"
+    siblings.mkdir()
+    trees = []
+    for name in ("tree-a", "tree-b"):
+        tree = siblings / name
+        _git(["worktree", "add", "-q", "-b", name, str(tree)], cwd=main)
+        (tree / "scratch").mkdir()
+        (tree / "pkg").mkdir()
+        trees.append(tree.resolve())
+    return main.resolve(), trees[0], trees[1]
+
+
+def test_a_root_in_a_sibling_worktrees_ignored_dir_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    two_linked_worktrees: tuple[Path, Path, Path],
+) -> None:
+    """Module loaded from linked worktree a; root in sibling b's gitignored
+    dir. Neither a's own tree nor the main checkout overlaps it, so only the
+    full worktree listing catches it."""
+    _main, tree_a, tree_b = two_linked_worktrees
+    monkeypatch.setattr(private_paths, "_MODULE_DIR", tree_a / "pkg")
+    root = tree_b / "scratch"
+    monkeypatch.setenv(private_paths.PRIVATE_ROOT_VARIABLE, str(root))
+    for cwd in _cwds(tmp_path):
+        monkeypatch.chdir(cwd)
+        assert (
+            _refusal_state(root / "out.txt")
+            == private_paths.PRIVATE_ROOT_OVERLAPS_CHECKOUT
+        )
+
+
+def test_a_root_containing_the_linked_worktrees_is_refused_from_main(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    two_linked_worktrees: tuple[Path, Path, Path],
+) -> None:
+    """Module loaded from the main checkout; root is the directory holding the
+    linked worktrees (it neither contains main nor sits inside it)."""
+    main, tree_a, _tree_b = two_linked_worktrees
+    package = main / "pkg"
+    package.mkdir()
+    monkeypatch.setattr(private_paths, "_MODULE_DIR", package)
+    root = tree_a.parent
+    monkeypatch.setenv(private_paths.PRIVATE_ROOT_VARIABLE, str(root))
+    for cwd in _cwds(tmp_path):
+        monkeypatch.chdir(cwd)
+        assert (
+            _refusal_state(root / "out.txt")
+            == private_paths.PRIVATE_ROOT_OVERLAPS_CHECKOUT
+        )
+
+
 def test_the_lookup_fails_closed_outside_any_work_tree(tmp_path: Path) -> None:
     loose = tmp_path / "not-a-repo"
     loose.mkdir()
@@ -381,7 +442,8 @@ def test_require_loopback_dsn_refuses_no_host_or_hostaddr() -> None:
 
 def test_an_unparseable_dsn_refusal_never_quotes_the_dsn() -> None:
     """psycopg's parse error can quote DSN fragments; the refusal's own text is
-    fixed, and the parse error survives only as the chained cause."""
+    fixed, and the parse error is not chained (``from None``), so no traceback
+    can print it either."""
     password = "Synthetic-Pw-555-0142"
     dsn = f"host=localhost password {password}"  # missing "=": unparseable
     with pytest.raises(PrivateOutputRefusal) as excinfo:
@@ -391,7 +453,8 @@ def test_an_unparseable_dsn_refusal_never_quotes_the_dsn() -> None:
     assert password not in str(refusal)
     assert password not in repr(refusal)
     assert password not in refusal.detail
-    assert refusal.__cause__ is not None
+    assert refusal.__cause__ is None
+    assert refusal.__suppress_context__ is True
 
 
 def test_require_loopback_dsn_refuses_a_service_parameter() -> None:
