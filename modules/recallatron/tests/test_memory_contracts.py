@@ -30,9 +30,11 @@ so a scan that silently stopped matching reds instead of passing vacuously.
    **One named exemption (Robin, 12.F1):** files under ``rheo_recallatron/migration/``
    (the predecessor-migration tooling package, matched on whole path parts) may name
    the two. AC 14 is about the destination not building these features; that package
-   names the predecessor's source tables only to inventory and ledger them, and their
-   rows map to ``unresolved``. Nothing else is exempt, the module's Alembic revision
-   tree (``rheo_recallatron/migrations/``) included.
+   names the predecessor's source tables only to inventory and ledger them (the run
+   spec's mapping rules, § Data Models, send these rows to ``unresolved``; the mapping
+   itself lands in a later phase). Nothing else is exempt, the module's Alembic
+   revision tree (``rheo_recallatron/migrations/``) included. The match is
+   case-sensitive: ``rheo_recallatron/Migration/`` is not the package.
 
 3. **The recall tool's description (AC 24)**, read off the declaration: it still says
    what it said before, plus the three sentences that tell an agent to distrust a
@@ -52,7 +54,7 @@ migration package is the only other copy of either word the scan has to allow.
 """
 
 import ast
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 
 _DISTRIBUTION = Path(__file__).resolve().parents[1]
 _MODULE_SRC = _DISTRIBUTION / "src"
@@ -85,15 +87,17 @@ _DEFERRED_NAMES_EXEMPT_DIRECTORY = ("rheo_recallatron", "migration")
 """The one directory whose files may name the deferred features (Robin, 12.F1).
 
 The predecessor-migration package names the predecessor's ``topic_thread`` and
-``procedural_notes`` source tables only to inventory and ledger them (their rows map to
-``unresolved``); it builds neither feature, which is all AC 14 claims. Matched as
-leading path parts relative to the scanned root, never as a string prefix, so
-``rheo_recallatron/migration_extra/`` and ``rheo_recallatron/migrations/`` (the Alembic
-revision tree) stay banned, as does a nested ``x/rheo_recallatron/migration/``.
+``procedural_notes`` source tables only to inventory and ledger them (the run spec's
+mapping rules, § Data Models, send these rows to ``unresolved``; the mapping itself
+lands in a later phase); it builds neither feature, which is all AC 14 claims. Matched
+as leading path parts relative to the scanned root, case-sensitively, never as a
+string prefix, so ``rheo_recallatron/migration_extra/``, ``rheo_recallatron/Migration/``
+and ``rheo_recallatron/migrations/`` (the Alembic revision tree) stay banned, as does a
+nested ``x/rheo_recallatron/migration/``.
 """
 
 
-def _deferred_names_exempt(relative: Path) -> bool:
+def _deferred_names_exempt(relative: PurePath) -> bool:
     exempt = _DEFERRED_NAMES_EXEMPT_DIRECTORY
     return len(relative.parts) > len(exempt) and relative.parts[: len(exempt)] == exempt
 
@@ -328,6 +332,19 @@ def test_the_real_migration_package_is_where_the_exemption_applies() -> None:
     text = inventory.read_text(encoding="utf-8")
     assert all(name in text for name in DEFERRED_FEATURE_NAMES)
     assert _deferred_names_exempt(inventory.relative_to(_MODULE_SRC))
+
+
+def test_the_exemption_is_case_sensitive() -> None:
+    """``Migration/`` is not ``migration/``. Checked on pure paths rather than a probe
+    tree: on a case-insensitive filesystem (macOS by default) the two directories are
+    one, so a file probe could not hold both, and this runs the same on Linux CI."""
+    assert _deferred_names_exempt(PurePosixPath("rheo_recallatron/migration/probe.py"))
+    for look_alike in (
+        "rheo_recallatron/Migration/probe.py",
+        "rheo_recallatron/MIGRATION/probe.py",
+        "Rheo_Recallatron/migration/probe.py",
+    ):
+        assert not _deferred_names_exempt(PurePosixPath(look_alike)), look_alike
 
 
 def test_the_declared_kinds_are_the_four_ratified_ones() -> None:
