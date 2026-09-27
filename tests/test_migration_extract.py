@@ -763,3 +763,63 @@ def test_inventory_refuses_a_missing_ontology_without_writing(
     assert code == 1
     assert list(out.iterdir()) == []
     assert capsys.readouterr().err.startswith(f"{cli.INPUT_UNREADABLE}: ")
+
+
+def test_an_unlistable_ontology_subdirectory_is_a_refusal_not_a_short_inventory(
+    private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ontology = _ontology(tmp_path)
+    locked = ontology / "notes"
+    out = private_root / "inventory-run"
+    locked.chmod(0)
+    try:
+        code = cli.main(
+            [
+                "inventory",
+                "--snapshot",
+                str(_snapshot(tmp_path)),
+                "--ontology",
+                str(ontology),
+                "--out",
+                str(out),
+            ]
+        )
+    finally:
+        locked.chmod(0o700)
+
+    assert code == 1
+    assert list(out.iterdir()) == []
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        f"{cli.INPUT_UNREADABLE}: cannot list the ontology directory {ontology}\n"
+    )
+
+
+def test_a_shadow_table_whose_count_fails_stays_unknown_not_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real_count = sqlite_source.row_count
+
+    def failing(connection: sqlite3.Connection, table: str) -> int:
+        if table in ("entity_vec_chunks", "entity_vec_rowids"):
+            raise sqlite3.OperationalError("synthetic count failure")
+        return real_count(connection, table)
+
+    monkeypatch.setattr(sqlite_source, "row_count", failing)
+    connection = sqlite_source.open_snapshot(_snapshot(tmp_path))
+    try:
+        result = inventory.build_inventory(
+            connection,
+            graph_source.read_graph(_ontology(tmp_path)),
+            _ontology(tmp_path),
+        )
+    finally:
+        connection.close()
+
+    (vec,) = [entry for entry in result.objects if entry.name == "entity_vec"]
+    assert vec.shadow_row_counts == {
+        "entity_vec_chunks": None,
+        "entity_vec_rowids": None,
+    }
+    assert vec.row_count is None

@@ -95,7 +95,8 @@ class SchemaEntry:
     columns: tuple[ColumnInfo, ...] | None
     foreign_keys: tuple[ForeignKeyInfo, ...]
     #: A virtual table's shadow tables and their row counts.
-    shadow_row_counts: dict[str, int]
+    #: A shadow whose count failed stays ``None`` (unknown), never 0.
+    shadow_row_counts: dict[str, int | None]
     ledger_scope: str
     scope_reason: str
 
@@ -182,7 +183,7 @@ def _schema_entries(connection: sqlite3.Connection) -> tuple[SchemaEntry, ...]:
     for obj in sorted(objects, key=lambda o: o.name):
         virtual = obj.virtual_module is not None
         shadow_counts = {
-            shadow: counts[shadow] or 0
+            shadow: counts[shadow]
             for shadow, owner in sorted(shadows.items())
             if owner == obj.name
         }
@@ -257,9 +258,15 @@ def _ontology_scope(name: str) -> tuple[str, str]:
     return UNCLASSIFIED, "not_in_spec"
 
 
+def _raise_listing_error(error: OSError) -> None:
+    raise error
+
+
 def _ontology_files(ontology_dir: Path) -> tuple[OntologyFile, ...]:
+    """Every file under ``ontology_dir``. A directory that cannot be listed raises
+    (``os.walk`` would otherwise skip it and the inventory would be silently short)."""
     files = []
-    for root, _dirs, names in os.walk(ontology_dir):
+    for root, _dirs, names in os.walk(ontology_dir, onerror=_raise_listing_error):
         for name in names:
             path = Path(root) / name
             relative = path.relative_to(ontology_dir).as_posix()
