@@ -1,0 +1,57 @@
+# A throwaway, test-only Postgres (issue #148). Opt-in: nothing points at it by
+# default, and it shares nothing with `compose.yaml`'s dev `postgres` service.
+#
+# - Same image as CI's service container and the dev stack (pgvector/pgvector:pg16),
+#   same credentials, so the suite sees the same server it sees on GitHub.
+# - Durability off (fsync, synchronous_commit, full_page_writes). The suite creates
+#   and drops databases constantly and never needs a commit to survive a crash.
+# - Data dir on the named volume `testpgdata`, which compose scopes to this
+#   project (`rheo-stream-test-<port>_testpgdata`) and `make test-pg-down` removes
+#   (`down -v`). Named rather than anonymous so it carries the project label and
+#   can never be mistaken for, or outlive, anything else. Not tmpfs by default: the full suite keeps every workspace
+#   database it creates until session teardown, about 8.6 MB each and roughly
+#   2,000 of them, so a tmpfs data dir would hold ~19 GB of the Docker VM's memory,
+#   which every other container on the machine shares. `compose.test.tmpfs.yaml`
+#   adds tmpfs for narrow runs (`TEST_PG_TMPFS=1`).
+#
+# Never point anything but tests at this cluster. A crash of this container can
+# corrupt its data, which is fine only because the data is disposable.
+#
+# Run through the Makefile (`make test-pg-up`, `make test-fast`, `make test-pg-down`).
+# The Makefile passes `-p rheo-stream-test-<port>`, so each host port is its own
+# compose project: two sessions on two ports never share or stop each other's
+# cluster, and none of them can touch the `rheo-stream` project `make up` manages.
+name: rheo-stream-test
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rheo
+      POSTGRES_PASSWORD: rheo_dev_only
+      POSTGRES_DB: rheo
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+    # Loopback only: the password is the documented dev placeholder, so the
+    # cluster must not be reachable from another host.
+    ports:
+      - "127.0.0.1:${RHEO_TEST_PG_PORT:-5434}:5432"
+    volumes:
+      - testpgdata:/var/lib/postgresql/data
+    # Over TCP, not the socket: during first-boot init the entrypoint runs a
+    # temporary socket-only server, and a socket probe can pass before the real
+    # server is listening.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U rheo -d rheo"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  testpgdata:

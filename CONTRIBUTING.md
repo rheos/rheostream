@@ -33,8 +33,10 @@ python3 scripts/check_repository.py
 `make check` runs that plus the legacy-name, fixture-provenance, search-boundary,
 workspace-scripts and module-web-boundary gates; `make lint`, `make typecheck` and `make test` cover code
 changes. `uv run pytest` needs a reachable Postgres cluster: `make up` starts one, or
-point `RHEO_TEST_CLUSTER_DSN` at your own. [scripts/README.md](scripts/README.md)
-describes each gate.
+point `RHEO_TEST_CLUSTER_DSN` at your own. For local runs, `make test-fast` is
+quicker: it starts a throwaway test-only cluster on port 5434 (durability off, its
+own disposable data volume) and runs `make test` against it. [tests/README.md](tests/README.md) has
+the details. [scripts/README.md](scripts/README.md) describes each gate.
 
 Review staged content for private information as well as credentials. Use invented
 people, organizations, and source payloads in examples. Never attach real client
