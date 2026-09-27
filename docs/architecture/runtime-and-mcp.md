@@ -146,9 +146,11 @@ The Rheo runtime producer holds its evidence in one core table beside the runtim
 `core.evidence_unit` (revision `0010_evidence_unit`), not in `core.runtime_transcript`. A
 row is one turn waiting to become memory: `pending` with its sanitized body, or `settled` or
 `gap` with the body cleared and a content-free `outcome` word. It is transient working state,
-never exported. A pending row ages to `gap/expired_pending` once
-`automatic_memory.max_pending_hours` passes, and `core.retention_sweep` deletes settled and
-gap rows older than `runtime.transcript_retention_days`. A run's turn is recorded only when
+never exported. Its `source_expires_at` is its recording time plus
+`automatic_memory.max_pending_hours`; the first drain claim or daily `core.retention_sweep`
+after that instant ages a still-pending row to `gap/expired_pending`, so on a workspace
+nothing drains its text can stay until the next daily sweep. The same sweep deletes settled
+and gap rows older than `runtime.transcript_retention_days`. A run's turn is recorded only when
 six conditions all hold, checked in order: `automatic_memory.enabled` is true at both the
 operator and the workspace level; an extraction provider resolves (the default `"none"`
 resolves nothing, so production records nothing until one is configured); an enabled module

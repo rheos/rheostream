@@ -41,7 +41,12 @@ from rheo_core.refs import uuid7
 from rheo_core.settings import ResolvedSettings, resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from rheo_core.storage.backend import HandlerUnitOfWork
-from rheo_core.storage.evidence_tables import evidence_unit
+from rheo_core.storage.evidence_tables import (
+    OUTCOME_OVERSIZE,
+    STATE_GAP,
+    STATE_PENDING,
+    evidence_unit,
+)
 
 EVIDENCE_RECORDED: Final = "core.evidence.recorded"
 """Published once per attempt that inserted at least one evidence row."""
@@ -51,10 +56,6 @@ ENABLED_KEY: Final = "automatic_memory.enabled"
 MAX_BYTES_KEY: Final = "automatic_memory.max_bytes_per_attempt"
 MAX_RECORDS_KEY: Final = "automatic_memory.max_records_per_attempt"
 MAX_PENDING_HOURS_KEY: Final = "automatic_memory.max_pending_hours"
-
-_PENDING: Final = "pending"
-_GAP: Final = "gap"
-_OVERSIZE: Final = "oversize"
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,8 +224,8 @@ def record_evidence(
                 expires_at=record.recorded_at + pending_for,
                 now=now,
                 body=None,
-                state=_GAP,
-                outcome=_OVERSIZE,
+                state=STATE_GAP,
+                outcome=OUTCOME_OVERSIZE,
                 settled_at=now,
             )
             gapped.append(record.native_key)
@@ -240,7 +241,7 @@ def record_evidence(
                 expires_at=record.recorded_at + pending_for,
                 now=now,
                 body=body,
-                state=_PENDING,
+                state=STATE_PENDING,
                 outcome=None,
                 settled_at=None,
             )

@@ -16,12 +16,15 @@ from typing import Final
 
 from sqlalchemy import Connection, delete, select, update
 
-from rheo_core.storage.evidence_tables import evidence_unit
+from rheo_core.storage.evidence_tables import (
+    OUTCOME_EXPIRED_PENDING,
+    STATE_GAP,
+    STATE_PENDING,
+    STATE_SETTLED,
+    evidence_unit,
+)
 
-_PENDING: Final = "pending"
-_GAP: Final = "gap"
-_SETTLED_STATES: Final = ("settled", _GAP)
-EXPIRED_PENDING: Final = "expired_pending"
+_SETTLED_STATES: Final = (STATE_SETTLED, STATE_GAP)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +56,7 @@ def purge_evidence(
     expired = (
         select(evidence_unit.c.id)
         .where(
-            evidence_unit.c.state == _PENDING,
+            evidence_unit.c.state == STATE_PENDING,
             evidence_unit.c.source_expires_at <= now,
         )
         .with_for_update(skip_locked=True)
@@ -61,7 +64,12 @@ def purge_evidence(
     aged = conn.execute(
         update(evidence_unit)
         .where(evidence_unit.c.id.in_(expired))
-        .values(state=_GAP, outcome=EXPIRED_PENDING, body=None, settled_at=now)
+        .values(
+            state=STATE_GAP,
+            outcome=OUTCOME_EXPIRED_PENDING,
+            body=None,
+            settled_at=now,
+        )
     ).rowcount
     deleted = conn.execute(
         delete(evidence_unit).where(

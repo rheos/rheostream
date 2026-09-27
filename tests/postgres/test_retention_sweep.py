@@ -32,7 +32,9 @@ from harness.evidence import (
 from pydantic import ValidationError
 from rheo_contracts import ContextPurpose
 from rheo_core.events import ConsumerRegistry
+from rheo_core.evidence import retention
 from rheo_core.evidence.record import MAX_BYTES_KEY, NewEvidence, record_evidence
+from rheo_core.evidence.retention import EvidencePurge, purge_evidence
 from rheo_core.refs import uuid7
 from rheo_core.storage import runtime_tables, work_tables
 from rheo_core.storage.data_root import Purpose, workspace_dir_for
@@ -396,13 +398,24 @@ def _units(ev: EvidenceWorkspace) -> dict[str, Any]:
     return {row.native_key: row for row in rows}
 
 
-def _sweep(ev: EvidenceWorkspace) -> None:
-    """One ``run_retention_sweep`` call, bounded so a lock wait fails instead of hangs.
+def _sweep(ev: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch) -> EvidencePurge:
+    """One ``run_retention_sweep`` call; what its evidence purge reported.
 
-    ``lock_timeout`` turns a blocking ``FOR UPDATE`` into an error after two seconds,
-    and ``statement_timeout`` caps any statement, so a sweep that waits on a held row
-    reds the test rather than stalling the suite.
+    Bounded so a lock wait fails instead of hangs: ``lock_timeout`` turns a blocking
+    ``FOR UPDATE`` into an error after two seconds, and ``statement_timeout`` caps any
+    statement, so a sweep that waits on a held row reds the test rather than stalling
+    the suite. The purge is wrapped, not replaced, so the counts are the ones the real
+    call returned inside the real sweep; the sweep imports it at call time, so the
+    wrapper is what it finds.
     """
+    reports: list[EvidencePurge] = []
+
+    def spy(conn: Connection, *, now: datetime, settled_before: datetime) -> Any:
+        report = purge_evidence(conn, now=now, settled_before=settled_before)
+        reports.append(report)
+        return report
+
+    monkeypatch.setattr(retention, "purge_evidence", spy)
     with ev.unit_of_work() as uow:
         uow.connection.execute(text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'"))
         uow.connection.execute(text("SET LOCAL statement_timeout = '10s'"))
@@ -412,10 +425,12 @@ def _sweep(ev: EvidenceWorkspace) -> None:
             _NeverCancelled(),
         )
         uow.commit()
+    assert len(reports) == 1, "the sweep ran its evidence purge exactly once"
+    return reports[0]
 
 
 def test_the_sweep_ages_expired_pending_evidence_on_a_workspace_with_no_cli_dir(
-    recording: EvidenceWorkspace,
+    recording: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The regression this purge's placement exists to prevent.
 
@@ -430,7 +445,7 @@ def test_the_sweep_ages_expired_pending_evidence_on_a_workspace_with_no_cli_dir(
     )
     fresh = _record(recording, _evidence(recording, recorded_at=now), now=now)
 
-    _sweep(recording)
+    assert _sweep(recording, monkeypatch) == EvidencePurge(aged=1, deleted=0)
 
     assert not _config_dir(recording.workspace_id).exists()
     units = _units(recording)
@@ -443,7 +458,7 @@ def test_the_sweep_ages_expired_pending_evidence_on_a_workspace_with_no_cli_dir(
 
 
 def test_the_sweep_deletes_old_settled_and_gap_evidence_and_keeps_recent(
-    recording: EvidenceWorkspace,
+    recording: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     now = _now()
     old_settled = _record(recording, _evidence(recording, recorded_at=now), now=now)
@@ -469,7 +484,7 @@ def test_the_sweep_deletes_old_settled_and_gap_evidence_and_keeps_recent(
         )
         uow.commit()
 
-    _sweep(recording)
+    assert _sweep(recording, monkeypatch) == EvidencePurge(aged=0, deleted=2)
 
     units = _units(recording)
     assert old_settled not in units
@@ -478,7 +493,7 @@ def test_the_sweep_deletes_old_settled_and_gap_evidence_and_keeps_recent(
 
 
 def test_an_old_oversize_gap_is_deleted_like_any_settled_row(
-    recording: EvidenceWorkspace,
+    recording: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``record_evidence`` stamps ``settled_at`` on a ``gap/oversize`` row at insert."""
     recording.set_workspace(MAX_BYTES_KEY, 100)
@@ -501,7 +516,7 @@ def test_an_old_oversize_gap_is_deleted_like_any_settled_row(
     )
     assert before[old_oversize].settled_at == old_at
 
-    _sweep(recording)
+    assert _sweep(recording, monkeypatch) == EvidencePurge(aged=0, deleted=1)
 
     units = _units(recording)
     assert old_oversize not in units
@@ -509,7 +524,7 @@ def test_an_old_oversize_gap_is_deleted_like_any_settled_row(
 
 
 def test_the_sweep_skips_a_pending_row_another_transaction_holds(
-    recording: EvidenceWorkspace,
+    recording: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A drain may hold a row's lock across a model call; the sweep must not wait.
 
@@ -536,12 +551,13 @@ def test_the_sweep_skips_a_pending_row_another_transaction_holds(
         ).one()
         try:
             started = time.monotonic()
-            _sweep(recording)
+            report = _sweep(recording, monkeypatch)
             elapsed = time.monotonic() - started
         finally:
             holder.rollback()
 
     assert elapsed < _LOCK_TIMEOUT_SECONDS
+    assert report == EvidencePurge(aged=1, deleted=0)
     units = _units(recording)
     assert units[held].state == "pending"
     assert units[held].body == TURN

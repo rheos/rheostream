@@ -52,7 +52,15 @@ own core migration widening ``evidence_unit_purpose``, plus a live-shape sibling
 same pattern as ``EVIDENCE_PRODUCER_KINDS``. ``tests/postgres/test_evidence_tables.py``
 reds when the enum and this tuple diverge.
 """
-EVIDENCE_STATES: Final = ("pending", "settled", "gap")
+STATE_PENDING: Final = "pending"
+STATE_SETTLED: Final = "settled"
+STATE_GAP: Final = "gap"
+EVIDENCE_STATES: Final = (STATE_PENDING, STATE_SETTLED, STATE_GAP)
+"""Order is 0010's CHECK text; do not reorder."""
+OUTCOME_OVERSIZE: Final = "oversize"
+"""A ``gap`` outcome: the sanitized text alone exceeded the attempt's byte budget."""
+OUTCOME_EXPIRED_PENDING: Final = "expired_pending"
+"""A ``gap`` outcome: the row was still ``pending`` after its ``source_expires_at``."""
 NATIVE_KEY_MAX_LENGTH: Final = 256
 
 evidence_metadata = MetaData(schema=CORE_SCHEMA)
