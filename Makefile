@@ -12,7 +12,7 @@
 # (tests/conftest.py, pytest.exit) with a message naming the remedy — it never
 # skips, because a skipped `postgres` marker would pass this gate vacuously.
 
-.PHONY: install test lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts flagship-config flagship-up flagship-down
+.PHONY: install test test-fast test-pg-up test-pg-down lint typecheck build up down demo check migrate codegen absence-proof criterion-31 legacy-names fixture-provenance theme-tokens search-boundary workspace-scripts flagship-config flagship-up flagship-down
 
 ABSENCE_PROOF_CONFIG := $(shell git rev-parse --git-path rheo-absence-config.json)
 ABSENCE_PROOF_CHECKOUT := $(shell git rev-parse --git-path rheo-absence-checkout.json)
@@ -23,6 +23,33 @@ install:
 
 test:
 	uv run pytest
+	pnpm -r test
+
+# Issue #148: a fast, throwaway, test-only Postgres (deploy/compose.test.yaml):
+# durability off, data on tmpfs, same image as CI. Opt-in; `make test` and every
+# default DSN are unchanged. The compose project is named after the host port, so
+# a second session can take its own port (`RHEO_TEST_PG_PORT=5435 make test-fast`)
+# and neither can stop the other's cluster or the `make up` dev stack.
+#
+# `test-fast` starts the cluster if it is not running (a no-op if it is), then
+# runs `make test`'s two commands against it. The cluster stays up for the next
+# run; `test-pg-down` throws it away. PYTEST_ARGS narrows the pytest half, e.g.
+# `make test-fast PYTEST_ARGS=tests/postgres/test_provisioning.py`.
+RHEO_TEST_PG_PORT ?= 5434
+TEST_PG_COMPOSE := docker compose -p rheo-stream-test-$(RHEO_TEST_PG_PORT) -f deploy/compose.test.yaml
+TEST_PG_DSN := postgresql://rheo:rheo_dev_only@localhost:$(RHEO_TEST_PG_PORT)/postgres
+PYTEST_ARGS ?=
+
+test-pg-up:
+	RHEO_TEST_PG_PORT=$(RHEO_TEST_PG_PORT) $(TEST_PG_COMPOSE) up -d --wait
+
+# `-v` is safe here: the project owns no named volume, and the name scopes it to
+# this port's test cluster only.
+test-pg-down:
+	RHEO_TEST_PG_PORT=$(RHEO_TEST_PG_PORT) $(TEST_PG_COMPOSE) down -v
+
+test-fast: test-pg-up
+	RHEO_TEST_CLUSTER_DSN=$(TEST_PG_DSN) uv run pytest $(PYTEST_ARGS)
 	pnpm -r test
 
 lint:

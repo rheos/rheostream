@@ -109,6 +109,7 @@ PUBLIC_PATHS = (
     "apps/web/package.json",
     "deploy/compose.yaml",
     "deploy/compose.flagship.yaml",
+    "deploy/compose.test.yaml",
     "deploy/.env.flagship.example",
     "Dockerfile",
     "apps/web/Dockerfile",
