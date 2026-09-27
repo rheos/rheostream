@@ -62,6 +62,7 @@ from rheo_core.storage import work_tables
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_core.storage.work_index import DueWorkspace
+from rheo_core.storage.work_index_tables import workspace_work_due
 from rheo_core.work.jobs import enqueue_job, list_failed_jobs
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
@@ -134,6 +135,7 @@ from rheo_recallatron.storage.repository import (
     set_embedding_state,
 )
 from sqlalchemy import ColumnElement, Engine, Row, and_, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 pytestmark = pytest.mark.postgres
 
@@ -768,6 +770,86 @@ def test_every_writer_queues_an_embed_job_and_its_memory_is_recallable_meanwhile
     assert memory_reference(memory_id) in [item.ref for item in outcome.result.items]
     (still,) = [row for row in embedding.jobs_of(EMBED_JOB_KIND) if row.id == job.id]
     assert still.state == "queued", still
+
+
+# --- #118: an enqueued embed job marks its workspace due ------------------------------
+
+
+def _due_at(ws: EmbeddingWorkspace) -> datetime | None:
+    """The workspace's row in the control-plane due-work index, or ``None``."""
+    with ws.cluster.backend.control_engine.connect() as conn:
+        value = conn.execute(
+            select(workspace_work_due.c.due_at).where(
+                workspace_work_due.c.workspace_id == ws.workspace
+            )
+        ).scalar_one_or_none()
+    return value if isinstance(value, datetime) else None
+
+
+def _push_due_out(ws: EmbeddingWorkspace) -> datetime:
+    """Set the index an hour out, as a visit that found nothing leaves it."""
+    later = datetime.now(UTC) + timedelta(hours=1)
+    with ws.cluster.backend.control_engine.begin() as conn:
+        statement = pg_insert(workspace_work_due).values(
+            workspace_id=ws.workspace, due_at=later, updated_at=datetime.now(UTC)
+        )
+        conn.execute(
+            statement.on_conflict_do_update(
+                index_elements=[workspace_work_due.c.workspace_id],
+                set_={"due_at": later},
+            )
+        )
+    pushed = _due_at(ws)
+    assert pushed is not None
+    return pushed
+
+
+@pytest.mark.parametrize("writer", ["remember", "correct"])
+def test_a_queued_embed_job_marks_the_workspace_due_for_the_next_pass(
+    embedding: EmbeddingWorkspace, monkeypatch: pytest.MonkeyPatch, writer: str
+) -> None:
+    """Issue #118: the job is found on the next worker pass, not at the reconcile floor.
+
+    The index is pushed an hour out first, the state a visit that found nothing leaves
+    behind, so only the writer's own mark can bring it back to now. One case per call
+    site: ``remember`` reaches the shared insert, ``correct`` its own in-place path, and
+    ``correct``'s target is seeded through the repository so no earlier job or mark
+    exists for it.
+    """
+    _store_strategy(embedding, STRATEGY_HYBRID)
+    _select(monkeypatch, registry.FAKE_PROVIDER)
+    target = (
+        _seed_texts(embedding, ("apples", _APPLES_BODY))[0]
+        if writer == "correct"
+        else None
+    )
+
+    pushed = _push_due_out(embedding)
+    if target is None:
+        memory_id = canonical_ref(_remember(embedding, "apples").ref).id
+    else:
+        _correct_to_pears(embedding, target)
+        memory_id = target
+
+    assert [job.input for job in embedding.jobs_of(EMBED_JOB_KIND)] == [
+        {"memory_id": str(memory_id)}
+    ]
+    due = _due_at(embedding)
+    assert due is not None and due < pushed and due <= datetime.now(UTC), due
+
+
+def test_a_write_that_queues_no_embed_job_leaves_the_index_alone(
+    embedding: EmbeddingWorkspace,
+) -> None:
+    """The negative control: under the shipped default no job is queued, so the write
+    asks for no mark and the pushed-out index stays where it was."""
+    assert registry.configured_provider_name() == "none"
+    pushed = _push_due_out(embedding)
+
+    _remember(embedding, "apples")
+
+    assert embedding.jobs_of(EMBED_JOB_KIND) == []
+    assert _due_at(embedding) == pushed
 
 
 # --- the embed job's outcomes ---------------------------------------------------------

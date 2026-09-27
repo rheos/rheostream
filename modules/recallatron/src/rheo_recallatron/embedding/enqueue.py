@@ -14,7 +14,9 @@ memory is re-embedded on the same terms as a new one.
 
 **The job commits with the memory; the provider runs after.** The row is written in the
 writer's own transaction, so it exists exactly when the memory does, and the provider is
-called by the worker once that transaction has committed.
+called by the worker once that transaction has committed. The helper also asks the
+dispatcher for a post-commit due mark, so that worker looks on its next pass rather
+than at the reconcile floor (#118).
 
 **One more caller, ungated: the rebuild's leftovers.** A rebuild skips rows another
 writer holds, and queues an embed job for each live memory its walk left unembedded
@@ -26,6 +28,7 @@ from datetime import datetime
 from uuid import UUID
 
 from rheo_contracts import WorkspaceContext
+from rheo_core.events.consumers import HandlerUnitOfWork
 from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.work.jobs import enqueue_job
 
@@ -84,7 +87,28 @@ def enqueue_embed_jobs(
             now=now,
             max_attempts=EMBED_MAX_ATTEMPTS,
         )
+    if memory_ids:
+        _request_due_mark(uow)
     return len(memory_ids)
+
+
+def _request_due_mark(uow: UnitOfWork) -> None:
+    """Ask ``dispatch()`` to mark the workspace due once the writer has committed.
+
+    ``enqueue_job`` writes the row inside the writer's transaction, where there is no
+    control-plane connection to mark the due-work index with, so without this a new
+    memory's embed job waited for the reconcile floor (``work.due_reconcile_seconds``,
+    900 s by default) before any worker looked at it (#118). The request is the
+    established post-commit hook (``HandlerUnitOfWork.request_due_mark``, the one the
+    core's delivery retry and replay operations use): a dispatch that rolls back writes
+    no mark.
+
+    A plain ``UnitOfWork`` has no dispatcher to ask. That is the rebuild's case: it runs
+    as a worker job, inside the visit to this same workspace, and the visit's own
+    remaining-work read after the drain already sees the rows queued here.
+    """
+    if isinstance(uow, HandlerUnitOfWork):
+        uow.request_due_mark()
 
 
 def enqueue_rebuild_job(
