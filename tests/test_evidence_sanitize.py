@@ -69,6 +69,12 @@ def test_a_longer_fence_needs_a_closer_at_least_as_long() -> None:
     assert sanitize(text) == KEPT
 
 
+def test_a_fence_line_with_an_info_string_does_not_close_the_block() -> None:
+    """A closing fence carries nothing after it, so a nested opener stays inside."""
+    text = f"```\nouter\n```python\nleaked_code()\n```\n\n{KEPT}"
+    assert sanitize(text) == KEPT
+
+
 def test_diff_body_after_a_blank_line_is_still_part_of_the_hunk() -> None:
     text = f"@@ -1,3 +1,3 @@\n-a\n+b\n\n context\n+c\n\n{KEPT}"
     assert sanitize(text) == KEPT

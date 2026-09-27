@@ -91,7 +91,8 @@ would pass once and then, its indentation collapsed away, drop on a second pass.
 
 _FENCE: Final = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 """A fence line opens or closes a fenced code block (Markdown: three or more backticks
-or tildes). A block closes on a fence of the same character at least as long."""
+or tildes). A block closes on a fence of the same character at least as long, with
+nothing but whitespace after it on the line."""
 
 _SEGMENT_BREAK: Final = re.compile(r"\n[ \t]*\n")
 
@@ -148,7 +149,10 @@ def _without_fenced_blocks(text: str) -> str:
                 continue
             kept.append(line)
         elif opener is not None and opener.group(1)[0] == fence[0]:
-            if len(opener.group(1)) >= len(fence):
+            # A closing fence carries nothing after it: a fence line with an info
+            # string (a nested opener such as ```python) stays inside the block.
+            closes = not line[opener.end() :].strip()
+            if closes and len(opener.group(1)) >= len(fence):
                 fence = None
                 kept.append("")
     return "\n".join(kept)
