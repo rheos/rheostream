@@ -118,14 +118,16 @@ def _normalize(text: str) -> str:
 
 
 def _denylist_needles(lines: Iterable[str]) -> list[str]:
-    """Normalized, non-blank denylist lines, in file order (1-based externally)."""
-    return [_normalize(line) for line in lines if line.strip()]
+    """One normalized needle per raw denylist line, in file order, so a needle's
+    1-based position is the denylist file's own line number. A blank or
+    whitespace-only line becomes an empty needle, which never matches."""
+    return [_normalize(line) for line in lines]
 
 
 def match_denylist(text: str, needles: Sequence[str]) -> list[tuple[int, int]]:
-    """Every ``(1-based line number in text, 1-based denylist line index)`` pair
-    where a needle is a substring of that line, case-insensitively and with runs of
-    whitespace collapsed on both sides."""
+    """Every ``(1-based line number in text, 1-based denylist file line number)``
+    pair where a needle is a substring of that line, case-insensitively and with
+    runs of whitespace collapsed on both sides."""
     hits: list[tuple[int, int]] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
         normalized = _normalize(line)
@@ -152,15 +154,13 @@ def compute_triage_exemptions(
     than a coincidence.
     """
     needles = _denylist_needles(denylist_lines)
-    nonblank = [line for line in denylist_lines if line.strip()]
+    nonblank_count = sum(1 for needle in needles if needle)
     matched_indices: set[int] = set()
     for _source_id, text in pairs:
         for _lineno, index in match_denylist(text, needles):
             matched_indices.add(index)
-    exempt_lines = [
-        line for index, line in enumerate(nonblank, start=1) if index in matched_indices
-    ]
-    return exempt_lines, len(matched_indices), len(nonblank) - len(matched_indices)
+    exempt_lines = [denylist_lines[index - 1] for index in sorted(matched_indices)]
+    return exempt_lines, len(matched_indices), nonblank_count - len(matched_indices)
 
 
 # --- git plumbing (the only I/O in this script besides main()'s wiring) --------------
@@ -207,11 +207,25 @@ def _commit_shas(range_spec: str, cwd: Path) -> list[str]:
 
 
 def _added_lines(diff_text: str) -> str:
-    added = [
-        line[1:]
-        for line in diff_text.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
-    ]
+    """The added lines of a ``git show`` / ``git diff`` patch.
+
+    Tracks position rather than guessing from a line's prefix: a file's header
+    (``diff --git``, ``index``, ``---``, ``+++``) runs from its ``diff --git`` line
+    to its first ``@@`` hunk header, and only lines inside a hunk are content. So
+    an added content line that itself begins ``++`` (shown as ``+++...``) is kept,
+    while the ``+++ b/<path>`` file header is not. Inside a hunk every line starts
+    with `` ``, ``+``, ``-`` or ``\\``, so a ``diff --git`` line there is always a
+    real file boundary.
+    """
+    added: list[str] = []
+    in_hunk = False
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line.startswith("+"):
+            added.append(line[1:])
     return "\n".join(added)
 
 
@@ -284,6 +298,29 @@ def _read_denylist(path_value: str) -> list[str]:
 
 # --- self-test ------------------------------------------------------------------------
 
+#: One synthetic tracked name per path-gate pattern, in pattern order. Hand-written
+#: on purpose: a list generated from ``_PATH_GATE_PATTERNS`` would shrink along with
+#: it, and the self-test could no longer notice a dropped pattern.
+_PLANTED_GATE_NAMES: tuple[str, ...] = (
+    "harvest-ledger-2026.csv",
+    "entity-pairs.csv",
+    "inventory-2026.json",
+    "memory-extract.jsonl",
+    "comparison-a.json",
+    "ground-truth.csv",
+    "cost-forecast.md",
+    "measurement-1.txt",
+    "reading-1.json",
+    "migration-report.txt",
+    "dry-run-1.json",
+    "denylist-draft.txt",
+    "nested/report.md",
+    "compat-manifest.md",
+    "producer-register.md",
+    "REHARVEST.md",
+    "SCRATCH.md",
+)
+
 
 def _self_test() -> str | None:
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -294,23 +331,46 @@ def _self_test() -> str | None:
         _run_git(["config", "user.email", "scratch@example.com"], cwd=repo)
         _run_git(["config", "user.name", "Scratch"], cwd=repo)
 
-        # --- path gate: a clean file, a planted pattern match, a planted exact
-        # hand-written-report name, and a clean near-miss.
+        # --- path gate: one planted synthetic name per pattern (written out by
+        # hand, never derived from _PATH_GATE_PATTERNS, so dropping any one pattern
+        # leaves its planted name unflagged and fails here), plus a clean file and
+        # a near-miss extension that must stay clear.
         (repo / "clean.txt").write_text("nothing interesting here\n")
-        (repo / "inventory-2026.json").write_text("{}\n")
+        (repo / "inventory.py").write_text("# not json, should not match\n")
         nested = repo / "nested"
         nested.mkdir()
-        (nested / "report.md").write_text("# report\n")
-        (repo / "inventory.py").write_text("# not json, should not match\n")
+        for relative in _PLANTED_GATE_NAMES:
+            (repo / relative).write_text("synthetic\n")
         _run_git(["add", "-A"], cwd=repo)
         _run_git(["commit", "-q", "-m", "seed"], cwd=repo)
 
         gate_findings = check_path_gate(_git_ls_files(cwd=repo))
         flagged = {f.split(":", 1)[0] for f in gate_findings}
-        if "inventory-2026.json" not in flagged:
-            return "self-test FAILED: path gate missed a planted inventory*.json file"
-        if "nested/report.md" not in flagged:
-            return "self-test FAILED: path gate missed a planted exact-name report.md"
+        for relative in _PLANTED_GATE_NAMES:
+            if relative not in flagged:
+                return f"self-test FAILED: path gate missed a planted {relative}"
+            matching = [
+                pattern
+                for pattern in _PATH_GATE_PATTERNS
+                if fnmatch.fnmatchcase(Path(relative).name, pattern)
+            ]
+            if len(matching) != 1:
+                return (
+                    f"self-test FAILED: planted {relative} must match exactly one "
+                    f"pattern, so dropping that pattern is caught; matched "
+                    f"{len(matching)}"
+                )
+        for pattern in _PATH_GATE_PATTERNS:
+            covering = [
+                relative
+                for relative in _PLANTED_GATE_NAMES
+                if fnmatch.fnmatchcase(Path(relative).name, pattern)
+            ]
+            if len(covering) != 1:
+                return (
+                    f"self-test FAILED: pattern {pattern!r} needs exactly one "
+                    f"planted name of its own, found {len(covering)}"
+                )
         if "clean.txt" in flagged:
             return "self-test FAILED: path gate flagged an innocuous tracked file"
         if "inventory.py" in flagged:
@@ -349,6 +409,19 @@ def _self_test() -> str | None:
         if not any("denylist line 1" in f for f in diff_findings):
             return "self-test FAILED: --diff mode missed a leak a later commit reverted"
 
+        # --- mode 2, continued: an added content line that itself begins "++"
+        # shows as "+++..." in the patch and must still be scanned, while the
+        # "+++ b/<path>" file header must not be.
+        plus_base = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        (repo / "plus.txt").write_text("++Acme Regional Hospital\n")
+        _run_git(["add", "-A"], cwd=repo)
+        _run_git(["commit", "-q", "-m", "add a doubled-plus line"], cwd=repo)
+        if not scan_diff(needles, f"{plus_base}..HEAD", cwd=repo):
+            return "self-test FAILED: --diff mode dropped an added line beginning '++'"
+        header_needles = _denylist_needles(["b/plus.txt"])
+        if scan_diff(header_needles, f"{plus_base}..HEAD", cwd=repo):
+            return "self-test FAILED: --diff mode scanned a '+++' file header"
+
         # --- mode 3: --commits, a leak in a commit message.
         (repo / "trivial.txt").write_text("x\n")
         _run_git(["add", "-A"], cwd=repo)
@@ -368,33 +441,54 @@ def _self_test() -> str | None:
         if not text_findings:
             return "self-test FAILED: --text mode missed a leak in an arbitrary file"
 
-        # --- mode 5: --triage-exempt, over a synthetic fixture with synthetic
-        # tokens only. A mixed-case, differently-spaced match is exempted, and
-        # `compute_triage_exemptions` agrees with the default-mode matcher on the
-        # same fixture because both call `match_denylist` and nothing else.
-        exempt_denylist = ["Foo   Bar", "Never Matches Anything Real"]
-        exempt_needles = _denylist_needles(exempt_denylist)
-        fixture_pairs = [
-            ("tests/fixtures/public.txt", "the contact is foo bar, publicly known"),
-            ("tests/fixtures/clean.txt", "nothing sensitive in here"),
-        ]
-        default_like_indices = {
-            index
-            for _source, text in fixture_pairs
-            for _lineno, index in match_denylist(text, exempt_needles)
-        }
-        exempt_lines, exempted, remaining = compute_triage_exemptions(
-            exempt_denylist, fixture_pairs
+        # --- mode 5: --triage-exempt, over the scratch repo's own tracked tree
+        # (synthetic tokens only). A mixed-case, differently-spaced public token is
+        # exempted, and the exempt set is compared against the *real* default-mode
+        # scan (`scan_default`) over the same tree, fed exactly what
+        # `run_triage_exempt` feeds `compute_triage_exemptions`. The blank second
+        # denylist line proves findings name the denylist file's raw line number.
+        fixture_dir = repo / "tests" / "fixtures"
+        fixture_dir.mkdir(parents=True)
+        (fixture_dir / "public-contact.txt").write_text(
+            "the contact is FOO bar, publicly known\n"
         )
-        if exempt_lines != ["Foo   Bar"]:
+        _run_git(["add", "-A"], cwd=repo)
+        _run_git(["commit", "-q", "-m", "add a public fixture"], cwd=repo)
+        exempt_denylist = [
+            "Foo   Bar",
+            "",
+            "Acme Regional Hospital",
+            "Never Matches Anything Real",
+        ]
+        default_scan = scan_default(_denylist_needles(exempt_denylist), cwd=repo)
+        if "tests/fixtures/public-contact.txt:1: denylist line 1" not in default_scan:
             return (
-                "self-test FAILED: --triage-exempt did not exempt the mixed-case, "
-                f"differently-spaced match: {exempt_lines!r}"
+                "self-test FAILED: default mode missed the mixed-case, "
+                f"differently-spaced fixture token: {default_scan!r}"
             )
-        if exempted != len(default_like_indices) or default_like_indices != {1}:
+        if "public.txt:1: denylist line 3" not in default_scan:
             return (
-                "self-test FAILED: --triage-exempt's matched-index set disagrees "
-                "with the default-mode matcher over the same fixture"
+                "self-test FAILED: a finding did not name the denylist file's raw "
+                f"line number: {default_scan!r}"
+            )
+        default_indices = {int(finding.rsplit(" ", 1)[1]) for finding in default_scan}
+        exempt_lines, exempted, remaining = compute_triage_exemptions(
+            exempt_denylist, _tracked_text_at_ref("HEAD", cwd=repo)
+        )
+        exempt_indices = {
+            index
+            for index, line in enumerate(exempt_denylist, start=1)
+            if line in exempt_lines
+        }
+        if exempt_lines != ["Foo   Bar", "Acme Regional Hospital"]:
+            return (
+                "self-test FAILED: --triage-exempt did not exempt exactly the "
+                f"matched denylist lines: {exempt_lines!r}"
+            )
+        if exempt_indices != default_indices or exempted != len(default_indices):
+            return (
+                "self-test FAILED: --triage-exempt's exempt set disagrees with "
+                "the default-mode scan over the same tree"
             )
         if remaining != 1:
             return (
@@ -435,6 +529,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--out is only valid together with --triage-exempt", file=sys.stderr)
         return 1
 
+    denylist_path = os.environ.get(DENYLIST_VARIABLE)
+
+    if args.triage_exempt is not None:
+        # Triage prints the two counts and nothing else: no path-gate lines and no
+        # "passed" line, so its terminal output carries nothing but the counts.
+        if not denylist_path:
+            print(
+                f"--triage-exempt needs {DENYLIST_VARIABLE} set; nothing to exempt "
+                "against",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            exempted, remaining = run_triage_exempt(
+                _read_denylist(denylist_path),
+                args.triage_exempt,
+                Path(args.out),
+                cwd=ROOT,
+            )
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+            print(f"migration-output check failed: {error}", file=sys.stderr)
+            return 1
+        except Exception as error:  # the guard's PrivateOutputRefusal, lazily imported
+            state = getattr(error, "state", None)
+            if state is None:
+                raise
+            print(f"--triage-exempt refused its --out path: {state}", file=sys.stderr)
+            return 1
+        print(f"exempted={exempted} remaining={remaining}")
+        return 0
+
     try:
         tracked = _git_ls_files()
     except subprocess.CalledProcessError as error:
@@ -442,9 +567,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     findings = check_path_gate(tracked)
-    exempt_summary: tuple[int, int] | None = None
 
-    denylist_path = os.environ.get(DENYLIST_VARIABLE)
     if denylist_path:
         try:
             denylist_lines = _read_denylist(denylist_path)
@@ -454,11 +577,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         needles = _denylist_needles(denylist_lines)
 
         try:
-            if args.triage_exempt is not None:
-                exempt_summary = run_triage_exempt(
-                    denylist_lines, args.triage_exempt, Path(args.out)
-                )
-            elif args.diff is not None:
+            if args.diff is not None:
                 findings.extend(scan_diff(needles, args.diff))
             elif args.commits is not None:
                 findings.extend(scan_commits(needles, args.commits))
@@ -469,19 +588,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except subprocess.CalledProcessError as error:
             print(f"migration-output check failed: {error}", file=sys.stderr)
             return 1
-    elif args.triage_exempt is not None:
-        print(
-            f"--triage-exempt needs {DENYLIST_VARIABLE} set; nothing to exempt against",
-            file=sys.stderr,
-        )
-        return 1
 
     for finding in findings:
         print(finding, file=sys.stderr)
-
-    if exempt_summary is not None:
-        exempted, remaining = exempt_summary
-        print(f"exempted={exempted} remaining={remaining}")
 
     if findings:
         return 1
