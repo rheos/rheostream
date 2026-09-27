@@ -4,7 +4,15 @@ Own ``MetaData(schema="core")``, not added to frozen ``core_tables.py:CORE_TABLE
 to ``runtime_tables.py``: an evidence unit is a turn of human conversation waiting to be
 turned into memory, a sibling of the runtime tables rather than a new
 ``runtime_transcript.kind``. It is transient working state, like ``core.job``: never
-exported, held for at most ``automatic_memory.max_pending_hours``.
+exported. A ``pending`` row keeps its text until it settles, or until the first drain
+claim or daily ``core.retention_sweep`` after its ``source_expires_at`` ages it to
+``gap/expired_pending``, so it can outlive ``automatic_memory.max_pending_hours`` by up
+to one sweep interval.
+
+**The whole table is frozen at 0010.** Revision ``0010_evidence_unit`` creates it from
+this module (``evidence_metadata.create_all``), so every column, CHECK and index here is
+what 0010 builds, not only the vocabulary tuples below. Any change needs its own
+migration plus a live-shape sibling object, the ``runtime_tables.py`` pattern.
 
 Each vocabulary is a ``Final`` tuple checked in the database, so an insert outside it is
 refused there and not only in code. ``purpose`` is the ``ContextPurpose`` values frozen

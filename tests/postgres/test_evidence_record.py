@@ -12,6 +12,9 @@ Seams:
   row resolves ``False``.
 - ``record_evidence``'s four content-free outcomes, its budgets, and its
   ``ON CONFLICT DO NOTHING`` idempotency.
+- ``record_evidence``'s binding to its context (#197): a speaker other than the
+  context's account, or a purpose other than its bound purpose, refuses the whole
+  batch before any write, seen on the same connection inside the open transaction.
 - The event: one per attempt that inserted a row, subject the first inserted row,
   ``data == {}``, and a post-commit due mark requested exactly when it fanned out.
 
@@ -33,7 +36,14 @@ from harness.evidence import (
     enable_recording,
     probe_registry,
 )
-from rheo_contracts import ActorKind, ContextPurpose, WorkspaceContext
+from harness.registry import add_member
+from rheo_contracts import (
+    ActorKind,
+    AuthenticatedPrincipal,
+    ContextPurpose,
+    Role,
+    WorkspaceContext,
+)
 from rheo_core.boundary.factories import context_from_token
 from rheo_core.events import ConsumerRegistry
 from rheo_core.evidence import EVIDENCE_RECORDED, providers
@@ -446,6 +456,94 @@ def test_record_evidence_refuses_a_unit_of_work_without_a_registry(
                 recording.context(), uow, [_evidence(recording)], now=datetime.now(UTC)
             )
     assert _units(recording) == []
+
+
+# --- record_evidence binds every record to the verified context (#197) ------------
+
+SPEAKER_RULE = "refuses a speaker that is not the context's account"
+PURPOSE_RULE = "refuses a purpose that is not the context's bound purpose"
+
+
+def _counts_on(uow: HandlerUnitOfWork) -> tuple[int, int]:
+    """Evidence rows and recorded-event outbox rows, on ``uow``'s own connection."""
+    outbox = work_tables.outbox_event
+    connection = uow.connection
+    units = len(connection.execute(select(evidence_unit.c.id)).all())
+    events = len(
+        connection.execute(
+            select(outbox.c.position).where(outbox.c.type == EVIDENCE_RECORDED)
+        ).all()
+    )
+    return units, events
+
+
+def _assert_refused(
+    ev: EvidenceWorkspace,
+    records: list[NewEvidence],
+    *,
+    match: str,
+    ctx: WorkspaceContext | None = None,
+) -> None:
+    """Refused before any write: nothing on the same connection inside the open
+    transaction, and so nothing committed either."""
+    context = ev.context() if ctx is None else ctx
+    with ev.handler(probe_registry()) as uow:
+        with pytest.raises(ValueError, match=match):
+            record_evidence(context, uow, records, now=datetime.now(UTC))
+        assert _counts_on(uow) == (0, 0)
+    assert _units(ev) == []
+    assert _events(ev) == []
+
+
+def test_a_speaker_other_than_the_contexts_account_is_refused(
+    recording: EvidenceWorkspace,
+) -> None:
+    other = add_member(
+        recording.cluster.backend,
+        recording.workspace_id,
+        Role.MEMBER,
+        display_name="Second Member",
+    )
+    record = replace(_evidence(recording), speaker_account_id=other, audience_id=other)
+    _assert_refused(recording, [record], match=SPEAKER_RULE)
+
+
+def test_a_purpose_other_than_the_contexts_bound_purpose_is_refused(
+    recording: EvidenceWorkspace,
+) -> None:
+    record = replace(_evidence(recording), purpose=ContextPurpose.INTERNAL_ANALYSIS)
+    assert recording.context().principal.bound_purpose is ContextPurpose.RESPOND
+    _assert_refused(recording, [record], match=PURPOSE_RULE)
+
+
+def test_a_mixed_batch_is_refused_before_its_valid_first_record_is_written(
+    recording: EvidenceWorkspace,
+) -> None:
+    """The count is taken inside the still-open transaction, so a per-record check
+    that wrote the valid record first would show one row here, rollback or not."""
+    valid = _evidence(recording)
+    mismatched = replace(_evidence(recording), speaker_account_id=uuid7())
+    _assert_refused(recording, [valid, mismatched], match=SPEAKER_RULE)
+
+
+def test_an_accountless_bound_context_matches_no_speaker(
+    recording: EvidenceWorkspace,
+) -> None:
+    bound = recording.context()
+    ctx = bound.model_copy(
+        update={
+            "principal": AuthenticatedPrincipal(
+                account_id=None, bound_purpose=ContextPurpose.RESPOND
+            )
+        }
+    )
+    _assert_refused(recording, [_evidence(recording)], match=SPEAKER_RULE, ctx=ctx)
+
+
+def test_an_unbound_context_matches_no_purpose(recording: EvidenceWorkspace) -> None:
+    ctx = recording.context(purpose=None)
+    assert ctx.principal.account_id == recording.owner_account_id
+    _assert_refused(recording, [_evidence(recording)], match=PURPOSE_RULE, ctx=ctx)
 
 
 # --- the event --------------------------------------------------------------------
