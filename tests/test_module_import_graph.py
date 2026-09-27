@@ -15,6 +15,7 @@ _PATH_TOKEN = "modules/recallatron"
 _MATRIX_PARSER = _REPO_ROOT / "tests" / "test_acceptance_matrix.py"
 _ABSENCE_PROOF_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _DECLARED_TEST_DEPENDENCIES = {
+    "tests/postgres/test_history_records.py",
     "tests/postgres/test_memory_browse.py",
     "tests/postgres/test_memory_dedup.py",
     "tests/postgres/test_memory_embedding.py",
@@ -31,6 +32,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_module_storage_ownership.py",
     "tests/postgres/test_tool_telemetry.py",
     "tests/test_flagship_overlay.py",
+    "tests/test_history_extract.py",
     "tests/test_migration_extract.py",
     "tests/test_migration_predecessor_reader.py",
     "tests/test_migration_private_paths.py",
