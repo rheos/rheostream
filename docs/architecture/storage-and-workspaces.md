@@ -205,6 +205,7 @@ this is the inventory.
 | `approval`, `approval_payload`, `standing_grant`, `standing_grant_operation`, `external_action` (not built yet) | [confirmation and safety](confirmation-and-safety.md) |
 | `runtime_request`, `runtime_request_context`, `runtime_session`, `runtime_transcript` | [runtime and MCP](runtime-and-mcp.md) |
 | `tool_telemetry` | [runtime and MCP](runtime-and-mcp.md#the-mcp-facade) |
+| `evidence_unit` | [runtime and MCP](runtime-and-mcp.md) |
 | `deletion_record`, `export_record`, `export_record_ref`, `migration_verification` (the last not built yet) | [deletion, export, migration](deletion-export-migration.md) |
 
 ### Composition and schema versions (FR 9)
@@ -452,11 +453,17 @@ relax the deployment value:
 The resolver implements all four comparators, and each has a declared key: `min` on
 `runtime.max_deadline_seconds`, `runtime.max_context_bytes`,
 `runtime.transcript_retention_days`, `approvals.max_window_seconds`,
-`identity.token_max_days.*` and the two `telemetry.*` keys; `subset` on
+`identity.token_max_days.*`, the two `telemetry.*` keys and the four automatic-memory
+limits (`automatic_memory.max_bytes_per_attempt`, `automatic_memory.max_records_per_attempt`,
+`automatic_memory.max_units_per_job`, `automatic_memory.max_pending_hours`); `subset` on
 `runtime.allowed_runtimes`, `runtime.allowed_models` and `redaction.internal_purposes`;
-`and` on `redaction.contact_points_to_model`; `union` on `<module>.redaction.exclude_types`,
-which the module loader declares for every loaded module that owns a record type (issue
-#130). `approvals.confirm_operations` and `approvals.standing_grant_classes` are not declared
+`and` on `redaction.contact_points_to_model` and `automatic_memory.enabled`; `union` on
+`<module>.redaction.exclude_types`, which the module loader declares for every loaded module
+that owns a record type (issue #130). `automatic_memory.extraction.provider` is a
+deployment-only key with no floor, default `"none"`, that selects the extraction provider.
+The evidence-unit retention sweep declares no key of its own: it deletes settled and gap
+`core.evidence_unit` rows older than `runtime.transcript_retention_days`.
+`approvals.confirm_operations` and `approvals.standing_grant_classes` are not declared
 yet; a standing grant's classes are fixed in code to read, draft and mutate.
 
 Enforcement is in two places on purpose: the settings write path validates against the resolved

@@ -139,9 +139,24 @@ crashes, tails, failed hooks and expired/missing sources remain explicit gaps. N
 or spawned-process durability guarantee is claimed.
 
 This amendment fixes the later carrier's bounds and what it may ask of the core. It adds no
-public transcript path, no credential, and no local-settings example carrying user data; the
-tables above are unchanged by it, and run 1a1 ships no transcript reader, extractor or hook
+public transcript path, no credential, and no local-settings example carrying user data
 ([memory](memory.md#provenance-and-links)).
+
+The Rheo runtime producer holds its evidence in one core table beside the runtime tables,
+`core.evidence_unit` (revision `0010_evidence_unit`), not in `core.runtime_transcript`. A
+row is one turn waiting to become memory: `pending` with its sanitized body, or `settled` or
+`gap` with the body cleared and a content-free `outcome` word. It is transient working state,
+never exported. Its `source_expires_at` is its recording time plus
+`automatic_memory.max_pending_hours`; the first daily `core.retention_sweep` after that
+instant ages a still-pending row to `gap/expired_pending`, so its text can stay until the
+next daily sweep (a later drain job will also age rows when it claims them). The same sweep deletes settled
+and gap rows older than `runtime.transcript_retention_days`. A run's turn is recorded only when
+six conditions all hold, checked in order: `automatic_memory.enabled` is true at both the
+operator and the workspace level; an extraction provider resolves (the default `"none"`
+resolves nothing, so production records nothing until one is configured); an enabled module
+subscribes to `core.evidence.recorded`; the speaker is a person (an account, or a
+person-held `cli` token, never an `mcp` or `runtime` token); the run is bound to a purpose;
+and the task text is non-empty after sanitation. No transcript reader or hook ships with it.
 
 ## `ClaudeCliRuntime`
 

@@ -103,6 +103,8 @@ CORE_TABLES = {
     "deletion_record",
     # 0008_tool_telemetry
     "tool_telemetry",
+    # 0010_evidence_unit
+    "evidence_unit",
 }
 # The rest of the approval family, owned by later chain steps; their presence here
 # would contaminate the trial. Tables leave this set exactly when the revision that
@@ -182,7 +184,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
     # Every revision the script directory holds, not the one the database records:
-    # the control chain ships two files and the core chain nine, so these are all
+    # the control chain ships two files and the core chain ten, so these are all
     # the ids each carries.
     assert known_revisions(CONTROL_CHAIN) == {"0001_control_plane", "0002_work_index"}
     assert known_revisions(CORE_CHAIN) == {
@@ -195,6 +197,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
         "0007_record_deletion",
         "0008_tool_telemetry",
         "0009_runtime_session_policy",
+        "0010_evidence_unit",
     }
 
 
@@ -212,7 +215,7 @@ def test_control_chain_creates_exactly_the_eleven_tables(
         assert recorded_revisions(connection, CONTROL_CHAIN) == {"0002_work_index"}
 
 
-def test_core_chain_creates_exactly_the_twenty_five_tables(
+def test_core_chain_creates_exactly_the_twenty_six_tables(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
     _, engine = workspace_engine(cluster, workspace)
@@ -222,9 +225,7 @@ def test_core_chain_creates_exactly_the_twenty_five_tables(
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CORE_CHAIN) == {
-            "0009_runtime_session_policy"
-        }
+        assert recorded_revisions(connection, CORE_CHAIN) == {"0010_evidence_unit"}
 
 
 def test_migrate_control_is_idempotent_and_survives_an_existing_database(
@@ -339,7 +340,7 @@ def test_failing_core_revision_marks_unavailable_and_startup_completes(
     with broken_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO core.alembic_version_core (version_num) VALUES (:v)"),
-            {"v": "0009_runtime_session_policy"},
+            {"v": "0010_evidence_unit"},
         )
     repair(broken)
     assert cluster.registry_row(broken).state is WorkspaceState.ACTIVE
@@ -377,7 +378,7 @@ def test_schema_ahead_marks_unavailable_and_refuses_repair(
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE core.alembic_version_core SET version_num = :v"),
-            {"v": "0009_runtime_session_policy"},
+            {"v": "0010_evidence_unit"},
         )
     repair(workspace)
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE

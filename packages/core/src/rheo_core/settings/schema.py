@@ -25,7 +25,8 @@ keys, for thirty-eight; the public-authority split adds
 adds the eleven ``runtime.*`` keys, for fifty; run 1a0's module contract adds
 ``modules.installed``, for fifty-one. Run 1a1 adds the two ``telemetry.*`` keys, for
 fifty-three, and issue #130 adds the two ``redaction.*`` keys the tier policy reads
-(``rheo_core/redaction/policy.py``), for fifty-five.
+(``rheo_core/redaction/policy.py``), for fifty-five. Run 1a4 adds the six
+``automatic_memory.*`` keys, for sixty-one.
 ``api.cors_origins`` is still not declared here, for the reason this key was not
 until now: a key with no reader is machinery with no caller, and the registry/TOML
 identity check holds per merge SHA — every later chunk that adds a key adds it to
@@ -1023,6 +1024,68 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=Floor.AND,
         explicit_per_workspace=False,
         default=False,
+    ),
+    # --- automatic memory (run 1a4) ---------------------------------------------------
+    # Core keys, unprefixed, because core owns the evidence surface; #132's prefix
+    # rule binds module-declared keys only. ``enabled`` is ``and`` exactly as
+    # ``redaction.contact_points_to_model`` is: a workspace ``true`` under an operator
+    # ``false`` resolves ``false`` and the write path refuses it. Its reader adds the
+    # explicit-row half (``set_by_workspace(...) and get_bool(...)``), so no workspace
+    # row means off whatever the operator says. The four limits are ``min``: a
+    # workspace may lower its own bound, never raise it; raising one is a deployment
+    # write. ``extraction.provider`` names the extraction provider and is the
+    # deployment's alone; ``"none"`` records nothing.
+    KeySpec(
+        key="automatic_memory.enabled",
+        type=ValueType.BOOL,
+        scope=Scope.WORKSPACE,
+        floor=Floor.AND,
+        explicit_per_workspace=False,
+        default=False,
+    ),
+    KeySpec(
+        key="automatic_memory.max_bytes_per_attempt",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=1048576,
+        minimum=1,
+    ),
+    KeySpec(
+        key="automatic_memory.max_records_per_attempt",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=1000,
+        minimum=1,
+    ),
+    KeySpec(
+        key="automatic_memory.max_units_per_job",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=64,
+        minimum=1,
+    ),
+    KeySpec(
+        key="automatic_memory.max_pending_hours",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=24,
+        minimum=1,
+    ),
+    KeySpec(
+        key="automatic_memory.extraction.provider",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="none",
     ),
 )
 
