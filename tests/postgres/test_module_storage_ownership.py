@@ -8,10 +8,13 @@ AC 3 is about **platform storage**: the workspace database the core owns. The ra
 database scan has exactly one named exemption, and it is not platform storage: the
 migration groundwork's predecessor snapshot reader,
 ``rheo_recallatron/migration/predecessor/sqlite_source.py``, opens a read-only
-external input (a local SQLite snapshot file, ``mode=ro&immutable=1``). Only a
-``sqlite3.connect`` call in that one file is exempt; every other raw call in it, and
-``sqlite3.connect`` anywhere else in the module, is still a violation (see
-:func:`_raw_database_violations` and its controls).
+external input (a local SQLite snapshot file, ``mode=ro&immutable=1``). The rule is
+exact: at most one ``sqlite3.connect`` call, passing the literal keyword ``uri=True``,
+in that one file (matched on its full path relative to the module's ``src``) is
+exempt. Every other raw call in that file, and ``sqlite3.connect`` in any other file,
+is still a violation. The URI's own contents are built at runtime, so the pinned-URI
+unit test in ``tests/test_migration_predecessor_reader.py`` covers them, not this scan
+(see :func:`_raw_database_violations` and its controls).
 """
 
 from __future__ import annotations
@@ -533,9 +536,13 @@ def test_recallatron_constructs_no_raw_database_access(tmp_path: Path) -> None:
 def test_the_snapshot_reader_exemption_covers_one_file_and_one_call(
     tmp_path: Path,
 ) -> None:
-    """Positive controls for the one named exemption: a ``sqlite3.connect`` in any
-    other file (a sibling in ``migration/``, or a same-named file elsewhere) is still
-    reported, and so is any other raw call inside the exempt file itself."""
+    """Positive controls for the one named exemption. Every probe outside the exempt
+    path uses the exact accepted form, ``sqlite3.connect(uri, uri=True)``, so only
+    the path decides: a sibling in ``migration/``, a same-named file elsewhere, and
+    the full reader path nested under a prefix are all reported. So is any other raw
+    call inside the exempt file itself."""
+    accepted = "import sqlite3\nsqlite3.connect(uri, uri=True)\n"
+    nested = f"extra/{_SNAPSHOT_READER}"
     probes = {
         _SNAPSHOT_READER: (
             "import sqlite3\n"
@@ -544,8 +551,9 @@ def test_the_snapshot_reader_exemption_covers_one_file_and_one_call(
             "psycopg.connect(url)\n"
             'dsn = "postgresql://probe.invalid/db"\n'
         ),
-        "rheo_recallatron/migration/cli.py": "import sqlite3\nsqlite3.connect(path)\n",
-        "rheo_recallatron/sqlite_source.py": "import sqlite3\nsqlite3.connect(path)\n",
+        "rheo_recallatron/migration/cli.py": accepted,
+        "rheo_recallatron/sqlite_source.py": accepted,
+        nested: accepted,
     }
     for relative, source in probes.items():
         probe = tmp_path / relative
@@ -554,11 +562,12 @@ def test_the_snapshot_reader_exemption_covers_one_file_and_one_call(
 
     scanned, violations = _raw_database_violations(tmp_path)
 
-    assert scanned == 3
+    assert scanned == 4
     assert violations == {
         _SNAPSHOT_READER: ["call connect@4", "dsn@5"],
         "rheo_recallatron/migration/cli.py": ["call connect@2"],
         "rheo_recallatron/sqlite_source.py": ["call connect@2"],
+        nested: ["call connect@2"],
     }
 
 
@@ -574,14 +583,16 @@ def test_the_snapshot_reader_exemption_covers_one_file_and_one_call(
         ("import sqlite3\nsqlite3.connect(path)\n", ["call connect@2"]),
         ("import sqlite3\nsqlite3.connect(path, uri=False)\n", ["call connect@2"]),
         ("import sqlite3\nsqlite3.connect(path, uri=flag)\n", ["call connect@2"]),
+        ("import psycopg\npsycopg.connect(u, uri=True)\n", ["call connect@2"]),
     ],
-    ids=["second-connect", "no-uri", "uri-false", "uri-not-literal"],
+    ids=["second-connect", "no-uri", "uri-false", "uri-not-literal", "other-callee"],
 )
 def test_the_snapshot_reader_exemption_covers_only_one_uri_open(
     tmp_path: Path, source: str, expected: list[str]
 ) -> None:
-    """Inside the exempt file itself: a second ``sqlite3.connect``, or one that does
-    not pass the literal ``uri=True``, is still reported."""
+    """Inside the exempt file itself: a second ``sqlite3.connect``, one that does not
+    pass the literal ``uri=True``, or any other callee's ``connect`` (even with
+    ``uri=True`` and alone in the file) is still reported."""
     probe = tmp_path / _SNAPSHOT_READER
     probe.parent.mkdir(parents=True)
     probe.write_text(source, encoding="utf-8")
