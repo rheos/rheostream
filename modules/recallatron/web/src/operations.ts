@@ -13,6 +13,8 @@ export const ENTITY_LIST = "recallatron.entity.list";
 export const ENTITY_GET = "recallatron.entity.get";
 export const DEDUP_CANDIDATES = "recallatron.memory.dedup_candidates";
 export const EMBEDDING_COVERAGE = "recallatron.embedding.coverage";
+export const HISTORY_SEARCH = "recallatron.history.search";
+export const HISTORY_GET = "recallatron.history.get";
 
 /**
  * The only type an operation name can have in this package. `callChecked` accepts
@@ -26,4 +28,6 @@ export type Operation =
   | typeof ENTITY_LIST
   | typeof ENTITY_GET
   | typeof DEDUP_CANDIDATES
-  | typeof EMBEDDING_COVERAGE;
+  | typeof EMBEDDING_COVERAGE
+  | typeof HISTORY_SEARCH
+  | typeof HISTORY_GET;

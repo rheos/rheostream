@@ -36,6 +36,7 @@ construction, and the only thing that distinguishes it from a missing one is the
 expiry record that has to already be there.
 """
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -48,6 +49,7 @@ from rheo_core.deletion.records import DeletionRecordRow, list_deletion_records
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.work.schedules import ScheduleOutcome, schedule_outcome
+from sqlalchemy import insert, select
 
 from rheo_recallatron.configuration import (
     AUTOMATIC_BOUND_PURPOSE,
@@ -131,6 +133,7 @@ ENTITY_RECORD: Final = "memory_entity"
 MENTION_RECORD: Final = "memory_mention"
 LINK_RECORD: Final = "memory_link"
 RECEIPT_RECORD: Final = "source_receipt"
+HISTORY_RECORD: Final = "history_record"
 
 _KIND_ORDER: Final = (
     MEMORY_RECORD,
@@ -139,6 +142,7 @@ _KIND_ORDER: Final = (
     MENTION_RECORD,
     LINK_RECORD,
     RECEIPT_RECORD,
+    HISTORY_RECORD,
 )
 """The order the categories are emitted in, fixed rather than incidental.
 
@@ -325,6 +329,28 @@ def _receipt_line(row: SourceReceiptRow) -> dict[str, object]:
     }
 
 
+_HISTORY_FIELDS: Final = (
+    "id",
+    "source_namespace",
+    "external_source_key",
+    "source_reference",
+    "kind",
+    "status",
+    "title",
+    "body",
+    "occurred_at",
+    "imported_at",
+    "session_key",
+    "chat_key",
+    "source_role",
+    "source_category",
+    "source_created_at",
+    "confirmed_at",
+    "superseded_by_source_key",
+    "erased_at",
+)
+
+
 def export_memory_records(
     snapshot: "ExportSnapshot",
 ) -> Sequence[Mapping[str, object]]:
@@ -368,6 +394,19 @@ def export_memory_records(
         for row in export_memory_link_rows(connection)
     )
     lines.extend(_receipt_line(row) for row in export_source_receipt_rows(connection))
+    for row in connection.execute(
+        select(t.history_record).order_by(
+            t.history_record.c.source_namespace,
+            t.history_record.c.external_source_key,
+            t.history_record.c.id,
+        )
+    ).mappings():
+        lines.append(
+            {
+                _RECORD_KEY: HISTORY_RECORD,
+                **{name: row[name] for name in _HISTORY_FIELDS},
+            }
+        )
     return tuple(lines)
 
 
@@ -475,6 +514,32 @@ class _Parsed:
     mentions: tuple[MemoryMentionRow, ...]
     links: tuple[MemoryLinkRow, ...]
     receipts: tuple[SourceReceiptRow, ...]
+    histories: tuple[dict[str, object], ...] = ()
+
+
+def _history_of(row: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "id": _uuid(row["id"], "history id"),
+        "source_namespace": str(row["source_namespace"]),
+        "external_source_key": str(row["external_source_key"]),
+        "source_reference": _text(row["source_reference"]),
+        "kind": str(row["kind"]),
+        "status": str(row["status"]),
+        "title": str(row["title"]),
+        "body": str(row["body"]),
+        "occurred_at": _instant(row["occurred_at"], "history occurred_at"),
+        "imported_at": _instant(row["imported_at"], "history imported_at"),
+        "session_key": _text(row["session_key"]),
+        "chat_key": _text(row["chat_key"]),
+        "source_role": _text(row["source_role"]),
+        "source_category": _text(row["source_category"]),
+        "source_created_at": _maybe_instant(
+            row["source_created_at"], "history source_created_at"
+        ),
+        "confirmed_at": _maybe_instant(row["confirmed_at"], "history confirmed_at"),
+        "superseded_by_source_key": _text(row["superseded_by_source_key"]),
+        "erased_at": _maybe_instant(row["erased_at"], "history erased_at"),
+    }
 
 
 def _parsed(rows: Sequence[Mapping[str, object]]) -> _Parsed:
@@ -513,7 +578,56 @@ def _parsed(rows: Sequence[Mapping[str, object]]) -> _Parsed:
             for row in buckets[LINK_RECORD]
         ),
         receipts=tuple(_receipt_of(row) for row in buckets[RECEIPT_RECORD]),
+        histories=tuple(_history_of(row) for row in buckets[HISTORY_RECORD]),
     )
+
+
+def _validate_histories(parsed: _Parsed) -> None:
+    ids = [row["id"] for row in parsed.histories]
+    keys = [
+        (row["source_namespace"], row["external_source_key"])
+        for row in parsed.histories
+    ]
+    if len(ids) != len(set(ids)) or len(keys) != len(set(keys)):
+        raise ArtifactRowInvalid("duplicate historical identity")
+    for row in parsed.histories:
+        if not row["source_namespace"] or not row["external_source_key"]:
+            raise ArtifactRowInvalid("history source identity is empty")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", row["external_source_key"]):
+            raise ArtifactRowInvalid("history source identity is not opaque")
+        if (
+            row["kind"] not in t.HISTORY_KINDS
+            or row["status"] not in t.HISTORY_STATUSES
+        ):
+            raise ArtifactRowInvalid("history kind or status is invalid")
+        allowed = {
+            "conversation": {"turn"},
+            "procedural_note": {"unconfirmed", "confirmed", "superseded"},
+            "session_digest": {"summary"},
+            "memory_item": {"current", "superseded", "conflicted"},
+            "graph_entity": {"current", "superseded"},
+            "graph_event": {"event"},
+        }
+        if row["status"] not in allowed[row["kind"]]:
+            raise ArtifactRowInvalid("history kind and status disagree")
+        if row["erased_at"] is not None and (
+            row["title"]
+            or row["body"]
+            or any(
+                row[name] is not None
+                for name in (
+                    "source_reference",
+                    "session_key",
+                    "chat_key",
+                    "source_role",
+                    "source_category",
+                    "source_created_at",
+                    "confirmed_at",
+                    "superseded_by_source_key",
+                )
+            )
+        ):
+            raise ArtifactRowInvalid("erased history retains content or metadata")
 
 
 def _source_identities(parsed: "_Parsed") -> tuple[tuple[str, str, str], ...]:
@@ -954,6 +1068,7 @@ def import_memory_records(
     purposes = _validate_structure(parsed)
     _validate_receipts(parsed, purposes)
     _validate_successors(parsed)
+    _validate_histories(parsed)
     connection = uow.connection
     for memory in parsed.memories:
         insert_memory(
@@ -970,6 +1085,8 @@ def import_memory_records(
         insert_memory_link(connection, link)
     for receipt in parsed.receipts:
         insert_source_receipt(connection, receipt)
+    for history in parsed.histories:
+        connection.execute(insert(t.history_record).values(**history))
 
     def finish() -> None:
         records = list_deletion_records(connection)

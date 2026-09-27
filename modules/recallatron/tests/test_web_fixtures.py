@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from rheo_recallatron.contracts import EntityItem, EntityList
 from rheo_recallatron.dedup import DedupCandidates
 from rheo_recallatron.embedding.operations import EmbeddingCoverageReport
+from rheo_recallatron.history import HistoryItem, HistorySearchResult
 from rheo_recallatron.operations import MemoryItem, ReadWindow, RecallResult
 from rheo_recallatron.refusals import REFERENCE_SCAN_LIMIT, WINDOW_SCAN_LIMIT
 
@@ -52,6 +53,9 @@ _RESULT_FIXTURES: dict[str, type[BaseModel]] = {
     "dedup-empty.json": DedupCandidates,
     "coverage.json": EmbeddingCoverageReport,
     "coverage-no-provider.json": EmbeddingCoverageReport,
+    "history-item.json": HistoryItem,
+    "history-search-populated.json": HistorySearchResult,
+    "history-search-empty.json": HistorySearchResult,
 }
 
 _REFUSAL_FIXTURES: dict[str, str] = {

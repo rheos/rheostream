@@ -456,3 +456,79 @@ source_receipt = Table(
         name="source_receipt_digest_length",
     ),
 )
+
+
+# The one-time predecessor's searchable evidence is separate from curated memory.
+# It has its own revision metadata so 0002's frozen create_all never creates it.
+history_metadata = MetaData(schema=MEMORY_SCHEMA)
+HISTORY_KINDS: Final = (
+    "conversation",
+    "procedural_note",
+    "session_digest",
+    "memory_item",
+    "graph_entity",
+    "graph_event",
+)
+HISTORY_STATUSES: Final = (
+    "turn",
+    "unconfirmed",
+    "confirmed",
+    "superseded",
+    "current",
+    "conflicted",
+    "summary",
+    "event",
+)
+
+history_record = Table(
+    "history_record",
+    history_metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("source_namespace", Text, nullable=False),
+    Column("external_source_key", Text, nullable=False),
+    Column("source_reference", Text, nullable=True),
+    Column("kind", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("body", Text, nullable=False),
+    Column(
+        "search_tsv",
+        TSVECTOR,
+        Computed(
+            "to_tsvector('english'::regconfig, title || ' ' || body)", persisted=True
+        ),
+        nullable=False,
+    ),
+    Column("occurred_at", _timestamptz(), nullable=False),
+    Column("imported_at", _timestamptz(), nullable=False),
+    Column("session_key", Text, nullable=True),
+    Column("chat_key", Text, nullable=True),
+    Column("source_role", Text, nullable=True),
+    Column("source_category", Text, nullable=True),
+    Column("source_created_at", _timestamptz(), nullable=True),
+    Column("confirmed_at", _timestamptz(), nullable=True),
+    Column("superseded_by_source_key", Text, nullable=True),
+    Column("erased_at", _timestamptz(), nullable=True),
+    CheckConstraint(_in("kind", HISTORY_KINDS), name="history_record_kind"),
+    CheckConstraint(
+        "external_source_key ~ '^sha256:[0-9a-f]{64}$'",
+        name="history_record_opaque_source_key",
+    ),
+    CheckConstraint(_in("status", HISTORY_STATUSES), name="history_record_status"),
+    CheckConstraint(
+        "erased_at IS NULL OR (title = '' AND body = '' AND session_key IS NULL "
+        "AND chat_key IS NULL AND source_role IS NULL AND source_category IS NULL "
+        "AND source_reference IS NULL AND source_created_at IS NULL "
+        "AND confirmed_at IS NULL "
+        "AND superseded_by_source_key IS NULL)",
+        name="history_record_erased_content",
+    ),
+    Index(
+        "history_record_source_key",
+        "source_namespace",
+        "external_source_key",
+        unique=True,
+    ),
+    Index("history_record_search_tsv_gin", "search_tsv", postgresql_using="gin"),
+    Index("history_record_time_id", "occurred_at", "id"),
+)

@@ -20,6 +20,8 @@ const READ_ONLY_ALLOWLIST = [
   `${MODULE}.entity.get`,
   `${MODULE}.memory.dedup_candidates`,
   `${MODULE}.embedding.coverage`,
+  `${MODULE}.history.search`,
+  `${MODULE}.history.get`,
 ];
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));

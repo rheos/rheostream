@@ -82,6 +82,7 @@ from rheo_recallatron.storage.repository import (
 
 ORIGIN_TOLD: Final = "told"
 ORIGIN_DERIVED: Final = "derived"
+ORIGIN_MIGRATED: Final = "migrated"
 """§ A3's two origins a 1a1 writer produces. ``migrated`` belongs to the import path.
 
 An automatic memory keeps ``derived``: its provenance is distinguished by the

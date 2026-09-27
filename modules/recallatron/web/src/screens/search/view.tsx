@@ -1,6 +1,6 @@
 import { CoverageFigure } from "../../components/coverage";
 import { GenericError, StateMessage } from "../../components/state-message";
-import type { Provenance, ResultsState, SearchState } from "./load";
+import type { HistoryState, Provenance, ResultsState, SearchState } from "./load";
 import { EMPTY_COPY, QUERY_MAX_LENGTH } from "./load";
 import styles from "./search.module.css";
 
@@ -67,13 +67,47 @@ function Results({ results }: { results: ResultsState }) {
   }
 }
 
+function HistoryResults({ history }: { history: HistoryState }) {
+  if (history.state === "hidden") return null;
+  return (
+    <section aria-label="Historical records" className={styles.section}>
+      <h2 className={styles.subheading}>Historical records</h2>
+      <p className={styles.historyNote}>
+        Conversation turns and procedural notes are source evidence. An unconfirmed note is not an
+        accepted memory.
+      </p>
+      {history.state === "results" ? (
+        <ol className={styles.results}>
+          {history.rows.map((row) => (
+            <li key={row.id} className={styles.result}>
+              <a className={styles.resultTitle} href={row.href}>
+                {row.title}
+              </a>
+              <span className={styles.meta}>
+                {row.kind} · {row.status} · <time dateTime={row.dateTime}>{row.when}</time>
+              </span>
+              <p className={styles.excerpt}>{row.excerpt}</p>
+            </li>
+          ))}
+        </ol>
+      ) : history.state === "empty" ? (
+        <p className={styles.historyNote}>No historical matches.</p>
+      ) : history.state === "error" ? (
+        <GenericError />
+      ) : null}
+    </section>
+  );
+}
+
 export function SearchView({ state }: { state: SearchState }) {
   return (
     <div className={styles.screen}>
-      <h1 className={styles.title}>Search memory</h1>
+      <h1 className={styles.title}>
+        {state.history.state === "hidden" ? "Search memory" : "Search Recallatron"}
+      </h1>
       <form className={styles.form} role="search" method="get" action={state.action}>
         <label className={styles.label} htmlFor="memory-search-q">
-          Search memories
+          {state.history.state === "hidden" ? "Search memories" : "Search memories and history"}
         </label>
         <input
           className={styles.input}
@@ -86,8 +120,12 @@ export function SearchView({ state }: { state: SearchState }) {
         <button type="submit">Search</button>
       </form>
       <section aria-label="Search results" className={styles.section}>
+        {state.history.state === "hidden" ? null : (
+          <h2 className={styles.subheading}>Memories</h2>
+        )}
         <Results results={state.results} />
       </section>
+      <HistoryResults history={state.history} />
       <CoverageFigure coverage={state.coverage} />
     </div>
   );

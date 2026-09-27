@@ -31,10 +31,17 @@ NEVER_SELECTED_TABLE: Final = "app_secret"
 
 #: The tables a row reader may select from. Only what a mapping or inventory step
 #: needs today: ``conversation`` and ``session_digest`` for their ``session_id``
-#: (sessions with turns and no digest), and ``entity_vec_rowids`` (the ``entity_vec``
-#: vec0 table's own shadow) for the entity ids behind its ghost rows.
+#: (sessions with turns and no digest), ``procedural_notes`` for the owner-only
+#: historical extract, and ``entity_vec_rowids`` (the ``entity_vec`` vec0 table's
+#: own shadow) for the entity ids behind its ghost rows.
 SELECTABLE_TABLES: Final = frozenset(
-    {"memory_items", "conversation", "session_digest", "entity_vec_rowids"}
+    {
+        "memory_items",
+        "conversation",
+        "session_digest",
+        "procedural_notes",
+        "entity_vec_rowids",
+    }
 )
 
 SNAPSHOT_MODE_REFUSED = "snapshot_mode_refused"
