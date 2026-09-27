@@ -70,12 +70,19 @@ reach core without the `ShellApi` its screens are handed (#183). It follows ever
 the package, `react`, or a web-contract export. That shuts out the `@/` alias into
 apps/web, `next/headers`, `next/server`, Node built-ins and every other package. It
 also refuses a free `fetch` or other network API, `process`, `globalThis`, `eval`,
-`Function`, `import.meta`, `.cookie`, a non-member use of `window`/`self`/`global`, a
-non-literal dynamic `import()`, `require(`, and `"use server"`. Test files the entry
+`Function`, `document`, `import.meta`, a non-member use of a global-object name
+(`window`, `self`, `global`, `top`, `parent`, `frames`, `opener`, spreads included),
+the `.cookie`, `.constructor`, `.__proto__`, `.prototype`, `.defaultView` and
+`.ownerDocument` members (and those names as string keys), `with`, string timers,
+`<script>`/`<iframe>`/`<embed>`, `dangerouslySetInnerHTML`, `javascript:` URLs, a
+non-literal dynamic `import()`, `require(`, and `"use server"`. Every target of a
+conditional web-contract export is followed. Test files the entry
 points never import are out of scope. It fails when no module web package exists, or
 when one has no `package.json` or entry point. Runs in `make check`. Self-tests itself
-on every run before scanning the real tree. Known limit: it reads source text, so a
-name assembled at runtime and passed through an allowed object is out of its sight.
+on every run before scanning the real tree. Known limits: it reads source text, so a
+name assembled at runtime and passed through an allowed object is out of its sight, and
+markup that makes the browser send a cookie-bearing request (`<img src>`,
+`<form action>`) is left to the routing-literal gate.
 
 Each gate is a standalone, stdlib-only `python3` script with no import from
 anywhere else in the repository, so it runs from a bare checkout before any

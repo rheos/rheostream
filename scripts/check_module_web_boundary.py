@@ -37,27 +37,51 @@ allowlist is a one-line change to `_ALLOWED_BARE` here, which is the review poin
 
 - a free reference to `fetch`, `XMLHttpRequest`, `WebSocket`, `WebSocketStream`,
   `EventSource`, `WebTransport`, `RTCPeerConnection`, `Worker`, `SharedWorker`,
-  `importScripts`, `navigator` or `cookieStore`;
-- a free reference to `process` (so `process.env`, `const { env } = process`);
+  `importScripts`, `navigator` or `cookieStore`, including `(0, fetch)`;
+- a free reference to `process` (so `process.env`, `const { env } = process`,
+  `{ ...process }`);
 - `globalThis`, `eval` and `Function`, which reach any of the above by computed name;
-- `window`, `self` or `global`, unless the reference is a plain member access to a
-  name not listed above, or declares a local (`const window = …`) or a typed
-  parameter (`(shell, window: ReadWindow)`). Recallatron's browse loader names a
-  local `window`, so `window.items` passes, while `window.fetch`, `self[…]`,
-  `const w = window`, `const { location } = window` and `f(self)` are refused;
-- any `.cookie` member access, and `document[…]`;
+- `document` (cookies, `defaultView`, script injection), `__proto__`, and
+  `dangerouslySetInnerHTML`;
+- `window`, `self`, `global`, `top`, `parent`, `frames` and `opener`, which all hold
+  the global object, unless the reference is a plain member access to a name not
+  listed here, declares a local (`const window = …`), or is a key, typed parameter
+  or type member (`(shell, window: ReadWindow)`, `{ top: 0 }`). Recallatron's browse
+  loader names a local `window`, so `window.items` passes, while `window.fetch`,
+  `window?.["fetch"]`, `window.parent.fetch`, `self.globalThis`, `const w = window`,
+  `{ ...window }`, `c ? top : x` and `f(self)` are refused. A spread (`...x`) ends in
+  `.` but is not a member access, and is treated as a free reference;
+- the members `.cookie`, `.constructor`, `.__proto__`, `.prototype`, `.defaultView`
+  and `.ownerDocument`, optional chaining included, and the same names as a whole
+  string key (`f["constructor"]`, ``Reflect.get(f, `prototype`)``), because any
+  function's `.constructor` is the `Function` constructor
+  (`[].map.constructor("…")()`) and `defaultView` returns the global object. A class's
+  own `constructor() {}` method is not a member access and passes;
+- a `with` statement, and `setTimeout`/`setInterval` given a string of code;
+- a `<script>`, `<iframe>` or `<embed>` element, `createElement("script")` (and
+  iframe/embed), and a `javascript:` URL string;
 - `import.meta`;
 - a `"use server"` directive, which would publish a server function from the web
   process.
 
-A "free" reference is one not preceded by `.`, so `obj.fetch`, `refetch` and
-`prefetchAll` are not refused. A property key spelled like a listed name
-(`{ process: 1 }`, `type T = { fetch(): void }`) is refused too; rename the field.
+A "free" reference is one not preceded by `.` (other than a spread's `...`), so
+`obj.fetch`, `refetch` and `prefetchAll` are not refused. A property key spelled like
+a name in the first four groups (`{ process: 1 }`, `type T = { fetch(): void }`) is
+refused too; rename the field.
 
-Known limit: the scan reads source text, not types or values. It does not see a name
-assembled at runtime and passed through an allowed object, and a regex literal
-containing a quote can confuse the string blanker. Every form #183 names is caught.
-Core still checks roles and token sets on each call.
+Known limits. The scan reads source text, not types or values:
+- It does not see a name assembled at runtime and passed through an allowed object.
+  `Reflect`, `Proxy` and `Object.getOwnPropertyDescriptor` are not refused by name,
+  because each needs a handle to a global object or a function's constructor first,
+  and the rules above refuse every handle the scan can see.
+- A string key built at runtime (`f["constr" + "uctor"]`) is not seen; only the
+  `.constructor` member and whole-literal keys are.
+- Rendered markup that makes the browser send a request with the user's cookies
+  (`<img src>`, `<form action>`, `<link href>`, CSS `url()`) is not refused here. A
+  literal route in one is the routing-literal gate's (criterion 22) to catch.
+- A regex literal containing a quote can confuse the string blanker.
+
+Every form #183 names is caught. Core still checks roles and token sets on each call.
 
 At least one `modules/*/web` package must exist, or the scan reports that rather than
 passing over nothing. A package without a `package.json` or without an entry point
@@ -154,20 +178,47 @@ _FORBIDDEN_FREE = {
     "globalThis": "reaches globals by name (globalThis)",
     "eval": "evaluates code by string (eval)",
     "Function": "evaluates code by string (Function)",
+    "document": "reaches document (script injection, cookies, defaultView)",
+    "__proto__": "reaches a prototype (__proto__)",
+    "dangerouslySetInnerHTML": "injects raw HTML, which can carry a script",
 }
-_GLOBAL_OBJECTS = ("window", "self", "global")
+# Names that hold the global object. Each may still be a local's name, so a plain
+# member access to an unlisted name (`window.items`) passes; see _code_findings.
+_GLOBAL_OBJECTS = ("window", "self", "global", "top", "parent", "frames", "opener")
 
 _FROM_SPEC = re.compile(r"\bfrom\s*([\"'])")
 _SIDE_EFFECT_SPEC = re.compile(r"(?<![\w$.])import\s*([\"'])")
 _DYNAMIC_IMPORT = re.compile(r"(?<![\w$.])import\s*\(")
 _REQUIRE = re.compile(r"(?<![\w$.])require\s*\(")
 _IMPORT_META = re.compile(r"(?<![\w$.])import\s*\.\s*meta\b")
-_COOKIE_MEMBER = re.compile(r"\.\s*cookie(?![\w$])")
-_DOCUMENT_COMPUTED = re.compile(r"(?<![\w$.])document\s*(?:\?\.\s*)?\[")
+# Members that read cookies, return the global object or a document, or reach a
+# constructor or prototype (`[].map.constructor("…")()` is the Function constructor).
+# `?.` ends in `.`, so optional chaining is covered too.
+_DANGEROUS_MEMBERS = (
+    "cookie",
+    "constructor",
+    "__proto__",
+    "prototype",
+    "defaultView",
+    "ownerDocument",
+)
+_DANGEROUS_MEMBER = re.compile(r"\.\s*(" + "|".join(_DANGEROUS_MEMBERS) + r")(?![\w$])")
+# The same names as a string key where the scan can see one: `x["constructor"]`,
+# `Reflect.get(f, "prototype")`. Matched on the kept view, whole literal only.
+_DANGEROUS_KEY = re.compile(r"([\"'`])(" + "|".join(_DANGEROUS_MEMBERS) + r")\1")
+_WITH_STATEMENT = re.compile(r"(?<![\w$.])with\s*\(")
+_TIMER_STRING = re.compile(r"(?<![\w$.])(?:setTimeout|setInterval)\s*\(\s*[\"'`]")
+_SCRIPT_ELEMENT = re.compile(r"<\s*(script|iframe|embed)(?![\w$-])")
+_CREATE_SCRIPT = re.compile(
+    r"\bcreateElement\s*\(\s*([\"'`])\s*(script|iframe|embed)\s*\1", re.IGNORECASE
+)
+_JAVASCRIPT_URL = re.compile(r"[\"'`]\s*javascript\s*:", re.IGNORECASE)
 _MEMBER_AFTER = re.compile(r"\s*(?:\?\.|\.)\s*([\w$]+)")
 _DECLARES = re.compile(r"(?<![\w$])(?:const|let|var)\s+$")
-_PARAMETER_BEFORE = re.compile(r"[(,]\s*$")
-_ANNOTATED_AFTER = re.compile(r"\s*\??\s*:")
+# `name:` / `name?:` is a key, a typed parameter or a label, unless it is the middle
+# of a ternary (`c ? top : x`) or a `case` label (`case window:`).
+_KEY_AFTER = re.compile(r"\s*\??\s*:(?!:)")
+_VALUE_BEFORE = re.compile(r"(?:\?|(?<![\w$])case)\s*$")
 _USE_SERVER = re.compile(r"(?:^|[{;])\s*([\"'])use server\1", re.MULTILINE)
 
 
@@ -284,11 +335,14 @@ def _quoted_at(keep: str, quote_index: int) -> tuple[str, int] | None:
 
 
 def _free(code: str, start: int) -> bool:
-    """True when the identifier at `start` is not a member access (`x.name`)."""
+    """True when the identifier at `start` is not a member access (`x.name`). A
+    spread (`...process`) also ends in `.`, and it IS a free reference."""
     j = start - 1
     while j >= 0 and code[j] in " \t\r\n":
         j -= 1
-    return j < 0 or code[j] != "."
+    if j < 0 or code[j] != ".":
+        return True
+    return j >= 2 and code[j - 2 : j + 1] == "..."
 
 
 def _code_findings(relative: str, keep: str, code: str) -> list[str]:
@@ -302,7 +356,7 @@ def _code_findings(relative: str, keep: str, code: str) -> list[str]:
             if _free(code, match.start()):
                 add(match.start(), reason)
 
-    forbidden_members = {*_FORBIDDEN_FREE, "document", *_GLOBAL_OBJECTS}
+    forbidden_members = {*_FORBIDDEN_FREE, *_GLOBAL_OBJECTS, *_DANGEROUS_MEMBERS}
     for obj in _GLOBAL_OBJECTS:
         for match in re.finditer(r"(?<![\w$])" + obj + r"(?![\w$])", code):
             if not _free(code, match.start()):
@@ -317,18 +371,28 @@ def _code_findings(relative: str, keep: str, code: str) -> list[str]:
             before = code[max(0, match.start() - 40) : match.start()]
             if _DECLARES.search(before):
                 continue  # `const window = …` declares a local
-            if _PARAMETER_BEFORE.search(before) and _ANNOTATED_AFTER.match(after):
-                continue  # `(shell, window: ReadWindow)` declares a parameter
+            if _KEY_AFTER.match(after) and not _VALUE_BEFORE.search(before):
+                continue  # `(shell, window: ReadWindow)`, `{ top: 0 }`, a type member
             add(
                 match.start(),
                 f"uses the global {obj} other than through a plain member access "
                 "(aliasing, computed access, or passing it on)",
             )
 
-    for match in _COOKIE_MEMBER.finditer(code):
-        add(match.start(), "reads a cookie (.cookie)")
-    for match in _DOCUMENT_COMPUTED.finditer(code):
-        add(match.start(), "reaches document by computed name")
+    for match in _DANGEROUS_MEMBER.finditer(code):
+        add(match.start(), f"reaches .{match.group(1)}")
+    for match in _DANGEROUS_KEY.finditer(keep):
+        add(match.start(), f"names {match.group(2)} as a string key")
+    for match in _WITH_STATEMENT.finditer(code):
+        add(match.start(), "uses a with statement")
+    for match in _TIMER_STRING.finditer(code):
+        add(match.start(), "passes a string of code to a timer")
+    for match in _SCRIPT_ELEMENT.finditer(code):
+        add(match.start(), f"renders a <{match.group(1)}> element")
+    for match in _CREATE_SCRIPT.finditer(keep):
+        add(match.start(), f"creates a <{match.group(2)}> element")
+    for match in _JAVASCRIPT_URL.finditer(keep):
+        add(match.start(), "spells a javascript: URL")
     for match in _IMPORT_META.finditer(code):
         add(match.start(), "reads import.meta")
     for match in _REQUIRE.finditer(code):
@@ -407,9 +471,11 @@ def _entry_points(package_json: dict) -> list[str]:
     return entries
 
 
-def _contract_exports(repo_root: Path) -> dict[str, str] | None:
-    """Map each exported contract subpath (`@rheo-stream/web-contract/screen`) to its
-    file, or None when the contract package is missing or unreadable."""
+def _contract_exports(repo_root: Path) -> dict[str, list[str]] | None:
+    """Map each exported contract subpath (`@rheo-stream/web-contract/screen`) to
+    EVERY target its export names, nested conditions included, the same collection
+    `_entry_points` does for a module package. None when the contract package is
+    missing or unreadable."""
     manifest = repo_root / _CONTRACT_DIR / "package.json"
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -418,18 +484,15 @@ def _contract_exports(repo_root: Path) -> dict[str, str] | None:
     exports = data.get("exports")
     if not isinstance(exports, dict):
         return {}
-    mapping: dict[str, str] = {}
+    mapping: dict[str, list[str]] = {}
     for key, value in exports.items():
-        targets: list[str] = []
-        if isinstance(value, str):
-            targets = [value]
-        elif isinstance(value, dict):
-            targets = [v for v in value.values() if isinstance(v, str)]
+        targets = _entry_points({"exports": value})
         if not key.startswith("./") or "*" in key or not targets:
             continue
-        mapping[_CONTRACT_NAME + "/" + key[2:]] = os.path.normpath(
-            str(repo_root / _CONTRACT_DIR / targets[0])
-        )
+        mapping[_CONTRACT_NAME + "/" + key[2:]] = [
+            os.path.normpath(str(repo_root / _CONTRACT_DIR / target))
+            for target in targets
+        ]
     return mapping
 
 
@@ -531,7 +594,20 @@ def _scan_package(
             if spec in _ALLOWED_BARE:
                 continue
             if contract is not None and spec in contract:
-                queue.append((contract[spec], contract_root))
+                for target in contract[spec]:
+                    resolved = (
+                        _resolve_file(target)
+                        if _within(target, contract_root)
+                        else None
+                    )
+                    if resolved is None:
+                        findings.append(
+                            f"{where}: {spec} names the export target "
+                            f"{_relative_to(target, repo_root)}, which does not "
+                            "resolve to a file inside the web-contract package"
+                        )
+                        continue
+                    queue.append((resolved, contract_root))
                 continue
             if contract is None and spec.startswith(_CONTRACT_NAME + "/"):
                 findings.append(
@@ -610,6 +686,74 @@ _PLANTED = {
     "import-meta.ts": "export const e = import.meta.env;\n",
     "use-server.ts": '"use server";\nexport async function act() {}\n',
     "use-server-inline.ts": "export async function act() { 'use server'; }\n",
+    # CodeRabbit 1: the Function constructor through `.constructor`, and prototypes.
+    "constructor-call.ts": "export const f = () => [].map.constructor('return 1')();\n",
+    "constructor-optional.ts": "export const f = (g: () => void) => g?.constructor;\n",
+    "constructor-key.ts": (
+        "export const f = (g: object) => (g as never)['constructor'];\n"
+    ),
+    "constructor-template-key.ts": (
+        "export const f = (g: object) => Reflect.get(g, `constructor`);\n"
+    ),
+    "proto-member.ts": "export const p = (o: { x: 1 }) => o.__proto__;\n",
+    "proto-literal.ts": "export const o = { __proto__: null };\n",
+    "proto-key.ts": 'export const p = (o: object) => Reflect.get(o, "__proto__");\n',
+    "prototype-member.ts": "export const p = Object.prototype;\n",
+    "prototype-key.ts": (
+        "export const p = (o: object) => Reflect.get(o, 'prototype');\n"
+    ),
+    # CodeRabbit 2: a spread ends in `.` but is not a member access.
+    "spread-process.ts": "export const s = { ...process }.env;\n",
+    "spread-window.ts": "export const w = { ...window };\n",
+    "spread-self.ts": "export const w = [...self];\n",
+    "spread-global.ts": "export const w = { ... global };\n",
+    "spread-top.ts": "export const w = { ...top };\n",
+    # CodeRabbit 3: members that return the global object or a document.
+    "window-parent.ts": "export const f = (u: string) => window.parent.fetch(u);\n",
+    "window-top.ts": "export const f = (u: string) => window.top?.fetch(u);\n",
+    "window-frames.ts": "export const f = (u: string) => window.frames.fetch(u);\n",
+    "window-opener.ts": "export const f = (u: string) => window.opener.fetch(u);\n",
+    "window-self.ts": "export const f = (u: string) => window.self.fetch(u);\n",
+    "window-globalthis.ts": (
+        "export const f = (u: string) => self.globalThis.fetch(u);\n"
+    ),
+    "free-top.ts": "export const f = (u: string) => top.fetch(u);\n",
+    "free-parent.ts": "export const w = parent;\n",
+    "defaultview.ts": (
+        "export const f = (d: { defaultView: { name:"
+        " string } }) => d.defaultView.name;\n"
+    ),
+    "owner-document.ts": (
+        "export const f = (e: { ownerDocument: 1 }) => e.ownerDocument;\n"
+    ),
+    "document-free.ts": "export const t = () => document.title;\n",
+    # Siblings of the same class.
+    "optional-computed.ts": "export const f = () => window?.['fetch'];\n",
+    "comma-fetch.ts": "export const f = (u: string) => (0, fetch)(u);\n",
+    # `name:` is a key only outside a ternary or `case`.
+    "ternary-global.ts": "export const w = (c: boolean) => (c ? top : null);\n",
+    "case-global.ts": (
+        "export const k = (x: unknown) => {\n"
+        "  switch (x) {\n"
+        "    case window:\n"
+        "      return 1;\n"
+        "  }\n"
+        "  return 0;\n"
+        "};\n"
+    ),
+    "with.ts": "export function f(o: object) {\n  with (o) {\n    return 1;\n  }\n}\n",
+    "timer-string.ts": "export const t = () => setTimeout('go()', 0);\n",
+    "script-element.tsx": 'export const S = () => <script src="/x.js" />;\n',
+    "iframe-element.tsx": 'export const S = () => <iframe src="/x" />;\n',
+    "inner-html.tsx": (
+        "export const S = (h: string) => <div"
+        " dangerouslySetInnerHTML={{ __html: h }} />;\n"
+    ),
+    "create-script.ts": (
+        "export const s = (c: (t: string) => unknown) => c.call(null, 'x') ?? "
+        "createElement('script');\n"
+    ),
+    "javascript-url.tsx": "export const A = () => <a href='javascript:void 0'>x</a>;\n",
 }
 
 # Reached from the entry point and must NOT be flagged.
@@ -655,6 +799,21 @@ _NEAR_MISSES = {
         "};\n"
     ),
     "relative-ok.ts": 'export { helper } from "./helpers/index";\n',
+    # A class constructor, layout keys and type members named like globals, a
+    # ternary-free annotation, and timers given a function.
+    "shapes.tsx": (
+        "export class Counter {\n"
+        "  constructor(readonly n: number) {}\n"
+        "}\n"
+        "type Node = { parent: string; top: number };\n"
+        "interface Frame {\n  opener?: string\n  frames: number[]\n}\n"
+        'export const box = { top: 0, parent: "root" };\n'
+        "export const t = (node: Node, f: Frame) =>"
+        " node.parent + node.top + f.frames;\n"
+        "export const later = (go: () => void) => setTimeout(go, 0);\n"
+        "export const P = () => <p>{'the constructor,"
+        " prototype and <script> tag'}</p>;\n"
+    ),
     # Clean itself; the fetch it launders lives in ../testing/net.ts, checked below.
     "launder.ts": 'export { net } from "../testing/net";\n',
 }
@@ -762,6 +921,47 @@ def _self_test() -> str | None:
             return (
                 "self-test FAILED: a fetch inside the web-contract package went "
                 "uncaught (contract imports are not followed)"
+            )
+
+        # CodeRabbit 4: every target of a conditional contract export is scanned,
+        # nested conditions included, and a target that does not resolve fails.
+        _write(
+            repo,
+            {
+                "packages/web-contract/package.json": json.dumps(
+                    {
+                        "name": _CONTRACT_NAME,
+                        "exports": {
+                            "./screen": {
+                                "types": "./src/screen.ts",
+                                "import": {"node": "./dist/screen.js"},
+                                "default": "./dist/missing.js",
+                            }
+                        },
+                    }
+                ),
+                "packages/web-contract/src/screen.ts": (
+                    "export type ScreenProps = {};\n"
+                ),
+                "packages/web-contract/dist/screen.js": (
+                    "export const f = () => fetch('/x');\n"
+                ),
+            },
+        )
+        findings, _ = check(repo)
+        if not any(
+            f.startswith("packages/web-contract/dist/screen.js:1:") for f in findings
+        ):
+            return (
+                "self-test FAILED: a fetch in a conditional contract export's "
+                "non-first target went uncaught"
+            )
+        if not any(
+            "dist/missing.js" in f and "does not resolve" in f for f in findings
+        ):
+            return (
+                "self-test FAILED: a contract export target that does not resolve "
+                "was not reported"
             )
 
     # A package with no entry point, and one with no package.json, both fail.
