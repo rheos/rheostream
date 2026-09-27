@@ -1,5 +1,8 @@
 # Documentation
 
+- [Architecture tour](architecture/code-tour.md): a short route through the implemented
+  request path, a storage decision, and the cross-database enqueue limitation.
+
 - [Idea document](ideas/rheo-stream-idea.md): product thesis, boundaries, decisions,
   and open architecture questions.
 - [Workspace layout](workspace-layout.md): public checkout and connected private
