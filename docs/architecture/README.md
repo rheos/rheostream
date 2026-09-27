@@ -1,5 +1,9 @@
 # Architecture
 
+For a short introduction to the implemented system, start with the
+[architecture tour](code-tour.md). It links the request path, workspace-storage
+decision and enqueue limitation to code and tests.
+
 **Status:** Architecture specification, designed against the accepted
 [requirements and scope](../requirements/requirements-and-scope.md) (D1 to D11, R1 to R5, FR 1 to
 FR 53) and the accepted [build plan](../requirements/build-plan.md). The decisions recorded here as
