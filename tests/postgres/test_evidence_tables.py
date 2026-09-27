@@ -158,8 +158,11 @@ def test_the_check_constraints_are_the_named_set(
         ).all()
     definitions = {str(name): str(definition) for name, definition in rows}
     assert set(definitions) == CHECK_CONSTRAINTS
-    # Built from the enum, not a retyped literal: every member and nothing else.
-    assert EVIDENCE_PURPOSES == tuple(purpose.value for purpose in ContextPurpose)
+    # A literal frozen at 0010, pinned to the enum: every member and nothing else.
+    assert set(EVIDENCE_PURPOSES) == {purpose.value for purpose in ContextPurpose}, (
+        "ContextPurpose and EVIDENCE_PURPOSES diverge: a new ContextPurpose needs its "
+        "own core migration widening evidence_unit_purpose (0010 is frozen)"
+    )
     for purpose in ContextPurpose:
         assert f"'{purpose.value}'" in definitions["evidence_unit_purpose"]
     for state in EVIDENCE_STATES:

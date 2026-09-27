@@ -7,12 +7,12 @@ turned into memory, a sibling of the runtime tables rather than a new
 exported, held for at most ``automatic_memory.max_pending_hours``.
 
 Each vocabulary is a ``Final`` tuple checked in the database, so an insert outside it is
-refused there and not only in code. ``purpose`` is built from ``ContextPurpose`` itself.
+refused there and not only in code. ``purpose`` is the ``ContextPurpose`` values frozen
+at 0010, pinned against the enum by a test.
 """
 
 from typing import Final
 
-from rheo_contracts import ContextPurpose
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -34,12 +34,24 @@ EVIDENCE_PRODUCER_KINDS: Final = ("rheo_runtime",)
 0010 builds ``core.evidence_unit`` from this module via ``create_all``, so changing the
 tuple would change what 0010 creates. A later producer (1a4b) is admitted through its
 own migration plus a live-shape sibling object, the ``runtime_tables.py`` pattern
-(``runtime_session_0006`` frozen, ``runtime_session`` live, revision 0009). The same
-holds for ``EVIDENCE_PURPOSES`` below, derived from ``ContextPurpose``: a new purpose
-needs its own migration, not an edit that changes what 0010 creates.
+(``runtime_session_0006`` frozen, ``runtime_session`` live, revision 0009).
 """
 EVIDENCE_AUDIENCE_KINDS: Final = ("workspace", "member")
-EVIDENCE_PURPOSES: Final = tuple(purpose.value for purpose in ContextPurpose)
+EVIDENCE_PURPOSES: Final = (
+    "respond",
+    "follow_up",
+    "share_with_referral",
+    "internal_analysis",
+)
+"""Frozen at revision ``0010_evidence_unit``'s set: the ``ContextPurpose`` values as
+they stood then, in enum order, so 0010's CHECK text never moves.
+
+Deliberately a literal, not derived from ``ContextPurpose``: a derivation would let a
+new enum member silently change what 0010 creates. A new ``ContextPurpose`` needs its
+own core migration widening ``evidence_unit_purpose``, plus a live-shape sibling, the
+same pattern as ``EVIDENCE_PRODUCER_KINDS``. ``tests/postgres/test_evidence_tables.py``
+reds when the enum and this tuple diverge.
+"""
 EVIDENCE_STATES: Final = ("pending", "settled", "gap")
 NATIVE_KEY_MAX_LENGTH: Final = 256
 
