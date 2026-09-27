@@ -30,8 +30,8 @@ For repository changes, run:
 python3 scripts/check_repository.py
 ```
 
-`make check` runs that plus the legacy-name, fixture-provenance, search-boundary and
-workspace-scripts gates; `make lint`, `make typecheck` and `make test` cover code
+`make check` runs that plus the legacy-name, fixture-provenance, search-boundary,
+workspace-scripts and module-web-boundary gates; `make lint`, `make typecheck` and `make test` cover code
 changes. `uv run pytest` needs a reachable Postgres cluster: `make up` starts one, or
 point `RHEO_TEST_CLUSTER_DSN` at your own. For local runs, `make test-fast` is
 quicker: it starts a throwaway test-only cluster on port 5434 (durability off, its
