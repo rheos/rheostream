@@ -82,7 +82,9 @@ class RecordAttempt:
     """What one attempt did with each record, as native keys and nothing else.
 
     - ``accepted``: its sanitized text fits, so it is held as a ``pending`` row;
-    - ``deferred``: past this attempt's record or byte budget, no row; resend it later;
+    - ``deferred``: at or after the first record past this attempt's record or byte
+      budget, no row; always a suffix of the batch in record order, so the caller
+      resends from its first key;
     - ``gapped``: its sanitized text alone exceeds the byte budget, so it is held as a
       content-free ``gap/oversize`` row and will never be extracted;
     - ``dropped``: sanitation left nothing, or found an injection marker; no row.
@@ -167,12 +169,17 @@ def record_evidence(
     caller has already checked :func:`recording_allowed`; this function does not
     re-check it, so a fixture may drive it directly.
 
-    The budgets count the sanitized bodies this attempt admits as ``pending``
-    (including one whose native key turns out to be held already): a record that
-    would take the count past ``max_records_per_attempt`` or the byte total past
-    ``max_bytes_per_attempt`` is deferred. A body over the byte budget on its own can
-    never fit, so it becomes a ``gap/oversize`` row instead, and carries no body
-    toward either budget.
+    **Budgets.** ``max_records_per_attempt`` counts every row this attempt writes or
+    finds held: ``pending`` and ``gap/oversize`` alike. ``max_bytes_per_attempt``
+    counts ``pending`` bodies only, since a gap row has none. A dropped record writes
+    no row and counts toward neither. A body over the byte budget on its own can
+    never fit, so it becomes a ``gap/oversize`` row rather than a deferral.
+
+    **Deferral is a suffix.** The first record that would take either total past its
+    budget is deferred, and so is every record after it, whatever its size or
+    content. ``deferred`` is therefore the tail of ``records`` in order, and
+    everything accepted, gapped or dropped comes before it: the caller resends from
+    the first deferred key and no later range is believed complete.
     """
     consumers = uow.consumers
     if consumers is None:
@@ -196,12 +203,20 @@ def record_evidence(
     admitted_bytes = 0
 
     for record in records:
+        if deferred:
+            # Prefix semantics: the caller resends from the first deferred key.
+            deferred.append(record.native_key)
+            continue
         body = sanitize(record.raw_text)
         if body is None:
             dropped.append(record.native_key)
             continue
         size = len(body.encode("utf-8"))
+        if admitted + 1 > max_records:
+            deferred.append(record.native_key)
+            continue
         if size > max_bytes:
+            admitted += 1
             inserted = _insert(
                 uow,
                 record,
@@ -213,7 +228,7 @@ def record_evidence(
                 settled_at=now,
             )
             gapped.append(record.native_key)
-        elif admitted + 1 > max_records or admitted_bytes + size > max_bytes:
+        elif admitted_bytes + size > max_bytes:
             deferred.append(record.native_key)
             continue
         else:

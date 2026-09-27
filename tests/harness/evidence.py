@@ -27,6 +27,7 @@ from rheo_contracts import ContextPurpose, EventEnvelope, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.events import ConsumerRegistry, ConsumerSubscription
 from rheo_core.evidence import EVIDENCE_RECORDED
+from rheo_core.evidence.record import ENABLED_KEY
 from rheo_core.operations import HARNESS_MODULE_ID
 from rheo_core.settings import encode_text, spec_for
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
@@ -37,7 +38,6 @@ from harness.registry import enable_harness_module
 EVIDENCE_PROBE_CONSUMER_ID: Final = "test.evidence_probe"
 ENABLED_ENV: Final = "RHEO__automatic_memory__enabled"
 PROVIDER_ENV: Final = "RHEO__automatic_memory__extraction__provider"
-ENABLED_KEY: Final = "automatic_memory.enabled"
 
 
 def _ignore(envelope: EventEnvelope, uow: HandlerUnitOfWork) -> None:
@@ -107,14 +107,17 @@ class EvidenceWorkspace:
         assert isinstance(ctx, WorkspaceContext), ctx
         return ctx
 
-    def set_workspace(self, key: str, value: object) -> None:
-        """Write a workspace settings row directly, below the write path's checks."""
+    def set_workspace(self, key: str, value: bool | int) -> None:
+        """Write a workspace settings row directly, below the write path's checks.
+
+        Every ``automatic_memory.*`` key a workspace may set is a bool or an int.
+        """
         spec = spec_for(key)
         with self.unit_of_work() as uow:
             upsert_workspace_setting(
                 uow.connection,
                 key=key,
-                value=encode_text(spec, value),  # type: ignore[arg-type]
+                value=encode_text(spec, value),
                 value_type=spec.type,
                 updated_by=None,
             )
