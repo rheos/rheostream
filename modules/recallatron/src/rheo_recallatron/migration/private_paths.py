@@ -21,8 +21,8 @@ refusal.
 import os
 import subprocess
 from pathlib import Path
-from urllib.parse import urlsplit
 
+from psycopg.conninfo import conninfo_to_dict
 from rheo_core.storage.data_root import find_checkout_root
 
 PRIVATE_ROOT_VARIABLE = "RHEO_MIGRATION_PRIVATE_ROOT"
@@ -135,10 +135,44 @@ def require_private_output(path: os.PathLike[str] | str) -> Path:
 
 
 def require_loopback_dsn(dsn: str) -> str:
-    """Refuse ``dsn`` unless its host is a loopback spelling. Returns ``dsn`` as-is."""
-    host = urlsplit(dsn).hostname
-    if host not in _LOOPBACK_HOSTS:
+    """Refuse ``dsn`` unless every host it names is a loopback spelling.
+
+    libpq's own connection-string rules let a ``host`` or ``hostaddr`` query
+    parameter override or supplement the URI authority (``hostaddr`` in particular
+    is the literal address libpq connects to, taking precedence over ``host`` for
+    the actual TCP connection), and either can carry a comma-separated multi-host
+    list. Checking only the URI authority (as a plain ``urlsplit`` would) misses
+    all of that: ``postgresql://u@localhost/db?host=db.example.com`` and
+    ``postgresql://u@localhost/db?hostaddr=192.0.2.1`` both read as ``localhost``
+    under a bare authority check while actually connecting elsewhere. Parsing with
+    ``psycopg.conninfo.conninfo_to_dict`` (libpq's own parsing rules, not a
+    reimplementation) surfaces the real ``host``/``hostaddr`` values libpq would
+    use, whichever of the URI or key/value DSN forms was given. Returns ``dsn``
+    as-is.
+    """
+    try:
+        params = conninfo_to_dict(dsn)
+    except Exception as error:  # a DSN libpq itself can't parse is never loopback
         raise PrivateOutputRefusal(
-            DSN_NOT_LOOPBACK, f"refusing a non-loopback DSN host: {host!r}"
+            DSN_NOT_LOOPBACK, f"refusing an unparseable DSN: {error}"
+        ) from error
+
+    hosts = [
+        part.strip("[]")
+        for key in ("host", "hostaddr")
+        for part in str(params.get(key) or "").split(",")
+        if part
+    ]
+    if not hosts:
+        # No host/hostaddr at all: refuse rather than guess, matching the
+        # previous authority-only check's behavior for a DSN with no host.
+        raise PrivateOutputRefusal(
+            DSN_NOT_LOOPBACK, "refusing a DSN with no host or hostaddr"
         )
+
+    for host in hosts:
+        if host not in _LOOPBACK_HOSTS:
+            raise PrivateOutputRefusal(
+                DSN_NOT_LOOPBACK, f"refusing a non-loopback DSN host: {host!r}"
+            )
     return dsn

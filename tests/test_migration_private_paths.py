@@ -192,3 +192,41 @@ def test_require_loopback_dsn_refuses_a_non_loopback_host() -> None:
     with pytest.raises(PrivateOutputRefusal) as excinfo:
         require_loopback_dsn(dsn)
     assert excinfo.value.state == private_paths.DSN_NOT_LOOPBACK
+
+
+def test_require_loopback_dsn_refuses_a_host_query_param_override() -> None:
+    """A loopback authority with a non-loopback ``host`` query parameter: libpq
+    lets the query parameter override the authority host outright."""
+    dsn = "postgresql://rheo:rheo_dev_only@localhost/postgres?host=db.example.com"
+    with pytest.raises(PrivateOutputRefusal) as excinfo:
+        require_loopback_dsn(dsn)
+    assert excinfo.value.state == private_paths.DSN_NOT_LOOPBACK
+
+
+def test_require_loopback_dsn_refuses_a_hostaddr_query_param_override() -> None:
+    """A loopback authority with a non-loopback ``hostaddr``: libpq uses
+    ``hostaddr`` as the literal address it connects to."""
+    dsn = "postgresql://rheo:rheo_dev_only@localhost/postgres?hostaddr=192.0.2.1"
+    with pytest.raises(PrivateOutputRefusal) as excinfo:
+        require_loopback_dsn(dsn)
+    assert excinfo.value.state == private_paths.DSN_NOT_LOOPBACK
+
+
+def test_require_loopback_dsn_refuses_a_non_loopback_member_of_a_multi_host_list() -> (
+    None
+):
+    dsn = "postgresql://rheo:rheo_dev_only@localhost,db.example.com:5433/postgres"
+    with pytest.raises(PrivateOutputRefusal) as excinfo:
+        require_loopback_dsn(dsn)
+    assert excinfo.value.state == private_paths.DSN_NOT_LOOPBACK
+
+
+def test_require_loopback_dsn_accepts_a_multi_host_list_all_loopback() -> None:
+    dsn = "postgresql://rheo:rheo_dev_only@localhost,127.0.0.1:5433/postgres"
+    assert require_loopback_dsn(dsn) == dsn
+
+
+def test_require_loopback_dsn_refuses_no_host_or_hostaddr() -> None:
+    with pytest.raises(PrivateOutputRefusal) as excinfo:
+        require_loopback_dsn("postgresql:///postgres")
+    assert excinfo.value.state == private_paths.DSN_NOT_LOOPBACK
