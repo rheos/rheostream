@@ -21,6 +21,7 @@ from rheo_core.boundary.context import (
 )
 from rheo_core.boundary.factories import (
     MEMORY_EXPIRY_OPERATIONS,
+    context_for_evidence_acceptance,
     context_for_harness,
     context_for_memory_expiry,
     context_for_operator,
@@ -34,6 +35,7 @@ __all__ = [
     "WORKSPACE_MISSING_DETAIL",
     "WORKSPACE_UNAVAILABLE",
     "Refusal",
+    "context_for_evidence_acceptance",
     "context_for_harness",
     "context_for_memory_expiry",
     "context_for_operator",

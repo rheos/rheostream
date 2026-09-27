@@ -245,6 +245,61 @@ def context_for_memory_expiry(workspace_id: UUID) -> WorkspaceContext | Refusal:
     )
 
 
+def context_for_evidence_acceptance(
+    workspace_id: UUID, *, account_id: UUID, purpose: ContextPurpose
+) -> WorkspaceContext | Refusal:
+    """The context a drain job calls 1a1's acceptance seam under, for one evidence row
+    (spec § System Components, item 9).
+
+    Actor ``system`` with no id, role ``service``, entry ``job``, no audience, and an
+    empty operation set: it reaches no dispatchable operation. Its principal is the
+    evidence row's speaker and the row's own purpose, both passed in by core's claim
+    path, which read them from that row.
+
+    **Why a principal, and why the purpose is a parameter.** 1a1's replay path re-reads
+    the existing memory under this context. A member memory is eligible only to its own
+    account, and a bound read sees only memories carrying its purpose. An accountless
+    context, or one fixed to a single purpose, would turn a legitimate replay of, say,
+    a ``share_with_referral`` turn into a false ``source_unavailable``.
+
+    Refuses ``membership_missing`` when ``account_id`` holds no ``control.membership``
+    row for ``workspace_id``, the read :func:`context_from_operation` runs. Like
+    :func:`context_for_memory_expiry` it is a value and not an authority: what admits
+    a unit is the evidence row, checked by core's ``RuntimeEvidenceAuthority``.
+    """
+    if not isinstance(workspace_id, UUID) or not isinstance(account_id, UUID):
+        raise TypeError("workspace_id and account_id must be UUIDs")
+    bound_purpose = ContextPurpose(purpose)
+    backend = get_backend()
+    with backend.control_engine.connect() as connection:
+        membership = get_membership(
+            connection, account_id=account_id, workspace_id=workspace_id
+        )
+    if membership is None:
+        return Refusal(
+            MEMBERSHIP_MISSING,
+            f"no control.membership row for account {account_id} in workspace "
+            f"{workspace_id}",
+        )
+    enabled = _active_workspace_modules(backend, workspace_id)
+    if isinstance(enabled, Refusal):
+        return enabled
+    return WorkspaceContext(
+        workspace_id=workspace_id,
+        actor=Actor(kind=ActorKind.SYSTEM, id=None),
+        role=Role.SERVICE,
+        entry=Entry.JOB,
+        # None, as for ``context_for_memory_expiry``: a job has no audience.
+        audience=None,
+        operation_set=frozenset(),
+        enabled_modules=enabled,
+        request_id=uuid7(),
+        principal=AuthenticatedPrincipal(
+            account_id=account_id, bound_purpose=bound_purpose
+        ),
+    )
+
+
 def context_for_harness(
     workspace_id: UUID,
     account_id: UUID,

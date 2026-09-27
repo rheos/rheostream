@@ -88,6 +88,29 @@ def core_version() -> str:
     return metadata.version(CORE_DISTRIBUTION)
 
 
+# Placed after ``core_version`` rather than directly under ``database_name_for``: the
+# criterion-5 mutation in ``docs/acceptance/phase-1-matrix.md`` names
+# ``def core_version()`` as the context after ``database_name_for``'s return line.
+_DATABASE_NAME_HEX: Final = re.compile(r"[0-9a-f]{32}")
+
+
+def workspace_id_for_database(name: str) -> UUID | None:
+    """The workspace id :func:`database_name_for` would name ``name``, or ``None``.
+
+    Its pure inverse: ``ws_`` then exactly 32 lowercase hex digits, and the round trip
+    through :func:`database_name_for` must give ``name`` back. The round trip is the
+    check, so the two functions cannot drift apart silently. No database, no settings,
+    no clock.
+    """
+    if not isinstance(name, str) or not name.startswith(DATABASE_NAME_PREFIX):
+        return None
+    digits = name[len(DATABASE_NAME_PREFIX) :]
+    if not _DATABASE_NAME_HEX.fullmatch(digits):
+        return None
+    workspace_id = UUID(hex=digits)
+    return workspace_id if database_name_for(workspace_id) == name else None
+
+
 def _slug_for(workspace_id: UUID, slug: str | None) -> str:
     if slug is None:
         return str(workspace_id)
