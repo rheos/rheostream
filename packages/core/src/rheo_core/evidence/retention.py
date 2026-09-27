@@ -42,10 +42,10 @@ def purge_evidence(
 
     1. Every ``pending`` row whose ``source_expires_at <= now`` becomes
        ``gap/expired_pending`` with its body cleared and ``settled_at = now``. The rows
-       are chosen by a ``FOR UPDATE SKIP LOCKED`` subquery, the same shape as the
-       drain's claim step 1: a drain may hold a row's lock across a model call, and a
-       row it holds is skipped, never waited on. The next claim or the next sweep
-       ages it if that drain rolls back.
+       are chosen by a ``FOR UPDATE SKIP LOCKED`` subquery: a row another transaction
+       holds is skipped, never waited on, and the next sweep ages it if that
+       transaction rolls back. A later drain job will hold row locks across a model
+       call and age rows with the same subquery when it claims them.
     2. Every ``settled`` or ``gap`` row whose ``settled_at`` is older than
        ``settled_before`` is deleted. The caller passes
        ``now - runtime.transcript_retention_days``.
