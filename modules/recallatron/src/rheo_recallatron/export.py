@@ -610,6 +610,7 @@ def _validate_histories(parsed: _Parsed) -> None:
             "memory_item": {"current", "superseded", "conflicted"},
             "graph_entity": {"current", "superseded"},
             "graph_event": {"event"},
+            "profile_item": {"summary"},
         }
         if row["status"] not in allowed[row["kind"]]:
             raise ArtifactRowInvalid("history kind and status disagree")

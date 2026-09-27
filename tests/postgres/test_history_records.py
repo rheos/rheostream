@@ -230,6 +230,42 @@ def test_history_import_replay_does_not_duplicate_or_resurrect(
     assert (third.inserted, third.identical, third.erased) == (0, 0, 1)
 
 
+def test_synthesized_profile_is_searchable_history_only(
+    history_workspace: tuple,
+) -> None:
+    owner, _member, operations, database_name, engine = history_workspace
+    at = datetime.now(UTC)
+    unit = HistoryExtractUnit(
+        external_source_key="profile.synth:item:1",
+        source_reference="profile.synth.json:item:1",
+        kind="profile_item",
+        status="summary",
+        title="Synthesized profile item",
+        body="A synthetic summary of the cedar garden project.",
+        occurred_at=at,
+        source_category="work",
+    )
+    extract = parse_history_extract(
+        dump_history_extract([unit], source_sha256="a" * 64, unresolved_count=0)
+    )
+    with UnitOfWork(engine, database_name) as uow:
+        report = import_history(uow.connection, extract, imported_at=at)
+        uow.commit()
+    assert report.inserted == 1
+    result = dispatch(
+        owner,
+        HISTORY_SEARCH,
+        {"query": "cedar"},
+        registry=operations,
+        consumers=ConsumerRegistry(),
+    )
+    assert result.ok and isinstance(result.result, HistorySearchResult)
+    assert len(result.result.items) == 1
+    assert result.result.items[0].kind == "profile_item"
+    with UnitOfWork(engine, database_name) as uow:
+        assert uow.connection.execute(select(memory)).all() == []
+
+
 def test_history_import_obscures_supersession_source_identity(
     history_workspace: tuple,
 ) -> None:

@@ -73,8 +73,7 @@ function HistoryResults({ history }: { history: HistoryState }) {
     <section aria-label="Historical records" className={styles.section}>
       <h2 className={styles.subheading}>Historical records</h2>
       <p className={styles.historyNote}>
-        Conversation turns and procedural notes are source evidence. An unconfirmed note is not an
-        accepted memory.
+        A historical record is source evidence, not an accepted memory.
       </p>
       {history.state === "results" ? (
         <ol className={styles.results}>
@@ -84,7 +83,7 @@ function HistoryResults({ history }: { history: HistoryState }) {
                 {row.title}
               </a>
               <span className={styles.meta}>
-                {row.kind} · {row.status} · <time dateTime={row.dateTime}>{row.when}</time>
+                {row.kind.replaceAll("_", " ")} · {row.status} · <time dateTime={row.dateTime}>{row.when}</time>
               </span>
               <p className={styles.excerpt}>{row.excerpt}</p>
             </li>

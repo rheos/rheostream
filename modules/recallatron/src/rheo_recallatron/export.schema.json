@@ -271,7 +271,7 @@
           "source_namespace": { "type": "string", "minLength": 1 },
           "external_source_key": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
           "source_reference": { "$ref": "#/$defs/nullableText" },
-          "kind": { "enum": ["conversation", "procedural_note", "session_digest", "memory_item", "graph_entity", "graph_event"] },
+          "kind": { "enum": ["conversation", "procedural_note", "session_digest", "memory_item", "graph_entity", "graph_event", "profile_item"] },
           "status": { "enum": ["turn", "unconfirmed", "confirmed", "superseded", "current", "conflicted", "summary", "event"] },
           "title": { "type": "string" },
           "body": { "type": "string" },

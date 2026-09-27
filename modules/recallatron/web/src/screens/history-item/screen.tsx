@@ -54,7 +54,7 @@ export function HistoryItemView({ state }: { state: HistoryItemState }) {
       </p>
       <dl className={styles.facts}>
         <dt>Kind</dt>
-        <dd>{item.kind}</dd>
+        <dd>{item.kind.replaceAll("_", " ")}</dd>
         <dt>Occurred</dt>
         <dd>
           <time dateTime={item.occurred_at}>{formatUtc(item.occurred_at)}</time>

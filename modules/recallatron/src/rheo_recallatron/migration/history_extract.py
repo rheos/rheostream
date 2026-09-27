@@ -55,6 +55,7 @@ class HistoryExtractUnit(_Frozen):
         "memory_item",
         "graph_entity",
         "graph_event",
+        "profile_item",
     ]
     status: Literal[
         "turn",
@@ -102,6 +103,7 @@ class HistoryExtractUnit(_Frozen):
             "memory_item": {"current", "superseded", "conflicted"},
             "graph_entity": {"current", "superseded"},
             "graph_event": {"event"},
+            "profile_item": {"summary"},
         }
         if self.status not in allowed[self.kind]:
             raise ValueError("history kind and status disagree")

@@ -45,10 +45,20 @@ def test_round_trip_preserves_history_metadata() -> None:
             occurred_at=AT,
             source_category="relate",
         ),
+        HistoryExtractUnit(
+            external_source_key="profile.synth:item:1",
+            source_reference="profile.synth.json:item:1",
+            kind="profile_item",
+            status="summary",
+            title="Synthesized profile item",
+            body="A synthetic summary of a project.",
+            occurred_at=AT,
+            source_category="work",
+        ),
     ]
     lines = dump_history_extract(units, source_sha256=CHECKSUM, unresolved_count=0)
     parsed = parse_history_extract(lines)
-    assert parsed.header.unit_count == 3
+    assert parsed.header.unit_count == 4
     assert parsed.units == tuple(units)
 
 

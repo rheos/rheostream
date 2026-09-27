@@ -468,6 +468,7 @@ HISTORY_KINDS: Final = (
     "memory_item",
     "graph_entity",
     "graph_event",
+    "profile_item",
 )
 HISTORY_STATUSES: Final = (
     "turn",
