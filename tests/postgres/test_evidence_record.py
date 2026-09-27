@@ -34,7 +34,8 @@ from harness.evidence import (
     enable_recording,
     probe_registry,
 )
-from rheo_contracts import Actor, ActorKind, ContextPurpose, WorkspaceContext
+from rheo_contracts import ActorKind, ContextPurpose, WorkspaceContext
+from rheo_core.boundary.factories import context_from_token
 from rheo_core.events import ConsumerRegistry
 from rheo_core.evidence import EVIDENCE_RECORDED, providers
 from rheo_core.evidence.record import (
@@ -46,6 +47,7 @@ from rheo_core.evidence.record import (
     recording_allowed,
 )
 from rheo_core.operations import SETTINGS_SET, dispatch, register_core_operations
+from rheo_core.operations.core_ops import TOKEN_ISSUE, WORKSPACE_STATUS
 from rheo_core.refs import uuid7
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -264,15 +266,40 @@ def test_no_consumer_registry_refuses_without_failing(
 # --- conditions 4 and 5 -----------------------------------------------------------
 
 
+def _token_context(ev: EvidenceWorkspace, kind: str, surface: str) -> WorkspaceContext:
+    """A context resolved from a real issued token, bound to a purpose, so only
+    condition 4 can refuse it."""
+    issued = dispatch(
+        ev.context(),
+        TOKEN_ISSUE,
+        {"kind": kind, "operations": [WORKSPACE_STATUS], "purpose": "respond"},
+    )
+    assert issued.ok, issued
+    ctx = context_from_token(str(issued.result.value), surface)  # type: ignore[union-attr]
+    assert isinstance(ctx, WorkspaceContext), ctx
+    assert ctx.actor.kind is ActorKind.TOKEN
+    assert ctx.principal.bound_purpose is ContextPurpose.RESPOND
+    return ctx
+
+
 @pytest.mark.parametrize(
-    ("token_kind", "expected"), [("mcp", False), ("runtime", False), ("cli", True)]
+    ("kind", "surface", "token_kind", "expected"),
+    [
+        ("mcp", "mcp", "mcp", False),
+        # No operation issues a runtime token; the predicate reads the kind the
+        # caller passes, so the mcp-token context stands in for the actor.
+        ("mcp", "mcp", "runtime", False),
+        ("cli", "api", "cli", True),
+    ],
 )
 def test_a_token_actor_records_only_for_a_person_held_token(
-    recording: EvidenceWorkspace, token_kind: str, expected: bool
+    recording: EvidenceWorkspace,
+    kind: str,
+    surface: str,
+    token_kind: str,
+    expected: bool,
 ) -> None:
-    ctx = recording.context().model_copy(
-        update={"actor": Actor(kind=ActorKind.TOKEN, id=uuid7())}
-    )
+    ctx = _token_context(recording, kind, surface)
     assert _record_if_allowed(recording, ctx=ctx, token_kind=token_kind) is expected
     assert len(_units(recording)) == (1 if expected else 0)
 
