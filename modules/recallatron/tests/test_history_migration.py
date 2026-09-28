@@ -12,7 +12,7 @@ from sqlalchemy.schema import CreateColumn, CreateIndex
 
 _REVISION = (
     Path(__file__).resolve().parents[1]
-    / "modules/recallatron/src/rheo_recallatron/migrations/versions"
+    / "src/rheo_recallatron/migrations/versions"
     / "0004_history_records.py"
 )
 
