@@ -1833,6 +1833,28 @@ The following changes are recorded here.
     were. The reference deployment keeps `recallatron.rheo.stream` as a permanent
     redirect to the same path on `recall.`, for old and external links only; it is not
     an application host, and nothing the application generates points at it.
+16. **Migration preserves records; legacy search rankings are not the oracle.**
+    Directed by the maintainer on 2026-09-28, recorded against issue #193. The
+    predecessor was not a well-tested retrieval benchmark. FR 53 and criterion 32
+    therefore replace old/new result agreement with count/identity accounting,
+    valid destinations under the approved mapping, preserved source identity,
+    original clocks, lifecycle/status and available provenance, replay without
+    duplicates or erasure resurrection, and representative independently expected
+    search/access spot checks. Historical evidence remains distinct from curated
+    memory. Legacy overlap and ranking agreement are optional diagnostics, not
+    cutover gates; forward-looking ranker improvements can ship independently.
+    Entry 10's valid-destination and explicit data-loss decision remains intact:
+    this does not authorize unmapped records, lossy conversions or silent omissions.
+    Privacy and exact-artifact approval, ambient producer/drain proof, backup,
+    rollback and deliberate freeze/import/client/writer cutover remain separate
+    requirements and authorizations. The release-one transfer is a bounded one-time
+    operational job, not a requirement to build the previously proposed generic
+    migration batch, core verification table or import/switchover API. Its exact
+    tested implementation and private checksums/accounting/rollback evidence must
+    remain available after its execution path is retired. Verification reports stay
+    in private storage and out of public repositories, messages and logs. This
+    decision is not a transfer pass or permission to perform live actions. See
+    [migration verification](../architecture/deletion-export-migration.md#migration-verification-fr-53).
 
 ### Preferred but still to validate
 

@@ -198,21 +198,38 @@ categories plus one per exportable module), read through the same snapshot an ex
 
 ## Migration verification (FR 53)
 
-The predecessor memory store's migration in phase two, and any later predecessor migration, is
-verified before switchover and the result kept where the data lives. None of this section is
-built yet: the table, the switchover operation and the CI check below arrive with run 1b.
+Predecessor migrations are verified before switchover and the result is kept where
+the data lives. The maintainer's 2026-09-28 amendment replaces the previously
+proposed old/new retrieval-match tolerance, including its 0.05 default, with the
+independent preservation and usability checks in FR 53 and criterion 32. The
+generic `core.migration_verification` table and module switchover API proposed
+here were not built; they are not prerequisites for the one-time release-one
+transfer. See [decision-ledger entry 16](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).
 
-| `core.migration_verification` column | Meaning |
-| --- | --- |
-| `id`, `source_name text`, `module_id`, `run_at`, `run_by_id` | `source_name` is a label chosen by the operator; the public repository never carries a real source's name. |
-| `source_count integer`, `destination_count integer`, `missing_count integer` | Every source record must have a destination record. |
-| `sample_size integer`, `sample_matched integer`, `tolerance_fraction numeric`, `passed boolean` | A sampled set of retrieval queries compared under the old and new retrieval layers; `passed` when `sample_matched / sample_size >= 1 - tolerance_fraction`. Default tolerance 0.05, recorded on the row. |
-| `report_file_ref null` | An optional fuller report under the workspace's private files. |
+Its private, checksum-bound verification record must identify:
 
-The migration job writes the row and stops. Switchover (pointing the workspace's memory module at
-the migrated records as its live set) is `recallatron.migration.switch_over`, a separate mutate
-operation a person invokes after reading the verification (criterion 32). A CI check asserts no
-file matching a migration-report pattern is tracked in the repository.
+- the exact source snapshot and approved mapping/extract artifacts, target
+  workspace and tested importer version;
+- source-to-destination counts and identity accounting by source class, valid
+  destinations and explicit loss/omission decisions; an unexplained missing
+  record is not a pass;
+- preservation of original timestamps, lifecycle/status, available provenance
+  and intended searchability/access, with historical evidence distinguished from
+  curated memory;
+- repeated-import and erasure/no-resurrection proof, and representative search
+  spot checks with expected records identified independently of legacy rankings;
+- backup/restore, producer/drain/one-writer evidence, rollback and the separately
+  authorized final cutover boundary.
+
+Preparation or synthetic checks alone do not prove final data transfer. The
+one-time job must not switch clients or writers automatically. The maintainer
+reviews the exact private artifacts and verification before separately authorizing
+live actions; unsupported/lossy mappings retain their own decision gate. Reports,
+source artifacts and source identifiers must not be published in repositories,
+messages, logs or unrelated external services. Authorized owner-only destination
+storage is not public disclosure. Keep the exact tested importer and private
+verification and rollback records after its execution path is retired. Repository isolation checks
+guard migration-output paths; they do not approve arbitrary report contents.
 
 ## Disaster recovery for release one
 

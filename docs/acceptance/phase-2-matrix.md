@@ -8,8 +8,9 @@ claims a criterion is demonstrated merely because a row exists.
 
 **Ten rows, not fourteen.** Phase two's criteria run 24 to 37, and criteria 32, 34, 35 and
 37 have no row. Retrieval-strategy selection (31) was run 1a2's and its row was added at
-that run's close-out. The predecessor migration (32) is run 1b's, which has not run, so no
-evidence for it exists yet. The naming gate, fixture-provenance gate and re-asserted CI
+that run's close-out. The predecessor migration (32) is run 1b's: its code-only preparation
+has shipped, but final data transfer and criterion-32 acceptance evidence are outstanding.
+The naming gate, fixture-provenance gate and re-asserted CI
 gates (34, 35, 37) are run 1a3's. That run built the ported interface surface they name,
 and their gates run in continuous integration over it: the `repository-checks` job's
 legacy-name and fixture-provenance steps, and the `web` job's criterion-22 routing-literal
@@ -23,6 +24,17 @@ needs a maintainer's go-ahead before anyone edits a gate script. The rows are tr
 #120. Do not add a row for one of those on the strength of a test that happens to pass; the
 guard's per-file completeness check is what keeps the set exact, and widening the set is a
 decision, not a fix.
+
+**Migration acceptance does not compare legacy rankings.** The maintainer's
+2026-09-28 amendment to FR 53 and criterion 32 requires count/identity accounting,
+valid destinations, replay/no-resurrection, preserved source semantics and
+independently expected search/access spot checks. Historical evidence is not
+silently promoted to curated memory. The old retrieval-overlap tolerance is not
+the oracle, and independent ranking improvements are not a migration prerequisite.
+This clarification adds no criterion-32 row and claims no completed transfer,
+mutation demonstration or real-data acceptance pass. Source preservation/loss,
+privacy, ambient producer/drain, backup/rollback and deliberate cutover gates
+remain; see [decision-ledger entry 16](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).
 
 **No row is `partial` any more.** Criterion 24 was seeded `partial` because its interface
 half belonged to run 1a3; that run shipped the interface contributions and promoted the row,
@@ -503,7 +515,7 @@ first dense pass (Prompt 6) reported no red among the other measured sites, and 
 
 ### Criterion 33
 
-**Text:** "Every phase-one path completes correctly in a workspace where the memory module was never installed and never enabled, verified by running the phase-one acceptance suite in such a workspace. Workspace-level disable is phase-seven work under D5, so release one proves the module boundary by absence rather than by disable." (`build-plan.md:333-338`)
+**Text:** "Every phase-one path completes correctly in a workspace where the memory module was never installed and never enabled, verified by running the phase-one acceptance suite in such a workspace. Workspace-level disable is phase-seven work under D5, so release one proves the module boundary by absence rather than by disable." (`build-plan.md:338-343`)
 
 **State:** complete
 
@@ -559,7 +571,7 @@ runs agreed" from quietly meaning "both runs ran nothing".
 
 ### Criterion 36
 
-**Text:** "Criterion 21 is re-asserted at the end of this phase against a workspace that has the memory module installed, enabled, and populated. The export carries the module's records through the export format its manifest declares (criterion 25), and after a restore into an empty deployment the restored workspace's composition, configuration versions, module schema versions, and memory records match the original by comparison." (`build-plan.md:353-358`)
+**Text:** "Criterion 21 is re-asserted at the end of this phase against a workspace that has the memory module installed, enabled, and populated. The export carries the module's records through the export format its manifest declares (criterion 25), and after a restore into an empty deployment the restored workspace's composition, configuration versions, module schema versions, and memory records match the original by comparison." (`build-plan.md:358-363`)
 
 **State:** complete
 
