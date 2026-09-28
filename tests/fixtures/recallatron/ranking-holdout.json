@@ -1,0 +1,18 @@
+{
+  "origin": "synthetic",
+  "description": "Independent holdout authored before inspecting its rankings: direct answers versus nearby non-answers, with both creation orders, a paraphrase and an unrelated no-answer question.",
+  "records": [
+    {"id": "locker", "title": "Access note", "body": "The bicycle locker access card is kept in the yellow envelope inside the desk drawer."},
+    {"id": "studio", "title": "Access note", "body": "The art studio access card is on the coat hook. It does not unlock the bicycle locker."},
+    {"id": "chemicals", "title": "Storage note", "body": "Store cleaning chemicals in the locked cupboard. This cupboard must not be used for the ceramic kiln gloves."},
+    {"id": "gloves", "title": "Storage note", "body": "The ceramic kiln gloves are stored in the orange basket beside the kiln."},
+    {"id": "watering", "title": "Plant care", "body": "Water the orchid pots every Saturday morning. Empty the saucers after watering."},
+    {"id": "cactus", "title": "Plant care", "body": "Water the cactus pots on the first day of each month. Do not follow this timetable for the orchids."}
+  ],
+  "cases": [
+    {"id": "locker-location", "query": "Where is the bicycle locker access card?", "relevant": ["locker"]},
+    {"id": "glove-location", "query": "Where are the ceramic kiln gloves stored?", "relevant": ["gloves"]},
+    {"id": "watering-paraphrase", "query": "Which day should I give the orchids a drink?", "relevant": ["watering"]},
+    {"id": "unrelated", "query": "galactic supernova remnant expansion", "relevant": []}
+  ]
+}

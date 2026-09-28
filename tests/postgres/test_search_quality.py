@@ -50,6 +50,11 @@ _CORPUS = json.loads(
 )
 _RECORDS = _CORPUS["records"]
 _CASES = _CORPUS["cases"]
+_HOLDOUT = json.loads(
+    (
+        Path(__file__).parents[1] / "fixtures/recallatron/ranking-holdout.json"
+    ).read_text()
+)
 _PASSES = [
     pytest.param(strategy, case, id=f"{strategy}-{case['id']}")
     for case in _CASES
@@ -145,6 +150,55 @@ def curated_corpus(search_workspace: SearchWorkspace) -> dict[str, str]:
         assert result.ok and isinstance(result.result, MemoryWritten), result
         refs[result.result.ref] = record["id"]
     return refs
+
+
+@pytest.fixture
+def holdout_corpus(search_workspace: SearchWorkspace) -> dict[str, str]:
+    refs = {}
+    for record in _HOLDOUT["records"]:
+        result = search_workspace.call(
+            MEMORY_REMEMBER,
+            {
+                "kind": "note",
+                "title": record["title"],
+                "body": record["body"],
+                "purposes": ["respond"],
+            },
+        )
+        assert result.ok and isinstance(result.result, MemoryWritten), result
+        refs[result.result.ref] = record["id"]
+    return refs
+
+
+@pytest.mark.parametrize("strategy", ["dense", "hybrid"])
+@pytest.mark.parametrize("k", [1, 3])
+@pytest.mark.parametrize("case", _HOLDOUT["cases"], ids=lambda case: case["id"])
+def test_independent_ranking_holdout(
+    search_workspace: SearchWorkspace,
+    holdout_corpus: dict[str, str],
+    local_provider: LocalEmbeddingProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    strategy: str,
+    k: int,
+    case: dict,
+) -> None:
+    monkeypatch.setattr(embedding_registry, "configured_provider_name", lambda: "local")
+    monkeypatch.setitem(embedding_registry.providers(), "local", local_provider)
+    _select_strategy(search_workspace, strategy)
+    with UnitOfWork(search_workspace.engine, search_workspace.database) as uow:
+        fill_missing_embeddings(uow, provider=local_provider, batch_size=32)
+        uow.commit()
+    outcome = search_workspace.call(MEMORY_RECALL, {"query": case["query"], "k": k})
+    assert outcome.ok and isinstance(outcome.result, RecallResult), outcome
+    assert outcome.result.provenance.dense_available
+    ranked = [holdout_corpus[item.ref] for item in outcome.result.items]
+    measured = score(ranked, set(case["relevant"]), k=k)
+    print(f"holdout {case['id']} / {strategy} / k={k}: {ranked}; {measured}")
+    if case["relevant"]:
+        assert measured.reciprocal_rank == 1.0, (case["id"], ranked, measured)
+        assert measured.recall_at_k == 1.0
+    else:
+        assert ranked == []
 
 
 @pytest.mark.parametrize(("strategy", "case"), _PASSES)
