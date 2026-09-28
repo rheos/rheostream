@@ -106,6 +106,47 @@ describe("response guards", () => {
     expect(isRecallResult({ ...result, items })).toBe(false);
   });
 
+  it("accept additive relevance metadata and pre-amendment payloads", () => {
+    const result = fixture("recall-populated.json") as {
+      items: Record<string, unknown>[];
+      provenance: Record<string, unknown>;
+    };
+    expect(isRecallResult({
+      ...result,
+      items: result.items.map((item) => ({ ...item, rerank_score: -2.5 })),
+      provenance: { ...result.provenance, reranker: "local-model@synthetic-revision" },
+    })).toBe(true);
+    const provenance = { ...result.provenance };
+    delete provenance.reranker;
+    delete provenance.rerank_degraded;
+    expect(isRecallResult({
+      ...result, provenance,
+      items: result.items.map((item) => without(item, "rerank_score")),
+    })).toBe(true);
+    expect(isRecallResult({
+      ...result,
+      provenance: { ...result.provenance, rerank_degraded: true },
+    })).toBe(true);
+  });
+
+  it("reject malformed relevance scores and provenance", () => {
+    const result = fixture("recall-populated.json") as {
+      items: Record<string, unknown>[];
+      provenance: Record<string, unknown>;
+    };
+    for (const score of ["high", NaN, Infinity]) {
+      expect(isRecallResult({
+        ...result,
+        items: result.items.map((item) => ({ ...item, rerank_score: score })),
+      })).toBe(false);
+    }
+    for (const fields of [{ reranker: 7 }, { rerank_degraded: "yes" }]) {
+      expect(isRecallResult({
+        ...result, provenance: { ...result.provenance, ...fields },
+      })).toBe(false);
+    }
+  });
+
   it("refuse non-objects", () => {
     for (const value of [null, undefined, 1, "text", []]) {
       expect(isEntityList(value)).toBe(false);

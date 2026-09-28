@@ -104,6 +104,7 @@ from rheo_recallatron.operations import (
     RecallResult,
 )
 from rheo_recallatron.resolvers import resolve_memory
+from rheo_recallatron.retrieval import rerank
 from rheo_recallatron.retrieval.dense import (
     NO_EMBEDDINGS,
     NO_PROVIDER,
@@ -580,6 +581,7 @@ def test_dense_recall_finds_a_memory_that_shares_no_term_with_its_query(
         strategy=STRATEGY_DENSE,
         arms=ArmCounts(lexical=0, dense=1),
         dense_available=True,
+        reranker=f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}",
     )
 
 
@@ -1019,6 +1021,7 @@ def test_dense_recall_of_apples_returns_the_nearest_rows_apples_then_pears(
         strategy=STRATEGY_DENSE,
         arms=ArmCounts(lexical=0, dense=2),
         dense_available=True,
+        reranker=f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}",
     )
 
 
@@ -1481,6 +1484,37 @@ def test_hybrid_with_no_usable_dense_arm_answers_the_lexical_rows_in_order(
         assert record.error_class != ValueError.__name__
         assert record.provider_model_id == FAKE_MODEL_ID
         assert record.provider_dimensions == EMBEDDING_DIMENSIONS
+
+
+def test_degraded_hybrid_does_not_widen_admission_for_a_relevance_window(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_ordered(retrieval, *_AC6_ROWS)
+    _select(monkeypatch, "none")
+    admitted = []
+
+    def admit(memory_id):
+        admitted.append(memory_id)
+        return True
+
+    with retrieval.reading() as uow:
+        ctx = retrieval.context()
+        result = HybridStrategy().search(
+            ctx,
+            uow,
+            SearchRequest(
+                query="apples",
+                mode=ReadMode.CURRENT,
+                memory=_request(ctx, uow),
+                limit=CANDIDATE_SCAN_LIMIT,
+                k=1,
+                candidate_k=50,
+                admit=admit,
+            ),
+        )
+    assert not result.dense_available
+    assert len(admitted) == 1
+    assert len(result.hits) == 1
 
 
 def test_hybrid_over_partial_coverage_reports_the_dense_arm_available(

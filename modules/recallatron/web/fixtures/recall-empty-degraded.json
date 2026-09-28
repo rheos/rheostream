@@ -6,6 +6,8 @@
       "lexical": 0,
       "dense": 0
     },
-    "dense_available": false
+    "dense_available": false,
+    "reranker": null,
+    "rerank_degraded": false
   }
 }

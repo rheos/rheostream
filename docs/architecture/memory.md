@@ -150,6 +150,15 @@ an identity it merely claimed.
 
 ## Retrieval (FR 27, FR 30, criteria 27 and 31)
 
+**Local semantic ordering amendment:** the first-stage mechanics below remain in
+force, but healthy curated `dense`/`hybrid` reads using the local provider now walk
+a three-times-k admitted window capped at 50, then apply on-box query/document relevance
+before returning k. Hybrid proves that top-window instead of only top-k. Full source
+eligibility and the same shared reference budget precede model input. The
+[relevance contract](recall-relevance-ranking.md) specifies the immutable model,
+separate `rerank_score` / `provenance.reranker`, explicit degraded fallback and
+resource/truncation limitations. Lexical-only and owner-only history are unchanged.
+
 `recallatron.memory.recall(query, k, include_invalidated, purpose)`, read class, roles `owner`,
 `member`, `service`. Two stages: the workspace's configured `RetrievalStrategy.search` ranks,
 and the operation's own handler then decides what may be returned. Which strategy ranks is the

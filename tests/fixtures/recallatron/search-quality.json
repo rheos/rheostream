@@ -1,0 +1,29 @@
+{
+  "origin": "synthetic",
+  "description": "Invented workshop and garden records; questions and relevance labels authored from the stated facts, before running retrieval. No predecessor results or private data.",
+  "records": [
+    {"id": "pump", "title": "Water system maintenance", "body": "Before servicing the greenhouse irrigation pump, shut the blue isolation valve. Wait until the pressure gauge reads zero."},
+    {"id": "fertilizer", "title": "Seedling care", "body": "Feed the greenhouse tomato seedlings with diluted fertilizer once a week. Avoid wetting their leaves."},
+    {"id": "lighting", "title": "Electrical safety", "body": "Before replacing greenhouse lamps, switch off the lighting circuit breaker. The water supply can stay on."},
+    {"id": "payment", "title": "Billing instructions", "body": "Payments for supplier invoices use account code FINCH47. Add the invoice number as the bank transfer reference."},
+    {"id": "filing", "title": "Document storage", "body": "Archive supplier invoices in the green cabinet after matching them with delivery slips. Keep the paper copies for auditing."},
+    {"id": "contact", "title": "Workshop coordination", "body": "For workshop schedule changes, email Mira Vale at mira.vale@example.test. She cannot take daytime telephone calls."},
+    {"id": "delivery", "title": "Delivery routing", "body": "Send workshop deliveries to the south gate. Ask the driver to ring the bell on arrival."},
+    {"id": "shed-key", "title": "Tool access", "body": "The potting shed key is in the red tin beside the seed trays. Return it there after borrowing the tools."},
+    {"id": "house-key", "title": "House access", "body": "The spare front door key is in the blue tin on the kitchen shelf. It does not open the potting shed."},
+    {"id": "compost", "title": "Waste sorting", "body": "Keep diseased tomato leaves out of the compost. Bag them for collection so the infection does not spread."}
+  ],
+  "cases": [
+    {"id": "pump-question", "query": "Which valve do I shut before servicing the greenhouse pump?", "relevant": ["pump"], "strategies": ["lexical", "dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "pump-paraphrase", "query": "How do I stop water flowing before fixing the irrigation equipment?", "relevant": ["pump"], "strategies": ["dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "contact-question", "query": "How should I tell Mira about a change to the workshop schedule?", "relevant": ["contact"], "strategies": ["lexical", "dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "shed-key-question", "query": "Where is the key for the potting shed kept?", "relevant": ["shed-key"], "strategies": ["lexical", "dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "invoice-transfer", "query": "What reference should accompany a supplier invoice payment?", "relevant": ["payment"], "strategies": ["lexical", "dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "exact-account", "query": "FINCH47", "relevant": ["payment"], "strategies": ["lexical", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "exact-contact", "query": "mira.vale@example.test", "relevant": ["contact"], "strategies": ["lexical", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "ambiguous-invoices", "query": "supplier invoices", "relevant": ["payment", "filing"], "strategies": ["lexical", "dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "compost-paraphrase", "query": "How should I dispose of infected tomato foliage?", "relevant": ["compost"], "strategies": ["dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": 1},
+    {"id": "no-answer-astronomy", "query": "neutron star gravitational collapse", "relevant": [], "strategies": ["lexical", "dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": null},
+    {"id": "no-answer-maritime", "query": "submarine ballast inspection interval", "relevant": [], "strategies": ["lexical", "dense", "hybrid"], "cutoff": 3, "first_relevant_rank_max": null}
+  ]
+}
