@@ -325,11 +325,16 @@ until a separately ratified append-only criterion amendment says otherwise.
     behavioural suite against both a dense-only and a lexical-only configuration, both passing.
     *(Scenario: Runtime choice, applied to retrieval rather than to a model runtime; FR 30.)*
 32. The migration from the predecessor's memory store is verified before switchover by a
-    count-and-sample comparison: every source record has a destination record, and a sampled set
-    of retrieval queries returns the same records under the new retrieval layer as under the old
-    one, within a documented tolerance. The comparison result is written to private workspace
-    storage next to the migrated data, and a check asserts no migration report is tracked in this
-    repository. *(Scenario: Export and restore; FR 53, D9.)*
+    count, identity and sample check: every source record has a valid destination under the
+    approved mapping; original identity, timestamps, lifecycle/status and available provenance
+    are retained; a second import creates no duplicates and does not resurrect erased content;
+    and representative independently expected records can be found and inspected through the
+    intended search surface with its access restrictions intact. Historical evidence remains
+    distinguishable from curated memory. Legacy result overlap or ranking agreement is not
+    required. The verification result is written to private workspace storage next to the
+    migrated data, and a check asserts no migration report is tracked in this repository.
+    *(Scenario: Export and restore; FR 53, D9. Amended 2026-09-28 — see decision-ledger entry 16
+    in the [idea document](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).)*
 33. Every phase-one path completes correctly in a workspace where the memory module was never
     installed and never enabled, verified by running the phase-one acceptance suite in such a
     workspace. Workspace-level disable is phase-seven work under D5, so release one proves the

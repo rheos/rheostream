@@ -560,10 +560,16 @@ These three are appended after FR 50 so that the numbering above stays stable.
   the workspace rather than needing core knowledge of that module. A restored pending approved
   action requires a fresh approval before it can execute.
 - **FR 53.** Migrating a predecessor data store into a rheoStream module is verified before
-  switchover: every source record has a destination record, and a sampled set of retrieval
-  queries returns the same records under the new implementation as under the old one, within a
-  documented tolerance. The verification result is recorded where the migrated data lives, in
-  private workspace storage, and never in the public repository.
+  switchover: every source record has a valid destination record under the approved mapping,
+  with source identity, original timestamps, lifecycle/status and available provenance
+  retained. Count and identity accounting detect missing records; repeated import does not
+  create duplicates or resurrect erased content. Representative spot checks establish that
+  records intended to be searchable can be found and inspected with the intended access
+  restrictions. Expected records are identified independently of the predecessor's retrieval
+  output; matching its rankings or top-k results is not required. The verification result is
+  recorded where the migrated data lives, in private workspace storage, and never in the
+  public repository. *(Amended 2026-09-28 — see decision-ledger entry 16 in the
+  [idea document](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).)*
 
 ## Release-one scope boundary
 
