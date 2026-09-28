@@ -8,11 +8,29 @@ Submodules, each imported by its own path:
 - :mod:`~rheo_core.evidence.providers`: the extraction provider seam and its registry.
 - :mod:`~rheo_core.evidence.record`: the ingest path, its recording gate, and the
   recorded event.
+- :mod:`~rheo_core.evidence.service`: the eligible-evidence service, claim and settle.
 
-``__all__`` is the locked public surface Recallatron may reach. It grows only as the
-eligible-evidence service lands; today it is the recorded event's type alone.
+``__all__`` is the locked public surface Recallatron may reach, exactly these seven
+names. Nothing else joins it: not the authority, not the workspace resolution, not a
+table or a query helper.
 """
 
 from rheo_core.evidence.record import EVIDENCE_RECORDED
+from rheo_core.evidence.service import (
+    ClaimedBatch,
+    ClaimedUnit,
+    EvidenceAuditUnwritable,
+    EvidenceClaimInconsistent,
+    claim_units,
+    settle_unit,
+)
 
-__all__: list[str] = ["EVIDENCE_RECORDED"]
+__all__: list[str] = [
+    "EVIDENCE_RECORDED",
+    "ClaimedBatch",
+    "ClaimedUnit",
+    "EvidenceAuditUnwritable",
+    "EvidenceClaimInconsistent",
+    "claim_units",
+    "settle_unit",
+]

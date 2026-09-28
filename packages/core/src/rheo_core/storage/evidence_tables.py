@@ -69,6 +69,16 @@ OUTCOME_OVERSIZE: Final = "oversize"
 """A ``gap`` outcome: the sanitized text alone exceeded the attempt's byte budget."""
 OUTCOME_EXPIRED_PENDING: Final = "expired_pending"
 """A ``gap`` outcome: the row was still ``pending`` after its ``source_expires_at``."""
+OUTCOME_EXTRACTION_FAILED: Final = "extraction_failed"
+"""A ``gap`` outcome: extraction failed on the row's fifth attempt."""
+OUTCOME_AUTHORITY_UNVERIFIED: Final = "authority_unverified"
+"""A ``settled`` outcome: no acceptance context, or the authority pre-check refused."""
+OUTCOME_ACTIVE: Final = "active"
+"""A ``settled`` outcome: the seam created a memory; the one that gets an audit row.
+
+``outcome`` has no CHECK, so these words change nothing 0010 creates. The seam's other
+outcomes (``noop``, ``denied``, ``expired``, ``source_unavailable``) are stored as the
+accepting module passes them."""
 NATIVE_KEY_MAX_LENGTH: Final = 256
 
 evidence_metadata = MetaData(schema=CORE_SCHEMA)

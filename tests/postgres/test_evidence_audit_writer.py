@@ -11,8 +11,10 @@ Seams:
 - with no sink installed for that module id it answers ``False``, raises nothing,
   writes nothing and logs ``audit_row_unwritable`` naming only the label and the
   module id;
-- nothing in ``packages``, ``apps`` or ``modules`` calls it yet. Prompt 10 adds the one
-  real caller, ``rheo_core/evidence/service.py``, and widens :data:`EXPECTED_CALLERS`.
+- in ``packages``, ``apps`` and ``modules`` only ``rheo_core/evidence/service.py``
+  names it, beside its definition in ``dispatch.py``: a call, an import, a bare name or
+  an attribute reference anywhere else is a second caller, so an aliased import or the
+  function passed as a value is caught as surely as a direct call.
 
 The ``_AuditWrite`` refactor this writer rests on is pinned by the existing suite, run
 unedited: ``tests/test_audit_sink.py``, ``tests/postgres/test_audit_dispatch.py`` (whose
@@ -53,9 +55,14 @@ _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 SCAN_ROOTS: Final = ("packages", "apps", "modules")
 """The shipped tree, the same three roots ``tests/test_audit_sink.py`` scans."""
 
-EXPECTED_CALLERS: Final[frozenset[str]] = frozenset()
-"""Files under :data:`SCAN_ROOTS` that call the writer. Empty until Prompt 10, which
-sets it to ``{"packages/core/src/rheo_core/evidence/service.py"}``."""
+EXPECTED_CALLERS: Final[frozenset[str]] = frozenset(
+    {"packages/core/src/rheo_core/evidence/service.py"}
+)
+"""Files under :data:`SCAN_ROOTS` that reference the writer: its one caller,
+``settle_unit``."""
+
+DEFINING_MODULE: Final = "packages/core/src/rheo_core/operations/dispatch.py"
+"""Where the writer is defined; its ``def`` is not a reference."""
 
 WRITER: Final = "record_evidence_acceptance_audit"
 
@@ -191,31 +198,63 @@ def test_no_sink_for_the_module_answers_false_writes_nothing_and_logs(
     assert repr(DIGEST) not in rendered
 
 
-def _callers(path: Path) -> bool:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        if name == WRITER:
+def _references(source: str) -> bool:
+    """Whether ``source`` reaches the writer by any name-shaped route: an import of it
+    (aliased or not), a bare name (a call, or the function passed as a value), or an
+    attribute of that name (``dispatch.record_evidence_acceptance_audit``)."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and any(
+            alias.name == WRITER for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.Name) and node.id == WRITER:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == WRITER:
             return True
     return False
 
 
-def test_nothing_in_the_shipped_tree_calls_the_writer_yet() -> None:
-    """The caller pin (spec R5): the writer is not a general audit door. Prompt 10's
-    ``settle_unit`` is to be its one caller; until then the set is empty."""
+def _referencing_files() -> tuple[set[str], int]:
     callers: set[str] = set()
     parsed = 0
     for root in SCAN_ROOTS:
         for path in sorted((_REPO_ROOT / root).rglob("*.py")):
             parsed += 1
-            if _callers(path):
-                callers.add(path.relative_to(_REPO_ROOT).as_posix())
+            relative = path.relative_to(_REPO_ROOT).as_posix()
+            if relative != DEFINING_MODULE and _references(
+                path.read_text(encoding="utf-8")
+            ):
+                callers.add(relative)
+    return callers, parsed
 
-    # Positive controls: the scan read a real tree, and it does see a call, in this
-    # file's own tests above.
+
+def test_only_the_evidence_service_references_the_writer() -> None:
+    """The caller pin (spec R5): the writer is not a general audit door.
+    ``settle_unit`` is its one caller."""
+    callers, parsed = _referencing_files()
+
+    # Positive controls: the scan read a real tree and sees a call in this file's
+    # own tests above.
     assert parsed > 50, parsed
-    assert _callers(Path(__file__)) is True
+    assert _references(Path(__file__).read_text(encoding="utf-8")) is True
     assert callers == EXPECTED_CALLERS, sorted(callers)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        f"from rheo_core.operations.dispatch import {WRITER} as write\n",
+        f"from rheo_core.operations import dispatch\nhook = dispatch.{WRITER}\n",
+        f"handlers = [{WRITER}]\n",
+        f"{WRITER}(ctx, uow)\n",
+    ],
+    ids=["aliased-import", "attribute-value", "name-value", "direct-call"],
+)
+def test_the_scan_sees_every_route_to_the_writer(source: str) -> None:
+    """Each shape a second caller could take, including ones with no call at the
+    writer's own name."""
+    assert _references(source) is True
+
+
+def test_the_scan_ignores_a_mention_in_a_string_or_comment() -> None:
+    assert _references(f'"""{WRITER}"""\n# {WRITER}\nlabel = "{WRITER}"\n') is False
