@@ -10,7 +10,11 @@ Seams under test:
 - **an extraction failure leaves the drain job ``succeeded``**, once, with no error;
   only the row's own ``extraction_attempts`` moves;
 - **an unresolved workspace is a job retry**: the drain raises, retries under
-  ``DRAIN_MAX_ATTEMPTS`` and fails terminally, and never touches an evidence row.
+  ``DRAIN_MAX_ATTEMPTS`` and fails terminally, and never touches an evidence row;
+- **an unknown mention kind is dropped before acceptance (#215)**, so a model's
+  ``company`` never reaches the entity CHECK, and the memory keeps the valid mention;
+- **a database error leaves the drain content-free (#215)**: what escapes is the
+  class name and SQLSTATE, never the row or the parameters it quoted.
 
 Two tests run the whole chain on purpose. One pins where the drain is published and
 consumed (#187): a job that records evidence, the delivery the same visit drains, and
@@ -22,6 +26,7 @@ kind the manifest stops declaring fails here as unknown. Every text is synthetic
 """
 
 import importlib
+import logging
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -72,7 +77,12 @@ from rheo_core.work.jobs import enqueue_job
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import VisitResult, visit_workspace
 from rheo_recallatron import automatic
-from rheo_recallatron.automatic import DrainJobPayload, on_evidence_recorded
+from rheo_recallatron.automatic import (
+    MENTIONS_DROPPED_LOG,
+    DrainDatabaseError,
+    DrainJobPayload,
+    on_evidence_recorded,
+)
 from rheo_recallatron.configuration import (
     AUTOMATIC_CONSUMER_ID,
     DRAIN_JOB_KIND,
@@ -83,6 +93,7 @@ from rheo_recallatron.manifest import MANIFEST
 from rheo_recallatron.storage import tables as memory_tables
 from sqlalchemy import select
 from sqlalchemy.engine import Row
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 
 pytestmark = pytest.mark.postgres
 
@@ -596,3 +607,151 @@ def test_with_the_pipeline_live_a_recording_failure_leaves_the_run_succeeding(
     assert job_row(engine, operation_id)["state"] == "succeeded"
     assert _units(ev) == []
     assert _jobs(ev) == []
+
+
+# --- #215: an unknown mention kind is dropped before acceptance --------------------
+
+
+class _Mentioning:
+    """A provider answering every item with a note proposing two mentions: one of a
+    kind Recallatron has (``place``) and one it does not (``company``)."""
+
+    @property
+    def name(self) -> str:
+        return FAKE_PROVIDER
+
+    def extract(self, batch: DigestBatch) -> dict[str, object]:
+        memory = {
+            "kind": "note",
+            "title": "Spring volunteer meeting",
+            "body": _TURN,
+            "mentions": [
+                {"kind": "company", "name": _UNKNOWN_KIND_NAME},
+                {"kind": "place", "name": "Community Hall"},
+            ],
+        }
+        return {"items": [{"item": i.item_id, "memory": memory} for i in batch.items]}
+
+
+_UNKNOWN_KIND_NAME: Final = "Example Hall Rentals"
+
+
+def test_an_unknown_mention_kind_is_dropped_and_the_memory_keeps_the_valid_one(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    pinned: datetime,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Without the drop, ``company`` fails the ``memory_entity_kind`` CHECK. The
+    receipt and the success audit both carry the digest of the rebuilt unit, so what
+    was audited is what was accepted."""
+    providers()  # the built-ins first, so the swap is undone onto them
+    monkeypatch.setitem(PROVIDERS, FAKE_PROVIDER, _Mentioning())
+    _record_with_probe(ev, f"{FAKE_EXTRACTION_MARKER} {_TURN}", at=pinned)
+    _enqueue_drain(ev, at=pinned)
+    with caplog.at_level(logging.DEBUG):
+        _visit(ev, at=pinned)
+
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts, drain.last_error) == ("succeeded", 1, None)
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "active")
+    with ev.unit_of_work() as uow:
+        connection = uow.connection
+        [memory] = connection.execute(select(memory_tables.memory)).all()
+        entities = connection.execute(select(memory_tables.memory_entity)).all()
+        mentions = connection.execute(select(memory_tables.memory_mention)).all()
+        [receipt] = connection.execute(select(memory_tables.source_receipt)).all()
+        [audit] = connection.execute(
+            select(work_tables.audit_record).where(
+                work_tables.audit_record.c.operation_name == "core.evidence.accept"
+            )
+        ).all()
+    assert [(e.kind, e.name) for e in entities] == [("place", "Community Hall")]
+    assert [(m.memory_id, m.entity_id) for m in mentions] == [
+        (memory.id, entities[0].id)
+    ]
+    assert bytes(audit.request_digest) == bytes(receipt.payload_digest)
+
+    [dropped] = [r for r in caplog.records if r.getMessage() == MENTIONS_DROPPED_LOG]
+    assert (vars(dropped)["mention_count"], vars(dropped)["unit_count"]) == (1, 1)
+    assert "company" not in caplog.text
+    assert _UNKNOWN_KIND_NAME not in caplog.text
+
+
+# --- #215: a database error leaves the drain content-free --------------------------
+
+
+class _DriverError(Exception):
+    """A driver error with a SQLSTATE and a message quoting the failing row, as
+    psycopg's does."""
+
+    sqlstate = "57P01"
+
+
+def _operational(text_: str) -> DBAPIError:
+    return OperationalError(
+        f"INSERT INTO memory (body) VALUES ('{text_}')",
+        {"body": text_},
+        _DriverError(f"Failing row contains ({text_})"),
+    )
+
+
+def _invalidated_integrity(text_: str) -> DBAPIError:
+    return IntegrityError(
+        f"INSERT INTO memory_entity (name) VALUES ('{text_}')",
+        {"name": text_},
+        _DriverError(f"Failing row contains ({text_})"),
+        connection_invalidated=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("make_error", "error_type", "invalidated"),
+    [
+        (_operational, "OperationalError", False),
+        (_invalidated_integrity, "IntegrityError", True),
+    ],
+    ids=["not_contained", "invalidated_integrity"],
+)
+def test_a_database_error_escaping_the_drain_carries_no_evidence_text(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    pinned: datetime,
+    caplog: pytest.LogCaptureFixture,
+    make_error: Callable[[str], DBAPIError],
+    error_type: str,
+    invalidated: bool,
+) -> None:
+    """An error the per-unit savepoint does not contain (another class, or a dropped
+    connection) still rolls the drain back and retries it, but through the worker it
+    is only its class name and SQLSTATE: not in the raised exception, not in
+    ``last_error``, not in any log line. The unit is left pending and uncounted."""
+    _record_with_probe(ev, f"{FAKE_EXTRACTION_MARKER} {_TURN}", at=pinned)
+
+    def raises(*_args: object, **_kwargs: object) -> Any:
+        raise make_error(_TURN)
+
+    monkeypatch.setattr(automatic, "accept_source_unit", raises)
+    _enqueue_drain(ev, at=pinned)
+    with caplog.at_level(logging.DEBUG):
+        _visit(ev, at=pinned)
+
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 1)
+    assert drain.last_error == f"{error_type} (SQLSTATE 57P01)"
+    [raised] = [
+        record.args[1]
+        for record in caplog.records
+        if record.msg == "job %s raised: %s" and isinstance(record.args, tuple)
+    ]
+    assert isinstance(raised, DrainDatabaseError)
+    assert (raised.error_type, raised.sqlstate) == (error_type, "57P01")
+    assert raised.connection_invalidated is invalidated
+    assert raised.__cause__ is None and raised.__context__ is None
+    for rendered in (str(raised), repr(raised), str(drain.last_error), caplog.text):
+        assert _TURN not in rendered
+        assert "Failing row" not in rendered
+        assert "INSERT" not in rendered
+    [unit] = _units(ev)
+    assert (unit.state, unit.extraction_attempts) == ("pending", 0)
