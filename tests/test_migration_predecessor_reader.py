@@ -273,12 +273,52 @@ def test_uncheckpointed_wal_pages_are_refused(tmp_path: Path) -> None:
         writer.close()
 
 
-def test_an_empty_wal_sidecar_does_not_refuse_a_snapshot(tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", ["-wal", "-journal"])
+def test_an_empty_sidecar_does_not_refuse_a_snapshot(
+    tmp_path: Path, suffix: str
+) -> None:
     snapshot = _snapshot(tmp_path)
-    snapshot.with_name(snapshot.name + "-wal").touch()
+    snapshot.with_name(snapshot.name + suffix).touch()
     with sqlite_source.open_snapshot(snapshot) as connection:
         assert sqlite_source.memory_item_labels(connection) == _MEMORY_LABELS
     connection.close()
+
+
+def test_unfinished_rollback_journal_is_refused(tmp_path: Path) -> None:
+    snapshot, writer = new_snapshot(tmp_path, _DDL)
+    try:
+        writer.execute(
+            "INSERT INTO memory_items (type, label, properties, ts) "
+            "VALUES ('fact', 'Uncommitted synthetic fact', '{}', '2026-01-01')"
+        )
+        journal = snapshot.with_name(snapshot.name + "-journal")
+        assert journal.stat().st_size > 0
+        with pytest.raises(SnapshotRefusal) as excinfo:
+            sqlite_source.open_snapshot(snapshot)
+        assert excinfo.value.state == sqlite_source.SNAPSHOT_UNREADABLE
+        assert "journal" in str(excinfo.value)
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-journal"])
+def test_uninspectable_snapshot_sidecar_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
+) -> None:
+    snapshot = _snapshot(tmp_path)
+    sidecar = snapshot.with_name(snapshot.name + suffix)
+    original_stat = Path.stat
+
+    def guarded_stat(path: Path, **kwargs: object):
+        if path == sidecar:
+            raise PermissionError("synthetic sidecar refusal")
+        return original_stat(path, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+    with pytest.raises(SnapshotRefusal) as excinfo:
+        sqlite_source.open_snapshot(snapshot)
+    assert excinfo.value.state == sqlite_source.SNAPSHOT_UNREADABLE
 
 
 def test_schema_introspection_reads_tables_columns_and_foreign_keys(

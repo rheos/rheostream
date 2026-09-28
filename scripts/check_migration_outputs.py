@@ -169,10 +169,46 @@ def compute_triage_exemptions(
 # --- git plumbing (the only I/O in this script besides main()'s wiring) --------------
 
 
+_GIT_LOCAL_VARIABLES = frozenset(
+    {
+        # Repository-local variables from `git rev-parse --local-env-vars`, plus
+        # namespace/discovery controls. Hooks export these; cwd cannot override them.
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    }
+)
+
+
+def _git_env() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in _GIT_LOCAL_VARIABLES
+        and not name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
+
+
 def _run_git(args: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env=_git_env(),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -193,6 +229,7 @@ def _tracked_text_at_ref(ref: str, cwd: Path = ROOT) -> list[tuple[str, str]]:
         blob = subprocess.run(
             ["git", "show", f"{ref}:{relative}"],
             cwd=cwd,
+            env=_git_env(),
             capture_output=True,
             text=True,
             encoding="utf-8",
