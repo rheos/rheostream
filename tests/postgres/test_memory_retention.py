@@ -75,6 +75,7 @@ from rheo_core.work.schedules import (
 )
 from rheo_recallatron import MANIFEST
 from rheo_recallatron.configuration import (
+    DRAIN_JOB_KIND,
     EMBED_JOB_KIND,
     MEMORY_RECORD_TYPE,
     REBUILD_JOB_KIND,
@@ -522,12 +523,14 @@ def test_the_module_declares_one_schedule_on_its_own_job_kind(
     assert schedule.job_kind == job.name == MEMORY_RETENTION_SWEEP
     assert MEMORY_RETENTION_SWEEP == CATCH_UP_JOB_KIND
     assert schedule.enabled_by_default is True
-    # The sweep is the only kind a schedule enqueues; the other two are enqueued by a
-    # memory write and by the rebuild operation. Exactly these three, no fourth.
+    # The sweep is the only kind a schedule enqueues; the other three are enqueued by
+    # a memory write, by the rebuild operation, and by the automatic-memory consumer
+    # (the drain). Exactly these four, no fifth.
     assert {job.name for job in MANIFEST.jobs} == {
         MEMORY_RETENTION_SWEEP,
         EMBED_JOB_KIND,
         REBUILD_JOB_KIND,
+        DRAIN_JOB_KIND,
     }
     # And it is a *second* schedule, beside the core's, not a replacement for it.
     assert sweep.schedule_row(RETENTION_SWEEP).enabled is True

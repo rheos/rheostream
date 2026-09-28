@@ -15,6 +15,7 @@ _PATH_TOKEN = "modules/recallatron"
 _MATRIX_PARSER = _REPO_ROOT / "tests" / "test_acceptance_matrix.py"
 _ABSENCE_PROOF_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _DECLARED_TEST_DEPENDENCIES = {
+    "tests/postgres/test_automatic_memory_drain.py",
     "tests/postgres/test_history_records.py",
     "tests/postgres/test_memory_browse.py",
     "tests/postgres/test_memory_dedup.py",
@@ -82,7 +83,8 @@ migration package for it to guard, and ``test_migration_predecessor_reader.py``
 (FR 1, FR 18) drives the predecessor reader and the ``recallatron-migrate denylist``
 console script, which live only in this distribution, and ``test_migration_extract.py``
 (FR 1, FR 3) drives the timestamp rule, the extract model and the ``inventory``
-subcommand, which live there too.
+subcommand, which live there too, and ``test_automatic_memory_drain.py`` drives the
+automatic-memory consumer and drain job, which only Recallatron declares.
 
 ``tests/postgres/test_workspace_status.py`` was in this set and is deliberately not any
 more: it carries four phase-one acceptance demonstrators, and being *allowed* to name

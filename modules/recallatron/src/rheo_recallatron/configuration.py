@@ -339,6 +339,15 @@ REBUILD_MAX_ATTEMPTS: Final = 3
 the whole walk: a rebuild that failed three times is a provider or a corpus problem an
 owner has to look at, not a blip."""
 
+DRAIN_JOB_KIND: Final = f"{MODULE_ID}.automatic_memory.drain"
+AUTOMATIC_CONSUMER_ID: Final = f"{MODULE_ID}.automatic_memory"
+
+DRAIN_MAX_ATTEMPTS: Final = 5
+"""Attempts one automatic-memory drain job gets, for a fault that raises out of its
+handler: a database error, an audit-write failure, an unresolved workspace. Each is
+workspace-wide rather than one partition's; a bad extraction is not one of them,
+because the claim contains it and the drain succeeds."""
+
 
 @dataclass(frozen=True, slots=True)
 class RetentionPolicy:

@@ -149,7 +149,8 @@ row is one turn waiting to become memory: `pending` with its sanitized body, or 
 never exported. Its `source_expires_at` is its recording time plus
 `automatic_memory.max_pending_hours`; the first daily `core.retention_sweep` after that
 instant ages a still-pending row to `gap/expired_pending`, so its text can stay until the
-next daily sweep (a later drain job will also age rows when it claims them). The same sweep deletes settled
+next daily sweep, unless a drain job ages it sooner: Recallatron's automatic-memory drain ages
+every expired pending row before it claims. The same sweep deletes settled
 and gap rows older than `runtime.transcript_retention_days`. A run's turn is recorded only when
 six conditions all hold, checked in order: `automatic_memory.enabled` is true at both the
 operator and the workspace level; an extraction provider resolves (the default `"none"`

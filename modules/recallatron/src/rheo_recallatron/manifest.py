@@ -24,9 +24,10 @@ carries § A10's seven memory tools,
 and ``export`` now carries the real exporter/importer pair with the JSON Schema that
 describes what they move. ``web`` declares the memory screens' contribution: the
 ``recallatron`` surface, four routes, three navigation entries and one search provider.
-``subscriptions`` stays empty, and that is deliberate: no consumer exists in 1a1, and
-a declaration whose implementation is a later prompt's would be a promise the loader
-registers and nothing keeps.
+``subscriptions`` holds one entry, the automatic-memory drain's consumer of core's
+evidence-recorded event. It only enqueues a drain job, so a slow provider or a
+raising acceptance holds up that job and never this consumer's ordered delivery;
+``jobs`` carries the drain itself (``rheo_recallatron.automatic``).
 
 **Why the settings key is not declared in this file.** This module now imports its own
 operations, which import the eligibility service, which has to read the retention key
@@ -40,6 +41,8 @@ from typing import Final
 
 from rheo_contracts import CONTRACT_VERSION
 from rheo_core.audit.core_sink import CORE_AUDIT_SINK
+from rheo_core.events.consumers import ConsumerSubscription
+from rheo_core.evidence import EVIDENCE_RECORDED
 from rheo_core.modules.manifest import (
     DeletionParticipant,
     ExportDeclaration,
@@ -55,8 +58,16 @@ from rheo_core.modules.manifest import (
     WebSurface,
 )
 
+from rheo_recallatron.automatic import (
+    DrainJobPayload,
+    on_evidence_recorded,
+    run_drain_job,
+)
 from rheo_recallatron.configuration import (
+    AUTOMATIC_CONSUMER_ID,
     DENSE_FLOOR_PERCENT_SPEC,
+    DRAIN_JOB_KIND,
+    DRAIN_MAX_ATTEMPTS,
     EMBED_JOB_KIND,
     EMBED_MAX_ATTEMPTS,
     EMBEDDING_BATCH_SIZE_SPEC,
@@ -211,10 +222,20 @@ MANIFEST: Final = ModuleManifest(
     # acceptance; ``invalidated`` is the lifecycle closure's, and declaring only the
     # one with a publisher would leave the other's shape for that run to invent.
     events=EVENTS,
-    # Empty, and correct: no consumer exists in 1a1, and a publish that reaches none
-    # still writes its outbox row and completes with zero deliveries. An event nobody
-    # consumes is not an error.
-    subscriptions=(),
+    # One: the automatic-memory drain's consumer. Its handler reads nothing from the
+    # envelope and only enqueues a drain job, because processing inline would put a
+    # slow provider or a raising acceptance in front of every later delivery to it;
+    # as a job, a fault holds up only that job. Replay-safe, because a replayed
+    # delivery enqueues one more drain, and a drain with nothing pending is a no-op.
+    subscriptions=(
+        ConsumerSubscription(
+            consumer_id=AUTOMATIC_CONSUMER_ID,
+            event_type=EVIDENCE_RECORDED,
+            module_id=MODULE_ID,
+            replay_safe=True,
+            handler=on_evidence_recorded,
+        ),
+    ),
     # The retention sweep, and the daily row that enqueues it. Separate from the
     # core's own ``core.retention_sweep`` in both halves on purpose: the two retain
     # different things under different policies, and one schedule feeding both would
@@ -253,6 +274,16 @@ MANIFEST: Final = ModuleManifest(
             input_model=EmbeddingRebuildPayload,
             handler=run_embedding_rebuild_job,
             max_attempts=REBUILD_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
+        # The automatic-memory drain, which the consumer above enqueues. Not
+        # cancellable: its acceptances, settlements and follow-up commit in one
+        # transaction, so a cancellation could only discard the whole claim.
+        JobKind(
+            name=DRAIN_JOB_KIND,
+            input_model=DrainJobPayload,
+            handler=run_drain_job,
+            max_attempts=DRAIN_MAX_ATTEMPTS,
             cancellable=False,
         ),
     ),

@@ -77,6 +77,7 @@ from rheo_core.audit import CORE_AUDIT_SINK, install_sink, reset_sinks
 from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.boundary.factories import context_from_operation
 from rheo_core.events import ConsumerRegistry
+from rheo_core.evidence import EVIDENCE_RECORDED
 from rheo_core.migrations.module_chain import run_module_chain
 from rheo_core.operations import (
     CONSUMERS_MISSING,
@@ -106,12 +107,14 @@ from rheo_core.storage.repositories import (
 from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
 from rheo_recallatron.configuration import (
+    AUTOMATIC_CONSUMER_ID,
     CANDIDATE_SCAN_LIMIT,
     DENSE_FLOOR_PERCENT_SPEC,
     EMBEDDING_BATCH_SIZE_DEFAULT,
     LEXICAL_DF_THRESHOLD,
     LEXICAL_RAREST_KEPT,
     MEMORY_RECORD_TYPE,
+    MODULE_ID,
     RECALL_K_DEFAULT,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
@@ -3995,9 +3998,14 @@ def failing_audit_sink() -> Iterator[None]:
     install_sink(HARNESS_MODULE_ID, CORE_AUDIT_SINK)
 
 
-def test_the_manifest_declares_both_ratified_events_and_no_subscription() -> None:
-    """AC 1: exactly two ``EventDeclaration``s, schema version 1, three fields each."""
-    assert MANIFEST.subscriptions == ()
+def test_the_manifest_declares_both_ratified_events_and_one_subscription() -> None:
+    """AC 1: exactly two ``EventDeclaration``s, schema version 1, three fields each;
+    and the one subscription, the automatic-memory drain's consumer."""
+    (subscription,) = MANIFEST.subscriptions
+    assert subscription.consumer_id == AUTOMATIC_CONSUMER_ID
+    assert subscription.event_type == EVIDENCE_RECORDED
+    assert subscription.module_id == MODULE_ID
+    assert subscription.replay_safe is True
     declared = {event.type: event for event in MANIFEST.events}
     assert set(declared) == {MEMORY_RECORDED, MEMORY_INVALIDATED}
     for event in declared.values():

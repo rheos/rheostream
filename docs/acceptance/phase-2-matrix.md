@@ -53,7 +53,7 @@ are new captures. Each of those three rows says so in its own `Note:`.
 **Demonstrator:**
 - `pytest:tests/postgres/test_module_lifecycle.py::test_install_then_enable_makes_workspace_status_report_recallatron`
 - `pytest:tests/postgres/test_memory_lifecycle.py::test_loading_the_module_makes_its_memory_a_real_owned_deletable_type`
-- `pytest:tests/postgres/test_memory_records.py::test_the_manifest_declares_both_ratified_events_and_no_subscription`
+- `pytest:tests/postgres/test_memory_records.py::test_the_manifest_declares_both_ratified_events_and_one_subscription`
 - `pytest:tests/postgres/test_web_contribution.py::test_the_committed_composition_is_what_compose_renders`
 - `pytest:tests/postgres/test_web_contribution.py::test_the_composition_carries_recallatron_navigation_routes_and_recall`
 - `pytest:tests/postgres/test_web_contribution.py::test_enabling_recallatron_in_a_fresh_workspace_reports_it_enabled_and_routed`

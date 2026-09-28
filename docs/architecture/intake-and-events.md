@@ -565,7 +565,8 @@ runtime transcripts past their `retention_until`, tool telemetry rows older than
 `runtime.transcript_retention_days` under that workspace configuration directory's
 `projects/` subtree. It also ages `pending` evidence units past their `source_expires_at`
 into content-free `gap/expired_pending` rows, skipping any row another transaction holds
-locked rather than waiting on it (a later drain job will hold such locks), and deletes
+locked rather than waiting on it (Recallatron's automatic-memory drain job holds such
+locks on the rows it claims, until its transaction commits), and deletes
 settled and gap evidence rows older than `runtime.transcript_retention_days`. Both evidence
 steps run before the session-file walk, which returns early on a workspace with no CLI
 configuration directory, so they run on every workspace, including the ones nothing drains.
