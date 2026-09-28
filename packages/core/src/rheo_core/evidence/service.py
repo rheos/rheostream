@@ -50,7 +50,11 @@ from rheo_contracts.source_units import (
 )
 from sqlalchemy import ColumnElement, and_, func, or_, select, text, update
 
-from rheo_core.boundary import Refusal, context_for_evidence_acceptance
+from rheo_core.boundary import (
+    MEMBERSHIP_MISSING,
+    Refusal,
+    context_for_evidence_acceptance,
+)
 from rheo_core.evidence.authority import RuntimeEvidenceAuthority
 from rheo_core.evidence.extract import NOOP_EVIDENCE, digest, validate_extraction
 from rheo_core.evidence.providers import resolve_provider
@@ -281,16 +285,23 @@ def _earliest_waiting(
     """The earliest ``retry_after`` among waiting rows, or ``None``.
 
     ``lockable_only`` leaves out rows another transaction holds (``FOR KEY SHARE SKIP
-    LOCKED``, the weakest lock a ``FOR UPDATE`` holder still blocks): an empty claim
-    never schedules a follow-up from rows a drain holding them schedules for itself.
+    LOCKED``, the weakest lock a ``FOR UPDATE`` holder still blocks), and locks only
+    the one row it answers from: an empty claim never schedules a follow-up from rows
+    a drain holding them schedules for itself.
     """
-    waiting = select(evidence_unit.c.retry_after).where(_waiting(now))
-    if lockable_only:
-        waiting = waiting.with_for_update(key_share=True, skip_locked=True)
-    earliest: datetime | None = uow.connection.execute(
-        select(func.min(waiting.subquery().c.retry_after))
-    ).scalar_one()
-    return earliest
+    if not lockable_only:
+        earliest: datetime | None = uow.connection.execute(
+            select(func.min(evidence_unit.c.retry_after)).where(_waiting(now))
+        ).scalar_one()
+        return earliest
+    first: datetime | None = uow.connection.execute(
+        select(evidence_unit.c.retry_after)
+        .where(_waiting(now))
+        .order_by(evidence_unit.c.retry_after)
+        .limit(1)
+        .with_for_update(key_share=True, skip_locked=True)
+    ).scalar_one_or_none()
+    return first
 
 
 def _follow_up_at(
@@ -369,14 +380,19 @@ def claim_units(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
     taken = [row.id for row in rows]
 
     # Step 3. Every row of one partition shares its speaker and purpose, so one
-    # acceptance context serves the whole claim, and its refusal (the speaker is no
-    # longer a member) leaves no row with a context. The pre-check then runs per row
-    # on a placeholder unit: the authority reads only the unit's identity fields.
+    # acceptance context serves the whole claim, and its membership_missing refusal
+    # (the speaker is no longer a member) leaves no row with a context. Any other
+    # refusal (the workspace became unavailable) says nothing about these rows, so
+    # it raises and leaves them pending for the job's retry rather than settling
+    # them for good. The pre-check then runs per row on a placeholder unit: the
+    # authority reads only the unit's identity fields.
     context = context_for_evidence_acceptance(
         workspace_id,
         account_id=anchor.speaker_account_id,
         purpose=ContextPurpose(anchor.purpose),
     )
+    if isinstance(context, Refusal) and context.state != MEMBERSHIP_MISSING:
+        raise EvidenceWorkspaceUnresolved("no acceptance context for the workspace")
     authority = RuntimeEvidenceAuthority(uow)
     verified: list[Any] = []
     for row in rows:

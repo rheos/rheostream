@@ -40,7 +40,7 @@ from rheo_contracts import ContextPurpose, RecordRef, Role, WorkspaceContext
 from rheo_contracts.source_units import AuthorityRefused, TrustedSourceUnit
 from rheo_core.audit import AUDIT_SUCCEEDED, list_audit_records
 from rheo_core.audit.records import AuditRow
-from rheo_core.boundary import context_for_harness
+from rheo_core.boundary import MEMBERSHIP_MISSING, Refusal, context_for_harness
 from rheo_core.evidence import (
     ClaimedBatch,
     ClaimedUnit,
@@ -470,6 +470,60 @@ def test_a_partition_with_no_verified_unit_settles_it_and_calls_no_provider(
     assert fake.calls == []
 
 
+def _refuse_context(monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    def refused(
+        workspace_id: UUID, *, account_id: UUID, purpose: ContextPurpose
+    ) -> Refusal:
+        return Refusal(state, "synthetic")
+
+    monkeypatch.setattr(evidence_service, "context_for_evidence_acceptance", refused)
+
+
+def test_a_membership_missing_context_refusal_settles_the_partition(
+    monkeypatch: pytest.MonkeyPatch,
+    recording: EvidenceWorkspace,
+    fake: FakeExtractionProvider,
+    now: datetime,
+) -> None:
+    records = _record(
+        recording, recording.context(), _texts("gone", 2), at=now - timedelta(minutes=2)
+    )
+    _refuse_context(monkeypatch, MEMBERSHIP_MISSING)
+
+    batch = _claim(recording, now=now)
+
+    assert batch.units == ()
+    for record in records:
+        row = _row(recording, record)
+        assert (row.state, row.outcome) == (STATE_SETTLED, OUTCOME_AUTHORITY_UNVERIFIED)
+        assert row.settled_at == now and row.body is None
+    assert fake.calls == []
+
+
+def test_any_other_context_refusal_raises_and_leaves_the_partition_pending(
+    monkeypatch: pytest.MonkeyPatch,
+    recording: EvidenceWorkspace,
+    fake: FakeExtractionProvider,
+    now: datetime,
+) -> None:
+    """A transient refusal (the workspace briefly unavailable) says nothing about the
+    rows: settling them would lose up to a whole partition for good, so the job fails
+    and retries instead."""
+    records = _record(
+        recording, recording.context(), _texts("kept", 2), at=now - timedelta(minutes=2)
+    )
+    _refuse_context(monkeypatch, WORKSPACE_UNAVAILABLE)
+
+    with pytest.raises(EvidenceWorkspaceUnresolved):
+        _claim(recording, now=now)
+
+    for record in records:
+        row = _row(recording, record)
+        assert row.state == STATE_PENDING and row.settled_at is None
+        assert row.extraction_attempts == 0 and row.retry_after is None
+    assert fake.calls == []
+
+
 def test_an_authority_refusal_settles_the_row_through_the_placeholder_unit(
     monkeypatch: pytest.MonkeyPatch,
     recording: EvidenceWorkspace,
@@ -863,6 +917,30 @@ def test_a_past_retry_after_on_a_claimed_row_schedules_no_follow_up(
 
     assert len(batch.units) == 2
     assert batch.follow_up_at is None
+
+
+def test_the_partition_read_uses_the_anchor_order_so_the_anchor_is_always_in_it(
+    recording: EvidenceWorkspace, fake: FakeExtractionProvider, now: datetime
+) -> None:
+    """Three older once-failed rows (claimable again) and a newer never-failed anchor,
+    one partition, a limit of two. Ordered by ``source_recorded_at`` alone, the
+    ``LIMIT 3`` read would be the three older rows and miss the anchor."""
+    recording.set_workspace(MAX_UNITS_PER_JOB_KEY, 2)
+    ctx = recording.context(ContextPurpose.INTERNAL_ANALYSIS)
+    older = _record(recording, ctx, _texts("older", 3), at=now - timedelta(minutes=10))
+    _set(
+        recording, older, extraction_attempts=1, retry_after=now - timedelta(seconds=1)
+    )
+    (anchor,) = _record(
+        recording, ctx, _texts("anchor", 1), at=now - timedelta(minutes=1)
+    )
+
+    batch = _claim(recording, now=now)
+
+    keys = [u.unit.external_source_key for u in batch.units]
+    assert len(keys) == 2
+    assert keys[0] == anchor.native_key
+    assert batch.follow_up_at == now
 
 
 def test_a_failed_unit_sorts_after_a_never_failed_one_recorded_later(
