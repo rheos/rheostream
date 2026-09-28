@@ -16,7 +16,7 @@ const { shell } = fakeShell("member", {
 
 describe("screens", () => {
   it("exports exactly the screen identifiers the module's routes name", () => {
-    expect(Object.keys(screens).sort()).toEqual(["browse", "duplicates", "item", "search"]);
+    expect(Object.keys(screens).sort()).toEqual(["browse", "duplicates", "historyItem", "item", "search"]);
   });
 
   it.each([

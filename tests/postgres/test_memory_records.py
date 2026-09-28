@@ -214,6 +214,7 @@ _TABLES = (
     "memory_embedding",
     "source_receipt",
     "embedding_state",
+    "history_record",
     _VERSION_TABLE,
 )
 """§ A3's six-table memory spine, the ``source_receipt`` seam, ``embedding_state``, and
@@ -247,6 +248,10 @@ _INDEXES = (
     "memory_embedding_vector_hnsw",
     "source_receipt_pkey",
     "embedding_state_pkey",
+    "history_record_pkey",
+    "history_record_source_key",
+    "history_record_search_tsv_gin",
+    "history_record_time_id",
     f"{_VERSION_TABLE}_pkc",
 )
 """Every index, primary keys included. § A3's closing paragraph names the non-key ones,
@@ -294,6 +299,11 @@ _CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("source_receipt", "source_receipt_digest_length"),
     ("embedding_state", "embedding_state_pkey"),
     ("embedding_state", "embedding_state_one_row"),
+    ("history_record", "history_record_pkey"),
+    ("history_record", "history_record_kind"),
+    ("history_record", "history_record_opaque_source_key"),
+    ("history_record", "history_record_status"),
+    ("history_record", "history_record_erased_content"),
     (_VERSION_TABLE, f"{_VERSION_TABLE}_pkc"),
 )
 """Every primary key, foreign key and check, by the table that owns it.

@@ -1,0 +1,15 @@
+{"id": "ent-001", "type": "Project", "label": "Example Widget Co", "properties": {}, "valid_from": "2026-01-02T03:04:05.000Z", "valid_until": null, "confidence": 0.9, "source": "manual", "superseded_by": null, "confirmed": true}
+{"id": "ent-002", "type": "Person", "label": "Sample Gardener", "properties": {"role": "volunteer"}, "valid_from": "2026-01-02T03:04:06.000Z", "valid_until": null, "confidence": 0.8, "source": "session:synthetic-session-1", "superseded_by": null, "confirmed": false}
+{"id": "ent-003", "type": "Fact", "label": "Old Greenhouse Rota", "properties": {}, "valid_from": "2026-01-03T00:00:00.000Z", "valid_until": null, "confidence": 0.7, "source": "manual", "superseded_by": null, "confirmed": false}
+{"id": "ent-004", "type": "Fact", "label": "New Greenhouse Rota", "properties": {}, "valid_from": "2026-01-04T00:00:00.000Z", "valid_until": null, "confidence": 0.7, "source": "manual", "superseded_by": null, "confirmed": false}
+{"id": "ent-005", "type": "Preference", "label": "Tea", "properties": {}, "valid_from": "2026-01-05T00:00:00.000Z", "valid_until": null, "confidence": 0.6, "source": "manual", "superseded_by": null, "confirmed": false}
+{"id": "ent-006", "type": "Deadline", "label": "Draft Seed Order", "properties": {"due": "2026-02-01"}, "valid_from": "2026-01-06T00:00:00.000Z", "valid_until": "2026-02-01T00:00:00.000Z", "confidence": 0.9, "source": "manual", "superseded_by": null, "confirmed": true}
+{"op": "relate", "from": "ent-002", "rel": "works_on", "to": "ent-001", "confidence": 0.8, "source": "manual", "valid_from": "2026-01-07T00:00:00.000Z", "valid_until": null, "confirmed": false, "ts": "2026-01-07T00:00:00.000Z"}
+{"op": "confirm_relate", "from": "ent-002", "rel": "works_on", "to": "ent-001", "ts": "2026-01-08T00:00:00.000Z"}
+{"op": "unrelate", "from": "ent-002", "rel": "works_on", "to": "ent-001", "ts": "2026-01-09T00:00:00.000Z"}
+{"op": "confirm", "id": "ent-002", "ts": "2026-01-10T00:00:00.000Z"}
+{"op": "supersede", "old": "ent-003", "new": "ent-004", "ts": "2026-01-11T00:00:00.000Z"}
+{"id": "ent-002", "type": "Person", "label": "Sample  Gardener North", "properties": {"role": "volunteer"}, "valid_from": "2026-01-12T00:00:00.000Z", "valid_until": null, "confidence": 0.8, "source": "session:synthetic-session-2", "superseded_by": null, "confirmed": true}
+
+{"op": "rename", "id": "ent-001", "ts": "2026-01-13T00:00:00.000Z"}
+this line is not json

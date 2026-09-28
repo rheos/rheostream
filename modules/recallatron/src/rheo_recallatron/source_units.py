@@ -103,6 +103,7 @@ from rheo_recallatron.storage.repository import (
 )
 from rheo_recallatron.writes import (
     ORIGIN_DERIVED,
+    ORIGIN_MIGRATED,
     ProposedLink,
     WriteAudience,
     write_memory,
@@ -443,6 +444,8 @@ def accept_source_unit(
         return _terminalize(uow, unit, grant, namespace, state=denial)
 
     recorded_at = unit.source_recorded_at
+    if recorded_at is None and unit.producer_kind == "migration":
+        recorded_at = unit.evidence.occurred_at
     if recorded_at is None:
         # Reachable only for a migration unit with no source instants: there is no
         # server clock a preserved row may borrow, because its ``recorded_at`` is the
@@ -469,7 +472,7 @@ def accept_source_unit(
         purposes=purposes,
         confidence=unit.evidence.confidence,
         occurred_at=unit.evidence.occurred_at,
-        origin=ORIGIN_DERIVED,
+        origin=ORIGIN_MIGRATED if unit.producer_kind == "migration" else ORIGIN_DERIVED,
         recorded_at=recorded_at,
         recorded_by_kind=(
             "service" if unit.principal_account_id is None else "account"

@@ -126,6 +126,7 @@ from rheo_recallatron.entities import (
     visible_entity,
 )
 from rheo_recallatron.events import consumers_for_dispatch
+from rheo_recallatron.history import HISTORY_OPERATIONS
 from rheo_recallatron.lifecycle import correct, supersede
 from rheo_recallatron.references import canonical_ref, entity_container, memory_target
 from rheo_recallatron.refusals import (
@@ -884,12 +885,14 @@ OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     *ENTITY_OPERATIONS,
     (DEDUP_DECLARATION, dedup_candidates),
     *EMBEDDING_OPERATIONS,
+    *HISTORY_OPERATIONS,
 )
 """What the manifest declares: three memory reads (``recall``, ``read``, ``get``), two
 writes, the two lifecycle changes, the two entity reads, the dedup-candidate read and
-the owner's embedding rebuild and coverage. The entity reads and the dedup-candidate
-read have no MCP tool, so no model reaches them; they are reachable over the API by a
-token whose set holds them. The record
+the owner's embedding rebuild and coverage, plus owner-only history search, get and
+approved erase. Entity and history reads and the dedup-candidate read have no MCP
+tool, so no model reaches them; they are reachable over the API by a token whose set
+holds them. The record
 resolver is declared beside this tuple on the manifest and shares the same eligibility
 function; erasure is not here at all,
 because a memory is erased through the core's own record-delete operation against the

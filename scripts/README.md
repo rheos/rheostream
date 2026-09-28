@@ -84,9 +84,30 @@ name assembled at runtime and passed through an allowed object is out of its sig
 markup that makes the browser send a cookie-bearing request (`<img src>`,
 `<form action>`) is left to the routing-literal gate.
 
+`python3 scripts/check_migration_outputs.py` fails when a tracked path's basename
+matches a migration-output filename pattern (a harvested ledger, an entity-pair
+extract, a comparison, a forecast, a measurement, or one of a handful of exact
+hand-written report names) — the path gate, always active and the only part CI
+runs (`make migration-output-gate`). An optional local `RHEO_PRIVATE_DENYLIST`
+environment variable, naming a file outside the repository, additionally enables a
+case-insensitive, whitespace-normalized leak scan of tracked content in one of five
+modes selected by CLI flag (`--diff <range>`, `--commits <range>`, `--text
+<file>...`, `--triage-exempt <ref> --out <dir>`, or no flag for tracked text at
+`HEAD`); CI never sets this variable. On a match, only a location is printed:
+`<path>:<line>: denylist line <n>` for tracked or `--text` files,
+`<sha>:<path>:<new-file line>: denylist line <n>` for `--diff` (`STAGED` in place
+of the sha for the staged diff), and `<sha>:<message line>: denylist line <n>` for
+`--commits`, where `<n>` is the denylist file's own line number. The matched text
+and the denylist line's own content are never printed. Self-tests itself on every run
+before scanning the real tree.
+
 Each gate is a standalone, stdlib-only `python3` script with no import from
 anywhere else in the repository, so it runs from a bare checkout before any
-dependency is installed. That is why the quote-aware `_strip_ts_comments` helper, and
+dependency is installed — the one exception is `check_migration_outputs.py`'s
+`--triage-exempt` mode, which lazily imports
+`rheo_recallatron.migration.private_paths` (only when that mode is invoked, always
+through the project's own virtualenv via `uv run`; the path gate CI runs needs no
+import at all). That is why the quote-aware `_strip_ts_comments` helper, and
 the `_in_type_body` helper the search and theme gates share, are copied into each
 script that needs them rather than shared: the copies are deliberate, and a fix to one
 belongs in all of them.

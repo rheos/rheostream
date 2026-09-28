@@ -103,6 +103,7 @@ from rheo_recallatron.export import (
     export_memory_records,
     import_memory_records,
 )
+from rheo_recallatron.migration.history_import import opaque_history_source_key
 from rheo_recallatron.storage import tables as memory_tables
 from rheo_recallatron.storage.repository import (
     MemoryEmbeddingRow,
@@ -121,7 +122,7 @@ from rheo_recallatron.storage.repository import (
     insert_source_receipt,
     set_memory_successor,
 )
-from sqlalchemy import Engine, delete, func, select, text
+from sqlalchemy import Engine, delete, func, insert, select, text
 
 pytestmark = pytest.mark.postgres
 
@@ -715,6 +716,105 @@ def test_no_embedding_survives_the_round_trip(
         source, engine=cluster.backend.pools.engine_for(source.database_name)
     )
     assert rebuilt.count(memory_tables.memory_embedding) == 0
+
+
+def test_historical_evidence_and_erasure_tombstone_round_trip(
+    source: Deployment,
+    host: WorkspaceContext,
+    cluster: ClusterSession,
+) -> None:
+    at = datetime.now(UTC)
+    live_id, erased_id, profile_id = uuid7(), uuid7(), uuid7()
+    with source.unit() as uow:
+        uow.connection.execute(
+            insert(memory_tables.history_record),
+            [
+                {
+                    "id": live_id,
+                    "source_namespace": "synthetic",
+                    "external_source_key": opaque_history_source_key(
+                        "store.conversation:1"
+                    ),
+                    "source_reference": "store.conversation:1",
+                    "kind": "conversation",
+                    "status": "turn",
+                    "title": "Conversation turn",
+                    "body": "Synthetic garden evidence.",
+                    "occurred_at": at,
+                    "imported_at": at,
+                    "session_key": "synthetic-session",
+                    "chat_key": "synthetic-chat",
+                    "source_role": "user",
+                    "source_category": None,
+                    "source_created_at": None,
+                    "confirmed_at": None,
+                    "superseded_by_source_key": None,
+                    "erased_at": None,
+                },
+                {
+                    "id": erased_id,
+                    "source_namespace": "synthetic",
+                    "external_source_key": opaque_history_source_key(
+                        "store.procedural_note:2"
+                    ),
+                    "source_reference": None,
+                    "kind": "procedural_note",
+                    "status": "unconfirmed",
+                    "title": "",
+                    "body": "",
+                    "occurred_at": at,
+                    "imported_at": at,
+                    "session_key": None,
+                    "chat_key": None,
+                    "source_role": None,
+                    "source_category": None,
+                    "source_created_at": None,
+                    "confirmed_at": None,
+                    "superseded_by_source_key": None,
+                    "erased_at": at,
+                },
+                {
+                    "id": profile_id,
+                    "source_namespace": "synthetic",
+                    "external_source_key": opaque_history_source_key(
+                        "profile.synth:item:1"
+                    ),
+                    "source_reference": "profile.synth.json:item:1",
+                    "kind": "profile_item",
+                    "status": "summary",
+                    "title": "Synthesized profile item",
+                    "body": "A synthetic garden project summary.",
+                    "occurred_at": at,
+                    "imported_at": at,
+                    "session_key": None,
+                    "chat_key": None,
+                    "source_role": None,
+                    "source_category": "work",
+                    "source_created_at": None,
+                    "confirmed_at": None,
+                    "superseded_by_source_key": None,
+                    "erased_at": None,
+                },
+            ],
+        )
+    artifact = _export(source)
+    _remove_workspace(cluster, source.workspace)
+    _restore(cluster, host, artifact)
+    rebuilt = replace(
+        source, engine=cluster.backend.pools.engine_for(source.database_name)
+    )
+    with rebuilt.reading() as uow:
+        rows = {
+            row.id: row
+            for row in uow.connection.execute(select(memory_tables.history_record))
+        }
+    assert set(rows) == {live_id, erased_id, profile_id}
+    assert rows[live_id].body == "Synthetic garden evidence."
+    assert rows[live_id].source_reference == "store.conversation:1"
+    assert rows[erased_id].body == "" and rows[erased_id].erased_at is not None
+    assert rows[erased_id].source_reference is None
+    assert rows[profile_id].kind == "profile_item"
+    assert rows[profile_id].body == "A synthetic garden project summary."
 
 
 def test_retained_history_and_every_receipt_state_round_trip(

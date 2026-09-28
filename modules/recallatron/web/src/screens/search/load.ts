@@ -3,8 +3,8 @@ import type { ShellApi } from "@rheo-stream/web-contract/screen";
 import { callChecked } from "../../call";
 import { loadCoverage, type CoverageState } from "../../components/coverage";
 import { characterCount, excerpt, formatUtc } from "../../format";
-import { isRecallResult } from "../../guards";
-import { RECALL } from "../../operations";
+import { isHistorySearchResult, isRecallResult } from "../../guards";
+import { HISTORY_SEARCH, RECALL } from "../../operations";
 
 /**
  * Search: the application's one search input, as a plain GET form. `q` is trimmed
@@ -74,8 +74,24 @@ export interface SearchState {
   action: string;
   query: string;
   results: ResultsState;
+  history: HistoryState;
   coverage: CoverageState | null;
 }
+
+export interface HistoryResultRow {
+  id: string;
+  title: string;
+  kind: string;
+  status: string;
+  excerpt: string;
+  when: string;
+  dateTime: string;
+  href: string;
+}
+
+export type HistoryState =
+  | { state: "hidden" | "prompt" | "too-long" | "empty" | "error" }
+  | { state: "results"; rows: HistoryResultRow[] };
 
 type Query = Readonly<Record<string, string | undefined>>;
 
@@ -120,11 +136,39 @@ async function loadResults(shell: ShellApi, query: string): Promise<ResultsState
   };
 }
 
+async function loadHistory(shell: ShellApi, query: string): Promise<HistoryState> {
+  if (shell.role !== "owner") return { state: "hidden" };
+  if (query === "") return { state: "prompt" };
+  if (characterCount(query) > QUERY_MAX_LENGTH) return { state: "too-long" };
+  const called = await callChecked(
+    shell,
+    HISTORY_SEARCH,
+    { query, limit: 20 },
+    isHistorySearchResult,
+  );
+  if (called.state !== "ok") return { state: "error" };
+  if (called.value.items.length === 0) return { state: "empty" };
+  return {
+    state: "results",
+    rows: called.value.items.map((item) => ({
+      id: item.id,
+      title: item.title,
+      kind: item.kind,
+      status: item.status,
+      excerpt: excerpt(item.body, EXCERPT_LENGTH),
+      when: formatUtc(item.occurred_at),
+      dateTime: item.occurred_at,
+      href: shell.href("history-item", { id: item.id }),
+    })),
+  };
+}
+
 export async function loadSearch(shell: ShellApi, query: Query): Promise<SearchState> {
   const trimmed = (query.q ?? "").trim();
-  const [results, coverage] = await Promise.all([
+  const [results, history, coverage] = await Promise.all([
     loadResults(shell, trimmed),
+    loadHistory(shell, trimmed),
     loadCoverage(shell),
   ]);
-  return { action: shell.href("search"), query: trimmed, results, coverage };
+  return { action: shell.href("search"), query: trimmed, results, history, coverage };
 }

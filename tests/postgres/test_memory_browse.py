@@ -853,21 +853,28 @@ would make the pin a tautology over whatever the manifest now declares."""
 _ADDED_1A3: Final = frozenset(
     {"recallatron.memory.get", "recallatron.embedding.coverage"}
 )
+_ADDED_1B: Final = frozenset(
+    {
+        "recallatron.history.search",
+        "recallatron.history.get",
+        "recallatron.history.erase",
+    }
+)
 
 
-def test_recallatron_registers_exactly_the_1a2_set_plus_get_and_coverage(
+def test_recallatron_registers_the_pinned_operation_inventory(
     browse: BrowseWorkspace,
 ) -> None:
     """No new list-class name lands silently: the declared set and the loaded registry
-    are both exactly 1a2's plus the two single-answer reads this run adds."""
+    include only the reviewed additions to the pinned 1a2 set."""
     declared = {declaration.name for declaration, _ in MANIFEST.operations}
-    assert declared == _REGISTERED_1A2 | _ADDED_1A3
+    assert declared == _REGISTERED_1A2 | _ADDED_1A3 | _ADDED_1B
     loaded = {
         name
         for name in browse.surfaces.operations.names()
         if name.startswith(f"{_MEMORY_MODULE}.")
     }
-    assert loaded == _REGISTERED_1A2 | _ADDED_1A3
+    assert loaded == _REGISTERED_1A2 | _ADDED_1A3 | _ADDED_1B
     assert {MEMORY_GET, EMBEDDING_COVERAGE} == _ADDED_1A3
 
     tooled = {tool.operation for tool in MANIFEST.tools}

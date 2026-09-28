@@ -85,6 +85,10 @@ built so that other people can run it too.
 
 ## How it is put together
 
+Start with the [architecture tour](docs/architecture/code-tour.md): one request
+through the code, the workspace-storage decision, and a known enqueue limitation
+with links to the tests.
+
 A small framework core provides workspaces, permissions, module lifecycle, and
 durable background work. Modules own their own records
 and cooperate through

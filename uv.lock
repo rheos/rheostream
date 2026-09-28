@@ -1200,6 +1200,7 @@ name = "rheo-recallatron"
 version = "0.1.0"
 source = { editable = "modules/recallatron" }
 dependencies = [
+    { name = "psycopg", extra = ["binary"] },
     { name = "rheo-contracts" },
     { name = "rheo-core" },
 ]
@@ -1212,6 +1213,7 @@ local-embeddings = [
 [package.metadata]
 requires-dist = [
     { name = "fastembed", marker = "extra == 'local-embeddings'", specifier = ">=0.8.1,<0.9" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6,<4" },
     { name = "rheo-contracts", editable = "packages/contracts" },
     { name = "rheo-core", editable = "packages/core" },
 ]

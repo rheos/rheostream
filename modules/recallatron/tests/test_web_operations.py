@@ -29,6 +29,8 @@ _READ_ONLY_ALLOWLIST = frozenset(
         "recallatron.entity.get",
         "recallatron.memory.dedup_candidates",
         "recallatron.embedding.coverage",
+        "recallatron.history.search",
+        "recallatron.history.get",
     }
 )
 

@@ -37,6 +37,7 @@ surrogate id column on any of them, and `embedding_state` is a single row keyed 
 | `memory_embedding` | `memory_id`, `model_id text`, `dimensions integer`, `vector vector(384)`, `embedded_at` | Primary key `(memory_id, model_id)` and a memory foreign key `ON DELETE CASCADE`; no surrogate id. The dense index: migration `0003_dense_retrieval` narrows the column to `vector(384)` and adds the HNSW cosine index `memory_embedding_vector_hnsw`. Rows exist only for live, non-invalidated memories and are written by the [embedding job](#the-embedding-job) and the rebuild, never inside the writing transaction. |
 | `embedding_state` | `id boolean`, `embed_input_version integer` | One row per workspace (`CHECK (id)`), added by migration `0003_dense_retrieval` and written by the first [rebuild](#the-embedding-job), not by the migration. It records which composition of a memory's text the stored vectors were made from; a rebuild that finds it missing or different deletes every vector first. Internal and not exported. |
 | `source_receipt` | `representation_type text`, `source_namespace text`, `external_source_key text`, `record_id uuid null`, `payload_digest bytea`, `state text`, `producer_kind text`, `authority_id uuid`, `principal_account_id uuid null`, `audience_kind text`, `audience_id uuid null`, `bound_purpose text null`, `source_recorded_at null`, `source_expires_at null` | Internal and `exportable`. Primary key `(representation_type, source_namespace, external_source_key)`; `representation_type` in `memory`, `entity`. `record_id` is the nullable original UUIDv7 of the representation the unit created. `payload_digest` is a 32-byte SHA-256. `state` in `active`, `noop`, `denied`, `erased`, `expired`, `orphaned`. The authority columns are immutable and normalized: `producer_kind` in `migration`, `rheo_runtime`, `claude_code_local`; `authority_id` a UUIDv7; `audience_kind` in `workspace`, `member` paired with `audience_id`; `bound_purpose` a nullable member of the closed vocabulary; `source_recorded_at` and `source_expires_at` paired. The table holds no source body, label, filename, transcript or session id, model prompt or output, raw payload, or prior value. |
+| `history_record` | `source_namespace`, opaque `external_source_key`, nullable `source_reference`, `kind`, `status`, `title`, `body`, generated `search_tsv`, `occurred_at`, `imported_at`, optional source/session metadata, `erased_at null` | One-time predecessor evidence, separate from trusted memories and owner-only. Unique hashed source identity and GIN lexical index. The readable source reference is visible on a live owner hit. An erased row has blank title/body and null identifying metadata including the raw reference, retaining only the opaque key to prevent replay resurrection. |
 
 1a1 provided memory_embedding's table, composite primary key and memory foreign key only. 1a2
 owns dimension/provider/index strategy, dense fill/rebuild and retrieval behavior, and its
@@ -596,6 +597,22 @@ index needs no rebuild; it is a generated column.
 Not built yet: this is run 1b's design, and neither operation nor the `migration_batch` table
 exists in the module today.
 
+Run 1b's preparation now has a separate `history_record` table and owner-only
+`recallatron.history.search` / `.get` operations. This is historical evidence, not a
+`memory`: conversation turns, procedural notes, source digests, old memory-item rows,
+graph-entity versions and graph operations can be indexed without asserting that
+their content is confirmed or eligible for agent recall. Each record retains its
+source key, kind, status, time and available provenance. Erased records retain only
+the source identity and timestamps as anti-resurrection tombstones. The owner-only
+`.erase` operation uses per-action destructive approval. History is an optional,
+backward-compatible row in workspace export format 1 and restore. The owner search
+screen presents history separately from memories, and no agent tool exposes it.
+
+The one-time importer libraries accept validated extracts inside a routed
+transaction; they do not approve private source content, create a migration batch,
+switch writers, or perform a live cutover. Those steps and the verification record
+below remain outstanding.
+
 `recallatron.migration.import(source_label, extract_file_ref)`, mutate, roles `owner`,
 long-running: creates a `recallatron.migration_batch(id, source_label text, state text,
 verification_id uuid null, created_at)` row (`state` in `importing`, `verified`, `live`,
@@ -616,10 +633,11 @@ repository.
 ## Web contribution
 
 Memory browse, search, item and possible-duplicate screens plus the unified navigation and
-theme. The screens are read-only. They call exactly these operations through the internal API,
+theme. The screens are read-only. They call these operations through the internal API,
 like every other screen: `recallatron.memory.recall`, `recallatron.memory.read`,
 `recallatron.memory.get`, `recallatron.entity.list`, `recallatron.entity.get`,
-`recallatron.memory.dedup_candidates` and `recallatron.embedding.coverage`. No screen calls a
+`recallatron.memory.dedup_candidates`, `recallatron.embedding.coverage`,
+`recallatron.history.search` and `recallatron.history.get`. No screen calls a
 write or lifecycle operation. Both retention settings are read and set through the core's
 settings operations, not a module operation.
 
