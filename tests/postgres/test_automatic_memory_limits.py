@@ -1,0 +1,613 @@
+"""Automatic memory, acceptance criteria 5 to 7 and card item 5: the four limits, the
+retention recheck reached at the seam, extraction faults, and the success audit's
+rollback (spec § Acceptance criteria 5-7, Edge Case 4's reachability note, § Success
+audit; card acceptance item 5; R11).
+
+Seams under test:
+
+- **AC-6: ``_born_expired`` reached, not ``_window_state``.** One fixture for all
+  three legs: the operator raises ``max_pending_hours`` to 72, the workspace keeps
+  one day of retention, and each unit is recorded 30 hours ago. Its pending window
+  is still open (42 hours left), so the drain reaches policy, and only the leg with
+  the gate on and a workspace audience is born expired.
+- **AC-7: an extraction fault stays in its partition.** It moves only the row's own
+  ``extraction_attempts``/``retry_after``; every drain job succeeds on its first
+  attempt; the fifth failure settles ``gap/extraction_failed``; and a healthy
+  partition recorded after a failing one settles before the failing one is due again.
+- **Card item 5: all or nothing.** A raising sink, or no sink, rolls back the memory,
+  receipt, ``recorded`` event and ``core.evidence.accept`` row together and leaves
+  the unit pending with its body; a ``noop`` writes no audit row, so a raising sink
+  never touches it.
+
+Every drain runs through a real ``visit_workspace`` with the job kinds and the
+subscription taken off Recallatron's ``MANIFEST``. Every text is synthetic.
+"""
+
+import dataclasses
+from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any, Final
+from uuid import UUID
+
+import pytest
+from conftest import ClusterSession
+from harness.evidence import EvidenceWorkspace, enable_recording, probe_registry
+from harness.modules import install_and_enable_module, loaded_probe_modules
+from harness.registry import register_harness
+from rheo_contracts import ContextPurpose, Role, WorkspaceContext
+from rheo_core.audit import install_sink, reset_sinks, sink_for
+from rheo_core.boundary import context_for_harness
+from rheo_core.evidence import ClaimedBatch, claim_units, settle_unit
+from rheo_core.evidence.extract import DigestBatch
+from rheo_core.evidence.providers import (
+    FAKE_EXTRACTION_MARKER,
+    FAKE_PROVIDER,
+    PROVIDERS,
+    providers,
+)
+from rheo_core.evidence.record import (
+    MAX_BYTES_KEY,
+    MAX_RECORDS_KEY,
+    NewEvidence,
+    RecordAttempt,
+    record_evidence,
+)
+from rheo_core.evidence.service import EvidenceAuditUnwritable
+from rheo_core.operations import (
+    CORE_MODULE_ID,
+    HARNESS_MODULE_ID,
+    register_core_operations,
+)
+from rheo_core.settings import ValueType
+from rheo_core.storage.backend import HandlerUnitOfWork
+from rheo_core.storage.evidence_tables import evidence_unit
+from rheo_core.storage.repositories import upsert_workspace_setting
+from rheo_recallatron import automatic
+from rheo_recallatron.configuration import (
+    MODULE_ID,
+    RETENTION_DAYS_KEY,
+    RETENTION_EXPIRE_BY_AGE_KEY,
+)
+from rheo_recallatron.storage import tables as memory_tables
+from sqlalchemy.engine import Row
+
+from postgres.test_automatic_memory_acceptance import (
+    _ACCEPT_AUDIT,
+    _ONE_ACCEPTANCE,
+    _TURN,
+    _Answering,
+    _audit_names,
+    _counts,
+    _enqueue_drain,
+    _new_evidence,
+    _recall_refs,
+    _rows,
+    _visit,
+)
+from postgres.test_automatic_memory_drain import _install_failing, _jobs
+
+pytestmark = pytest.mark.postgres
+
+_PENDING_HOURS_ENV: Final = "RHEO__automatic_memory__max_pending_hours"
+_NO_RECEIPTS: Final = dict.fromkeys(_ONE_ACCEPTANCE, 0)
+_SINK_FAULT: Final = "a limits-test audit sink fault"
+_FAILING_TAG: Final = "failing-partition"
+
+
+@pytest.fixture(autouse=True)
+def registrations() -> None:
+    register_core_operations()
+    register_harness()
+
+
+@pytest.fixture
+def ev(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> Iterator[EvidenceWorkspace]:
+    """Recallatron installed and enabled, and recording conditions 1 and 2 on."""
+    with loaded_probe_modules(monkeypatch, MODULE_ID):
+        bootstrap = context_for_harness(workspace, owner_account_id, Role.OWNER)
+        assert isinstance(bootstrap, WorkspaceContext), bootstrap
+        install_and_enable_module(cluster.backend, bootstrap, workspace, MODULE_ID)
+        evidence = EvidenceWorkspace(cluster, workspace, owner_account_id)
+        enable_recording(monkeypatch, evidence)
+        yield evidence
+
+
+@pytest.fixture
+def now() -> datetime:
+    return datetime.now(UTC)
+
+
+# --- helpers ----------------------------------------------------------------------
+
+
+def _at(monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, at: datetime) -> None:
+    """One visit at ``at``, with the drain's own clock moved there too."""
+    monkeypatch.setattr(automatic, "_now", lambda: at)
+    _visit(ev, at=at)
+
+
+def _drain_at(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, at: datetime
+) -> None:
+    _enqueue_drain(ev, at=at)
+    _at(monkeypatch, ev, at)
+
+
+def _record_batch(
+    ev: EvidenceWorkspace,
+    records: Sequence[NewEvidence],
+    *,
+    purpose: ContextPurpose = ContextPurpose.RESPOND,
+    at: datetime,
+) -> RecordAttempt:
+    """One attempt, published to the probe only: the test drives the drain itself."""
+    with ev.handler(probe_registry()) as uow:
+        return record_evidence(ev.context(purpose), uow, records, now=at)
+
+
+def _evidence(
+    ev: EvidenceWorkspace,
+    body: str,
+    *,
+    at: datetime,
+    purpose: ContextPurpose = ContextPurpose.RESPOND,
+    workspace_audience: bool = False,
+) -> NewEvidence:
+    record = _new_evidence(ev.context(purpose), body, at=at)
+    if workspace_audience:
+        return dataclasses.replace(record, audience_kind="workspace", audience_id=None)
+    return record
+
+
+def _units(ev: EvidenceWorkspace) -> list[Row[Any]]:
+    return _rows(ev, evidence_unit)
+
+
+def _spy_claims(monkeypatch: pytest.MonkeyPatch) -> list[ClaimedBatch]:
+    """Every batch the drain claims, in order, from the real ``claim_units``."""
+    batches: list[ClaimedBatch] = []
+
+    def spy(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
+        batch = claim_units(uow, now=now)
+        batches.append(batch)
+        return batch
+
+    monkeypatch.setattr(automatic, "claim_units", spy)
+    return batches
+
+
+def _workspace_setting(
+    ev: EvidenceWorkspace, key: str, value: str, value_type: ValueType
+) -> None:
+    """A workspace settings row written directly, as the retention tests write it."""
+    with ev.unit_of_work() as uow:
+        upsert_workspace_setting(
+            uow.connection, key=key, value=value, value_type=value_type, updated_by=None
+        )
+        uow.commit()
+
+
+# --- AC-5: the four limits --------------------------------------------------------
+
+
+def _bodies(count: int) -> list[str]:
+    return [f"{FAKE_EXTRACTION_MARKER} Shelf {n} holds lanterns." for n in range(count)]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [(MAX_RECORDS_KEY, 2), (MAX_BYTES_KEY, 80)],
+    ids=["max_records_per_attempt", "max_bytes_per_attempt"],
+)
+def test_ac5_an_attempt_budget_defers_the_excess_and_a_resend_settles_it_all(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    now: datetime,
+    key: str,
+    value: int,
+) -> None:
+    """The deferred suffix writes no row and is named by key only; each resend
+    takes what fits, and after the drains every record is one live memory."""
+    ev.set_workspace(key, value)
+    records = [_evidence(ev, body, at=now) for body in _bodies(3)]
+
+    pending = list(records)
+    attempts = 0
+    while pending:
+        attempt = _record_batch(ev, pending, at=now)
+        attempts += 1
+        assert attempt.accepted, attempt  # every attempt makes progress
+        assert attempt.gapped == attempt.dropped == ()
+        assert attempt.deferred == tuple(
+            record.native_key for record in pending[len(attempt.accepted) :]
+        )
+        held = {unit.native_key for unit in _units(ev)}
+        assert held.isdisjoint(attempt.deferred)  # a deferral writes no row
+        _drain_at(monkeypatch, ev, now)
+        pending = pending[len(attempt.accepted) :]
+
+    assert attempts >= 2  # the first attempt really did defer
+    units = _units(ev)
+    assert {unit.native_key for unit in units} == {r.native_key for r in records}
+    assert {(unit.state, unit.outcome) for unit in units} == {("settled", "active")}
+    assert len(_rows(ev, memory_tables.memory)) == 3
+    assert _audit_names(ev).count(_ACCEPT_AUDIT) == 3
+
+
+def test_ac5_sixty_five_pending_units_take_two_drains_and_all_settle(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    """``max_units_per_job`` (64): the first drain claims 64 and enqueues a follow-up
+    due now, which claims the 65th. Nothing is left pending."""
+    batches = _spy_claims(monkeypatch)
+    records = [_evidence(ev, body, at=now) for body in _bodies(65)]
+    attempt = _record_batch(ev, records, at=now)
+    assert len(attempt.accepted) == 65
+    _drain_at(monkeypatch, ev, now)
+
+    assert [len(batch.units) for batch in batches] == [64, 1]
+    assert [batch.follow_up_at for batch in batches] == [now, None]
+    drains = _jobs(ev)
+    assert [(job.state, job.attempts) for job in drains] == [("succeeded", 1)] * 2
+    units = _units(ev)
+    assert len(units) == 65
+    assert {(unit.state, unit.outcome) for unit in units} == {("settled", "active")}
+    assert len(_rows(ev, memory_tables.memory)) == 65
+
+
+def test_ac5_a_unit_past_max_pending_hours_is_an_expired_gap_with_no_receipt(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    failing = _install_failing(monkeypatch)  # counts any extraction call
+    stale = now - timedelta(hours=25)  # default window 24 h: closed an hour ago
+    attempt = _record_batch(ev, [_evidence(ev, _TURN, at=stale)], at=now)
+    assert len(attempt.accepted) == 1
+    _drain_at(monkeypatch, ev, now)
+
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("gap", "expired_pending")
+    assert unit.body is None
+    assert unit.settled_at == now
+    assert failing.calls == 0  # never processed as though it arrived fresh
+    assert _counts(ev) == _NO_RECEIPTS
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("succeeded", 1)
+
+
+# --- AC-6: the retention recheck, reached at the seam ------------------------------
+
+
+def _retention_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    now: datetime,
+    *,
+    gate: bool,
+    workspace_audience: bool,
+) -> list[ClaimedBatch]:
+    """Edge Case 4 option (a), identical for every leg: a 72-hour pending window
+    (the operator's raise), one day of retention, a unit recorded 30 hours ago. Its
+    window closes in 42 hours; the horizon was 24 hours ago, 6 hours after it."""
+    monkeypatch.setenv(_PENDING_HOURS_ENV, "72")
+    _workspace_setting(ev, RETENTION_DAYS_KEY, "1", ValueType.INT)
+    _workspace_setting(
+        ev, RETENTION_EXPIRE_BY_AGE_KEY, "true" if gate else "false", ValueType.BOOL
+    )
+    recorded_at = now - timedelta(hours=30)
+    record = _evidence(ev, _TURN, at=recorded_at, workspace_audience=workspace_audience)
+    attempt = _record_batch(ev, [record], at=now)
+    assert len(attempt.accepted) == 1
+
+    # The pre-assertion: still pending, window still open, so the drain below reaches
+    # ``_policy_state``'s later checks and not ``_window_state``'s ``expired``.
+    [unit] = _units(ev)
+    assert unit.state == "pending"
+    assert unit.source_recorded_at == recorded_at
+    assert unit.source_expires_at == recorded_at + timedelta(hours=72)
+    assert unit.source_expires_at > now
+
+    batches = _spy_claims(monkeypatch)
+    _drain_at(monkeypatch, ev, now)
+    return batches
+
+
+def _claimed_once_with_no_follow_up(
+    ev: EvidenceWorkspace, batches: list[ClaimedBatch]
+) -> None:
+    """W1: the drain claimed the unit, and enqueued no follow-up drain."""
+    assert [len(batch.units) for batch in batches] == [1]
+    assert batches[0].follow_up_at is None
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("succeeded", 1)
+
+
+def test_ac6_gate_on_workspace_audience_outside_the_horizon_is_born_expired(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    batches = _retention_fixture(
+        monkeypatch, ev, now, gate=True, workspace_audience=True
+    )
+
+    _claimed_once_with_no_follow_up(ev, batches)
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "noop")
+    [receipt] = _rows(ev, memory_tables.source_receipt)
+    assert (receipt.state, receipt.record_id) == ("noop", None)
+    assert _rows(ev, memory_tables.memory) == []
+    assert _ACCEPT_AUDIT not in _audit_names(ev)
+
+
+def test_ac6_gate_off_the_same_workspace_unit_is_one_live_memory(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    batches = _retention_fixture(
+        monkeypatch, ev, now, gate=False, workspace_audience=True
+    )
+
+    _claimed_once_with_no_follow_up(ev, batches)
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "active")
+    [receipt] = _rows(ev, memory_tables.source_receipt)
+    assert receipt.state == "active"
+    [memory] = _rows(ev, memory_tables.memory)
+    assert (memory.audience_kind, memory.audience_id) == ("workspace", None)
+    [ref] = _recall_refs(ev, None)  # live: a read returns it
+    assert str(memory.id) in ref
+
+
+def test_ac6_gate_on_a_member_unit_of_the_same_age_is_one_live_memory(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    _retention_fixture(monkeypatch, ev, now, gate=True, workspace_audience=False)
+
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "active")
+    [receipt] = _rows(ev, memory_tables.source_receipt)
+    assert receipt.state == "active"
+    [memory] = _rows(ev, memory_tables.memory)
+    assert (memory.audience_kind, memory.audience_id) == ("member", ev.owner_account_id)
+    [ref] = _recall_refs(ev, None)
+    assert str(memory.id) in ref
+
+
+# --- AC-7: extraction faults ------------------------------------------------------
+
+
+class _Flaky:
+    """Raises on its first ``fails`` calls, or, given ``only_tag``, on every batch
+    whose text carries that tag; otherwise answers as the built-in fake does."""
+
+    def __init__(self, *, fails: int = 0, only_tag: str | None = None) -> None:
+        providers()  # the built-ins first, so the swap is undone onto them
+        self.fake = PROVIDERS[FAKE_PROVIDER]
+        self.fails = fails
+        self.only_tag = only_tag
+        self.calls = 0
+
+    @property
+    def name(self) -> str:
+        return FAKE_PROVIDER
+
+    def extract(self, batch: DigestBatch) -> Any:
+        self.calls += 1
+        if self.only_tag is not None:
+            fault = any(self.only_tag in item.text for item in batch.items)
+        else:
+            fault = self.calls <= self.fails
+        if fault:
+            raise RuntimeError("a limits-test provider fault")
+        return self.fake.extract(batch)
+
+
+def test_ac7_a_fault_then_success_after_retry_after_writes_one_memory(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    flaky = _Flaky(fails=1)
+    monkeypatch.setitem(PROVIDERS, FAKE_PROVIDER, flaky)
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    first = _enqueue_drain(ev, at=now)
+    _at(monkeypatch, ev, now)
+
+    # The failed drain wrote no receipt at all, and succeeded as a job.
+    assert _counts(ev) == _NO_RECEIPTS
+    [unit] = _units(ev)
+    assert (unit.state, unit.extraction_attempts) == ("pending", 1)
+    assert unit.retry_after == now + timedelta(seconds=5)
+    [drain] = [job for job in _jobs(ev) if job.id == first]
+    assert (drain.state, drain.attempts) == ("succeeded", 1)
+
+    _at(monkeypatch, ev, unit.retry_after)
+
+    assert flaky.calls == 2
+    assert _counts(ev) == _ONE_ACCEPTANCE
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "active")
+
+
+def test_ac7_five_faults_settle_extraction_failed_and_no_drain_job_ever_retries(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    failing = _install_failing(monkeypatch)
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    _enqueue_drain(ev, at=now)
+
+    at = now
+    for attempt, step in enumerate((5, 20, 80, 320, None), start=1):
+        _at(monkeypatch, ev, at)
+        [unit] = _units(ev)
+        assert unit.extraction_attempts == attempt
+        if step is None:
+            break
+        assert (unit.state, unit.retry_after) == (
+            "pending",
+            at + timedelta(seconds=step),
+        )
+        at = unit.retry_after
+
+    assert failing.calls == 5
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("gap", "extraction_failed")
+    assert unit.body is None
+    assert unit.settled_at == at
+    assert _counts(ev) == _NO_RECEIPTS
+    drains = _jobs(ev)
+    assert [(job.state, job.attempts) for job in drains] == [("succeeded", 1)] * 5
+
+
+def test_ac7_a_healthy_later_partition_settles_before_the_failing_one_is_due_again(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    """R11's head-of-line proof: the failing partition is recorded first and so
+    anchors the first claim; the healthy one, recorded after it, is settled by the
+    follow-up drain before the failing one's ``retry_after`` comes due."""
+    flaky = _Flaky(only_tag=_FAILING_TAG)
+    monkeypatch.setitem(PROVIDERS, FAKE_PROVIDER, flaky)
+    failing_body = f"{FAKE_EXTRACTION_MARKER} The {_FAILING_TAG} lanterns."
+    _record_batch(
+        ev,
+        [_evidence(ev, failing_body, at=now - timedelta(seconds=10))],
+        purpose=ContextPurpose.RESPOND,
+        at=now,
+    )
+    healthy = ContextPurpose.INTERNAL_ANALYSIS
+    _record_batch(
+        ev,
+        [_evidence(ev, _TURN, at=now - timedelta(seconds=5), purpose=healthy)],
+        purpose=healthy,
+        at=now,
+    )
+    batches = _spy_claims(monkeypatch)
+    _drain_at(monkeypatch, ev, now)
+
+    by_purpose = {unit.purpose: unit for unit in _units(ev)}
+    stuck = by_purpose[ContextPurpose.RESPOND.value]
+    settled = by_purpose[healthy.value]
+    assert [len(batch.units) for batch in batches[:2]] == [0, 1]
+    assert (stuck.state, stuck.extraction_attempts) == ("pending", 1)
+    assert (settled.state, settled.outcome) == ("settled", "active")
+    assert settled.settled_at == now < stuck.retry_after
+    assert _counts(ev) == _ONE_ACCEPTANCE
+    queued = [job for job in _jobs(ev) if job.state == "queued"]
+    assert [job.next_run_at for job in queued] == [stuck.retry_after]
+
+
+# --- card item 5: the success audit rolls back with the acceptance ------------------
+
+
+class _RaisingSink:
+    def record(self, *args: object, **kwargs: object) -> None:
+        raise RuntimeError(_SINK_FAULT)
+
+
+_SINK_IDS: Final = (CORE_MODULE_ID, HARNESS_MODULE_ID, MODULE_ID)
+
+
+@pytest.fixture
+def sinks(ev: EvidenceWorkspace) -> Iterator[None]:
+    """Snapshot the sink table and put it back afterwards, whatever the test did."""
+    installed = {module_id: sink_for(module_id) for module_id in _SINK_IDS}
+    assert installed[MODULE_ID] is not None  # Recallatron's manifest installed one
+    yield
+    _replace_sinks(installed)
+
+
+def _replace_sinks(table: dict[str, Any]) -> None:
+    reset_sinks()
+    for module_id, sink in table.items():
+        if sink is not None:
+            install_sink(module_id, sink)
+
+
+def _without_recallatron_sink() -> dict[str, Any]:
+    return {
+        module_id: sink_for(module_id)
+        for module_id in _SINK_IDS
+        if module_id != MODULE_ID
+    }
+
+
+def _spy_settlements(monkeypatch: pytest.MonkeyPatch) -> list[type[BaseException]]:
+    raised: list[type[BaseException]] = []
+
+    def spy(*args: Any, **kwargs: Any) -> None:
+        try:
+            settle_unit(*args, **kwargs)
+        except BaseException as exc:
+            raised.append(type(exc))
+            raise
+
+    monkeypatch.setattr(automatic, "settle_unit", spy)
+    return raised
+
+
+def _assert_rolled_back(ev: EvidenceWorkspace) -> None:
+    """Nothing of the acceptance survived, and the unit waits with its body."""
+    assert _counts(ev) == _NO_RECEIPTS
+    assert _rows(ev, memory_tables.memory_entity) == []
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome, unit.settled_at) == ("pending", None, None)
+    assert unit.body is not None and FAKE_EXTRACTION_MARKER in unit.body
+
+
+def test_card5a_a_raising_sink_fails_the_attempt_and_a_restored_sink_accepts_once(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime, sinks: None
+) -> None:
+    installed = {module_id: sink_for(module_id) for module_id in _SINK_IDS}
+    _replace_sinks({**_without_recallatron_sink(), MODULE_ID: _RaisingSink()})
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    _drain_at(monkeypatch, ev, now)
+
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts, drain.last_error) == ("queued", 1, _SINK_FAULT)
+    _assert_rolled_back(ev)
+
+    _replace_sinks(installed)  # CORE_AUDIT_SINK back under Recallatron's id
+    _at(monkeypatch, ev, drain.next_run_at)
+
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("succeeded", 2)
+    assert _counts(ev) == _ONE_ACCEPTANCE
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "active")
+
+
+def test_card5b_no_sink_is_evidence_audit_unwritable_and_rolls_everything_back(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime, sinks: None
+) -> None:
+    _replace_sinks(_without_recallatron_sink())
+    assert sink_for(MODULE_ID) is None
+    raised = _spy_settlements(monkeypatch)
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    _drain_at(monkeypatch, ev, now)
+
+    assert raised == [EvidenceAuditUnwritable]
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 1)
+    assert drain.last_error is not None
+    _assert_rolled_back(ev)
+
+
+def test_card5c_a_noop_settles_with_no_audit_row_while_the_raising_sink_is_installed(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime, sinks: None
+) -> None:
+    _replace_sinks({**_without_recallatron_sink(), MODULE_ID: _RaisingSink()})
+    providers()  # the built-ins first, so the swap is undone onto them
+    monkeypatch.setitem(
+        PROVIDERS, FAKE_PROVIDER, _Answering({"kind": "note", "title": "", "body": ""})
+    )
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    _drain_at(monkeypatch, ev, now)
+
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts, drain.last_error) == ("succeeded", 1, None)
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "noop")
+    [receipt] = _rows(ev, memory_tables.source_receipt)
+    assert receipt.state == "noop"
+    assert _rows(ev, memory_tables.memory) == []
+    assert _audit_names(ev).count(_ACCEPT_AUDIT) == 0

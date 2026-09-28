@@ -17,6 +17,7 @@ _ABSENCE_PROOF_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_automatic_memory_acceptance.py",
     "tests/postgres/test_automatic_memory_drain.py",
+    "tests/postgres/test_automatic_memory_limits.py",
     "tests/postgres/test_history_records.py",
     "tests/postgres/test_memory_browse.py",
     "tests/postgres/test_memory_dedup.py",
@@ -88,6 +89,8 @@ subcommand, which live there too, and ``test_automatic_memory_drain.py`` drives 
 automatic-memory consumer and drain job, which only Recallatron declares.
 ``test_automatic_memory_acceptance.py`` drives the automatic-memory acceptance path end
 to end through Recallatron's real seam, from a runtime turn to a live memory.
+``test_automatic_memory_limits.py`` drives the drain's limit, retention and
+audit-rollback behaviour through Recallatron's real job kind and sink registration.
 
 ``tests/postgres/test_workspace_status.py`` was in this set and is deliberately not any
 more: it carries four phase-one acceptance demonstrators, and being *allowed* to name
