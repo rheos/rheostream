@@ -5,11 +5,10 @@ recording gate and the eligible-evidence service both read.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any
 
 import pytest
 from rheo_core.evidence import providers
+from rheo_core.evidence.extract import DigestBatch, DigestItem
 from rheo_core.evidence.providers import (
     FAKE_EXTRACTION_MARKER,
     FakeExtractionProvider,
@@ -18,17 +17,6 @@ from rheo_core.evidence.providers import (
 )
 
 PROVIDER_ENV = "RHEO__automatic_memory__extraction__provider"
-
-
-@dataclass(frozen=True)
-class _Item:
-    item_id: str
-    text: str
-
-
-@dataclass(frozen=True)
-class _Batch:
-    items: tuple[_Item, ...]
 
 
 def test_the_fake_resolves_under_the_test_profile(
@@ -77,7 +65,7 @@ def test_a_registered_variant_replaces_the_fake(
         def name(self) -> str:
             return "faulting"
 
-        def extract(self, batch: Any) -> Mapping[str, object]:
+        def extract(self, batch: DigestBatch) -> Mapping[str, object]:
             raise TimeoutError("synthetic transient fault")
 
     monkeypatch.setattr(providers, "PROVIDERS", {})
@@ -87,13 +75,15 @@ def test_a_registered_variant_replaces_the_fake(
     provider = resolve_provider()
     assert provider is not None and provider.name == "faulting"
     with pytest.raises(TimeoutError):
-        provider.extract(_Batch(items=()))
+        provider.extract(DigestBatch(items=()))
 
 
 def test_the_fake_is_deterministic_and_records_what_it_saw() -> None:
     fake = FakeExtractionProvider()
     marked = f"{FAKE_EXTRACTION_MARKER} The team prefers Thursday releases."
-    batch = _Batch(items=(_Item("u1", marked), _Item("u2", "nothing to remember")))
+    batch = DigestBatch(
+        items=(DigestItem("u1", marked), DigestItem("u2", "nothing to remember"))
+    )
     first = fake.extract(batch)
     assert first == {
         "items": [
@@ -122,7 +112,7 @@ def test_the_registered_fake_can_be_reset_between_tests(
     monkeypatch.setenv(PROVIDER_ENV, "fake")
     fake = resolve_provider()
     assert isinstance(fake, FakeExtractionProvider)
-    fake.extract(_Batch(items=(_Item("u1", "left over"),)))
+    fake.extract(DigestBatch(items=(DigestItem("u1", "left over"),)))
     fake.reset_calls()
     assert fake.calls == []
     assert resolve_provider() is fake
