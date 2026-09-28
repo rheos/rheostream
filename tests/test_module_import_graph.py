@@ -17,6 +17,7 @@ _ABSENCE_PROOF_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_automatic_memory_acceptance.py",
     "tests/postgres/test_automatic_memory_drain.py",
+    "tests/postgres/test_automatic_memory_export.py",
     "tests/postgres/test_automatic_memory_limits.py",
     "tests/postgres/test_automatic_memory_shapes.py",
     "tests/postgres/test_history_records.py",
@@ -97,6 +98,8 @@ to end through Recallatron's real seam, from a runtime turn to a live memory.
 audit-rollback behaviour through Recallatron's real job kind and sink registration.
 ``test_automatic_memory_shapes.py`` calls Recallatron's own ``accept_source_unit``
 directly for the ``claude_code_local`` shape, which only the real seam can answer.
+``test_automatic_memory_export.py`` drives Recallatron's real export/import pair over
+automatic memories, so a restore re-checks each one's own bound purpose.
 ``test_evidence_boundary.py`` scans Recallatron's source tree for the FR 2 import
 boundary, so it names that tree's path. ``test_search_quality.py`` drives the real
 curated and owner-only history search against independently labelled synthetic
