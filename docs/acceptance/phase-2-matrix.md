@@ -104,8 +104,9 @@ and `routing_config()` dropping every module surface reds it too
 
 **Note:** the first three demonstrators are the module-contract half, run 1a0's. The first
 two are unchanged; the third was renamed from `..._and_no_subscription` by run 1a4a, when
-the manifest gained its one subscription, and now asserts it. Its mutation, captured by P7 on 2026-09-21, set `schema_version=None` in
-`core_ops.py`'s `_workspace_status` and reddened
+the manifest gained its one subscription, and now asserts it. The module-contract half's
+mutation, captured by P7 on 2026-09-21, set `schema_version=None` in
+`core_ops.py`'s `_workspace_status` and reddened the first demonstrator,
 `test_install_then_enable_makes_workspace_status_report_recallatron` with
 `E       AssertionError: assert [{'module_id'...rsion': None}] == [{'module_id'...ory_records'}]`.
 It targets the reporting side, because a status response that stopped carrying the applied

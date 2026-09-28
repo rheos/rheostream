@@ -21,6 +21,7 @@ Kinds and subscriptions are taken off ``MANIFEST``, never registered by hand, so
 kind the manifest stops declaring fails here as unknown. Every text is synthetic.
 """
 
+import importlib
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -405,6 +406,41 @@ def test_an_extraction_failure_leaves_the_drain_succeeded_and_only_the_row_moved
     assert (unit.state, unit.extraction_attempts) == ("pending", 1)
     assert unit.retry_after == pinned + timedelta(seconds=5)
     assert (follow_up.state, follow_up.next_run_at) == ("queued", unit.retry_after)
+
+
+# --- the drain: acceptance and settlement commit together --------------------------
+
+
+def test_an_unwritable_audit_rolls_the_whole_acceptance_back(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, pinned: datetime
+) -> None:
+    """``settle_unit`` raises ``EvidenceAuditUnwritable`` after acceptance wrote its
+    memory: the job fails its attempt, and the memory, its receipt and its entities
+    go with it. The row is left pending, unclaimed, for the retry."""
+    _record_with_probe(ev, f"{FAKE_EXTRACTION_MARKER} {_TURN}", at=pinned)
+    # The submodule itself: the package re-exports a function named ``dispatch``.
+    dispatch_module = importlib.import_module("rheo_core.operations.dispatch")
+    monkeypatch.setattr(
+        dispatch_module,
+        "record_evidence_acceptance_audit",
+        lambda *args, **kwargs: False,
+    )
+    _enqueue_drain(ev, at=pinned)
+    _visit(ev, at=pinned)
+
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 1)
+    assert drain.last_error is not None
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome, unit.settled_at) == ("pending", None, None)
+    assert unit.extraction_attempts == 0
+    with ev.unit_of_work() as uow:
+        for table in (
+            memory_tables.memory,
+            memory_tables.source_receipt,
+            memory_tables.memory_entity,
+        ):
+            assert uow.connection.execute(select(table)).all() == [], table.name
 
 
 # --- the drain: an unresolved workspace is a job retry -----------------------------
