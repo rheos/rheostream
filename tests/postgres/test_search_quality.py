@@ -41,6 +41,7 @@ from rheo_recallatron.migration.history_extract import (
 )
 from rheo_recallatron.migration.history_import import import_history
 from rheo_recallatron.operations import MEMORY_RECALL, MEMORY_REMEMBER, RecallResult
+from rheo_recallatron.retrieval import rerank
 from sqlalchemy import Engine
 
 pytestmark = pytest.mark.postgres
@@ -56,8 +57,14 @@ _HOLDOUT = json.loads(
     ).read_text()
 )
 _PASSES = [
-    pytest.param(strategy, case, id=f"{strategy}-{case['id']}")
+    pytest.param(strategy, case, 3, id=f"{strategy}-{case['id']}")
     for case in _CASES
+    for strategy in case["strategies"]
+]
+_PASSES += [
+    pytest.param(strategy, case, 1, id=f"{strategy}-{case['id']}-k1")
+    for case in _CASES
+    if case["id"] == "shed-key-question"
     for strategy in case["strategies"]
 ]
 
@@ -191,6 +198,12 @@ def test_independent_ranking_holdout(
     outcome = search_workspace.call(MEMORY_RECALL, {"query": case["query"], "k": k})
     assert outcome.ok and isinstance(outcome.result, RecallResult), outcome
     assert outcome.result.provenance.dense_available
+    if outcome.result.items:
+        assert (
+            outcome.result.provenance.reranker
+            == f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}"
+        )
+        assert not outcome.result.provenance.rerank_degraded
     ranked = [holdout_corpus[item.ref] for item in outcome.result.items]
     measured = score(ranked, set(case["relevant"]), k=k)
     print(f"holdout {case['id']} / {strategy} / k={k}: {ranked}; {measured}")
@@ -201,7 +214,7 @@ def test_independent_ranking_holdout(
         assert ranked == []
 
 
-@pytest.mark.parametrize(("strategy", "case"), _PASSES)
+@pytest.mark.parametrize(("strategy", "case", "k"), _PASSES)
 def test_curated_search_answers_independent_questions(
     search_workspace: SearchWorkspace,
     curated_corpus: dict[str, str],
@@ -209,6 +222,7 @@ def test_curated_search_answers_independent_questions(
     monkeypatch: pytest.MonkeyPatch,
     strategy: str,
     case: dict,
+    k: int,
 ) -> None:
     # Neither ambient criterion-31 variables nor a configured fake provider may
     # silently turn this matrix into another strategy/provider pass.
@@ -221,11 +235,20 @@ def test_curated_search_answers_independent_questions(
         with UnitOfWork(search_workspace.engine, search_workspace.database) as uow:
             fill_missing_embeddings(uow, provider=local_provider, batch_size=32)
             uow.commit()
-    outcome = search_workspace.call(MEMORY_RECALL, {"query": case["query"], "k": 3})
+    outcome = search_workspace.call(MEMORY_RECALL, {"query": case["query"], "k": k})
     assert outcome.ok and isinstance(outcome.result, RecallResult), outcome
     result = outcome.result
     assert result.provenance.strategy == strategy
     assert result.provenance.dense_available == (strategy != "lexical")
+    if strategy == "lexical":
+        assert result.provenance.reranker is None
+        assert not result.provenance.rerank_degraded
+        assert all(item.rerank_score is None for item in result.items)
+    if strategy != "lexical" and result.items:
+        assert (
+            result.provenance.reranker == f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}"
+        )
+        assert not result.provenance.rerank_degraded
     ranked = [curated_corpus[item.ref] for item in result.items]
     relevant = set(case["relevant"])
     measured = score(ranked, relevant, k=case["cutoff"])

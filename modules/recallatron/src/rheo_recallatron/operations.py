@@ -119,7 +119,10 @@ from rheo_recallatron.eligibility import (
     is_container_member,
     memory_reference,
 )
+from rheo_recallatron.embedding import embed_input
+from rheo_recallatron.embedding.local import LocalEmbeddingProvider
 from rheo_recallatron.embedding.operations import EMBEDDING_OPERATIONS
+from rheo_recallatron.embedding.registry import resolve_provider
 from rheo_recallatron.entities import (
     ENTITY_OPERATIONS,
     resolve_mentions,
@@ -136,6 +139,7 @@ from rheo_recallatron.refusals import (
     REFERENCE_SCAN_LIMIT,
     WINDOW_SCAN_LIMIT,
 )
+from rheo_recallatron.retrieval import rerank
 from rheo_recallatron.retrieval.dispatch import resolve_strategy
 from rheo_recallatron.retrieval.protocol import (
     ARM_DENSE,
@@ -234,6 +238,9 @@ class RecallItem(MemoryItem):
 
     score: float
     strategy: str
+    rerank_score: float | None = None
+    """Raw relevance logit when provenance.reranker is set. The original score
+    remains on the first-stage strategy's scale; it need not descend after rerank."""
 
 
 class RecallInput(Strict):
@@ -436,14 +443,19 @@ def recall(
     walked in rank order and each is fully evaluated — links included — before any of
     its content is put in the answer, so a row whose source the caller may not read
     never contributes a title. The walk stops at ``k`` eligible rows or at the bounded
-    candidate scan, whichever comes first.
+    candidate scan, whichever comes first. With the local semantic provider, a
+    relevance pass instead walks up to three times k eligible candidates (at most
+    150), under the same reference budget, then returns k. No denied text reaches
+    that model; a spent budget refuses before the relevance call.
 
     No no-query recency bundle and no implicit session expansion. Every item and the
     response's ``provenance`` name the strategy that answered. ``provenance.arms``
     counts, per arm, the returned items that arm ranked, so nothing the walk dropped
     can move it. A strategy that scores by rank (``hybrid``) is handed the same
     eligibility decision up front and ranks admitted candidates only, so no score or
-    position counts a memory this caller may not read either (#125).
+    position counts a memory this caller may not read either (#125). The optional
+    relevance pass is named separately in provenance, with its score beside rather
+    than in place of the original retrieval score. It never admits a new candidate.
     """
     _checked_purpose(ctx, model_input.purpose)
     request = _opened(ctx, uow)
@@ -461,6 +473,12 @@ def recall(
         return True
 
     strategy = resolve_strategy(ctx, uow)
+    # The on-box relevance model accompanies the on-box semantic provider only.
+    # Lexical-only, degraded semantic and other-provider paths keep their contract.
+    wants_rerank = strategy.name in {"dense", "hybrid"} and isinstance(
+        resolve_provider(), LocalEmbeddingProvider
+    )
+    window = model_input.k * rerank.WINDOW_MULTIPLIER if wants_rerank else model_input.k
     ranked = strategy.search(
         ctx,
         uow,
@@ -471,19 +489,41 @@ def recall(
             limit=CANDIDATE_SCAN_LIMIT,
             k=model_input.k,
             admit=admit,
+            candidate_k=window if wants_rerank else None,
         ),
     )
 
-    items: list[RecallItem] = []
-    returned: list[Hit] = []
+    candidates: list[tuple[Hit, Eligible]] = []
     for hit in ranked.hits:
-        if len(items) == model_input.k:
+        if len(candidates) == (window if ranked.dense_available else model_input.k):
             break
         decision = eligible_memory(ctx, uow, hit.ref, mode=mode, request=request)
         if isinstance(decision, Denied):
             if decision.state == REFERENCE_SCAN_LIMIT:
                 raise _refuse(decision)
             continue
+        candidates.append((hit, decision))
+
+    scores = None
+    degraded = False
+    if wants_rerank and ranked.dense_available and candidates:
+        scores = rerank.relevance_scores(
+            model_input.query,
+            [
+                embed_input(decision.row.title, decision.row.body)
+                for _, decision in candidates
+            ],
+        )
+        degraded = scores is None
+    ordering = list(range(len(candidates)))
+    if scores is not None:
+        # Stable ties keep the original first-stage order, never an added recency
+        # boost or an unseen candidate's rank. Only admitted text reached the model.
+        ordering.sort(key=lambda index: scores[index], reverse=True)
+    items: list[RecallItem] = []
+    returned: list[Hit] = []
+    for index in ordering[: model_input.k]:
+        hit, decision = candidates[index]
         items.append(
             RecallItem(
                 # The same rendering every read uses, plus the two fields only a
@@ -493,6 +533,7 @@ def recall(
                 **_item(ctx, uow, decision, request=request).model_dump(),
                 score=hit.score,
                 strategy=strategy.name,
+                rerank_score=None if scores is None else scores[index],
             )
         )
         returned.append(hit)
@@ -508,6 +549,12 @@ def recall(
                 dense=sum(ARM_DENSE in hit.arms for hit in returned),
             ),
             dense_available=ranked.dense_available,
+            reranker=(
+                f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}"
+                if scores is not None
+                else None
+            ),
+            rerank_degraded=degraded,
         ),
     )
 

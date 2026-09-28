@@ -46,6 +46,12 @@ class SearchRequest:
     limit: int
     k: int
     admit: Callable[[UUID], bool] | None = None
+    candidate_k: int | None = None
+    """Optional admitted first-stage window for post-eligibility relevance ranking.
+
+    The requested k still bounds the hybrid dense arm's existing over-fetch; this
+    only extends fusion's proof from top-k to top-window. None keeps the old walk.
+    """
 
 
 ARM_LEXICAL: Final = "lexical"

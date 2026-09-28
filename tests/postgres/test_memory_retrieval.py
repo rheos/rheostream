@@ -104,6 +104,7 @@ from rheo_recallatron.operations import (
     RecallResult,
 )
 from rheo_recallatron.resolvers import resolve_memory
+from rheo_recallatron.retrieval import rerank
 from rheo_recallatron.retrieval.dense import (
     NO_EMBEDDINGS,
     NO_PROVIDER,
@@ -580,6 +581,7 @@ def test_dense_recall_finds_a_memory_that_shares_no_term_with_its_query(
         strategy=STRATEGY_DENSE,
         arms=ArmCounts(lexical=0, dense=1),
         dense_available=True,
+        reranker=f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}",
     )
 
 
@@ -1019,6 +1021,7 @@ def test_dense_recall_of_apples_returns_the_nearest_rows_apples_then_pears(
         strategy=STRATEGY_DENSE,
         arms=ArmCounts(lexical=0, dense=2),
         dense_available=True,
+        reranker=f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}",
     )
 
 

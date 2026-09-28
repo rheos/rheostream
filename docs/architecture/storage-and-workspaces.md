@@ -327,6 +327,12 @@ selection, the dense fill and rebuild, reciprocal rank fusion and the bounded re
 within ties, and closed criterion 31. There is no persisted model-dimension registry: the width
 is pinned in the column type, `vector(384)`.
 
+The [post-eligibility relevance amendment](recall-relevance-ranking.md) supersedes
+recency-only final ordering on healthy local semantic curated recall. It ranks a
+bounded admitted window with a pinned on-box query/document model, preserves the
+first-stage scores separately, and explicitly reports model failure. Lexical-only
+and owner-only history ordering are unchanged.
+
 One protocol (`rheo_recallatron.retrieval.protocol`):
 
 ```text
@@ -334,7 +340,7 @@ RetrievalStrategy
   index(ctx, uow, item: IndexItem) -> None     # item: memory id, title, body
   invalidate(ctx, uow, ref) -> None            # removes every derived index entry for ref
   search(ctx, uow, request: SearchRequest) -> SearchResult
-      # request: query, mode, memory request, limit, k, admit
+      # request: query, mode, memory request, limit, k, admit, optional candidate_k
       # result: hits (ref, score, strategy, arms), per-arm lengths, dense_available
 ```
 

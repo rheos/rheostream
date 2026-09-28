@@ -267,7 +267,10 @@ class HybridStrategy:
         dense_ids = [hit.ref for hit in dense.hits]
         if request.admit is not None:
             lexical_ids, dense_ids = admitted_arms(
-                lexical_ids, dense_ids, admit=request.admit, k=request.k
+                lexical_ids,
+                dense_ids,
+                admit=request.admit,
+                k=request.k if request.candidate_k is None else request.candidate_k,
             )
         ranked = (lexical_ids, dense_ids)
         fused = fuse(ranked, _recorded_at(uow, {ref for arm in ranked for ref in arm}))

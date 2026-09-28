@@ -348,11 +348,18 @@ class RecallProvenance(Strict):
     ``strategy``. Read it before comparing scores: ``score`` is on the answering
     strategy's own scale and is comparable only among items in one response.
     ``dense_available`` is whether a dense arm could contribute to this answer at all.
+    ``reranker`` identifies an applied post-eligibility local relevance pass; its
+    raw scores live in each item's ``rerank_score``. ``rerank_degraded`` explicitly
+    distinguishes failure of that pass from first-stage semantic availability.
     """
 
     strategy: str
     arms: ArmCounts
     dense_available: bool
+    reranker: str | None = None
+    """Applied local relevance model and immutable revision, otherwise None."""
+    rerank_degraded: bool = False
+    """A requested relevance pass failed; the original ordering was preserved."""
 
 
 class MemoryWritten(Strict):

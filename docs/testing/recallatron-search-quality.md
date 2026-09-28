@@ -6,6 +6,21 @@ workshop facts. It exercises the real operation dispatcher, isolated PostgreSQL
 workspaces, and (for semantic retrieval) the shipped local MiniLM model and pgvector.
 No production queries, source exports or model service receive fixture text.
 
+The original corpus/oracle is unchanged. A separately frozen
+[ranking-holdout.json](../../tests/fixtures/recallatron/ranking-holdout.json) tests
+direct answers against nearby non-answers in both creation orders, a paraphrase
+and an unrelated no-answer query, at both k=1 and k=3. The original shed-key case
+also runs at k=1; passing only when multiple results were requested would leave
+the common first-result request broken.
+
+Semantic-enabled curated recall now applies a bounded local cross-encoder relevance
+pass after full eligibility. It uses `Xenova/ms-marco-MiniLM-L-6-v2`, pinned to
+revision `a09144355adeed5f58c8ed011d209bf8ee5a1fec` (Apache-2.0), through the
+already-pinned FastEmbed runtime. Both the original suite and holdout require that
+real relevance model whenever there are semantic results; model failure/degradation
+does not turn the quality gate green. No new dependency, embedding rebuild, source
+transfer, hosted inference or history-search expansion is involved.
+
 The corpus and oracle are in
 [search-quality.json](../../tests/fixtures/recallatron/search-quality.json).
 Questions are not copied record titles. Similar-topic distractors distinguish water
@@ -67,6 +82,15 @@ The test harness fills embeddings synchronously after creating the corpus, using
 real rebuild implementation. It tests steady-state retrieval, not worker lag or
 just-written dense-only visibility. It does not measure large-corpus approximate
 index performance, latency, or tune relevance floors, fusion weights or HNSW.
+
+The relevance window is the first three times k admitted candidates (at most 150),
+not the entire corpus. A better answer outside that first-stage window cannot be
+rescued. The unchanged dense floor still admits/rejects dense candidates. The local
+reranker uses its model's bounded tokenization, so long documents can be truncated;
+this suite does not establish ranking quality for facts beyond that token window.
+Relevance scores are raw logits, not confidence probabilities or verification of a
+claim. Unanswered near-topic questions can still return related notes. A failed pass
+preserves the first-stage order and reports `rerank_degraded=true`, not success.
 
 Add new questions and labels from their intended meaning **before** inspecting a
 new result ranking. When a case fails, preserve the question and labels while
