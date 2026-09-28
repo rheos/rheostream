@@ -152,7 +152,7 @@ an identity it merely claimed.
 
 **Local semantic ordering amendment:** the first-stage mechanics below remain in
 force, but healthy curated `dense`/`hybrid` reads using the local provider now walk
-a three-times-k admitted window, then apply bounded on-box query/document relevance
+a three-times-k admitted window capped at 50, then apply on-box query/document relevance
 before returning k. Hybrid proves that top-window instead of only top-k. Full source
 eligibility and the same shared reference budget precede model input. The
 [relevance contract](recall-relevance-ranking.md) specifies the immutable model,

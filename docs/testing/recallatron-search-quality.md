@@ -83,7 +83,7 @@ real rebuild implementation. It tests steady-state retrieval, not worker lag or
 just-written dense-only visibility. It does not measure large-corpus approximate
 index performance, latency, or tune relevance floors, fusion weights or HNSW.
 
-The relevance window is the first three times k admitted candidates (at most 150),
+The relevance window is the first three times k admitted candidates, capped at 50,
 not the entire corpus. A better answer outside that first-stage window cannot be
 rescued. The unchanged dense floor still admits/rejects dense candidates. The local
 reranker uses its model's bounded tokenization, so long documents can be truncated;

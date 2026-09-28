@@ -2,6 +2,7 @@
 
 import socket
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from rheo_recallatron.retrieval import rerank
@@ -55,3 +56,51 @@ def test_warm_real_relevance_inference_needs_no_socket(monkeypatch) -> None:
         ],
     )
     assert scores[0] > scores[1]
+
+
+@pytest.mark.parametrize(
+    ("k", "window"), [(1, 3), (3, 9), (10, 30), (20, 50), (50, 50)]
+)
+def test_relevance_window_is_capped_without_shortening_requested_k(k, window) -> None:
+    assert rerank.candidate_window(k) == window
+    assert k <= window <= rerank.WINDOW_LIMIT
+
+
+def test_failed_load_is_shared_backed_off_and_retries_after_failure(
+    monkeypatch,
+) -> None:
+    model = rerank.LocalReranker()
+    clock = [100.0]
+    attempts = []
+    monkeypatch.setattr(rerank, "monotonic", lambda: clock[0])
+
+    def fail():
+        attempts.append("load")
+        # A slow failed fetch: the retry deadline must start after this time.
+        clock[0] = 150.0
+        raise OSError("synthetic artifact outage")
+
+    monkeypatch.setattr(model, "_create_model", fail)
+
+    def request(_):
+        try:
+            model._load()
+        except Exception as exc:
+            return type(exc)
+        raise AssertionError("load should fail during this outage")
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        failures = list(pool.map(request, range(8)))
+    assert attempts == ["load"]
+    assert failures.count(OSError) == 1
+    assert failures.count(rerank.RerankerCoolingDown) == 7
+    clock[0] = 150.0 + rerank.LOAD_RETRY_SECONDS - 1
+    assert request(None) is rerank.RerankerCoolingDown
+    recovered = object()
+    monkeypatch.setattr(model, "_create_model", lambda: recovered)
+    clock[0] += 1
+    assert model._load() is recovered
+    # A resident healthy model requires no artifact fetch or repeated initialization.
+    monkeypatch.setattr(model, "_create_model", fail)
+    assert model._load() is recovered
+    assert attempts == ["load"]

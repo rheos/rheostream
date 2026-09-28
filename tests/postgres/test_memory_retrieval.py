@@ -1486,6 +1486,37 @@ def test_hybrid_with_no_usable_dense_arm_answers_the_lexical_rows_in_order(
         assert record.provider_dimensions == EMBEDDING_DIMENSIONS
 
 
+def test_degraded_hybrid_does_not_widen_admission_for_a_relevance_window(
+    retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_ordered(retrieval, *_AC6_ROWS)
+    _select(monkeypatch, "none")
+    admitted = []
+
+    def admit(memory_id):
+        admitted.append(memory_id)
+        return True
+
+    with retrieval.reading() as uow:
+        ctx = retrieval.context()
+        result = HybridStrategy().search(
+            ctx,
+            uow,
+            SearchRequest(
+                query="apples",
+                mode=ReadMode.CURRENT,
+                memory=_request(ctx, uow),
+                limit=CANDIDATE_SCAN_LIMIT,
+                k=1,
+                candidate_k=50,
+                admit=admit,
+            ),
+        )
+    assert not result.dense_available
+    assert len(admitted) == 1
+    assert len(result.hits) == 1
+
+
 def test_hybrid_over_partial_coverage_reports_the_dense_arm_available(
     retrieval: RetrievalWorkspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

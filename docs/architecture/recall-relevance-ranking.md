@@ -7,7 +7,7 @@ history archive are unchanged. The original RRF recency tie-break remains the
 first-stage fallback, not the final relevance rule on a healthy local semantic read.
 
 For curated `dense` or `hybrid` recall using the local embedding provider, walk the
-first three times requested k readable candidates (maximum 150), using the existing
+first three times requested k readable candidates, capped at 50, using the existing
 500-candidate and shared 4096-reference/depth-64 bounds. Full eligibility, including
 permission-bearing sources, precedes any text reaching the local relevance model.
 Budget exhaustion refuses the whole read before that call, without partial content.
@@ -31,6 +31,9 @@ After reranking, base scores need not descend. Raw rerank scores are not confide
 probabilities and must not be compared across queries. A model/runtime failure
 preserves the original order, sets `rerank_degraded=true`, leaves `reranker` and
 `rerank_score` null, and logs only the exception class, not query/document/error text.
+A failed cold load is shared across concurrent callers and backed off for five
+minutes measured from failure completion; later calls degrade immediately instead
+of repeating a network timeout. A subsequent retry can recover without a restart.
 An empty or unavailable-semantic answer does not invoke the model. Lexical-only
 and non-local providers retain their original walk and ordering.
 

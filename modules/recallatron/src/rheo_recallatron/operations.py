@@ -444,8 +444,8 @@ def recall(
     its content is put in the answer, so a row whose source the caller may not read
     never contributes a title. The walk stops at ``k`` eligible rows or at the bounded
     candidate scan, whichever comes first. With the local semantic provider, a
-    relevance pass instead walks up to three times k eligible candidates (at most
-    150), under the same reference budget, then returns k. No denied text reaches
+    relevance pass instead walks up to three times k eligible candidates, capped
+    at 50, under the same reference budget, then returns k. No denied text reaches
     that model; a spent budget refuses before the relevance call.
 
     No no-query recency bundle and no implicit session expansion. Every item and the
@@ -478,7 +478,7 @@ def recall(
     wants_rerank = strategy.name in {"dense", "hybrid"} and isinstance(
         resolve_provider(), LocalEmbeddingProvider
     )
-    window = model_input.k * rerank.WINDOW_MULTIPLIER if wants_rerank else model_input.k
+    window = rerank.candidate_window(model_input.k) if wants_rerank else model_input.k
     ranked = strategy.search(
         ctx,
         uow,
