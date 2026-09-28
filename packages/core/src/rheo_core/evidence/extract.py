@@ -27,7 +27,9 @@ checks the raw response client-side and gives every batch item exactly one
   ``confidence``, ``occurred_at`` and ``mentions``; and an id the response leaves out.
   The extra-field refusal is what keeps a model from proposing ``purposes`` or
   ``links``: the evidence value accepts both, for the migration producer, so they are
-  refused here, before one is built.
+  refused here, before one is built. A proposed mention is likewise closed to
+  ``kind``, ``name`` and ``role``: a ``backing_ref`` would let model text pick a record
+  the entity becomes visible through, so one makes the item no candidate.
 - "No candidate" is :data:`NOOP_EVIDENCE`. It passes the evidence value's own
   ``min_length`` checks and fails 1a1's explicit-evidence gate (a blank title and
   body), so the unchanged seam writes a terminal ``noop`` receipt for it. No new seam
@@ -43,7 +45,7 @@ from datetime import datetime
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from rheo_contracts.source_units import MemoryKind, SanitizedEvidence, SourceMention
+from rheo_contracts.source_units import MemoryKind, SanitizedEvidence
 
 ITEM_ID_PREFIX: Final = "u"
 
@@ -97,6 +99,17 @@ class _ExtractionResponse(BaseModel):
     items: list[object] | tuple[object, ...]
 
 
+class _ProposedMention(BaseModel):
+    """A mention as a model may propose it: a kind, a name and a role, nothing else."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # FR 6: model text selects no trusted identity or authority, so no backing_ref.
+    kind: str
+    name: str
+    role: str | None = None
+
+
 class _ProposedMemory(BaseModel):
     """The fields a model may propose, and no others.
 
@@ -111,7 +124,7 @@ class _ProposedMemory(BaseModel):
     body: str
     confidence: float | None = None
     occurred_at: datetime | None = None
-    mentions: tuple[SourceMention, ...] = ()
+    mentions: tuple[_ProposedMention, ...] = ()
 
 
 def _candidate(memory: object) -> SanitizedEvidence | None:

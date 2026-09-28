@@ -340,6 +340,55 @@ def test_an_unattributable_entry_is_ignored(entry: object) -> None:
     assert validate_extraction(batch, {"items": [entry]}) == {"u1": NOOP_EVIDENCE}
 
 
+def test_a_proposed_mention_with_a_backing_ref_is_no_candidate_for_that_item() -> None:
+    """FR 6: model text selects no trusted identity. A backing ref is a visibility
+    route to the entity, so a model may not propose one."""
+    batch = _batch("a body", "b body")
+    result = validate_extraction(
+        batch,
+        {
+            "items": [
+                {
+                    "item": "u1",
+                    "memory": _memory(
+                        mentions=[
+                            {
+                                "kind": "person",
+                                "name": "Avery Example",
+                                "backing_ref": "rheo://example/record/1",
+                            }
+                        ]
+                    ),
+                },
+                {"item": "u2", "memory": _memory(title="Second")},
+            ]
+        },
+    )
+    assert result["u1"] is NOOP_EVIDENCE
+    assert result["u2"].title == "Second"
+
+
+def test_a_proposed_mention_with_an_unknown_field_is_no_candidate() -> None:
+    batch = _batch("a body")
+    mention = {"kind": "person", "name": "Avery Example", "entity_id": "e-1"}
+    result = validate_extraction(
+        batch, {"items": [{"item": "u1", "memory": _memory(mentions=[mention])}]}
+    )
+    assert result == {"u1": NOOP_EVIDENCE}
+
+
+def test_a_proposed_mention_keeps_kind_name_and_role_and_no_backing_ref() -> None:
+    batch = _batch("a body")
+    mention = {"kind": "person", "name": "Avery Example", "role": "owner"}
+    result = validate_extraction(
+        batch, {"items": [{"item": "u1", "memory": _memory(mentions=[mention])}]}
+    )
+    assert result["u1"].mentions == (
+        SourceMention(kind="person", name="Avery Example", role="owner"),
+    )
+    assert result["u1"].mentions[0].backing_ref is None
+
+
 def test_an_entry_with_a_key_beyond_item_and_memory_is_no_candidate() -> None:
     batch = _batch("a body")
     result = validate_extraction(
