@@ -15,6 +15,7 @@ _PATH_TOKEN = "modules/recallatron"
 _MATRIX_PARSER = _REPO_ROOT / "tests" / "test_acceptance_matrix.py"
 _ABSENCE_PROOF_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _DECLARED_TEST_DEPENDENCIES = {
+    "tests/postgres/test_automatic_memory_acceptance.py",
     "tests/postgres/test_automatic_memory_drain.py",
     "tests/postgres/test_history_records.py",
     "tests/postgres/test_memory_browse.py",
@@ -85,6 +86,8 @@ console script, which live only in this distribution, and ``test_migration_extra
 (FR 1, FR 3) drives the timestamp rule, the extract model and the ``inventory``
 subcommand, which live there too, and ``test_automatic_memory_drain.py`` drives the
 automatic-memory consumer and drain job, which only Recallatron declares.
+``test_automatic_memory_acceptance.py`` drives the automatic-memory acceptance path end
+to end through Recallatron's real seam, from a runtime turn to a live memory.
 
 ``tests/postgres/test_workspace_status.py`` was in this set and is deliberately not any
 more: it carries four phase-one acceptance demonstrators, and being *allowed* to name
