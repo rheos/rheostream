@@ -36,6 +36,7 @@ from harness.evidence import (
     probe_registry,
 )
 from harness.registry import add_member
+from psycopg.errors import LockNotAvailable
 from rheo_contracts import ContextPurpose, RecordRef, Role, WorkspaceContext
 from rheo_contracts.source_units import AuthorityRefused, TrustedSourceUnit
 from rheo_core.audit import AUDIT_SUCCEEDED, list_audit_records
@@ -85,6 +86,7 @@ from rheo_core.storage.evidence_tables import (
 )
 from rheo_core.storage.provisioning import database_name_for
 from sqlalchemy import Connection, delete, func, select, text, update
+from sqlalchemy.exc import OperationalError
 
 pytestmark = pytest.mark.postgres
 
@@ -754,6 +756,44 @@ def test_no_drain_loop_only_a_waiting_row_schedules_a_follow_up(
     assert scheduled.units == ()
     assert scheduled.follow_up_at == now + timedelta(seconds=20)
     assert fake.calls == []
+
+
+def _try_lock(connection: Connection, evidence_id: UUID) -> bool:
+    """``FOR UPDATE NOWAIT`` on one row: whether it was free. Never waits."""
+    try:
+        with connection.begin_nested():
+            connection.execute(
+                select(evidence_unit.c.id)
+                .where(evidence_unit.c.id == evidence_id)
+                .with_for_update(nowait=True)
+            ).one()
+    except OperationalError as exc:
+        assert isinstance(exc.orig, LockNotAvailable), exc
+        return False
+    return True
+
+
+def test_an_empty_claims_follow_up_probe_locks_only_the_earliest_waiting_row(
+    recording: EvidenceWorkspace, fake: FakeExtractionProvider, now: datetime
+) -> None:
+    ctx = recording.context()
+    earliest, later = _record(
+        recording, ctx, _texts("waiting", 2), at=now - timedelta(minutes=3)
+    )
+    _set(recording, [earliest], retry_after=now + timedelta(seconds=20))
+    _set(recording, [later], retry_after=now + timedelta(seconds=40))
+    earliest_id, later_id = _row(recording, earliest).id, _row(recording, later).id
+
+    with recording.unit_of_work() as uow:
+        batch = claim_units(handler_uow(uow, probe_registry()), now=now)
+        assert batch.units == ()
+        assert batch.follow_up_at == now + timedelta(seconds=20)
+        # The claim's transaction is still open, holding whatever it locked.
+        with _other_connection(recording) as other:
+            other.execute(text("SET LOCAL lock_timeout = '2s'"))
+            assert _try_lock(other, later_id) is True
+            assert _try_lock(other, earliest_id) is False
+            other.rollback()
 
 
 # --- settled_at everywhere ------------------------------------------------------------
