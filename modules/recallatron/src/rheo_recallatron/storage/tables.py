@@ -459,7 +459,8 @@ source_receipt = Table(
 
 
 # The one-time predecessor's searchable evidence is separate from curated memory.
-# It has its own revision metadata so 0002's frozen create_all never creates it.
+# Its creation DDL is frozen inside 0004_history_records. Later shape changes need
+# a new revision; editing these runtime objects cannot rewrite revision 0004.
 history_metadata = MetaData(schema=MEMORY_SCHEMA)
 HISTORY_KINDS: Final = (
     "conversation",

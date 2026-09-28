@@ -119,6 +119,22 @@ def open_snapshot(
         ) from error
     if not resolved.is_file():
         raise SnapshotRefusal(SNAPSHOT_MISSING, f"not a regular file: {resolved}")
+    # immutable=1 cannot see committed pages left in the WAL. A caller must
+    # checkpoint/copy the source first; opening it here must never lose those rows.
+    wal = resolved.with_name(resolved.name + "-wal")
+    try:
+        wal_size = wal.stat().st_size
+    except FileNotFoundError:
+        wal_size = 0
+    except OSError as error:
+        raise SnapshotRefusal(
+            SNAPSHOT_UNREADABLE, "cannot verify the snapshot's WAL sidecar"
+        ) from error
+    if wal_size:
+        raise SnapshotRefusal(
+            SNAPSHOT_UNREADABLE,
+            "non-empty WAL sidecar; provide a checkpointed snapshot copy first",
+        )
     # as_uri() percent-encodes '?' and '#', so the path cannot extend the query.
     uri = f"{resolved.as_uri()}?mode=ro&immutable=1"
     try:

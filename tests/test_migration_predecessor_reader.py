@@ -255,6 +255,32 @@ def test_a_wal_mode_snapshot_is_read_without_wal_or_shm_side_files(
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == before
 
 
+def test_uncheckpointed_wal_pages_are_refused(tmp_path: Path) -> None:
+    snapshot, writer = new_snapshot(tmp_path, _DDL, wal=True)
+    try:
+        writer.execute(
+            "INSERT INTO memory_items (type, label, properties, ts) "
+            "VALUES ('fact', 'Recent synthetic fact', '{}', '2026-01-01')"
+        )
+        writer.commit()
+        wal = snapshot.with_name(snapshot.name + "-wal")
+        assert wal.stat().st_size > 0
+        assert writer.execute("SELECT count(*) FROM memory_items").fetchone() == (1,)
+        with pytest.raises(SnapshotRefusal) as excinfo:
+            sqlite_source.open_snapshot(snapshot)
+        assert excinfo.value.state == sqlite_source.SNAPSHOT_UNREADABLE
+    finally:
+        writer.close()
+
+
+def test_an_empty_wal_sidecar_does_not_refuse_a_snapshot(tmp_path: Path) -> None:
+    snapshot = _snapshot(tmp_path)
+    snapshot.with_name(snapshot.name + "-wal").touch()
+    with sqlite_source.open_snapshot(snapshot) as connection:
+        assert sqlite_source.memory_item_labels(connection) == _MEMORY_LABELS
+    connection.close()
+
+
 def test_schema_introspection_reads_tables_columns_and_foreign_keys(
     tmp_path: Path,
 ) -> None:

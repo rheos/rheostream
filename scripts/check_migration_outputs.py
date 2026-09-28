@@ -310,7 +310,15 @@ def run_triage_exempt(
     pairs = _tracked_text_at_ref(ref, cwd=cwd)
     exempt_lines, exempted, remaining = compute_triage_exemptions(denylist_lines, pairs)
     out_path = require_private_output(Path(out_dir) / "denylist-exempt.txt")
-    out_path.write_text("".join(f"{line}\n" for line in exempt_lines), encoding="utf-8")
+    descriptor = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        # Tighten existing files too, before truncating or writing private text.
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+            handle.truncate(0)
+            handle.write("".join(f"{line}\n" for line in exempt_lines))
+    finally:
+        os.close(descriptor)
     return exempted, remaining
 
 

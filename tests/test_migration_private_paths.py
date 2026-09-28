@@ -556,6 +556,69 @@ def test_run_triage_exempt_refuses_an_out_dir_outside_the_private_root(
     assert not outside.exists()
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_triage_exempt_output_is_owner_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, existing: bool
+) -> None:
+    script = _load_script()
+    monkeypatch.setattr(script, "_tracked_text_at_ref", lambda *a, **kw: [("a", "x")])
+    root = _ignored_root_in(tmp_path, "private-home")
+    monkeypatch.setenv(private_paths.PRIVATE_ROOT_VARIABLE, str(root))
+    target = root / "denylist-exempt.txt"
+    if existing:
+        target.write_text("old content longer than x\n")
+        target.chmod(0o644)
+    assert script.run_triage_exempt(["x"], "HEAD", root) == (1, 0)
+    assert target.read_text() == "x\n"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_triage_exempt_refuses_a_symlink_inserted_after_the_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    script = _load_script()
+    monkeypatch.setattr(script, "_tracked_text_at_ref", lambda *a, **kw: [("a", "x")])
+    root = _ignored_root_in(tmp_path, "private-home")
+    monkeypatch.setenv(private_paths.PRIVATE_ROOT_VARIABLE, str(root))
+    outside = tmp_path / "outside.txt"
+    outside.write_text("leave unchanged")
+    real_guard = private_paths.require_private_output
+
+    def swap_after_guard(path: Path) -> Path:
+        checked = real_guard(path)
+        checked.symlink_to(outside)
+        return checked
+
+    monkeypatch.setattr(private_paths, "require_private_output", swap_after_guard)
+    with pytest.raises(OSError):
+        script.run_triage_exempt(["x"], "HEAD", root)
+    assert outside.read_text() == "leave unchanged"
+
+
+def test_triage_exempt_closes_the_file_if_permission_tightening_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    script = _load_script()
+    monkeypatch.setattr(script, "_tracked_text_at_ref", lambda *a, **kw: [("a", "x")])
+    root = _ignored_root_in(tmp_path, "private-home")
+    monkeypatch.setenv(private_paths.PRIVATE_ROOT_VARIABLE, str(root))
+    target = root / "denylist-exempt.txt"
+    target.write_text("leave unchanged")
+    descriptors: list[int] = []
+
+    def refuse(descriptor: int, mode: int) -> None:
+        descriptors.append(descriptor)
+        raise OSError("synthetic permission failure")
+
+    monkeypatch.setattr(script.os, "fchmod", refuse)
+    with pytest.raises(OSError, match="synthetic permission failure"):
+        script.run_triage_exempt(["x"], "HEAD", root)
+    assert target.read_text() == "leave unchanged"
+    (descriptor,) = descriptors
+    with pytest.raises(OSError):
+        script.os.fstat(descriptor)
+
+
 def test_triage_exempt_mode_prints_only_the_two_counts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
