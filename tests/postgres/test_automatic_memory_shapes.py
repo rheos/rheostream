@@ -20,8 +20,10 @@ Seams under test:
   resolving, a real runtime run succeeds and leaves no evidence row, no job but its
   own, no recorded event, no delivery, no memory schema and no evidence log line.
   Condition 3 is what makes this hold, and the positive control proves it: the same
-  run with a subscriber that *is* enabled records one row. No AC-9 case registers
-  anything off Recallatron's manifest.
+  run with a subscriber that *is* enabled records one row. Two legs register nothing
+  off Recallatron's manifest; the third, FR 26's case, loads Recallatron's real
+  subscription into the registry and still sees every zero, because the workspace
+  never enabled the module.
 - **AC-11(b), runtime half.** On a batch a real ``claim_units`` returned, no value of
   the batch or its units is a raw handle, and the authority's only public attribute is
   ``verify``. Its private unit of work is the one sanctioned exception, pinned by
@@ -69,7 +71,12 @@ from rheo_recallatron.source_units import AcceptOutcome, accept_source_unit
 from rheo_recallatron.storage import tables as memory_tables
 from sqlalchemy import Connection, Engine, Row, Select, Table, select, text
 
-from postgres.test_automatic_memory_acceptance import _TURN, _record, _rows
+from postgres.test_automatic_memory_acceptance import (
+    _TURN,
+    _consumers,
+    _record,
+    _rows,
+)
 from postgres.test_runtime_evidence_hook import (
     _assert_reached_the_hook_and_finished,
     _probe_deliveries,
@@ -365,14 +372,17 @@ def _evidence_log(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     ]
 
 
-def test_ac9_without_recallatron_a_run_leaves_no_trace_of_the_pipeline(
-    absent: EvidenceWorkspace, caplog: pytest.LogCaptureFixture
+def _assert_no_pipeline_trace(
+    absent: EvidenceWorkspace,
+    consumers: ConsumerRegistry,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """One real run with ``consumers`` wired in, and every AC-9 zero after it."""
     caplog.set_level(logging.DEBUG, logger="rheo_core.evidence")
     assert MODULE_ID not in absent.context().enabled_modules
     assert not _memory_schema_exists(absent)
 
-    operation_id = _run(absent, consumers=ConsumerRegistry())
+    operation_id = _run(absent, consumers=consumers)
 
     _assert_reached_the_hook_and_finished(absent, operation_id)
     [job] = _all(absent, work_tables.job)
@@ -392,6 +402,25 @@ def test_ac9_without_recallatron_a_run_leaves_no_trace_of_the_pipeline(
     # No receipt and no memory: the module's schema was never created.
     assert not _memory_schema_exists(absent)
     assert _evidence_log(caplog) == []
+
+
+def test_ac9_without_recallatron_a_run_leaves_no_trace_of_the_pipeline(
+    absent: EvidenceWorkspace, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No subscriber wired in at all."""
+    _assert_no_pipeline_trace(absent, ConsumerRegistry(), caplog)
+
+
+def test_ac9_recallatrons_loaded_subscription_is_inert_where_it_is_not_enabled(
+    absent: EvidenceWorkspace, caplog: pytest.LogCaptureFixture
+) -> None:
+    """FR 26's real case, and the one exemption from AC-9's no-manifest rule: the
+    process has Recallatron's own subscription loaded, off its real manifest, but
+    this workspace never enabled the module. Condition 3 counts only a subscriber
+    whose module the workspace enabled, so the same zeros hold."""
+    consumers = _consumers()
+    assert [s.module_id for s in consumers.for_type(EVIDENCE_RECORDED)] == [MODULE_ID]
+    _assert_no_pipeline_trace(absent, consumers, caplog)
 
 
 def test_ac9_positive_control_an_enabled_subscriber_records_the_same_run(

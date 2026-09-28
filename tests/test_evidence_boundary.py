@@ -31,7 +31,10 @@ can be made, and each is made mechanically.
 
 import ast
 import dataclasses
+import importlib.util
 import inspect
+import subprocess
+import sys
 import types
 import typing
 from datetime import datetime
@@ -315,11 +318,20 @@ def test_the_surface_check_catches_a_leaked_handle() -> None:
 # --- (c) one hop to the runtime ------------------------------------------------------
 
 
-def _runtime_imports(tree: ast.AST) -> list[str]:
+def _package_of(path: Path, root: Path, root_package: str) -> str:
+    """The package a module file's relative imports resolve against: its own
+    directory's dotted name, ``root`` being ``root_package``."""
+    parts = path.parent.relative_to(root).parts
+    return ".".join([root_package, *parts])
+
+
+def _runtime_imports(tree: ast.AST, package: str) -> list[str]:
     """Imports of a runtime module, top-level or deferred, as ``<name>@<line>``.
 
-    A relative import is resolved against ``rheo_core.evidence``, so ``from ..runtime
-    import x`` is not a way round the scan.
+    A relative import is resolved from the importing file's own package, through
+    :func:`importlib.util.resolve_name`, so ``from ..runtime import x`` in
+    ``rheo_core/evidence/`` or ``from ...runtime import x`` one subpackage deeper is
+    not a way round the scan.
     """
     found: list[str] = []
     for node in ast.walk(tree):
@@ -329,8 +341,7 @@ def _runtime_imports(tree: ast.AST) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if node.level:
-                base = _EVIDENCE_PACKAGE.split(".")[: 2 - node.level + 1]
-                module = ".".join([*base, module] if module else base)
+                module = importlib.util.resolve_name("." * node.level + module, package)
             names = [module] + [f"{module}.{alias.name}" for alias in node.names]
         for name in names:
             if any(_is_or_under(name, forbidden) for forbidden in _FORBIDDEN_RUNTIME):
@@ -338,22 +349,27 @@ def _runtime_imports(tree: ast.AST) -> list[str]:
     return sorted(found)
 
 
-def _scan_runtime_imports(root: Path) -> tuple[int, dict[str, list[str]]]:
+def _scan_runtime_imports(
+    root: Path, root_package: str = _EVIDENCE_PACKAGE
+) -> tuple[int, dict[str, list[str]]]:
     scanned = 0
     violations: dict[str, list[str]] = {}
     for path in _python_files(root):
         scanned += 1
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        found = _runtime_imports(tree)
+        found = _runtime_imports(tree, _package_of(path, root, root_package))
         if found:
             violations[str(path.relative_to(root))] = found
     return scanned, violations
 
 
 def test_core_evidence_imports_no_runtime_module_one_hop() -> None:
-    """R12: the package Recallatron imports never names the runtime itself, so 1a4b
-    registers its provider from the runtime side and a laptop-side sanitizer stays
-    importable without the runtime plumbing."""
+    """R12: no module in the package Recallatron imports names the runtime itself,
+    so 1a4b must register its provider from the runtime side.
+
+    One hop only, and deliberately: ``import rheo_core.evidence`` already loads
+    ``rheo_core.storage.runtime_tables`` transitively through other core packages
+    (§ A1), so no closure claim about that module could pass."""
     scanned, violations = _scan_runtime_imports(_EVIDENCE_SRC)
 
     files = {path.name for path in _python_files(_EVIDENCE_SRC)}
@@ -363,8 +379,31 @@ def test_core_evidence_imports_no_runtime_module_one_hop() -> None:
     assert not violations, f"rheo_core.evidence imports the runtime: {violations}"
 
 
+def test_importing_core_evidence_does_not_load_the_runtime_package() -> None:
+    """What the closure does hold today, in a fresh interpreter: the runtime package
+    itself stays unloaded (its table module does not; see the test above)."""
+    probe = (
+        "import sys\n"
+        "import rheo_core.evidence\n"
+        "loaded = sorted(m for m in sys.modules\n"
+        "    if m == 'rheo_core.runtime' or m.startswith('rheo_core.runtime.'))\n"
+        "sys.exit(f'loaded: {loaded}' if loaded else 0)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_the_one_hop_scan_flags_a_runtime_import(tmp_path: Path) -> None:
-    """The positive control, including a deferred and a relative import."""
+    """The positive control: deferred imports, and relative imports at level 2 and,
+    one subpackage deeper, at level 3, each resolved from its own file's package."""
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "probe.py").write_text(
+        "from ...runtime import x\nfrom ..runtime import not_the_runtime\n",
+        encoding="utf-8",
+    )
     (tmp_path / "probe.py").write_text(
         "from rheo_core.runtime import RUNTIME_RUN\n"
         "import rheo_core.storage.runtime_tables\n"
@@ -377,8 +416,11 @@ def test_the_one_hop_scan_flags_a_runtime_import(tmp_path: Path) -> None:
     )
     scanned, violations = _scan_runtime_imports(tmp_path)
 
-    assert scanned == 1
+    assert scanned == 2
+    # In ``rheo_core.evidence.nested``, ``...runtime`` is ``rheo_core.runtime`` and
+    # ``..runtime`` is ``rheo_core.evidence.runtime``, which is not the runtime.
     assert violations == {
+        "nested/probe.py": ["rheo_core.runtime.x@1", "rheo_core.runtime@1"],
         "probe.py": sorted(
             [
                 "rheo_core.runtime@1",
@@ -390,5 +432,5 @@ def test_the_one_hop_scan_flags_a_runtime_import(tmp_path: Path) -> None:
                 "rheo_core.runtime@7",
                 "rheo_core.runtime.adapters@7",
             ]
-        )
+        ),
     }
