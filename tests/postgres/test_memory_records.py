@@ -4750,12 +4750,16 @@ def test_acceptance_keeps_a_mention_backing_ref_the_caller_can_read(
     after = memory.counts()
     assert outcome.state == "active" and outcome.memory_ref is not None
     with memory.reading() as uow:
-        refs = (
-            uow.connection.execute(select(memory_tables.memory_entity.c.ref))
+        carrying = (
+            uow.connection.execute(
+                select(memory_tables.memory_entity.c.id).where(
+                    memory_tables.memory_entity.c.ref == ref
+                )
+            )
             .scalars()
             .all()
         )
-    assert list(refs) == [ref]
+    assert len(carrying) == 1, "exactly one entity carries the readable ref"
     assert (ref, "about") in _links_of(memory, outcome.memory_ref)
     assert after["entity"] == before["entity"] + 1
     assert after["mention"] == before["mention"] + 1
@@ -4867,7 +4871,7 @@ def test_acceptance_creates_no_entity_when_a_later_mention_backing_ref_is_unread
         )
         readable = _write(uow.connection, _row(title="a readable record"))
     hidden = memory_reference(theirs.id)
-    readable_ref = memory_reference(readable.id)
+    readable_backing = memory_reference(readable.id)
 
     before = memory.counts()
     after_no_ref = _unit(
@@ -4887,7 +4891,7 @@ def test_acceptance_creates_no_entity_when_a_later_mention_backing_ref_is_unread
     after_readable = _unit(
         evidence={
             "mentions": (
-                SourceMention(kind="person", name="Ada", backing_ref=readable_ref),
+                SourceMention(kind="person", name="Ada", backing_ref=readable_backing),
                 SourceMention(kind="person", name="Grace", backing_ref=hidden),
             ),
         }
@@ -4900,7 +4904,7 @@ def test_acceptance_creates_no_entity_when_a_later_mention_backing_ref_is_unread
         carrying = (
             uow.connection.execute(
                 select(memory_tables.memory_entity.c.id).where(
-                    memory_tables.memory_entity.c.ref == readable_ref
+                    memory_tables.memory_entity.c.ref == readable_backing
                 )
             )
             .scalars()
