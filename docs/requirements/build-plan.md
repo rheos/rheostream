@@ -325,13 +325,17 @@ until a separately ratified append-only criterion amendment says otherwise.
     behavioural suite against both a dense-only and a lexical-only configuration, both passing.
     *(Scenario: Runtime choice, applied to retrieval rather than to a model runtime; FR 30.)*
 32. The migration from the predecessor's memory store is verified before switchover by a
-    count, identity and sample check: every source record has a valid destination under the
+    count, identity, index and access check: every source record has a valid destination under the
     approved mapping; original identity, timestamps, lifecycle/status and available provenance
     are retained; a second import creates no duplicates and does not resurrect erased content;
-    and representative independently expected records can be found and inspected through the
-    intended search surface with its access restrictions intact. Historical evidence remains
-    distinguishable from curated memory. Legacy result overlap or ranking agreement is not
-    required. The verification result is written to private workspace storage next to the
+    and searchable destinations are populated/indexed with intended access restrictions intact.
+    Historical evidence remains distinguishable from curated memory. Planned legacy-memory
+    queries, labelled expected records, old-memory relevance scores and legacy ranking agreement
+    are not cutover gates. Random spot checks are optional/informal; partial or missing recall
+    of preserved legacy material may be improved later. Before cutover, separately prove that
+    new eligible memories are automatically saved and recalled through the intended client
+    with correct access, using benign operator-chosen examples rather than an owner-authored
+    benchmark. The verification result is written to private workspace storage next to the
     migrated data, and a check asserts no migration report is tracked in this repository.
     *(Scenario: Export and restore; FR 53, D9. Amended 2026-09-28 — see decision-ledger entry 16
     in the [idea document](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).)*

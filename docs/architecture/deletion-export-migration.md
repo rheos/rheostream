@@ -201,7 +201,10 @@ categories plus one per exportable module), read through the same snapshot an ex
 Predecessor migrations are verified before switchover and the result is kept where
 the data lives. The maintainer's 2026-09-28 amendment replaces the previously
 proposed old/new retrieval-match tolerance, including its 0.05 default, with the
-independent preservation and usability checks in FR 53 and criterion 32. The
+preservation, index/access and new-memory function checks in FR 53 and criterion 32.
+Planned legacy-memory queries, labelled expected records and old-memory relevance
+scores are not gates; random spot checks are optional/informal and partial or
+missing recall of preserved legacy material may be improved later. The
 generic `core.migration_verification` table and module switchover API proposed
 here were not built; they are not prerequisites for the one-time release-one
 transfer. See [decision-ledger entry 16](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).
@@ -216,8 +219,12 @@ Its private, checksum-bound verification record must identify:
 - preservation of original timestamps, lifecycle/status, available provenance
   and intended searchability/access, with historical evidence distinguished from
   curated memory;
-- repeated-import and erasure/no-resurrection proof, and representative search
-  spot checks with expected records identified independently of legacy rankings;
+- repeated-import and erasure/no-resurrection proof, index coverage and access
+  checks, with any informal legacy-recall observations recorded only as optional
+  diagnostics, not a relevance pass/fail;
+- separate automatic save-and-recall proof for new eligible memories through the
+  intended client with correct access, using benign operator-chosen examples
+  rather than an owner-authored query plan or benchmark;
 - backup/restore, producer/drain/one-writer evidence, rollback and the separately
   authorized final cutover boundary.
 

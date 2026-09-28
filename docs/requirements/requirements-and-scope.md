@@ -563,10 +563,15 @@ These three are appended after FR 50 so that the numbering above stays stable.
   switchover: every source record has a valid destination record under the approved mapping,
   with source identity, original timestamps, lifecycle/status and available provenance
   retained. Count and identity accounting detect missing records; repeated import does not
-  create duplicates or resurrect erased content. Representative spot checks establish that
-  records intended to be searchable can be found and inspected with the intended access
-  restrictions. Expected records are identified independently of the predecessor's retrieval
-  output; matching its rankings or top-k results is not required. The verification result is
+  create duplicates or resurrect erased content. Verify that searchable destinations are
+  populated/indexed and enforce the intended access restrictions. The release-one memory
+  transfer does not require planned legacy-memory queries, labelled expected records or an
+  old-memory relevance score. Random spot checks are optional and informal; partial or missing
+  recall of preserved legacy material may be improved later, without waiving record accounting
+  or access controls. Matching predecessor rankings or top-k results is not required. Before
+  memory cutover, separately prove that new eligible memories are automatically saved and can
+  be recalled through the intended client with correct access; benign operator-chosen examples
+  suffice, without an owner-authored benchmark. The verification result is
   recorded where the migrated data lives, in private workspace storage, and never in the
   public repository. *(Amended 2026-09-28 — see decision-ledger entry 16 in the
   [idea document](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).)*

@@ -641,8 +641,13 @@ remain outstanding; none requires a generic migration batch.
 Use the smallest tested one-time runner around those libraries. Rehearse approved
 mappings in an isolated workspace, retaining original identity, clocks,
 lifecycle/status and provenance rather than writing every source class as a
-trusted memory. Prove count/identity accounting, replay/no-resurrection,
-independently expected search/access spot checks and export/restore. Rebuild
+trusted memory. Prove count/identity accounting, replay/no-resurrection, index
+coverage, intended access controls and export/restore. Planned legacy-memory
+queries, labelled expected records and old-memory relevance scores are not
+migration gates. Random spot checks are optional/informal; partial or missing recall
+of preserved legacy material may be improved later. Separately prove automatic
+save-and-recall of new eligible memories through the intended client with correct
+access, using benign operator-chosen examples, not an owner-authored benchmark. Rebuild
 curated-memory vectors with the existing [embedding job](#the-embedding-job): it
 covers the workspace, requires a provider and does not migrate predecessor
 vectors. Owner-only historical search remains its separate lexical surface.

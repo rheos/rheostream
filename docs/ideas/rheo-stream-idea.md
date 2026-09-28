@@ -1833,16 +1833,22 @@ The following changes are recorded here.
     were. The reference deployment keeps `recallatron.rheo.stream` as a permanent
     redirect to the same path on `recall.`, for old and external links only; it is not
     an application host, and nothing the application generates points at it.
-16. **Migration preserves records; legacy search rankings are not the oracle.**
+16. **Migration preserves records; legacy recall quality is not a cutover score.**
     Directed by the maintainer on 2026-09-28, recorded against issue #193. The
     predecessor was not a well-tested retrieval benchmark. FR 53 and criterion 32
     therefore replace old/new result agreement with count/identity accounting,
     valid destinations under the approved mapping, preserved source identity,
     original clocks, lifecycle/status and available provenance, replay without
-    duplicates or erasure resurrection, and representative independently expected
-    search/access spot checks. Historical evidence remains distinct from curated
-    memory. Legacy overlap and ranking agreement are optional diagnostics, not
-    cutover gates; forward-looking ranker improvements can ship independently.
+    duplicates or erasure resurrection, populated/indexed destinations and intended
+    access controls. Further clarified the same day: no planned legacy-memory queries,
+    labelled expected records or old-memory relevance score is required. Random spot
+    checks are optional/informal; partial or missing recall of preserved legacy material
+    may be improved later. Historical evidence remains distinct from curated memory.
+    Legacy overlap and ranking agreement are optional diagnostics, not cutover gates;
+    forward-looking ranker improvements can ship independently. Before memory cutover,
+    separately prove that new eligible memories are automatically saved and recalled
+    through the intended client with correct access. Benign operator-chosen examples
+    suffice; no owner-authored test plan or benchmark is required.
     Entry 10's valid-destination and explicit data-loss decision remains intact:
     this does not authorize unmapped records, lossy conversions or silent omissions.
     Privacy and exact-artifact approval, ambient producer/drain proof, backup,
