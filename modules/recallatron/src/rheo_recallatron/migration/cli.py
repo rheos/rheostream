@@ -139,11 +139,16 @@ def _read_exempt(path: Path) -> list[str]:
 
 
 def _write_private_text(path: Path, text: str) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
     try:
         descriptor = os.open(path, flags, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+                handle.truncate(0)
+                handle.write(text)
+        finally:
+            os.close(descriptor)
     except OSError as error:
         raise InputRefusal(OUTPUT_UNWRITABLE, f"cannot write {path}") from error
 

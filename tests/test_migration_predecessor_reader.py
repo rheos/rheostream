@@ -406,6 +406,40 @@ def test_a_record_whose_own_superseded_by_is_set_is_not_live(
     assert _written(out) == _EXPECTED_WITHOUT_EXEMPTIONS
 
 
+def test_denylist_tightens_an_existing_output_file(
+    private_root: Path, tmp_path: Path
+) -> None:
+    out = private_root / "denylist-out"
+    out.mkdir()
+    target = out / cli.DENYLIST_FILE_NAME
+    target.write_text("old longer synthetic content" * 30)
+    target.chmod(0o644)
+    assert _run(tmp_path, out) == 0
+    assert _written(out) == _EXPECTED_WITHOUT_EXEMPTIONS
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_private_cli_output_closes_if_permission_tightening_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "synthetic-output.txt"
+    target.write_text("leave unchanged")
+    descriptors: list[int] = []
+
+    def refuse(descriptor: int, mode: int) -> None:
+        descriptors.append(descriptor)
+        raise OSError("synthetic permission failure")
+
+    monkeypatch.setattr(cli.os, "fchmod", refuse)
+    with pytest.raises(cli.InputRefusal) as excinfo:
+        cli._write_private_text(target, "new synthetic content")
+    assert excinfo.value.state == cli.OUTPUT_UNWRITABLE
+    assert target.read_text() == "leave unchanged"
+    (descriptor,) = descriptors
+    with pytest.raises(OSError):
+        cli.os.fstat(descriptor)
+
+
 def test_an_unreadable_snapshot_is_a_refusal_not_a_traceback(
     private_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
