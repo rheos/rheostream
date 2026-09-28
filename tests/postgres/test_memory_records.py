@@ -106,6 +106,7 @@ from rheo_core.storage.repositories import (
 )
 from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
+from rheo_recallatron import operations as memory_operations
 from rheo_recallatron.configuration import (
     AUTOMATIC_CONSUMER_ID,
     CANDIDATE_SCAN_LIMIT,
@@ -148,6 +149,7 @@ from rheo_recallatron.eligibility import (
 )
 from rheo_recallatron.embedding import registry as embedding_registry
 from rheo_recallatron.embedding.local import MODEL_ID as LOCAL_MODEL_ID
+from rheo_recallatron.embedding.local import LocalEmbeddingProvider
 from rheo_recallatron.embedding.protocol import EmbeddingProvider
 from rheo_recallatron.embedding.rebuild import fill_missing_embeddings
 from rheo_recallatron.entities import ENTITY_GET, ENTITY_LIST, remove_mention
@@ -171,6 +173,7 @@ from rheo_recallatron.retrieval import (
     LexicalStrategy,
     SearchRequest,
     SearchResult,
+    rerank,
 )
 from rheo_recallatron.retrieval import dispatch as retrieval_dispatch
 from rheo_recallatron.retrieval.lexical_query import lexical_tsquery
@@ -1096,6 +1099,10 @@ def test_the_pass_recalls_with_the_strategy_its_environment_names(
         # ``lexical`` reads no dense index and always reports ``false``.
         if criterion_31_pass.expected_strategy != STRATEGY_LEXICAL:
             assert outcome.result.provenance.dense_available, outcome.result.provenance
+            assert outcome.result.provenance.reranker == (
+                f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}"
+            )
+            assert not outcome.result.provenance.rerank_degraded
 
 
 def _window(outcome: OperationOutcome) -> ReadWindow:
@@ -1875,6 +1882,91 @@ class _SpyStrategy:
     ) -> SearchResult:
         self.requests.append(request)
         return self.answer
+
+
+@pytest.mark.parametrize("scores", [(1.0, 3.0, 2.0), (2.0, 2.0, 1.0), None])
+def test_relevance_pass_is_admitted_bounded_and_reports_fallback(
+    memory: MemoryWorkspace, monkeypatch: pytest.MonkeyPatch, scores
+) -> None:
+    with memory.unit() as uow:
+        hidden = _write(
+            uow.connection,
+            _row(title="blocked", body="NEVER_SEND_TO_RERANKER"),
+            links=((f"harness.note:{uuid7()}", "about", False),),
+        )
+        visible = [
+            _write(uow.connection, _row(title=f"note {i}", body=f"invented {i}"))
+            for i in range(4)
+        ]
+    spy = _SpyStrategy(
+        SearchResult(
+            hits=tuple(
+                Hit(row.id, 0.9 - i * 0.1, "dense", frozenset({ARM_DENSE}))
+                for i, row in enumerate([hidden, *visible])
+            ),
+            arms=ArmProvenance(lexical=0, dense=5),
+            dense_available=True,
+        ),
+        name=STRATEGY_DENSE,
+    )
+    memory.set_strategy(STRATEGY_DENSE)
+    monkeypatch.setitem(STRATEGY_REGISTRY, STRATEGY_DENSE, spy)
+    monkeypatch.setattr(memory_operations, "resolve_provider", LocalEmbeddingProvider)
+    seen = []
+
+    def relevance(query, documents):
+        seen.append((query, documents))
+        return scores
+
+    monkeypatch.setattr(rerank, "relevance_scores", relevance)
+    result = _recalled(memory.recall(memory.context(), query="invented", k=1))
+    assert seen == [("invented", [f"note {i}\ninvented {i}" for i in range(3)])]
+    assert spy.requests[0].k == 1 and spy.requests[0].candidate_k == 3
+    assert result.provenance.arms == ArmCounts(lexical=0, dense=1)
+    winner = 1 if scores == (1.0, 3.0, 2.0) else 0
+    assert result.items[0].title == f"note {winner}"
+    assert result.items[0].score == pytest.approx(0.8 - winner * 0.1)
+    assert result.items[0].rerank_score == (None if scores is None else scores[winner])
+    assert result.provenance.rerank_degraded == (scores is None)
+    assert result.provenance.reranker == (
+        None if scores is None else f"{rerank.MODEL_ID}@{rerank.MODEL_REVISION}"
+    )
+
+
+def test_relevance_window_budget_refuses_before_any_model_content(
+    memory: MemoryWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with memory.unit() as uow:
+        rows = [
+            _write(uow.connection, _row(title=f"note {i}", body="invented"))
+            for i in range(3)
+        ]
+    spy = _SpyStrategy(
+        SearchResult(
+            tuple(Hit(row.id, 0.8, "dense", frozenset({ARM_DENSE})) for row in rows),
+            ArmProvenance(lexical=0, dense=3),
+            True,
+        ),
+        name=STRATEGY_DENSE,
+    )
+    memory.set_strategy(STRATEGY_DENSE)
+    monkeypatch.setitem(STRATEGY_REGISTRY, STRATEGY_DENSE, spy)
+    monkeypatch.setattr(memory_operations, "resolve_provider", LocalEmbeddingProvider)
+    opened = memory_operations._opened
+
+    def small_budget(ctx, uow):
+        request = opened(ctx, uow)
+        request.budget = ReferenceBudget(limit=2)
+        return request
+
+    def forbidden(*args):
+        raise AssertionError("model must not receive a partial permission walk")
+
+    monkeypatch.setattr(memory_operations, "_opened", small_budget)
+    monkeypatch.setattr(rerank, "relevance_scores", forbidden)
+    _refused(
+        memory.recall(memory.context(), query="invented", k=1), "reference_scan_limit"
+    )
 
 
 def test_recall_runs_the_strategy_the_registry_resolves(

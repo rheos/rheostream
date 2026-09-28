@@ -163,6 +163,15 @@ an identity it merely claimed.
 
 ## Retrieval (FR 27, FR 30, criteria 27 and 31)
 
+**Local semantic ordering amendment:** the first-stage mechanics below remain in
+force, but healthy curated `dense`/`hybrid` reads using the local provider now walk
+a three-times-k admitted window capped at 50, then apply on-box query/document relevance
+before returning k. Hybrid proves that top-window instead of only top-k. Full source
+eligibility and the same shared reference budget precede model input. The
+[relevance contract](recall-relevance-ranking.md) specifies the immutable model,
+separate `rerank_score` / `provenance.reranker`, explicit degraded fallback and
+resource/truncation limitations. Lexical-only and owner-only history are unchanged.
+
 `recallatron.memory.recall(query, k, include_invalidated, purpose)`, read class, roles `owner`,
 `member`, `service`. Two stages: the workspace's configured `RetrievalStrategy.search` ranks,
 and the operation's own handler then decides what may be returned. Which strategy ranks is the
@@ -607,8 +616,11 @@ index needs no rebuild; it is a generated column.
 
 ## Migration from the predecessor (FR 53, criterion 32)
 
-Not built yet: this is run 1b's design, and neither operation nor the `migration_batch` table
-exists in the module today.
+The release-one transfer is a one-time operational job, verified under the amended
+FR 53/criterion 32. The generic migration-batch/import/switchover API previously
+proposed here was never built and is not required for that job. This amendment
+does not remove any shipped record, export or source-replay contract. See
+[decision-ledger entry 16](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).
 
 Run 1b's preparation now has a separate `history_record` table and owner-only
 `recallatron.history.search` / `.get` operations. This is historical evidence, not a
@@ -622,26 +634,28 @@ backward-compatible row in workspace export format 1 and restore. The owner sear
 screen presents history separately from memories, and no agent tool exposes it.
 
 The one-time importer libraries accept validated extracts inside a routed
-transaction; they do not approve private source content, create a migration batch,
-switch writers, or perform a live cutover. Those steps and the verification record
-below remain outstanding.
+transaction; they do not approve private source content, switch writers or
+perform a live cutover. Exact artifact approval, final transfer and verification
+remain outstanding; none requires a generic migration batch.
 
-`recallatron.migration.import(source_label, extract_file_ref)`, mutate, roles `owner`,
-long-running: creates a `recallatron.migration_batch(id, source_label text, state text,
-verification_id uuid null, created_at)` row (`state` in `importing`, `verified`, `live`,
-`failed`; a declared record type whose resolver returns a label and nothing else), writes each
-predecessor record as a memory with `origin = migrated`,
-`audience = workspace`, the default purposes, and a `derived_from` link to the batch, then
-writes the `core.migration_verification` row
-([migration verification](deletion-export-migration.md#migration-verification-fr-53)).
-Migrated memories get their vectors from the [embedding rebuild](#the-embedding-job) as it
-ships: it covers the whole workspace rather than one batch, runs only when a provider resolves,
-and refuses without one. Whether and when the import runs it, like the rest of the import's
-shape, is run 1b's to decide.
-Memories of a batch in state `verified` are excluded from the candidate SQL until
-`recallatron.migration.switch_over(batch_ref)` (mutate, roles `owner`) sets the batch `live`.
-The extract file and the report are workspace files under the data root, never in the
-repository.
+Use the smallest tested one-time runner around those libraries. Rehearse approved
+mappings in an isolated workspace, retaining original identity, clocks,
+lifecycle/status and provenance rather than writing every source class as a
+trusted memory. Prove count/identity accounting, replay/no-resurrection,
+independently expected search/access spot checks and export/restore. Rebuild
+curated-memory vectors with the existing [embedding job](#the-embedding-job): it
+covers the workspace, requires a provider and does not migrate predecessor
+vectors. Owner-only historical search remains its separate lexical surface.
+
+The final transfer requires exact approved artifacts, separately authorized
+source freeze/drain/capture and a verified backup/rollback boundary. Keep writers
+quiet during the authorized import and verification; repoint the daily client and
+enable the new writer only through the separately approved cutover. No importer
+automatically performs that switch. The private extract and
+[verification record](deletion-export-migration.md#migration-verification-fr-53)
+stay in private storage and out of public repositories, messages and logs. Retain
+the exact tested runner and its private checksum/accounting/rollback evidence
+after retiring the one-time path.
 
 ## Web contribution
 

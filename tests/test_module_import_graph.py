@@ -30,6 +30,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_memory_records.py",
     "tests/postgres/test_memory_retention.py",
     "tests/postgres/test_memory_retrieval.py",
+    "tests/postgres/test_search_quality.py",
     "tests/postgres/test_module_install.py",
     "tests/postgres/test_module_lifecycle.py",
     "tests/postgres/test_module_migrations.py",
@@ -44,6 +45,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/test_module_import_graph.py",
     "tests/test_module_name_prefixes.py",
     "tests/test_module_settings_order.py",
+    "tests/test_relevance_reranker.py",
 }
 """The test files allowed to name Recallatron, each for a reason.
 
@@ -96,7 +98,11 @@ audit-rollback behaviour through Recallatron's real job kind and sink registrati
 ``test_automatic_memory_shapes.py`` calls Recallatron's own ``accept_source_unit``
 directly for the ``claude_code_local`` shape, which only the real seam can answer.
 ``test_evidence_boundary.py`` scans Recallatron's source tree for the FR 2 import
-boundary, so it names that tree's path.
+boundary, so it names that tree's path. ``test_search_quality.py`` drives the real
+curated and owner-only history search against independently labelled synthetic
+questions;
+``test_relevance_reranker.py`` checks this module's local relevance runtime and its
+outage/network guards. Neither adds a core/application dependency on the module.
 
 ``tests/postgres/test_workspace_status.py`` was in this set and is deliberately not any
 more: it carries four phase-one acceptance demonstrators, and being *allowed* to name

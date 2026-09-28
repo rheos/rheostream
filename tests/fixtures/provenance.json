@@ -1,5 +1,15 @@
 [
   {
+    "path": "tests/fixtures/recallatron/ranking-holdout.json",
+    "origin": "synthetic",
+    "how": "independently authored access, storage and plant-care facts and relevance labels before inspecting rankings; no personal data or predecessor outputs"
+  },
+  {
+    "path": "tests/fixtures/recallatron/search-quality.json",
+    "origin": "synthetic",
+    "how": "hand-authored invented garden and workshop facts with independent questions, explicit relevance labels and near-topic distractors; no legacy search output"
+  },
+  {
     "path": "tests/fixtures/ac8-credential-leak.diff",
     "origin": "synthetic",
     "how": "a hand-authored diff illustrating a credential leak, no real code or secret"

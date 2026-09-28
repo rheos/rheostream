@@ -69,6 +69,7 @@ export interface MemoryItem {
 export interface RecallItem extends MemoryItem {
   score: number;
   strategy: string;
+  rerank_score?: number | null;
 }
 
 export function isMemoryLinkHead(value: unknown): value is MemoryLinkHead {
@@ -102,6 +103,9 @@ export function isRecallItem(value: unknown): value is RecallItem {
   return (
     isRecord(value) &&
     isFiniteNumber(value.score) &&
+    (value.rerank_score === undefined ||
+      value.rerank_score === null ||
+      isFiniteNumber(value.rerank_score)) &&
     isString(value.strategy) &&
     isMemoryItem(value)
   );
@@ -113,6 +117,8 @@ export interface RecallProvenance {
   strategy: string;
   arms: { lexical: number; dense: number };
   dense_available: boolean;
+  reranker?: string | null;
+  rerank_degraded?: boolean;
 }
 
 export interface RecallResult {
@@ -127,7 +133,10 @@ function isRecallProvenance(value: unknown): value is RecallProvenance {
     isRecord(value.arms) &&
     isInteger(value.arms.lexical) &&
     isInteger(value.arms.dense) &&
-    typeof value.dense_available === "boolean"
+    typeof value.dense_available === "boolean" &&
+    (value.reranker === undefined || isNullableString(value.reranker)) &&
+    (value.rerank_degraded === undefined ||
+      typeof value.rerank_degraded === "boolean")
   );
 }
 
