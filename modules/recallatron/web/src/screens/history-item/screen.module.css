@@ -1,0 +1,36 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rs-space-4);
+  max-inline-size: 72ch;
+}
+
+.screen h1 {
+  margin: 0;
+}
+
+.warning {
+  margin: 0;
+  color: var(--rs-color-ink-dim);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--rs-space-2) var(--rs-space-4);
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--rs-color-ink-dim);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -3,12 +3,25 @@
 The live object diff and the two source scans are deliberately independent of the
 ``WorkspaceContext`` and ``SecretScope`` construction gates.  Each mechanism has a
 positive control so an empty walk or a matcher that no longer matches cannot pass.
+
+AC 3 is about **platform storage**: the workspace database the core owns. The raw
+database scan has exactly one named exemption, and it is not platform storage: the
+migration groundwork's predecessor snapshot reader,
+``rheo_recallatron/migration/predecessor/sqlite_source.py``, opens a read-only
+external input (a local SQLite snapshot file, ``mode=ro&immutable=1``). The rule is
+exact: at most one ``sqlite3.connect`` call, passing the literal keyword ``uri=True``,
+in that one file (matched on its full path relative to the module's ``src``) is
+exempt. Every other raw call in that file, and ``sqlite3.connect`` in any other file,
+is still a violation. The URI's own contents are built at runtime, so the pinned-URI
+unit test in ``tests/test_migration_predecessor_reader.py`` covers them, not this scan
+(see :func:`_raw_database_violations` and its controls).
 """
 
 from __future__ import annotations
 
 import ast
 import re
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID
@@ -65,6 +78,17 @@ _DATABASE_MODULES = frozenset(
     {"sqlalchemy", "psycopg", "psycopg2", "asyncpg", "pg8000", "sqlite3"}
 )
 _DSN_PREFIXES = ("postgresql://", "postgresql+")
+# The one named exemption from the raw database scan (see the module docstring): the
+# predecessor snapshot is a read-only external input, not platform storage, so its
+# reader may open it. One file (a path relative to the module's ``src``), and in it
+# at most ONE ``sqlite3.connect`` call, and only one passing ``uri=True`` (keyword,
+# literal ``True``): the audited read-only open. A second connect in the reader, or
+# one without ``uri=True``, is reported. The URI string's own contents
+# (``mode=ro&immutable=1``) are built at runtime and are not provable from the AST;
+# the pinned-URI unit test in ``tests/test_migration_predecessor_reader.py`` covers
+# them.
+_SNAPSHOT_READER = "rheo_recallatron/migration/predecessor/sqlite_source.py"
+_SNAPSHOT_READER_CALL = "sqlite3.connect"
 
 
 @pytest.fixture
@@ -441,6 +465,41 @@ def _scan_sources(root: Path, matcher: object) -> tuple[int, dict[str, list[str]
     return len(files), violations
 
 
+def _exempt_sites(relative: str, tree: ast.AST) -> Counter[str]:
+    """The sites the one named exemption covers in ``relative``: the first
+    ``sqlite3.connect(..., uri=True)`` call in the snapshot reader's own file, and
+    nothing else (see ``_SNAPSHOT_READER``'s comment)."""
+    if relative != _SNAPSHOT_READER:
+        return Counter()
+    aliases = _import_aliases(tree)
+    audited = sorted(
+        (node.lineno, node.col_offset)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _qualified_name(node.func, aliases) == _SNAPSHOT_READER_CALL
+        and any(
+            keyword.arg == "uri"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in node.keywords
+        )
+    )
+    return Counter(f"call connect@{line}" for line, _ in audited[:1])
+
+
+def _raw_database_violations(root: Path) -> tuple[int, dict[str, list[str]]]:
+    scanned, violations = _scan_sources(root, _raw_database_sites)
+    remaining: dict[str, list[str]] = {}
+    for relative, sites in violations.items():
+        tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+        # Counter subtraction removes one site per exempt call, so a second raw call
+        # on the same line (say a psycopg.connect) is still reported.
+        kept = sorted((Counter(sites) - _exempt_sites(relative, tree)).elements())
+        if kept:
+            remaining[relative] = kept
+    return scanned, remaining
+
+
 def test_recallatron_names_no_foreign_storage(tmp_path: Path) -> None:
     scanned, violations = _scan_sources(_MODULE_SRC, _foreign_storage_sites)
     assert scanned, "no Recallatron Python files scanned"
@@ -454,9 +513,13 @@ def test_recallatron_names_no_foreign_storage(tmp_path: Path) -> None:
 
 
 def test_recallatron_constructs_no_raw_database_access(tmp_path: Path) -> None:
-    scanned, violations = _scan_sources(_MODULE_SRC, _raw_database_sites)
+    scanned, violations = _raw_database_violations(_MODULE_SRC)
     assert scanned, "no Recallatron Python files scanned"
     assert not violations, f"Recallatron constructs raw database access: {violations}"
+    # The exemption is in use: without it the real tree would report the reader.
+    assert _scan_sources(_MODULE_SRC, _raw_database_sites)[1].keys() == {
+        _SNAPSHOT_READER
+    }
 
     probe = tmp_path / "probe.py"
     probe.write_text(
@@ -468,6 +531,73 @@ def test_recallatron_constructs_no_raw_database_access(tmp_path: Path) -> None:
     control_scanned, control = _scan_sources(tmp_path, _raw_database_sites)
     assert control_scanned == 1
     assert control == {"probe.py": ["call create_engine@3", "dsn@2"]}
+
+
+def test_the_snapshot_reader_exemption_covers_one_file_and_one_call(
+    tmp_path: Path,
+) -> None:
+    """Positive controls for the one named exemption. Every probe outside the exempt
+    path uses the exact accepted form, ``sqlite3.connect(uri, uri=True)``, so only
+    the path decides: a sibling in ``migration/``, a same-named file elsewhere, and
+    the full reader path nested under a prefix are all reported. So is any other raw
+    call inside the exempt file itself."""
+    accepted = "import sqlite3\nsqlite3.connect(uri, uri=True)\n"
+    nested = f"extra/{_SNAPSHOT_READER}"
+    probes = {
+        _SNAPSHOT_READER: (
+            "import sqlite3\n"
+            "import psycopg\n"
+            "sqlite3.connect(uri, uri=True)\n"
+            "psycopg.connect(url)\n"
+            'dsn = "postgresql://probe.invalid/db"\n'
+        ),
+        "rheo_recallatron/migration/cli.py": accepted,
+        "rheo_recallatron/sqlite_source.py": accepted,
+        nested: accepted,
+    }
+    for relative, source in probes.items():
+        probe = tmp_path / relative
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text(source, encoding="utf-8")
+
+    scanned, violations = _raw_database_violations(tmp_path)
+
+    assert scanned == 4
+    assert violations == {
+        _SNAPSHOT_READER: ["call connect@4", "dsn@5"],
+        "rheo_recallatron/migration/cli.py": ["call connect@2"],
+        "rheo_recallatron/sqlite_source.py": ["call connect@2"],
+        nested: ["call connect@2"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "import sqlite3\n"
+            "sqlite3.connect(uri, uri=True)\n"
+            "sqlite3.connect(other, uri=True)\n",
+            ["call connect@3"],
+        ),
+        ("import sqlite3\nsqlite3.connect(path)\n", ["call connect@2"]),
+        ("import sqlite3\nsqlite3.connect(path, uri=False)\n", ["call connect@2"]),
+        ("import sqlite3\nsqlite3.connect(path, uri=flag)\n", ["call connect@2"]),
+        ("import psycopg\npsycopg.connect(u, uri=True)\n", ["call connect@2"]),
+    ],
+    ids=["second-connect", "no-uri", "uri-false", "uri-not-literal", "other-callee"],
+)
+def test_the_snapshot_reader_exemption_covers_only_one_uri_open(
+    tmp_path: Path, source: str, expected: list[str]
+) -> None:
+    """Inside the exempt file itself: a second ``sqlite3.connect``, one that does not
+    pass the literal ``uri=True``, or any other callee's ``connect`` (even with
+    ``uri=True`` and alone in the file) is still reported."""
+    probe = tmp_path / _SNAPSHOT_READER
+    probe.parent.mkdir(parents=True)
+    probe.write_text(source, encoding="utf-8")
+
+    assert _raw_database_violations(tmp_path) == (1, {_SNAPSHOT_READER: expected})
 
 
 @pytest.mark.parametrize(

@@ -11,6 +11,16 @@
   margin-block: 0;
 }
 
+.subheading {
+  margin-block: 0;
+  font-size: var(--rs-font-size-lg);
+}
+
+.historyNote {
+  margin: 0;
+  color: var(--rs-color-ink-dim);
+}
+
 .form {
   display: flex;
   flex-wrap: wrap;

@@ -2,7 +2,9 @@
 name = "rheo-recallatron"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["rheo-core", "rheo-contracts"]
+# psycopg is named directly because `migration/private_paths.py` imports its
+# `conninfo` parser; the specifier matches `packages/core/pyproject.toml`'s.
+dependencies = ["rheo-core", "rheo-contracts", "psycopg[binary]>=3.3.6,<4"]
 
 # The one real embedding provider (MiniLM-L6-v2 through ONNX, in-process), as an
 # extra rather than a base dependency: a deployment that runs `lexical` retrieval
@@ -11,6 +13,11 @@ dependencies = ["rheo-core", "rheo-contracts"]
 # configuration naming it degrades exactly like one naming no provider at all.
 # The floor is the version the model identifier and the vector space were measured
 # on; `uv.lock` pins the exact build.
+# The migration groundwork's own tooling lives in this distribution, never under
+# `apps/cli`: `packages/` and `apps/` may not import `rheo_recallatron`.
+[project.scripts]
+recallatron-migrate = "rheo_recallatron.migration.cli:main"
+
 [project.optional-dependencies]
 local-embeddings = ["fastembed>=0.8.1,<0.9"]
 

@@ -30,6 +30,8 @@ jobs:
         run: make workspace-scripts
       - name: Check module web packages reach core only through ShellApi (#183)
         run: make module-web-boundary
+      - name: Check migration-output isolation path gate (FR 18)
+        run: make migration-output-gate
 
   # The container image had no gate anywhere until this job (issue #49). The host
   # half of `make build` stalls on a credential helper reaching ghcr.io, which the

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { EMBEDDING_COVERAGE, RECALL } from "../../operations";
+import { EMBEDDING_COVERAGE, HISTORY_SEARCH, RECALL } from "../../operations";
 import { callsOutside, fakeShell, type Responder } from "../../testing/fake-shell";
 import { field, fixture, ok, refusal } from "../../testing/fixtures";
 import { render, textOf } from "../../testing/markup";
 import { EMPTY_COPY, emptyKind, loadSearch, QUERY_MAX_LENGTH, RECALL_K } from "./load";
 import { SearchView } from "./view";
 
-const SEARCH_OPERATIONS = [RECALL, EMBEDDING_COVERAGE];
+const SEARCH_OPERATIONS = [RECALL, HISTORY_SEARCH, EMBEDDING_COVERAGE];
 
 async function searchFor(
   q: string | undefined,
@@ -16,6 +16,7 @@ async function searchFor(
 ) {
   const { shell, calls } = fakeShell(role, {
     [RECALL]: recall,
+    [HISTORY_SEARCH]: ok("history-search-populated.json"),
     [EMBEDDING_COVERAGE]: ok("coverage.json"),
   });
   const state = await loadSearch(shell, { q });
@@ -98,6 +99,24 @@ describe("loadSearch", () => {
 });
 
 describe("Search results", () => {
+  it("shows historical evidence to an owner, labeled separately from memories", async () => {
+    const { calls, markup, text } = await searchFor("garden", ok("recall-populated.json"), "owner");
+    expect(calls.find((call) => call.operation === HISTORY_SEARCH)?.input).toEqual({
+      query: "garden",
+      limit: 20,
+    });
+    expect(text).toContain("Historical records");
+    expect(text).toContain("unconfirmed");
+    expect(text).toContain("not an accepted memory");
+    expect(markup).toContain("/history-item?id=");
+  });
+
+  it("does not request or reveal owner history to a member", async () => {
+    const { calls, text } = await searchFor("garden");
+    expect(calls.some((call) => call.operation === HISTORY_SEARCH)).toBe(false);
+    expect(text).not.toContain("Historical records");
+  });
+
   it("renders each result's ref, kind, title, excerpt, UTC time and a link to Item", async () => {
     const { markup, text } = await searchFor("garden");
     const ref = field("recall-populated.json", "items", 0, "ref");
@@ -226,7 +245,7 @@ describe("Search arm counts", () => {
   // The exact key set of each state that reaches the view, so a count can't ride along
   // on a new field anywhere in it.
   const KEYS = {
-    search: ["action", "coverage", "query", "results"],
+    search: ["action", "coverage", "history", "query", "results"],
     results: ["provenance", "rows", "state"],
     empty: ["empty", "provenance", "state"],
     provenance: ["denseAvailable", "strategy"],

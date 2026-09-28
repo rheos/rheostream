@@ -63,6 +63,7 @@ _ROUTE_SCREENS: Final = [
     ("browse", "browse"),
     ("search", "search"),
     ("item", "item"),
+    ("history-item", "historyItem"),
     ("duplicates", "duplicates"),
 ]
 _RECALL_PROVIDER_LINE: Final = f'{{ id: "recall", operation: "{RECALL_OPERATION}" }}'

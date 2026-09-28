@@ -35,6 +35,11 @@
     "how": "hand-authored core.workspace.status result with the memory module enabled"
   },
   {
+    "path": "modules/recallatron/tests/fixtures/migration/synthetic_graph.jsonl",
+    "origin": "synthetic",
+    "how": "hand-authored ontology patch log with invented ids, labels and timestamps from the \"sample garden\" scenario"
+  },
+  {
     "path": "modules/recallatron/web/fixtures/coverage-no-provider.json",
     "origin": "synthetic",
     "how": "hand-authored null-provider embedding.coverage response shape"
@@ -68,6 +73,21 @@
     "path": "modules/recallatron/web/fixtures/entity-list.json",
     "origin": "synthetic",
     "how": "hand-authored entity.list response from the invented \"sample garden\" scenario"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/history-item.json",
+    "origin": "synthetic",
+    "how": "hand-authored historical-record detail from the invented sample garden scenario"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/history-search-empty.json",
+    "origin": "synthetic",
+    "how": "hand-authored empty owner history-search response"
+  },
+  {
+    "path": "modules/recallatron/web/fixtures/history-search-populated.json",
+    "origin": "synthetic",
+    "how": "hand-authored owner history-search response from the invented sample garden scenario"
   },
   {
     "path": "modules/recallatron/web/fixtures/memory-item.json",

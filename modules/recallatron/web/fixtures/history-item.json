@@ -1,0 +1,13 @@
+{
+  "id": "019946d0-0000-7000-8000-000000000001",
+  "kind": "procedural_note",
+  "status": "unconfirmed",
+  "title": "Procedural note",
+  "body": "A synthetic, unconfirmed way to label garden trays.",
+  "occurred_at": "2026-09-01T12:00:00Z",
+  "source_namespace": "predecessor",
+  "external_source_key": "store.procedural_note:1",
+  "session_key": "example-session",
+  "source_role": null,
+  "source_category": "garden"
+}

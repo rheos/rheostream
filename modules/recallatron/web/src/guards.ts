@@ -139,6 +139,60 @@ export function isRecallResult(value: unknown): value is RecallResult {
   );
 }
 
+// --- owner-only historical evidence ------------------------------------------------
+
+export interface HistoryItem {
+  id: string;
+  kind: string;
+  status: string;
+  title: string;
+  body: string;
+  occurred_at: string;
+  source_namespace: string;
+  external_source_key: string;
+  session_key: string | null;
+  source_role: string | null;
+  source_category: string | null;
+}
+
+export interface HistorySearchHit extends HistoryItem {
+  score: number;
+}
+
+export interface HistorySearchResult {
+  items: HistorySearchHit[];
+  strategy: string;
+}
+
+export function isHistoryItem(value: unknown): value is HistoryItem {
+  return (
+    isRecord(value) &&
+    isString(value.id) &&
+    isString(value.kind) &&
+    isString(value.status) &&
+    isString(value.title) &&
+    isString(value.body) &&
+    isString(value.occurred_at) &&
+    isString(value.source_namespace) &&
+    isString(value.external_source_key) &&
+    isNullableString(value.session_key) &&
+    isNullableString(value.source_role) &&
+    isNullableString(value.source_category)
+  );
+}
+
+export function isHistorySearchHit(value: unknown): value is HistorySearchHit {
+  return isRecord(value) && isFiniteNumber(value.score) && isHistoryItem(value);
+}
+
+export function isHistorySearchResult(value: unknown): value is HistorySearchResult {
+  return (
+    isRecord(value) &&
+    isString(value.strategy) &&
+    isArrayOf(value.items, isHistorySearchHit)
+  );
+}
+
 // --- read -------------------------------------------------------------------------
 
 export interface ReadWindow {

@@ -27,6 +27,15 @@ so a scan that silently stopped matching reds instead of passing vacuously.
    would catch a widened tuple, the other a migration that altered the constraint
    directly.
 
+   **One named exemption (Robin, 12.F1):** files under ``rheo_recallatron/migration/``
+   (the predecessor-migration tooling package, matched on whole path parts) may name
+   the two. AC 14 is about the destination not building these features; that package
+   names the predecessor's source tables only to inventory and ledger them (the run
+   spec's mapping rules, § Data Models, send these rows to ``unresolved``; the mapping
+   itself lands in a later phase). Nothing else is exempt, the module's Alembic
+   revision tree (``rheo_recallatron/migrations/``) included. The match is
+   case-sensitive: ``rheo_recallatron/Migration/`` is not the package.
+
 3. **The recall tool's description (AC 24)**, read off the declaration: it still says
    what it said before, plus the three sentences that tell an agent to distrust a
    ranked list.
@@ -39,13 +48,13 @@ so a scan that silently stopped matching reds instead of passing vacuously.
    types are pinned to their fields, with no member of their own a caller could act
    on.
 
-**This file is deliberately the one place the two deferred names are written down.** It
-scans ``src/``; it does not scan itself, and there is no third copy of either word in
-the distribution for the scan to have to exclude.
+**Outside the one exemption above, this file is deliberately the one place the two
+deferred names are written down.** It scans ``src/``; it does not scan itself, and the
+migration package is the only other copy of either word the scan has to allow.
 """
 
 import ast
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 
 _DISTRIBUTION = Path(__file__).resolve().parents[1]
 _MODULE_SRC = _DISTRIBUTION / "src"
@@ -73,6 +82,25 @@ DEFERRED_FEATURE_NAMES = ("topic_thread", "procedural_notes")
 do not have. Neither has a 1a1 schema, migration, tool, export field, test or
 acceptance claim, and a content-free source-unit key is neither of them.
 """
+
+_DEFERRED_NAMES_EXEMPT_DIRECTORY = ("rheo_recallatron", "migration")
+"""The one directory whose files may name the deferred features (Robin, 12.F1).
+
+The predecessor-migration package names the predecessor's ``topic_thread`` and
+``procedural_notes`` source tables only to inventory and ledger them (the run spec's
+mapping rules, § Data Models, send these rows to ``unresolved``; the mapping itself
+lands in a later phase); it builds neither feature, which is all AC 14 claims. Matched
+as leading path parts relative to the scanned root, case-sensitively, never as a
+string prefix, so ``rheo_recallatron/migration_extra/``, ``rheo_recallatron/Migration/``
+and ``rheo_recallatron/migrations/`` (the Alembic revision tree) stay banned, as does a
+nested ``x/rheo_recallatron/migration/``.
+"""
+
+
+def _deferred_names_exempt(relative: PurePath) -> bool:
+    exempt = _DEFERRED_NAMES_EXEMPT_DIRECTORY
+    return len(relative.parts) > len(exempt) and relative.parts[: len(exempt)] == exempt
+
 
 RATIFIED_KINDS = ("note", "fact", "decision", "summary")
 """§ A3's four, written out here rather than imported, so this assertion compares two
@@ -198,10 +226,13 @@ def _scan_deferred_names(root: Path) -> tuple[int, dict[str, list[str]]]:
     violations: dict[str, list[str]] = {}
     for path in _source_files(root):
         scanned += 1
+        relative = path.relative_to(root)
+        if _deferred_names_exempt(relative):
+            continue
         text = path.read_text(encoding="utf-8").casefold()
         named = [name for name in DEFERRED_FEATURE_NAMES if name in text]
         if named:
-            violations[str(path.relative_to(root))] = named
+            violations[str(relative)] = named
     return scanned, violations
 
 
@@ -259,6 +290,61 @@ def test_the_deferred_name_scan_flags_a_reintroduced_literal(tmp_path: Path) -> 
     scanned, violations = _scan_deferred_names(tmp_path)
     assert scanned == 1
     assert violations == {"0003_probe.py": ["topic_thread", "procedural_notes"]}
+
+
+def test_the_migration_package_exemption_is_exactly_one_directory(
+    tmp_path: Path,
+) -> None:
+    """The positive controls for 12.F1's exemption: only a file under
+    ``rheo_recallatron/migration/`` may name the deferred features. The rest of the
+    source, the Alembic revision tree (a future ``0004_migration_batch`` included),
+    a look-alike sibling directory and a nested copy of the path are all flagged."""
+    literal = 'SELECT count(*) FROM "topic_thread"  -- and procedural_notes\n'
+    probes = {
+        "rheo_recallatron/migration/inventory.py": False,
+        "rheo_recallatron/migration/predecessor/probe.py": False,
+        "rheo_recallatron/probe.py": True,
+        "rheo_recallatron/migrations/versions/0004_migration_batch.py": True,
+        "rheo_recallatron/migrations/script.py.mako": True,
+        "rheo_recallatron/migration_extra/probe.py": True,
+        "rheo_recallatron/migration.py": True,
+        "x/rheo_recallatron/migration/probe.py": True,
+    }
+    for relative in probes:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(literal, encoding="utf-8")
+
+    scanned, violations = _scan_deferred_names(tmp_path)
+
+    assert scanned == len(probes)
+    assert violations == {
+        str(Path(relative)): ["topic_thread", "procedural_notes"]
+        for relative, flagged in probes.items()
+        if flagged
+    }
+
+
+def test_the_real_migration_package_is_where_the_exemption_applies() -> None:
+    """The exemption is in use, not dead: the real inventory names both tables and
+    sits under the exempt directory, so without 12.F1 the real-tree scan would red."""
+    inventory = _MODULE_SRC / "rheo_recallatron" / "migration" / "inventory.py"
+    text = inventory.read_text(encoding="utf-8")
+    assert all(name in text for name in DEFERRED_FEATURE_NAMES)
+    assert _deferred_names_exempt(inventory.relative_to(_MODULE_SRC))
+
+
+def test_the_exemption_is_case_sensitive() -> None:
+    """``Migration/`` is not ``migration/``. Checked on pure paths rather than a probe
+    tree: on a case-insensitive filesystem (macOS by default) the two directories are
+    one, so a file probe could not hold both, and this runs the same on Linux CI."""
+    assert _deferred_names_exempt(PurePosixPath("rheo_recallatron/migration/probe.py"))
+    for look_alike in (
+        "rheo_recallatron/Migration/probe.py",
+        "rheo_recallatron/MIGRATION/probe.py",
+        "Rheo_Recallatron/migration/probe.py",
+    ):
+        assert not _deferred_names_exempt(PurePosixPath(look_alike)), look_alike
 
 
 def test_the_declared_kinds_are_the_four_ratified_ones() -> None:
