@@ -20,7 +20,8 @@
         }
       ],
       "score": 0.03278688524590164,
-      "strategy": "hybrid"
+      "strategy": "hybrid",
+      "rerank_score": null
     },
     {
       "ref": "recallatron.memory:10000000-0000-4000-8000-000000000002",
@@ -35,7 +36,8 @@
       "superseded_by": null,
       "links": [],
       "score": 0.016129032258064516,
-      "strategy": "hybrid"
+      "strategy": "hybrid",
+      "rerank_score": null
     }
   ],
   "provenance": {
@@ -44,6 +46,8 @@
       "lexical": 2,
       "dense": 1
     },
-    "dense_available": true
+    "dense_available": true,
+    "reranker": null,
+    "rerank_degraded": false
   }
 }

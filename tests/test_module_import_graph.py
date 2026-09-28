@@ -26,6 +26,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_memory_records.py",
     "tests/postgres/test_memory_retention.py",
     "tests/postgres/test_memory_retrieval.py",
+    "tests/postgres/test_search_quality.py",
     "tests/postgres/test_module_install.py",
     "tests/postgres/test_module_lifecycle.py",
     "tests/postgres/test_module_migrations.py",
@@ -39,6 +40,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/test_module_import_graph.py",
     "tests/test_module_name_prefixes.py",
     "tests/test_module_settings_order.py",
+    "tests/test_relevance_reranker.py",
 }
 """The test files allowed to name Recallatron, each for a reason.
 
@@ -82,7 +84,10 @@ migration package for it to guard, and ``test_migration_predecessor_reader.py``
 (FR 1, FR 18) drives the predecessor reader and the ``recallatron-migrate denylist``
 console script, which live only in this distribution, and ``test_migration_extract.py``
 (FR 1, FR 3) drives the timestamp rule, the extract model and the ``inventory``
-subcommand, which live there too.
+subcommand, which live there too. ``test_search_quality.py`` drives the real curated
+and owner-only history search against independently labelled synthetic questions;
+``test_relevance_reranker.py`` checks this module's local relevance runtime and its
+outage/network guards. Neither adds a core/application dependency on the module.
 
 ``tests/postgres/test_workspace_status.py`` was in this set and is deliberately not any
 more: it carries four phase-one acceptance demonstrators, and being *allowed* to name
