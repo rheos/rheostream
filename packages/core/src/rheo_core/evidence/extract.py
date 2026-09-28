@@ -90,8 +90,9 @@ class _ExtractionResponse(BaseModel):
     """The whole response's shape. Entries stay unvalidated here, so one bad entry
     costs its own item a candidate rather than failing every item in the batch.
 
-    Strict, so ``items`` must really be a list or a tuple: a string or bytes value is
-    not coerced into a sequence of characters.
+    Strict, so ``items`` must really be a list or a tuple: lax mode would coerce a set
+    (whose order is arbitrary) or a one-shot iterator into a list. A string or bytes
+    value is refused either way.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
