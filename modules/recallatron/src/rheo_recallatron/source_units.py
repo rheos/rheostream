@@ -460,6 +460,8 @@ def accept_source_unit(
     links = _verified_links(ctx, uow, unit, request=request)
     if links is None:
         return _terminalize(uow, unit, grant, namespace, state=STATE_DENIED)
+    if not _mentions_readable(ctx, uow, unit):
+        return _terminalize(uow, unit, grant, namespace, state=STATE_DENIED)
     purposes = _accepted_purposes(unit)
     assert purposes is not None  # _policy_state refused a None above
     written = write_memory(
@@ -600,6 +602,9 @@ def _mention(uow: UnitOfWork, mention: SourceMention, now: datetime) -> Resolved
     or a readable backing ref the producer would have to have probed for, and probing
     is the thing the non-probing rule exists to forbid. So every mention on a unit is
     a creation, and two units naming the same person create two entities.
+
+    Every backing ref it receives has already passed ``_mentions_readable`` under the
+    acting context.
     """
     row = create_entity(
         uow.connection,
@@ -614,6 +619,30 @@ def _mention(uow: UnitOfWork, mention: SourceMention, now: datetime) -> Resolved
         kind=row.kind,
         name=row.name,
         backing_ref=row.ref,
+    )
+
+
+def _mentions_readable(
+    ctx: WorkspaceContext, uow: UnitOfWork, unit: TrustedSourceUnit
+) -> bool:
+    """Whether every mention backing ref on the unit is readable by the acting context.
+
+    A backing ref is a restriction as well as a label: it becomes an ``about`` link on
+    the memory, and ``visible_entity`` shows the entity to anyone who can read it. So
+    an unreadable ref denies the unit rather than being stripped or dropped, the same
+    rule ``_verified_links`` applies to a link. It is the manual path's rule
+    (``resolve_mentions``), checked under the same acting context as the links.
+
+    There is deliberately no ``canonical_ref`` step: a malformed ref, a missing one
+    and an unreadable one must take the same branch, because the non-probing rule
+    forbids telling them apart. It runs over every mention before the first entity is
+    created, so a refused unit leaves no entity behind. A mention with no backing ref
+    is not checked.
+    """
+    return all(
+        readable_ref(ctx, uow, mention.backing_ref)
+        for mention in unit.evidence.mentions
+        if mention.backing_ref is not None
     )
 
 

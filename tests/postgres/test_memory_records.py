@@ -4732,6 +4732,183 @@ def test_acceptance_copies_the_units_canonical_links_and_its_mentions(
     assert _accept(memory, unreadable).state == "denied"
 
 
+def test_acceptance_keeps_a_mention_backing_ref_the_caller_can_read(
+    memory: MemoryWorkspace,
+) -> None:
+    """A backing ref the acting context can read is kept: on the entity, and as the
+    memory's ``about`` link, exactly as the manual path keeps one."""
+    with memory.unit() as uow:
+        row = _write(uow.connection, _row(title="a readable record"))
+    ref = memory_reference(row.id)
+    unit = _unit(
+        evidence={
+            "mentions": (SourceMention(kind="person", name="Ada", backing_ref=ref),),
+        }
+    )
+    before = memory.counts()
+    outcome = _accept(memory, unit)
+    after = memory.counts()
+    assert outcome.state == "active" and outcome.memory_ref is not None
+    with memory.reading() as uow:
+        refs = (
+            uow.connection.execute(select(memory_tables.memory_entity.c.ref))
+            .scalars()
+            .all()
+        )
+    assert list(refs) == [ref]
+    assert (ref, "about") in _links_of(memory, outcome.memory_ref)
+    assert after["entity"] == before["entity"] + 1
+    assert after["mention"] == before["mention"] + 1
+
+
+def test_acceptance_denies_a_unit_whose_mention_backing_ref_the_caller_cannot_read(
+    memory: MemoryWorkspace,
+) -> None:
+    """#201: a trusted producer cannot mint an entity carrying a ref its caller cannot
+    read. The unit is refused whole, with a content-free receipt and nothing else."""
+    with memory.unit() as uow:
+        # Somebody else's member-private memory: live, and unreadable by the owner.
+        theirs = _write(
+            uow.connection,
+            _row(title="theirs", audience_kind="member", audience_id=uuid7()),
+        )
+    hidden = memory_reference(theirs.id)
+    unit = _unit(
+        evidence={
+            "mentions": (SourceMention(kind="person", name="Ada", backing_ref=hidden),),
+        }
+    )
+    before = memory.counts()
+    outcome = _accept(memory, unit)
+    after = memory.counts()
+    with memory.reading() as uow:
+        carrying = (
+            uow.connection.execute(
+                select(memory_tables.memory_entity.c.id).where(
+                    memory_tables.memory_entity.c.ref == hidden
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert list(carrying) == [], "an entity carries a ref its caller cannot read"
+    assert outcome == AcceptOutcome("denied", None)
+    assert {key: after[key] - before[key] for key in after} == {
+        "memory": 0,
+        "purpose": 0,
+        "entity": 0,
+        "mention": 0,
+        "link": 0,
+        "receipt": 1,
+        "outbox": 0,
+    }
+    assert (unit.external_source_key, "denied", False) in _receipts(memory)
+
+
+def test_acceptance_answers_an_unreadable_backing_ref_exactly_as_a_missing_or_malformed_one(  # noqa: E501 - the name states the non-probing claim in full
+    memory: MemoryWorkspace,
+) -> None:
+    """The non-probing proof: an unreadable live ref, a missing one, a malformed one
+    and a foreign-module one are indistinguishable in outcome, rows and receipt."""
+    with memory.unit() as uow:
+        theirs = _write(
+            uow.connection,
+            _row(title="theirs", audience_kind="member", audience_id=uuid7()),
+        )
+    refs = {
+        "unreadable": memory_reference(theirs.id),
+        "missing": memory_reference(uuid7()),
+        "malformed": "not-a-reference",
+        "foreign": f"{_FOREIGN}:{uuid7()}",
+    }
+    observed: list[tuple[AcceptOutcome, dict[str, int], tuple[str, bool]]] = []
+    for ref in refs.values():
+        unit = _unit(
+            evidence={
+                "mentions": (
+                    SourceMention(kind="person", name="Ada", backing_ref=ref),
+                ),
+            }
+        )
+        before = memory.counts()
+        outcome = _accept(memory, unit)
+        after = memory.counts()
+        (receipt,) = [
+            (state, has_record)
+            for key, state, has_record in _receipts(memory)
+            if key == unit.external_source_key
+        ]
+        observed.append(
+            (outcome, {key: after[key] - before[key] for key in after}, receipt)
+        )
+    outcomes = [outcome for outcome, _, _ in observed]
+    deltas = [delta for _, delta, _ in observed]
+    receipts = [receipt for _, _, receipt in observed]
+    assert outcomes == [AcceptOutcome("denied", None)] * len(refs), dict(
+        zip(refs, outcomes, strict=True)
+    )
+    assert all(delta == deltas[0] for delta in deltas), dict(
+        zip(refs, deltas, strict=True)
+    )
+    assert receipts == [("denied", False)] * len(refs), dict(
+        zip(refs, receipts, strict=True)
+    )
+
+
+def test_acceptance_creates_no_entity_when_a_later_mention_backing_ref_is_unreadable(
+    memory: MemoryWorkspace,
+) -> None:
+    """Every mention is checked before the first entity exists, so a refusal on a
+    later mention leaves no entity from an earlier one behind."""
+    with memory.unit() as uow:
+        theirs = _write(
+            uow.connection,
+            _row(title="theirs", audience_kind="member", audience_id=uuid7()),
+        )
+        readable = _write(uow.connection, _row(title="a readable record"))
+    hidden = memory_reference(theirs.id)
+    readable_ref = memory_reference(readable.id)
+
+    before = memory.counts()
+    after_no_ref = _unit(
+        evidence={
+            "mentions": (
+                SourceMention(kind="person", name="Ada"),
+                SourceMention(kind="person", name="Grace", backing_ref=hidden),
+            ),
+        }
+    )
+    assert _accept(memory, after_no_ref) == AcceptOutcome("denied", None)
+    after = memory.counts()
+    assert after["entity"] == before["entity"]
+    assert after["mention"] == before["mention"]
+
+    before = memory.counts()
+    after_readable = _unit(
+        evidence={
+            "mentions": (
+                SourceMention(kind="person", name="Ada", backing_ref=readable_ref),
+                SourceMention(kind="person", name="Grace", backing_ref=hidden),
+            ),
+        }
+    )
+    assert _accept(memory, after_readable) == AcceptOutcome("denied", None)
+    after = memory.counts()
+    for key in ("memory", "purpose", "entity", "mention", "link", "outbox"):
+        assert after[key] == before[key], key
+    with memory.reading() as uow:
+        carrying = (
+            uow.connection.execute(
+                select(memory_tables.memory_entity.c.id).where(
+                    memory_tables.memory_entity.c.ref == readable_ref
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert list(carrying) == []
+
+
 def test_the_validated_importer_adapter_preserves_its_rows_purposes(
     memory: MemoryWorkspace,
 ) -> None:
