@@ -2,13 +2,15 @@
 package (spec § Architecture, System Components item 8; FR 2, 5, 6, 9, 10; R9, R11,
 R14).
 
-Two functions. :func:`claim_units` takes one bounded, single-partition batch of
+Three functions. :func:`claim_units` takes one bounded, single-partition batch of
 ``pending`` evidence, checks each unit's authority before any model call, runs the one
 extraction call, and hands back fully built :class:`ClaimedUnit` values.
 :func:`settle_unit` records what the accepting module did with one of them, writing the
-success audit row first when a memory was created. Neither commits: both run in the
-drain job's own transaction, so memory, receipt, event, audit row and settlement land
-together or not at all.
+success audit row first when a memory was created. :func:`defer_unit` counts an
+attempt on one whose acceptance the database refused, so a poison unit backs off like
+an extraction failure instead of jamming the queue (#215). None of them commits: all
+run in the drain job's own transaction, so memory, receipt, event, audit row and
+settlement land together or not at all.
 
 **Two words used throughout.** *Claimable* means ``state = 'pending' AND (retry_after
 IS NULL OR retry_after <= now)``. *Waiting* means ``state = 'pending' AND retry_after >
@@ -62,6 +64,7 @@ from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from rheo_core.storage.backend import HandlerUnitOfWork, StorageRefusal, UnitOfWork
 from rheo_core.storage.evidence_tables import (
+    OUTCOME_ACCEPTANCE_FAILED,
     OUTCOME_ACTIVE,
     OUTCOME_AUTHORITY_UNVERIFIED,
     OUTCOME_EXPIRED_PENDING,
@@ -323,10 +326,13 @@ def _follow_up_at(
     return _earliest_waiting(uow, now=now, lockable_only=False)
 
 
-def _back_off(uow: UnitOfWork, rows: Sequence[Any], *, now: datetime) -> None:
-    """Step 4's failure path: count the attempt on every row; back each off, or
-    settle it ``gap/extraction_failed`` on the last attempt. The row stays
-    ``pending`` while it backs off, so ``settled_at`` stays null."""
+def _back_off(
+    uow: UnitOfWork, rows: Sequence[Any], *, final_outcome: str, now: datetime
+) -> None:
+    """Count the attempt on every row; back each off, or settle it
+    ``gap/<final_outcome>`` on the last attempt. The row stays ``pending`` while it
+    backs off, so ``settled_at`` stays null. ``rows`` need only ``id`` and
+    ``extraction_attempts``."""
     for row in rows:
         attempts = row.extraction_attempts + 1
         values: dict[str, object] = {"extraction_attempts": attempts}
@@ -340,7 +346,7 @@ def _back_off(uow: UnitOfWork, rows: Sequence[Any], *, now: datetime) -> None:
                 uow,
                 row.id,
                 state=STATE_GAP,
-                outcome=OUTCOME_EXTRACTION_FAILED,
+                outcome=final_outcome,
                 now=now,
             )
 
@@ -430,7 +436,7 @@ def claim_units(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
     except Exception as exc:  # any provider fault is contained to this partition
         failure = type(exc).__name__
     if failure is not None:
-        _back_off(uow, verified, now=now)
+        _back_off(uow, verified, final_outcome=OUTCOME_EXTRACTION_FAILED, now=now)
         # The type name and a count only: a provider may fill a message with text.
         logger.warning(
             EXTRACTION_FAILED_LOG,
@@ -489,3 +495,29 @@ def settle_unit(
         ):
             raise EvidenceAuditUnwritable("no audit sink for the accepting module")
     _settle_row(uow, claimed.evidence_id, state=STATE_SETTLED, outcome=outcome, now=now)
+
+
+def defer_unit(uow: HandlerUnitOfWork, claimed: ClaimedUnit, *, now: datetime) -> None:
+    """Count a failed acceptance of ``claimed`` as one attempt, in the caller's
+    transaction.
+
+    For a unit whose acceptance the database refused (a constraint or a bad value):
+    the caller has rolled its own savepoint back, so no memory was written, and this
+    backs the row off on the extraction schedule, or settles it
+    ``gap/acceptance_failed`` on the fifth attempt. Without it a poison unit would
+    roll back the whole drain with ``extraction_attempts`` still 0 and anchor every
+    later claim (R11).
+
+    The attempt count is re-read rather than taken from the claim: the row is locked
+    by this transaction, so the read is current. A row that is no longer ``pending``
+    is an invariant violation and raises :class:`EvidenceClaimInconsistent`.
+    """
+    row = uow.connection.execute(
+        select(evidence_unit.c.id, evidence_unit.c.extraction_attempts).where(
+            evidence_unit.c.id == claimed.evidence_id,
+            evidence_unit.c.state == STATE_PENDING,
+        )
+    ).one_or_none()
+    if row is None:
+        raise EvidenceClaimInconsistent("a claimed evidence row was no longer pending")
+    _back_off(uow, [row], final_outcome=OUTCOME_ACCEPTANCE_FAILED, now=now)

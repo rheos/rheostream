@@ -71,6 +71,10 @@ OUTCOME_EXPIRED_PENDING: Final = "expired_pending"
 """A ``gap`` outcome: the row was still ``pending`` after its ``source_expires_at``."""
 OUTCOME_EXTRACTION_FAILED: Final = "extraction_failed"
 """A ``gap`` outcome: extraction failed on the row's fifth attempt."""
+OUTCOME_ACCEPTANCE_FAILED: Final = "acceptance_failed"
+"""A ``gap`` outcome: the accepting module's write was refused by the database on the
+row's fifth attempt. Attempts are one count, so extraction and acceptance failures on
+the same row add up."""
 OUTCOME_AUTHORITY_UNVERIFIED: Final = "authority_unverified"
 """A ``settled`` outcome: no acceptance context, or the authority pre-check refused."""
 OUTCOME_ACTIVE: Final = "active"

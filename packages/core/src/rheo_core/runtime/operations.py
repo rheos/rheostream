@@ -48,6 +48,7 @@ from sqlalchemy.exc import DBAPIError
 
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_from_operation
+from rheo_core.evidence.errors import EvidenceDatabaseError
 from rheo_core.evidence.record import NewEvidence, record_evidence, recording_allowed
 from rheo_core.operations.records import (
     finish_cancelled,
@@ -986,6 +987,7 @@ def make_run_runtime_job(
                 # rollback is what keeps the run's own transaction usable. A publish
                 # rolled back here may leave a due-mark request set; the worker path
                 # never reads it, so the cost is at most a spare wake-up.
+                dropped: EvidenceDatabaseError | None = None
                 try:
                     with uow.connection.begin_nested():
                         record_evidence(
@@ -1013,11 +1015,18 @@ def make_run_runtime_job(
                 except DBAPIError as error:
                     if error.connection_invalidated:
                         # A dropped backend takes the session whatever a savepoint
-                        # does.
-                        raise
-                    _log_evidence_failure(error, payload)
+                        # does, so this one propagates. Not as itself: its text
+                        # quotes the row and its parameters, the turn's own words,
+                        # and the worker stores that text as ``last_error`` (#215).
+                        dropped = EvidenceDatabaseError(error)
+                    else:
+                        _log_evidence_failure(error, payload)
                 except Exception as error:  # recording is opt-in; the run is not
                     _log_evidence_failure(error, payload)
+                if dropped is not None:
+                    # Outside the ``except`` block, so the original is not on
+                    # ``__context__`` either.
+                    raise dropped from None
             expires_at = now + timedelta(seconds=deadline)
             token_id, run_token = issue_runtime_token(
                 account_id=account_id,
