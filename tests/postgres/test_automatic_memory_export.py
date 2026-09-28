@@ -19,6 +19,7 @@ trip. Every text and identifier is synthetic.
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
 
@@ -27,11 +28,13 @@ from conftest import ClusterSession, MakeWorkspace
 from harness.evidence import EvidenceWorkspace, enable_recording
 from harness.modules import install_and_enable_module, loaded_probe_modules
 from harness.registry import register_harness
+from harness.runtime_matrix import job_row
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.deletion import OWNED_DELETIONS
 from rheo_core.evidence.providers import FAKE_EXTRACTION_MARKER
-from rheo_core.operations import register_core_operations
+from rheo_core.exports import WORKSPACE_RESTORE
+from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
 from rheo_core.storage.evidence_tables import evidence_unit
 from rheo_recallatron import automatic
@@ -49,9 +52,9 @@ from postgres.test_memory_export_restore import (
     Deployment,
     _export,
     _remove_workspace,
-    _restore,
     _slug,
 )
+from postgres.test_memory_export_restore import _visit as _visit_exports
 
 pytestmark = pytest.mark.postgres
 
@@ -130,6 +133,27 @@ def _deployment(ev: EvidenceWorkspace) -> Deployment:
         owner_account_id=ev.owner_account_id,
         database_name=ev.database_name,
         engine=ev.cluster.backend.pools.engine_for(ev.database_name),
+    )
+
+
+def _restore(cluster: ClusterSession, host: WorkspaceContext, artifact: Path) -> None:
+    """Dispatch the restore from ``host``, run it, and require the job to succeed.
+
+    Checked on the job row itself, so a restore the importer refuses reds here with
+    the job's own failure (``last_error`` names the refusal) rather than later, as a
+    restored workspace that never became available.
+    """
+    outcome = dispatch(host, WORKSPACE_RESTORE, {"artifact_path": str(artifact)})
+    assert outcome.state == "pending", outcome
+    assert outcome.operation_id is not None
+    _visit_exports(cluster, host.workspace_id)
+    engine = cluster.backend.pools.engine_for(
+        cluster.registry_row(host.workspace_id).database_name
+    )
+    job = job_row(engine, outcome.operation_id)
+    assert (job["state"], job["last_error"]) == ("succeeded", None), (
+        f"the restore job did not succeed: state={job['state']!r}, "
+        f"last_error={job['last_error']!r}"
     )
 
 
