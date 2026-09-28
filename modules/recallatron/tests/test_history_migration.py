@@ -6,9 +6,8 @@ from pathlib import Path
 import pytest
 from rheo_recallatron.storage import tables
 from rheo_recallatron.storage.tables import history_record
-from sqlalchemy import CheckConstraint, Column, MetaData, Text
-from sqlalchemy.dialects import postgresql
-from sqlalchemy.schema import CreateColumn, CreateIndex
+from sqlalchemy import Column, MetaData, Text, create_mock_engine
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 _REVISION = (
     Path(__file__).resolve().parents[1]
@@ -22,24 +21,22 @@ def test_history_revision_has_the_current_shape_but_independent_metadata() -> No
         "recallatron.history_record"
     ]
     assert frozen is not history_record
-    dialect = postgresql.dialect()
+    dialect = create_mock_engine("postgresql://", lambda *args, **kwargs: None).dialect
     assert frozen.schema == history_record.schema
     assert frozen.name == history_record.name
-    assert [str(CreateColumn(c).compile(dialect=dialect)) for c in frozen.c] == [
-        str(CreateColumn(c).compile(dialect=dialect)) for c in history_record.c
-    ]
-    assert list(frozen.primary_key.columns.keys()) == list(
-        history_record.primary_key.columns.keys()
+    assert list(frozen.c.keys()) == list(history_record.c.keys())
+    # SQLAlchemy stores constraints in a set; their render order is not stable.
+    # Compare all DDL lines independently of that ordering and trailing commas,
+    # while checking column order separately above.
+    assert sorted(
+        line.strip().rstrip(",")
+        for line in str(CreateTable(frozen).compile(dialect=dialect)).splitlines()
+    ) == sorted(
+        line.strip().rstrip(",")
+        for line in str(
+            CreateTable(history_record).compile(dialect=dialect)
+        ).splitlines()
     )
-    assert {
-        (c.name, str(c.sqltext))
-        for c in frozen.constraints
-        if isinstance(c, CheckConstraint)
-    } == {
-        (c.name, str(c.sqltext))
-        for c in history_record.constraints
-        if isinstance(c, CheckConstraint)
-    }
     assert sorted(
         str(CreateIndex(i).compile(dialect=dialect)) for i in frozen.indexes
     ) == (
