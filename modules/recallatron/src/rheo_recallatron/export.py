@@ -52,7 +52,6 @@ from rheo_core.work.schedules import ScheduleOutcome, schedule_outcome
 from sqlalchemy import insert, select
 
 from rheo_recallatron.configuration import (
-    AUTOMATIC_BOUND_PURPOSE,
     AUTOMATIC_PRODUCER_KINDS,
     MEMORY_RECORD_TYPE,
     MODULE_ID,
@@ -835,11 +834,11 @@ def _validate_automatic(
         raise ArtifactRowInvalid(
             f"automatic memory {memory.id} claims origin {memory.origin!r}"
         )
-    if receipt.bound_purpose != AUTOMATIC_BOUND_PURPOSE:
+    if receipt.bound_purpose is None:
         raise ArtifactRowInvalid(
             f"automatic receipt for {memory.id} binds {receipt.bound_purpose!r}"
         )
-    if purposes.get(memory.id) != {AUTOMATIC_BOUND_PURPOSE}:
+    if purposes.get(memory.id) != {receipt.bound_purpose}:
         raise ArtifactRowInvalid(
             f"automatic memory {memory.id} does not carry exactly its bound purpose"
         )

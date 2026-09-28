@@ -4149,8 +4149,10 @@ def test_the_kind_check_constraint_admits_exactly_the_four_ratified_kinds(
 #   1. acceptance requires ``source_recorded_at >= now - recallatron.retention.days``
 #      and terminalizes an out-of-window unit ``noop`` rather than writing a row no
 #      read could return;
-#   2. automatic acceptance binds exactly ``internal_analysis``, with the consequence
-#      that such a memory is invisible to a bound read requiring another purpose;
+#   2. automatic acceptance binds exactly the unit's own bound purpose, the one its
+#      authority verified (1a4's purpose-binding amendment; it was the fixed
+#      ``internal_analysis`` before), with the consequence that such a memory is
+#      invisible to a bound read requiring another purpose;
 #   3. one source unit yields at most one destination representation — a message
 #      carrying two *separable* explicit facts is still one unit.
 
@@ -4287,16 +4289,30 @@ def _receipts(memory: MemoryWorkspace) -> list[tuple[str, str, bool]]:
     return [(str(key), str(state), record is not None) for key, state, record in rows]
 
 
-def test_acceptance_binds_internal_analysis_and_hides_it_from_another_purpose(
-    memory: MemoryWorkspace,
+_REFERRAL = "share_with_referral"
+
+
+@pytest.mark.parametrize(
+    ("bound", "other"),
+    [
+        (_INTERNAL, _REFERRAL),
+        (_REFERRAL, _INTERNAL),
+        (_RESPOND, _INTERNAL),
+        (_FOLLOW_UP, _RESPOND),
+    ],
+    ids=["internal_analysis", "share_with_referral", "respond", "follow_up"],
+)
+def test_acceptance_binds_its_bound_purpose_and_hides_it_from_another_purpose(
+    memory: MemoryWorkspace, bound: str, other: str
 ) -> None:
     """Ratified rule 2, and the product consequence § A5 states out loud.
 
-    A memory recorded automatically carries exactly ``internal_analysis``. It is
-    therefore invisible to a read bound to ``respond`` — no override — visible to an
-    unbound browse, and visible to a read bound to ``internal_analysis``.
+    A memory recorded automatically carries exactly the unit's bound purpose, the one
+    its authority verified. It is therefore invisible to a read bound to the other
+    purpose (no override), visible to an unbound browse, and visible to a read bound
+    to its own purpose.
     """
-    unit = _unit()
+    unit = _unit(bound_purpose=bound)
     outcome = _accept(memory, unit)
     assert outcome.state == "active" and outcome.memory_ref is not None
 
@@ -4307,18 +4323,18 @@ def test_acceptance_binds_internal_analysis_and_hides_it_from_another_purpose(
     assert row.source_namespace is not None
     assert row.external_source_key == unit.external_source_key
     with memory.reading() as uow:
-        assert list_memory_purposes(uow.connection, row.id) == (_INTERNAL,)
+        assert list_memory_purposes(uow.connection, row.id) == (bound,)
     assert _receipts(memory) == [(unit.external_source_key, "active", True)]
 
     found = memory.recall(memory.context(), query="explicitly")
     assert found.ok and found.result is not None
     assert [item.title for item in found.result.items] == [unit.evidence.title]
 
-    bound_elsewhere = memory.recall(memory.bound_context(_RESPOND), query="explicitly")
+    bound_elsewhere = memory.recall(memory.bound_context(other), query="explicitly")
     assert bound_elsewhere.ok and bound_elsewhere.result is not None
     assert bound_elsewhere.result.items == ()
 
-    bound_here = memory.recall(memory.bound_context(_INTERNAL), query="explicitly")
+    bound_here = memory.recall(memory.bound_context(bound), query="explicitly")
     assert bound_here.ok and bound_here.result is not None
     assert len(bound_here.result.items) == 1
 
@@ -4587,16 +4603,22 @@ def test_a_verified_unit_that_fails_source_policy_earns_a_content_free_receipt(
 ) -> None:
     """A verified caller failing policy is ``denied`` — with a receipt, no memory.
 
-    Four failures, each a different sentence of § A5: a purpose that is not the
-    ratified automatic binding, an audience above the verified ceiling, a reversed
+    Five failures, each a different sentence of § A5: a unit bound to a purpose other
+    than the one its grant verified, an automatic unit whose stated evidence purpose
+    differs from its own binding, an audience above the verified ceiling, a reversed
     source window, and a required canonical link the unit omits.
     """
     now = datetime.now(UTC)
     account = memory.owner_account_id
     cases: tuple[tuple[str, TrustedSourceUnit, object], ...] = (
         (
-            "another purpose",
+            "a purpose other than the grant's",
             _unit(bound_purpose=ContextPurpose.RESPOND),
+            "grant_internal",
+        ),
+        (
+            "a stated purpose other than the binding",
+            _unit(evidence={"purposes": (ContextPurpose.RESPOND,)}),
             None,
         ),
         (
@@ -4620,8 +4642,12 @@ def test_a_verified_unit_that_fails_source_policy_earns_a_content_free_receipt(
     )
     for label, unit, variant in cases:
         before = memory.counts()
-        if variant == "ceiling":
+        if variant == "grant_internal":
             authority: object = _granting(
+                memory, unit, bound_purpose=ContextPurpose.INTERNAL_ANALYSIS
+            )
+        elif variant == "ceiling":
+            authority = _granting(
                 memory, unit, audience_kind="member", audience_id=account
             )
         elif variant == "links":

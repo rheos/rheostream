@@ -99,8 +99,9 @@ class SanitizedEvidence(_Frozen):
 
     ``purposes`` is populated only by the migration producer, which "preserves each
     imported memory's ratified purposes" (§ A3). The two automatic producer kinds
-    leave it empty: their acceptance binds exactly ``internal_analysis`` and a unit
-    presenting any other or additional purpose is refused before a write.
+    leave it empty: their acceptance binds exactly the bound purpose its authority
+    verified, and a unit presenting any other or additional purpose is refused before
+    a write.
     """
 
     kind: MemoryKind

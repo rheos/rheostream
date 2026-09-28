@@ -37,7 +37,7 @@ import pytest
 from conftest import ClusterSession, MakeWorkspace
 from harness.modules import install_and_enable_module, loaded_probe_modules
 from harness.registry import add_member
-from rheo_contracts import Role, WorkspaceContext
+from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_core.audit import AUDIT_LIST
 from rheo_core.audit.operations import AuditListInput, audit_list_handler
 from rheo_core.boundary import context_for_harness
@@ -84,7 +84,6 @@ from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
 from rheo_recallatron import MANIFEST
 from rheo_recallatron.configuration import (
-    AUTOMATIC_BOUND_PURPOSE,
     EMBEDDING_DIMENSIONS,
     MEMORY_RECORD_TYPE,
     RETENTION_DAYS_DEFAULT,
@@ -388,7 +387,7 @@ def _populate(deployment: Deployment, owner_account_id: UUID) -> dict[str, Any]:
     replacement = _seed_memory(
         deployment,
         _memory(title="the replacement", origin="derived"),
-        purposes=(_RESPOND, AUTOMATIC_BOUND_PURPOSE),
+        purposes=(_RESPOND, ContextPurpose.INTERNAL_ANALYSIS.value),
         links=((memory_reference(predecessor.id), _DERIVED_FROM, True),),
     )
     # The supersession pointer, written after the replacement exists — which is the
@@ -1254,7 +1253,7 @@ def test_an_automatic_active_receipt_may_not_widen_what_it_accepted(
         key="auto",
         record_id=accepted.id,
         producer_kind="rheo_runtime",
-        bound_purpose=AUTOMATIC_BOUND_PURPOSE,
+        bound_purpose=ContextPurpose.INTERNAL_ANALYSIS.value,
         source_recorded_at=recorded_at,
         source_expires_at=recorded_at + timedelta(days=1),
     )
@@ -1262,12 +1261,71 @@ def test_an_automatic_active_receipt_may_not_widen_what_it_accepted(
         importing.run(
             (
                 _memory_line(accepted),
-                _purpose_line(accepted.id, AUTOMATIC_BOUND_PURPOSE),
+                _purpose_line(accepted.id, ContextPurpose.INTERNAL_ANALYSIS.value),
                 _line(record="source_receipt", **_receipt_fields(receipt)),
             )
         )
     assert refusal.value.state == ARTIFACT_INVALID
     assert "claims origin" in str(refusal.value)
+
+
+def _automatic_artifact(
+    *, bound_purpose: str, memory_purpose: str
+) -> tuple[dict[str, Any], ...]:
+    """One automatically accepted memory and its active receipt, as artifact lines.
+
+    Everything but the two purposes is the shape the acceptance path writes (derived
+    origin, the receipt's audience, the original source clock), so a refusal can only
+    come from the purpose re-check.
+    """
+    recorded_at = datetime.now(UTC) - timedelta(hours=1)
+    accepted = replace(
+        _memory(
+            title="an automatic memory", origin="derived", source_key=("probe", "auto")
+        ),
+        recorded_at=recorded_at,
+    )
+    receipt = _receipt(
+        state="active",
+        namespace="probe",
+        key="auto",
+        record_id=accepted.id,
+        producer_kind="rheo_runtime",
+        bound_purpose=bound_purpose,
+        source_recorded_at=recorded_at,
+        source_expires_at=recorded_at + timedelta(days=1),
+    )
+    return (
+        _memory_line(accepted),
+        _purpose_line(accepted.id, memory_purpose),
+        _line(record="source_receipt", **_receipt_fields(receipt)),
+    )
+
+
+def test_an_automatic_referral_memory_restores_with_its_bound_purpose(
+    importing: Importing,
+) -> None:
+    """1a4's purpose binding, rechecked on the way in: an automatic memory carries
+    exactly its receipt's bound purpose, any of the four, so a ``share_with_referral``
+    one restores rather than being refused for not being ``internal_analysis``."""
+    referral = ContextPurpose.SHARE_WITH_REFERRAL.value
+    importing.run(_automatic_artifact(bound_purpose=referral, memory_purpose=referral))
+
+
+def test_an_automatic_memory_whose_purpose_is_not_its_binding_is_refused(
+    importing: Importing,
+) -> None:
+    """Restore cannot re-purpose an automatic memory: a receipt bound
+    ``share_with_referral`` whose memory carries ``{internal_analysis}`` is refused."""
+    with pytest.raises(OperationRefused) as refusal:
+        importing.run(
+            _automatic_artifact(
+                bound_purpose=ContextPurpose.SHARE_WITH_REFERRAL.value,
+                memory_purpose=ContextPurpose.INTERNAL_ANALYSIS.value,
+            )
+        )
+    assert refusal.value.state == ARTIFACT_INVALID
+    assert "does not carry exactly its bound purpose" in str(refusal.value)
 
 
 def _receipt_fields(row: SourceReceiptRow) -> dict[str, Any]:
