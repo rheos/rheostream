@@ -4603,8 +4603,9 @@ def test_a_verified_unit_that_fails_source_policy_earns_a_content_free_receipt(
 ) -> None:
     """A verified caller failing policy is ``denied`` — with a receipt, no memory.
 
-    Five failures, each a different sentence of § A5: a unit bound to a purpose other
-    than the one its grant verified, an automatic unit whose stated evidence purpose
+    Six failures, each a different sentence of § A5: a unit bound to a purpose other
+    than the one its grant verified, an automatic unit with no bound purpose under a
+    grant with none, an automatic unit whose stated evidence purpose
     differs from its own binding, an audience above the verified ceiling, a reversed
     source window, and a required canonical link the unit omits.
     """
@@ -4615,6 +4616,11 @@ def test_a_verified_unit_that_fails_source_policy_earns_a_content_free_receipt(
             "a purpose other than the grant's",
             _unit(bound_purpose=ContextPurpose.RESPOND),
             "grant_internal",
+        ),
+        (
+            "an unbound automatic unit",
+            _unit(bound_purpose=None),
+            None,
         ),
         (
             "a stated purpose other than the binding",
