@@ -15,6 +15,12 @@ point `RHEO_TEST_CLUSTER_DSN` at one); the `postgres` marker selects the
 database-touching tests, and the suite fails fast — never a silent skip — when the
 cluster is unreachable.
 
+Recallatron also has a small [forward-looking search-quality suite](../docs/testing/recallatron-search-quality.md):
+independent synthetic questions, labelled answers, ranking/coverage measures and
+no-answer controls through lexical, real-model dense/hybrid and separate history
+search. It is a relevance regression gate, not predecessor-result parity or a claim
+that all real queries are already evaluated.
+
 ## A fast, throwaway test cluster
 
 `make up`'s Postgres is also the dev and demo database, so it runs at full
