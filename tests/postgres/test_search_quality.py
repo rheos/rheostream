@@ -89,6 +89,10 @@ def search_workspace(
         owner = context_for_harness(workspace, owner_account_id, Role.OWNER)
         assert isinstance(owner, WorkspaceContext)
         install_and_enable_module(cluster.backend, owner, workspace, MANIFEST.module_id)
+        # Contexts capture enabled modules. The bootstrap context predates enable;
+        # search must use a fresh boundary context, just as a subsequent request does.
+        owner = context_for_harness(workspace, owner_account_id, Role.OWNER)
+        assert isinstance(owner, WorkspaceContext)
         member_id = add_member(
             cluster.backend, workspace, Role.MEMBER, display_name="synthetic-reviewer"
         )
@@ -131,7 +135,12 @@ def curated_corpus(search_workspace: SearchWorkspace) -> dict[str, str]:
     for record in _RECORDS:
         result = search_workspace.call(
             MEMORY_REMEMBER,
-            {"kind": "note", "title": record["title"], "body": record["body"]},
+            {
+                "kind": "note",
+                "title": record["title"],
+                "body": record["body"],
+                "purposes": ["respond"],
+            },
         )
         assert result.ok and isinstance(result.result, MemoryWritten), result
         refs[result.result.ref] = record["id"]
@@ -251,7 +260,9 @@ def test_history_search_relevance_stays_on_its_separate_surface(
         HISTORY_SEARCH, {"query": case["query"], "limit": 3}
     )
     assert outcome.ok and isinstance(outcome.result, HistorySearchResult), outcome
-    ranked = [historical_corpus[item.source_reference] for item in outcome.result.items]
+    ranked = [
+        historical_corpus[item.external_source_key] for item in outcome.result.items
+    ]
     measured = score(ranked, set(case["relevant"]), k=case["cutoff"])
     print(f"{case['id']} / history-lexical: {ranked}; {measured}")
     if not case["relevant"]:
@@ -276,7 +287,7 @@ def test_history_only_claim_keeps_status_and_owner_boundary(
     assert found.ok and isinstance(found.result, HistorySearchResult), found
     assert len(found.result.items) == 1
     note = found.result.items[0]
-    assert (note.kind, note.status, note.source_reference) == (
+    assert (note.kind, note.status, note.external_source_key) == (
         "procedural_note",
         "unconfirmed",
         "synthetic:tentative",
