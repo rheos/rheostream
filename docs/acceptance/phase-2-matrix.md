@@ -65,7 +65,7 @@ are new captures. Each of those three rows says so in its own `Note:`.
 **Demonstrator:**
 - `pytest:tests/postgres/test_module_lifecycle.py::test_install_then_enable_makes_workspace_status_report_recallatron`
 - `pytest:tests/postgres/test_memory_lifecycle.py::test_loading_the_module_makes_its_memory_a_real_owned_deletable_type`
-- `pytest:tests/postgres/test_memory_records.py::test_the_manifest_declares_both_ratified_events_and_no_subscription`
+- `pytest:tests/postgres/test_memory_records.py::test_the_manifest_declares_both_ratified_events_and_one_subscription`
 - `pytest:tests/postgres/test_web_contribution.py::test_the_committed_composition_is_what_compose_renders`
 - `pytest:tests/postgres/test_web_contribution.py::test_the_composition_carries_recallatron_navigation_routes_and_recall`
 - `pytest:tests/postgres/test_web_contribution.py::test_enabling_recallatron_in_a_fresh_workspace_reports_it_enabled_and_routed`
@@ -114,16 +114,19 @@ the enabled fixture's `state` changed to `installed` reds the enabled case
 and `routing_config()` dropping every module surface reds it too
 (`E       assert set() == {'recallatron'}`).
 
-**Note:** the first three demonstrators are the module-contract half, run 1a0's, and are
-unchanged. Its mutation, captured by P7 on 2026-09-21, set `schema_version=None` in
-`core_ops.py`'s `_workspace_status` and reddened
+**Note:** the first three demonstrators are the module-contract half, run 1a0's. The first
+two are unchanged; the third was renamed from `..._and_no_subscription` by run 1a4a, when
+the manifest gained its one subscription, and now asserts it. The module-contract half's
+mutation, captured by P7 on 2026-09-21, set `schema_version=None` in
+`core_ops.py`'s `_workspace_status` and reddened the first demonstrator,
 `test_install_then_enable_makes_workspace_status_report_recallatron` with
 `E       AssertionError: assert [{'module_id'...rsion': None}] == [{'module_id'...ory_records'}]`.
 It targets the reporting side, because a status response that stopped carrying the applied
 schema revision would leave install and enable both succeeding and the workspace row's own
 claim unverifiable. The second and third demonstrators cover what "its records … all appear"
 means: the memory record type reaches the core deletion registry as a real owned deletable
-type, and both declared events arrive from the manifest with no subscription, each purely
+type, and both declared events arrive from the manifest with exactly one subscription (the
+automatic-memory drain's consumer of core's evidence-recorded event), each purely
 through the registration contract with no core file naming the module.
 
 **Note:** this row was seeded `partial`, holding back the criterion's "interface

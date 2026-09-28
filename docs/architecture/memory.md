@@ -77,6 +77,8 @@ purpose setting: a caller with a bound purpose writes exactly that purpose, an u
 names none takes its sources' intersection (`resolve_purposes` in the module's `writes`
 module). A run with purpose `p` can be given a
 memory only when `p` is in its purposes ([context builder](runtime-and-mcp.md#the-context-builder)).
+An automatic memory carries exactly its producer's verified bound purpose, any of the four, and is
+never re-bound (Robin, 2026-09-26).
 
 **Derivation intersects, never unions.** `recallatron.memory.derive(sources, kind, title, body,
 …)`, whose other fields are `remember`'s with `sources` in place of `provenance_refs`, writes a
@@ -138,8 +140,19 @@ changes or re-chunking cannot invent new identities for consumed evidence.
 Denied/noop/erased/expired outcomes suppress replay without source content; restore preserves
 receipts but restores no live enrollment or worker authority. Acceptance workers may suppress a
 verified unit with no live representation; erasing a live memory uses the existing approved
-deletion coordinator or its exact verified retention exception. 1a1 implements no transcript
-reader, extractor or hook.
+deletion coordinator or its exact verified retention exception. 1a1 implemented no transcript
+reader, extractor or hook; that sentence describes that run.
+
+Automatic acceptance now runs as a job. Core records a person's own runtime turn as a pending
+evidence unit, audience `member` with the speaker's account, and publishes
+`core.evidence.recorded`. The module's one subscription, `recallatron.automatic_memory`, reads
+nothing from that event and only enqueues a `recallatron.automatic_memory.drain` job with an
+empty payload. The drain claims one partition of pending evidence through core's service, which
+checks each unit's authority and runs the one extraction call, then passes each claimed unit
+through `accept_source_unit` and settles it with the seam's own outcome, all in one
+transaction. An item the extraction found nothing explicit in arrives as the noop sentinel
+evidence, and acceptance terminalizes it `noop` with no memory. An extraction failure stays in
+core: the claim backs its partition off and the drain still succeeds.
 
 Every non-replayable receipt state answers one word, `source_unavailable`: a changed digest, a
 noncurrent or missing representation, and an erased, expired, noop, denied or orphaned receipt

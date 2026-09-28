@@ -59,7 +59,7 @@ from hashlib import sha256
 from typing import Final
 from uuid import UUID
 
-from rheo_contracts import ContextPurpose, WorkspaceContext
+from rheo_contracts import WorkspaceContext
 from rheo_contracts.source_units import (
     AuthorityGrant,
     AuthorityRefused,
@@ -72,10 +72,7 @@ from rheo_core.events.consumers import ConsumerRegistry
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
 
-from rheo_recallatron.configuration import (
-    AUTOMATIC_BOUND_PURPOSE,
-    AUTOMATIC_PRODUCER_KINDS,
-)
+from rheo_recallatron.configuration import AUTOMATIC_PRODUCER_KINDS
 from rheo_recallatron.eligibility import (
     AUDIENCE_MEMBER,
     AUDIENCE_WORKSPACE,
@@ -239,24 +236,24 @@ def _within_ceiling(unit: TrustedSourceUnit, grant: AuthorityGrant) -> bool:
 def _accepted_purposes(unit: TrustedSourceUnit) -> tuple[str, ...] | None:
     """The purposes an accepted memory carries, or ``None`` for a policy failure.
 
-    Automatic acceptance binds exactly ``internal_analysis``, for both producer kinds
-    (§ A5). A unit presenting any other or additional purpose refuses before a write —
-    which is the whole of AC 4's third sentence, and the reason such a memory is
-    invisible to a read bound to anything else.
+    Automatic acceptance binds exactly the unit's own bound purpose, any of the four,
+    for both producer kinds (§ A5, amended by 1a4's purpose binding). An unbound unit,
+    or one whose stated evidence purposes are anything but that one purpose, refuses
+    before a write, which is why such a memory is invisible to a read bound to anything
+    else. The unit cannot choose its purpose: :func:`_policy_state` already refuses a
+    unit whose bound purpose differs from the one its authority verified.
 
     Migration is the third producer kind and is not an automatic producer: it may be
     unbound and preserves each imported memory's own ratified purposes, under its
     separately verified import contract.
     """
     if unit.producer_kind in AUTOMATIC_PRODUCER_KINDS:
-        if unit.bound_purpose is None or unit.bound_purpose.value != (
-            AUTOMATIC_BOUND_PURPOSE
-        ):
+        if unit.bound_purpose is None:
             return None
         stated = set(unit.evidence.purposes)
-        if stated and stated != {ContextPurpose(AUTOMATIC_BOUND_PURPOSE)}:
+        if stated and stated != {unit.bound_purpose}:
             return None
-        return (AUTOMATIC_BOUND_PURPOSE,)
+        return (unit.bound_purpose.value,)
     if not unit.evidence.purposes:
         return None
     return tuple(sorted({purpose.value for purpose in unit.evidence.purposes}))
@@ -460,6 +457,8 @@ def accept_source_unit(
     links = _verified_links(ctx, uow, unit, request=request)
     if links is None:
         return _terminalize(uow, unit, grant, namespace, state=STATE_DENIED)
+    if not _mentions_readable(ctx, uow, unit):
+        return _terminalize(uow, unit, grant, namespace, state=STATE_DENIED)
     purposes = _accepted_purposes(unit)
     assert purposes is not None  # _policy_state refused a None above
     written = write_memory(
@@ -600,6 +599,9 @@ def _mention(uow: UnitOfWork, mention: SourceMention, now: datetime) -> Resolved
     or a readable backing ref the producer would have to have probed for, and probing
     is the thing the non-probing rule exists to forbid. So every mention on a unit is
     a creation, and two units naming the same person create two entities.
+
+    Every backing ref it receives has already passed ``_mentions_readable`` under the
+    acting context.
     """
     row = create_entity(
         uow.connection,
@@ -614,6 +616,30 @@ def _mention(uow: UnitOfWork, mention: SourceMention, now: datetime) -> Resolved
         kind=row.kind,
         name=row.name,
         backing_ref=row.ref,
+    )
+
+
+def _mentions_readable(
+    ctx: WorkspaceContext, uow: UnitOfWork, unit: TrustedSourceUnit
+) -> bool:
+    """Whether every mention backing ref on the unit is readable by the acting context.
+
+    A backing ref is a restriction as well as a label: it becomes an ``about`` link on
+    the memory, and ``visible_entity`` shows the entity to anyone who can read it. So
+    an unreadable ref denies the unit rather than being stripped or dropped, the same
+    rule ``_verified_links`` applies to a link. It is the manual path's rule
+    (``resolve_mentions``), checked under the same acting context as the links.
+
+    There is deliberately no ``canonical_ref`` step: a malformed ref, a missing one
+    and an unreadable one must take the same branch, because the non-probing rule
+    forbids telling them apart. It runs over every mention before the first entity is
+    created, so a refused unit leaves no entity behind. A mention with no backing ref
+    is not checked.
+    """
+    return all(
+        readable_ref(ctx, uow, mention.backing_ref)
+        for mention in unit.evidence.mentions
+        if mention.backing_ref is not None
     )
 
 

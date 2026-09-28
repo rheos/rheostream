@@ -28,8 +28,9 @@ any exception; the caller owns retry and backoff.
 
 import threading
 from collections.abc import Mapping
-from typing import Any, Final, Protocol
+from typing import Final, Protocol
 
+from rheo_core.evidence.extract import DigestBatch
 from rheo_core.settings import current_profile, resolve
 
 EXTRACTION_PROVIDER_KEY: Final = "automatic_memory.extraction.provider"
@@ -44,7 +45,7 @@ contains it yields a candidate, and anything else yields ``null``."""
 class ExtractionProvider(Protocol):
     """Proposes at most one memory per digested evidence item.
 
-    ``extract`` takes one digest batch (its type is the digestion step's) and returns
+    ``extract`` takes one :class:`~rheo_core.evidence.extract.DigestBatch` and returns
     the raw structured response, unvalidated; validating it is the caller's job, never
     the provider's. A transient fault raises any exception.
     """
@@ -52,14 +53,14 @@ class ExtractionProvider(Protocol):
     @property
     def name(self) -> str: ...
 
-    def extract(self, batch: Any) -> Mapping[str, object]: ...
+    def extract(self, batch: DigestBatch) -> Mapping[str, object]: ...
 
 
 class FakeExtractionProvider:
     """A deterministic stand-in, for tests only.
 
-    Reads a batch as anything with ``items``, each carrying ``item_id`` and ``text``,
-    and answers ``{"items": [{"item": <id>, "memory": <candidate or None>}, ...]}``: a
+    Reads each of the batch's items by ``item_id`` and ``text``, and answers
+    ``{"items": [{"item": <id>, "memory": <candidate or None>}, ...]}``: a
     ``note`` built from the text when it contains :data:`FAKE_EXTRACTION_MARKER`, and
     ``None`` otherwise. Every batch it was called with is kept in :attr:`calls`, so a
     test can assert on exactly what the model would have seen. The registered instance
@@ -72,7 +73,7 @@ class FakeExtractionProvider:
     """
 
     def __init__(self) -> None:
-        self.calls: list[Any] = []
+        self.calls: list[DigestBatch] = []
 
     @property
     def name(self) -> str:
@@ -82,11 +83,11 @@ class FakeExtractionProvider:
         """Forget every recorded batch."""
         self.calls.clear()
 
-    def extract(self, batch: Any) -> Mapping[str, object]:
+    def extract(self, batch: DigestBatch) -> Mapping[str, object]:
         self.calls.append(batch)
         items: list[dict[str, object]] = []
         for item in batch.items:
-            text = str(item.text)
+            text = item.text
             memory: dict[str, object] | None = None
             if FAKE_EXTRACTION_MARKER in text:
                 memory = {

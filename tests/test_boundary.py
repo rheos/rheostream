@@ -68,6 +68,7 @@ from rheo_core.boundary import (
     WORKSPACE_MISSING_DETAIL,
     WORKSPACE_UNAVAILABLE,
     Refusal,
+    context_for_evidence_acceptance,
     context_for_harness,
     context_for_operator,
 )
@@ -368,6 +369,51 @@ def test_context_for_harness_is_refused_membership_missing(
     assert isinstance(
         context_for_harness(workspace, member, Role.MEMBER), WorkspaceContext
     )
+
+
+def test_context_for_evidence_acceptance_is_refused_membership_missing(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    stranger = uuid7()
+    refusal = context_for_evidence_acceptance(
+        workspace, account_id=stranger, purpose=ContextPurpose.INTERNAL_ANALYSIS
+    )
+    assert isinstance(refusal, Refusal)
+    assert refusal.state == MEMBERSHIP_MISSING
+    # Any role counts: a plain member's account gets a context.
+    member = add_member(
+        cluster.backend, workspace, Role.MEMBER, display_name="evidence-member"
+    )
+    assert isinstance(
+        context_for_evidence_acceptance(
+            workspace, account_id=member, purpose=ContextPurpose.INTERNAL_ANALYSIS
+        ),
+        WorkspaceContext,
+    )
+
+
+@pytest.mark.parametrize(
+    "purpose",
+    [ContextPurpose.INTERNAL_ANALYSIS, ContextPurpose.SHARE_WITH_REFERRAL],
+    ids=lambda purpose: purpose.value,
+)
+def test_context_for_evidence_acceptance_carries_the_passed_account_and_purpose(
+    cluster: ClusterSession, workspace: UUID, purpose: ContextPurpose
+) -> None:
+    member = add_member(
+        cluster.backend, workspace, Role.MEMBER, display_name="evidence-speaker"
+    )
+    ctx = context_for_evidence_acceptance(workspace, account_id=member, purpose=purpose)
+    assert isinstance(ctx, WorkspaceContext)
+    assert ctx.workspace_id == workspace
+    assert ctx.principal.account_id == member
+    assert ctx.principal.bound_purpose is purpose
+    assert ctx.actor.kind is ActorKind.SYSTEM and ctx.actor.id is None
+    assert ctx.role is Role.SERVICE
+    assert ctx.entry is Entry.JOB
+    assert ctx.audience is None
+    assert ctx.operation_set == frozenset()
+    assert ctx.operation_set is not ALL_OPERATIONS
 
 
 def test_harness_context_carries_the_ratified_account_values_and_is_immutable(

@@ -77,6 +77,7 @@ from rheo_core.audit import CORE_AUDIT_SINK, install_sink, reset_sinks
 from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.boundary.factories import context_from_operation
 from rheo_core.events import ConsumerRegistry
+from rheo_core.evidence import EVIDENCE_RECORDED
 from rheo_core.migrations.module_chain import run_module_chain
 from rheo_core.operations import (
     CONSUMERS_MISSING,
@@ -107,12 +108,14 @@ from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
 from rheo_recallatron import operations as memory_operations
 from rheo_recallatron.configuration import (
+    AUTOMATIC_CONSUMER_ID,
     CANDIDATE_SCAN_LIMIT,
     DENSE_FLOOR_PERCENT_SPEC,
     EMBEDDING_BATCH_SIZE_DEFAULT,
     LEXICAL_DF_THRESHOLD,
     LEXICAL_RAREST_KEPT,
     MEMORY_RECORD_TYPE,
+    MODULE_ID,
     RECALL_K_DEFAULT,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
@@ -4087,9 +4090,14 @@ def failing_audit_sink() -> Iterator[None]:
     install_sink(HARNESS_MODULE_ID, CORE_AUDIT_SINK)
 
 
-def test_the_manifest_declares_both_ratified_events_and_no_subscription() -> None:
-    """AC 1: exactly two ``EventDeclaration``s, schema version 1, three fields each."""
-    assert MANIFEST.subscriptions == ()
+def test_the_manifest_declares_both_ratified_events_and_one_subscription() -> None:
+    """AC 1: exactly two ``EventDeclaration``s, schema version 1, three fields each;
+    and the one subscription, the automatic-memory drain's consumer."""
+    (subscription,) = MANIFEST.subscriptions
+    assert subscription.consumer_id == AUTOMATIC_CONSUMER_ID
+    assert subscription.event_type == EVIDENCE_RECORDED
+    assert subscription.module_id == MODULE_ID
+    assert subscription.replay_safe is True
     declared = {event.type: event for event in MANIFEST.events}
     assert set(declared) == {MEMORY_RECORDED, MEMORY_INVALIDATED}
     for event in declared.values():
@@ -4241,8 +4249,10 @@ def test_the_kind_check_constraint_admits_exactly_the_four_ratified_kinds(
 #   1. acceptance requires ``source_recorded_at >= now - recallatron.retention.days``
 #      and terminalizes an out-of-window unit ``noop`` rather than writing a row no
 #      read could return;
-#   2. automatic acceptance binds exactly ``internal_analysis``, with the consequence
-#      that such a memory is invisible to a bound read requiring another purpose;
+#   2. automatic acceptance binds exactly the unit's own bound purpose, the one its
+#      authority verified (1a4's purpose-binding amendment; it was the fixed
+#      ``internal_analysis`` before), with the consequence that such a memory is
+#      invisible to a bound read requiring another purpose;
 #   3. one source unit yields at most one destination representation — a message
 #      carrying two *separable* explicit facts is still one unit.
 
@@ -4379,16 +4389,30 @@ def _receipts(memory: MemoryWorkspace) -> list[tuple[str, str, bool]]:
     return [(str(key), str(state), record is not None) for key, state, record in rows]
 
 
-def test_acceptance_binds_internal_analysis_and_hides_it_from_another_purpose(
-    memory: MemoryWorkspace,
+_REFERRAL = "share_with_referral"
+
+
+@pytest.mark.parametrize(
+    ("bound", "other"),
+    [
+        (_INTERNAL, _REFERRAL),
+        (_REFERRAL, _INTERNAL),
+        (_RESPOND, _INTERNAL),
+        (_FOLLOW_UP, _RESPOND),
+    ],
+    ids=["internal_analysis", "share_with_referral", "respond", "follow_up"],
+)
+def test_acceptance_binds_its_bound_purpose_and_hides_it_from_another_purpose(
+    memory: MemoryWorkspace, bound: str, other: str
 ) -> None:
     """Ratified rule 2, and the product consequence § A5 states out loud.
 
-    A memory recorded automatically carries exactly ``internal_analysis``. It is
-    therefore invisible to a read bound to ``respond`` — no override — visible to an
-    unbound browse, and visible to a read bound to ``internal_analysis``.
+    A memory recorded automatically carries exactly the unit's bound purpose, the one
+    its authority verified. It is therefore invisible to a read bound to the other
+    purpose (no override), visible to an unbound browse, and visible to a read bound
+    to its own purpose.
     """
-    unit = _unit()
+    unit = _unit(bound_purpose=bound)
     outcome = _accept(memory, unit)
     assert outcome.state == "active" and outcome.memory_ref is not None
 
@@ -4399,18 +4423,18 @@ def test_acceptance_binds_internal_analysis_and_hides_it_from_another_purpose(
     assert row.source_namespace is not None
     assert row.external_source_key == unit.external_source_key
     with memory.reading() as uow:
-        assert list_memory_purposes(uow.connection, row.id) == (_INTERNAL,)
+        assert list_memory_purposes(uow.connection, row.id) == (bound,)
     assert _receipts(memory) == [(unit.external_source_key, "active", True)]
 
     found = memory.recall(memory.context(), query="explicitly")
     assert found.ok and found.result is not None
     assert [item.title for item in found.result.items] == [unit.evidence.title]
 
-    bound_elsewhere = memory.recall(memory.bound_context(_RESPOND), query="explicitly")
+    bound_elsewhere = memory.recall(memory.bound_context(other), query="explicitly")
     assert bound_elsewhere.ok and bound_elsewhere.result is not None
     assert bound_elsewhere.result.items == ()
 
-    bound_here = memory.recall(memory.bound_context(_INTERNAL), query="explicitly")
+    bound_here = memory.recall(memory.bound_context(bound), query="explicitly")
     assert bound_here.ok and bound_here.result is not None
     assert len(bound_here.result.items) == 1
 
@@ -4679,16 +4703,28 @@ def test_a_verified_unit_that_fails_source_policy_earns_a_content_free_receipt(
 ) -> None:
     """A verified caller failing policy is ``denied`` — with a receipt, no memory.
 
-    Four failures, each a different sentence of § A5: a purpose that is not the
-    ratified automatic binding, an audience above the verified ceiling, a reversed
+    Six failures, each a different sentence of § A5: a unit bound to a purpose other
+    than the one its grant verified, an automatic unit with no bound purpose under a
+    grant with none, an automatic unit whose stated evidence purpose
+    differs from its own binding, an audience above the verified ceiling, a reversed
     source window, and a required canonical link the unit omits.
     """
     now = datetime.now(UTC)
     account = memory.owner_account_id
     cases: tuple[tuple[str, TrustedSourceUnit, object], ...] = (
         (
-            "another purpose",
+            "a purpose other than the grant's",
             _unit(bound_purpose=ContextPurpose.RESPOND),
+            "grant_internal",
+        ),
+        (
+            "an unbound automatic unit",
+            _unit(bound_purpose=None),
+            None,
+        ),
+        (
+            "a stated purpose other than the binding",
+            _unit(evidence={"purposes": (ContextPurpose.RESPOND,)}),
             None,
         ),
         (
@@ -4712,8 +4748,12 @@ def test_a_verified_unit_that_fails_source_policy_earns_a_content_free_receipt(
     )
     for label, unit, variant in cases:
         before = memory.counts()
-        if variant == "ceiling":
+        if variant == "grant_internal":
             authority: object = _granting(
+                memory, unit, bound_purpose=ContextPurpose.INTERNAL_ANALYSIS
+            )
+        elif variant == "ceiling":
+            authority = _granting(
                 memory, unit, audience_kind="member", audience_id=account
             )
         elif variant == "links":
@@ -4822,6 +4862,187 @@ def test_acceptance_copies_the_units_canonical_links_and_its_mentions(
         }
     )
     assert _accept(memory, unreadable).state == "denied"
+
+
+def test_acceptance_keeps_a_mention_backing_ref_the_caller_can_read(
+    memory: MemoryWorkspace,
+) -> None:
+    """A backing ref the acting context can read is kept: on the entity, and as the
+    memory's ``about`` link, exactly as the manual path keeps one."""
+    with memory.unit() as uow:
+        row = _write(uow.connection, _row(title="a readable record"))
+    ref = memory_reference(row.id)
+    unit = _unit(
+        evidence={
+            "mentions": (SourceMention(kind="person", name="Ada", backing_ref=ref),),
+        }
+    )
+    before = memory.counts()
+    outcome = _accept(memory, unit)
+    after = memory.counts()
+    assert outcome.state == "active" and outcome.memory_ref is not None
+    with memory.reading() as uow:
+        carrying = (
+            uow.connection.execute(
+                select(memory_tables.memory_entity.c.id).where(
+                    memory_tables.memory_entity.c.ref == ref
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(carrying) == 1, "exactly one entity carries the readable ref"
+    assert (ref, "about") in _links_of(memory, outcome.memory_ref)
+    assert after["entity"] == before["entity"] + 1
+    assert after["mention"] == before["mention"] + 1
+
+
+def test_acceptance_denies_a_unit_whose_mention_backing_ref_the_caller_cannot_read(
+    memory: MemoryWorkspace,
+) -> None:
+    """#201: a trusted producer cannot mint an entity carrying a ref its caller cannot
+    read. The unit is refused whole, with a content-free receipt and nothing else."""
+    with memory.unit() as uow:
+        # Somebody else's member-private memory: live, and unreadable by the owner.
+        theirs = _write(
+            uow.connection,
+            _row(title="theirs", audience_kind="member", audience_id=uuid7()),
+        )
+    hidden = memory_reference(theirs.id)
+    unit = _unit(
+        evidence={
+            "mentions": (SourceMention(kind="person", name="Ada", backing_ref=hidden),),
+        }
+    )
+    before = memory.counts()
+    outcome = _accept(memory, unit)
+    after = memory.counts()
+    with memory.reading() as uow:
+        carrying = (
+            uow.connection.execute(
+                select(memory_tables.memory_entity.c.id).where(
+                    memory_tables.memory_entity.c.ref == hidden
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert list(carrying) == [], "an entity carries a ref its caller cannot read"
+    assert outcome == AcceptOutcome("denied", None)
+    assert {key: after[key] - before[key] for key in after} == {
+        "memory": 0,
+        "purpose": 0,
+        "entity": 0,
+        "mention": 0,
+        "link": 0,
+        "receipt": 1,
+        "outbox": 0,
+    }
+    assert (unit.external_source_key, "denied", False) in _receipts(memory)
+
+
+def test_acceptance_answers_an_unreadable_backing_ref_exactly_as_a_missing_or_malformed_one(  # noqa: E501 - the name states the non-probing claim in full
+    memory: MemoryWorkspace,
+) -> None:
+    """The non-probing proof: an unreadable live ref, a missing one, a malformed one
+    and a foreign-module one are indistinguishable in outcome, rows and receipt."""
+    with memory.unit() as uow:
+        theirs = _write(
+            uow.connection,
+            _row(title="theirs", audience_kind="member", audience_id=uuid7()),
+        )
+    refs = {
+        "unreadable": memory_reference(theirs.id),
+        "missing": memory_reference(uuid7()),
+        "malformed": "not-a-reference",
+        "foreign": f"{_FOREIGN}:{uuid7()}",
+    }
+    observed: list[tuple[AcceptOutcome, dict[str, int], tuple[str, bool]]] = []
+    for ref in refs.values():
+        unit = _unit(
+            evidence={
+                "mentions": (
+                    SourceMention(kind="person", name="Ada", backing_ref=ref),
+                ),
+            }
+        )
+        before = memory.counts()
+        outcome = _accept(memory, unit)
+        after = memory.counts()
+        (receipt,) = [
+            (state, has_record)
+            for key, state, has_record in _receipts(memory)
+            if key == unit.external_source_key
+        ]
+        observed.append(
+            (outcome, {key: after[key] - before[key] for key in after}, receipt)
+        )
+    outcomes = [outcome for outcome, _, _ in observed]
+    deltas = [delta for _, delta, _ in observed]
+    receipts = [receipt for _, _, receipt in observed]
+    assert outcomes == [AcceptOutcome("denied", None)] * len(refs), dict(
+        zip(refs, outcomes, strict=True)
+    )
+    assert all(delta == deltas[0] for delta in deltas), dict(
+        zip(refs, deltas, strict=True)
+    )
+    assert receipts == [("denied", False)] * len(refs), dict(
+        zip(refs, receipts, strict=True)
+    )
+
+
+def test_acceptance_creates_no_entity_when_a_later_mention_backing_ref_is_unreadable(
+    memory: MemoryWorkspace,
+) -> None:
+    """Every mention is checked before the first entity exists, so a refusal on a
+    later mention leaves no entity from an earlier one behind."""
+    with memory.unit() as uow:
+        theirs = _write(
+            uow.connection,
+            _row(title="theirs", audience_kind="member", audience_id=uuid7()),
+        )
+        readable = _write(uow.connection, _row(title="a readable record"))
+    hidden = memory_reference(theirs.id)
+    readable_backing = memory_reference(readable.id)
+
+    before = memory.counts()
+    after_no_ref = _unit(
+        evidence={
+            "mentions": (
+                SourceMention(kind="person", name="Ada"),
+                SourceMention(kind="person", name="Grace", backing_ref=hidden),
+            ),
+        }
+    )
+    assert _accept(memory, after_no_ref) == AcceptOutcome("denied", None)
+    after = memory.counts()
+    assert after["entity"] == before["entity"]
+    assert after["mention"] == before["mention"]
+
+    before = memory.counts()
+    after_readable = _unit(
+        evidence={
+            "mentions": (
+                SourceMention(kind="person", name="Ada", backing_ref=readable_backing),
+                SourceMention(kind="person", name="Grace", backing_ref=hidden),
+            ),
+        }
+    )
+    assert _accept(memory, after_readable) == AcceptOutcome("denied", None)
+    after = memory.counts()
+    for key in ("memory", "purpose", "entity", "mention", "link", "outbox"):
+        assert after[key] == before[key], key
+    with memory.reading() as uow:
+        carrying = (
+            uow.connection.execute(
+                select(memory_tables.memory_entity.c.id).where(
+                    memory_tables.memory_entity.c.ref == readable_backing
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert list(carrying) == []
 
 
 def test_the_validated_importer_adapter_preserves_its_rows_purposes(

@@ -149,14 +149,18 @@ row is one turn waiting to become memory: `pending` with its sanitized body, or 
 never exported. Its `source_expires_at` is its recording time plus
 `automatic_memory.max_pending_hours`; the first daily `core.retention_sweep` after that
 instant ages a still-pending row to `gap/expired_pending`, so its text can stay until the
-next daily sweep (a later drain job will also age rows when it claims them). The same sweep deletes settled
+next daily sweep, unless a drain job ages it sooner: Recallatron's automatic-memory drain ages
+every expired pending row before it claims. The same sweep deletes settled
 and gap rows older than `runtime.transcript_retention_days`. A run's turn is recorded only when
 six conditions all hold, checked in order: `automatic_memory.enabled` is true at both the
 operator and the workspace level; an extraction provider resolves (the default `"none"`
 resolves nothing, so production records nothing until one is configured); an enabled module
 subscribes to `core.evidence.recorded`; the speaker is a person (an account, or a
 person-held `cli` token, never an `mcp` or `runtime` token); the run is bound to a purpose;
-and the task text is non-empty after sanitation. No transcript reader or hook ships with it.
+and the task text is non-empty after sanitation. A failure while recording is logged without
+content and the run carries on without its evidence, and the recorder only accepts a turn
+attributed to the run's own account and bound purpose. No transcript reader or hook ships
+with it.
 
 ## `ClaudeCliRuntime`
 

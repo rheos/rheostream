@@ -234,6 +234,14 @@ for ``operation_id`` — and raises ``OperationRefused(CONSUMERS_MISSING, ...)``
 fan-out would then depend on which call built the registry, which is a silent wrong
 answer rather than a refusal."""
 
+EVIDENCE_ACCEPT_AUDIT: Final = "core.evidence.accept"
+"""The ``operation_name`` of the audit row one automatic memory acceptance writes.
+
+A constant here rather than a parameter of :func:`record_evidence_acceptance_audit`,
+so no caller can mint an arbitrary audit label through that entry point. It names no
+registered operation: the drain job that accepts a unit is a job, not a dispatch, and
+this label is what its row carries instead of a declaration's name."""
+
 _APPROVAL_CLASSES: Final = frozenset(
     {SafetyClass.DESTRUCTIVE, SafetyClass.EXTERNAL, SafetyClass.FINANCIAL}
 )
@@ -449,9 +457,17 @@ class _AuditWrite:
 
     Its existence is itself the "a row is written here" condition: it is ``None``
     exactly when no row is written, and every call site reads it that way.
+
+    **It holds the operation's name and class, not the whole registered operation.**
+    Those two are all the row takes from a declaration, and holding only them lets a
+    row that no declaration stands behind — :func:`record_evidence_acceptance_audit`'s
+    fixed ``core.evidence.accept`` label — go through this same method instead of
+    spelling the protocol's keywords at a second call site. :func:`_audit_write` fills
+    both from the declaration, so every dispatch-written row is unchanged.
     """
 
-    operation: RegisteredOperation
+    operation_name: str
+    safety_class: SafetyClass
     sink: AuditSink
     request_digest: bytes
     subject_ref: RecordRef | None
@@ -465,12 +481,11 @@ class _AuditWrite:
         operation_id: UUID | None,
     ) -> None:
         """Write the row through ``uow``. Does not commit; the caller owns that."""
-        declaration = self.operation.declaration
         self.sink.record(
             ctx,
             uow,
-            operation=declaration.name,
-            safety_class=declaration.safety_class,
+            operation=self.operation_name,
+            safety_class=self.safety_class,
             subject_ref=self.subject_ref,
             request_digest=self.request_digest,
             outcome=outcome,
@@ -520,7 +535,13 @@ def _audit_write(
             },
         )
         return None
-    return _AuditWrite(operation, sink, request_digest, subject_ref)
+    return _AuditWrite(
+        operation_name=declaration.name,
+        safety_class=declaration.safety_class,
+        sink=sink,
+        request_digest=request_digest,
+        subject_ref=subject_ref,
+    )
 
 
 def record_operation_audit(
@@ -577,6 +598,59 @@ def record_operation_audit(
     return True
 
 
+def record_evidence_acceptance_audit(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    *,
+    module_id: str,
+    subject_ref: RecordRef,
+    request_digest: bytes,
+) -> bool:
+    """Write the one success audit row for an automatic memory acceptance, in
+    ``uow``'s transaction; answer whether a row was written.
+
+    **The second audit entry outside** :func:`dispatch`, after
+    :func:`record_operation_audit`, and inside this module for the same two reasons:
+    the sink protocol's keywords stay spelled once, in :class:`_AuditWrite`, and
+    ``.record(`` callers stay the one file ``tests/test_audit_sink.py`` pins. 1a1's
+    acceptance seam writes no audit row by design; the drain job that calls it does,
+    through core's evidence service, in the same transaction as the memory and its
+    receipt, so a failed row rolls both back.
+
+    **Nothing about the row is the caller's to choose but two ids.** The operation
+    name is :data:`EVIDENCE_ACCEPT_AUDIT`, the class ``MUTATE``, the outcome
+    ``succeeded`` and ``operation_id`` null (no operation record stands behind a job's
+    acceptance), all fixed here. Actor and entry come from ``ctx``, which for this
+    path is :func:`~rheo_core.boundary.factories.context_for_evidence_acceptance`'s
+    ``system``/``job``. ``subject_ref`` is the created memory's ref and
+    ``request_digest`` the unit's payload digest, the one the receipt stores. No
+    memory body, title, evidence text or native key reaches this function, so none can
+    reach the row.
+
+    ``module_id`` picks the sink, resolved exactly as :func:`_audit_write` resolves
+    one: the accepting module's own, which is the one its manifest installed in the
+    worker. With no sink installed for it this logs ``audit_row_unwritable`` and
+    answers ``False`` without raising, and the caller decides what a missing row
+    means.
+    """
+    sink = sink_for(module_id)
+    if sink is None:
+        logger.error(
+            "audit_row_unwritable",
+            extra={"operation": EVIDENCE_ACCEPT_AUDIT, "module_id": module_id},
+        )
+        return False
+    audit = _AuditWrite(
+        operation_name=EVIDENCE_ACCEPT_AUDIT,
+        safety_class=SafetyClass.MUTATE,
+        sink=sink,
+        request_digest=request_digest,
+        subject_ref=subject_ref,
+    )
+    audit.record(ctx, uow, outcome=AUDIT_SUCCEEDED, operation_id=None)
+    return True
+
+
 def _audit_alone(
     ctx: WorkspaceContext,
     audit: _AuditWrite | None,
@@ -626,7 +700,7 @@ def _audit_alone(
         logger.error(
             "audit_row_not_written",
             extra={
-                "operation": audit.operation.name,
+                "operation": audit.operation_name,
                 "outcome": outcome,
                 "workspace_id": str(ctx.workspace_id),
                 "request_id": str(ctx.request_id),

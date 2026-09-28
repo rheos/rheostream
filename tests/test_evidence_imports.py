@@ -18,6 +18,7 @@ MODULES = (
     "rheo_core.work.schedules",
     "rheo_core.evidence.retention",
     "rheo_core.evidence",
+    "rheo_core.evidence.service",
 )
 
 

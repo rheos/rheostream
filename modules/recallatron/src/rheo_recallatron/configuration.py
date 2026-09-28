@@ -339,6 +339,15 @@ REBUILD_MAX_ATTEMPTS: Final = 3
 the whole walk: a rebuild that failed three times is a provider or a corpus problem an
 owner has to look at, not a blip."""
 
+DRAIN_JOB_KIND: Final = f"{MODULE_ID}.automatic_memory.drain"
+AUTOMATIC_CONSUMER_ID: Final = f"{MODULE_ID}.automatic_memory"
+
+DRAIN_MAX_ATTEMPTS: Final = 5
+"""Attempts one automatic-memory drain job gets, for a fault that raises out of its
+handler: a database error, an audit-write failure, an unresolved workspace. Each is
+workspace-wide rather than one partition's; a bad extraction is not one of them,
+because the claim contains it and the drain succeeds."""
+
 
 @dataclass(frozen=True, slots=True)
 class RetentionPolicy:
@@ -512,18 +521,14 @@ DEDUP_LIMIT_MAX: Final = 50
 DEDUP_LIMIT_DEFAULT: Final = 10
 """How many pairs one call returns, mirroring ``RECALL_K``."""
 
-AUTOMATIC_BOUND_PURPOSE: Final = "internal_analysis"
-"""§ A5: automatic acceptance binds exactly one purpose, for both producer kinds.
-
-Named here rather than inlined at the seam because the product consequence is the
-reason it is a constant: a memory recorded under it is invisible to any bound read
-requiring a different purpose, and visible to an unbound browse and to a read bound to
-it. Changing this value changes that visibility for every automatic memory, which is a
-spec amendment and not a local edit.
-"""
-
 AUTOMATIC_PRODUCER_KINDS: Final = ("rheo_runtime", "claude_code_local")
-"""The two producer kinds whose acceptance binds :data:`AUTOMATIC_BOUND_PURPOSE`.
+"""The two producer kinds whose acceptance binds exactly the purpose their authority
+verified.
+
+There is no fixed automatic purpose: a unit carries its run's one bound purpose, any of
+the four, and its memory carries exactly that one. A memory recorded under it is
+invisible to any bound read requiring a different purpose, and visible to an unbound
+browse and to a read bound to it.
 
 ``migration`` is the third receipt producer kind and is deliberately absent: it may be
 unbound and preserves each imported memory's own ratified purposes, under its

@@ -15,6 +15,11 @@ _PATH_TOKEN = "modules/recallatron"
 _MATRIX_PARSER = _REPO_ROOT / "tests" / "test_acceptance_matrix.py"
 _ABSENCE_PROOF_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _DECLARED_TEST_DEPENDENCIES = {
+    "tests/postgres/test_automatic_memory_acceptance.py",
+    "tests/postgres/test_automatic_memory_drain.py",
+    "tests/postgres/test_automatic_memory_export.py",
+    "tests/postgres/test_automatic_memory_limits.py",
+    "tests/postgres/test_automatic_memory_shapes.py",
     "tests/postgres/test_history_records.py",
     "tests/postgres/test_memory_browse.py",
     "tests/postgres/test_memory_dedup.py",
@@ -32,6 +37,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_module_migrations.py",
     "tests/postgres/test_module_storage_ownership.py",
     "tests/postgres/test_tool_telemetry.py",
+    "tests/test_evidence_boundary.py",
     "tests/test_flagship_overlay.py",
     "tests/test_history_extract.py",
     "tests/test_migration_extract.py",
@@ -84,8 +90,20 @@ migration package for it to guard, and ``test_migration_predecessor_reader.py``
 (FR 1, FR 18) drives the predecessor reader and the ``recallatron-migrate denylist``
 console script, which live only in this distribution, and ``test_migration_extract.py``
 (FR 1, FR 3) drives the timestamp rule, the extract model and the ``inventory``
-subcommand, which live there too. ``test_search_quality.py`` drives the real curated
-and owner-only history search against independently labelled synthetic questions;
+subcommand, which live there too, and ``test_automatic_memory_drain.py`` drives the
+automatic-memory consumer and drain job, which only Recallatron declares.
+``test_automatic_memory_acceptance.py`` drives the automatic-memory acceptance path end
+to end through Recallatron's real seam, from a runtime turn to a live memory.
+``test_automatic_memory_limits.py`` drives the drain's limit, retention and
+audit-rollback behaviour through Recallatron's real job kind and sink registration.
+``test_automatic_memory_shapes.py`` calls Recallatron's own ``accept_source_unit``
+directly for the ``claude_code_local`` shape, which only the real seam can answer.
+``test_automatic_memory_export.py`` drives Recallatron's real export/import pair over
+automatic memories, so a restore re-checks each one's own bound purpose.
+``test_evidence_boundary.py`` scans Recallatron's source tree for the FR 2 import
+boundary, so it names that tree's path. ``test_search_quality.py`` drives the real
+curated and owner-only history search against independently labelled synthetic
+questions;
 ``test_relevance_reranker.py`` checks this module's local relevance runtime and its
 outage/network guards. Neither adds a core/application dependency on the module.
 

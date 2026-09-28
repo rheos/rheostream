@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from rheo_contracts import (
     WorkspaceContext,
 )
 from sqlalchemy import insert, select, update
+from sqlalchemy.exc import DBAPIError
 
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_from_operation
@@ -100,6 +102,7 @@ HARD_DEADLINE_SECONDS: Final = 3600
 CREDENTIAL_SLOT: Final = "model"
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
 _OUTPUT_ADAPTER: TypeAdapter[RuntimeOutput] = TypeAdapter(RuntimeOutput)
+_evidence_logger = logging.getLogger("rheo_core.evidence")
 
 
 class RuntimeRunInput(BaseModel):
@@ -471,6 +474,17 @@ def _job_actor(payload: RuntimeJobPayload) -> JobActor:
             return _NO_ACTOR
         return JobActor(account_id=row.account_id, token_kind=row.kind)
     return _NO_ACTOR
+
+
+def _log_evidence_failure(error: Exception, payload: RuntimeJobPayload) -> None:
+    """One content-free line: the error's class and the operation, never its text."""
+    _evidence_logger.warning(
+        "evidence_record_failed",
+        extra={
+            "error_type": type(error).__name__,
+            "operation_id": str(payload.operation_id),
+        },
+    )
 
 
 def _fail(
@@ -959,33 +973,51 @@ def make_run_runtime_job(
             # The automatic-memory hook: the person's own task, recorded before the
             # adapter starts, so a run that later fails still records what they said.
             # A run that raises rolls the row back with this transaction, and the
-            # retry records it again, idempotent on the native key.
+            # retry records it again, idempotent on the native key. A recording
+            # failure never fails the run: the write sits in a savepoint, and the
+            # failure is logged by class only, never its message or the task. The
+            # recorder also refuses a record whose speaker or purpose is not this
+            # run's own account and bound purpose.
             if recording_allowed(ctx, uow, token_kind=token_kind, settings=settings):
                 bound_purpose = ctx.principal.bound_purpose
                 assert bound_purpose is not None  # condition 5, just checked
                 recorded_at = clock()
-                record_evidence(
-                    ctx,
-                    uow,
-                    [
-                        NewEvidence(
-                            producer_kind="rheo_runtime",
-                            authority_id=payload.operation_id,
-                            native_key=f"turn:{payload.operation_id}",
-                            speaker_account_id=account_id,
-                            # Every runtime run is account-backed and purpose-bound,
-                            # so its ceiling is the speaker's member audience, never
-                            # workspace.
-                            audience_kind="member",
-                            audience_id=account_id,
-                            # Verbatim, never re-bound.
-                            purpose=bound_purpose,
-                            recorded_at=recorded_at,
-                            raw_text=payload.task,
+                # The ``try`` is outside the savepoint on purpose: the savepoint's
+                # rollback is what keeps the run's own transaction usable. A publish
+                # rolled back here may leave a due-mark request set; the worker path
+                # never reads it, so the cost is at most a spare wake-up.
+                try:
+                    with uow.connection.begin_nested():
+                        record_evidence(
+                            ctx,
+                            uow,
+                            [
+                                NewEvidence(
+                                    producer_kind="rheo_runtime",
+                                    authority_id=payload.operation_id,
+                                    native_key=f"turn:{payload.operation_id}",
+                                    speaker_account_id=account_id,
+                                    # Every runtime run is account-backed and
+                                    # purpose-bound, so its ceiling is the speaker's
+                                    # member audience, never workspace.
+                                    audience_kind="member",
+                                    audience_id=account_id,
+                                    # Verbatim, never re-bound.
+                                    purpose=bound_purpose,
+                                    recorded_at=recorded_at,
+                                    raw_text=payload.task,
+                                )
+                            ],
+                            now=recorded_at,
                         )
-                    ],
-                    now=recorded_at,
-                )
+                except DBAPIError as error:
+                    if error.connection_invalidated:
+                        # A dropped backend takes the session whatever a savepoint
+                        # does.
+                        raise
+                    _log_evidence_failure(error, payload)
+                except Exception as error:  # recording is opt-in; the run is not
+                    _log_evidence_failure(error, payload)
             expires_at = now + timedelta(seconds=deadline)
             token_id, run_token = issue_runtime_token(
                 account_id=account_id,

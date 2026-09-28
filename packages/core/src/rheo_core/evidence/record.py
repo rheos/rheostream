@@ -170,6 +170,10 @@ def record_evidence(
     caller has already checked :func:`recording_allowed`; this function does not
     re-check it, so a fixture may drive it directly.
 
+    **Bound to the context.** Every record's speaker must be the context's account and
+    its purpose the context's bound purpose; one mismatch raises ``ValueError`` for
+    the whole batch before anything is written.
+
     **Budgets.** ``max_records_per_attempt`` counts every row this attempt writes or
     finds held: ``pending`` and ``gap/oversize`` alike. ``max_bytes_per_attempt``
     counts ``pending`` bodies only, since a gap row has none. A dropped record writes
@@ -187,6 +191,7 @@ def record_evidence(
         # Checked before any write: the event needs the process's registry, and a
         # throwaway one would decide fan-out by which call built it.
         raise ValueError("record_evidence needs the unit of work's consumer registry")
+    _check_bound_to_context(ctx, records)
     settings = resolve(
         workspace_id=ctx.workspace_id,
         source=TransactionBoundOverrideSource(uow, workspace_id=ctx.workspace_id),
@@ -269,6 +274,30 @@ def record_evidence(
         gapped=tuple(gapped),
         dropped=tuple(dropped),
     )
+
+
+def _check_bound_to_context(
+    ctx: WorkspaceContext, records: Sequence[NewEvidence]
+) -> None:
+    """Refuse the whole batch unless every record is the verified run's own turn.
+
+    Runs before the settings read and before any write, so a mismatch leaves no row
+    and no event even inside the caller's open transaction. A context without an
+    account or a bound purpose matches nothing. The messages name the rule and
+    nothing from the record.
+    """
+    account_id = ctx.principal.account_id
+    bound_purpose = ctx.principal.bound_purpose
+    for record in records:
+        if account_id is None or record.speaker_account_id != account_id:
+            raise ValueError(
+                "record_evidence refuses a speaker that is not the context's account"
+            )
+        if bound_purpose is None or record.purpose != bound_purpose:
+            raise ValueError(
+                "record_evidence refuses a purpose that is not the context's bound"
+                " purpose"
+            )
 
 
 def _insert(
