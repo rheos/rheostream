@@ -9,6 +9,7 @@ those reached it: the model sees an ordinal and a body, nothing else.
 import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import MappingProxyType
 
 import pytest
 from rheo_contracts.source_units import SanitizedEvidence, SourceMention
@@ -360,6 +361,7 @@ def test_an_entry_with_a_key_beyond_item_and_memory_is_no_candidate() -> None:
         {"results": [{"item": "u1", "memory": None}]},
         {"items": {"item": "u1", "memory": None}},
         {"items": "u1"},
+        {"items": b"u1"},
         {"items": None},
         {"items": [], "note": "extra top-level key"},
         None,
@@ -371,6 +373,7 @@ def test_an_entry_with_a_key_beyond_item_and_memory_is_no_candidate() -> None:
         "no-items-key",
         "items-is-object",
         "items-is-string",
+        "items-is-bytes",
         "items-is-null",
         "extra-top-level-key",
         "none",
@@ -380,5 +383,32 @@ def test_a_response_not_shaped_as_an_items_list_raises(response: object) -> None
     batch = _batch("a body")
     with pytest.raises(ExtractionOutputInvalid) as caught:
         validate_extraction(batch, response)
+    # Neither link may lead back to a pydantic error quoting the raw model output.
     assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
     assert "u1" not in str(caught.value)
+
+
+def test_any_mapping_with_a_tuple_of_items_is_a_well_shaped_response() -> None:
+    """The provider protocol promises a Mapping, not a dict; a conforming provider
+    must not be treated as a transport fault."""
+    batch = _batch("a body", "b body")
+    response = MappingProxyType(
+        {
+            "items": (
+                {"item": "u1", "memory": _memory()},
+                {"item": "u2", "memory": None},
+            )
+        }
+    )
+    result = validate_extraction(batch, response)
+    assert result["u1"].title == "Releases move to Thursday"
+    assert result["u2"] is NOOP_EVIDENCE
+
+
+def test_a_dict_with_a_tuple_of_items_is_a_well_shaped_response() -> None:
+    batch = _batch("a body")
+    result = validate_extraction(
+        batch, {"items": ({"item": "u1", "memory": _memory()},)}
+    )
+    assert result["u1"].title == "Releases move to Thursday"

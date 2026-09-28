@@ -86,11 +86,15 @@ def digest(bodies: Sequence[str]) -> DigestBatch:
 
 class _ExtractionResponse(BaseModel):
     """The whole response's shape. Entries stay unvalidated here, so one bad entry
-    costs its own item a candidate rather than failing every item in the batch."""
+    costs its own item a candidate rather than failing every item in the batch.
+
+    Strict, so ``items`` must really be a list or a tuple: a string or bytes value is
+    not coerced into a sequence of characters.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    items: list[object]
+    items: list[object] | tuple[object, ...]
 
 
 class _ProposedMemory(BaseModel):
@@ -130,14 +134,22 @@ def validate_extraction(
     """Every batch item id mapped to its one candidate, or to :data:`NOOP_EVIDENCE`.
 
     Raises :class:`ExtractionOutputInvalid` when the response as a whole is not
-    ``{"items": [...]}``.
+    ``{"items": [...]}``. Any mapping counts as the object, since the provider
+    protocol promises a ``Mapping`` rather than a ``dict``.
     """
-    try:
-        parsed = _ExtractionResponse.model_validate(response)
-    except ValidationError:
+    parsed: _ExtractionResponse | None = None
+    if isinstance(response, Mapping):
+        try:
+            parsed = _ExtractionResponse.model_validate(dict(response))
+        except ValidationError:
+            pass
+    if parsed is None:
+        # Raised outside the except block on purpose: a ValidationError's text quotes
+        # the raw model output, and raising inside the block would keep it reachable
+        # on ``__context__`` even with ``from None``.
         raise ExtractionOutputInvalid(
             "extraction response is not an object holding an items list"
-        ) from None
+        )
 
     issued = {item.item_id for item in batch.items}
     answers: dict[str, list[Mapping[object, object]]] = {}
