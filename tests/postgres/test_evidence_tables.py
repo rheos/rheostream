@@ -37,7 +37,7 @@ from sqlalchemy.exc import IntegrityError
 
 pytestmark = pytest.mark.postgres
 
-HEAD = "0010_evidence_unit"
+HEAD = "0011_local_evidence"
 PREVIOUS = "0009_runtime_session_policy"
 
 CHECK_CONSTRAINTS = {
@@ -300,8 +300,10 @@ def test_producer_kind_and_native_key_length_are_bounded(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
     _, engine = _engine(cluster, workspace)
-    # 1a4b's producer is not admitted until its own migration widens the check.
-    _refused(engine, "evidence_unit_producer_kind", producer_kind="claude_code_local")
+    # 1a4b's producer is admitted once 0011_local_evidence widens the check; an
+    # unknown kind is still refused, so the CHECK still bounds the column.
+    _admitted(engine, producer_kind="claude_code_local")
+    _refused(engine, "evidence_unit_producer_kind", producer_kind="not_a_kind")
     _admitted(engine, native_key="k" * 256)
     _refused(engine, "evidence_unit_native_key_length", native_key="k" * 257)
 
