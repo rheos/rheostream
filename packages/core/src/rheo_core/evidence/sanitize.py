@@ -36,18 +36,22 @@ The steps, in this order (spec Architecture, System Components item 1):
    rest is split into blank-line-separated segments, and each is worked in three
    passes:
 
-   a. *Whole segment.* A line that is only a filesystem path is removed. A path may
+   a. *Whole segment.* A line that is only a filesystem path is removed, after a
+      leading list bullet and one layer of matching quotes or backticks come off
+      (``"C:\\Users\\...\\tax 2025.pdf"`` from "Copy as path"). A path may
       hold spaces and nothing marks where it ends, so a line that starts at a root is
       a path to its end: a Windows drive root (``C:\\`` or ``C:/``), a UNC
       ``\\\\server\\``, ``~/``, ``./``, ``../``, or a POSIX root holding a
       directory (``/Users/example/My Documents/...``). What is left is removed whole
       when it is a unified-diff hunk (with any directly following segments made only
       of diff body lines), an XML/HTML-tag block spanning the whole segment, a JSON
-      object or array, part of a stack trace, or a shell or REPL transcript (a line
-      opening with ``$ cmd``, ``user@host:~$ cmd`` or ``>>>``; the lines after a
-      prompt are its output). A stack frame counts mid-sentence when its shape is
-      distinctive: ``Caused by: java.io.IOException: ...`` or ``File "/app/x.py",
-      line 3`` inside a sentence takes the segment with it.
+      object or array, part of a stack trace, a PEM header (``-----BEGIN ...
+      KEY-----``), or a shell or REPL transcript (a line opening with ``$ cmd``,
+      ``user@host:~$ cmd``, zsh's ``user@host dir % cmd``, ``>>>`` and the like; the
+      lines after a prompt are its output). A stack frame counts mid-sentence when
+      its shape is distinctive: ``Caused by: java.io.IOException: ...``,
+      ``PermissionError: [Errno 13] ...`` or ``File "/app/x.py", line 3`` inside a
+      sentence takes the segment with it.
    b. *Line by line*, the way the path rule works, so a prose line sharing the segment
       survives. A JSON object or array that starts a line and ends one is removed with
       every line it spans. So is a tag block: from a line that opens with a tag to the
@@ -80,7 +84,8 @@ The steps, in this order (spec Architecture, System Components item 1):
       dropped. So is a quoted list in prose: "I said ["yes", "no"] earlier" has the
       shape of ``["rm","-rf","/"]``, nothing tells them apart, and the privacy floor
       drops it. Kept and pinned: ``$5``, "costs $20 a month", "see ~/notes",
-      ``v1.2.3``, "Python 3.12", a short git SHA, a URL, a citation or list of numbers
+      ``v1.2.3``, "Python 3.12", a short git SHA, an ordinary URL (see the accepted
+      costs for one that carries a long id), a citation or list of numbers
       (``[1]``, ``[2, 3]``), a task box ``[ ]``, a Markdown link, "the C: drive" and a
       ``>>>`` mentioned mid-sentence.
 
@@ -112,8 +117,17 @@ The steps, in this order (spec Architecture, System Components item 1):
    **Accepted costs (#225):** a line opening with a multi-directory path loses the
    words after it ("/srv/app is where it lives" on its own line), the twin of "C:\\ is
    nearly full"; a triple-nested e-mail quote (``>>> I agree``) reads as a REPL line;
-   ``$ 5`` with a space at the start of a line reads as a prompt. Each is a missing
-   memory, never a leaked payload.
+   ``$ 5`` with a space at the start of a line reads as a prompt. A line opening at a
+   one-level ``~/x``, ``./x`` or ``../`` is a path to its end too ("~/notes is where I
+   keep stuff", "./configure then make", "../ is the parent"), because ``~/My
+   Documents/x`` holds its space in the first level. A prose mention of "Traceback
+   (most recent call last):" takes its segment, since the header is matched
+   mid-sentence. A mixed-case identifier of 40 or more characters with a digit and
+   few separators reads as a blob. So does the id in a URL: a Google Docs, Drive or
+   Sheets link holds a 44-character id, and its segment goes. That one is arguably a
+   gain rather than a cost, because a link-shared document's id works like a
+   password, so there is no URL exemption. Each is a missing memory, never a leaked
+   payload.
 3. **Drop the whole unit** (``None``) when any prose segment carries an injection
    marker from the closed list below. A turn carrying an attempt to steer the model
    that reads it is not trustworthy evidence as a whole, so the unit goes, not the
@@ -227,36 +241,71 @@ _STACK_FRAME_LINES: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"^\s*at [^\s(]+ ?\([^()\n]*:\d+(?::\d+)?\)\s*$", re.MULTILINE),
     re.compile(r"\bat [^\s(]+ ?\([^()\s]*\.\w+:\d+(?::\d+)?\)"),
     re.compile(r"^\s*at \S+:\d+:\d+\s*$", re.MULTILINE),
-    re.compile(r"\bCaused by: [\w$]+(?:\.[\w$]+)+"),
+    re.compile(
+        r"\bCaused by: (?:[\w$]+(?:\.[\w$]+)+|[A-Z][\w$]*(?:Exception|Error)\b)"
+    ),
     re.compile(r"(?<![\w$.])(?:[a-z_][\w$]*+\.)++[A-Z][\w$]*(?:Exception|Error):"),
+    re.compile(
+        r"""(?<![\w$.])(?:[A-Z][A-Za-z0-9]*)?(?:Exception|Error):[ \t]*
+        (?:\[Errno[ ]\d+\]                          # PermissionError: [Errno 13]
+          | E[A-Z]{2,}:                              # Error: ENOENT:
+          | ['"]?(?:[~.]{0,2}/|[A-Za-z]:[\\/]|\\\\)  # a path, quoted or not
+        )""",
+        re.VERBOSE,
+    ),
 )
 """Python traceback headers and frames, JavaScript/JVM ``at ...(file:line)`` frames,
 and JVM exception lines. A segment carrying any of them is part of a trace and goes
 whole. Since #225 the distinctive shapes match mid-sentence too: a traceback header, a
 Python ``File "...", line N`` frame, an ``at name(file.ext:N)`` frame whose location
 names a file, a ``Caused by:`` chain naming a dotted class, and a qualified exception
-class followed by its message colon (``java.io.IOException:``). Two stay whole-line
+class followed by its message colon (``java.io.IOException:``), and a bare
+exception name (``PermissionError:``, ``Error:``) when what follows its colon is an
+``[Errno N]``, a Node code such as ``ENOENT:`` or a path, quoted or not. A bare name
+with anything else after it is prose ("it raised a ValueError, oddly", "Error:
+something broke"). Two stay whole-line
 only, because mid-sentence they are also ordinary prose: an ``at`` frame whose
 location has no file extension or holds a space ("meet at noon (room 4:30)"), and the
 bare ``at file:N:N`` form ("at 10:30:00"). The qualified-class pattern starts only at
 the head of a dotted run (the lookbehind) and its inner quantifiers are possessive, so
 a 64 KB ``a.a.a...`` run is one linear scan, not one per position."""
 
-_TRANSCRIPT_LINES: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(r"^[ \t]*\$ \S", re.MULTILINE),
-    re.compile(r"^[ \t]*>>>(?: |$)", re.MULTILINE),
-    re.compile(r"^[ \t]*[\w.-]+@[\w.-]+:[^\s$#]*[$#] \S", re.MULTILINE),
+_PROMPT_LEAD: Final = r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?`?"
+"""Where a prompt may start: the line start, after an optional list bullet and an
+optional opening backtick (``- $ make``, ```$ make```)."""
+
+_TRANSCRIPT_LINES: Final[tuple[re.Pattern[str], ...]] = tuple(
+    re.compile(_PROMPT_LEAD + prompt, re.MULTILINE)
+    for prompt in (
+        r"\$ \S",  # $ cmd
+        r">>>(?: |$)",  # the Python REPL
+        r"[\w.-]+@[\w.-]+:[^\s$#]*[$#] \S",  # bash: user@host:~$ cmd
+        r"[\w.-]+@[\w.-]+ [^\s%#]+ [%#] \S",  # zsh: user@host dir % cmd
+        r"\[[\w.-]+@[\w.-]+ [^\]\n]*\][$#] \S",  # [user@host dir]$ cmd
+        r"PS [A-Za-z]:\\[^>\n]*> \S",  # PowerShell: PS C:\x> cmd
+        r"In \[\d+\]: \S",  # IPython
+    )
 )
 """A line that opens with a shell prompt (``$ cmd``, ``user@host:~$ cmd``) or the
 Python REPL's ``>>>``. The segment goes whole, like a trace: the lines after a prompt
 are the command's output, which no line grammar tells apart from prose. ``$5`` and
 "costs $20" are no prompt (no space after a line-start ``$``), and a ``>>>`` in the
-middle of a sentence is not at a line start. A triple-nested e-mail quote (``>>> I
+middle of a sentence is not at a line start. The zsh default (``robin@mac app %
+make``), the bracketed ``[user@host dir]$``, PowerShell's ``PS C:\\x>`` and IPython's
+``In [1]:`` count too; a ``%`` is a prompt only after ``user@host dir``, so "50 % of
+users", "a 5 % fee" and ``100%`` are prose. Every pattern is anchored at a line start
+and each variable run stops at a character the next token needs, so each line costs
+one scan. A triple-nested e-mail quote (``>>> I
 agree``) reads as a REPL line and goes, an accepted cost."""
 
 _XML_BLOCK: Final = re.compile(r"<[A-Za-z_!?/][^>]*>.*", re.DOTALL)
 """Opens with a tag (or a comment, declaration or closing tag); the segment must also
 end with ``>``, so ``<tool_use>...</tool_use>``-style markup is spanned end to end."""
+
+_PEM_HEADER: Final = re.compile(r"-----BEGIN (?:[A-Z ]*KEY|CERTIFICATE)-----")
+"""A PEM armour header (``-----BEGIN RSA PRIVATE KEY-----``, ``-----BEGIN
+CERTIFICATE-----``). Its segment goes whole even when the body lines are too short
+for the blob rule. The scan starts only at the literal ``-----BEGIN``."""
 
 _PATH_LINE: Final = re.compile(
     r"""^\s*(?:
@@ -281,6 +330,9 @@ where it ends, so a line that starts at a root is a path to its end: a drive roo
 missing memory rather than a leaked path. A bare ``/name`` with words after it is
 kept: it is the shape of a slash command (``/review the PR``), and it cannot hold a
 directory's space-separated name without a second slash."""
+
+_LIST_BULLET: Final = re.compile(r"^(?:[-*+]|\d+[.)])[ \t]+")
+"""A Markdown list bullet, taken off a line before the path test (#225 review)."""
 
 _TAG_LINE: Final = re.compile(
     r"^\s*(?:<[A-Za-z_][\w:.-]*(?:\s[^<>]*)?/?>|</[A-Za-z_]|<!|<\?)"
@@ -434,6 +486,10 @@ def _is_transcript(segment: str) -> bool:
     return any(pattern.search(segment) for pattern in _TRANSCRIPT_LINES)
 
 
+def _is_pem(segment: str) -> bool:
+    return _PEM_HEADER.search(segment) is not None
+
+
 def _is_whole_payload(segment: str) -> bool:
     return (
         _is_diff(segment)
@@ -441,6 +497,7 @@ def _is_whole_payload(segment: str) -> bool:
         or _is_json(segment)
         or _is_stack_trace(segment)
         or _is_transcript(segment)
+        or _is_pem(segment)
     )
 
 
@@ -448,8 +505,22 @@ def _collapsed(segment: str) -> str:
     return _WHITESPACE.sub(" ", segment).strip()
 
 
+def _path_candidate(line: str) -> str:
+    """``line`` without a leading list bullet and one layer of matching quotes or
+    backticks, the way a copied path arrives: Windows "Copy as path" wraps it in
+    double quotes, and Markdown wraps it in backticks or lists it."""
+    body = _LIST_BULLET.sub("", line.strip(), count=1)
+    if len(body) >= 2 and body[0] in "\"'`" and body[-1] == body[0]:
+        body = body[1:-1]
+    return body
+
+
+def _is_path_line(line: str) -> bool:
+    return _PATH_LINE.match(_path_candidate(line)) is not None
+
+
 def _without_path_lines(segment: str) -> str:
-    return "\n".join(line for line in segment.split("\n") if not _PATH_LINE.match(line))
+    return "\n".join(line for line in segment.split("\n") if not _is_path_line(line))
 
 
 class _UnboundedPayload(Exception):

@@ -103,6 +103,38 @@ PAYLOADS_225 = {
     "repl lines": ">>> import os\n>>> os.listdir('/')",
     "bare repl prompt": ">>>",
 }
+PAYLOADS_225_REVIEW = {
+    "windows copy-as-path, quoted": (
+        '"C:\\Users\\example\\My Documents\\tax 2025.pdf"'
+    ),
+    "posix path in single quotes": "'/Users/example/My Documents/x'",
+    "posix path in backticks": "`/Users/example/My Documents/x`",
+    "posix path as a list item": "- /Users/example/My Documents/x",
+    "path as a numbered item in backticks": "1. `C:/Users/example/x y.txt`",
+    "python errno exception": (
+        "PermissionError: [Errno 13] Permission denied: '/Users/example/My Documents/x'"
+    ),
+    "cause with a bare exception name": "Caused by: IOException: /var/secret/db.key",
+    "cause, bare name, no message": "It said Caused by: SocketTimeoutException again.",
+    "node error code": (
+        "Error: ENOENT: no such file or directory, open '/Users/example/x'"
+    ),
+    "bare exception then a quoted path": "It said FileNotFoundError: '/tmp/x' again.",
+    "zsh prompt": "robin@mac rheo-stream % make test",
+    "zsh root prompt": "robin@mac ~ # ls",
+    "bracketed prompt": "[dana@build app]$ ls -la",
+    "bracketed root prompt": "[root@build ~]# cat /etc/shadow",
+    "bulleted prompt": "- $ make deploy",
+    "backticked prompt": "`$ make deploy`",
+    "powershell prompt": "PS C:\\Users\\example> Get-ChildItem",
+    "ipython prompt": "In [1]: import os",
+    "pem key with short body lines": (
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIB\nabc\n-----END RSA PRIVATE KEY-----"
+    ),
+    "pem certificate header": "-----BEGIN CERTIFICATE-----",
+    "pem key header in a sentence": "It starts -----BEGIN OPENSSH PRIVATE KEY----- ok",
+}
+PAYLOADS_225.update(PAYLOADS_225_REVIEW)
 PAYLOADS.update(PAYLOADS_225)
 
 
@@ -322,6 +354,19 @@ CONTROLS_225 = {
     "caused by in prose": "Caused by: the rain, mostly.",
     "an exception named in passing": "We saw a java.lang.NullPointerException today.",
     "a dollar at a line start": "Budget:\n$20 for lunch",
+    # #225 review: bare exception names, percent signs, quotes and bullets.
+    "an exception named in prose": "It raised a ValueError, oddly.",
+    "a bare error message": "The error was: Error: something broke.",
+    "a js error in prose": "He said: TypeError: undefined is not a function.",
+    "an error count": "Error: 5 retries left",
+    "a percentage with a space": "About 50 % of users",
+    "a fee": "a 5 % fee",
+    "a bare percentage": "100%",
+    "an address before a percent": "dana@example.com % of the time",
+    "a citation with In": "In [1] Smith argues it.",
+    "a quoted line": '"hello there"',
+    "a backticked command in prose": "`ls` is a command",
+    "a bulleted price": "- $5 lunch",
     "unspaced cjk with a latin word and a number": (
         "我在2026年用Python写了一个小工具然后把结果发给了团队里的每一位同事请大家看看效果"
     ),
@@ -513,6 +558,26 @@ def test_the_225_accepted_costs_are_pinned() -> None:
     assert sanitize("$ 5 a month") is None
 
 
+GOOGLE_DOC = (
+    "https://docs.google.com/document/d/1aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789AbCdEf"
+)
+
+
+def test_the_225_review_accepted_costs_are_pinned() -> None:
+    """Named in the sanitize docstring. A one-level ``~/``, ``./`` or ``../`` line
+    start is a path to its end; a prose "Traceback (most recent call last):" is the
+    header; a 40+ mixed-case id with a digit is a blob, and so is a Google Docs id,
+    which takes its URL's segment with it. That last one is no URL exemption: a
+    link-shared document's id works like a password."""
+    assert sanitize(f"{KEPT}\n~/notes is where I keep stuff") == KEPT
+    assert sanitize(f"{KEPT}\n./configure then make") == KEPT
+    assert sanitize(f"{KEPT}\n../ is the parent") == KEPT
+    assert sanitize("I got a Traceback (most recent call last): error") is None
+    assert sanitize("fooBarBazQux1FooBarBazQux2FooBarBazQux3Xy is the id") is None
+    assert sanitize(f"Open {GOOGLE_DOC}/edit please") is None
+    assert sanitize(f"{KEPT}\n\nOpen {GOOGLE_DOC}/edit please") == KEPT
+
+
 DEPTH = 12_000
 """Far past the parser's recursion depth, and every shape stays under the cap."""
 TOO_DEEP = {
@@ -584,6 +649,15 @@ ADVERSARIAL = {
     "prompt lines": _fit("$ x\n"),
     "user@host": _fit("u@h:"),
     "unc roots": _fit("\\\\"),
+    # #225 review.
+    "pem openers": _fit("-----BEGIN A "),
+    "bare exception words": _fit("AError"),
+    "bare exception colons": _fit("Error: '"),
+    "zsh near-prompt": _fit("u@h d "),
+    "zsh near-prompt lines": _fit("u@h d %\n"),
+    "bracketed near-prompt": _fit("[u@h "),
+    "powershell near-prompt": "PS C:\\" + _fit("x")[6:],
+    "bulleted quoted path lines": _fit('- "/a b\n'),
 }
 
 
@@ -643,6 +717,9 @@ IDEMPOTENCE_SAMPLE = (
     f"{KEPT}\n/srv/app is where it lives",
     f"{KEPT}\n\nI said ['yes', 'no'] earlier.",
     f"Run it:\n$ make deploy\nDeployed 3 hosts.\n\n{KEPT}",
+    f"{KEPT}\n~/notes is where I keep stuff",
+    f"{KEPT}\n\nOpen {GOOGLE_DOC}/edit please",
+    f"{KEPT}\n- `/Users/example/My Documents/x`\nThat is all.",
 )
 
 
