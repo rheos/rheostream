@@ -32,6 +32,7 @@ from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.evidence_enrollment_tables import evidence_enrollment
 from rheo_core.storage.postgres import PostgresBackend
 from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from rheo_app_cli.context import bootstrap
 
@@ -138,25 +139,45 @@ def rotate_bridge(args: argparse.Namespace) -> int:
 
 
 def _locate(backend: PostgresBackend, enrollment_id: UUID) -> tuple[UUID, UUID] | None:
-    """``(workspace_id, account_id)`` of the active workspace holding the enrollment."""
+    """``(workspace_id, account_id)`` of the active workspace holding the enrollment.
+
+    A workspace whose database cannot be read is named on stderr and skipped, as
+    ``rheo doctor`` carries on past one: the enrollment may be in another.
+    """
     with backend.control_engine.connect() as connection:
         rows = list_workspaces(connection, state=WorkspaceState.ACTIVE)
     for row in rows:
-        with backend.pools.acquire(row.database_name) as engine:
-            with engine.connect() as connection:
-                present = connection.execute(
-                    text("SELECT to_regclass('core.evidence_enrollment')")
-                ).scalar_one()
-                if present is None:
-                    continue
-                account_id = connection.execute(
-                    select(evidence_enrollment.c.account_id).where(
-                        evidence_enrollment.c.id == enrollment_id
-                    )
-                ).scalar_one_or_none()
+        try:
+            account_id = _enrollment_account(backend, row.database_name, enrollment_id)
+        except (SQLAlchemyError, ValueError) as exc:
+            # ``ValueError``: ``pools.acquire`` refuses a malformed database name.
+            print(
+                f"skipped workspace {row.id} ({row.slug}): cannot read: "
+                f"{type(exc).__name__}",
+                file=sys.stderr,
+            )
+            continue
         if account_id is not None:
             return row.id, account_id
     return None
+
+
+def _enrollment_account(
+    backend: PostgresBackend, database_name: str, enrollment_id: UUID
+) -> UUID | None:
+    with backend.pools.acquire(database_name) as engine:
+        with engine.connect() as connection:
+            present = connection.execute(
+                text("SELECT to_regclass('core.evidence_enrollment')")
+            ).scalar_one()
+            if present is None:
+                return None
+            account_id: UUID | None = connection.execute(
+                select(evidence_enrollment.c.account_id).where(
+                    evidence_enrollment.c.id == enrollment_id
+                )
+            ).scalar_one_or_none()
+            return account_id
 
 
 def revoke_bridge(args: argparse.Namespace) -> int:

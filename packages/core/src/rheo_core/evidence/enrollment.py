@@ -29,10 +29,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Final
 from uuid import UUID
 
+import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 from rheo_contracts import ActorKind, ContextPurpose, WorkspaceContext
 from sqlalchemy import Connection, insert, select, text, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from rheo_core.boundary.context import MEMBERSHIP_MISSING
 from rheo_core.evidence.local_authority import ENROLLMENT_INACTIVE
@@ -65,6 +66,9 @@ ENROLLMENT_REVOKE: Final = "core.evidence_enrollment.revoke"
 
 ENROLLMENT_EXISTS: Final = "enrollment_exists"
 """An active enrollment already holds the machine and project fingerprint pair."""
+
+ACTIVE_PAIR_INDEX: Final = "evidence_enrollment_active_pair"
+"""The partial unique index behind :data:`ENROLLMENT_EXISTS`."""
 
 BRIDGE_PURPOSE: Final = ContextPurpose.INTERNAL_ANALYSIS
 """The one purpose v1 enrolls under (spec § Architect calls, C5)."""
@@ -181,6 +185,14 @@ def _mint(ctx: WorkspaceContext, account_id: UUID) -> tuple[UUID, str, datetime]
     return token_id, value, row.expires_at
 
 
+def _constraint_name(violation: IntegrityError) -> str:
+    """The violated constraint's name, as ``storage/control_plane.py`` reads it."""
+    orig = violation.orig
+    if isinstance(orig, psycopg.Error):
+        return orig.diag.constraint_name or ""
+    return ""
+
+
 def _owned_enrollment(
     uow: UnitOfWork, enrollment_id: UUID, account_id: UUID
 ) -> tuple[UUID, str]:
@@ -228,19 +240,30 @@ def create_handler(
         )
     token_id, value, expires_at = _mint(ctx, account_id)
     enrollment_id = uuid7()
-    uow.connection.execute(
-        insert(evidence_enrollment).values(
-            id=enrollment_id,
-            account_id=account_id,
-            token_id=token_id,
-            machine_fingerprint=model_input.machine_fingerprint,
-            project_fingerprint=model_input.project_fingerprint,
-            purpose=BRIDGE_PURPOSE.value,
-            state=STATE_ACTIVE,
-            created_at=datetime.now(UTC),
-            revoked_at=None,
-        )
-    )
+    # A concurrent create can pass the pre-check above and lose the race on the
+    # partial unique index; it gets the pre-check's answer. The savepoint keeps the
+    # handler's transaction usable after the violation.
+    try:
+        with uow.connection.begin_nested():
+            uow.connection.execute(
+                insert(evidence_enrollment).values(
+                    id=enrollment_id,
+                    account_id=account_id,
+                    token_id=token_id,
+                    machine_fingerprint=model_input.machine_fingerprint,
+                    project_fingerprint=model_input.project_fingerprint,
+                    purpose=BRIDGE_PURPOSE.value,
+                    state=STATE_ACTIVE,
+                    created_at=datetime.now(UTC),
+                    revoked_at=None,
+                )
+            )
+    except IntegrityError as violation:
+        if _constraint_name(violation) != ACTIVE_PAIR_INDEX:
+            raise
+        raise OperationRefused(
+            ENROLLMENT_EXISTS, "this machine and directory are already enrolled"
+        ) from violation
     return EnrollmentCreated(
         enrollment_id=enrollment_id,
         token_id=token_id,

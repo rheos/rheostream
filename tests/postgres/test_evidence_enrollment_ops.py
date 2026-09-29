@@ -29,12 +29,13 @@ import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from conftest import ClusterSession
 from harness.evidence import EvidenceWorkspace, enable_recording, probe_registry
 from harness.registry import add_member
+from rheo_app_cli.commands import evidence as evidence_cli
 from rheo_app_cli.main import main
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_contracts.source_units import (
@@ -66,6 +67,7 @@ from rheo_core.operations import (
     register_core_operations,
 )
 from rheo_core.operations.core_ops import TOKEN_ISSUE
+from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import NOT_FOUND
 from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
 from rheo_core.storage.backend import StorageRefusal
@@ -80,7 +82,8 @@ from rheo_core.storage.evidence_enrollment_tables import (
     evidence_enrollment,
 )
 from rheo_core.storage.evidence_tables import evidence_unit
-from sqlalchemy import delete, inspect, select
+from sqlalchemy import delete, insert, inspect, select
+from sqlalchemy.exc import OperationalError
 
 pytestmark = pytest.mark.postgres
 
@@ -274,6 +277,87 @@ def test_a_second_active_enrollment_for_the_pair_is_refused(
     )
     again = _create(ctx, account_id=owner_account_id, machine=machine, project=project)
     assert again.state == ENROLLMENT_EXISTS
+
+
+def _insert_enrollment(
+    cluster: ClusterSession,
+    workspace: UUID,
+    account_id: UUID,
+    *,
+    machine: str,
+    project: str,
+    token_id: UUID,
+) -> None:
+    """A committed enrollment written beside the handler, as a concurrent create's."""
+    database = cluster.registry_row(workspace).database_name
+    with cluster.backend.pools.engine_for(database).begin() as connection:
+        connection.execute(
+            insert(evidence_enrollment).values(
+                id=uuid7(),
+                account_id=account_id,
+                token_id=token_id,
+                machine_fingerprint=machine,
+                project_fingerprint=project,
+                purpose=ContextPurpose.INTERNAL_ANALYSIS.value,
+                state=STATE_ACTIVE,
+                created_at=datetime.now(UTC),
+                revoked_at=None,
+            )
+        )
+
+
+def test_a_create_that_loses_the_race_gets_the_same_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """A concurrent create commits the pair between the pre-check and the insert:
+    the partial unique index answers ``enrollment_exists``, not a handler failure."""
+    machine, project = _fingerprint(), _fingerprint()
+    real_mint = enrollment_module._mint
+
+    def racing_mint(*args: Any, **kwargs: Any) -> Any:
+        result = real_mint(*args, **kwargs)
+        _insert_enrollment(
+            cluster,
+            workspace,
+            owner_account_id,
+            machine=machine,
+            project=project,
+            token_id=uuid4(),
+        )
+        return result
+
+    monkeypatch.setattr(enrollment_module, "_mint", racing_mint)
+    outcome = _create(
+        _operator(workspace),
+        account_id=owner_account_id,
+        machine=machine,
+        project=project,
+    )
+    assert outcome.state == ENROLLMENT_EXISTS
+
+
+def test_another_integrity_error_on_insert_is_not_enrollment_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """Only the active-pair index maps to ``enrollment_exists``: a token id already
+    held by another enrollment still fails the handler."""
+    held = _created(_create(_operator(workspace), account_id=owner_account_id))
+    real_mint = enrollment_module._mint
+
+    def reused_token_mint(*args: Any, **kwargs: Any) -> Any:
+        _, value, expires_at = real_mint(*args, **kwargs)
+        return held.token_id, value, expires_at
+
+    monkeypatch.setattr(enrollment_module, "_mint", reused_token_mint)
+    outcome = _create(_operator(workspace), account_id=owner_account_id)
+    assert not outcome.ok
+    assert outcome.state != ENROLLMENT_EXISTS
 
 
 # --- revoke ------------------------------------------------------------------------
@@ -606,3 +690,40 @@ def test_enroll_json_prints_exactly_one_line_and_revoke_takes_only_the_id(
     assert code == 0, err
     assert out == ""
     assert _enrollment(cluster, workspace, enrollment_id).state == STATE_REVOKED
+
+
+def test_revoke_skips_an_unreadable_workspace_and_keeps_looking(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    capsys: pytest.CaptureFixture[str],
+    make_workspace: Any,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """Every database read but the enrolled workspace's fails. The enrollment is in
+    a workspace newer than ``workspace``, and the search goes oldest first, so
+    ``workspace`` is skipped, named on stderr, and the search carries on."""
+    newer = make_workspace()
+    created = _created(_create(_operator(newer), account_id=owner_account_id))
+    holder = cluster.registry_row(newer).database_name
+    real_read = evidence_cli._enrollment_account
+
+    def flaky_read(backend: Any, database_name: str, enrollment_id: UUID) -> Any:
+        if database_name != holder:
+            raise OperationalError("SELECT 1", {}, Exception("synthetic outage"))
+        return real_read(backend, database_name, enrollment_id)
+
+    monkeypatch.setattr(evidence_cli, "_enrollment_account", flaky_read)
+    try:
+        code, out, err = _run(capsys, "evidence", "revoke", str(created.enrollment_id))
+
+        assert code == 0, err
+        assert out == ""
+        assert f"skipped workspace {workspace} (" in err
+        assert "cannot read: OperationalError" in err
+        row = _enrollment(cluster, newer, created.enrollment_id)
+        assert row.state == STATE_REVOKED
+    finally:
+        engine = cluster.backend.pools.engine_for(holder)
+        with engine.begin() as connection:
+            connection.execute(delete(evidence_enrollment))
