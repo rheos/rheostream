@@ -24,13 +24,23 @@ any follow-up drain job commit together or not at all. An extraction failure nev
 reaches this module: ``claim_units`` contains it to its partition and returns no
 units, so the drain succeeds and the per-row attempt counts commit.
 
-**One poison unit costs only itself (#215).** Each unit's accept-then-settle runs in
-its own savepoint. A database refusal of that unit's writes (``IntegrityError`` or
-``DataError`` on a live connection) rolls the savepoint back and hands the unit to
-core's ``defer_unit``, which counts the attempt and backs the row off, or settles it
-``gap/acceptance_failed`` on the fifth. The drain then carries on with the next unit
-and succeeds, so the count commits. Anything else still rolls the whole drain back:
-``EvidenceAuditUnwritable``, a dropped connection, any other raise.
+**One poison unit costs only itself (#215), and only at the accept step (#221).**
+Each unit's ``accept_source_unit`` call runs in its own savepoint. A database refusal
+of that unit's writes (``IntegrityError`` or ``DataError`` on a live connection) rolls
+the savepoint back and hands the unit to core's ``defer_unit``, which counts the
+attempt and backs the row off, or settles it ``gap/acceptance_failed`` on the fifth.
+The drain then carries on with the next unit and succeeds, so the count commits.
+``settle_unit`` runs outside the savepoint: a fault in the settlement, its success
+audit row or anything else is not the unit's fault, so it rolls the whole drain back
+and fails the job attempt, as does ``EvidenceAuditUnwritable``, a dropped connection
+or any other raise.
+
+**A run of deferrals is not a poison unit (#221).** A schema or code fault that
+refuses every acceptance would otherwise defer every unit and, five drains later,
+settle them all ``gap/acceptance_failed`` while each drain job reports success. So
+when at least :data:`DEFERRAL_RUN_MINIMUM` units of one batch defer and they are more
+than half of it, the drain raises :class:`DrainDeferralRun`. That rolls the drain
+back, deferral counts included, and the job fails where people look.
 
 **A model's mention kinds are not trusted.** Extraction accepts any kind string, and
 the ``memory_entity_kind`` CHECK allows only :data:`EntityKind`. A mention of any other
@@ -81,6 +91,9 @@ _ENTITY_KINDS: Final = frozenset(get_args(EntityKind))
 MENTIONS_DROPPED_LOG: Final = "automatic_memory_mentions_dropped"
 ACCEPTANCE_DEFERRED_LOG: Final = "automatic_memory_acceptance_deferred"
 
+DEFERRAL_RUN_MINIMUM: Final = 2
+"""The fewest deferred units that can make a run: one deferral is a poison unit."""
+
 
 def _sqlstate(error: StatementError) -> str | None:
     """The driver's SQLSTATE, when it is a string; anything else could carry text."""
@@ -106,6 +119,21 @@ class DrainDatabaseError(Exception):
         self.connection_invalidated: bool = bool(
             getattr(error, "connection_invalidated", False)
         )
+
+
+class DrainDeferralRun(Exception):
+    """More than half of one batch's units deferred, and at least
+    :data:`DEFERRAL_RUN_MINIMUM` of them: a workspace-wide acceptance fault, not a
+    poison unit. ``str()`` is the two counts and nothing else."""
+
+    def __init__(self, *, deferred: int, claimed: int) -> None:
+        super().__init__(f"{deferred} of {claimed} claimed units deferred")
+        self.deferred: int = deferred
+        self.claimed: int = claimed
+
+
+def _is_deferral_run(deferred: int, claimed: int) -> bool:
+    return deferred >= DEFERRAL_RUN_MINIMUM and 2 * deferred > claimed
 
 
 class DrainJobPayload(BaseModel):
@@ -193,6 +221,7 @@ def _drain(
         if dropped:
             dropped_mentions += dropped
             trimmed_units += 1
+        refused: IntegrityError | DataError | None = None
         try:
             with uow.connection.begin_nested():
                 outcome = accept_source_unit(
@@ -203,27 +232,35 @@ def _drain(
                     consumers=consumers,
                     now=now,
                 )
-                settle_unit(
-                    uow,
-                    claimed,
-                    outcome=outcome.state,
-                    memory_ref=outcome.memory_ref,
-                    audit_module_id=MODULE_ID,
-                    now=now,
-                )
         except (IntegrityError, DataError) as error:
             if error.connection_invalidated:
                 raise
+            refused = error
+        if refused is not None:
             defer_unit(uow, claimed, now=now)
             deferred += 1
             _log.warning(
                 ACCEPTANCE_DEFERRED_LOG,
                 extra={
                     "evidence_id": str(claimed.evidence_id),
-                    "error_type": type(error).__name__,
-                    "sqlstate": _sqlstate(error),
+                    "error_type": type(refused).__name__,
+                    "sqlstate": _sqlstate(refused),
                 },
             )
+            if _is_deferral_run(deferred, len(batch.units)):
+                # Outside the ``except`` block, so the refusal, whose text quotes the
+                # failing row, is not on ``__context__``.
+                raise DrainDeferralRun(deferred=deferred, claimed=len(batch.units))
+            continue
+        # Outside the savepoint (#221): a settlement fault rolls the drain back.
+        settle_unit(
+            uow,
+            claimed,
+            outcome=outcome.state,
+            memory_ref=outcome.memory_ref,
+            audit_module_id=MODULE_ID,
+            now=now,
+        )
     if dropped_mentions:
         _log.info(
             MENTIONS_DROPPED_LOG,

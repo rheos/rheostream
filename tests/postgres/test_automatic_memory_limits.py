@@ -22,12 +22,16 @@ Seams under test:
   acceptance rolls back only that unit's savepoint; its partition neighbour is
   accepted in the same drain, the poison unit backs off on the extraction schedule,
   and its fifth attempt settles ``gap/acceptance_failed``.
+- **#221: only the accept step is contained.** A refused audit insert rolls the whole
+  drain back and fails the job attempt, and a batch whose every unit is refused fails
+  the drain job terminally instead of gapping the batch.
 
 Every drain runs through a real ``visit_workspace`` with the job kinds and the
 subscription taken off Recallatron's ``MANIFEST``. Every text is synthetic.
 """
 
 import dataclasses
+import importlib
 import logging
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -70,6 +74,7 @@ from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_recallatron import automatic
 from rheo_recallatron.automatic import ACCEPTANCE_DEFERRED_LOG
 from rheo_recallatron.configuration import (
+    DRAIN_MAX_ATTEMPTS,
     MODULE_ID,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
@@ -742,3 +747,93 @@ def test_215_a_poison_unit_settles_acceptance_failed_on_its_fifth_attempt(
     assert {(job.state, job.attempts, job.last_error) for job in drains} == {
         ("succeeded", 1, None)
     }
+
+
+# --- #221: only the accept step is contained -----------------------------------------
+
+
+def _faulting_audit_insert(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The success audit write refused by the database, as a NOT NULL column added
+    without a default or a new CHECK on the audit row would refuse it: a real
+    SQLSTATE 23514 from the server, raised where the row is inserted. Answers one
+    entry per refused write."""
+    dispatch_module = importlib.import_module("rheo_core.operations.dispatch")
+    refused: list[int] = []
+
+    def write(ctx: Any, uow: Any, **kwargs: Any) -> bool:
+        refused.append(1)
+        uow.connection.execute(
+            text(
+                "DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = 'check_violation', "
+                f"MESSAGE = 'Failing row contains ({_POISON_ROW})'; END $$"
+            )
+        )
+        return True
+
+    monkeypatch.setattr(dispatch_module, "record_evidence_acceptance_audit", write)
+    return refused
+
+
+def test_221_a_fault_in_the_audit_insert_rolls_the_drain_back_and_gaps_nothing(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    """Before #221 the per-unit savepoint also covered ``settle_unit``, so this
+    refusal deferred the unit and the drain succeeded; five drains later it settled
+    ``gap/acceptance_failed``. Now the drain job fails its attempt, content-free, and
+    the unit waits uncounted with its body."""
+    refused = _faulting_audit_insert(monkeypatch)
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    _drain_at(monkeypatch, ev, now)
+
+    assert refused == [1]
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 1)
+    assert drain.last_error == "IntegrityError (SQLSTATE 23514)"
+    _assert_rolled_back(ev)
+    [unit] = _units(ev)
+    assert (unit.extraction_attempts, unit.retry_after) == (0, None)
+
+
+def test_221_every_unit_refused_fails_the_drain_job_instead_of_gapping_the_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    now: datetime,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A workspace-wide acceptance fault: every unit's acceptance is refused. The
+    run of deferrals raises, so each drain attempt rolls back with nothing counted,
+    the job fails terminally after ``DRAIN_MAX_ATTEMPTS``, and no unit is gapped."""
+    refused = _poisoned_acceptance(monkeypatch)
+    _record_batch(
+        ev,
+        [
+            _evidence(
+                ev, f"{FAKE_EXTRACTION_MARKER} The {_POISON_TAG} lanterns {n}.", at=now
+            )
+            for n in range(3)
+        ],
+        at=now,
+    )
+    _enqueue_drain(ev, at=now)
+
+    at = now
+    with caplog.at_level(logging.DEBUG):
+        for attempt in range(1, DRAIN_MAX_ATTEMPTS + 1):
+            _at(monkeypatch, ev, at)
+            [drain] = _jobs(ev)
+            assert drain.attempts == attempt
+            expected = "failed" if attempt == DRAIN_MAX_ATTEMPTS else "queued"
+            assert drain.state == expected, (attempt, drain.state)
+            assert drain.last_error == "2 of 3 claimed units deferred"
+            at = drain.next_run_at
+
+    # Two refusals per drain: the second makes the run and stops the batch.
+    assert len(refused) == 2 * DRAIN_MAX_ATTEMPTS
+    units = _units(ev)
+    assert len(units) == 3
+    assert {(u.state, u.outcome, u.extraction_attempts) for u in units} == {
+        ("pending", None, 0)
+    }
+    assert _counts(ev) == _NO_RECEIPTS
+    assert _POISON_ROW not in caplog.text
+    assert _POISON_TAG not in caplog.text
