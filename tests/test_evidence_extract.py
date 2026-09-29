@@ -76,7 +76,12 @@ def _assert_model_sees_only_ordinals_and_text(
     }
     reachable = _values(batch)
     assert not hidden & set(reachable)
-    assert [field.name for field in dataclasses.fields(DigestBatch)] == ["items"]
+    # ``mention_kinds`` (#222) is the module's fixed vocabulary, never a unit's
+    # value: the hidden-value check above walks it too.
+    assert [field.name for field in dataclasses.fields(DigestBatch)] == [
+        "items",
+        "mention_kinds",
+    ]
     for item in batch.items:
         assert [field.name for field in dataclasses.fields(item)] == ["item_id", "text"]
         assert not hasattr(item, "__dict__")
@@ -118,6 +123,15 @@ def test_digestion_numbers_items_in_claim_order_and_carries_only_text() -> None:
 
 def test_digestion_is_deterministic() -> None:
     assert _batch("a", "b") == _batch("a", "b")
+
+
+def test_digestion_carries_the_mention_kinds_it_is_given_and_none_by_default() -> None:
+    """#222: the kinds ride on the batch for a provider to list; core adds none."""
+    units = _units("first body")
+    assert digest([unit.body for unit in units]).mention_kinds == ()
+    batch = digest([unit.body for unit in units], mention_kinds=["person", "place"])
+    _assert_model_sees_only_ordinals_and_text(batch, units)
+    assert batch.mention_kinds == ("person", "place")
 
 
 # --- a well-formed response --------------------------------------------------------

@@ -7,7 +7,13 @@ claimed units' bodies, in claim order, into one :class:`DigestBatch` of
 takes the bodies alone, so a unit's ``native_key``, speaker, audience and purpose
 cannot reach a model through it: the model is never told who said a thing, who may
 read it, or what it may be used for, and so cannot be steered into choosing any of
-them. The attribute names ``item_id`` and ``text`` are read by
+them. The one other thing a batch carries is ``mention_kinds`` (#222): the entity
+kinds the accepting module will keep, a fixed vocabulary the drain passes through
+:func:`~rheo_core.evidence.service.claim_units`, so a provider can tell the model
+which kinds to use. It is the same for every unit and says nothing about any of
+them; core only passes it on, and validation stays open to any kind string.
+
+The attribute names ``item_id`` and ``text`` are read by
 :class:`~rheo_core.evidence.providers.FakeExtractionProvider`; renaming them breaks the
 fake at run time, not at type-check time.
 
@@ -71,18 +77,21 @@ class DigestItem:
 
 @dataclass(frozen=True, slots=True)
 class DigestBatch:
-    """One provider call's input, in claim order."""
+    """One provider call's input, in claim order, and the mention kinds the
+    accepting module keeps (empty: the module named none)."""
 
     items: tuple[DigestItem, ...]
+    mention_kinds: tuple[str, ...] = ()
 
 
-def digest(bodies: Sequence[str]) -> DigestBatch:
+def digest(bodies: Sequence[str], *, mention_kinds: Sequence[str] = ()) -> DigestBatch:
     """The claimed units' bodies, in claim order, as one batch of ordinal items."""
     return DigestBatch(
         items=tuple(
             DigestItem(item_id=f"{ITEM_ID_PREFIX}{ordinal}", text=body)
             for ordinal, body in enumerate(bodies, start=1)
-        )
+        ),
+        mention_kinds=tuple(mention_kinds),
     )
 
 

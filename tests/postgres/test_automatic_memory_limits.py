@@ -22,12 +22,19 @@ Seams under test:
   acceptance rolls back only that unit's savepoint; its partition neighbour is
   accepted in the same drain, the poison unit backs off on the extraction schedule,
   and its fifth attempt settles ``gap/acceptance_failed``.
+- **#217: a workspace-wide acceptance fault is found before the model call.** With no
+  audit sink, or no usable retention policy, two drains in a row fail without calling
+  the provider once.
+- **#221: only the accept step is contained.** A refused audit insert rolls the whole
+  drain back and fails the job attempt, while two refused units in one batch are
+  each still deferred and counted, so the #215 jam cannot come back.
 
 Every drain runs through a real ``visit_workspace`` with the job kinds and the
 subscription taken off Recallatron's ``MANIFEST``. Every text is synthetic.
 """
 
 import dataclasses
+import importlib
 import logging
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -180,8 +187,8 @@ def _spy_claims(monkeypatch: pytest.MonkeyPatch) -> list[ClaimedBatch]:
     """Every batch the drain claims, in order, from the real ``claim_units``."""
     batches: list[ClaimedBatch] = []
 
-    def spy(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
-        batch = claim_units(uow, now=now)
+    def spy(uow: HandlerUnitOfWork, *, now: datetime, **kwargs: Any) -> ClaimedBatch:
+        batch = claim_units(uow, now=now, **kwargs)
         batches.append(batch)
         return batch
 
@@ -587,16 +594,20 @@ def test_card5a_a_raising_sink_fails_the_attempt_and_a_restored_sink_accepts_onc
 def test_card5b_no_sink_is_evidence_audit_unwritable_and_rolls_everything_back(
     monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime, sinks: None
 ) -> None:
+    """Since #217 the missing sink is found before the model call, so the claim
+    raises ``EvidenceAuditUnwritable`` and ``settle_unit`` is never reached."""
     _replace_sinks(_without_recallatron_sink())
     assert sink_for(MODULE_ID) is None
     raised = _spy_settlements(monkeypatch)
     _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
     _drain_at(monkeypatch, ev, now)
 
-    assert raised == [EvidenceAuditUnwritable]
+    assert raised == []
     [drain] = _jobs(ev)
     assert (drain.state, drain.attempts) == ("queued", 1)
-    assert drain.last_error is not None
+    assert drain.last_error == str(
+        EvidenceAuditUnwritable("no audit sink for the accepting module")
+    )
     _assert_rolled_back(ev)
 
 
@@ -742,3 +753,141 @@ def test_215_a_poison_unit_settles_acceptance_failed_on_its_fifth_attempt(
     assert {(job.state, job.attempts, job.last_error) for job in drains} == {
         ("succeeded", 1, None)
     }
+
+
+# --- #221: only the accept step is contained -----------------------------------------
+
+
+def _faulting_audit_insert(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The success audit write refused by the database, as a NOT NULL column added
+    without a default or a new CHECK on the audit row would refuse it: a real
+    SQLSTATE 23514 from the server, raised where the row is inserted. Answers one
+    entry per refused write."""
+    dispatch_module = importlib.import_module("rheo_core.operations.dispatch")
+    refused: list[int] = []
+
+    def write(ctx: Any, uow: Any, **kwargs: Any) -> bool:
+        refused.append(1)
+        uow.connection.execute(
+            text(
+                "DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = 'check_violation', "
+                f"MESSAGE = 'Failing row contains ({_POISON_ROW})'; END $$"
+            )
+        )
+        return True
+
+    monkeypatch.setattr(dispatch_module, "record_evidence_acceptance_audit", write)
+    return refused
+
+
+def test_221_a_fault_in_the_audit_insert_rolls_the_drain_back_and_gaps_nothing(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    """Before #221 the per-unit savepoint also covered ``settle_unit``, so this
+    refusal deferred the unit and the drain succeeded; five drains later it settled
+    ``gap/acceptance_failed``. Now the drain job fails its attempt, content-free, and
+    the unit waits uncounted with its body."""
+    refused = _faulting_audit_insert(monkeypatch)
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    _drain_at(monkeypatch, ev, now)
+
+    assert refused == [1]
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 1)
+    assert drain.last_error == "IntegrityError (SQLSTATE 23514)"
+    _assert_rolled_back(ev)
+    [unit] = _units(ev)
+    assert (unit.extraction_attempts, unit.retry_after) == (0, None)
+
+
+@pytest.mark.parametrize("good", [0, 1], ids=["two_of_two", "two_of_three"])
+def test_221_two_poison_units_in_one_batch_each_back_off_and_the_drain_succeeds(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime, good: int
+) -> None:
+    """The #215 regression guard. Two refused units in one partition, alone or
+    beside a good one: every deferral commits, so each poison unit counts one
+    attempt and backs off, the good unit is accepted, and the job succeeds. Rolling
+    the batch back instead would leave ``extraction_attempts`` at 0, and since it
+    leads the claim order the next drain would anchor on the poison partition
+    again, ahead of a healthy one recorded later."""
+    refused = _poisoned_acceptance(monkeypatch)
+    poison = [
+        _evidence(
+            ev,
+            f"{FAKE_EXTRACTION_MARKER} The {_POISON_TAG} lanterns {n}.",
+            at=now - timedelta(seconds=20 - n),
+        )
+        for n in range(2)
+    ]
+    healthy = [_evidence(ev, _TURN, at=now - timedelta(seconds=5))][:good]
+    _record_batch(ev, [*poison, *healthy], at=now)
+    first = _enqueue_drain(ev, at=now)
+    batches = _spy_claims(monkeypatch)
+    _at(monkeypatch, ev, now)
+
+    assert len(refused) == 2
+    assert [len(batch.units) for batch in batches[:1]] == [2 + good]
+    [drain] = [job for job in _jobs(ev) if job.id == first]
+    assert (drain.state, drain.attempts, drain.last_error) == ("succeeded", 1, None)
+    stuck = [u for u in _units(ev) if u.body is not None and _POISON_TAG in u.body]
+    assert len(stuck) == 2
+    for unit in stuck:
+        assert (unit.state, unit.extraction_attempts) == ("pending", 1)
+        assert unit.retry_after == now + timedelta(seconds=5)
+    settled = [u for u in _units(ev) if u.id not in {s.id for s in stuck}]
+    assert [(u.state, u.outcome) for u in settled] == [("settled", "active")] * good
+    assert len(_rows(ev, memory_tables.memory)) == good
+
+    # A healthy partition recorded after the poison one is taken first next time.
+    later = ContextPurpose.INTERNAL_ANALYSIS
+    _record_batch(
+        ev, [_evidence(ev, _TURN, at=now, purpose=later)], purpose=later, at=now
+    )
+    _drain_at(monkeypatch, ev, now + timedelta(seconds=1))
+    [fresh] = [u for u in _units(ev) if u.purpose == later.value]
+    assert (fresh.state, fresh.outcome) == ("settled", "active")
+    assert len(refused) == 2  # the poison units were not claimed again yet
+
+
+# --- #217: workspace-wide acceptance faults never reach the provider -----------------
+
+
+def _no_sink(ev: EvidenceWorkspace) -> str:
+    _replace_sinks(_without_recallatron_sink())
+    return "no audit sink for the accepting module"
+
+
+def _no_retention(ev: EvidenceWorkspace) -> str:
+    """The gate on and the window out of range: AC 8's ``retention_unavailable``."""
+    _workspace_setting(ev, RETENTION_EXPIRE_BY_AGE_KEY, "true", ValueType.BOOL)
+    _workspace_setting(ev, RETENTION_DAYS_KEY, "0", ValueType.INT)
+    return "retention_unavailable"
+
+
+@pytest.mark.parametrize("fault", [_no_sink, _no_retention], ids=["sink", "retention"])
+def test_217_two_drains_failing_workspace_wide_never_call_the_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    now: datetime,
+    sinks: None,
+    fault: Any,
+) -> None:
+    """Both faults roll the drain back, extraction included. Checked after the
+    model call, each retry would send the same evidence again; checked before it,
+    neither drain calls the provider, and the unit waits uncounted with its body."""
+    counting = _Flaky()  # delegates to the built-in fake, counting every call
+    monkeypatch.setitem(PROVIDERS, FAKE_PROVIDER, counting)
+    expected = fault(ev)
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    _drain_at(monkeypatch, ev, now)
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 1)
+    _at(monkeypatch, ev, drain.next_run_at)
+
+    assert counting.calls == 0
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 2)
+    assert drain.last_error is not None and expected in drain.last_error
+    _assert_rolled_back(ev)
+    [unit] = _units(ev)
+    assert unit.extraction_attempts == 0

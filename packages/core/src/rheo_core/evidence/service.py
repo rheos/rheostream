@@ -32,12 +32,22 @@ counts the attempt and backs off on the job substrate's schedule, or settles
 then succeeds, so the counts commit, and because ``extraction_attempts`` leads the
 anchor order the next drain takes another partition first.
 
+**Workspace-wide acceptance checks run before the model call (#217).** A claim's
+extraction commits only with the drain that runs it, so a fault that rolls the whole
+drain back (no audit sink for the accepting module, no usable retention policy) would
+otherwise call the provider again on every retry with the same evidence. The accepting
+module passes ``before_extraction``, and the claim calls it with the acceptance
+context after step 3 whenever units survive it, before step 4 resolves the provider
+(so it runs even when no provider resolves). What it raises leaves
+:func:`claim_units` uncontained: no provider call is made, and the drain rolls back
+and retries as it would have after the call.
+
 **Content-free.** No exception, log line or audit row here carries evidence text, a
 native key or anything a provider said.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
@@ -128,7 +138,10 @@ class ClaimedBatch:
     follow_up_at: datetime | None
 
 
-def _claimable(now: datetime) -> ColumnElement[bool]:
+def claimable(now: datetime) -> ColumnElement[bool]:
+    """*Claimable*, as the module docstring defines it. Not on the package's public
+    surface; core's recovery check (``record.republish_for_stalled_drain``) reads it
+    so the two never disagree."""
     return and_(
         evidence_unit.c.state == STATE_PENDING,
         or_(evidence_unit.c.retry_after.is_(None), evidence_unit.c.retry_after <= now),
@@ -221,7 +234,7 @@ def _anchor(uow: UnitOfWork, *, now: datetime) -> Any:
             evidence_unit.c.audience_id,
             evidence_unit.c.purpose,
         )
-        .where(_claimable(now))
+        .where(claimable(now))
         .order_by(*_claim_order())
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -252,7 +265,7 @@ def _partition_rows(
             evidence_unit.c.extraction_attempts,
         )
         .where(
-            _claimable(now),
+            claimable(now),
             evidence_unit.c.speaker_account_id.is_not_distinct_from(
                 anchor.speaker_account_id
             ),
@@ -318,7 +331,7 @@ def _follow_up_at(
         return now
     other = uow.connection.execute(
         select(evidence_unit.c.id)
-        .where(_claimable(now), evidence_unit.c.id.not_in(taken))
+        .where(claimable(now), evidence_unit.c.id.not_in(taken))
         .limit(1)
     ).first()
     if other is not None:
@@ -351,7 +364,13 @@ def _back_off(
             )
 
 
-def claim_units(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
+def claim_units(
+    uow: HandlerUnitOfWork,
+    *,
+    now: datetime,
+    before_extraction: Callable[[WorkspaceContext], None] | None = None,
+    mention_kinds: Sequence[str] = (),
+) -> ClaimedBatch:
     """Claim one partition of pending evidence on this workspace's own database.
 
     Steps, in order: resolve the workspace from the connection (0); age expired
@@ -362,6 +381,16 @@ def claim_units(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
     ``settled/authority_unverified`` before any model call (3); run one extraction
     over what remains, containing any failure to this partition (4); and return the
     surviving units with the follow-up instant (5).
+
+    ``before_extraction``, when given, is called with the acceptance context between
+    steps 3 and 4 whenever step 3 leaves units to extract, before the provider is
+    resolved, so it runs even when none resolves. It checks what the accepting
+    module's acceptance needs regardless of the unit, and raises when that is
+    missing; the raise is not contained (#217).
+
+    ``mention_kinds`` is the entity-kind vocabulary the accepting module keeps. It is
+    handed to the provider on the batch, unread by core, so the model can be told the
+    allowed kinds (#222).
     """
     workspace_id = _routed_workspace_id(uow)
     _age_expired(uow, now=now)
@@ -423,9 +452,15 @@ def claim_units(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
             units=(), follow_up_at=_follow_up_at(uow, now=now, taken=taken, more=more)
         )
 
+    # #217: a workspace-wide acceptance fault raises here, before the provider is
+    # resolved or called, rather than after it in a drain that rolls the extraction
+    # back.
+    if before_extraction is not None:
+        before_extraction(context)
+
     # Step 4. The provider never touches the database, so the transaction is still
     # healthy after any exception it raises; the failure path's writes must commit.
-    batch = digest([row.body for row in verified])
+    batch = digest([row.body for row in verified], mention_kinds=mention_kinds)
     failure: str | None = None
     candidates: dict[str, SanitizedEvidence] = {}
     try:

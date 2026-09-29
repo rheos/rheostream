@@ -47,7 +47,9 @@ class ExtractionProvider(Protocol):
 
     ``extract`` takes one :class:`~rheo_core.evidence.extract.DigestBatch` and returns
     the raw structured response, unvalidated; validating it is the caller's job, never
-    the provider's. A transient fault raises any exception.
+    the provider's. A transient fault raises any exception. A provider that builds a
+    prompt lists the batch's ``mention_kinds``, when there are any, as the kinds a
+    proposed mention may take.
     """
 
     @property

@@ -245,6 +245,36 @@ def context_for_memory_expiry(workspace_id: UUID) -> WorkspaceContext | Refusal:
     )
 
 
+def context_for_evidence_recovery(workspace_id: UUID) -> WorkspaceContext | Refusal:
+    """The context the daily retention sweep republishes the evidence-recorded event
+    under, when claimable evidence has no drain on its way (#216).
+
+    Actor ``system`` with no id, role ``service``, entry ``job``, no audience, no
+    account, no bound purpose and an empty operation set: like
+    :func:`context_for_memory_expiry`, a sweep is nobody. It reaches no dispatchable
+    operation; what it is for is ``publish``, which reads its actor for the outbox row
+    and its ``enabled_modules`` for the fan-out. A value, not an authority: holding one
+    lets a caller publish an event whose ``data`` is ``{}`` and nothing else.
+    """
+    if not isinstance(workspace_id, UUID):
+        raise TypeError("workspace_id must be a UUID")
+    enabled = _active_workspace_modules(get_backend(), workspace_id)
+    if isinstance(enabled, Refusal):
+        return enabled
+    return WorkspaceContext(
+        workspace_id=workspace_id,
+        actor=Actor(kind=ActorKind.SYSTEM, id=None),
+        role=Role.SERVICE,
+        entry=Entry.JOB,
+        # None, as for ``context_for_memory_expiry``: a job has no audience.
+        audience=None,
+        operation_set=frozenset(),
+        enabled_modules=enabled,
+        request_id=uuid7(),
+        principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),
+    )
+
+
 def context_for_evidence_acceptance(
     workspace_id: UUID, *, account_id: UUID, purpose: ContextPurpose
 ) -> WorkspaceContext | Refusal:
