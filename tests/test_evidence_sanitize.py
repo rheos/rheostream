@@ -157,6 +157,20 @@ def test_a_payload_exposed_by_removing_indented_lines_goes_in_the_same_pass() ->
     assert sanitize(text) == KEPT
 
 
+def test_a_diff_header_joined_by_removing_an_indented_line_goes() -> None:
+    """Removing the indented line makes ``---`` and ``+++`` adjacent, a header; the
+    whole-segment tests run again on what pass (b) leaves, so it goes first time."""
+    text = f"{KEPT}\n\n--- a/app.py\n    junk\n+++ b/app.py"
+    assert sanitize(text) == KEPT
+
+
+def test_a_hunk_header_split_across_lines_still_takes_its_body_with_it() -> None:
+    """The header is only one once collapsed, and it still opens a hunk: the body
+    segment after it goes too, rather than surviving as a headerless body."""
+    text = f"@@ -1,1\n+1,1 @@\n\n-old line\n+new line\n\n{KEPT}"
+    assert sanitize(text) == KEPT
+
+
 def test_a_tag_line_running_on_into_prose_is_judged_by_the_inline_rule() -> None:
     """A line that opens with a bare tag and carries on is not a block: ``<target>`` is
     a placeholder, kept. With a closing tag the inline rule drops the segment."""
