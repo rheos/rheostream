@@ -99,10 +99,8 @@ from rheo_core.evidence import (
     settle_unit,
 )
 from rheo_core.operations.refusals import OperationRefused
-from rheo_core.storage import work_tables
 from rheo_core.work.cancellation import CancellationToken
-from rheo_core.work.jobs import QUEUED, enqueue_job
-from sqlalchemy import select
+from rheo_core.work.jobs import enqueue_job
 from sqlalchemy.exc import DataError, IntegrityError, StatementError
 
 from rheo_recallatron.configuration import (
@@ -183,18 +181,6 @@ def _now() -> datetime:
 def _enqueue_drain(
     uow: HandlerUnitOfWork, *, now: datetime, next_run_at: datetime | None = None
 ) -> None:
-    if next_run_at is not None:
-        pending = uow.connection.execute(
-            select(work_tables.job.c.id)
-            .where(
-                work_tables.job.c.kind == DRAIN_JOB_KIND,
-                work_tables.job.c.state == QUEUED,
-                work_tables.job.c.next_run_at == next_run_at,
-            )
-            .limit(1)
-        ).first()
-        if pending is not None:
-            return
     enqueue_job(
         uow.connection,
         kind=DRAIN_JOB_KIND,
@@ -202,6 +188,7 @@ def _enqueue_drain(
         now=now,
         max_attempts=DRAIN_MAX_ATTEMPTS,
         next_run_at=next_run_at,
+        dedupe=next_run_at is not None,
     )
     uow.request_due_mark()
 
