@@ -25,6 +25,16 @@ RefusalReason = Literal["path_escape", "project_unmatched"]
 
 _NOT_ALNUM = re.compile(r"[^A-Za-z0-9]")
 
+# Flags that mark machine-generated or non-conversational text on a line that
+# otherwise looks human. A line is admitted only when each is absent or
+# exactly ``False``. [capture 11] — may be revised at reconciliation.
+MACHINE_FLAGS: tuple[str, ...] = (
+    "isMeta",
+    "isSidechain",
+    "isCompactSummary",
+    "isVisibleInTranscriptOnly",
+)
+
 
 @dataclass(frozen=True)
 class Ok:
@@ -136,8 +146,9 @@ def human_text(line: dict[str, object]) -> str | None:
 
     [capture 11] — may be revised at reconciliation.
 
-    An allow-list: only a ``user`` line of ``human`` origin that is neither meta
-    nor sidechain, carries no ``toolUseResult``, and whose ``message.content``
+    An allow-list: only a ``user`` line of ``human`` origin whose
+    ``MACHINE_FLAGS`` are each absent or exactly ``False``, that carries no
+    ``toolUseResult``, and whose ``message.content``
     is a string or a non-empty list made only of ``text`` blocks. A list is
     joined with a blank line. Any shape not recognised here fails closed.
     """
@@ -146,7 +157,8 @@ def human_text(line: dict[str, object]) -> str | None:
     origin = line.get("origin", {})
     if not isinstance(origin, dict) or origin.get("kind") != "human":
         return None
-    if line.get("isMeta") is True or line.get("isSidechain") is True:
+    # Absent or exactly False only: 1, "true", null or a list all exclude.
+    if any(line.get(flag, False) is not False for flag in MACHINE_FLAGS):
         return None
     if "toolUseResult" in line:
         return None

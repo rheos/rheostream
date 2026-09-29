@@ -77,6 +77,8 @@ NON_HUMAN_LINES: dict[str, dict[str, Any]] = {
     "tool_use_result_key_only": human("ok", toolUseResult="ok"),
     "meta": human("<synthetic meta text>", isMeta=True),
     "sidechain": human(isSidechain=True),
+    "compact_summary": human("a synthetic summary", isCompactSummary=True),
+    "transcript_only": human("synthetic display text", isVisibleInTranscriptOnly=True),
     "task_notification": human("a task finished", origin={"kind": "task-notification"}),
     "peer_message": human("hello from a peer", origin={"kind": "peer"}),
     "scheduled_prompt": human("run the nightly thing", origin={"kind": "scheduled"}),
@@ -113,6 +115,29 @@ def test_every_non_human_shape_is_skipped(name: str) -> None:
     line = NON_HUMAN_LINES[name]
     assert not transcript.is_human_line(line)
     assert transcript.human_text(line) is None
+
+
+@pytest.mark.parametrize("flag", transcript.MACHINE_FLAGS)
+@pytest.mark.parametrize("value", [True, 1, "true", ["x"], None, "false", 0])
+def test_a_machine_flag_other_than_absent_or_false_excludes_the_line(
+    flag: str, value: object
+) -> None:
+    line = human(**{flag: value})
+    assert not transcript.is_human_line(line)
+
+
+def test_machine_flags_explicitly_false_are_admitted() -> None:
+    line = human(**dict.fromkeys(transcript.MACHINE_FLAGS, False))
+    assert transcript.is_human_line(line)
+
+
+def test_the_machine_flags_cover_meta_sidechain_compaction_and_display_only() -> None:
+    assert set(transcript.MACHINE_FLAGS) == {
+        "isMeta",
+        "isSidechain",
+        "isCompactSummary",
+        "isVisibleInTranscriptOnly",
+    }
 
 
 # --- parse_clock, extract_ids, entrypoint ---------------------------------
