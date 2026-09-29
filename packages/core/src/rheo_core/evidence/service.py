@@ -32,12 +32,21 @@ counts the attempt and backs off on the job substrate's schedule, or settles
 then succeeds, so the counts commit, and because ``extraction_attempts`` leads the
 anchor order the next drain takes another partition first.
 
+**Workspace-wide acceptance checks run before the model call (#217).** A claim's
+extraction commits only with the drain that runs it, so a fault that rolls the whole
+drain back (no audit sink for the accepting module, no usable retention policy) would
+otherwise call the provider again on every retry with the same evidence. The accepting
+module passes ``before_extraction``, and the claim calls it with the acceptance
+context after step 3 and before step 4, only when a provider call is about to happen.
+What it raises leaves :func:`claim_units` uncontained: no provider call is made, and
+the drain rolls back and retries as it would have after the call.
+
 **Content-free.** No exception, log line or audit row here carries evidence text, a
 native key or anything a provider said.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
@@ -351,7 +360,12 @@ def _back_off(
             )
 
 
-def claim_units(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
+def claim_units(
+    uow: HandlerUnitOfWork,
+    *,
+    now: datetime,
+    before_extraction: Callable[[WorkspaceContext], None] | None = None,
+) -> ClaimedBatch:
     """Claim one partition of pending evidence on this workspace's own database.
 
     Steps, in order: resolve the workspace from the connection (0); age expired
@@ -362,6 +376,11 @@ def claim_units(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
     ``settled/authority_unverified`` before any model call (3); run one extraction
     over what remains, containing any failure to this partition (4); and return the
     surviving units with the follow-up instant (5).
+
+    ``before_extraction``, when given, is called with the acceptance context between
+    steps 3 and 4, and only when step 4 will call the provider. It checks what the
+    accepting module's acceptance needs regardless of the unit, and raises when that
+    is missing; the raise is not contained (#217).
     """
     workspace_id = _routed_workspace_id(uow)
     _age_expired(uow, now=now)
@@ -422,6 +441,11 @@ def claim_units(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
         return ClaimedBatch(
             units=(), follow_up_at=_follow_up_at(uow, now=now, taken=taken, more=more)
         )
+
+    # #217: a workspace-wide acceptance fault raises here, before the model call,
+    # rather than after it in a drain that rolls the extraction back.
+    if before_extraction is not None:
+        before_extraction(context)
 
     # Step 4. The provider never touches the database, so the transaction is still
     # healthy after any exception it raises; the failure path's writes must commit.

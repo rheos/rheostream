@@ -42,6 +42,16 @@ when at least :data:`DEFERRAL_RUN_MINIMUM` units of one batch defer and they are
 than half of it, the drain raises :class:`DrainDeferralRun`. That rolls the drain
 back, deferral counts included, and the job fails where people look.
 
+**Workspace-wide acceptance preconditions are checked before the model call
+(#217).** Two things acceptance needs do not depend on the unit: an audit sink for
+this module, which ``settle_unit`` writes the success row through, and a usable
+retention policy, which ``accept_source_unit`` refuses ``retention_unavailable``
+without. Either missing rolls the whole drain back, and with it the claim's
+extraction, so each retry would send the same evidence to the provider again. The
+drain hands ``claim_units`` :func:`_acceptance_ready`, which core calls just before
+the provider, and it raises the same ``EvidenceAuditUnwritable`` or refusal the
+acceptance would have raised, with no model call made.
+
 **A model's mention kinds are not trusted.** Extraction accepts any kind string, and
 the ``memory_entity_kind`` CHECK allows only :data:`EntityKind`. A mention of any other
 kind is dropped before acceptance, and the same rebuilt unit is settled, so the
@@ -65,13 +75,22 @@ pins time for both by replacing it.
 
 import dataclasses
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Final, get_args
 
 from pydantic import BaseModel, ConfigDict
-from rheo_contracts import EventEnvelope
+from rheo_contracts import EventEnvelope, WorkspaceContext
+from rheo_core.audit import sink_for
 from rheo_core.events.consumers import ConsumerRegistry, HandlerUnitOfWork
-from rheo_core.evidence import ClaimedUnit, claim_units, defer_unit, settle_unit
+from rheo_core.evidence import (
+    ClaimedUnit,
+    EvidenceAuditUnwritable,
+    claim_units,
+    defer_unit,
+    settle_unit,
+)
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
 from sqlalchemy.exc import DataError, IntegrityError, StatementError
@@ -82,6 +101,8 @@ from rheo_recallatron.configuration import (
     MODULE_ID,
 )
 from rheo_recallatron.contracts import EntityKind
+from rheo_recallatron.eligibility import begin_request
+from rheo_recallatron.refusals import RETENTION_UNAVAILABLE
 from rheo_recallatron.source_units import accept_source_unit
 
 _log = logging.getLogger(__name__)
@@ -182,6 +203,28 @@ def _known_mentions(claimed: ClaimedUnit) -> tuple[ClaimedUnit, int]:
     return dataclasses.replace(claimed, unit=unit), dropped
 
 
+def _acceptance_ready(
+    uow: HandlerUnitOfWork, *, now: datetime
+) -> Callable[[WorkspaceContext], None]:
+    """The check ``claim_units`` runs just before the provider call (#217): raise what
+    acceptance would raise for any unit of this workspace, before the model is asked.
+
+    The sink is looked up exactly as ``record_evidence_acceptance_audit`` looks it
+    up, and retention is read through the same ``begin_request`` acceptance opens
+    with, on the drain's own transaction.
+    """
+
+    def ready(ctx: WorkspaceContext) -> None:
+        if sink_for(MODULE_ID) is None:
+            raise EvidenceAuditUnwritable("no audit sink for the accepting module")
+        if begin_request(ctx, uow, now=now) is None:
+            raise OperationRefused(
+                RETENTION_UNAVAILABLE, "this workspace has no usable retention policy"
+            )
+
+    return ready
+
+
 def run_drain_job(
     uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
 ) -> None:
@@ -211,7 +254,7 @@ def _drain(
 ) -> None:
     """The drain proper: :func:`run_drain_job` only guards what may escape it."""
     now = _now()
-    batch = claim_units(uow, now=now)
+    batch = claim_units(uow, now=now, before_extraction=_acceptance_ready(uow, now=now))
     dropped_mentions = 0
     trimmed_units = 0
     deferred = 0

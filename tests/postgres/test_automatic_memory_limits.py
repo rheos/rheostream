@@ -22,6 +22,9 @@ Seams under test:
   acceptance rolls back only that unit's savepoint; its partition neighbour is
   accepted in the same drain, the poison unit backs off on the extraction schedule,
   and its fifth attempt settles ``gap/acceptance_failed``.
+- **#217: a workspace-wide acceptance fault is found before the model call.** With no
+  audit sink, or no usable retention policy, two drains in a row fail without calling
+  the provider once.
 - **#221: only the accept step is contained.** A refused audit insert rolls the whole
   drain back and fails the job attempt, and a batch whose every unit is refused fails
   the drain job terminally instead of gapping the batch.
@@ -185,8 +188,8 @@ def _spy_claims(monkeypatch: pytest.MonkeyPatch) -> list[ClaimedBatch]:
     """Every batch the drain claims, in order, from the real ``claim_units``."""
     batches: list[ClaimedBatch] = []
 
-    def spy(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
-        batch = claim_units(uow, now=now)
+    def spy(uow: HandlerUnitOfWork, *, now: datetime, **kwargs: Any) -> ClaimedBatch:
+        batch = claim_units(uow, now=now, **kwargs)
         batches.append(batch)
         return batch
 
@@ -592,16 +595,20 @@ def test_card5a_a_raising_sink_fails_the_attempt_and_a_restored_sink_accepts_onc
 def test_card5b_no_sink_is_evidence_audit_unwritable_and_rolls_everything_back(
     monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime, sinks: None
 ) -> None:
+    """Since #217 the missing sink is found before the model call, so the claim
+    raises ``EvidenceAuditUnwritable`` and ``settle_unit`` is never reached."""
     _replace_sinks(_without_recallatron_sink())
     assert sink_for(MODULE_ID) is None
     raised = _spy_settlements(monkeypatch)
     _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
     _drain_at(monkeypatch, ev, now)
 
-    assert raised == [EvidenceAuditUnwritable]
+    assert raised == []
     [drain] = _jobs(ev)
     assert (drain.state, drain.attempts) == ("queued", 1)
-    assert drain.last_error is not None
+    assert drain.last_error == str(
+        EvidenceAuditUnwritable("no audit sink for the accepting module")
+    )
     _assert_rolled_back(ev)
 
 
@@ -837,3 +844,47 @@ def test_221_every_unit_refused_fails_the_drain_job_instead_of_gapping_the_batch
     assert _counts(ev) == _NO_RECEIPTS
     assert _POISON_ROW not in caplog.text
     assert _POISON_TAG not in caplog.text
+
+
+# --- #217: workspace-wide acceptance faults never reach the provider -----------------
+
+
+def _no_sink(ev: EvidenceWorkspace) -> str:
+    _replace_sinks(_without_recallatron_sink())
+    return "no audit sink for the accepting module"
+
+
+def _no_retention(ev: EvidenceWorkspace) -> str:
+    """The gate on and the window out of range: AC 8's ``retention_unavailable``."""
+    _workspace_setting(ev, RETENTION_EXPIRE_BY_AGE_KEY, "true", ValueType.BOOL)
+    _workspace_setting(ev, RETENTION_DAYS_KEY, "0", ValueType.INT)
+    return "retention_unavailable"
+
+
+@pytest.mark.parametrize("fault", [_no_sink, _no_retention], ids=["sink", "retention"])
+def test_217_two_drains_failing_workspace_wide_never_call_the_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    now: datetime,
+    sinks: None,
+    fault: Any,
+) -> None:
+    """Both faults roll the drain back, extraction included. Checked after the
+    model call, each retry would send the same evidence again; checked before it,
+    neither drain calls the provider, and the unit waits uncounted with its body."""
+    counting = _Flaky()  # delegates to the built-in fake, counting every call
+    monkeypatch.setitem(PROVIDERS, FAKE_PROVIDER, counting)
+    expected = fault(ev)
+    _record_batch(ev, [_evidence(ev, _TURN, at=now)], at=now)
+    _drain_at(monkeypatch, ev, now)
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 1)
+    _at(monkeypatch, ev, drain.next_run_at)
+
+    assert counting.calls == 0
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts) == ("queued", 2)
+    assert drain.last_error is not None and expected in drain.last_error
+    _assert_rolled_back(ev)
+    [unit] = _units(ev)
+    assert unit.extraction_attempts == 0

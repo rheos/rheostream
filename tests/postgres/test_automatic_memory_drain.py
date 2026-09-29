@@ -261,7 +261,7 @@ def _claims(*batches: ClaimedBatch) -> Callable[..., ClaimedBatch]:
     """A stand-in claim answering ``batches`` in order, then an empty one."""
     queue = list(batches)
 
-    def claim(uow: HandlerUnitOfWork, *, now: datetime) -> ClaimedBatch:
+    def claim(uow: HandlerUnitOfWork, *, now: datetime, **_: object) -> ClaimedBatch:
         return queue.pop(0) if queue else ClaimedBatch(units=(), follow_up_at=None)
 
     return claim
