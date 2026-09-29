@@ -25,6 +25,7 @@ reads only the tokens of active enrollments.
 """
 
 import json
+import logging
 import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -52,6 +53,7 @@ from rheo_core.evidence.enrollment import (
     ENROLLMENT_EXISTS,
     ENROLLMENT_REVOKE,
     ENROLLMENT_ROTATE,
+    OLD_TOKEN_REVOKE_FAILED_LOG,
 )
 from rheo_core.evidence.local_authority import (
     ENROLLMENT_INACTIVE,
@@ -82,7 +84,7 @@ from rheo_core.storage.evidence_enrollment_tables import (
     evidence_enrollment,
 )
 from rheo_core.storage.evidence_tables import evidence_unit
-from sqlalchemy import delete, insert, inspect, select
+from sqlalchemy import delete, insert, inspect, select, update
 from sqlalchemy.exc import OperationalError
 
 pytestmark = pytest.mark.postgres
@@ -577,6 +579,7 @@ def test_a_failed_row_update_leaves_the_new_token_matching_nothing(
 
 def test_a_failed_old_token_revoke_leaves_the_old_token_matching_nothing(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     cluster: ClusterSession,
     workspace: UUID,
     owner_account_id: UUID,
@@ -588,6 +591,7 @@ def test_a_failed_old_token_revoke_leaves_the_old_token_matching_nothing(
         raise StorageRefusal("access_token_missing", "synthetic revoke failure")
 
     monkeypatch.setattr(enrollment_module, "_revoke_token_if_live", broken_revoke)
+    caplog.set_level(logging.WARNING, logger="rheo_core.evidence")
     new = _created(
         dispatch(
             ctx,
@@ -603,6 +607,42 @@ def test_a_failed_old_token_revoke_leaves_the_old_token_matching_nothing(
     assert _token(cluster, old.token_id).revoked_at is None
     assert _active_for_token(cluster, workspace, old.token_id) == 0
     assert _active_for_token(cluster, workspace, new.token_id) == 1
+    # The failure is logged content-free: no raw token value, old or new.
+    (logged,) = [
+        record
+        for record in caplog.records
+        if record.getMessage() == OLD_TOKEN_REVOKE_FAILED_LOG
+    ]
+    assert logged.error_type == "StorageRefusal"  # type: ignore[attr-defined]
+    rendered = f"{logged.getMessage()} {logged.__dict__}"
+    assert old.value not in rendered
+    assert new.value not in rendered
+
+
+def test_rotate_mints_under_the_rows_stored_purpose(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """The new token's purpose is the enrollment row's, not the create constant."""
+    ctx = _operator(workspace)
+    old = _created(_create(ctx, account_id=owner_account_id))
+    database = cluster.registry_row(workspace).database_name
+    with cluster.backend.pools.engine_for(database).begin() as connection:
+        connection.execute(
+            update(evidence_enrollment)
+            .where(evidence_enrollment.c.id == old.enrollment_id)
+            .values(purpose=ContextPurpose.RESPOND.value)
+        )
+    new = _created(
+        dispatch(
+            ctx,
+            ENROLLMENT_ROTATE,
+            {
+                "enrollment_id": str(old.enrollment_id),
+                "account_id": str(owner_account_id),
+            },
+        )
+    )
+    assert _token(cluster, new.token_id).purpose == ContextPurpose.RESPOND.value
 
 
 # --- the operator CLI --------------------------------------------------------------
@@ -638,6 +678,7 @@ def test_enroll_prints_only_the_raw_token(
     lines = out.splitlines()
     assert len(lines) == 1 and out == lines[0] + "\n"
     assert lines[0].startswith("rheo_cli_")
+    assert lines[0] not in err
     ctx = context_from_token(lines[0], "api")
     assert isinstance(ctx, WorkspaceContext), ctx
     assert ctx.operation_set == BRIDGE_SNAPSHOT
@@ -668,6 +709,7 @@ def test_enroll_json_prints_exactly_one_line_and_revoke_takes_only_the_id(
     parsed = json.loads(line)
     assert set(parsed) == {"enrollment_id", "token", "expires_at"}
     assert parsed["token"].startswith("rheo_cli_")
+    assert parsed["token"] not in err
     enrollment_id = UUID(parsed["enrollment_id"])
 
     code, out, err = _run(
@@ -684,6 +726,7 @@ def test_enroll_json_prints_exactly_one_line_and_revoke_takes_only_the_id(
     assert code == 0, err
     (rotated,) = out.splitlines()
     assert set(json.loads(rotated)) == {"enrollment_id", "token", "expires_at"}
+    assert json.loads(rotated)["token"] not in err
     assert json.loads(rotated)["enrollment_id"] == str(enrollment_id)
 
     code, out, err = _run(capsys, "evidence", "revoke", str(enrollment_id))

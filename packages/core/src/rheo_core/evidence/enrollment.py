@@ -168,7 +168,9 @@ def _require_membership(account_id: UUID, workspace_id: UUID) -> None:
         )
 
 
-def _mint(ctx: WorkspaceContext, account_id: UUID) -> tuple[UUID, str, datetime]:
+def _mint(
+    ctx: WorkspaceContext, account_id: UUID, purpose: str
+) -> tuple[UUID, str, datetime]:
     """A new bridge token for ``account_id``: ``(token_id, value, expires_at)``.
 
     The expiry is read back from the row just written rather than recomputed, so the
@@ -176,7 +178,7 @@ def _mint(ctx: WorkspaceContext, account_id: UUID) -> tuple[UUID, str, datetime]
     token_id, value = issue_bridge_token(
         account_id=account_id,
         workspace_id=ctx.workspace_id,
-        purpose=BRIDGE_PURPOSE.value,
+        purpose=purpose,
         issued_from=_issued_from(ctx),
     )
     with get_backend().control_engine.connect() as connection:
@@ -195,21 +197,22 @@ def _constraint_name(violation: IntegrityError) -> str:
 
 def _owned_enrollment(
     uow: UnitOfWork, enrollment_id: UUID, account_id: UUID
-) -> tuple[UUID, str]:
-    """``(token_id, state)`` of the target's own enrollment, locked for update; an
-    absent id and another account's id both answer ``not_found``."""
+) -> tuple[UUID, str, str]:
+    """``(token_id, state, purpose)`` of the target's own enrollment, locked for
+    update; an absent id and another account's id both answer ``not_found``."""
     row = uow.connection.execute(
         select(
             evidence_enrollment.c.account_id,
             evidence_enrollment.c.token_id,
             evidence_enrollment.c.state,
+            evidence_enrollment.c.purpose,
         )
         .where(evidence_enrollment.c.id == enrollment_id)
         .with_for_update()
     ).one_or_none()
     if row is None or row.account_id != account_id:
         raise OperationRefused(NOT_FOUND, f"no enrollment {enrollment_id}")
-    return row.token_id, row.state
+    return row.token_id, row.state, row.purpose
 
 
 def create_handler(
@@ -238,7 +241,7 @@ def create_handler(
         raise OperationRefused(
             ENROLLMENT_EXISTS, "this machine and directory are already enrolled"
         )
-    token_id, value, expires_at = _mint(ctx, account_id)
+    token_id, value, expires_at = _mint(ctx, account_id, BRIDGE_PURPOSE.value)
     enrollment_id = uuid7()
     # A concurrent create can pass the pre-check above and lose the race on the
     # partial unique index; it gets the pre-check's answer. The savepoint keeps the
@@ -302,13 +305,20 @@ def rotate_handler(
       still commits. Raising would roll that update back and leave the old token
       live and still matching; not raising leaves it live but matching no enrollment,
       so its one operation refuses ``enrollment_inactive``.
+
+    The workspace row update commits after the old token is already revoked in the
+    control plane. If that commit fails, the active row points at a revoked token,
+    which fails closed: ``rheo doctor`` shows ``FAIL`` and a retried rotate repairs
+    it. The new token carries the row's stored purpose, not a constant.
     """
     _refuse_token_actor(ctx, ENROLLMENT_ROTATE)
     account_id = _target_account(ctx, model_input.account_id)
-    old_token_id, state = _owned_enrollment(uow, model_input.enrollment_id, account_id)
+    old_token_id, state, purpose = _owned_enrollment(
+        uow, model_input.enrollment_id, account_id
+    )
     if state != STATE_ACTIVE:
         raise OperationRefused(ENROLLMENT_INACTIVE, "the enrollment is revoked")
-    token_id, value, expires_at = _mint(ctx, account_id)
+    token_id, value, expires_at = _mint(ctx, account_id, purpose)
     _set_token_id(uow, model_input.enrollment_id, token_id)
     try:
         _revoke_token_if_live(old_token_id)
@@ -335,7 +345,7 @@ def revoke_handler(
     account's enrollment; another account's answers ``not_found``.
     """
     account_id = _target_account(ctx, model_input.account_id)
-    token_id, state = _owned_enrollment(uow, model_input.enrollment_id, account_id)
+    token_id, state, _ = _owned_enrollment(uow, model_input.enrollment_id, account_id)
     if state != STATE_ACTIVE:
         raise OperationRefused(ENROLLMENT_INACTIVE, "the enrollment is already revoked")
     _revoke_token_if_live(token_id)
