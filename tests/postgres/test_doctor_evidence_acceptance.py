@@ -11,8 +11,7 @@ counts are exact; the session's other workspaces are only reached through
 ``_check_evidence_acceptance``, which is asserted to include this one's line.
 
 - An empty table is ``ok``; a workspace with no table is ``ok`` and not applicable.
-- One failure among other settlements warns; every settled unit failing fails; the
-  threshold fails.
+- Any failure fails: one among other settlements, a lone lost unit, or many.
 - A settlement older than the window, and a ``pending`` row, count for nothing.
 - The line carries counts only, never evidence text or a native key.
 
@@ -25,7 +24,6 @@ from uuid import UUID, uuid4
 import pytest
 from conftest import ClusterSession
 from rheo_app_cli.commands.doctor import (
-    ACCEPTANCE_FAILED_FAIL_AT,
     ACCEPTANCE_WINDOW,
     _check_evidence_acceptance,
     _check_workspace_acceptance,
@@ -117,7 +115,7 @@ def test_a_workspace_without_the_table_is_not_applicable(
     assert "not applicable" in detail
 
 
-def test_one_failure_among_other_settlements_warns(
+def test_one_failure_among_other_settlements_fails(
     cluster: ClusterSession, workspace: UUID, now: datetime
 ) -> None:
     _insert(
@@ -145,7 +143,7 @@ def test_one_failure_among_other_settlements_warns(
     )
     _insert(cluster, workspace, state=STATE_PENDING, outcome=None, settled_at=None)
     level, detail = _check(cluster, workspace, now)
-    assert level == "warn", detail
+    assert level == "FAIL", detail
     assert detail.startswith("1 of 4 evidence units"), detail
     assert _MARKER not in detail
 
@@ -167,7 +165,7 @@ def test_a_lone_lost_unit_fails(
     assert _MARKER not in detail
 
 
-def test_the_threshold_fails_among_other_settlements(
+def test_many_failures_among_other_settlements_fail(
     cluster: ClusterSession, workspace: UUID, now: datetime
 ) -> None:
     _insert(
@@ -184,11 +182,11 @@ def test_the_threshold_fails_among_other_settlements(
         state=STATE_GAP,
         outcome=OUTCOME_ACCEPTANCE_FAILED,
         settled_at=now - timedelta(hours=1),
-        count=ACCEPTANCE_FAILED_FAIL_AT,
+        count=5,
     )
     level, detail = _check(cluster, workspace, now)
     assert level == "FAIL", detail
-    assert detail.startswith(f"{ACCEPTANCE_FAILED_FAIL_AT} of 25 evidence units")
+    assert detail.startswith("5 of 25 evidence units")
 
 
 def test_a_failure_older_than_the_window_is_not_counted(

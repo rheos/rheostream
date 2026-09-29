@@ -40,8 +40,11 @@ def settlement_counts_since(
     no ``core.evidence_unit`` (a workspace not yet migrated to revision 0010).
 
     ``settled_at`` is stamped on every row that leaves ``pending``, ``gap`` included,
-    so one column bounds both counts. The table has no index on it; it is transient
-    working state the retention sweep keeps small, so the scan is cheap.
+    so one column bounds both counts. The table has no index on it, and settled rows
+    stay until the retention sweep deletes them after
+    ``runtime.transcript_retention_days`` (90 by default), so this scans up to that
+    many days of small, body-less rows per workspace: fine for a doctor run, and #196
+    tracks the index.
     """
     present = connection.execute(
         text("SELECT to_regclass('core.evidence_unit')")

@@ -6,16 +6,13 @@ file pins the tier boundaries:
 
 * ``ok`` with no failure, on an empty window, and when the workspace has no evidence
   table at all (not applicable, never an error);
-* ``warn`` at one failure among other settlements;
-* ``FAIL`` at :data:`ACCEPTANCE_FAILED_FAIL_AT`, and when every unit settled in the
-  window failed: the quiet workspace whose one unit was lost.
+* ``FAIL`` on any failure: one among a busy day's other settlements, many, or the
+  quiet workspace's only unit. There is no ``warn`` tier, because each failure is
+  evidence lost for good.
 """
 
 import pytest
-from rheo_app_cli.commands.doctor import (
-    ACCEPTANCE_FAILED_FAIL_AT,
-    _acceptance_check,
-)
+from rheo_app_cli.commands.doctor import _acceptance_check
 from rheo_core.evidence.health import SettlementCounts
 
 NAME = "evidence acceptance probe"
@@ -41,19 +38,15 @@ def test_settlements_without_a_failure_are_ok() -> None:
     assert _level(settled=12, failed=0) == "ok"
 
 
-def test_one_failure_among_others_warns() -> None:
+def test_one_failure_among_others_fails() -> None:
+    """A lone loss on a busy day must not read as a pass."""
     check = _acceptance_check(NAME, SettlementCounts(settled=3, acceptance_failed=1))
-    assert check.level == "warn", check.line()
+    assert check.level == "FAIL", check.line()
     assert check.detail.startswith("1 of 3 evidence units"), check.detail
 
 
-@pytest.mark.parametrize("failed", [1, ACCEPTANCE_FAILED_FAIL_AT - 1])
-def test_below_the_threshold_with_other_settlements_warns(failed: int) -> None:
-    assert _level(settled=100, failed=failed) == "warn"
-
-
-@pytest.mark.parametrize("failed", [ACCEPTANCE_FAILED_FAIL_AT, 40])
-def test_the_threshold_fails(failed: int) -> None:
+@pytest.mark.parametrize("failed", [1, 4, 40])
+def test_any_failure_among_many_settlements_fails(failed: int) -> None:
     assert _level(settled=100, failed=failed) == "FAIL"
 
 

@@ -54,10 +54,6 @@ The rest is for connections the two-process figure does not count: an operator's
 process with its own engines, ``psql`` sessions, and the superuser-reserved slots."""
 ACCEPTANCE_WINDOW: Final = timedelta(hours=24)
 """How far back the evidence-acceptance check counts settlements (#221)."""
-ACCEPTANCE_FAILED_FAIL_AT: Final = 5
-"""``gap/acceptance_failed`` settlements in one workspace, within
-:data:`ACCEPTANCE_WINDOW`, at which the check fails rather than warns: one full run of
-five attempts per unit, five units lost in a day."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,10 +249,11 @@ def _check_workspaces(backend: PostgresBackend) -> Iterator[Check]:
 def _acceptance_check(name: str, counts: SettlementCounts | None) -> Check:
     """The level for one workspace's settlement counts (#221).
 
-    ``FAIL`` at :data:`ACCEPTANCE_FAILED_FAIL_AT` failures, or when every unit settled
-    in the window failed (the quiet-workspace case: a batch of one, lost); ``warn`` at
-    one or more; ``ok`` otherwise. No table is ``ok`` and says so. Counts only: the
-    detail never carries evidence text.
+    ``FAIL`` on any ``gap/acceptance_failed`` settlement in the window, ``ok``
+    otherwise. There is no ``warn`` tier: each such settlement is a unit whose evidence
+    is gone for good, and a lone one among a busy day's other settlements is exactly
+    the case that must not read as a pass. No table is ``ok`` and says so. Counts
+    only: the detail never carries evidence text.
     """
     hours = int(ACCEPTANCE_WINDOW.total_seconds() // 3600)
     if counts is None:
@@ -264,13 +261,11 @@ def _acceptance_check(name: str, counts: SettlementCounts | None) -> Check:
     failed, settled = counts.acceptance_failed, counts.settled
     detail = (
         f"{failed} of {settled} evidence units settled in the last {hours} h ended "
-        f"gap/acceptance_failed (fail at {ACCEPTANCE_FAILED_FAIL_AT} or when all do)"
+        "gap/acceptance_failed"
     )
     if failed == 0:
         return Check(name, "ok", detail)
-    if failed >= ACCEPTANCE_FAILED_FAIL_AT or failed == settled:
-        return Check(name, "FAIL", f"{detail}; the evidence of each is lost")
-    return Check(name, "warn", f"{detail}; the evidence of each is lost")
+    return Check(name, "FAIL", f"{detail}; the evidence of each is lost")
 
 
 def _check_workspace_acceptance(
@@ -288,7 +283,9 @@ def _check_workspace_acceptance(
                 counts = settlement_counts_since(
                     connection, since=now - ACCEPTANCE_WINDOW
                 )
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, ValueError) as exc:
+        # ``ValueError``: ``pools.acquire`` refuses a malformed database name. Either
+        # way one workspace reads FAIL and the run carries on to the next.
         return Check(name, "FAIL", f"cannot read: {type(exc).__name__}")
     return _acceptance_check(name, counts)
 
