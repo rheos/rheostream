@@ -36,11 +36,18 @@ The steps, in this order (spec Architecture, System Components item 1):
    rest is split into blank-line-separated segments, and each is worked in three
    passes:
 
-   a. *Whole segment.* A line that is only a filesystem path is removed (a Windows
-      path may hold spaces: a line that starts at a drive root is a path to its end).
-      What is left is removed whole when it is a unified-diff hunk (with any directly
-      following segments made only of diff body lines), an XML/HTML-tag block spanning
-      the whole segment, a JSON object or array, or part of a stack trace.
+   a. *Whole segment.* A line that is only a filesystem path is removed. A path may
+      hold spaces and nothing marks where it ends, so a line that starts at a root is
+      a path to its end: a Windows drive root (``C:\\`` or ``C:/``), a UNC
+      ``\\\\server\\``, ``~/``, ``./``, ``../``, or a POSIX root holding a
+      directory (``/Users/example/My Documents/...``). What is left is removed whole
+      when it is a unified-diff hunk (with any directly following segments made only
+      of diff body lines), an XML/HTML-tag block spanning the whole segment, a JSON
+      object or array, part of a stack trace, or a shell or REPL transcript (a line
+      opening with ``$ cmd``, ``user@host:~$ cmd`` or ``>>>``; the lines after a
+      prompt are its output). A stack frame counts mid-sentence when its shape is
+      distinctive: ``Caused by: java.io.IOException: ...`` or ``File "/app/x.py",
+      line 3`` inside a sentence takes the segment with it.
    b. *Line by line*, the way the path rule works, so a prose line sharing the segment
       survives. A JSON object or array that starts a line and ends one is removed with
       every line it spans. So is a tag block: from a line that opens with a tag to the
@@ -57,16 +64,25 @@ The steps, in this order (spec Architecture, System Components item 1):
       such as a ``---`` and ``+++`` header pair.
    c. *Inline payload.* What is left goes whole when it holds markup mid-sentence (a
       closing tag, a self-closing tag, an opening tag with a quoted attribute, a
-      comment, declaration or processing instruction) or an inline JSON object. The
-      whole segment goes, not the span: cutting ``<tool>ls</tool>`` out of "Please
-      inspect <tool>ls</tool> when ready." leaves a sentence about a payload that is
-      no longer there, and a span rule that misjudges one boundary leaks the payload
-      body. Prose that merely uses angle brackets or braces is kept and pinned by
-      negative controls: ``a < b``, ``x<y and y>z``, ``List<String>``, a bare
-      placeholder such as ``<target>``, an address in ``<...>``, and ``{name}``.
+      comment, declaration or processing instruction), an inline JSON object, a
+      Python or JSON literal (a keyed dict in either quote, ``{'tool': 'bash'}``, or
+      a list or set with a quoted element, ``["rm","-rf","/"]``), or an encoded blob
+      (40 or more base64 characters with a digit and both cases; see
+      :data:`_BASE64_RUN` for the length). The whole segment goes, not the span:
+      cutting ``<tool>ls</tool>`` out of "Please inspect <tool>ls</tool> when
+      ready." leaves a sentence about a payload that is no longer there, and a span
+      rule that misjudges one boundary leaks the payload body. Prose that merely
+      uses angle brackets or braces is kept and pinned by negative controls:
+      ``a < b``, ``x<y and y>z``, ``List<String>``, a bare placeholder such as
+      ``<target>``, an address in ``<...>``, and ``{name}``.
       Rich-text markup is markup all the same, an accepted cost: "I <em>really</em>
       liked it" carries a closing tag, and a turn that is only that sentence is
-      dropped.
+      dropped. So is a quoted list in prose: "I said ["yes", "no"] earlier" has the
+      shape of ``["rm","-rf","/"]``, nothing tells them apart, and the privacy floor
+      drops it. Kept and pinned: ``$5``, "costs $20 a month", "see ~/notes",
+      ``v1.2.3``, "Python 3.12", a short git SHA, a URL, a citation or list of numbers
+      (``[1]``, ``[2, 3]``), a task box ``[ ]``, a Markdown link, "the C: drive" and a
+      ``>>>`` mentioned mid-sentence.
 
    Every segment is classified again once its whitespace has collapsed, and goes
    whole when the collapsed form is a payload (a hunk header or a stack frame split
@@ -77,7 +93,27 @@ The steps, in this order (spec Architecture, System Components item 1):
    **Kept on purpose:** a diff body with no hunk header before it. Its line grammar
    (``+``, ``-``, a leading space) is also the grammar of a Markdown list and of a
    pros-and-cons note, and without a header the two cannot be told apart. A body that
-   follows a header is removed with it. A test pins both halves.
+   follows a header is removed with it. A test pins both halves. Also kept, each
+   pinned (#225):
+
+   - a path inside a sentence ("See src/app/main.py for the entry point"), as
+     before; only a line that *starts* at a root goes;
+   - a bare ``/name`` followed by words ("/review the PR"): the shape of a slash
+     command, and it holds no directory;
+   - an ``at`` frame whose location has no file extension or holds a space, and the
+     bare ``at file:N:N`` form, when mid-sentence ("meet at noon (room 4:30)", "at
+     10:30:00"); a line that is nothing but such a frame still goes;
+   - a qualified exception name with no message colon after it ("we saw a
+     java.lang.NullPointerException today");
+   - a lowercase-only hex run such as a full 40-character SHA-1, and a run with a
+     separator more often than one character in ten (a mixed-case URL path, a slug,
+     a ``snake_case`` name).
+
+   **Accepted costs (#225):** a line opening with a multi-directory path loses the
+   words after it ("/srv/app is where it lives" on its own line), the twin of "C:\\ is
+   nearly full"; a triple-nested e-mail quote (``>>> I agree``) reads as a REPL line;
+   ``$ 5`` with a space at the start of a line reads as a prompt. Each is a missing
+   memory, never a leaked payload.
 3. **Drop the whole unit** (``None``) when any prose segment carries an injection
    marker from the closed list below. A turn carrying an attempt to steer the model
    that reads it is not trustworthy evidence as a whole, so the unit goes, not the
@@ -186,13 +222,37 @@ _DIFF_BODY_LINE: Final = re.compile(r"^(?:[+\- ]|\\ No newline)")
 """A line a hunk's body is made of: added, removed, context, or the no-newline note."""
 
 _STACK_FRAME_LINES: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(r"^\s*Traceback \(most recent call last\):", re.MULTILINE),
-    re.compile(r'^\s*File "[^"\n]+", line \d+', re.MULTILINE),
+    re.compile(r"Traceback \(most recent call last\):"),
+    re.compile(r'\bFile "[^"\n]+", line \d+'),
     re.compile(r"^\s*at [^\s(]+ ?\([^()\n]*:\d+(?::\d+)?\)\s*$", re.MULTILINE),
+    re.compile(r"\bat [^\s(]+ ?\([^()\s]*\.\w+:\d+(?::\d+)?\)"),
     re.compile(r"^\s*at \S+:\d+:\d+\s*$", re.MULTILINE),
+    re.compile(r"\bCaused by: [\w$]+(?:\.[\w$]+)+"),
+    re.compile(r"(?<![\w$.])(?:[a-z_][\w$]*+\.)++[A-Z][\w$]*(?:Exception|Error):"),
 )
-"""Python traceback headers and frames, and JavaScript/JVM ``at ...(file:line)``
-frames. A segment carrying any of them is part of a trace and goes whole."""
+"""Python traceback headers and frames, JavaScript/JVM ``at ...(file:line)`` frames,
+and JVM exception lines. A segment carrying any of them is part of a trace and goes
+whole. Since #225 the distinctive shapes match mid-sentence too: a traceback header, a
+Python ``File "...", line N`` frame, an ``at name(file.ext:N)`` frame whose location
+names a file, a ``Caused by:`` chain naming a dotted class, and a qualified exception
+class followed by its message colon (``java.io.IOException:``). Two stay whole-line
+only, because mid-sentence they are also ordinary prose: an ``at`` frame whose
+location has no file extension or holds a space ("meet at noon (room 4:30)"), and the
+bare ``at file:N:N`` form ("at 10:30:00"). The qualified-class pattern starts only at
+the head of a dotted run (the lookbehind) and its inner quantifiers are possessive, so
+a 64 KB ``a.a.a...`` run is one linear scan, not one per position."""
+
+_TRANSCRIPT_LINES: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"^[ \t]*\$ \S", re.MULTILINE),
+    re.compile(r"^[ \t]*>>>(?: |$)", re.MULTILINE),
+    re.compile(r"^[ \t]*[\w.-]+@[\w.-]+:[^\s$#]*[$#] \S", re.MULTILINE),
+)
+"""A line that opens with a shell prompt (``$ cmd``, ``user@host:~$ cmd``) or the
+Python REPL's ``>>>``. The segment goes whole, like a trace: the lines after a prompt
+are the command's output, which no line grammar tells apart from prose. ``$5`` and
+"costs $20" are no prompt (no space after a line-start ``$``), and a ``>>>`` in the
+middle of a sentence is not at a line start. A triple-nested e-mail quote (``>>> I
+agree``) reads as a REPL line and goes, an accepted cost."""
 
 _XML_BLOCK: Final = re.compile(r"<[A-Za-z_!?/][^>]*>.*", re.DOTALL)
 """Opens with a tag (or a comment, declaration or closing tag); the segment must also
@@ -200,18 +260,27 @@ end with ``>``, so ``<tool_use>...</tool_use>``-style markup is spanned end to e
 
 _PATH_LINE: Final = re.compile(
     r"""^\s*(?:
-        (?:~|\.{1,2})?(?:/[^\s/]+)+/?           # /abs, ~/home, ./rel, ../up
-      | [A-Za-z]:\\.*                           # C:\windows\path, spaces and all
-      | [\w.-]+(?:/[\w.@+-]+)+\.\w+             # rel/path/file.ext
-      | [\w.-]+(?:/[\w.@+-]+)+/                 # rel/dir/
-    )\s*$""",
+        (?:~|\.{1,2})?(?:/[^\s/]+)+/?\s*$       # /abs, ~/home, ./rel, ../up
+      | [\w.-]+(?:/[\w.@+-]+)+\.\w+\s*$         # rel/path/file.ext
+      | [\w.-]+(?:/[\w.@+-]+)+/\s*$             # rel/dir/
+        # From here on, a path to the end of the line, spaces and all (#225):
+      | [A-Za-z]:[\\/]                          # C:\windows\path, C:/forward/slash
+      | \\\\[^\\\s]+\\                          # \\server\share UNC
+      | (?:~|\.{1,2})/                          # ~/My Documents/x, ./a b, ../a b
+      | /{1,2}[^\s/]+/                          # /Users/x/My Documents, //srv/share
+    )""",
     re.VERBOSE,
 )
 """A line that is only a filesystem path. A URL is not one (its scheme's colon matches
-no branch), and a line with words around the path is kept. A Windows path may hold
-spaces (``C:\\Program Files\\...``) and nothing marks where it ends, so a line that
-starts at a drive root is a path to its end: "C:\\ is nearly full" on its own line goes
-too, as a missing memory rather than a leaked path."""
+no branch), and a line with words around the path is kept. A path may hold spaces
+(``C:\\Program Files\\...``, ``/Users/example/My Documents/...``) and nothing marks
+where it ends, so a line that starts at a root is a path to its end: a drive root
+(either slash), a UNC ``\\\\server\\``, the home or working directory (``~/``,
+``./``, ``../``), or a POSIX root holding at least one directory (``/name/``). So
+"C:\\ is nearly full" and "/srv/app is where it lives" on their own lines go too, as a
+missing memory rather than a leaked path. A bare ``/name`` with words after it is
+kept: it is the shape of a slash command (``/review the PR``), and it cannot hold a
+directory's space-separated name without a second slash."""
 
 _TAG_LINE: Final = re.compile(
     r"^\s*(?:<[A-Za-z_][\w:.-]*(?:\s[^<>]*)?/?>|</[A-Za-z_]|<!|<\?)"
@@ -242,6 +311,50 @@ its closing tag is what gives it away."""
 
 _INLINE_JSON_START: Final = re.compile(r'\{\s*"')
 """Where an inline JSON object can start: a brace, then a quoted key. Not ``{name}``."""
+
+_INLINE_LITERALS: Final = re.compile(
+    r"""
+        \{\s*(?:'[^']*'|"[^"]*")\s*:               # a keyed dict, either quote
+      | [\[{]\s*(?:-?\d[\d.eE+-]*+\s*+,\s*+)*+   # a list or set whose first
+        (?:'[^']*'|"[^"]*")\s*[,\]}]              #   non-number is a string
+    """,
+    re.VERBOSE,
+)
+"""A Python or JSON literal mid-sentence (#225): a brace, a quoted key and a colon
+(``{'tool': 'bash'}``, which the JSON rule cannot parse), or a bracket or brace whose
+elements run to a quoted string (``["rm","-rf","/"]``, ``[1, "x"]``, ``{'a', 'b'}``).
+Linear: each quoted span stops at the next quote of its kind. The run of leading
+numbers is possessive as hardening, not for correctness: giving an element back lands
+on a digit, where no quote can start, so it never changes a match, and a failed
+``[1,1,1,...`` at the cap no longer backtracks through every element (measured about
+15 ms without it and 2 ms with it; linear either way).
+
+A quoted list in prose has the same shape, and the privacy floor decides it: "I said
+["yes", "no"] earlier" goes whole, as a missing memory, because ``["rm","-rf","/"]``
+is what the rule is for and nothing tells the two apart. What is kept, pinned by
+negative controls: a citation or list of numbers (``[1]``, ``[1, 2]``), a Markdown
+task box ``[ ]``, a link ``[text](url)``, ``{name}`` and ``{}``: none holds a quoted
+element."""
+
+_BASE64_RUN: Final = re.compile(r"(?<![\w+/=-])[\w+/=-]{40,}", re.ASCII)
+"""A candidate encoded blob: 40 or more characters of the base64 alphabet, the
+URL-safe ``-`` and ``_`` included. ASCII only: unspaced CJK prose with a Latin word
+and a number in it must not read as one run. :func:`_is_blob` then asks for a digit,
+an upper- and a lowercase letter, and at most one separator (``/``, ``+``, ``-``,
+``_``) in every :data:`_BASE64_CHARS_PER_SEPARATOR` characters. The lookbehind lets
+a match start only at a run's head, so the scan is linear.
+
+Why 40: it is 30 encoded bytes, past anything prose makes. A short git SHA (7 to 12
+hex), a UUID (36 with hyphens), ``v1.2.3``, a camelCase name are all shorter or lack
+a character class, and a full 40-hex SHA-1 is lowercase only, so each is kept. The
+common credential shapes are at or over it: an AWS secret key is 40, a GitHub token
+40, a JWT segment or a PEM line longer.
+
+Why the separator limit: random base64 has one of ``+/`` (or ``-_``) in 32
+characters, so a 40-character blob meets the limit about 99 times in 100. A
+mixed-case URL path (``/Novadiem-Studio/bureau/blob/main/Docs2``), a hyphenated slug
+and a ``snake_case`` name have a separator every few characters, and are kept."""
+_BASE64_CHARS_PER_SEPARATOR: Final = 10
 
 _JSON_DECODER: Final = json.JSONDecoder(strict=False)
 """``strict=False`` accepts raw line breaks inside strings, so a payload that only
@@ -317,12 +430,17 @@ def _is_stack_trace(segment: str) -> bool:
     return any(pattern.search(segment) for pattern in _STACK_FRAME_LINES)
 
 
+def _is_transcript(segment: str) -> bool:
+    return any(pattern.search(segment) for pattern in _TRANSCRIPT_LINES)
+
+
 def _is_whole_payload(segment: str) -> bool:
     return (
         _is_diff(segment)
         or _is_xml_block(segment)
         or _is_json(segment)
         or _is_stack_trace(segment)
+        or _is_transcript(segment)
     )
 
 
@@ -469,8 +587,27 @@ def _carries_inline_json(segment: str) -> bool:
     return False
 
 
+def _is_blob(run: str) -> bool:
+    return (
+        any(char.isascii() and char.isdigit() for char in run)
+        and any(char.isascii() and char.isupper() for char in run)
+        and any(char.isascii() and char.islower() for char in run)
+        and sum(run.count(sep) for sep in "/+-_") * _BASE64_CHARS_PER_SEPARATOR
+        <= len(run)
+    )
+
+
+def _carries_blob(segment: str) -> bool:
+    return any(_is_blob(match.group()) for match in _BASE64_RUN.finditer(segment))
+
+
 def _carries_inline_payload(segment: str) -> bool:
-    return _INLINE_MARKUP.search(segment) is not None or _carries_inline_json(segment)
+    return (
+        _INLINE_MARKUP.search(segment) is not None
+        or _INLINE_LITERALS.search(segment) is not None
+        or _carries_blob(segment)
+        or _carries_inline_json(segment)
+    )
 
 
 def _prose_of(segment: str) -> str | None:
