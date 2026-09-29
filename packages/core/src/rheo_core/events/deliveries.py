@@ -460,7 +460,9 @@ def oldest_retained_position(conn: Connection) -> int | None:
     age and not by type, so the oldest row of any type is the point before which the
     outbox can no longer be trusted to be whole.
     """
-    value = conn.execute(select(func.min(t.outbox_event.c.position))).scalar_one()
+    value: int | None = conn.execute(
+        select(func.min(t.outbox_event.c.position))
+    ).scalar_one()
     return None if value is None else int(value)
 
 

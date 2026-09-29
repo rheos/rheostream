@@ -46,7 +46,7 @@ def settlement_counts_since(
     many days of small, body-less rows per workspace: fine for a doctor run, and #196
     tracks the index.
     """
-    present = connection.execute(
+    present: str | None = connection.execute(
         text("SELECT to_regclass('core.evidence_unit')")
     ).scalar_one()
     if present is None:

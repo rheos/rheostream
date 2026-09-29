@@ -167,7 +167,7 @@ def _enrollment_account(
 ) -> UUID | None:
     with backend.pools.acquire(database_name) as engine:
         with engine.connect() as connection:
-            present = connection.execute(
+            present: str | None = connection.execute(
                 text("SELECT to_regclass('core.evidence_enrollment')")
             ).scalar_one()
             if present is None:

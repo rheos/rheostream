@@ -46,6 +46,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, text
+from sqlalchemy.engine import ScalarResult
 from sqlalchemy.exc import DBAPIError
 
 from rheo_core.storage.backend import (
@@ -188,12 +189,14 @@ def recorded_revisions(connection: Connection, chain: str) -> frozenset[str]:
     """The revision ids the database's version table records; empty when absent."""
     schema, table = version_table_for(chain)
     qualified = f"{schema}.{table}"
-    present = connection.execute(
+    present: str | None = connection.execute(
         text("SELECT to_regclass(:name)"), {"name": qualified}
     ).scalar_one()
     if present is None:
         return frozenset()
-    rows = connection.execute(text(f"SELECT version_num FROM {qualified}")).scalars()
+    rows: ScalarResult[str] = connection.execute(
+        text(f"SELECT version_num FROM {qualified}")
+    ).scalars()
     return frozenset(str(row) for row in rows)
 
 

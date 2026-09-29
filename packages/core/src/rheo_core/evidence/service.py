@@ -184,7 +184,7 @@ def _waiting(now: datetime) -> ColumnElement[bool]:
 def _routed_workspace_id(uow: UnitOfWork) -> UUID:
     """The workspace whose own database ``uow`` is open on, or
     :class:`EvidenceWorkspaceUnresolved`."""
-    name = uow.connection.execute(text("SELECT current_database()")).scalar_one()
+    name: str = uow.connection.execute(text("SELECT current_database()")).scalar_one()
     workspace_id = workspace_id_for_database(name)
     if workspace_id is None:
         raise EvidenceWorkspaceUnresolved("the database is not a workspace database")

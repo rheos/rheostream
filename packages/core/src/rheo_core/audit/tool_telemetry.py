@@ -177,7 +177,7 @@ def _row(row: Row[Any]) -> ToolTelemetryRow:
     )
 
 
-def capacity_probe(max_rows: int) -> Select[tuple[int]]:
+def capacity_probe(max_rows: int) -> Select[int]:
     """The bounded existence probe, as the one statement production runs.
 
     ``SELECT count(*) FROM (SELECT 1 FROM core.tool_telemetry LIMIT max_rows + 1) t``.

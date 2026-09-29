@@ -386,12 +386,12 @@ def enrollment_token_counts(
     Each enrollment lands in one bucket, the worst it qualifies for. The token ids
     stay inside this function; nothing it returns names a row.
     """
-    present = workspace_connection.execute(
+    present: str | None = workspace_connection.execute(
         text("SELECT to_regclass('core.evidence_enrollment')")
     ).scalar_one()
     if present is None:
         return None
-    token_ids = list(
+    token_ids: list[UUID] = list(
         workspace_connection.execute(
             select(evidence_enrollment.c.token_id).where(
                 evidence_enrollment.c.state == STATE_ACTIVE
