@@ -25,12 +25,17 @@ needs a maintainer's go-ahead before anyone edits a gate script. The rows are tr
 guard's per-file completeness check is what keeps the set exact, and widening the set is a
 decision, not a fix.
 
-**Migration acceptance does not compare legacy rankings.** The maintainer's
+**Migration acceptance does not score legacy recall.** The maintainer's
 2026-09-28 amendment to FR 53 and criterion 32 requires count/identity accounting,
-valid destinations, replay/no-resurrection, preserved source semantics and
-independently expected search/access spot checks. Historical evidence is not
-silently promoted to curated memory. The old retrieval-overlap tolerance is not
-the oracle, and independent ranking improvements are not a migration prerequisite.
+valid indexed destinations, access controls, replay/no-resurrection and preserved
+source semantics. Planned legacy-memory queries, labelled expected records and
+old-memory relevance scores are not cutover gates; random spot checks are optional
+and informal. Partial or missing recall of preserved legacy material may be
+improved later. Historical evidence is not silently promoted to curated memory.
+The forward-function gate is new eligible memories automatically saved and recalled
+through the intended client with correct access; benign operator-chosen examples
+suffice, not an owner-authored benchmark. Legacy overlap and ranking improvements
+are not migration prerequisites.
 This clarification adds no criterion-32 row and claims no completed transfer,
 mutation demonstration or real-data acceptance pass. Source preservation/loss,
 privacy, ambient producer/drain, backup/rollback and deliberate cutover gates
