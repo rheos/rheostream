@@ -57,7 +57,13 @@ from rheo_core.evidence.enrollment import (
     ENROLLMENT_REVOKE,
     ENROLLMENT_ROTATE,
 )
-from rheo_core.evidence.ingest import EVIDENCE_INGEST, INGEST_MAX_RECORDS
+from rheo_core.evidence.ingest import (
+    EVIDENCE_INGEST,
+    INGEST_MAX_GAPS,
+    INGEST_MAX_RECORDS,
+    IngestInput,
+    ingest_handler,
+)
 from rheo_core.evidence.local_authority import (
     ENROLLMENT_INACTIVE,
     ENROLLMENT_MISMATCH,
@@ -74,6 +80,7 @@ from rheo_core.operations import (
     register_core_operations,
 )
 from rheo_core.operations.core_ops import TOKEN_ISSUE
+from rheo_core.operations.refusals import OUTPUT_INVALID, OperationRefused
 from rheo_core.storage import work_tables
 from rheo_core.storage.evidence_enrollment_tables import evidence_enrollment
 from rheo_core.storage.evidence_tables import (
@@ -491,7 +498,14 @@ def test_gaps_land_in_gapped_as_content_free_rows(ev: EvidenceWorkspace) -> None
 
 
 @pytest.mark.parametrize(
-    "shape", ["bad_record_key", "bad_gap_key", "naive_clock", "over_the_cap"]
+    "shape",
+    [
+        "bad_record_key",
+        "bad_gap_key",
+        "naive_clock",
+        "over_the_cap",
+        "over_the_gap_cap",
+    ],
 )
 def test_a_malformed_request_is_input_invalid_before_any_row(
     ev: EvidenceWorkspace, shape: str
@@ -504,11 +518,28 @@ def test_a_malformed_request_is_input_invalid_before_any_row(
         payload = enrolled.payload([], [(f"cc1:{_hex()}", at)])
     elif shape == "naive_clock":
         payload = enrolled.payload([(_record_key(), at.replace(tzinfo=None), _PLAIN)])
-    else:
+    elif shape == "over_the_cap":
         payload = enrolled.payload(
             [(_record_key(), at, _PLAIN) for _ in range(INGEST_MAX_RECORDS + 1)]
         )
+    else:
+        payload = enrolled.payload(
+            [], [(_gap_key(), at) for _ in range(INGEST_MAX_GAPS + 1)]
+        )
     _assert_refused(ev, _ingest(enrolled.ctx(), payload), INPUT_INVALID)
+
+
+def test_a_miswired_unit_of_work_is_refused_not_answered_inert(
+    ev: EvidenceWorkspace,
+) -> None:
+    """A plain unit of work, not the dispatcher's handler view: a loud
+    ``output_invalid``, never the all-deferred answer an opted-out deployment gives."""
+    enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
+    _, payload = _one_record(enrolled)
+    with ev.unit_of_work() as uow, pytest.raises(OperationRefused) as refused:
+        ingest_handler(enrolled.ctx(), uow, IngestInput.model_validate(payload))
+    assert refused.value.state == OUTPUT_INVALID
+    assert _units(ev) == []
 
 
 # --- the clock clamp ---------------------------------------------------------------

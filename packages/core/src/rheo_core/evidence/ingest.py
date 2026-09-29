@@ -38,7 +38,7 @@ from rheo_core.evidence.record import (
     recording_allowed,
 )
 from rheo_core.evidence.sanitize import MAX_INPUT_CHARS
-from rheo_core.operations.refusals import OperationRefused
+from rheo_core.operations.refusals import OUTPUT_INVALID, OperationRefused
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
@@ -123,6 +123,14 @@ def ingest_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: IngestInput
 ) -> IngestResult:
     """Check, gate, clamp, record; each step a plain early exit."""
+    # Wiring, not a recording condition: ``dispatch()`` always hands a handler unit of
+    # work, so anything else is a miswired caller. Refused loudly rather than folded
+    # into the all-deferred answer, which would make it look like an opted-out
+    # deployment (``core.runtime.run`` makes the same check).
+    if not isinstance(uow, HandlerUnitOfWork):
+        raise OperationRefused(
+            OUTPUT_INVALID, "core.evidence.ingest needs a handler unit of work"
+        )
     # 1. A token actor whose token an active enrollment holds.
     if ctx.actor.kind is not ActorKind.TOKEN or ctx.actor.id is None:
         raise OperationRefused(ENROLLMENT_INACTIVE, "no active enrollment")
@@ -151,7 +159,7 @@ def ingest_handler(
         workspace_id=ctx.workspace_id,
         source=TransactionBoundOverrideSource(uow, workspace_id=ctx.workspace_id),
     )
-    if not isinstance(uow, HandlerUnitOfWork) or not recording_allowed(
+    if not recording_allowed(
         ctx, uow, token_kind=_token_kind(ctx.actor.id), settings=settings
     ):
         return IngestResult(
