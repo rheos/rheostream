@@ -340,10 +340,18 @@ def run_retention_sweep(
     for the same reason: it ages undrained ``pending`` evidence into content-free gaps
     and deletes old settled rows, and the workspaces nothing drains are exactly the
     ones that must not miss it.
+
+    **After the purge, it re-arms a stalled drain (#216).** A drain job that failed
+    for good leaves claimable evidence with nothing to drain it.
+    ``republish_for_stalled_drain`` publishes the evidence-recorded event again when
+    such rows exist, no delivery of it is in flight, and recording conditions 1 to 3
+    hold, so the subscribing module's consumer enqueues a drain as it would for a
+    new turn. With recording off or no provider it reads no row and writes nothing.
     """
     # Deferred, the approvals/gate.py:524 pattern: rheo_core.work imports this module
     # at package import, so once rheo_core.evidence re-exports its drain service
     # (which imports rheo_core.work.backoff) a module-level import here is a cycle.
+    from rheo_core.evidence.record import republish_for_stalled_drain
     from rheo_core.evidence.retention import purge_evidence
 
     assert isinstance(payload, RetentionSweepPayload)
@@ -362,6 +370,9 @@ def run_retention_sweep(
         not_before=now - timedelta(days=settings.get_int(TOOL_RETENTION_DAYS_KEY)),
     )
     purge_evidence(uow.connection, now=now, settled_before=horizon)
+    republish_for_stalled_drain(
+        uow, workspace_id=payload.workspace_id, settings=settings, now=now
+    )
     config_dir = (
         workspace_dir_for(payload.workspace_id, Purpose.SCRATCH) / _CLI_CONFIG_DIR
     )

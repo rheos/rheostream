@@ -19,6 +19,17 @@ nothing. When at least one row was inserted the attempt publishes
 subject. ``data`` is exactly ``{}``: no text, no native key, no workspace id. The drain
 resolves its workspace from its own connection, so no reader needs one.
 
+**A drain that fails for good is re-armed by the daily sweep (#216).** The drain
+writes its own follow-up in the transaction it may roll back, so once a drain job
+reaches its retry limit nothing else asks for one, and the pending rows would age
+into ``gap/expired_pending``. :func:`republish_for_stalled_drain`, called by
+``core.retention_sweep`` after its evidence purge, publishes this same event again
+when claimable rows remain and no delivery of it is still in flight. The consumer
+that enqueues the drain on a recorded turn enqueues it on this one too, so core
+names no module and no job kind. The same recording conditions 1 to 3 gate it, so
+with recording off, or no provider, or no enabled subscriber, it reads nothing and
+publishes nothing.
+
 **Every row that is not ``pending`` carries ``settled_at``.** The retention sweep keys
 its delete on ``settled_at``, so a gap row without one would never be purged.
 """
@@ -31,8 +42,12 @@ from uuid import UUID
 
 from rheo_contracts import ContextPurpose, RecordRef, WorkspaceContext
 from rheo_contracts.source_units import ProducerKind, SourceAudienceKind
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
+from rheo_core.boundary.context import Refusal
+from rheo_core.boundary.factories import context_for_evidence_recovery
+from rheo_core.events.deliveries import LEASED, PENDING
 from rheo_core.events.publish import NewEvent, publish
 from rheo_core.evidence.attribution import is_human_attributable
 from rheo_core.evidence.providers import resolve_provider
@@ -40,6 +55,7 @@ from rheo_core.evidence.sanitize import sanitize
 from rheo_core.refs import uuid7
 from rheo_core.settings import ResolvedSettings, resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
+from rheo_core.storage import work_tables
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.evidence_tables import (
     OUTCOME_OVERSIZE,
@@ -274,6 +290,93 @@ def record_evidence(
         gapped=tuple(gapped),
         dropped=tuple(dropped),
     )
+
+
+def _recorded_delivery_in_flight(uow: HandlerUnitOfWork) -> bool:
+    """Whether any delivery of :data:`EVIDENCE_RECORDED` is still ``pending`` or
+    ``leased``: a drain is already on its way, so a republish would only add one."""
+    delivery = work_tables.event_delivery
+    event = work_tables.outbox_event
+    return bool(
+        uow.connection.execute(
+            select(
+                select(delivery.c.event_id)
+                .join(event, event.c.id == delivery.c.event_id)
+                .where(
+                    event.c.type == EVIDENCE_RECORDED,
+                    delivery.c.state.in_((PENDING, LEASED)),
+                )
+                .exists()
+            )
+        ).scalar_one()
+    )
+
+
+def republish_for_stalled_drain(
+    uow: HandlerUnitOfWork,
+    *,
+    workspace_id: UUID,
+    settings: ResolvedSettings,
+    now: datetime,
+) -> bool:
+    """Publish :data:`EVIDENCE_RECORDED` again when claimable evidence has no drain on
+    its way; answer whether it did (#216).
+
+    In this order, each a plain early return: the unit of work carries a consumer
+    registry; recording conditions 1 and 2 hold (the workspace has opted in, a
+    provider resolves); a claimable row exists; no delivery of the event is in
+    flight; the workspace yields a context; and an enabled module subscribes
+    (condition 3). The one row read is a ``LIMIT 1`` on ``evidence_unit``, and it is
+    reached only once the in-memory conditions hold, so an inert deployment reads
+    nothing. The event is exactly the recorded one: the first claimable row as
+    subject, ``data == {}``.
+
+    A drain already queued, as a retry or a follow-up, is not visible here: core
+    knows no module's job kind. The republish then costs one extra drain, whose claim
+    skips every row the other holds. Does not commit.
+    """
+    # Deferred, as the sweep's own import of this function is: ``service`` imports
+    # ``rheo_core.work.backoff``, and ``rheo_core.work`` holds the sweep that calls
+    # this, so a module-level import adds an edge into that cycle.
+    from rheo_core.evidence.service import claimable
+
+    consumers = uow.consumers
+    if consumers is None:
+        return False
+    if not automatic_memory_enabled(settings) or resolve_provider() is None:
+        return False
+    first = uow.connection.execute(
+        select(evidence_unit.c.id)
+        .where(claimable(now))
+        .order_by(evidence_unit.c.source_recorded_at, evidence_unit.c.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if first is None:
+        return False
+    if _recorded_delivery_in_flight(uow):
+        return False
+    ctx = context_for_evidence_recovery(workspace_id)
+    if isinstance(ctx, Refusal):
+        return False
+    if not any(
+        subscription.module_id in ctx.enabled_modules
+        for subscription in consumers.for_type(EVIDENCE_RECORDED)
+    ):
+        return False
+    publish(
+        ctx,
+        uow,
+        NewEvent(
+            type=EVIDENCE_RECORDED,
+            schema_version=EVIDENCE_RECORDED_SCHEMA_VERSION,
+            subject_ref=evidence_ref(first).format(),
+            subject_revision=1,
+            data={},
+        ),
+        now=now,
+        consumers=consumers,
+    )
+    return True
 
 
 def _check_bound_to_context(

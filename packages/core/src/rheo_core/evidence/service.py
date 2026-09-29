@@ -137,7 +137,10 @@ class ClaimedBatch:
     follow_up_at: datetime | None
 
 
-def _claimable(now: datetime) -> ColumnElement[bool]:
+def claimable(now: datetime) -> ColumnElement[bool]:
+    """*Claimable*, as the module docstring defines it. Not on the package's public
+    surface; core's recovery check (``record.republish_for_stalled_drain``) reads it
+    so the two never disagree."""
     return and_(
         evidence_unit.c.state == STATE_PENDING,
         or_(evidence_unit.c.retry_after.is_(None), evidence_unit.c.retry_after <= now),
@@ -230,7 +233,7 @@ def _anchor(uow: UnitOfWork, *, now: datetime) -> Any:
             evidence_unit.c.audience_id,
             evidence_unit.c.purpose,
         )
-        .where(_claimable(now))
+        .where(claimable(now))
         .order_by(*_claim_order())
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -261,7 +264,7 @@ def _partition_rows(
             evidence_unit.c.extraction_attempts,
         )
         .where(
-            _claimable(now),
+            claimable(now),
             evidence_unit.c.speaker_account_id.is_not_distinct_from(
                 anchor.speaker_account_id
             ),
@@ -327,7 +330,7 @@ def _follow_up_at(
         return now
     other = uow.connection.execute(
         select(evidence_unit.c.id)
-        .where(_claimable(now), evidence_unit.c.id.not_in(taken))
+        .where(claimable(now), evidence_unit.c.id.not_in(taken))
         .limit(1)
     ).first()
     if other is not None:

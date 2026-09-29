@@ -17,7 +17,10 @@ Seams under test:
   table, and the provider is sent the six kinds; a unit whose every mention is
   dropped is still accepted, with none;
 - **a database error leaves the drain content-free (#215)**: what escapes is the
-  class name and SQLSTATE, never the row or the parameters it quoted.
+  class name and SQLSTATE, never the row or the parameters it quoted;
+- **the daily sweep re-arms a drain that failed for good (#216)**: it republishes the
+  recorded event, the real consumer enqueues a drain, and that drain settles the row;
+  with nothing claimable, recording off, or a delivery in flight it publishes nothing.
 
 Two tests run the whole chain on purpose. One pins where the drain is published and
 consumed (#187): a job that records evidence, the delivery the same visit drains, and
@@ -39,6 +42,7 @@ import pytest
 from conftest import ClusterSession
 from harness import runtime_matrix
 from harness.evidence import (
+    PROVIDER_ENV,
     EvidenceWorkspace,
     enable_recording,
     probe_registry,
@@ -67,7 +71,7 @@ from rheo_core.evidence.providers import (
     PROVIDERS,
     providers,
 )
-from rheo_core.evidence.record import NewEvidence, record_evidence
+from rheo_core.evidence.record import NewEvidence, evidence_ref, record_evidence
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.refs import uuid7
 from rheo_core.runtime import RUNTIME_RUN
@@ -79,6 +83,11 @@ from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import VisitResult, visit_workspace
+from rheo_core.work.schedules import (
+    RETENTION_SWEEP,
+    RetentionSweepPayload,
+    run_retention_sweep,
+)
 from rheo_recallatron import automatic
 from rheo_recallatron.automatic import (
     KIND_SYNONYMS,
@@ -857,3 +866,201 @@ def test_a_database_error_escaping_the_drain_carries_no_evidence_text(
         assert "INSERT" not in rendered
     [unit] = _units(ev)
     assert (unit.state, unit.extraction_attempts) == ("pending", 0)
+
+
+# --- #216: the daily sweep re-arms a drain that failed for good ---------------------
+
+
+class _NeverCancelled:
+    """A cancellation token that never fires; the sweep only calls ``checkpoint``."""
+
+    def checkpoint(self) -> None:
+        return None
+
+
+def _recorded_events(ev: EvidenceWorkspace) -> list[Row[Any]]:
+    event = work_tables.outbox_event
+    with ev.unit_of_work() as uow:
+        return list(
+            uow.connection.execute(
+                select(event)
+                .where(event.c.type == EVIDENCE_RECORDED)
+                .order_by(event.c.position)
+            )
+        )
+
+
+def _sweep_directly(ev: EvidenceWorkspace, consumers: ConsumerRegistry) -> None:
+    """One ``run_retention_sweep`` on a handler view carrying ``consumers``."""
+    with ev.handler(consumers) as uow:
+        run_retention_sweep(
+            uow,
+            RetentionSweepPayload(workspace_id=ev.workspace_id),
+            _NeverCancelled(),
+        )
+
+
+def _record_unsubscribed(ev: EvidenceWorkspace, *, at: datetime) -> None:
+    """One pending row whose recorded event had no subscriber, so nothing is in
+    flight and no drain was ever asked for."""
+    ctx = ev.context(ContextPurpose.RESPOND)
+    body = f"{FAKE_EXTRACTION_MARKER} {_TURN}"
+    with ev.handler(ConsumerRegistry()) as uow:
+        attempt = record_evidence(ctx, uow, [_new_evidence(ctx, body, at=at)], now=at)
+    assert len(attempt.accepted) == 1, attempt
+
+
+def test_216_a_drain_that_failed_for_good_is_re_armed_by_the_sweep(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    """The drain fails every attempt and is left ``failed``, the unit pending. The
+    sweep, run as a real job in a real visit, republishes the recorded event; the
+    same visit delivers it to Recallatron's consumer, which enqueues a drain, and the
+    next visit settles the unit. A second sweep finds nothing claimable and
+    publishes nothing."""
+    _record_with_probe(ev, f"{FAKE_EXTRACTION_MARKER} {_TURN}", at=now)
+    real_context = evidence_service.context_for_evidence_acceptance
+    _no_context(monkeypatch)
+    failed_id = _enqueue_drain(ev, at=now)
+    for attempt in range(1, DRAIN_MAX_ATTEMPTS + 1):
+        at = now + timedelta(seconds=400 * (attempt - 1))
+        monkeypatch.setattr(automatic, "_now", lambda at=at: at)
+        _visit(ev, at=at)
+    [failed] = _jobs(ev)
+    assert (failed.id, failed.state) == (failed_id, "failed")
+    [unit] = _units(ev)
+    assert (unit.state, unit.extraction_attempts) == ("pending", 0)
+    before = len(_recorded_events(ev))
+
+    # The fault clears; nothing but the sweep is left to notice.
+    monkeypatch.setattr(
+        evidence_service, "context_for_evidence_acceptance", real_context
+    )
+    at = now + timedelta(seconds=2000)
+    monkeypatch.setattr(automatic, "_now", lambda: at)
+    kinds = _kinds()
+    kinds.register(RETENTION_SWEEP, RetentionSweepPayload, run_retention_sweep)
+    consumers = _consumers()
+
+    def sweep_job() -> None:
+        with ev.unit_of_work() as uow:
+            enqueue_job(
+                uow.connection,
+                kind=RETENTION_SWEEP,
+                payload={"workspace_id": str(ev.workspace_id)},
+                now=at,
+                max_attempts=1,
+            )
+            uow.commit()
+
+    sweep_job()
+    _visit(ev, at=at, kinds=kinds, consumers=consumers)
+
+    events = _recorded_events(ev)
+    assert len(events) == before + 1
+    republished = events[-1]
+    assert (republished.actor_kind, republished.actor_id) == ("system", None)
+    assert republished.data == {}
+    assert republished.subject_ref == evidence_ref(unit.id).format()
+    [rearmed] = [job for job in _jobs(ev) if job.id != failed_id]
+    assert (rearmed.state, rearmed.input, rearmed.next_run_at) == ("queued", {}, at)
+
+    _visit(ev, at=at, kinds=kinds, consumers=consumers)
+    [rearmed] = [job for job in _jobs(ev) if job.id == rearmed.id]
+    assert (rearmed.state, rearmed.attempts, rearmed.last_error) == (
+        "succeeded",
+        1,
+        None,
+    )
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "active")
+    with ev.unit_of_work() as uow:
+        assert len(uow.connection.execute(select(memory_tables.memory)).all()) == 1
+
+    sweep_job()
+    _visit(ev, at=at, kinds=kinds, consumers=consumers)
+    assert len(_recorded_events(ev)) == before + 1
+    assert len(_jobs(ev)) == 2
+
+
+def test_216_the_sweep_republishes_nothing_on_an_empty_table(
+    ev: EvidenceWorkspace,
+) -> None:
+    """The flagship's shape once recording is on: no evidence, so no event, no
+    delivery, no drain job."""
+    _sweep_directly(ev, _consumers())
+
+    assert _recorded_events(ev) == []
+    assert _jobs(ev) == []
+    with ev.unit_of_work() as uow:
+        assert uow.connection.execute(select(work_tables.event_delivery)).all() == []
+
+
+def _provider_none(monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace) -> None:
+    monkeypatch.setenv(PROVIDER_ENV, "none")
+
+
+def _recording_off(monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace) -> None:
+    ev.set_workspace("automatic_memory.enabled", False)
+
+
+def _no_registry(monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace) -> None:
+    return None
+
+
+@pytest.mark.parametrize(
+    ("inert", "consumers"),
+    [
+        (_provider_none, _consumers),
+        (_recording_off, _consumers),
+        (_no_registry, ConsumerRegistry),
+    ],
+    ids=["provider_none", "recording_off", "no_subscriber"],
+)
+def test_216_the_sweep_republishes_nothing_while_the_pipeline_is_inert(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    now: datetime,
+    inert: Callable[[pytest.MonkeyPatch, EvidenceWorkspace], None],
+    consumers: Callable[[], ConsumerRegistry],
+) -> None:
+    """A claimable row is left, and each of recording conditions 1 to 3 in turn is
+    off: the sweep leaves the row to age and publishes nothing."""
+    _record_unsubscribed(ev, at=now)
+    before = len(_recorded_events(ev))
+    inert(monkeypatch, ev)
+    _sweep_directly(ev, consumers())
+
+    assert len(_recorded_events(ev)) == before
+    assert _jobs(ev) == []
+    [unit] = _units(ev)
+    assert unit.state == "pending"
+
+
+def test_216_the_sweep_republishes_nothing_while_a_delivery_is_in_flight(
+    ev: EvidenceWorkspace, now: datetime
+) -> None:
+    """The recorded turn's own delivery is still pending: its drain is on its way."""
+    _record_with_probe(ev, f"{FAKE_EXTRACTION_MARKER} {_TURN}", at=now)
+    before = len(_recorded_events(ev))
+    _sweep_directly(ev, _consumers(probe=True))
+
+    assert len(_recorded_events(ev)) == before
+    assert _jobs(ev) == []
+
+
+def test_216_an_unsubscribed_claimable_row_is_republished_once(
+    ev: EvidenceWorkspace, now: datetime
+) -> None:
+    """The positive control for the two tests above: the same row, pipeline live,
+    nothing in flight, and the sweep publishes exactly one event, with one delivery
+    to Recallatron's consumer."""
+    _record_unsubscribed(ev, at=now)
+    before = len(_recorded_events(ev))
+    _sweep_directly(ev, _consumers())
+
+    assert len(_recorded_events(ev)) == before + 1
+    delivery = work_tables.event_delivery
+    with ev.unit_of_work() as uow:
+        [pending] = uow.connection.execute(select(delivery)).all()
+    assert (pending.consumer_id, pending.state) == (AUTOMATIC_CONSUMER_ID, "pending")
