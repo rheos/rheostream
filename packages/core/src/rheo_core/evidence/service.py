@@ -99,6 +99,14 @@ MAX_UNITS_PER_JOB_KEY: Final = "automatic_memory.max_units_per_job"
 
 EXTRACTION_FAILED_LOG: Final = "evidence_extraction_failed"
 
+ACCEPTANCE_FAILED_LOG: Final = "evidence_acceptance_failed"
+"""The warning :func:`defer_unit` logs when it settles a unit ``gap/acceptance_failed``
+(#221). One line per settlement, carrying the evidence id and the attempt count only.
+``rheo doctor``'s evidence-acceptance check counts the same settlements from the
+table, which is the durable record: this line is emitted inside the drain's
+transaction, so a drain that later rolls back leaves a line for a settlement that did
+not commit."""
+
 
 class EvidenceWorkspaceUnresolved(Exception):
     """This connection's database is not one active workspace's own. Private to this
@@ -539,7 +547,8 @@ def defer_unit(uow: HandlerUnitOfWork, claimed: ClaimedUnit, *, now: datetime) -
     For a unit whose acceptance the database refused (a constraint or a bad value):
     the caller has rolled its own savepoint back, so no memory was written, and this
     backs the row off on the extraction schedule, or settles it
-    ``gap/acceptance_failed`` on the fifth attempt. Without it a poison unit would
+    ``gap/acceptance_failed`` on the fifth attempt and logs
+    :data:`ACCEPTANCE_FAILED_LOG`. Without it a poison unit would
     roll back the whole drain with ``extraction_attempts`` still 0 and anchor every
     later claim (R11).
 
@@ -556,3 +565,11 @@ def defer_unit(uow: HandlerUnitOfWork, claimed: ClaimedUnit, *, now: datetime) -
     if row is None:
         raise EvidenceClaimInconsistent("a claimed evidence row was no longer pending")
     _back_off(uow, [row], final_outcome=OUTCOME_ACCEPTANCE_FAILED, now=now)
+    attempts = row.extraction_attempts + 1
+    if attempts >= EXTRACTION_MAX_ATTEMPTS:
+        # The id and the count only (#221): the refusal's own message can quote the
+        # failing row, so neither it nor the error type is carried here.
+        logger.warning(
+            ACCEPTANCE_FAILED_LOG,
+            extra={"evidence_id": str(claimed.evidence_id), "attempts": attempts},
+        )
