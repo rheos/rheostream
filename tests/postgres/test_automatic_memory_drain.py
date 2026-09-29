@@ -12,7 +12,10 @@ Seams under test:
 - **an unresolved workspace is a job retry**: the drain raises, retries under
   ``DRAIN_MAX_ATTEMPTS`` and fails terminally, and never touches an evidence row;
 - **an unknown mention kind is dropped before acceptance (#215)**, so a model's
-  ``company`` never reaches the entity CHECK, and the memory keeps the valid mention;
+  ``vehicle`` never reaches the entity CHECK, and the memory keeps the valid mention;
+- **a near-miss kind is mapped (#222)**: case-folded, or through the short synonym
+  table, and the provider is sent the six kinds; a unit whose every mention is
+  dropped is still accepted, with none;
 - **a database error leaves the drain content-free (#215)**: what escapes is the
   class name and SQLSTATE, never the row or the parameters it quoted.
 
@@ -29,7 +32,7 @@ import importlib
 import logging
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import Any, Final, get_args
 from uuid import UUID
 
 import pytest
@@ -78,6 +81,7 @@ from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import VisitResult, visit_workspace
 from rheo_recallatron import automatic
 from rheo_recallatron.automatic import (
+    KIND_SYNONYMS,
     MENTIONS_DROPPED_LOG,
     DrainDatabaseError,
     DrainJobPayload,
@@ -89,6 +93,7 @@ from rheo_recallatron.configuration import (
     DRAIN_MAX_ATTEMPTS,
     MODULE_ID,
 )
+from rheo_recallatron.contracts import EntityKind
 from rheo_recallatron.manifest import MANIFEST
 from rheo_recallatron.storage import tables as memory_tables
 from sqlalchemy import select
@@ -612,28 +617,35 @@ def test_with_the_pipeline_live_a_recording_failure_leaves_the_run_succeeding(
 # --- #215: an unknown mention kind is dropped before acceptance --------------------
 
 
+_UNKNOWN_KIND: Final = "vehicle"
+_UNKNOWN_KIND_NAME: Final = "Example Hall Rentals Van"
+
+
 class _Mentioning:
-    """A provider answering every item with a note proposing two mentions: one of a
-    kind Recallatron has (``place``) and one it does not (``company``)."""
+    """A provider answering every item with a note proposing ``mentions``, by
+    default two: one of a kind Recallatron has (``place``) and one no kind or
+    synonym covers (:data:`_UNKNOWN_KIND`). Keeps every batch it was sent."""
+
+    def __init__(self, mentions: list[dict[str, str]] | None = None) -> None:
+        self.mentions = mentions or [
+            {"kind": _UNKNOWN_KIND, "name": _UNKNOWN_KIND_NAME},
+            {"kind": "place", "name": "Community Hall"},
+        ]
+        self.calls: list[DigestBatch] = []
 
     @property
     def name(self) -> str:
         return FAKE_PROVIDER
 
     def extract(self, batch: DigestBatch) -> dict[str, object]:
+        self.calls.append(batch)
         memory = {
             "kind": "note",
             "title": "Spring volunteer meeting",
             "body": _TURN,
-            "mentions": [
-                {"kind": "company", "name": _UNKNOWN_KIND_NAME},
-                {"kind": "place", "name": "Community Hall"},
-            ],
+            "mentions": self.mentions,
         }
         return {"items": [{"item": i.item_id, "memory": memory} for i in batch.items]}
-
-
-_UNKNOWN_KIND_NAME: Final = "Example Hall Rentals"
 
 
 def test_an_unknown_mention_kind_is_dropped_and_the_memory_keeps_the_valid_one(
@@ -642,7 +654,7 @@ def test_an_unknown_mention_kind_is_dropped_and_the_memory_keeps_the_valid_one(
     pinned: datetime,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Without the drop, ``company`` fails the ``memory_entity_kind`` CHECK. The
+    """Without the drop, ``vehicle`` fails the ``memory_entity_kind`` CHECK. The
     receipt and the success audit both carry the digest of the rebuilt unit, so what
     was audited is what was accepted."""
     providers()  # the built-ins first, so the swap is undone onto them
@@ -675,8 +687,85 @@ def test_an_unknown_mention_kind_is_dropped_and_the_memory_keeps_the_valid_one(
 
     [dropped] = [r for r in caplog.records if r.getMessage() == MENTIONS_DROPPED_LOG]
     assert (vars(dropped)["mention_count"], vars(dropped)["unit_count"]) == (1, 1)
-    assert "company" not in caplog.text
+    assert _UNKNOWN_KIND not in caplog.text
     assert _UNKNOWN_KIND_NAME not in caplog.text
+
+
+# --- #222: near-miss kinds are mapped, and the model is told the six ---------------
+
+
+def _drain_with(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    at: datetime,
+    provider: _Mentioning,
+) -> tuple[Row[Any], list[Row[Any]], list[Row[Any]]]:
+    """One recorded unit drained by ``provider``: the memory, its entities and its
+    mentions, after asserting the drain succeeded and the unit settled ``active``."""
+    providers()  # the built-ins first, so the swap is undone onto them
+    monkeypatch.setitem(PROVIDERS, FAKE_PROVIDER, provider)
+    _record_with_probe(ev, f"{FAKE_EXTRACTION_MARKER} {_TURN}", at=at)
+    _enqueue_drain(ev, at=at)
+    _visit(ev, at=at)
+
+    [drain] = _jobs(ev)
+    assert (drain.state, drain.attempts, drain.last_error) == ("succeeded", 1, None)
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("settled", "active")
+    with ev.unit_of_work() as uow:
+        connection = uow.connection
+        [memory] = connection.execute(select(memory_tables.memory)).all()
+        entities = connection.execute(
+            select(memory_tables.memory_entity).order_by(
+                memory_tables.memory_entity.c.name
+            )
+        ).all()
+        mentions = connection.execute(select(memory_tables.memory_mention)).all()
+    return memory, list(entities), list(mentions)
+
+
+def test_222_a_unit_whose_every_mention_is_dropped_is_accepted_with_none(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, pinned: datetime
+) -> None:
+    provider = _Mentioning(
+        [
+            {"kind": _UNKNOWN_KIND, "name": _UNKNOWN_KIND_NAME},
+            {"kind": "spaceship", "name": "Example Shuttle"},
+        ]
+    )
+    memory, entities, mentions = _drain_with(monkeypatch, ev, pinned, provider)
+
+    assert memory.title == "Spring volunteer meeting"
+    assert entities == []
+    assert mentions == []
+
+
+def test_222_case_and_synonyms_keep_an_entity_and_an_unknown_kind_is_dropped(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, pinned: datetime
+) -> None:
+    """``Person`` case-folds, ``company`` and `` City `` are in the synonym table,
+    and ``vehicle`` is in neither, so it alone is dropped. The provider was sent
+    Recallatron's six kinds on the batch."""
+    provider = _Mentioning(
+        [
+            {"kind": "Person", "name": "Alex Example"},
+            {"kind": "company", "name": "Example Hall Rentals"},
+            {"kind": " City ", "name": "Exampleton"},
+            {"kind": _UNKNOWN_KIND, "name": _UNKNOWN_KIND_NAME},
+        ]
+    )
+    memory, entities, mentions = _drain_with(monkeypatch, ev, pinned, provider)
+
+    assert [(e.kind, e.name) for e in entities] == [
+        ("person", "Alex Example"),
+        ("organization", "Example Hall Rentals"),
+        ("place", "Exampleton"),
+    ]
+    assert sorted(m.entity_id for m in mentions) == sorted(e.id for e in entities)
+    assert {m.memory_id for m in mentions} == {memory.id}
+    [batch] = provider.calls
+    assert batch.mention_kinds == get_args(EntityKind)
+    assert set(KIND_SYNONYMS.values()) <= set(get_args(EntityKind))
 
 
 # --- #215: a database error leaves the drain content-free --------------------------

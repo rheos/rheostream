@@ -53,9 +53,12 @@ the provider, and it raises the same ``EvidenceAuditUnwritable`` or refusal the
 acceptance would have raised, with no model call made.
 
 **A model's mention kinds are not trusted.** Extraction accepts any kind string, and
-the ``memory_entity_kind`` CHECK allows only :data:`EntityKind`. A mention of any other
-kind is dropped before acceptance, and the same rebuilt unit is settled, so the
-success audit's digest is of what was accepted.
+the ``memory_entity_kind`` CHECK allows only :data:`EntityKind`. The drain tells the
+provider the six kinds (``claim_units``'s ``mention_kinds``, #222), and then maps what
+comes back: a kind is case-folded, and a near miss in the short
+:data:`KIND_SYNONYMS` table becomes its :data:`EntityKind`. A mention of any other kind
+is dropped before acceptance, and the same rebuilt unit is settled, so the success
+audit's digest is of what was accepted.
 
 **Content-free failures.** A psycopg error's text quotes the failing row and SQLAlchemy
 adds the bound parameters, and the worker stores ``str(failure)`` as the job's
@@ -75,12 +78,14 @@ pins time for both by replacing it.
 
 import dataclasses
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Final, get_args
 
 from pydantic import BaseModel, ConfigDict
 from rheo_contracts import EventEnvelope, WorkspaceContext
+from rheo_contracts.source_units import SourceMention
 from rheo_core.audit import sink_for
 from rheo_core.events.consumers import ConsumerRegistry, HandlerUnitOfWork
 from rheo_core.evidence import (
@@ -107,7 +112,25 @@ from rheo_recallatron.source_units import accept_source_unit
 
 _log = logging.getLogger(__name__)
 
-_ENTITY_KINDS: Final = frozenset(get_args(EntityKind))
+_ENTITY_KIND_ORDER: Final[tuple[EntityKind, ...]] = get_args(EntityKind)
+_ENTITY_KINDS: Final[frozenset[str]] = frozenset(_ENTITY_KIND_ORDER)
+
+KIND_SYNONYMS: Final[Mapping[str, EntityKind]] = MappingProxyType(
+    {
+        "company": "organization",
+        "business": "organization",
+        "org": "organization",
+        "organisation": "organization",
+        "city": "place",
+        "country": "place",
+        "location": "place",
+    }
+)
+"""Near misses a model is likely to propose, case-folded, and the kind each means.
+
+Deliberately short: each entry is a word whose meaning is plainly one kind. A word
+that could be two (``group``, ``event``, ``product``) is left out and dropped, since
+a wrong kind is worse than no mention. The six kinds themselves need no entry."""
 
 MENTIONS_DROPPED_LOG: Final = "automatic_memory_mentions_dropped"
 ACCEPTANCE_DEFERRED_LOG: Final = "automatic_memory_acceptance_deferred"
@@ -189,18 +212,34 @@ def on_evidence_recorded(uow: HandlerUnitOfWork, envelope: EventEnvelope) -> Non
     _enqueue_drain(uow, now=_now())
 
 
+def _entity_kind(kind: str) -> str | None:
+    """``kind`` as an :data:`EntityKind`, case-folded and through
+    :data:`KIND_SYNONYMS`, or ``None`` when it is neither."""
+    folded = kind.strip().casefold()
+    if folded in _ENTITY_KINDS:
+        return folded
+    return KIND_SYNONYMS.get(folded)
+
+
 def _known_mentions(claimed: ClaimedUnit) -> tuple[ClaimedUnit, int]:
-    """``claimed`` without any mention whose kind is not an :data:`EntityKind`, and
-    how many were dropped. The unit is rebuilt only when something was."""
+    """``claimed`` with every mention's kind mapped to an :data:`EntityKind`, any
+    mention whose kind maps to none dropped, and how many were. The unit is rebuilt
+    only when a mention was dropped or renamed."""
     evidence = claimed.unit.evidence
-    kept = tuple(m for m in evidence.mentions if m.kind in _ENTITY_KINDS)
-    dropped = len(evidence.mentions) - len(kept)
-    if not dropped:
+    kept: list[SourceMention] = []
+    for mention in evidence.mentions:
+        kind = _entity_kind(mention.kind)
+        if kind is None:
+            continue
+        if kind != mention.kind:
+            mention = mention.model_copy(update={"kind": kind})
+        kept.append(mention)
+    if tuple(kept) == evidence.mentions:
         return claimed, 0
     unit = claimed.unit.model_copy(
-        update={"evidence": evidence.model_copy(update={"mentions": kept})}
+        update={"evidence": evidence.model_copy(update={"mentions": tuple(kept)})}
     )
-    return dataclasses.replace(claimed, unit=unit), dropped
+    return dataclasses.replace(claimed, unit=unit), len(evidence.mentions) - len(kept)
 
 
 def _acceptance_ready(
@@ -254,7 +293,12 @@ def _drain(
 ) -> None:
     """The drain proper: :func:`run_drain_job` only guards what may escape it."""
     now = _now()
-    batch = claim_units(uow, now=now, before_extraction=_acceptance_ready(uow, now=now))
+    batch = claim_units(
+        uow,
+        now=now,
+        before_extraction=_acceptance_ready(uow, now=now),
+        mention_kinds=_ENTITY_KIND_ORDER,
+    )
     dropped_mentions = 0
     trimmed_units = 0
     deferred = 0

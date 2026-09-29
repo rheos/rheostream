@@ -365,6 +365,7 @@ def claim_units(
     *,
     now: datetime,
     before_extraction: Callable[[WorkspaceContext], None] | None = None,
+    mention_kinds: Sequence[str] = (),
 ) -> ClaimedBatch:
     """Claim one partition of pending evidence on this workspace's own database.
 
@@ -381,6 +382,10 @@ def claim_units(
     steps 3 and 4, and only when step 4 will call the provider. It checks what the
     accepting module's acceptance needs regardless of the unit, and raises when that
     is missing; the raise is not contained (#217).
+
+    ``mention_kinds`` is the entity-kind vocabulary the accepting module keeps. It is
+    handed to the provider on the batch, unread by core, so the model can be told the
+    allowed kinds (#222).
     """
     workspace_id = _routed_workspace_id(uow)
     _age_expired(uow, now=now)
@@ -449,7 +454,7 @@ def claim_units(
 
     # Step 4. The provider never touches the database, so the transaction is still
     # healthy after any exception it raises; the failure path's writes must commit.
-    batch = digest([row.body for row in verified])
+    batch = digest([row.body for row in verified], mention_kinds=mention_kinds)
     failure: str | None = None
     candidates: dict[str, SanitizedEvidence] = {}
     try:
