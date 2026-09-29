@@ -37,7 +37,7 @@ its delete on ``settled_at``, so a gap row without one would never be purged.
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Final
+from typing import Final, Literal
 from uuid import UUID
 
 from rheo_contracts import ContextPurpose, RecordRef, WorkspaceContext
@@ -73,6 +73,10 @@ MAX_BYTES_KEY: Final = "automatic_memory.max_bytes_per_attempt"
 MAX_RECORDS_KEY: Final = "automatic_memory.max_records_per_attempt"
 MAX_PENDING_HOURS_KEY: Final = "automatic_memory.max_pending_hours"
 
+GapReason = Literal["source_truncated", "expired_pending"]
+"""A gap an enrolled producer reports: :data:`OUTCOME_SOURCE_TRUNCATED` or
+:data:`OUTCOME_EXPIRED_PENDING`, spelled out because ``Literal`` takes no names."""
+
 
 @dataclass(frozen=True, slots=True)
 class NewEvidence:
@@ -92,6 +96,26 @@ class NewEvidence:
     purpose: ContextPurpose
     recorded_at: datetime
     raw_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class NewGap:
+    """A span an enrolled producer knows it cannot deliver, held as a content-free gap.
+
+    :class:`NewEvidence`'s identity without ``raw_text``, plus the ``reason`` that
+    becomes the row's ``outcome``. The caller supplies ``authority_id``: the context's
+    actor is the presenting token, never the enrollment the row belongs to.
+    """
+
+    producer_kind: ProducerKind
+    authority_id: UUID
+    native_key: str
+    speaker_account_id: UUID
+    audience_kind: SourceAudienceKind
+    audience_id: UUID | None
+    purpose: ContextPurpose
+    recorded_at: datetime
+    reason: GapReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,8 +403,48 @@ def republish_for_stalled_drain(
     return True
 
 
+def record_gaps(
+    ctx: WorkspaceContext,
+    uow: HandlerUnitOfWork,
+    gaps: Sequence[NewGap],
+    *,
+    now: datetime,
+) -> tuple[str, ...]:
+    """Hold each of ``gaps`` as a content-free ``gap`` row; every passed key, in order.
+
+    Bound to the context exactly as :func:`record_evidence` is: one gap whose speaker
+    or purpose is not the context's raises ``ValueError`` for the whole batch before
+    anything is read or written. Each row has ``body`` null, ``outcome`` the gap's
+    reason and ``settled_at = now``, so the retention sweep purges it on
+    ``settled_at`` like any other settled row. ``source_expires_at`` only fills the
+    ``NOT NULL`` column. A key already held is left as it is and still returned:
+    held, do not resend.
+
+    Publishes no event, since a gap is never extracted, and counts toward no
+    ``automatic_memory.*`` budget. Commits nothing.
+    """
+    _check_bound_to_context(ctx, gaps)
+    settings = resolve(
+        workspace_id=ctx.workspace_id,
+        source=TransactionBoundOverrideSource(uow, workspace_id=ctx.workspace_id),
+    )
+    pending_for = timedelta(hours=settings.get_int(MAX_PENDING_HOURS_KEY))
+    for gap in gaps:
+        _insert(
+            uow,
+            gap,
+            expires_at=gap.recorded_at + pending_for,
+            now=now,
+            body=None,
+            state=STATE_GAP,
+            outcome=gap.reason,
+            settled_at=now,
+        )
+    return tuple(gap.native_key for gap in gaps)
+
+
 def _check_bound_to_context(
-    ctx: WorkspaceContext, records: Sequence[NewEvidence]
+    ctx: WorkspaceContext, records: Sequence[NewEvidence | NewGap]
 ) -> None:
     """Refuse the whole batch unless every record is the verified run's own turn.
 
@@ -405,7 +469,7 @@ def _check_bound_to_context(
 
 def _insert(
     uow: HandlerUnitOfWork,
-    record: NewEvidence,
+    record: NewEvidence | NewGap,
     *,
     expires_at: datetime,
     now: datetime,

@@ -85,6 +85,9 @@ OUTCOME_ACTIVE: Final = "active"
 ``outcome`` has no CHECK, so these words change nothing 0010 creates. The seam's other
 outcomes (``noop``, ``denied``, ``expired``, ``source_unavailable``) are stored as the
 accepting module passes them."""
+OUTCOME_SOURCE_TRUNCATED: Final = "source_truncated"
+"""A ``gap`` outcome an enrolled producer reports: part of its source was gone before
+it could be read, so that span is held as a content-free gap, never skipped."""
 NATIVE_KEY_MAX_LENGTH: Final = 256
 
 evidence_metadata = MetaData(schema=CORE_SCHEMA)

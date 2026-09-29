@@ -469,7 +469,6 @@ def claim_units(
     )
     if isinstance(context, Refusal) and context.state != MEMBERSHIP_MISSING:
         raise EvidenceWorkspaceUnresolved("no acceptance context for the workspace")
-    #
     # The partition key has no producer kind in it, so one claim can mix kinds
     # (EC 8): each row is checked by its own kind's authority, never the anchor's.
     # A kind with no authority here settles without a verify call.
