@@ -117,7 +117,9 @@ The steps, in this order (spec Architecture, System Components item 1):
    **Accepted costs (#225):** a line opening with a multi-directory path loses the
    words after it ("/srv/app is where it lives" on its own line), the twin of "C:\\ is
    nearly full"; a triple-nested e-mail quote (``>>> I agree``) reads as a REPL line;
-   ``$ 5`` with a space at the start of a line reads as a prompt. A line opening at a
+   ``$ 5`` with a space at the start of a line reads as a prompt, and so does a line
+   opening with an e-mail address, a word and then ``%`` or ``#`` ("dana@example.com
+   said % is odd"), which has the zsh prompt's shape. A line opening at a
    one-level ``~/x``, ``./x`` or ``../`` is a path to its end too ("~/notes is where I
    keep stuff", "./configure then make", "../ is the parent"), because ``~/My
    Documents/x`` holds its space in the first level. A prose mention of "Traceback
