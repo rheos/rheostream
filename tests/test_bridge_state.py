@@ -195,6 +195,79 @@ def test_a_failed_write_rolls_back_and_leaves_the_connection_usable(
     assert state.get_hold(conn) == state.Hold(hold_until=1000, hold_step=1)
 
 
+class Boom(Exception):
+    pass
+
+
+def _session_count(db_path: Path) -> int:
+    reader = sqlite3.connect(db_path)
+    try:
+        return int(reader.execute("SELECT count(*) FROM session").fetchone()[0])
+    finally:
+        reader.close()
+
+
+def test_a_grouped_write_that_raises_midway_leaves_neither_write(
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(Boom), state.transaction(conn):
+        state.set_spool_offset(conn, "2026-01-01.jsonl", 99)
+        state.upsert_session(conn, SESSION, transcript_path=TRANSCRIPT, seen_at=100)
+        raise Boom
+    assert not conn.in_transaction
+    assert state.get_spool_offset(conn, "2026-01-01.jsonl") == 0
+    assert state.get_session(conn, SESSION) is None
+
+
+def test_a_grouped_write_commits_together_only_at_the_outermost_exit(
+    conn: sqlite3.Connection, db_path: Path
+) -> None:
+    with state.transaction(conn):
+        state.upsert_session(conn, SESSION, transcript_path=TRANSCRIPT, seen_at=100)
+        # Joined, not committed: a second connection sees nothing yet.
+        assert conn.in_transaction
+        assert _session_count(db_path) == 0
+        state.advance_cursor(conn, SESSION, offset=64, inode=3)
+        state.bump_ledger(conn, state.accepted_reason("cli"), at=100, by=2)
+        state.set_hold(conn, hold_until=500, hold_step=1)
+    assert not conn.in_transaction
+    assert _session_count(db_path) == 1
+    row = state.get_session(conn, SESSION)
+    assert row is not None and row.cursor_offset == 64
+    assert state.get_ledger(conn)["accepted:cli"].count == 2
+    assert state.get_hold(conn) == state.Hold(hold_until=500, hold_step=1)
+
+
+def test_a_nested_transaction_joins_the_outer_one(conn: sqlite3.Connection) -> None:
+    with pytest.raises(Boom), state.transaction(conn):
+        with state.transaction(conn):
+            state.set_spool_offset(conn, "2026-01-01.jsonl", 7)
+        # The inner block's exit did not commit: the outer rollback undoes it.
+        assert conn.in_transaction
+        raise Boom
+    assert state.get_spool_offset(conn, "2026-01-01.jsonl") == 0
+
+
+def test_a_failed_commit_rolls_back_and_leaves_the_connection_usable(
+    conn: sqlite3.Connection,
+) -> None:
+    # A deferred foreign key is checked only at COMMIT, and SQLite leaves the
+    # transaction open when that check fails.
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+    conn.execute(
+        "CREATE TABLE child (parent_id INTEGER "
+        "REFERENCES parent (id) DEFERRABLE INITIALLY DEFERRED)"
+    )
+    with pytest.raises(sqlite3.IntegrityError), state.transaction(conn):
+        state.set_spool_offset(conn, "2026-01-01.jsonl", 5)
+        conn.execute("INSERT INTO child (parent_id) VALUES (1)")
+    assert not conn.in_transaction
+    assert state.get_spool_offset(conn, "2026-01-01.jsonl") == 0
+    state.set_spool_offset(conn, "2026-01-01.jsonl", 6)
+    assert state.get_spool_offset(conn, "2026-01-01.jsonl") == 6
+
+
 def test_writes_are_committed_for_a_second_connection(
     conn: sqlite3.Connection, db_path: Path
 ) -> None:

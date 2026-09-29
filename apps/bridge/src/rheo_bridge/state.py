@@ -8,9 +8,16 @@ cursors and counters, not evidence: the server holds every record by its native
 key, so a rebuilt cursor re-sends what the server already has.
 
 Every function takes the connection explicitly; there is no module-level
-connection. Each writer runs in its own ``BEGIN IMMEDIATE`` transaction, so a
-caller never calls ``commit()`` for a single logical step. Times are integer
-Unix seconds supplied by the caller; nothing here reads a clock.
+connection. Each writer runs inside :func:`transaction`: alone it commits its
+own step, and inside a caller's ``with transaction(conn):`` it joins, so
+several writes (a cursor, a ledger count and the hold, say) commit together.
+Times are integer Unix seconds supplied by the caller; nothing here reads a
+clock.
+
+The file keeps SQLite's default rollback journal, not WAL. The worker is the
+one writer; a status reader is blocked only for the moment a ``COMMIT`` holds
+the exclusive lock, which the default 5 s busy timeout rides out, while WAL
+would add two sidecar files that must also stay 0600 under ``bridge_home``.
 """
 
 from __future__ import annotations
@@ -121,8 +128,8 @@ def connect(path: Path) -> sqlite3.Connection:
         os.fchmod(fd, FILE_MODE)
     finally:
         os.close(fd)
-    # ``isolation_level=None``: no implicit transactions; each writer below
-    # opens its own.
+    # ``isolation_level=None``: no implicit transactions; :func:`transaction`
+    # opens every one explicitly.
     connection = sqlite3.connect(path, isolation_level=None)
     try:
         migrate(connection)
@@ -134,7 +141,7 @@ def connect(path: Path) -> sqlite3.Connection:
 
 def migrate(connection: sqlite3.Connection) -> None:
     """Create any of the four tables that is absent. Idempotent."""
-    with _transaction(connection):
+    with transaction(connection):
         for statement in SCHEMA:
             connection.execute(statement)
 
@@ -144,14 +151,42 @@ def close(connection: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _transaction(connection: sqlite3.Connection) -> Iterator[None]:
+def transaction(connection: sqlite3.Connection) -> Iterator[None]:
+    """Group writes so they commit together or not at all.
+
+    Outermost use opens ``BEGIN IMMEDIATE`` and commits on a clean exit. When
+    the connection is already in a transaction, the block joins it: it neither
+    begins nor commits, and an exception passes out to the outermost block,
+    which rolls everything back. There is no savepoint, so a caller that catches
+    an exception inside a joined block and carries on commits whatever that
+    block had already written.
+
+    A failed ``COMMIT`` (say, a deferred constraint) is rolled back before the
+    error is raised, so the connection is never left inside a transaction.
+    Every writer in this module runs inside one of these, so any mix of them
+    can be grouped under a caller's own ``with transaction(conn):``.
+    """
+    if connection.in_transaction:
+        yield
+        return
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield
     except BaseException:
-        connection.execute("ROLLBACK")
+        _rollback(connection)
         raise
-    connection.execute("COMMIT")
+    try:
+        connection.execute("COMMIT")
+    except BaseException:
+        _rollback(connection)
+        raise
+
+
+def _rollback(connection: sqlite3.Connection) -> None:
+    # SQLite has already rolled back after some errors (a full disk, an I/O
+    # error); a second ROLLBACK would then raise and hide the first error.
+    if connection.in_transaction:
+        connection.execute("ROLLBACK")
 
 
 # --- spool_offset -----------------------------------------------------------
@@ -166,7 +201,7 @@ def get_spool_offset(connection: sqlite3.Connection, file: str) -> int:
 
 
 def set_spool_offset(connection: sqlite3.Connection, file: str, offset: int) -> None:
-    with _transaction(connection):
+    with transaction(connection):
         connection.execute(
             "INSERT INTO spool_offset (file, offset) VALUES (?, ?) "
             "ON CONFLICT (file) DO UPDATE SET offset = excluded.offset",
@@ -192,7 +227,7 @@ def upsert_session(
     cursor and pending gap key are untouched, and an ``ended_at`` already set is
     kept when this sighting carries none.
     """
-    with _transaction(connection):
+    with transaction(connection):
         connection.execute(
             "INSERT INTO session "
             "(session_hash, transcript_path, first_seen_at, last_seen_at, ended_at) "
@@ -233,7 +268,7 @@ def advance_cursor(
     inode: int | None,
 ) -> None:
     """Move a known session's transcript cursor. An unknown session is a no-op."""
-    with _transaction(connection):
+    with transaction(connection):
         connection.execute(
             "UPDATE session SET cursor_offset = ?, cursor_inode = ? "
             "WHERE session_hash = ?",
@@ -245,7 +280,7 @@ def set_pending_gap_key(
     connection: sqlite3.Connection, session_hash: str, gap_key: str | None
 ) -> None:
     """Set or clear (``None``) a known session's unsent gap key."""
-    with _transaction(connection):
+    with transaction(connection):
         connection.execute(
             "UPDATE session SET pending_gap_key = ? WHERE session_hash = ?",
             (gap_key, session_hash),
@@ -253,7 +288,7 @@ def set_pending_gap_key(
 
 
 def delete_session(connection: sqlite3.Connection, session_hash: str) -> None:
-    with _transaction(connection):
+    with transaction(connection):
         connection.execute(
             "DELETE FROM session WHERE session_hash = ?", (session_hash,)
         )
@@ -273,7 +308,7 @@ def get_hold(connection: sqlite3.Connection) -> Hold:
 def set_hold(
     connection: sqlite3.Connection, *, hold_until: int, hold_step: int
 ) -> None:
-    with _transaction(connection):
+    with transaction(connection):
         connection.execute(
             "INSERT INTO hold (id, hold_until, hold_step) VALUES (1, ?, ?) "
             "ON CONFLICT (id) DO UPDATE SET "
@@ -283,7 +318,7 @@ def set_hold(
 
 
 def clear_hold(connection: sqlite3.Connection) -> None:
-    with _transaction(connection):
+    with transaction(connection):
         connection.execute("DELETE FROM hold WHERE id = 1")
 
 
@@ -314,7 +349,7 @@ def bump_ledger(
     _check_reason(reason)
     if by < 1:
         raise ValueError("a ledger bump must be positive")
-    with _transaction(connection):
+    with transaction(connection):
         connection.execute(
             "INSERT INTO ledger (reason, count, last_at) VALUES (?, ?, ?) "
             "ON CONFLICT (reason) DO UPDATE SET "

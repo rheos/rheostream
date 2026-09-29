@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -77,6 +78,12 @@ def _refused(status: int, code: str) -> Answer:
 
 @pytest.fixture
 def server() -> Iterator[FakeServer]:
+    with _running_server() as fake:
+        yield fake
+
+
+@contextmanager
+def _running_server() -> Iterator[FakeServer]:
     seen: list[Seen] = []
     fake = FakeServer(base_url="", seen=seen, answer=lambda _: _succeeded())
 
@@ -185,6 +192,9 @@ def test_a_naive_time_is_refused_where_it_is_made() -> None:
         (400, "enrollment_mismatch"),
         (401, "token_revoked"),
         (401, "token_expired"),
+        (401, "token_malformed"),
+        (403, "operation_not_permitted"),
+        (403, "role_not_permitted"),
         (422, "input_invalid"),
     ],
 )
@@ -204,6 +214,15 @@ def test_a_defined_refusal_is_typed_with_its_code(
         Answer(500, _envelope("failed", error={"error_code": "x", "error_text": "y"})),
         Answer(503, b"<html>unavailable</html>"),
         Answer(403, _envelope("operation_not_permitted")),
+        # A code outside the contract's closed set, or at the wrong status.
+        _refused(400, "some_new_state"),
+        _refused(400, "token_revoked"),
+        _refused(401, "enrollment_inactive"),
+        _refused(422, "operation_not_permitted"),
+        _refused(400, TOKEN),
+        # A body nested deep enough to exhaust the decoder's recursion.
+        Answer(200, b"[" * 100_000 + b"]" * 100_000),
+        Answer(400, b'{"error": ' + b"[" * 100_000 + b"]" * 100_000 + b"}"),
         # A refusal status whose body is not the envelope (say, a proxy's page).
         Answer(400, b"<html>bad request</html>"),
         Answer(401, b""),
@@ -222,6 +241,26 @@ def test_anything_else_is_a_transport_error(server: FakeServer, answer: Answer) 
     server.answer = lambda _: answer
     with pytest.raises(IngestTransportError):
         _post(server.base_url)
+    assert len(server.seen) == 1
+
+
+def test_an_unknown_code_never_reaches_the_error_message(server: FakeServer) -> None:
+    server.answer = lambda _: _refused(400, "synthetic_server_words")
+    with pytest.raises(IngestTransportError) as caught:
+        _post(server.base_url)
+    assert "synthetic_server_words" not in str(caught.value)
+
+
+def test_an_environment_proxy_never_receives_the_request(
+    server: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _running_server() as proxy:
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising=False)
+        for name in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"):
+            monkeypatch.setenv(name, proxy.base_url)
+        _post(server.base_url)
+        assert proxy.seen == []
     assert len(server.seen) == 1
 
 
