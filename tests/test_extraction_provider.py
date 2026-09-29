@@ -51,6 +51,7 @@ from rheo_core.runtime.extraction import (
     NO_STRUCTURED_RESULT,
     PROVIDER_NAME,
     STREAM_TRUNCATED,
+    TOKEN_REVOKE_FAILED,
     ClaudeCliExtractionProvider,
     ExtractionCredentialNotOwned,
     ExtractionRunFailed,
@@ -330,6 +331,43 @@ def test_the_throwaway_root_is_gone_after_a_raise(
     assert tokens.revoked == [_TOKEN_ID]
 
 
+class _RevokeFails(_Tokens):
+    """A revoker whose database error quotes text that must not surface."""
+
+    def revoke(self, token_id: UUID) -> None:
+        super().revoke(token_id)
+        raise RuntimeError(f"revoke failed near {_TEXT}")
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        pytest.param(_answered(), id="after-a-success"),
+        pytest.param(
+            [FailureEvent(kind=FailureKind.RUNTIME_ERROR, detail="x")],
+            id="after-a-failed-run",
+        ),
+    ],
+)
+def test_a_failing_revoke_still_removes_the_throwaway_root(
+    popen: PopenGuard, events: list[RuntimeEvent]
+) -> None:
+    """The directory goes whatever the revoke does, and the revoke's failure
+    surfaces content-free, with its own error off the exception chain."""
+    tokens = _RevokeFails()
+    adapter = ScriptedAdapter(events)
+    with pytest.raises(ExtractionRunFailed) as raised:
+        _provider(adapter, tokens).extract(_batch())
+
+    assert raised.value.kind == TOKEN_REVOKE_FAILED
+    assert tokens.revoked == [_TOKEN_ID]
+    assert not _throwaway_root(adapter).exists()
+    chained = raised.value.__context__
+    assert not isinstance(chained, RuntimeError)
+    assert _TEXT not in str(raised.value)
+    _served(adapter, popen)
+
+
 def test_each_call_gets_its_own_throwaway_root(
     tokens: _Tokens, popen: PopenGuard
 ) -> None:
@@ -458,7 +496,13 @@ def test_the_provider_never_reaches_a_real_process(
     through the evidence registry: the call fails ``adapter_unavailable`` before any
     settings read, token or directory, and nothing reaches ``Popen``."""
     monkeypatch.setenv("RHEO__automatic_memory__extraction__provider", PROVIDER_NAME)
-    monkeypatch.delitem(providers.providers(), PROVIDER_NAME, raising=False)
+    # Snapshotted, so teardown restores (or removes) whatever was there: the
+    # registration below must not leak into the shared provider registry.
+    monkeypatch.setitem(
+        providers.providers(),
+        PROVIDER_NAME,
+        ClaudeCliExtractionProvider(AdapterRegistry()),
+    )
     register_claude_cli_extraction(AdapterRegistry())
     provider = providers.resolve_provider()
     assert isinstance(provider, ClaudeCliExtractionProvider)

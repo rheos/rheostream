@@ -89,6 +89,7 @@ STREAM_TRUNCATED: Final = "stream_truncated"
 NO_STRUCTURED_RESULT: Final = "no_structured_result"
 RUN_CANCELLED: Final = "cancelled"
 APPROVAL_REQUESTED: Final = "approval_required"
+TOKEN_REVOKE_FAILED: Final = "token_revoke_failed"
 
 EXTRACTION_INSTRUCTION: Final = (
     "The passages below were written by one person while working with an "
@@ -250,11 +251,24 @@ class ClaudeCliExtractionProvider:
             handle = adapter.start(request, spawn=spawn)
             return self._await_result(handle, deadline_at=deadline_at)
         finally:
-            if handle is not None and not handle.finished():
-                handle.cancel()
-            if token_id is not None:
-                self._revoke_token(token_id)
-            _remove_tree(root)
+            revoke_failed = False
+            try:
+                if handle is not None and not handle.finished():
+                    handle.cancel()
+                if token_id is not None:
+                    try:
+                        self._revoke_token(token_id)
+                    except Exception:
+                        revoke_failed = True
+            finally:
+                # Its own ``finally``: whatever the cancel or the revoke does, the
+                # throwaway directory goes. The CLI's transcript under ``config/`` is
+                # the evidence text, and nothing else ever sweeps this directory.
+                _remove_tree(root)
+            if revoke_failed:
+                # Raised outside the ``except`` block, so the revoke error (whose text
+                # may quote the database's own detail) is not on ``__context__``.
+                raise ExtractionRunFailed(TOKEN_REVOKE_FAILED)
 
     def _request(
         self, batch: DigestBatch, *, deadline: int, model_id: str | None
