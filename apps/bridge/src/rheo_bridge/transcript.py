@@ -76,9 +76,12 @@ def validate_source(
     anything else that fails (a ``..`` component, a symlink resolving
     elsewhere, a relative path, a nested file, a non-file) is ``path_escape``.
 
+    The slug directory must itself resolve directly under ``projects_root``: a
+    slug directory symlinked elsewhere is ``path_escape`` for every path.
+
     A path with nothing at it is ``Missing`` only when it is otherwise valid:
-    absolute, no ``..``, a ``*.jsonl`` name directly inside the exact slug
-    directory, and that directory not a symlink out of ``projects_root``. A
+    absolute, no ``..``, and a ``*.jsonl`` name directly inside the exact slug
+    directory. A
     missing path under another slug stays ``project_unmatched``; any other
     missing path, a dangling symlink included, stays ``path_escape``.
     """
@@ -97,12 +100,13 @@ def validate_source(
         present = os.path.lexists(lexical)
     except (OSError, ValueError):
         return Refused("path_escape")
+    # The enrolled slug directory itself must resolve directly under
+    # projects_root; a symlinked slug directory pointing elsewhere admits
+    # nothing, present or missing.
+    if project_dir.parent != root:
+        return Refused("path_escape")
     if not present:
-        if (
-            lexical_parent == project_dir
-            and project_dir.parent == root
-            and lexical.suffix == ".jsonl"
-        ):
+        if lexical_parent == project_dir and lexical.suffix == ".jsonl":
             return Missing(lexical)
         if lexical_parent != project_dir and lexical_parent.parent == root:
             return Refused("project_unmatched")

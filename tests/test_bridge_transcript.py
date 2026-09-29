@@ -334,6 +334,19 @@ def test_an_absent_file_under_a_symlinked_slug_directory_is_a_path_escape(
     assert layout.validate(absent, layout.parent_dir) == Refused("path_escape")
 
 
+def test_an_existing_file_under_a_symlinked_slug_directory_is_a_path_escape(
+    layout: Layout,
+) -> None:
+    escaped = layout.outside / "escaped-project"
+    escaped.mkdir()
+    (escaped / "present.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    slug_dir = layout.projects_root / transcript.slug(str(layout.parent_dir))
+    slug_dir.symlink_to(escaped)
+    assert layout.validate(slug_dir / "present.jsonl", layout.parent_dir) == Refused(
+        "path_escape"
+    )
+
+
 def test_a_dangling_symlink_is_a_path_escape_not_missing(layout: Layout) -> None:
     link = layout.project(layout.parent_dir) / "dangling.jsonl"
     link.symlink_to(layout.outside / "gone.jsonl")
