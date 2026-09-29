@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from rheo_bridge import transcript
-from rheo_bridge.transcript import Ok, Refused
+from rheo_bridge.transcript import Missing, Ok, Refused
 
 SESSION_ID = "0b7e4f10-0000-4000-8000-00000000a11c"
 LINE_UUID = "7d2c9a33-0000-4000-8000-0000000b0b01"
@@ -270,7 +270,15 @@ def test_a_symlinked_file_inside_another_project_is_a_path_escape(
 
 
 @pytest.mark.parametrize(
-    "case", ["nested", "suffix", "directory", "missing", "relative"]
+    "case",
+    [
+        "nested",
+        "suffix",
+        "directory",
+        "missing_suffix",
+        "missing_nested",
+        "relative",
+    ],
 )
 def test_anything_but_a_direct_jsonl_file_is_refused(layout: Layout, case: str) -> None:
     project = layout.project(layout.parent_dir)
@@ -285,11 +293,51 @@ def test_anything_but_a_direct_jsonl_file_is_refused(layout: Layout, case: str) 
     elif case == "directory":
         candidate = project / "folder.jsonl"
         candidate.mkdir()
-    elif case == "missing":
-        candidate = project / "absent.jsonl"
+    elif case == "missing_suffix":
+        candidate = project / "absent.json"
+    elif case == "missing_nested":
+        candidate = project / "subagents" / "absent.jsonl"
     else:
         candidate = f"{project.name}/synthetic.jsonl"
     assert layout.validate(candidate, layout.parent_dir) == Refused("path_escape")
+
+
+def test_an_absent_file_in_the_exact_slug_directory_is_missing(layout: Layout) -> None:
+    project = layout.project(layout.parent_dir)
+    absent = project / "absent.jsonl"
+    result = layout.validate(absent, layout.parent_dir)
+    assert result == Missing(absent)
+    assert result != Ok(absent)
+
+
+def test_an_absent_file_under_another_slug_is_unmatched(layout: Layout) -> None:
+    other = layout.project(layout.child_dir)
+    absent = other / "absent.jsonl"
+    assert layout.validate(absent, layout.parent_dir) == Refused("project_unmatched")
+
+
+def test_an_absent_file_with_a_dot_dot_component_is_a_path_escape(
+    layout: Layout,
+) -> None:
+    project = layout.project(layout.parent_dir)
+    dotted = f"{project}/../{project.name}/absent.jsonl"
+    assert layout.validate(dotted, layout.parent_dir) == Refused("path_escape")
+
+
+def test_an_absent_file_under_a_symlinked_slug_directory_is_a_path_escape(
+    layout: Layout,
+) -> None:
+    escaped = layout.outside / "escaped-project"
+    escaped.mkdir()
+    (layout.projects_root / transcript.slug(str(layout.parent_dir))).symlink_to(escaped)
+    absent = layout.projects_root / transcript.slug(str(layout.parent_dir)) / "a.jsonl"
+    assert layout.validate(absent, layout.parent_dir) == Refused("path_escape")
+
+
+def test_a_dangling_symlink_is_a_path_escape_not_missing(layout: Layout) -> None:
+    link = layout.project(layout.parent_dir) / "dangling.jsonl"
+    link.symlink_to(layout.outside / "gone.jsonl")
+    assert layout.validate(link, layout.parent_dir) == Refused("path_escape")
 
 
 def test_a_nul_byte_in_the_path_is_refused_not_raised(layout: Layout) -> None:

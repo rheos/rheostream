@@ -34,11 +34,22 @@ class Ok:
 
 
 @dataclass(frozen=True)
+class Missing:
+    """The path is a valid location for the enrolled project, but nothing is there.
+
+    ``path`` is the lexical absolute path. The worker records a
+    ``source_truncated`` gap for it (spec step 3) instead of dropping the session.
+    """
+
+    path: Path
+
+
+@dataclass(frozen=True)
 class Refused:
     reason: RefusalReason
 
 
-ValidationResult = Ok | Refused
+ValidationResult = Ok | Missing | Refused
 
 
 def slug(path: str) -> str:
@@ -64,6 +75,12 @@ def validate_source(
     it. A file in another project's slug directory is ``project_unmatched``;
     anything else that fails (a ``..`` component, a symlink resolving
     elsewhere, a relative path, a nested file, a non-file) is ``path_escape``.
+
+    A path with nothing at it is ``Missing`` only when it is otherwise valid:
+    absolute, no ``..``, a ``*.jsonl`` name directly inside the exact slug
+    directory, and that directory not a symlink out of ``projects_root``. A
+    missing path under another slug stays ``project_unmatched``; any other
+    missing path, a dangling symlink included, stays ``path_escape``.
     """
     lexical = Path(transcript_path)
     # A relative path would resolve against the working directory, and ``..``
@@ -77,6 +94,20 @@ def validate_source(
         resolved = Path(os.path.realpath(lexical))
         lexical_parent = Path(os.path.realpath(lexical.parent))
         root = Path(os.path.realpath(projects_root))
+        present = os.path.lexists(lexical)
+    except (OSError, ValueError):
+        return Refused("path_escape")
+    if not present:
+        if (
+            lexical_parent == project_dir
+            and project_dir.parent == root
+            and lexical.suffix == ".jsonl"
+        ):
+            return Missing(lexical)
+        if lexical_parent != project_dir and lexical_parent.parent == root:
+            return Refused("project_unmatched")
+        return Refused("path_escape")
+    try:
         info = os.stat(resolved)
     except (OSError, ValueError):
         return Refused("path_escape")
