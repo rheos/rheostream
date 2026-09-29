@@ -40,6 +40,7 @@ from rheo_core.evidence.enrollment import (
     ENROLLMENT_REVOKE,
     ENROLLMENT_ROTATE,
 )
+from rheo_core.evidence.ingest import EVIDENCE_INGEST
 from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.modules.operations import MODULE_ENABLE, MODULE_INSTALL
 from rheo_core.operations import (
@@ -180,6 +181,9 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             ENROLLMENT_CREATE,
             ENROLLMENT_ROTATE,
             ENROLLMENT_REVOKE,
+            # Run 1a4b's ingest, the bridge token's one operation, registered beside
+            # the enrollment operations.
+            EVIDENCE_INGEST,
         )
     )
 

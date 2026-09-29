@@ -23,6 +23,9 @@ whose own row is the ``:105`` the cited range now reaches.
   1a4b). Models and handlers live in ``rheo_core.evidence.enrollment``, registered
   inside :func:`register_core_operations` because that module imports
   ``rheo_core.tokens.issue``.
+- ``core.evidence.ingest`` — ``mutate``; roles ``owner, member``. The one operation a
+  bridge token can call (run 1a4b). Models and handler live in
+  ``rheo_core.evidence.ingest``, registered beside the enrollment operations.
 - ``core.work.failures`` — ``read``; roles ``owner, operator``, and **not** the
   declaration default ``owner, member``. Reads the failed jobs through C1's
   ``rheo_core.work.jobs.list_failed_jobs``, never the ``core.job`` table
@@ -696,6 +699,12 @@ def register_core_operations(
     from rheo_core.evidence.enrollment import (
         rotate_handler as enrollment_rotate_handler,
     )
+    from rheo_core.evidence.ingest import (
+        EVIDENCE_INGEST,
+        IngestInput,
+        IngestResult,
+        ingest_handler,
+    )
     from rheo_core.modules.operations import (
         MODULE_ENABLE,
         MODULE_INSTALL,
@@ -785,6 +794,21 @@ def register_core_operations(
                 audit=AuditSpec(subject_field=None),
             ),
             enrollment_revoke_handler,
+        ),
+        # The one operation a bridge token can call. ``MUTATE``, roles ``owner,
+        # member``. ``Idempotency.NONE``: the native key is the idempotency, and a
+        # replay answers the held rows' outcome, so no second key is added.
+        (
+            OperationDeclaration(
+                name=EVIDENCE_INGEST,
+                safety_class=SafetyClass.MUTATE,
+                roles=frozenset({Role.OWNER, Role.MEMBER}),
+                input_model=IngestInput,
+                output=IngestResult,
+                idempotency=Idempotency.NONE,
+                audit=AuditSpec(subject_field=None),
+            ),
+            ingest_handler,
         ),
     )
     module_operations: tuple[tuple[OperationDeclaration, Handler], ...] = (

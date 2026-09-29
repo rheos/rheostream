@@ -366,7 +366,8 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         # core.standing_grant.create and core.standing_grant.revoke, 0c4 adds
         # core.runtime.run, run 1a0 adds core.module.install and then
         # core.module.enable, run 1a1 adds core.record.delete, and run 1a4b adds
-        # the three core.evidence_enrollment.* names. Sorted by the
+        # core.evidence.ingest and the three core.evidence_enrollment.* names.
+        # Sorted by the
         # name string, so the two core.approval.* names lead ("approval" before
         # "audit"), the two core.module.* names sit between core.audit.list and
         # core.operation.get with enable before install ("e" before "i"), the three
@@ -393,7 +394,9 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             APPROVAL_APPROVE,
             APPROVAL_REFUSE,
             "core.audit.list",
-            # Run 1a4b's three enrollment operations ("evidence" before "module").
+            # Run 1a4b's ingest and its three enrollment operations ("evidence"
+            # before "module"; "." before "_", so the ingest leads).
+            "core.evidence.ingest",
             ENROLLMENT_CREATE,
             ENROLLMENT_REVOKE,
             ENROLLMENT_ROTATE,

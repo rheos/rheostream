@@ -20,6 +20,8 @@ MODULES = (
     "rheo_core.evidence",
     "rheo_core.evidence.service",
     "rheo_core.storage.evidence_enrollment_tables",
+    "rheo_core.evidence.ingest",
+    "rheo_core.evidence.enrollment",
 )
 
 

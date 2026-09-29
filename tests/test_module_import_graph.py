@@ -21,6 +21,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_automatic_memory_limits.py",
     "tests/postgres/test_automatic_memory_local_poison.py",
     "tests/postgres/test_automatic_memory_shapes.py",
+    "tests/postgres/test_evidence_ingest.py",
     "tests/postgres/test_history_records.py",
     "tests/postgres/test_local_authority.py",
     "tests/postgres/test_memory_browse.py",
@@ -106,6 +107,8 @@ automatic memories, so a restore re-checks each one's own bound purpose.
 through Recallatron's real drain and seam, so its neighbours must become real memories.
 ``test_local_authority.py`` proves AC 2's expired-before-claim case leaves no memory
 and no receipt, which only Recallatron's own tables can show.
+``test_evidence_ingest.py`` drains a clamped ingest to a real memory, and proves a
+failed ingest leaves no memory or receipt, which only Recallatron's drain can show.
 ``test_evidence_boundary.py`` scans Recallatron's source tree for the FR 2 import
 boundary, so it names that tree's path. ``test_search_quality.py`` drives the real
 curated and owner-only history search against independently labelled synthetic

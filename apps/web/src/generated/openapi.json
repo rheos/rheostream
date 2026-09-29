@@ -898,6 +898,140 @@
         "title": "FailureSummaryInput",
         "type": "object"
       },
+      "IngestGap": {
+        "properties": {
+          "native_key": {
+            "pattern": "^cc1g:[0-9a-f]{64}$",
+            "title": "Native Key",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "source_truncated",
+              "expired_pending"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "native_key",
+          "reason",
+          "recorded_at"
+        ],
+        "title": "IngestGap",
+        "type": "object"
+      },
+      "IngestInput": {
+        "properties": {
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/IngestGap"
+            },
+            "maxItems": 1000,
+            "title": "Gaps",
+            "type": "array"
+          },
+          "machine_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Machine Fingerprint",
+            "type": "string"
+          },
+          "project_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Project Fingerprint",
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/IngestRecord"
+            },
+            "maxItems": 1000,
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "machine_fingerprint",
+          "project_fingerprint",
+          "records",
+          "gaps"
+        ],
+        "title": "IngestInput",
+        "type": "object"
+      },
+      "IngestRecord": {
+        "properties": {
+          "native_key": {
+            "pattern": "^cc1:[0-9a-f]{64}$",
+            "title": "Native Key",
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 65536,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "native_key",
+          "recorded_at",
+          "text"
+        ],
+        "title": "IngestRecord",
+        "type": "object"
+      },
+      "IngestResult": {
+        "description": "``record_evidence``'s four tuples, with the gap keys appended to ``gapped``.",
+        "properties": {
+          "accepted": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Accepted",
+            "type": "array"
+          },
+          "deferred": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Deferred",
+            "type": "array"
+          },
+          "dropped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dropped",
+            "type": "array"
+          },
+          "gapped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Gapped",
+            "type": "array"
+          }
+        },
+        "required": [
+          "accepted",
+          "deferred",
+          "gapped",
+          "dropped"
+        ],
+        "title": "IngestResult",
+        "type": "object"
+      },
       "JsonValue": {},
       "ModuleEnableInput": {
         "description": "The module to enable. The workspace comes from the context.\n\nThe same one field ``ModuleInstallInput`` carries, declared separately rather than\nshared: the input model is half of what the OpenAPI document publishes for an\noperation, and two operations pointed at one model would make a later change to\neither one a change to both.",
@@ -2214,6 +2348,73 @@
           }
         },
         "summary": "core.audit.list (read)"
+      }
+    },
+    "/api/v1/operations/core.evidence.ingest": {
+      "post": {
+        "operationId": "core.evidence.ingest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/IngestResult"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.evidence.ingest (mutate)"
       }
     },
     "/api/v1/operations/core.evidence_enrollment.create": {

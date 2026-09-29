@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.evidence.ingest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.evidence.ingest (mutate) */
+        post: operations["core.evidence.ingest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.evidence_enrollment.create": {
         parameters: {
             query?: never;
@@ -973,6 +990,58 @@ export interface components {
          * @description No fields: the workspace comes from the context.
          */
         FailureSummaryInput: Record<string, never>;
+        /** IngestGap */
+        IngestGap: {
+            /** Native Key */
+            native_key: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "source_truncated" | "expired_pending";
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+        };
+        /** IngestInput */
+        IngestInput: {
+            /** Gaps */
+            gaps: components["schemas"]["IngestGap"][];
+            /** Machine Fingerprint */
+            machine_fingerprint: string;
+            /** Project Fingerprint */
+            project_fingerprint: string;
+            /** Records */
+            records: components["schemas"]["IngestRecord"][];
+        };
+        /** IngestRecord */
+        IngestRecord: {
+            /** Native Key */
+            native_key: string;
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * IngestResult
+         * @description ``record_evidence``'s four tuples, with the gap keys appended to ``gapped``.
+         */
+        IngestResult: {
+            /** Accepted */
+            accepted: string[];
+            /** Deferred */
+            deferred: string[];
+            /** Dropped */
+            dropped: string[];
+            /** Gapped */
+            gapped: string[];
+        };
         JsonValue: unknown;
         /**
          * ModuleEnableInput
@@ -1674,6 +1743,41 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["AuditList"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.evidence.ingest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IngestInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["IngestResult"];
                         state: string;
                     };
                 };
