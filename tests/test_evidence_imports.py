@@ -22,6 +22,7 @@ MODULES = (
     "rheo_core.storage.evidence_enrollment_tables",
     "rheo_core.evidence.ingest",
     "rheo_core.evidence.enrollment",
+    "rheo_core.runtime.extraction",
 )
 
 

@@ -15,7 +15,8 @@
 # thirty-nine; C2 (run 0c4) adds the eleven runtime.* keys, for fifty; run 1a0's
 # module contract adds modules.installed, for fifty-one; run 1a1 adds the two
 # telemetry.* keys, for fifty-three; issue #130 adds the two redaction.* keys, for
-# fifty-five; run 1a4 adds the six automatic_memory.* keys, for sixty-one. Harness
+# fifty-five; run 1a4 adds the six automatic_memory.* keys, for sixty-one; run 1a4b
+# adds automatic_memory.extraction.model_id, for sixty-two. Harness
 # keys (tests/harness/) are registry-only by design and never appear here.
 
 profile = "development"
@@ -157,7 +158,8 @@ contact_points_to_model = false
 # Automatic memory (run 1a4). enabled is an and floor: on only when the operator sets
 # it true and the workspace has its own row set true. The four limits are min floors
 # a workspace may only lower. extraction.provider is deployment-only; "none" records
-# nothing.
+# nothing. extraction.model_id (run 1a4b) is the model the claude_cli provider asks
+# for; empty leaves the CLI's own default.
 [automatic_memory]
 enabled = false
 max_bytes_per_attempt = 1048576
@@ -167,3 +169,4 @@ max_pending_hours = 24
 
 [automatic_memory.extraction]
 provider = "none"
+model_id = ""

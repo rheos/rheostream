@@ -58,7 +58,7 @@ from datetime import datetime
 from typing import Final
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 from rheo_contracts import ContextPurpose
 from rheo_contracts.source_units import MemoryKind, SanitizedEvidence
 
@@ -139,6 +139,16 @@ class _ExtractionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     items: list[object] | tuple[object, ...]
+
+
+def extraction_response_schema() -> dict[str, JsonValue]:
+    """The whole response's JSON schema, for a provider that asks its model for one.
+
+    Only the outer ``{"items": [...]}`` shape, the same one :func:`validate_extraction`
+    enforces as a whole; the per-entry rules stay in the validator, where one bad entry
+    costs only its own item.
+    """
+    return _ExtractionResponse.model_json_schema()
 
 
 class _ProposedMention(BaseModel):

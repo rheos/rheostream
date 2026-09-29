@@ -1,7 +1,7 @@
 """Acceptance criterion 11: this run's own proof of the FR 2 boundary between
 Recallatron and core's evidence package (spec § Acceptance criteria 11, § A1, R12).
 
-Three scans, each with its own positive control:
+Four scans, each with its own positive control:
 
 - **(a) Import source.** Every import of core's evidence code anywhere under
   Recallatron's source tree is ``from rheo_core.evidence import <name>``, and each
@@ -17,6 +17,10 @@ Three scans, each with its own positive control:
 - **(c) One hop to the runtime (R12).** No module in ``rheo_core.evidence`` imports
   ``rheo_core.runtime`` or ``rheo_core.storage.runtime_tables``, at module level or
   inside a function.
+- **(d) The extraction provider's importers (1a4b, AC 12).**
+  ``rheo_core.runtime.extraction`` is imported only by the two composition roots and by
+  tests, anywhere in the repository: the provider enters a process only where a root
+  registers it.
 
 **Why not 1a1's scan.**
 ``test_recallatron_imports_no_runtime_transcript_or_hook_module``
@@ -123,7 +127,7 @@ def _python_files(root: Path) -> list[Path]:
     )
 
 
-# --- (a) import source ---------------------------------------------------------------
+# --- (a) import source ----------------------------------------------------------------
 
 
 def _evidence_imports(
@@ -234,7 +238,7 @@ def test_the_evidence_import_scan_flags_every_other_route(tmp_path: Path) -> Non
     }
 
 
-# --- (b) public surface --------------------------------------------------------------
+# --- (b) public surface ---------------------------------------------------------------
 
 
 def _types_in(annotation: Any) -> list[Any]:
@@ -330,7 +334,7 @@ def test_the_surface_check_catches_a_leaked_handle() -> None:
     assert _raw_handles_in(ClaimedBatch) == []
 
 
-# --- (c) one hop to the runtime ------------------------------------------------------
+# --- (c) one hop to the runtime -------------------------------------------------------
 
 
 def _package_of(path: Path, root: Path, root_package: str) -> str:
@@ -449,3 +453,107 @@ def test_the_one_hop_scan_flags_a_runtime_import(tmp_path: Path) -> None:
             ]
         ),
     }
+
+
+# --- (d) the extraction provider's importers ------------------------------------------
+
+_EXTRACTION_MODULE: Final = "rheo_core.runtime.extraction"
+_EXTRACTION_IMPORTERS: Final = frozenset(
+    {
+        "apps/worker/src/rheo_app_worker/main.py",
+        "apps/core/src/rheo_app_core/startup.py",
+    }
+)
+"""The two composition roots (spec § System Components item 7): the worker, which
+hands the provider its real adapters, and the core process, whose recording gate asks
+its own provider registry."""
+_SCANNED_TREES: Final = ("apps", "modules", "packages", "runtimes", "scripts", "tests")
+
+
+def _extraction_importers(root: Path) -> list[str]:
+    """Every file under ``root``'s scanned trees that imports the extraction module,
+    top-level or deferred, relative imports resolved from the file's own package."""
+    found: list[str] = []
+    for tree_name in _SCANNED_TREES:
+        base = root / tree_name
+        if not base.is_dir():
+            continue
+        for path in _python_files(base):
+            relative = path.relative_to(root)
+            # A package's own relative imports resolve against its dotted name; for
+            # ``packages/<dist>/src/<pkg>/...`` that is the part after ``src``.
+            parts = relative.parent.parts
+            package = (
+                ".".join(parts[parts.index("src") + 1 :]) if "src" in parts else ""
+            )
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    if node.level:
+                        if not package:
+                            continue
+                        module = importlib.util.resolve_name(
+                            "." * node.level + module, package
+                        )
+                    names = [module] + [
+                        f"{module}.{alias.name}" for alias in node.names
+                    ]
+                if any(_is_or_under(name, _EXTRACTION_MODULE) for name in names):
+                    found.append(str(relative))
+                    break
+    return sorted(set(found))
+
+
+def _outside_the_roots(importers: list[str]) -> list[str]:
+    return [
+        path
+        for path in importers
+        if path not in _EXTRACTION_IMPORTERS and not path.startswith("tests/")
+    ]
+
+
+def test_only_the_composition_roots_and_tests_import_the_extraction_provider() -> None:
+    importers = _extraction_importers(_REPO_ROOT)
+
+    # Both roots really import it, so the allowance is not a stale permission.
+    assert _EXTRACTION_IMPORTERS <= set(importers)
+    assert _outside_the_roots(importers) == [], importers
+
+
+def test_the_extraction_importer_scan_flags_every_route(tmp_path: Path) -> None:
+    """The positive control: a plain import, a from-import of the package's
+    attribute, a deferred import, and a relative import inside ``rheo_core``."""
+    probes = {
+        "apps/api/src/rheo_app_api/plain.py": "import rheo_core.runtime.extraction\n",
+        "apps/api/src/rheo_app_api/attribute.py": (
+            "from rheo_core.runtime import extraction\n"
+        ),
+        "modules/demo/src/rheo_demo/later.py": (
+            "def later():\n    from rheo_core.runtime.extraction import PROVIDER_NAME\n"
+        ),
+        "packages/core/src/rheo_core/evidence/relative.py": (
+            "from ..runtime.extraction import register_claude_cli_extraction\n"
+        ),
+        "packages/core/src/rheo_core/evidence/unrelated.py": (
+            "from rheo_core.runtime import AdapterRegistry\n"
+        ),
+        "tests/test_probe.py": "import rheo_core.runtime.extraction\n",
+    }
+    for relative, body in probes.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    importers = _extraction_importers(tmp_path)
+
+    assert _outside_the_roots(importers) == [
+        "apps/api/src/rheo_app_api/attribute.py",
+        "apps/api/src/rheo_app_api/plain.py",
+        "modules/demo/src/rheo_demo/later.py",
+        "packages/core/src/rheo_core/evidence/relative.py",
+    ]
+    assert "tests/test_probe.py" in importers

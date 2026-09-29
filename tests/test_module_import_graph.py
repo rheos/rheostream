@@ -16,6 +16,7 @@ _MATRIX_PARSER = _REPO_ROOT / "tests" / "test_acceptance_matrix.py"
 _ABSENCE_PROOF_MATRIX = _REPO_ROOT / "docs" / "acceptance" / "phase-1-matrix.md"
 _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_automatic_memory_acceptance.py",
+    "tests/postgres/test_automatic_memory_claude_cli.py",
     "tests/postgres/test_automatic_memory_drain.py",
     "tests/postgres/test_automatic_memory_export.py",
     "tests/postgres/test_automatic_memory_limits.py",
@@ -105,6 +106,8 @@ directly for the ``claude_code_local`` shape, which only the real seam can answe
 automatic memories, so a restore re-checks each one's own bound purpose.
 ``test_automatic_memory_local_poison.py`` drives a poison ``claude_code_local`` unit
 through Recallatron's real drain and seam, so its neighbours must become real memories.
+``test_automatic_memory_claude_cli.py`` drains a ``claude_code_local`` unit through the
+``claude_cli`` provider on a scripted adapter, so it must become a real memory.
 ``test_local_authority.py`` proves AC 2's expired-before-claim case leaves no memory
 and no receipt, which only Recallatron's own tables can show.
 ``test_evidence_ingest.py`` drains a clamped ingest to a real memory, and proves a
