@@ -443,13 +443,18 @@ def test_too_many_failed_json_parses_make_a_segment_a_payload() -> None:
 
 
 def _fit(unit: str) -> str:
-    return (unit * (MAX_INPUT_CHARS // len(unit) + 1))[:MAX_INPUT_CHARS]
+    """Whole units only: a unit cut short can end the text in ``>`` and let the
+    whole-segment tag rule drop it at once, which would time nothing."""
+    return unit * (MAX_INPUT_CHARS // len(unit))
 
 
 ADVERSARIAL = {
     "brace quote": _fit('{"'),
     "brace quote lines": _fit('{"\n'),
     "open tag lines": _fit("<a> x\n"),
+    "open tag lines, no space": _fit("<a>x\n"),
+    "json lines": _fit("[1]\n"),
+    "json lines with prose after": _fit("[1] x\n"),
     "bare tag lines": _fit("<a>\nprose\n"),
     "unclosed quoted attribute": "<a " + _fit("b='x' = ")[3:],
     "deep array": "x\n" + "[" * (MAX_INPUT_CHARS - 2),
