@@ -93,7 +93,7 @@ from rheo_recallatron.manifest import MANIFEST
 from rheo_recallatron.storage import tables as memory_tables
 from sqlalchemy import select
 from sqlalchemy.engine import Row
-from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, StatementError
 
 pytestmark = pytest.mark.postgres
 
@@ -697,6 +697,17 @@ def _operational(text_: str) -> DBAPIError:
     )
 
 
+def _bind_failure(text_: str) -> StatementError:
+    """What SQLAlchemy raises when binding a parameter fails: not a ``DBAPIError``,
+    and its ``str()`` still quotes the parameters."""
+    return StatementError(
+        "a bind processor refused a value",
+        f"INSERT INTO memory (body) VALUES ('{text_}')",
+        {"body": text_},
+        TypeError("unserializable"),
+    )
+
+
 def _invalidated_integrity(text_: str) -> DBAPIError:
     return IntegrityError(
         f"INSERT INTO memory_entity (name) VALUES ('{text_}')",
@@ -707,20 +718,22 @@ def _invalidated_integrity(text_: str) -> DBAPIError:
 
 
 @pytest.mark.parametrize(
-    ("make_error", "error_type", "invalidated"),
+    ("make_error", "error_type", "sqlstate", "invalidated"),
     [
-        (_operational, "OperationalError", False),
-        (_invalidated_integrity, "IntegrityError", True),
+        (_operational, "OperationalError", "57P01", False),
+        (_invalidated_integrity, "IntegrityError", "57P01", True),
+        (_bind_failure, "StatementError", None, False),
     ],
-    ids=["not_contained", "invalidated_integrity"],
+    ids=["not_contained", "invalidated_integrity", "bind_failure"],
 )
 def test_a_database_error_escaping_the_drain_carries_no_evidence_text(
     monkeypatch: pytest.MonkeyPatch,
     ev: EvidenceWorkspace,
     pinned: datetime,
     caplog: pytest.LogCaptureFixture,
-    make_error: Callable[[str], DBAPIError],
+    make_error: Callable[[str], StatementError],
     error_type: str,
+    sqlstate: str | None,
     invalidated: bool,
 ) -> None:
     """An error the per-unit savepoint does not contain (another class, or a dropped
@@ -739,14 +752,14 @@ def test_a_database_error_escaping_the_drain_carries_no_evidence_text(
 
     [drain] = _jobs(ev)
     assert (drain.state, drain.attempts) == ("queued", 1)
-    assert drain.last_error == f"{error_type} (SQLSTATE 57P01)"
+    assert drain.last_error == f"{error_type} (SQLSTATE {sqlstate})"
     [raised] = [
         record.args[1]
         for record in caplog.records
         if record.msg == "job %s raised: %s" and isinstance(record.args, tuple)
     ]
     assert isinstance(raised, DrainDatabaseError)
-    assert (raised.error_type, raised.sqlstate) == (error_type, "57P01")
+    assert (raised.error_type, raised.sqlstate) == (error_type, sqlstate)
     assert raised.connection_invalidated is invalidated
     assert raised.__cause__ is None and raised.__context__ is None
     for rendered in (str(raised), repr(raised), str(drain.last_error), caplog.text):

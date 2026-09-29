@@ -39,7 +39,8 @@ success audit's digest is of what was accepted.
 
 **Content-free failures.** A psycopg error's text quotes the failing row and SQLAlchemy
 adds the bound parameters, and the worker stores ``str(failure)`` as the job's
-``last_error``. So a ``DBAPIError`` never leaves the drain as itself:
+``last_error``. So no ``StatementError`` (the base of ``DBAPIError``, and what
+SQLAlchemy raises when binding a parameter fails) leaves the drain as itself:
 :class:`DrainDatabaseError` carries its class name and SQLSTATE only. The two log lines
 here carry counts, a class name and a SQLSTATE, never a kind, a name or a message.
 
@@ -63,7 +64,7 @@ from rheo_core.events.consumers import ConsumerRegistry, HandlerUnitOfWork
 from rheo_core.evidence import ClaimedUnit, claim_units, defer_unit, settle_unit
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
-from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError, StatementError
 
 from rheo_recallatron.configuration import (
     DRAIN_JOB_KIND,
@@ -81,26 +82,30 @@ MENTIONS_DROPPED_LOG: Final = "automatic_memory_mentions_dropped"
 ACCEPTANCE_DEFERRED_LOG: Final = "automatic_memory_acceptance_deferred"
 
 
-def _sqlstate(error: DBAPIError) -> str | None:
+def _sqlstate(error: StatementError) -> str | None:
     """The driver's SQLSTATE, when it is a string; anything else could carry text."""
     raw = getattr(error.orig, "sqlstate", None)
     return raw if isinstance(raw, str) else None
 
 
 class DrainDatabaseError(Exception):
-    """A ``DBAPIError`` that escaped the drain, with its message, statement and
+    """A ``StatementError`` that escaped the drain, with its message, statement and
     parameters dropped: ``str()`` and ``repr()`` are the class name and SQLSTATE.
 
     Core's own equivalent is not on the evidence surface Recallatron may import, so
     this module keeps its own. ``connection_invalidated`` is kept.
     """
 
-    def __init__(self, error: DBAPIError) -> None:
+    def __init__(self, error: StatementError) -> None:
         sqlstate = _sqlstate(error)
         super().__init__(f"{type(error).__name__} (SQLSTATE {sqlstate})")
         self.error_type: str = type(error).__name__
         self.sqlstate: str | None = sqlstate
-        self.connection_invalidated: bool = bool(error.connection_invalidated)
+        # Only a ``DBAPIError`` knows whether the connection went; a bind failure
+        # never touched it.
+        self.connection_invalidated: bool = bool(
+            getattr(error, "connection_invalidated", False)
+        )
 
 
 class DrainJobPayload(BaseModel):
@@ -166,7 +171,7 @@ def run_drain_job(
     escaped: DrainDatabaseError | None = None
     try:
         _drain(uow, token, consumers=consumers)
-    except DBAPIError as error:
+    except StatementError as error:
         escaped = DrainDatabaseError(error)
     if escaped is not None:
         # Outside the ``except`` block, so the original is not on ``__context__``.
@@ -214,6 +219,7 @@ def _drain(
             _log.warning(
                 ACCEPTANCE_DEFERRED_LOG,
                 extra={
+                    "evidence_id": str(claimed.evidence_id),
                     "error_type": type(error).__name__,
                     "sqlstate": _sqlstate(error),
                 },
