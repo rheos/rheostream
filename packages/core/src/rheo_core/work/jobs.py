@@ -47,8 +47,8 @@ means the same thing, stated once on :func:`finish_succeeded`.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Final
+from datetime import UTC, datetime, timedelta
+from typing import Final, Literal, overload
 from uuid import UUID
 
 from sqlalchemy import Connection, and_, case, func, insert, or_, select, update
@@ -141,6 +141,7 @@ def _apply(conn: Connection, where: ColumnElement[bool], **values: object) -> bo
     return conn.execute(update(t.job).where(where).values(**values)).rowcount == 1
 
 
+@overload
 def enqueue_job(
     conn: Connection,
     *,
@@ -150,11 +151,59 @@ def enqueue_job(
     max_attempts: int,
     next_run_at: datetime | None = None,
     operation_id: UUID | None = None,
-) -> UUID:
-    """Write one ``queued`` row and return its id. Does not commit.
+    dedupe: Literal[False] = False,
+) -> UUID: ...
+
+
+@overload
+def enqueue_job(
+    conn: Connection,
+    *,
+    kind: str,
+    payload: dict[str, object],
+    now: datetime,
+    max_attempts: int,
+    next_run_at: datetime | None = None,
+    operation_id: UUID | None = None,
+    dedupe: Literal[True],
+) -> bool: ...
+
+
+@overload
+def enqueue_job(
+    conn: Connection,
+    *,
+    kind: str,
+    payload: dict[str, object],
+    now: datetime,
+    max_attempts: int,
+    next_run_at: datetime | None = None,
+    operation_id: UUID | None = None,
+    dedupe: bool,
+) -> UUID | bool: ...
+
+
+def enqueue_job(
+    conn: Connection,
+    *,
+    kind: str,
+    payload: dict[str, object],
+    now: datetime,
+    max_attempts: int,
+    next_run_at: datetime | None = None,
+    operation_id: UUID | None = None,
+    dedupe: bool = False,
+) -> UUID | bool:
+    """Write one ``queued`` row without committing; normally return its id.
 
     ``attempts = 0``, ``cancel_requested = false``, and ``next_run_at`` defaults to
     ``now`` — a job with no requested delay is due the moment its transaction commits.
+
+    With ``dedupe=True``, serialize enqueues for this ``kind`` and due instant within
+    the database, then return whether this call inserted a row. A queued row at the same
+    instant suppresses the insert; leased and terminal rows do not. The advisory lock is
+    transaction-scoped, so the caller must retain its transaction through the enqueue.
+    The default path retains the original UUID return value and does not deduplicate.
 
     ``operation_id`` is the first writer ``job.operation_id`` has ever had. Additive
     with a ``None`` default, so both existing callers — :func:`enqueue` below and
@@ -164,6 +213,26 @@ def enqueue_job(
     ``long_running`` handler reads it from ``HandlerUnitOfWork.operation_id`` and
     passes it here.
     """
+    due_at = now if next_run_at is None else next_run_at
+    if dedupe:
+        # Hash a canonical instant in Python, not a session-timezone-dependent SQL
+        # rendering. A hash collision only serializes unrelated keys; the exact match
+        # below still controls whether an insert is suppressed.
+        lock_key = f"{len(kind)}:{kind}{due_at.astimezone(UTC).isoformat()}"
+        conn.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
+        )
+        existing = conn.execute(
+            select(t.job.c.id)
+            .where(
+                t.job.c.kind == kind,
+                t.job.c.state == QUEUED,
+                t.job.c.next_run_at == due_at,
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return False
     job_id = uuid7()
     conn.execute(
         insert(t.job).values(
@@ -174,12 +243,12 @@ def enqueue_job(
             operation_id=operation_id,
             attempts=0,
             max_attempts=max_attempts,
-            next_run_at=now if next_run_at is None else next_run_at,
+            next_run_at=due_at,
             cancel_requested=False,
             created_at=now,
         )
     )
-    return job_id
+    return True if dedupe else job_id
 
 
 def has_job_for_operation(conn: Connection, *, operation_id: UUID) -> bool:

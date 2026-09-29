@@ -188,6 +188,7 @@ def _enqueue_drain(
         now=now,
         max_attempts=DRAIN_MAX_ATTEMPTS,
         next_run_at=next_run_at,
+        dedupe=next_run_at is not None,
     )
     uow.request_due_mark()
 

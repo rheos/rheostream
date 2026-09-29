@@ -150,8 +150,10 @@ never exported. Its `source_expires_at` is its recording time plus
 `automatic_memory.max_pending_hours`; the first daily `core.retention_sweep` after that
 instant ages a still-pending row to `gap/expired_pending`, so its text can stay until the
 next daily sweep, unless a drain job ages it sooner: Recallatron's automatic-memory drain ages
-every expired pending row before it claims. The same sweep deletes settled
-and gap rows older than `runtime.transcript_retention_days`. A run's turn is recorded only when
+every expired pending row before it claims. The sweep skips rows another transaction holds
+locked (`SKIP LOCKED`); if that transaction rolls back, the row remains pending until a later
+sweep can lock it, so there is no hard one-sweep-interval upper bound. The same sweep deletes
+settled and gap rows older than `runtime.transcript_retention_days`. A run's turn is recorded only when
 six conditions all hold, checked in order: `automatic_memory.enabled` is true at both the
 operator and the workspace level; an extraction provider resolves (the default `"none"`
 resolves nothing, so production records nothing until one is configured); an enabled module

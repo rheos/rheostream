@@ -6,8 +6,10 @@ turned into memory, a sibling of the runtime tables rather than a new
 ``runtime_transcript.kind``. It is transient working state, like ``core.job``: never
 exported. A ``pending`` row keeps its text until it settles, or until the first drain
 claim or daily ``core.retention_sweep`` after its ``source_expires_at`` ages it to
-``gap/expired_pending``, so it can outlive ``automatic_memory.max_pending_hours`` by up
-to one sweep interval.
+``gap/expired_pending``. With no competing lock, the daily sweep may leave its text for
+up to one sweep interval past ``automatic_memory.max_pending_hours``. The sweep uses
+``SKIP LOCKED``: if another transaction holds the row when the sweep runs, it remains
+pending until a later sweep can lock it, even if that transaction rolls back.
 
 **The whole table is frozen at 0010.** Revision ``0010_evidence_unit`` creates it from
 this module (``evidence_metadata.create_all``), so every column, CHECK and index here is

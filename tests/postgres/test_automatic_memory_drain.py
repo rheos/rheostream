@@ -413,6 +413,26 @@ def test_a_backed_off_follow_up_is_enqueued_exactly_at_its_instant(
     assert result.next_due_at == later
 
 
+def test_repeated_empty_drains_deduplicate_the_same_backed_off_follow_up(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, pinned: datetime
+) -> None:
+    later = pinned + timedelta(seconds=320)
+    batch = ClaimedBatch(units=(), follow_up_at=later)
+    monkeypatch.setattr(automatic, "claim_units", _claims(batch, batch))
+    first = _enqueue_drain(ev, at=pinned)
+    second = _enqueue_drain(ev, at=pinned)
+
+    _visit(ev, at=pinned)
+    _visit(ev, at=pinned)
+
+    jobs = _jobs(ev)
+    assert len(jobs) == 3
+    assert {job.id for job in jobs if job.id in (first, second)} == {first, second}
+    assert all(job.state == "succeeded" for job in jobs if job.id in (first, second))
+    [follow_up] = [job for job in jobs if job.id not in (first, second)]
+    assert (follow_up.state, follow_up.next_run_at) == ("queued", later)
+
+
 def test_an_extraction_failure_leaves_the_drain_succeeded_and_only_the_row_moved(
     monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, pinned: datetime
 ) -> None:

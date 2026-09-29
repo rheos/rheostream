@@ -151,6 +151,72 @@ def test_an_explicit_budget_beats_the_setting(
     assert _read(engine, job_id).max_attempts == 2
 
 
+def test_enqueue_job_deduplicates_only_matching_queued_kind_and_instant(
+    engine: Engine, now: datetime
+) -> None:
+    due_at = now + timedelta(minutes=5)
+    with engine.begin() as conn:
+        inserted = enqueue_job(
+            conn,
+            kind=KIND,
+            payload=PAYLOAD,
+            now=now,
+            max_attempts=3,
+            next_run_at=due_at,
+            dedupe=True,
+        )
+        duplicate = enqueue_job(
+            conn,
+            kind=KIND,
+            payload=PAYLOAD,
+            now=now,
+            max_attempts=3,
+            next_run_at=due_at,
+            dedupe=True,
+        )
+        different_kind = enqueue_job(
+            conn,
+            kind=f"{KIND}.other",
+            payload=PAYLOAD,
+            now=now,
+            max_attempts=3,
+            next_run_at=due_at,
+            dedupe=True,
+        )
+        different_instant = enqueue_job(
+            conn,
+            kind=KIND,
+            payload=PAYLOAD,
+            now=now,
+            max_attempts=3,
+            next_run_at=due_at + timedelta(seconds=1),
+            dedupe=True,
+        )
+        default_one = enqueue_job(
+            conn,
+            kind=KIND,
+            payload=PAYLOAD,
+            now=now,
+            max_attempts=3,
+            next_run_at=due_at,
+        )
+        default_two = enqueue_job(
+            conn,
+            kind=KIND,
+            payload=PAYLOAD,
+            now=now,
+            max_attempts=3,
+            next_run_at=due_at,
+        )
+
+    assert inserted is True
+    assert duplicate is False
+    assert different_kind is True
+    assert different_instant is True
+    assert isinstance(default_one, UUID) and isinstance(default_two, UUID)
+    assert default_one != default_two
+
+
 # --- AC 3: the lease query ------------------------------------------------------------
 
 

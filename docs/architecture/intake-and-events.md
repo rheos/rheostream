@@ -570,6 +570,8 @@ locks on the rows it claims, until its transaction commits), and deletes
 settled and gap evidence rows older than `runtime.transcript_retention_days`. Both evidence
 steps run before the session-file walk, which returns early on a workspace with no CLI
 configuration directory, so they run on every workspace, including the ones nothing drains.
+Because the sweep skips locked rows, a still-pending row whose lock holder rolls back is
+left for a later daily sweep; expiry therefore has no hard one-sweep-interval upper bound.
 Outbox retention named under [Events and the outbox](#events-and-the-outbox-fr-15) is
 unimplemented and is not part of that handler. Each workspace is provisioned a
 `core.schedule` row at migrate time; the worker's schedule ticker enqueues
