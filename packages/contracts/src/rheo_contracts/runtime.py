@@ -306,6 +306,10 @@ class AdapterSpawn(BaseModel):
     work_dir: str
     config_dir: str
     native_handle: str | None
+    # Both default off so every existing spawn keeps its argv. Only the
+    # extraction provider sets them; runtime runs never do.
+    model_override: str | None = None
+    disable_builtin_tools: bool = False
 
 
 class RuntimeHandle(Protocol):
