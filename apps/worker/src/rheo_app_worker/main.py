@@ -45,6 +45,7 @@ from rheo_core.runtime import (
     RuntimeJobPayload,
     make_run_runtime_job,
 )
+from rheo_core.runtime.extraction import register_claude_cli_extraction
 from rheo_core.settings import resolve
 from rheo_core.storage.postgres import get_backend, reset_backend
 from rheo_core.work.kinds import JobKindRegistry
@@ -159,6 +160,13 @@ def main() -> None:
     # RHEO__<module>__* variable is a stray until its settings are registered.
     register_module_settings()
     refuse_misconfigured_login()
+    # The worker is where drains call ``extract``, so the ``claude_cli`` extraction
+    # provider gets the real adapter here: this module's own ``ADAPTERS``. The core
+    # process registers it too, on an empty registry (``rheo_app_core/startup.py``,
+    # ``run_startup``), because its recording gate asks whether a provider resolves.
+    # Here rather than beside ``ADAPTERS.register`` at module level: registering reads
+    # the deployment profile, and a bare import of this module must resolve nothing.
+    register_claude_cli_extraction(ADAPTERS)
     register_modules()
     backend = get_backend()
     stop = threading.Event()

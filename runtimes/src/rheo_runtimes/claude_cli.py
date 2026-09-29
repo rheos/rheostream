@@ -450,6 +450,13 @@ def _argv(
         "--allowedTools",
         ",".join(request.permitted_tools),
     ]
+    if spawn.model_override:
+        argv.extend(["--model", spawn.model_override])
+    if spawn.disable_builtin_tools:
+        # Doc-sourced: an empty --tools value disables every built-in tool.
+        # --allowedTools "" only pre-approves nothing. Unverified against the
+        # installed CLI until CP-B checks that a tool call is refused.
+        argv.extend(["--tools", ""])
     if spawn.native_handle:
         argv.extend(["--resume", spawn.native_handle])
     return argv

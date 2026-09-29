@@ -3,10 +3,10 @@
 In order: the allowed modules' settings keys (#108) → settings → the
 production/https invariant → data root → the ``secret://env/*`` reference check →
 ensure the control database and run the ``control`` chain → the identity-provider
-sync → migrate active workspaces serially → build the operation registry → build the
-tool registry → load the modules the resolved ``modules.installed`` setting names →
-check that every registered operation above the read class has an installed audit
-sink.
+sync → migrate active workspaces serially → build the operation registry → register the
+``claude_cli`` extraction provider → build the tool registry → load the modules the
+resolved ``modules.installed`` setting names → check that every registered operation
+above the read class has an installed audit sink.
 "Ensure the control database" treats psycopg's ``DuplicateDatabase`` as success
 (``PostgresBackend.ensure_database``), mirroring provisioning's "already exists is a
 retry": the advisory lock covers the migration chain, not the ``CREATE DATABASE``
@@ -43,6 +43,8 @@ from rheo_core.modules import load_modules, register_module_settings
 from rheo_core.operations import REGISTRY, register_core_operations
 from rheo_core.operations.audit_paths import check_audit_paths
 from rheo_core.routing import SCHEME_KEY
+from rheo_core.runtime import AdapterRegistry
+from rheo_core.runtime.extraction import register_claude_cli_extraction
 from rheo_core.secrets import check_env_references
 from rheo_core.settings import PROFILE_KEY, resolve
 from rheo_core.storage.data_root import (
@@ -121,6 +123,14 @@ def run_startup() -> StartupReport:
     sync_providers(backend, settings)
     workspaces = migrate_active_workspaces(backend)
     operations = tuple(sorted(op.name for op in register_core_operations()))
+    # This process never calls ``extract``, but ``core.evidence.ingest`` runs here and
+    # the recording gate (``evidence/record.py``, ``recording_allowed``) asks THIS
+    # process's provider registry whether one resolves; without this registration a
+    # deployment configured for ``claude_cli`` would defer every record forever. The
+    # adapter registry is deliberately empty, so a stray ``extract`` here fails
+    # ``adapter_unavailable`` and spawns nothing. The worker registers the same
+    # provider on its real adapters (``rheo_app_worker/main.py``, ``main``).
+    register_claude_cli_extraction(AdapterRegistry())
     # Beside the operation registration, not folded into it: a tool is a name over
     # an operation and carries no audit obligation, so ordering against
     # ``check_audit_paths`` below does not matter for tools the way it does for

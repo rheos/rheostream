@@ -3,14 +3,22 @@ package (spec § Architecture, System Components item 8; FR 2, 5, 6, 9, 10; R9, 
 R14).
 
 Three functions. :func:`claim_units` takes one bounded, single-partition batch of
-``pending`` evidence, checks each unit's authority before any model call, runs the one
-extraction call, and hands back fully built :class:`ClaimedUnit` values.
+``pending`` evidence, checks each unit against its own producer kind's authority
+before any model call, runs the one extraction call, and hands back fully built
+:class:`ClaimedUnit` values.
 :func:`settle_unit` records what the accepting module did with one of them, writing the
 success audit row first when a memory was created. :func:`defer_unit` counts an
 attempt on one whose acceptance the database refused, so a poison unit backs off like
 an extraction failure instead of jamming the queue (#215). None of them commits: all
 run in the drain job's own transaction, so memory, receipt, event, audit row and
 settlement land together or not at all.
+
+**An authority per row, not per claim (FR 5, EC 8).** A partition is keyed by speaker,
+audience and purpose, not by producer kind, so one claim can hold ``rheo_runtime`` and
+``claude_code_local`` rows together. Each row is verified by the authority for its own
+``producer_kind`` (:func:`_authorities`, built once per claim), and each
+:class:`ClaimedUnit` carries that same authority. A row whose kind has no authority
+settles ``settled/authority_unverified`` without one being asked.
 
 **Two words used throughout.** *Claimable* means ``state = 'pending' AND (retry_after
 IS NULL OR retry_after <= now)``. *Waiting* means ``state = 'pending' AND retry_after >
@@ -67,8 +75,17 @@ from rheo_core.boundary import (
     Refusal,
     context_for_evidence_acceptance,
 )
-from rheo_core.evidence.authority import RuntimeEvidenceAuthority
-from rheo_core.evidence.extract import NOOP_EVIDENCE, digest, validate_extraction
+from rheo_core.evidence.authority import RUNTIME_PRODUCER_KIND, RuntimeEvidenceAuthority
+from rheo_core.evidence.extract import (
+    NOOP_EVIDENCE,
+    ExtractionScope,
+    digest,
+    validate_extraction,
+)
+from rheo_core.evidence.local_authority import (
+    LOCAL_PRODUCER_KIND,
+    LocalEvidenceAuthority,
+)
 from rheo_core.evidence.providers import resolve_provider
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -130,7 +147,8 @@ class _ExtractionProviderMissing(Exception):
 @dataclass(frozen=True, slots=True)
 class ClaimedUnit:
     """One claimed unit, fully built by core, and the context and authority the
-    accepting module calls 1a1's seam with."""
+    accepting module calls 1a1's seam with. ``authority`` is the one for this unit's
+    own ``producer_kind``, not the partition anchor's."""
 
     evidence_id: UUID
     context: WorkspaceContext
@@ -303,6 +321,19 @@ def _unit(row: Any, evidence: SanitizedEvidence) -> TrustedSourceUnit:
     )
 
 
+def _authorities(uow: UnitOfWork) -> dict[str, SourceAuthority]:
+    """One authority per producer kind a claim can verify, each bound to ``uow``.
+
+    Built once per claim and looked up per row by the row's own ``producer_kind``.
+    A kind missing here (``migration``, or any later kind) has no claim-time
+    authority, so its row settles ``authority_unverified`` without a verify call.
+    """
+    return {
+        RUNTIME_PRODUCER_KIND: RuntimeEvidenceAuthority(uow),
+        LOCAL_PRODUCER_KIND: LocalEvidenceAuthority(uow),
+    }
+
+
 def _earliest_waiting(
     uow: UnitOfWork, *, now: datetime, lockable_only: bool
 ) -> datetime | None:
@@ -385,10 +416,12 @@ def claim_units(
     ``pending`` rows without waiting (1); anchor on the first claimable row and lock
     up to ``automatic_memory.max_units_per_job`` of its ``(speaker, audience kind,
     audience id, purpose)`` partition, plus one row that only signals more (2); settle
-    every row with no acceptance context or a refused authority pre-check
-    ``settled/authority_unverified`` before any model call (3); run one extraction
-    over what remains, containing any failure to this partition (4); and return the
-    surviving units with the follow-up instant (5).
+    every row with no acceptance context, no authority for its producer kind, or a
+    refused pre-check by its own kind's authority ``settled/authority_unverified``
+    before any model call (3); run one extraction over what remains, its batch
+    scoped to the workspace and the anchor's speaker and purpose, containing any
+    failure to this partition (4); and return the surviving units with the follow-up
+    instant (5).
 
     ``before_extraction``, when given, is called with the acceptance context between
     steps 3 and 4 whenever step 3 leaves units to extract, before the provider is
@@ -436,16 +469,24 @@ def claim_units(
     )
     if isinstance(context, Refusal) and context.state != MEMBERSHIP_MISSING:
         raise EvidenceWorkspaceUnresolved("no acceptance context for the workspace")
-    authority = RuntimeEvidenceAuthority(uow)
-    verified: list[Any] = []
+    # The partition key has no producer kind in it, so one claim can mix kinds
+    # (EC 8): each row is checked by its own kind's authority, never the anchor's.
+    # A kind with no authority here settles without a verify call.
+    authorities = _authorities(uow)
+    verified: list[tuple[Any, SourceAuthority]] = []
     for row in rows:
-        if isinstance(context, WorkspaceContext) and not isinstance(
-            authority.verify(
-                _unit(row, NOOP_EVIDENCE), workspace_id=workspace_id, now=now
-            ),
-            AuthorityRefused,
+        authority = authorities.get(row.producer_kind)
+        if (
+            isinstance(context, WorkspaceContext)
+            and authority is not None
+            and not isinstance(
+                authority.verify(
+                    _unit(row, NOOP_EVIDENCE), workspace_id=workspace_id, now=now
+                ),
+                AuthorityRefused,
+            )
         ):
-            verified.append(row)
+            verified.append((row, authority))
             continue
         _settle_row(
             uow,
@@ -468,7 +509,15 @@ def claim_units(
 
     # Step 4. The provider never touches the database, so the transaction is still
     # healthy after any exception it raises; the failure path's writes must commit.
-    batch = digest([row.body for row in verified], mention_kinds=mention_kinds)
+    batch = digest(
+        [row.body for row, _ in verified],
+        mention_kinds=mention_kinds,
+        scope=ExtractionScope(
+            workspace_id=workspace_id,
+            account_id=anchor.speaker_account_id,
+            purpose=ContextPurpose(anchor.purpose),
+        ),
+    )
     failure: str | None = None
     candidates: dict[str, SanitizedEvidence] = {}
     try:
@@ -479,7 +528,12 @@ def claim_units(
     except Exception as exc:  # any provider fault is contained to this partition
         failure = type(exc).__name__
     if failure is not None:
-        _back_off(uow, verified, final_outcome=OUTCOME_EXTRACTION_FAILED, now=now)
+        _back_off(
+            uow,
+            [row for row, _ in verified],
+            final_outcome=OUTCOME_EXTRACTION_FAILED,
+            now=now,
+        )
         # The type name and a count only: a provider may fill a message with text.
         logger.warning(
             EXTRACTION_FAILED_LOG,
@@ -497,7 +551,7 @@ def claim_units(
             unit=_unit(row, candidates[item.item_id]),
             authority=authority,
         )
-        for row, item in zip(verified, batch.items, strict=True)
+        for (row, authority), item in zip(verified, batch.items, strict=True)
     )
     return ClaimedBatch(
         units=units, follow_up_at=_follow_up_at(uow, now=now, taken=taken, more=more)

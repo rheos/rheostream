@@ -73,6 +73,12 @@ from rheo_core.audit import (
 from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.factories import context_from_token
 from rheo_core.deletion.operations import RECORD_DELETE
+from rheo_core.evidence.enrollment import (
+    ENROLLMENT_CREATE,
+    ENROLLMENT_REVOKE,
+    ENROLLMENT_ROTATE,
+)
+from rheo_core.evidence.ingest import EVIDENCE_INGEST
 from rheo_core.modules.operations import MODULE_ENABLE, MODULE_INSTALL
 from rheo_core.operations import (
     AUDIT_SINK_MISSING,
@@ -147,13 +153,17 @@ THE_SEVENTEEN = frozenset(
         WORK_RETRY,
         WORK_SKIP,
         WORK_REPLAY,
+        ENROLLMENT_CREATE,
+        ENROLLMENT_ROTATE,
+        ENROLLMENT_REVOKE,
+        EVIDENCE_INGEST,
     }
 )
-"""Every registered operation above the read class: eighteen core and five harness
+"""Every registered operation above the read class: twenty-two core and five harness
 (test profile only).
 
 **The name is pinned by an acceptance record and does not track the count.** It says
-seventeen and the set holds twenty-three, which is the right trade:
+seventeen and the set holds twenty-seven, which is the right trade:
 ``test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen`` below is
 one of criterion 14's demonstrator pytest node ids, listed verbatim in
 ``docs/acceptance/phase-1-matrix.md``, and ``tests/test_acceptance_matrix.py`` resolves
@@ -173,12 +183,14 @@ C6 had added ``core.approval.approve`` and ``core.approval.refuse`` (both ``MUTA
 and the two upper-class harness fixtures — ``harness.fixture.act`` (``DESTRUCTIVE``)
 and ``harness.sink.send`` (``EXTERNAL``), the first operations of any class above
 ``MUTATE`` in the tree. Issue #131 adds ``core.work.retry``, ``.skip`` and ``.replay``
-(all ``MUTATE``), which makes twenty-three.
+(all ``MUTATE``), which makes twenty-three. Run 1a4b adds the three
+``core.evidence_enrollment.*`` operations and ``core.evidence.ingest`` (all
+``MUTATE``), which makes twenty-seven.
 
 **A literal, and the registry-derived set is compared against it**, not the other way
 round. Derived alone, the assertion would equal whatever the registry happened to hold
 and could not fail — an operation that lost its ``MUTATE`` class would match its own
-mistake. The count is asserted as well as the membership, so a twenty-fourth operation
+mistake. The count is asserted as well as the membership, so a twenty-eighth operation
 added later fails here loudly rather than being silently left out of the coverage
 below."""
 
@@ -338,7 +350,7 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
     private_registry: OperationRegistry,
 ) -> None:
     """AC 26's first half: the set under test comes from the registry, and is
-    twenty-three.
+    twenty-seven.
 
     **The name still says seventeen and stays that way**: it is a criterion-14
     demonstrator node id, resolved verbatim by ``tests/test_acceptance_matrix.py``
@@ -361,7 +373,7 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
         and operation.declaration.safety_class is not SafetyClass.READ
     }
     assert mutating == set(THE_SEVENTEEN), sorted(mutating)
-    assert len(mutating) == 23, sorted(mutating)
+    assert len(mutating) == 27, sorted(mutating)
 
 
 def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
@@ -500,6 +512,32 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
         ),
         WORK_REPLAY: dispatch(
             owner, WORK_REPLAY, {"consumer_id": "core.none", "from_position": 1}
+        ),
+        # Run 1a4b's four. ``create`` succeeds for the owner and leaves an active
+        # enrollment whose fresh token ``rheo doctor`` reads as healthy; ``rotate``
+        # and ``revoke`` of an enrollment id nothing holds refuse ``not_found``; and
+        # the owner's session is not a bridge token, so ``ingest`` refuses
+        # ``enrollment_inactive``. Refused-but-audited records, the last three.
+        ENROLLMENT_CREATE: dispatch(
+            owner,
+            ENROLLMENT_CREATE,
+            {"machine_fingerprint": "a" * 64, "project_fingerprint": "b" * 64},
+        ),
+        ENROLLMENT_ROTATE: dispatch(
+            owner, ENROLLMENT_ROTATE, {"enrollment_id": str(uuid7())}
+        ),
+        ENROLLMENT_REVOKE: dispatch(
+            owner, ENROLLMENT_REVOKE, {"enrollment_id": str(uuid7())}
+        ),
+        EVIDENCE_INGEST: dispatch(
+            owner,
+            EVIDENCE_INGEST,
+            {
+                "machine_fingerprint": "a" * 64,
+                "project_fingerprint": "b" * 64,
+                "records": [],
+                "gaps": [],
+            },
         ),
     }
     assert member is not None

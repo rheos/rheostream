@@ -1,8 +1,8 @@
 """``rheo doctor``: the allowed modules' settings registration, data-root validity,
 cluster reachability, the control-plane head,
 the connection budget, the reconcile interval, per-workspace state, per-workspace
-evidence acceptance failures, and the ``CREATE EXTENSION`` privilege report for
-``vector`` and ``pg_trgm``.
+evidence acceptance failures, per-workspace bridge enrollment token expiry, and the
+``CREATE EXTENSION`` privilege report for ``vector`` and ``pg_trgm``.
 
 The privilege report is kept in this run per the run spec (Technical Risks item 11):
 nothing in 0b installs an extension, but ``storage.template_database`` and this
@@ -23,6 +23,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
+from rheo_core.evidence.enrollment import (
+    EnrollmentTokenCounts,
+    enrollment_token_counts,
+)
 from rheo_core.evidence.health import SettlementCounts, settlement_counts_since
 from rheo_core.migrations.orchestrator import (
     CONTROL_CHAIN,
@@ -310,6 +314,66 @@ def _check_evidence_acceptance(
         yield _check_workspace_acceptance(backend, row, now=at)
 
 
+def _enrollment_check(name: str, counts: EnrollmentTokenCounts | None) -> Check:
+    """The level for one workspace's active enrollments by bridge-token standing.
+
+    ``FAIL`` for a token revoked (or gone) under an active row, already expired, or
+    expiring within 7 days; ``warn`` within 14; ``ok`` otherwise. #229's scheduled
+    doctor pages on ``FAIL``, so a bridge token cannot lapse silently. Counts only:
+    no enrollment id, no account id.
+    """
+    if counts is None:
+        return Check(
+            name, "ok", "not applicable: no enrollment table in this workspace"
+        )
+    detail = (
+        f"{counts.active} active; token revoked {counts.revoked}, expired "
+        f"{counts.expired}, expiring within 7 days {counts.within_fail}, within 14 "
+        f"days {counts.within_warn}"
+    )
+    if counts.revoked or counts.expired or counts.within_fail:
+        return Check(name, "FAIL", f"{detail}; rotate or revoke each")
+    if counts.within_warn:
+        return Check(name, "warn", f"{detail}; rotate before expiry")
+    return Check(name, "ok", detail)
+
+
+def _check_workspace_enrollments(
+    backend: PostgresBackend, row: WorkspaceRow, *, now: datetime
+) -> Check:
+    """One active workspace's ``bridge enrollments`` line. Read-only."""
+    name = f"bridge enrollments {row.id} ({row.slug})"
+    try:
+        with backend.pools.acquire(row.database_name) as engine:
+            with (
+                engine.connect() as connection,
+                backend.control_engine.connect() as control,
+            ):
+                counts = enrollment_token_counts(connection, control, now=now)
+    except (SQLAlchemyError, ValueError) as exc:
+        return Check(name, "FAIL", f"cannot read: {type(exc).__name__}")
+    return _enrollment_check(name, counts)
+
+
+def _check_bridge_enrollments(
+    backend: PostgresBackend, *, now: datetime | None = None
+) -> Iterator[Check]:
+    """:func:`_check_workspace_enrollments` for every active workspace, in the shape
+    of :func:`_check_evidence_acceptance`."""
+    at = datetime.now(UTC) if now is None else now
+    try:
+        with backend.control_engine.connect() as connection:
+            rows = list_workspaces(connection, state=WorkspaceState.ACTIVE)
+    except SQLAlchemyError as exc:
+        yield Check("bridge enrollments", "FAIL", f"cannot list: {type(exc).__name__}")
+        return
+    if not rows:
+        yield Check("bridge enrollments", "ok", "not applicable: no active workspace")
+        return
+    for row in rows:
+        yield _check_workspace_enrollments(backend, row, now=at)
+
+
 def _check_extensions(backend: PostgresBackend) -> Iterator[Check]:
     try:
         report = backend.extension_report(EXTENSIONS)
@@ -360,6 +424,7 @@ def doctor(args: argparse.Namespace) -> int:
         checks.append(_check_reconcile_interval())
         checks.extend(_check_workspaces(backend))
         checks.extend(_check_evidence_acceptance(backend))
+        checks.extend(_check_bridge_enrollments(backend))
         checks.extend(_check_extensions(backend))
     for check in checks:
         print(check.line())

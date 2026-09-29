@@ -10,14 +10,17 @@ import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
+from uuid import uuid4
 
 import pytest
+from rheo_contracts import ContextPurpose
 from rheo_contracts.source_units import SanitizedEvidence, SourceMention
 from rheo_core.evidence.extract import (
     NOOP_EVIDENCE,
     DigestBatch,
     DigestItem,
     ExtractionOutputInvalid,
+    ExtractionScope,
     digest,
     validate_extraction,
 )
@@ -77,11 +80,19 @@ def _assert_model_sees_only_ordinals_and_text(
     reachable = _values(batch)
     assert not hidden & set(reachable)
     # ``mention_kinds`` (#222) is the module's fixed vocabulary, never a unit's
-    # value: the hidden-value check above walks it too.
+    # value: the hidden-value check above walks it too. ``scope`` is the claim's
+    # identity for the provider's own binding checks, never the model's: these
+    # batches carry none, and the scoped test below proves it stays out of the items.
     assert [field.name for field in dataclasses.fields(DigestBatch)] == [
         "items",
         "mention_kinds",
+        "scope",
     ]
+    assert batch.scope is None
+    _assert_items_are_ordinals_and_text(batch)
+
+
+def _assert_items_are_ordinals_and_text(batch: DigestBatch) -> None:
     for item in batch.items:
         assert [field.name for field in dataclasses.fields(item)] == ["item_id", "text"]
         assert not hasattr(item, "__dict__")
@@ -132,6 +143,35 @@ def test_digestion_carries_the_mention_kinds_it_is_given_and_none_by_default() -
     batch = digest([unit.body for unit in units], mention_kinds=["person", "place"])
     _assert_model_sees_only_ordinals_and_text(batch, units)
     assert batch.mention_kinds == ("person", "place")
+
+
+def test_a_scope_rides_on_the_batch_and_never_reaches_an_item_or_answer() -> None:
+    """The scope is copied onto the batch untouched for the provider; no item carries
+    any part of it, the items are exactly the unscoped batch's, and the fake
+    provider's answer (built from the items alone) names none of it."""
+    workspace_id, account_id = uuid4(), uuid4()
+    scope = ExtractionScope(
+        workspace_id=workspace_id,
+        account_id=account_id,
+        purpose=ContextPurpose.INTERNAL_ANALYSIS,
+    )
+    bodies = [f"{FAKE_EXTRACTION_MARKER} first body", "second body"]
+    scoped = digest(bodies, scope=scope)
+
+    assert scoped.scope is scope
+    assert scoped.items == digest(bodies).items
+    _assert_items_are_ordinals_and_text(scoped)
+    scope_values = {
+        str(workspace_id),
+        str(account_id),
+        workspace_id.hex,
+        account_id.hex,
+        ContextPurpose.INTERNAL_ANALYSIS.value,
+    }
+    for item in scoped.items:
+        assert not any(value in item.text for value in scope_values)
+    answer = repr(FakeExtractionProvider().extract(scoped))
+    assert not any(value in answer for value in scope_values)
 
 
 # --- a well-formed response --------------------------------------------------------

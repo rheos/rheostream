@@ -16,7 +16,8 @@ and ``web`` skip that registration (``NO_BOOTSTRAP_COMMANDS``), and ``doctor`` r
 as its own first check (``SELF_REGISTERING_COMMANDS``). Commands at this
 run's merge SHA: ``migrate``, ``account create``,
 ``workspace create|repair|list|status``, ``doctor``, ``routing hosts``,
-``member add``, ``token issue|revoke``, ``openapi`` (run 0v's) and ``web compose``
+``member add``, ``token issue|revoke``, ``evidence enroll|rotate|revoke`` (run
+1a4b's), ``openapi`` (run 0v's) and ``web compose``
 (run 1a3's). Those last two bootstrap nothing — see ``commands/openapi.py`` and
 ``commands/web.py``.
 
@@ -50,6 +51,7 @@ from rheo_core.storage.data_root import DataRootRefusal
 from rheo_app_cli.commands import (
     account,
     doctor,
+    evidence,
     member,
     migrate,
     openapi,
@@ -124,6 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
         routing,
         member,
         token,
+        evidence,
         openapi,
         web,
     ):

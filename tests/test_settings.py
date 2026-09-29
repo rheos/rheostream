@@ -137,6 +137,7 @@ PRODUCTION_KEYS = {
     "automatic_memory.max_units_per_job": 64,
     "automatic_memory.max_pending_hours": 24,
     "automatic_memory.extraction.provider": "none",
+    "automatic_memory.extraction.model_id": "",
 }
 
 FLOORED_KEYS = frozenset(

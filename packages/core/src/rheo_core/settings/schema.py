@@ -26,7 +26,8 @@ adds the eleven ``runtime.*`` keys, for fifty; run 1a0's module contract adds
 ``modules.installed``, for fifty-one. Run 1a1 adds the two ``telemetry.*`` keys, for
 fifty-three, and issue #130 adds the two ``redaction.*`` keys the tier policy reads
 (``rheo_core/redaction/policy.py``), for fifty-five. Run 1a4 adds the six
-``automatic_memory.*`` keys, for sixty-one.
+``automatic_memory.*`` keys, for sixty-one, and run 1a4b adds
+``automatic_memory.extraction.model_id``, for sixty-two.
 ``api.cors_origins`` is still not declared here, for the reason this key was not
 until now: a key with no reader is machinery with no caller, and the registry/TOML
 identity check holds per merge SHA — every later chunk that adds a key adds it to
@@ -1086,6 +1087,16 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default="none",
+    ),
+    # Run 1a4b: the model the ``claude_cli`` extraction provider asks for; empty
+    # leaves the CLI on its own default. Deployment-only, like the provider name.
+    KeySpec(
+        key="automatic_memory.extraction.model_id",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
     ),
 )
 

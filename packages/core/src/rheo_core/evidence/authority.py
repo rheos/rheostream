@@ -26,7 +26,7 @@ and nothing else: no key, no account id, no text.
 """
 
 from datetime import datetime
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from rheo_contracts import ContextPurpose
@@ -36,6 +36,7 @@ from rheo_contracts.source_units import (
     TrustedSourceUnit,
 )
 from sqlalchemy import select
+from sqlalchemy.engine import Row
 
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import get_membership
@@ -58,6 +59,50 @@ REFUSAL_REASONS: Final = frozenset(
     {PRODUCER_MISMATCH, SOURCE_UNAVAILABLE, SPEAKER_MISMATCH, MEMBERSHIP_REVOKED}
 )
 """The closed vocabulary of this authority's refusals."""
+
+
+def _pending_row(uow: UnitOfWork, unit: TrustedSourceUnit) -> Row[Any] | None:
+    """The unit's own ``core.evidence_unit`` row, read ``FOR SHARE`` in ``uow``'s
+    transaction, or ``None`` when it is missing or no longer ``pending``.
+
+    Shared by every evidence-backed authority: the row is keyed by ``(producer_kind,
+    authority_id, native_key)`` exactly as the unit names it, and a ``settled`` or
+    ``gap`` row answers the same as a missing one.
+    """
+    row = uow.connection.execute(
+        select(
+            evidence_unit.c.authority_id,
+            evidence_unit.c.speaker_account_id,
+            evidence_unit.c.audience_kind,
+            evidence_unit.c.audience_id,
+            evidence_unit.c.purpose,
+            evidence_unit.c.state,
+        )
+        .where(
+            evidence_unit.c.producer_kind == unit.producer_kind,
+            evidence_unit.c.authority_id == unit.authority_id,
+            evidence_unit.c.native_key == unit.external_source_key,
+        )
+        .with_for_update(read=True)
+    ).one_or_none()
+    if row is None or row.state != STATE_PENDING:
+        return None
+    return row
+
+
+def _is_member(account_id: UUID, workspace_id: UUID) -> bool:
+    """Whether ``account_id`` still holds a ``control.membership`` row for
+    ``workspace_id``.
+
+    The control plane is its own database, read on its own connection exactly as
+    ``context_from_operation`` reads it: the same window, the same accepted risk,
+    nothing new. It therefore takes no unit of work.
+    """
+    with get_backend().control_engine.connect() as connection:
+        membership = get_membership(
+            connection, account_id=account_id, workspace_id=workspace_id
+        )
+    return membership is not None
 
 
 class RuntimeEvidenceAuthority:
@@ -86,36 +131,12 @@ class RuntimeEvidenceAuthority:
         """
         if unit.producer_kind != RUNTIME_PRODUCER_KIND:
             return AuthorityRefused(reason=PRODUCER_MISMATCH)
-        row = self._uow.connection.execute(
-            select(
-                evidence_unit.c.authority_id,
-                evidence_unit.c.speaker_account_id,
-                evidence_unit.c.audience_kind,
-                evidence_unit.c.audience_id,
-                evidence_unit.c.purpose,
-                evidence_unit.c.state,
-            )
-            .where(
-                evidence_unit.c.producer_kind == unit.producer_kind,
-                evidence_unit.c.authority_id == unit.authority_id,
-                evidence_unit.c.native_key == unit.external_source_key,
-            )
-            .with_for_update(read=True)
-        ).one_or_none()
-        if row is None or row.state != STATE_PENDING:
+        row = _pending_row(self._uow, unit)
+        if row is None:
             return AuthorityRefused(reason=SOURCE_UNAVAILABLE)
         if row.speaker_account_id != unit.principal_account_id:
             return AuthorityRefused(reason=SPEAKER_MISMATCH)
-        # The control plane is its own database, read on its own connection exactly
-        # as ``context_from_operation`` reads it: the same window, the same accepted
-        # risk, nothing new.
-        with get_backend().control_engine.connect() as connection:
-            membership = get_membership(
-                connection,
-                account_id=row.speaker_account_id,
-                workspace_id=workspace_id,
-            )
-        if membership is None:
+        if not _is_member(row.speaker_account_id, workspace_id):
             return AuthorityRefused(reason=MEMBERSHIP_REVOKED)
         return AuthorityGrant(
             workspace_id=workspace_id,

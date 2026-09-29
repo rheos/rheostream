@@ -35,6 +35,12 @@ from rheo_core.approvals import (
     STANDING_GRANT_REVOKE,
 )
 from rheo_core.deletion.operations import RECORD_DELETE
+from rheo_core.evidence.enrollment import (
+    ENROLLMENT_CREATE,
+    ENROLLMENT_REVOKE,
+    ENROLLMENT_ROTATE,
+)
+from rheo_core.evidence.ingest import EVIDENCE_INGEST
 from rheo_core.modules.loader import ALLOWLIST_KEY
 from rheo_core.modules.operations import MODULE_ENABLE, MODULE_INSTALL
 from rheo_core.operations import (
@@ -169,6 +175,15 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             # ``rheo_core.deletion.operations`` and registered inside the registrar for
             # the same import-direction reason the module pair is.
             RECORD_DELETE,
+            # Run 1a4b's three enrollment operations, declared in
+            # ``rheo_core.evidence.enrollment`` and registered inside the registrar
+            # because that module imports ``rheo_core.tokens.issue``.
+            ENROLLMENT_CREATE,
+            ENROLLMENT_ROTATE,
+            ENROLLMENT_REVOKE,
+            # Run 1a4b's ingest, the bridge token's one operation, registered beside
+            # the enrollment operations.
+            EVIDENCE_INGEST,
         )
     )
 

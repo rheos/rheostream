@@ -12,6 +12,7 @@ import json
 import stat
 import time
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -140,18 +141,32 @@ def _request(
     )
 
 
-def _spawn(tmp_path: Path, *, native_handle: str | None = None) -> AdapterSpawn:
+def _spawn(
+    tmp_path: Path,
+    *,
+    native_handle: str | None = None,
+    model_override: str | None = None,
+    disable_builtin_tools: bool | None = None,
+) -> AdapterSpawn:
     work_dir = tmp_path / "work"
     config_dir = tmp_path / "config-dir"
     work_dir.mkdir()
     config_dir.parent.mkdir(parents=True, exist_ok=True)
-    return AdapterSpawn(
-        mcp_url="http://127.0.0.1:8080/mcp",
-        run_token="rheo_runtime_test_token",
-        work_dir=str(work_dir),
-        config_dir=str(config_dir),
-        native_handle=native_handle,
-    )
+    fields: dict[str, Any] = {
+        "mcp_url": "http://127.0.0.1:8080/mcp",
+        "run_token": "rheo_runtime_test_token",
+        "work_dir": str(work_dir),
+        "config_dir": str(config_dir),
+        "native_handle": native_handle,
+    }
+    # The new fields reach the constructor only when a test sets them, so the
+    # default spawn is built exactly as every pre-existing caller builds it
+    # and a set value still goes through validation.
+    if model_override is not None:
+        fields["model_override"] = model_override
+    if disable_builtin_tools is not None:
+        fields["disable_builtin_tools"] = disable_builtin_tools
+    return AdapterSpawn(**fields)
 
 
 def _configure(
@@ -271,6 +286,127 @@ def test_resume_uses_spawn_native_handle(
     argv = json.loads((Path(spawn.work_dir) / "argv.json").read_text())
     assert "--resume" in argv
     assert argv[argv.index("--resume") + 1] == "cli-session-99"
+
+
+def _captured_argv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    native_handle: str | None = None,
+    model_override: str | None = None,
+    disable_builtin_tools: bool | None = None,
+) -> list[str]:
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    seed = _fill_seed(tmp_path / "seed")
+    _configure(monkeypatch, tmp_path, executable=stub, seed=seed)
+    spawn = _spawn(
+        tmp_path,
+        native_handle=native_handle,
+        model_override=model_override,
+        disable_builtin_tools=disable_builtin_tools,
+    )
+    handle = ClaudeCliRuntime().start(_request(), spawn=spawn)
+    assert drain_until_terminal(handle).type == "final_output"
+    argv: list[str] = json.loads((Path(spawn.work_dir) / "argv.json").read_text())
+    return argv
+
+
+def test_default_spawn_leaves_both_new_fields_off() -> None:
+    spawn = AdapterSpawn(
+        mcp_url="http://127.0.0.1:8080/mcp",
+        run_token="rheo_runtime_test_token",
+        work_dir="/tmp/example-work",
+        config_dir="/tmp/example-config",
+        native_handle=None,
+    )
+    assert spawn.model_override is None
+    assert spawn.disable_builtin_tools is False
+
+
+def test_default_spawn_emits_neither_model_nor_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    argv = _captured_argv(monkeypatch, tmp_path)
+    work = tmp_path / "work"
+    assert argv[1:] == [
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--max-turns",
+        "7",
+        "--mcp-config",
+        str(work / "mcp.json"),
+        "--allowedTools",
+        "core.note.get",
+    ]
+    assert "--model" not in argv
+    assert "--tools" not in argv
+    # The request's own model_id is still ignored, as before.
+    assert "sonnet" not in argv
+
+
+def test_model_override_appends_the_exact_value(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    argv = _captured_argv(monkeypatch, tmp_path, model_override="haiku-example")
+    assert argv.count("--model") == 1
+    assert argv[argv.index("--model") + 1] == "haiku-example"
+    assert "--tools" not in argv
+
+
+def test_empty_model_override_emits_no_model_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    argv = _captured_argv(monkeypatch, tmp_path, model_override="")
+    assert "--model" not in argv
+
+
+def test_disable_builtin_tools_false_emits_no_tools_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    argv = _captured_argv(monkeypatch, tmp_path, disable_builtin_tools=False)
+    assert "--tools" not in argv
+    assert "--model" not in argv
+
+
+def test_disable_builtin_tools_appends_tools_then_empty_string(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    argv = _captured_argv(monkeypatch, tmp_path, disable_builtin_tools=True)
+    assert argv.count("--tools") == 1
+    assert argv[argv.index("--tools") + 1] == ""
+    assert "--model" not in argv
+    # --allowedTools is untouched; --tools is a separate, additional flag.
+    assert argv[argv.index("--allowedTools") + 1] == "core.note.get"
+
+
+def test_both_new_flags_sit_after_allowed_tools_and_before_resume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    argv = _captured_argv(
+        monkeypatch,
+        tmp_path,
+        native_handle="cli-session-42",
+        model_override="haiku-example",
+        disable_builtin_tools=True,
+    )
+    allowed = argv.index("--allowedTools")
+    assert argv[allowed + 2 :] == [
+        "--model",
+        "haiku-example",
+        "--tools",
+        "",
+        "--resume",
+        "cli-session-42",
+    ]
+    assert argv[1:6] == [
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--max-turns",
+    ]
 
 
 def test_empty_login_seed_is_credential_invalid_and_does_not_write_config(

@@ -116,6 +116,48 @@ def run_production_startup_and_report() -> None:
 
     report = run_startup()
 
+    # The core root's extraction registration (1a4b, AC 12), read before the worker's
+    # module is imported so it is this root's own. ``claude_cli`` is registered, its
+    # adapter registry is empty (an extract there fails ``adapter_unavailable`` before
+    # reading anything), and with the package default provider ``none`` nothing
+    # resolves.
+    from rheo_contracts import ContextPurpose
+    from rheo_core.evidence.extract import DigestBatch, ExtractionScope
+    from rheo_core.evidence.providers import providers, resolve_provider
+    from rheo_core.refs import uuid7
+    from rheo_core.runtime.extraction import (
+        ADAPTER_UNAVAILABLE,
+        PROVIDER_NAME,
+        ClaudeCliExtractionProvider,
+        ExtractionRunFailed,
+    )
+
+    extraction_problems: list[str] = []
+    extraction_provider = providers().get(PROVIDER_NAME)
+    if not isinstance(extraction_provider, ClaudeCliExtractionProvider):
+        extraction_problems.append(
+            f"core startup registered no {PROVIDER_NAME!r} extraction provider"
+        )
+    else:
+        probe_batch = DigestBatch(
+            items=(),
+            scope=ExtractionScope(
+                workspace_id=uuid7(),
+                account_id=uuid7(),
+                purpose=ContextPurpose.RESPOND,
+            ),
+        )
+        try:
+            extraction_provider.extract(probe_batch)
+            extraction_problems.append("the core process's provider ran an extract")
+        except ExtractionRunFailed as failed:
+            if failed.kind != ADAPTER_UNAVAILABLE:
+                extraction_problems.append(
+                    f"the core process's provider failed {failed.kind!r}, not "
+                    f"{ADAPTER_UNAVAILABLE!r}: its adapter registry is not empty"
+                )
+    extraction_resolves = resolve_provider() is not None
+
     # After ``run_startup()``: importing the worker's composition root is the
     # second half of the criterion's "consumer" clause, and it must be imported in
     # this same process so that what is asserted is one process's registration
@@ -123,7 +165,11 @@ def run_production_startup_and_report() -> None:
     # itself starts nothing.
     from rheo_app_worker import main as worker_main
 
-    problems: list[str] = []
+    problems: list[str] = list(extraction_problems)
+    if extraction_resolves:
+        problems.append(
+            "an extraction provider resolves under the package default provider"
+        )
 
     def operation_problems(registry: OperationRegistry) -> list[str]:
         """Every reason an operation in ``registry`` may not be in a production set.
@@ -330,6 +376,8 @@ def run_production_startup_and_report() -> None:
     # actual count alone, and "one provider row exists" is true for more reasons
     # than "this process's settings called for one".
     print(f"identity_providers_expected={len(expected_provider_ids)}")
+    print(f"extraction_registered={int(extraction_provider is not None)}")
+    print(f"extraction_resolves={int(extraction_resolves)}")
     # Last line, and the outer test reads it: an exit code alone cannot say which
     # profile the child resolved.
     print(f"PROFILE={report.profile}")
@@ -584,6 +632,10 @@ def test_a_production_start_registers_nothing_from_the_test_harness(
     # Neither registry was empty, so the enumeration above passed over something.
     assert int(counts["operations"]) > 0, output
     assert int(counts["tools"]) > 0, output
+    # 1a4b, AC 12: core startup registered ``claude_cli``, and under the default
+    # ``none`` it does not resolve.
+    assert counts["extraction_registered"] == "1", output
+    assert counts["extraction_resolves"] == "0", output
 
 
 @pytest.mark.postgres
@@ -675,3 +727,48 @@ def test_registering_an_operation_with_no_safety_class_is_refused_naming_it() ->
     assert raised.value.operation_name == "core.probe.act"
     assert "safety class" in raised.value.detail
     assert "core.probe.act" not in registry
+
+
+def test_the_worker_registers_the_extraction_provider_on_its_own_adapters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker root's half of AC 12: ``main()`` hands its process ``ADAPTERS`` (the
+    registry holding the real ``claude_cli`` adapter) to the extraction registration,
+    after the login refusal and before modules load. The core root's half is in the
+    production child above."""
+    from rheo_app_worker import main as worker_main
+
+    calls: list[str] = []
+    handed: list[object] = []
+
+    def _record(name: str) -> object:
+        def _call(*args: object, **kwargs: object) -> None:
+            calls.append(name)
+
+        return _call
+
+    def _register(adapters: object) -> None:
+        calls.append("register_extraction")
+        handed.append(adapters)
+
+    for attribute, label in (
+        ("register_module_settings", "module_settings"),
+        ("refuse_misconfigured_login", "login"),
+        ("register_modules", "register_modules"),
+        ("get_backend", "get_backend"),
+        ("install_stop_signals", "install_stop_signals"),
+        ("worker_loop", "worker_loop"),
+        ("reset_backend", "reset_backend"),
+    ):
+        monkeypatch.setattr(worker_main, attribute, _record(label))
+    monkeypatch.setattr(worker_main, "register_claude_cli_extraction", _register)
+
+    worker_main.main()
+
+    assert handed == [worker_main.ADAPTERS]
+    assert calls[:4] == [
+        "module_settings",
+        "login",
+        "register_extraction",
+        "register_modules",
+    ]

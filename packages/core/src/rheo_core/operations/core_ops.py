@@ -18,6 +18,14 @@ whose own row is the ``:105`` the cited range now reaches.
   member, operator`` (see :data:`TOKEN_ISSUE_DECLARATION`'s own docstring for why
   ``operator`` is safe to declare here). Handlers live in
   ``rheo_core.tokens.issue`` — this module only registers them.
+- ``core.evidence_enrollment.create`` / ``.rotate`` / ``.revoke`` — ``mutate``; roles
+  ``owner, member, operator``. A local bridge's enrollment and its bridge token (run
+  1a4b). Models and handlers live in ``rheo_core.evidence.enrollment``, registered
+  inside :func:`register_core_operations` because that module imports
+  ``rheo_core.tokens.issue``.
+- ``core.evidence.ingest`` — ``mutate``; roles ``owner, member``. The one operation a
+  bridge token can call (run 1a4b). Models and handler live in
+  ``rheo_core.evidence.ingest``, registered beside the enrollment operations.
 - ``core.work.failures`` — ``read``; roles ``owner, operator``, and **not** the
   declaration default ``owner, member``. Reads the failed jobs through C1's
   ``rheo_core.work.jobs.list_failed_jobs``, never the ``core.job`` table
@@ -672,6 +680,31 @@ def register_core_operations(
         RecordDeleteInput,
         delete_owned,
     )
+    from rheo_core.evidence.enrollment import (
+        ENROLLMENT_CREATE,
+        ENROLLMENT_REVOKE,
+        ENROLLMENT_ROTATE,
+        EnrollmentCreated,
+        EnrollmentCreateInput,
+        EnrollmentRevoked,
+        EnrollmentRevokeInput,
+        EnrollmentRotateInput,
+    )
+    from rheo_core.evidence.enrollment import (
+        create_handler as enrollment_create_handler,
+    )
+    from rheo_core.evidence.enrollment import (
+        revoke_handler as enrollment_revoke_handler,
+    )
+    from rheo_core.evidence.enrollment import (
+        rotate_handler as enrollment_rotate_handler,
+    )
+    from rheo_core.evidence.ingest import (
+        EVIDENCE_INGEST,
+        IngestInput,
+        IngestResult,
+        ingest_handler,
+    )
     from rheo_core.modules.operations import (
         MODULE_ENABLE,
         MODULE_INSTALL,
@@ -716,6 +749,66 @@ def register_core_operations(
                 audit=AuditSpec(subject_field=None),
             ),
             revoke_handler,
+        ),
+    )
+    # The three enrollment operations (run 1a4b). ``MUTATE``, roles ``owner, member,
+    # operator``; the handlers apply the target-account rule. ``create`` and
+    # ``rotate`` are in ``NON_TOKEN_ISSUABLE``, so no token reaches them; ``revoke``
+    # is not. ``Idempotency.NONE``: a repeat create refuses ``enrollment_exists``, a
+    # repeat rotate mints another token, and a repeat revoke refuses
+    # ``enrollment_inactive``. An enrollment id is not a ``RecordRef``, so
+    # ``subject_field=None``.
+    enrollment_operations: tuple[tuple[OperationDeclaration, Handler], ...] = (
+        (
+            OperationDeclaration(
+                name=ENROLLMENT_CREATE,
+                safety_class=SafetyClass.MUTATE,
+                roles=_TOKEN_OPERATION_ROLES,
+                input_model=EnrollmentCreateInput,
+                output=EnrollmentCreated,
+                idempotency=Idempotency.NONE,
+                audit=AuditSpec(subject_field=None),
+            ),
+            enrollment_create_handler,
+        ),
+        (
+            OperationDeclaration(
+                name=ENROLLMENT_ROTATE,
+                safety_class=SafetyClass.MUTATE,
+                roles=_TOKEN_OPERATION_ROLES,
+                input_model=EnrollmentRotateInput,
+                output=EnrollmentCreated,
+                idempotency=Idempotency.NONE,
+                audit=AuditSpec(subject_field=None),
+            ),
+            enrollment_rotate_handler,
+        ),
+        (
+            OperationDeclaration(
+                name=ENROLLMENT_REVOKE,
+                safety_class=SafetyClass.MUTATE,
+                roles=_TOKEN_OPERATION_ROLES,
+                input_model=EnrollmentRevokeInput,
+                output=EnrollmentRevoked,
+                idempotency=Idempotency.NONE,
+                audit=AuditSpec(subject_field=None),
+            ),
+            enrollment_revoke_handler,
+        ),
+        # The one operation a bridge token can call. ``MUTATE``, roles ``owner,
+        # member``. ``Idempotency.NONE``: the native key is the idempotency, and a
+        # replay answers the held rows' outcome, so no second key is added.
+        (
+            OperationDeclaration(
+                name=EVIDENCE_INGEST,
+                safety_class=SafetyClass.MUTATE,
+                roles=frozenset({Role.OWNER, Role.MEMBER}),
+                input_model=IngestInput,
+                output=IngestResult,
+                idempotency=Idempotency.NONE,
+                audit=AuditSpec(subject_field=None),
+            ),
+            ingest_handler,
         ),
     )
     module_operations: tuple[tuple[OperationDeclaration, Handler], ...] = (
@@ -805,6 +898,7 @@ def register_core_operations(
         registry.register(declaration, handler, origin=CORE_ORIGIN)
         for declaration, handler in CORE_OPERATIONS
         + token_operations
+        + enrollment_operations
         + APPROVAL_OPERATIONS
         + GRANT_OPERATIONS
         + module_operations
