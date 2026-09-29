@@ -19,6 +19,10 @@ startup sequence through the FastAPI lifespan.
 - ``doctor``'s reconcile-interval line names both keys and both resolved values, which
   is the half of AC 18 a packaged-defaults assertion cannot reach: either key can be
   overridden at deployment scope.
+- ``doctor``'s evidence-acceptance line (#221) reads ``ok`` for this test's workspace.
+  It is the one check whose ``FAIL`` this test tolerates, and only for other
+  workspaces: tests earlier in the session settle ``gap/acceptance_failed`` rows in
+  their own, which stay active until teardown.
 - The lifespan runs startup (control chain, active workspaces, the registry) and
   ``/healthz`` answers inside it with no database call of its own.
 - ``run_startup()`` **refuses to complete** when a registered operation above the read
@@ -277,8 +281,19 @@ def test_migrate_and_doctor_return_zero(
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE
 
     code, out, err = _run(capsys, "doctor")
-    assert code == 0, (out, err)
     report = out.splitlines()
+    # The evidence-acceptance check (#221) reads every active workspace, and other
+    # tests in this session leave ``gap/acceptance_failed`` rows in their own. Only
+    # those lines may fail; this test's workspace has no evidence and reads ok.
+    failing = [line for line in report if line.startswith("FAIL")]
+    assert all(
+        line.startswith("FAIL evidence acceptance ") and str(workspace) not in line
+        for line in failing
+    ), (out, err)
+    assert code == (1 if failing else 0), (out, err)
+    assert any(
+        line.startswith(f"ok   evidence acceptance {workspace} (") for line in report
+    ), report
     assert any(line.startswith("ok   data root:") for line in report), report
     assert any(line.startswith("ok   settings: profile test") for line in report)
     assert any(line.startswith("ok   cluster: reachable") for line in report)
@@ -326,7 +341,11 @@ def test_migrate_and_doctor_return_zero(
     assert "work.due_reconcile_seconds = 900" in reconcile, reconcile
     assert "storage.pool_idle_close_seconds = 300" in reconcile, reconcile
 
-    assert not any(line.startswith("FAIL") for line in report)
+    # Every FAIL is another workspace's evidence-acceptance line, checked above.
+    assert not any(
+        line.startswith("FAIL") and not line.startswith("FAIL evidence acceptance ")
+        for line in report
+    )
 
 
 # --- the core process startup sequence -----------------------------------------------

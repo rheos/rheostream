@@ -40,8 +40,9 @@ one batch are still each deferred and counted. Rolling the batch back instead wo
 leave ``extraction_attempts`` unmoved, and since that column leads the claim order,
 every later drain would anchor on the same partition and send the same evidence to
 the model again: the #215 jam. A fault that refuses every acceptance therefore still
-settles ``gap/acceptance_failed`` after five attempts; making that loud is a
-separate follow-up to #221.
+settles ``gap/acceptance_failed`` after five attempts. That settlement is made loud
+outside the drain (#221): ``defer_unit`` logs ``evidence_acceptance_failed`` for each
+one, and ``rheo doctor`` warns or fails on the count per workspace.
 
 **Workspace-wide acceptance preconditions are checked before the model call
 (#217).** Two things acceptance needs do not depend on the unit: an audit sink for

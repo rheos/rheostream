@@ -64,7 +64,7 @@ from rheo_core.evidence.record import (
     RecordAttempt,
     record_evidence,
 )
-from rheo_core.evidence.service import EvidenceAuditUnwritable
+from rheo_core.evidence.service import ACCEPTANCE_FAILED_LOG, EvidenceAuditUnwritable
 from rheo_core.operations import (
     CORE_MODULE_ID,
     HARNESS_MODULE_ID,
@@ -717,22 +717,33 @@ def test_215_a_poison_unit_backs_off_and_its_partition_neighbour_is_accepted(
 
 
 def test_215_a_poison_unit_settles_acceptance_failed_on_its_fifth_attempt(
-    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    now: datetime,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The deferral's own follow-ups carry the unit to its fifth attempt, on the
-    extraction schedule (5, 20, 80, 320 s), with no drain job ever retried."""
+    extraction schedule (5, 20, 80, 320 s), with no drain job ever retried.
+
+    #221: only the fifth, settling attempt logs ``evidence_acceptance_failed``, with
+    the evidence id and the attempt count and nothing the refusal quoted."""
     refused = _poisoned_acceptance(monkeypatch)
     body = f"{FAKE_EXTRACTION_MARKER} The {_POISON_TAG} lanterns."
     _record_batch(ev, [_evidence(ev, body, at=now)], at=now)
     _enqueue_drain(ev, at=now)
 
+    def settled_lines() -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.getMessage() == ACCEPTANCE_FAILED_LOG]
+
     at = now
     for attempt, step in enumerate((5, 20, 80, 320, None), start=1):
-        _at(monkeypatch, ev, at)
+        with caplog.at_level(logging.WARNING):
+            _at(monkeypatch, ev, at)
         [unit] = _units(ev)
         assert unit.extraction_attempts == attempt
         if step is None:
             break
+        assert settled_lines() == [], attempt
         assert (unit.state, unit.retry_after) == (
             "pending",
             at + timedelta(seconds=step),
@@ -745,6 +756,15 @@ def test_215_a_poison_unit_settles_acceptance_failed_on_its_fifth_attempt(
     assert len(refused) == 5
     [unit] = _units(ev)
     assert (unit.state, unit.outcome) == ("gap", "acceptance_failed")
+    [settled] = settled_lines()
+    assert settled.levelno == logging.WARNING
+    assert (vars(settled)["evidence_id"], vars(settled)["attempts"]) == (
+        str(unit.id),
+        5,
+    )
+    assert settled.exc_info is None
+    assert _POISON_TAG not in repr(vars(settled))
+    assert _POISON_ROW not in caplog.text
     assert unit.body is None
     assert unit.settled_at == at
     assert _counts(ev) == _NO_RECEIPTS
