@@ -63,6 +63,7 @@ from rheo_core.evidence.ingest import (
     EVIDENCE_INGEST,
     INGEST_MAX_GAPS,
     INGEST_MAX_RECORDS,
+    INGEST_MAX_TEXT_CHARS,
     IngestInput,
     ingest_handler,
 )
@@ -570,7 +571,7 @@ def test_a_resent_scrubbed_batch_answers_the_same_tuples(
 @pytest.mark.parametrize(
     "middle",
     [
-        "word " * (MAX_INPUT_CHARS // 5 + 1),
+        "word " * (INGEST_MAX_TEXT_CHARS // 5),
         "word " * ((MAX_INPUT_CHARS - 520) // 5) + " secret://a/b" * 40,
     ],
     ids=["raw_over_the_cap", "masked_over_the_cap"],
@@ -623,6 +624,7 @@ def test_gaps_land_in_gapped_as_content_free_rows(ev: EvidenceWorkspace) -> None
         "naive_clock",
         "over_the_cap",
         "over_the_gap_cap",
+        "over_the_text_ceiling",
     ],
 )
 def test_a_malformed_request_is_input_invalid_before_any_row(
@@ -640,9 +642,14 @@ def test_a_malformed_request_is_input_invalid_before_any_row(
         payload = enrolled.payload(
             [(_record_key(), at, _PLAIN) for _ in range(INGEST_MAX_RECORDS + 1)]
         )
-    else:
+    elif shape == "over_the_gap_cap":
         payload = enrolled.payload(
             [], [(_gap_key(), at) for _ in range(INGEST_MAX_GAPS + 1)]
+        )
+    else:
+        over = "x" * (INGEST_MAX_TEXT_CHARS + 1)
+        payload = enrolled.payload(
+            [(_record_key(), at, _PLAIN), (_record_key(), at, over)]
         )
     _assert_refused(ev, _ingest(enrolled.ctx(), payload), INPUT_INVALID)
 
