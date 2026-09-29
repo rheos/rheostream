@@ -5,11 +5,28 @@ settings, no clock, and no core import beyond
 :func:`~rheo_core.redaction.masking.mask_secret_references`, so a future laptop bridge
 can import and run the identical function before egress.
 
+**Input over** :data:`MAX_INPUT_CHARS` **is dropped whole** (``None``), before any
+step runs. It fails closed on purpose: a human turn that long is a paste, not a
+memory, and the Rheo-owned producer records the task text on its own. The cap also
+bounds the work: ``sanitize`` runs inside the recording transaction, before the byte
+budget, so its cost must be bounded by the input, not by what an adversary puts in
+it. Under the cap every scan is linear or capped: the JSON rules make at most
+:data:`_MAX_JSON_ATTEMPTS` failed parses per segment and treat a segment that needs
+more as a payload, and JSON nested deeper than the parser can recurse is a payload
+too.
+
 The steps, in this order (spec Architecture, System Components item 1):
 
-0. **Normalise line breaks.** Every line boundary :meth:`str.splitlines` knows,
-   ``\\r\\n`` and a lone ``\\r`` included, becomes ``\\n`` before anything else, so
-   CRLF text segments exactly like LF text.
+0. **Normalise line breaks and spaces.** Every line boundary :meth:`str.splitlines`
+   knows, ``\\r\\n`` and a lone ``\\r`` included, becomes ``\\n`` before anything else,
+   so CRLF text segments exactly like LF text. Then every other whitespace character
+   (no-break space, the U+2000 to U+200A spaces, the ideographic space U+3000 and the
+   rest of :data:`_ODD_SPACES`, plus the U+FEFF byte-order mark) becomes a plain
+   space. The line-start rules (role lines, fences, indented code, blank-line breaks)
+   read spaces and tabs only, while the final collapse reads every ``\\s``; left
+   unmapped, a no-break space before ``system:`` would pass the role marker once and
+   trip it on a second pass. A tab stays a tab: the indented-code rule counts it to
+   the next multiple of four columns, and the fence and role rules already accept it.
 1. **Mask secret references**, exactly as the runtime masks a task (#149). Contact
    values are *not* masked: the text is the person's own, and #149 decided that a
    contact value they typed is theirs to have remembered.
@@ -32,11 +49,12 @@ The steps, in this order (spec Architecture, System Components item 1):
       segment, as an unterminated fence runs to the end of the text. A line indented
       by four or more columns is indented code and goes. Markdown would read such a
       line after a prose line as a lazy continuation of the paragraph, but that is
-      the shape of a command pasted under "run this:", so the rule drops it; an
-      indented continuation of a list item goes with it, and that is a missing
-      memory, never a wrong one. What is left meets (a)'s whole-segment tests again:
-      removing a line can make two others adjacent, such as a ``---`` and ``+++``
-      header pair.
+      the shape of a command pasted under "run this:", so the rule drops it. An
+      indented continuation of a list item goes with it, and so does a tab-indented
+      list: "Groceries" / tab "milk" / tab "eggs" keeps only "Groceries". That is a
+      missing memory, never a wrong one, and an accepted cost. What is left meets
+      (a)'s whole-segment tests again: removing a line can make two others adjacent,
+      such as a ``---`` and ``+++`` header pair.
    c. *Inline payload.* What is left goes whole when it holds markup mid-sentence (a
       closing tag, a self-closing tag, an opening tag with a quoted attribute, a
       comment, declaration or processing instruction) or an inline JSON object. The
@@ -46,6 +64,9 @@ The steps, in this order (spec Architecture, System Components item 1):
       body. Prose that merely uses angle brackets or braces is kept and pinned by
       negative controls: ``a < b``, ``x<y and y>z``, ``List<String>``, a bare
       placeholder such as ``<target>``, an address in ``<...>``, and ``{name}``.
+      Rich-text markup is markup all the same, an accepted cost: "I <em>really</em>
+      liked it" carries a closing tag, and a turn that is only that sentence is
+      dropped.
 
    Every segment is classified again once its whitespace has collapsed, and goes
    whole when the collapsed form is a payload (a hunk header or a stack frame split
@@ -83,9 +104,25 @@ guarantees are structural (spec Technical Risks R2).
 
 import json
 import re
+from bisect import bisect_left
 from typing import Final
 
 from rheo_core.redaction.masking import mask_secret_references
+
+# --- the input cap and step 0 ---------------------------------------------------------
+
+MAX_INPUT_CHARS: Final = 65_536
+"""Longer input is dropped whole, before any step runs (see the module docstring)."""
+
+_ODD_SPACES: Final = (
+    "\x1f\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009"
+    "\u200a\u202f\u205f\u3000\ufeff"
+)
+"""Every character :meth:`str.isspace` accepts that :meth:`str.splitlines` does not
+already turn into a line break, less the plain space and the tab, plus U+FEFF, which
+is no ``\\s`` but is invisible in front of a role word all the same. A test derives the
+set from the running Python and compares."""
+_TO_PLAIN_SPACE: Final = str.maketrans(dict.fromkeys(_ODD_SPACES, " "))
 
 # --- step 3: the closed injection-marker list (spec component 1, verbatim) ------------
 
@@ -183,6 +220,7 @@ _TAG_LINE: Final = re.compile(
 comment, declaration or processing instruction. ``<dana@example.com>`` is not a tag
 (``@`` is no name character), so a line opening with an address is not markup."""
 _OPENING_TAG: Final = re.compile(r"^\s*<([A-Za-z_][\w:.-]*)(?:\s[^<>]*?)?(/?)>")
+_CLOSING_TAG_NAME: Final = re.compile(r"</([A-Za-z_][\w:.-]*)")
 _BARE_TAG_LINE: Final = re.compile(r"^\s*<[A-Za-z_][\w:.-]*(?:\s[^<>]*)?>\s*$")
 """A line holding nothing but one opening tag."""
 
@@ -190,7 +228,8 @@ _INLINE_MARKUP: Final = re.compile(
     r"""
         </[A-Za-z_][\w:.-]*\s*>                   # a closing tag
       | <[A-Za-z_][\w:.-]*(?:\s[^<>]*)?/>         # a self-closing tag
-      | <[A-Za-z_][\w:.-]*\s[^<>]*=\s*["'][^<>]*> # an opening tag, quoted attribute
+      | <[A-Za-z_][\w:.-]*\s                     # an opening tag, quoted attribute:
+        (?=[^<>]*=\s*["'])[^<>]*+>               #   atomic, so linear on no ``>``
       | <!(?:--|\[CDATA\[|[A-Za-z])               # a comment, CDATA or declaration
       | <\?[A-Za-z]                               # a processing instruction
     """,
@@ -207,6 +246,12 @@ _INLINE_JSON_START: Final = re.compile(r'\{\s*"')
 _JSON_DECODER: Final = json.JSONDecoder(strict=False)
 """``strict=False`` accepts raw line breaks inside strings, so a payload that only
 becomes valid JSON once its whitespace collapses is caught first time."""
+
+_MAX_JSON_ATTEMPTS: Final = 64
+"""Parses per segment, per rule, that may fail or fail to end a line. A failed parse
+costs time in proportion to its offset (the error locates itself), so an unbounded
+count is quadratic: ``'{"' * 32768`` is 32,768 failed parses. A segment that needs
+more attempts than this is treated as a payload."""
 
 _INDENT_COLUMNS: Final = 4
 """Markdown's indented code block: four columns of leading whitespace, a tab to the
@@ -261,6 +306,8 @@ def _is_json(segment: str) -> bool:
         return False
     try:
         parsed = _JSON_DECODER.decode(stripped)
+    except RecursionError:
+        return True  # nested past the parser's depth: a payload, never prose
     except ValueError:
         return False
     return isinstance(parsed, dict | list)
@@ -287,43 +334,100 @@ def _without_path_lines(segment: str) -> str:
     return "\n".join(line for line in segment.split("\n") if not _PATH_LINE.match(line))
 
 
-def _json_block_end(lines: list[str], start: int) -> int | None:
+class _UnboundedPayload(Exception):
+    """A segment the JSON rules cannot finish judging within their bounds: nested past
+    the parser's recursion depth, or past :data:`_MAX_JSON_ATTEMPTS`. It is dropped as
+    a payload."""
+
+
+class _JsonAttempts:
+    """The parse budget one JSON rule spends on one segment."""
+
+    def __init__(self) -> None:
+        self._left = _MAX_JSON_ATTEMPTS
+
+    def decode(self, text: str, index: int) -> int | None:
+        """Where the JSON value at ``index`` ends, or ``None`` when there is none."""
+        try:
+            _, end = _JSON_DECODER.raw_decode(text, index)
+        except RecursionError as error:
+            raise _UnboundedPayload from error
+        except ValueError:
+            self.spend()
+            return None
+        return end
+
+    def spend(self) -> None:
+        self._left -= 1
+        if self._left < 0:
+            raise _UnboundedPayload
+
+
+class _SegmentLines:
+    """One segment's lines, with what the block rules look up precomputed, so each
+    line costs time in proportion to itself rather than to the rest of the segment."""
+
+    def __init__(self, segment: str) -> None:
+        self.text = segment
+        self.lines = segment.split("\n")
+        self.starts: list[int] = []
+        offset = 0
+        for line in self.lines:
+            self.starts.append(offset)
+            offset += len(line) + 1
+        # next_gt[i]: the first line at or after i ending in ``>``, or -1.
+        self.next_gt = [-1] * (len(self.lines) + 1)
+        for index in range(len(self.lines) - 1, -1, -1):
+            ends = self.lines[index].rstrip().endswith(">")
+            self.next_gt[index] = index if ends else self.next_gt[index + 1]
+        # closers[name]: the lines holding ``</name``, ascending.
+        self.closers: dict[str, list[int]] = {}
+        for index, line in enumerate(self.lines):
+            for match in _CLOSING_TAG_NAME.finditer(line):
+                self.closers.setdefault(match.group(1), []).append(index)
+        self.json = _JsonAttempts()
+
+
+def _json_block_end(seg: _SegmentLines, start: int) -> int | None:
     """The last line of a JSON object or array that starts line ``start`` and ends a
     line, or ``None`` when there is none."""
-    line = lines[start]
+    line = seg.lines[start]
     offset = len(line) - len(line.lstrip())
     if line[offset : offset + 1] not in ("{", "["):
         return None
-    text = "\n".join(lines[start:])
-    try:
-        _, end = _JSON_DECODER.raw_decode(text, offset)
-    except ValueError:
+    end = seg.json.decode(seg.text, seg.starts[start] + offset)
+    if end is None:
         return None
-    if text[end:].split("\n", 1)[0].strip():
+    line_end = seg.text.find("\n", end)
+    if seg.text[end : len(seg.text) if line_end < 0 else line_end].strip():
+        seg.json.spend()
         return None  # prose follows on the line: left to the inline rule
-    return start + text.count("\n", 0, end)
+    return bisect_left(seg.starts, end + 1) - 1
 
 
-def _markup_block_end(lines: list[str], start: int) -> int | None:
+def _markup_block_end(seg: _SegmentLines, start: int) -> int | None:
     """The last line of a tag block that opens line ``start``, or ``None``.
 
-    The block ends on the first line ending in ``>`` once the opening tag's closer has
-    been seen, so ``<tool_use>`` / ``ls -la`` / ``</tool_use>`` goes whole rather than
-    stopping at the first line. A line that is only an opening tag and never closes
-    runs to the end of the segment. A line that opens with a tag, runs on into prose
-    and never closes is not a block; the inline rule judges it.
+    The block ends on the first line ending in ``>`` once the opening tag's closer
+    (``</`` and the same name) has been seen, so ``<tool_use>`` / ``ls -la`` /
+    ``</tool_use>`` goes whole rather than stopping at the first line. A line that is
+    only an opening tag and never closes runs to the end of the segment. A line that
+    opens with a tag, runs on into prose and never closes is not a block; the inline
+    rule judges it.
     """
-    if not _TAG_LINE.match(lines[start]):
+    line = seg.lines[start]
+    if not _TAG_LINE.match(line):
         return None
-    opener = _OPENING_TAG.match(lines[start])
-    closer = f"</{opener.group(1)}" if opener and not opener.group(2) else None
-    closed = closer is None
-    for index in range(start, len(lines)):
-        closed = closed or (closer is not None and closer in lines[index])
-        if closed and lines[index].rstrip().endswith(">"):
-            return index
-    if _BARE_TAG_LINE.match(lines[start]):
-        return len(lines) - 1
+    opener = _OPENING_TAG.match(line)
+    from_line: int | None = start
+    if opener and not opener.group(2):
+        closing = seg.closers.get(opener.group(1), [])
+        found = bisect_left(closing, start)
+        from_line = closing[found] if found < len(closing) else None
+    if from_line is not None and seg.next_gt[from_line] >= 0:
+        return seg.next_gt[from_line]
+    if _BARE_TAG_LINE.match(line):
+        return len(seg.lines) - 1
     return None
 
 
@@ -334,30 +438,34 @@ def _is_indented_code(line: str) -> bool:
 
 
 def _without_payload_lines(segment: str) -> str:
-    """Pass (b): ``segment`` without its JSON and tag blocks and indented code lines."""
-    lines = segment.split("\n")
+    """Pass (b): ``segment`` without its JSON and tag blocks and indented code lines.
+
+    Raises :class:`_UnboundedPayload` when the JSON rule runs out of bounds.
+    """
+    seg = _SegmentLines(segment)
     kept: list[str] = []
     index = 0
-    while index < len(lines):
-        end = _json_block_end(lines, index)
+    while index < len(seg.lines):
+        end = _json_block_end(seg, index)
         if end is None:
-            end = _markup_block_end(lines, index)
+            end = _markup_block_end(seg, index)
         if end is not None:
             index = end + 1
             continue
-        if not _is_indented_code(lines[index]):
-            kept.append(lines[index])
+        if not _is_indented_code(seg.lines[index]):
+            kept.append(seg.lines[index])
         index += 1
     return "\n".join(kept)
 
 
 def _carries_inline_json(segment: str) -> bool:
-    for start in _INLINE_JSON_START.finditer(segment):
-        try:
-            _JSON_DECODER.raw_decode(segment, start.start())
-        except ValueError:
-            continue
-        return True  # a brace and a quoted key only ever decode to an object
+    attempts = _JsonAttempts()
+    try:
+        for start in _INLINE_JSON_START.finditer(segment):
+            if attempts.decode(segment, start.start()) is not None:
+                return True  # a brace and a quoted key only ever decode to an object
+    except _UnboundedPayload:
+        return True
     return False
 
 
@@ -370,7 +478,10 @@ def _prose_of(segment: str) -> str | None:
     segment = _without_path_lines(segment)
     if not segment.strip() or _is_whole_payload(segment):
         return None
-    prose = _without_payload_lines(segment)
+    try:
+        prose = _without_payload_lines(segment)
+    except _UnboundedPayload:
+        return None
     if not prose.strip() or _is_whole_payload(prose):
         return None
     return prose
@@ -430,7 +541,10 @@ def _carries_injection_marker(segment: str) -> bool:
 
 def sanitize(text: str) -> str | None:
     """The text as it may be stored and shown to a model, or ``None`` to drop it."""
-    masked = mask_secret_references("\n".join(text.splitlines()))
+    if len(text) > MAX_INPUT_CHARS:
+        return None
+    normalised = "\n".join(text.splitlines()).translate(_TO_PLAIN_SPACE)
+    masked = mask_secret_references(normalised)
     screened, kept = _screened_segments(masked)
     if any(_carries_injection_marker(segment) for segment in screened):
         return None
