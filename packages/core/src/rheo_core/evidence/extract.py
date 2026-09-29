@@ -4,14 +4,21 @@ answer is believed (spec Architecture, System Components item 7; FR 6, AC 3).
 **Digestion is deterministic and carries nothing but text.** :func:`digest` turns the
 claimed units' bodies, in claim order, into one :class:`DigestBatch` of
 :class:`DigestItem` values whose ids are per-batch ordinals, ``"u1"`` to ``"uN"``. It
-takes the bodies alone, so a unit's ``native_key``, speaker, audience and purpose
-cannot reach a model through it: the model is never told who said a thing, who may
-read it, or what it may be used for, and so cannot be steered into choosing any of
-them. The one other thing a batch carries is ``mention_kinds`` (#222): the entity
-kinds the accepting module will keep, a fixed vocabulary the drain passes through
+builds the items from the bodies alone, so a unit's ``native_key``, speaker, audience
+and purpose cannot reach a model through it: the model is never told who said a
+thing, who may read it, or what it may be used for, and so cannot be steered into
+choosing any of them. Besides the items, a batch carries ``mention_kinds`` (#222): the
+entity kinds the accepting module will keep, a fixed vocabulary the drain passes through
 :func:`~rheo_core.evidence.service.claim_units`, so a provider can tell the model
 which kinds to use. It is the same for every unit and says nothing about any of
 them; core only passes it on, and validation stays open to any kind string.
+
+A batch may also carry an :class:`ExtractionScope`: the workspace, the partition's
+speaker account and its purpose. It is there for the provider's own binding checks
+(a credential bound to one account, a working directory under the right workspace),
+not for the model. :func:`digest` copies it onto the batch untouched, and no item text
+is built from it, so the rule above holds: nothing about who said a unit, or what it
+may be used for, reaches the model through a batch.
 
 The attribute names ``item_id`` and ``text`` are read by
 :class:`~rheo_core.evidence.providers.FakeExtractionProvider`; renaming them breaks the
@@ -49,8 +56,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+from rheo_contracts import ContextPurpose
 from rheo_contracts.source_units import MemoryKind, SanitizedEvidence
 
 ITEM_ID_PREFIX: Final = "u"
@@ -76,15 +85,37 @@ class DigestItem:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtractionScope:
+    """Whose claim a batch is: the workspace, the partition's speaker and its purpose.
+
+    For the provider's own binding checks, never for the model: a provider that runs
+    under a credential bound to one account checks ``account_id`` against it, and
+    places any working directory under ``workspace_id``. No prompt text is built from
+    it.
+    """
+
+    workspace_id: UUID
+    account_id: UUID
+    purpose: ContextPurpose
+
+
+@dataclass(frozen=True, slots=True)
 class DigestBatch:
-    """One provider call's input, in claim order, and the mention kinds the
-    accepting module keeps (empty: the module named none)."""
+    """One provider call's input, in claim order, the mention kinds the accepting
+    module keeps (empty: the module named none), and the claim's scope (``None``:
+    the caller named none)."""
 
     items: tuple[DigestItem, ...]
     mention_kinds: tuple[str, ...] = ()
+    scope: ExtractionScope | None = None
 
 
-def digest(bodies: Sequence[str], *, mention_kinds: Sequence[str] = ()) -> DigestBatch:
+def digest(
+    bodies: Sequence[str],
+    *,
+    mention_kinds: Sequence[str] = (),
+    scope: ExtractionScope | None = None,
+) -> DigestBatch:
     """The claimed units' bodies, in claim order, as one batch of ordinal items."""
     return DigestBatch(
         items=tuple(
@@ -92,6 +123,7 @@ def digest(bodies: Sequence[str], *, mention_kinds: Sequence[str] = ()) -> Diges
             for ordinal, body in enumerate(bodies, start=1)
         ),
         mention_kinds=tuple(mention_kinds),
+        scope=scope,
     )
 
 
