@@ -34,7 +34,9 @@ The steps, in this order (spec Architecture, System Components item 1):
       line after a prose line as a lazy continuation of the paragraph, but that is
       the shape of a command pasted under "run this:", so the rule drops it; an
       indented continuation of a list item goes with it, and that is a missing
-      memory, never a wrong one.
+      memory, never a wrong one. What is left meets (a)'s whole-segment tests again:
+      removing a line can make two others adjacent, such as a ``---`` and ``+++``
+      header pair.
    c. *Inline payload.* What is left goes whole when it holds markup mid-sentence (a
       closing tag, a self-closing tag, an opening tag with a quoted attribute, a
       comment, declaration or processing instruction) or an inline JSON object. The
