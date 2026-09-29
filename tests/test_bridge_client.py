@@ -270,6 +270,10 @@ def test_tls_verification_is_on() -> None:
         "ftp://api.example.org",
         "https://",
         "https://api.example.org/?q=1",
+        "https://someone:secret@api.example.org",
+        "https://someone@api.example.org",
+        "https://:secret@api.example.org",
+        "http://someone:secret@127.0.0.1:8000",
     ],
 )
 def test_a_base_url_that_would_expose_the_token_is_refused(base_url: str) -> None:

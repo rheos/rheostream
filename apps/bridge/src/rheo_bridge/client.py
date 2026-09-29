@@ -177,6 +177,9 @@ def _ingest_url(base_url: str) -> str:
         raise ValueError("base_url must be https (plain http only for loopback)")
     if parts.query or parts.fragment:
         raise ValueError("base_url must not carry a query or fragment")
+    # A second credential beside the token, and one ``__repr__`` would print.
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("base_url must not carry user information")
     return base_url.rstrip("/") + INGEST_PATH
 
 
