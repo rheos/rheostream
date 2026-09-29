@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import tempfile
 from pathlib import Path
 
 from rheo_bridge.paths import FILE_MODE, machine_key_path
@@ -19,22 +20,52 @@ from rheo_bridge.paths import FILE_MODE, machine_key_path
 MACHINE_KEY_BYTES = 32
 
 
-def load_or_create_machine_key(bridge_home: Path) -> bytes:
-    """Return ``machine.key``, creating it once (32 random bytes, 0600)."""
-    path = machine_key_path(bridge_home)
+class MachineKeyError(ValueError):
+    """``machine.key`` exists but cannot be used (a symlink, or the wrong size)."""
+
+
+def _read_machine_key(path: Path) -> bytes:
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
-    except FileExistsError:
-        key = path.read_bytes()
-        if len(key) != MACHINE_KEY_BYTES:
-            raise ValueError(
-                f"machine.key holds {len(key)} bytes, want {MACHINE_KEY_BYTES}"
-            ) from None
-        return key
-    key = secrets.token_bytes(MACHINE_KEY_BYTES)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(key)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if os.path.islink(path):
+            raise MachineKeyError(f"{path.name} is a symlink; refusing it") from exc
+        raise
+    with os.fdopen(fd, "rb") as handle:
+        key = handle.read(MACHINE_KEY_BYTES + 1)
+    if len(key) != MACHINE_KEY_BYTES:
+        raise MachineKeyError(
+            f"{path.name} holds {len(key)} bytes, want {MACHINE_KEY_BYTES}"
+        )
     return key
+
+
+def load_or_create_machine_key(bridge_home: Path) -> bytes:
+    """Return ``machine.key``, creating it once (32 random bytes, 0600).
+
+    Creation is atomic: the key is written and fsynced to a private temp file,
+    then hard-linked into place. ``link`` fails if anything (a file or a
+    symlink) already holds the name, so a crash can leave only a stray temp
+    file, never a short ``machine.key``, and two racing creators agree on one
+    key. A symlinked ``machine.key`` is refused, never read through.
+    """
+    path = machine_key_path(bridge_home)
+    if os.path.lexists(path):
+        return _read_machine_key(path)
+    fd, tmp_name = tempfile.mkstemp(prefix=".machine.key.", dir=bridge_home)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(secrets.token_bytes(MACHINE_KEY_BYTES))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, FILE_MODE)
+        try:
+            os.link(tmp_name, path)
+        except FileExistsError:
+            pass  # another creator won the race; use its key
+    finally:
+        os.unlink(tmp_name)
+    return _read_machine_key(path)
 
 
 def machine_fingerprint(machine_key: bytes) -> str:

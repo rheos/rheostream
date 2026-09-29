@@ -96,6 +96,10 @@ def load(bridge_home: Path) -> Config | None:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
+    except UnicodeDecodeError as exc:
+        raise ConfigError("config.json is not UTF-8") from exc
+    except OSError as exc:
+        raise ConfigError(f"config.json cannot be read: {exc.strerror}") from exc
     try:
         raw = json.loads(text)
     except json.JSONDecodeError as exc:

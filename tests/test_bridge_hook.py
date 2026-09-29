@@ -14,8 +14,12 @@ import hmac
 import io
 import json
 import os
+import shutil
+import signal
 import stat
+import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -298,11 +302,21 @@ def test_no_payload_string_but_the_transcript_path_reaches_the_spool(
 
 
 def test_an_unwritable_spool_directory_still_exits_zero_silently(
-    bridge_home: Path, spawn: FakeSpawn, capsys: pytest.CaptureFixture[str]
+    bridge_home: Path,
+    spawn: FakeSpawn,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spool = bridge_home / "spool"
     spool.mkdir(mode=0o700)
     os.chmod(spool, 0o500)
+
+    # The hook fchmods the spool back to 0700, which its owner may do; a spool
+    # that is truly unwritable belongs to someone else, where fchmod is EPERM.
+    def not_owner(fd: int, mode: int) -> None:
+        raise PermissionError("synthetic: not the owner")
+
+    monkeypatch.setattr(hook.os, "fchmod", not_owner)
     try:
         code = _run(bridge_home, json.dumps(_payload()).encode(), spawn, capsys=capsys)
     finally:
@@ -429,3 +443,123 @@ def test_check_private_refuses_a_group_readable_file(tmp_path: Path) -> None:
     os.chmod(home / "token", 0o644)
     with pytest.raises(paths.InsecurePermissionsError, match="token"):
         paths.check_private(home)
+
+
+# --- hardening: SIGINT, symlinks, atomic key, modes, config errors ---------------
+
+
+def test_sigint_while_waiting_on_stdin_still_exits_zero_silently(
+    bridge_home: Path, held_worker_lock: None
+) -> None:
+    """SessionEnd fires on Ctrl-C exits, so the hook itself can receive SIGINT."""
+    installed = bridge_home / "hook.py"
+    shutil.copyfile(HOOK_SOURCE, installed)
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(bridge_home.parent)}
+    proc = subprocess.Popen(
+        [sys.executable, str(installed), "SessionEnd"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        # Let the interpreter start and install the handler; the hook then
+        # blocks reading the still-open stdin.
+        time.sleep(1.5)
+        proc.send_signal(signal.SIGINT)
+        time.sleep(0.2)
+        out, err = proc.communicate(json.dumps(_payload()).encode(), timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 0
+    assert (out, err) == (b"", b"")
+    _assert_one_locator(bridge_home, "SessionEnd")
+
+
+def test_a_symlinked_spool_directory_fails_closed(
+    bridge_home: Path,
+    tmp_path: Path,
+    spawn: FakeSpawn,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (bridge_home / "spool").symlink_to(elsewhere)
+    assert _run(bridge_home, json.dumps(_payload()).encode(), spawn, capsys=capsys) == 0
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_symlinked_spool_file_fails_closed(
+    bridge_home: Path,
+    tmp_path: Path,
+    spawn: FakeSpawn,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = tmp_path / "elsewhere.jsonl"
+    target.write_bytes(b"")
+    spool = bridge_home / "spool"
+    spool.mkdir(mode=0o700)
+    today = time.strftime("%Y-%m-%d", time.gmtime(time.time())) + ".jsonl"
+    (spool / today).symlink_to(target)
+    assert _run(bridge_home, json.dumps(_payload()).encode(), spawn, capsys=capsys) == 0
+    assert target.read_bytes() == b""
+
+
+def test_an_existing_loose_spool_is_tightened(
+    bridge_home: Path, spawn: FakeSpawn
+) -> None:
+    spool = bridge_home / "spool"
+    spool.mkdir()
+    os.chmod(spool, 0o755)
+    today = time.strftime("%Y-%m-%d", time.gmtime(time.time())) + ".jsonl"
+    (spool / today).write_bytes(b"")
+    os.chmod(spool / today, 0o644)
+    assert _run(bridge_home, json.dumps(_payload()).encode(), spawn) == 0
+    assert stat.S_IMODE(spool.stat().st_mode) == 0o700
+    assert stat.S_IMODE((spool / today).stat().st_mode) == 0o600
+    _assert_one_locator(bridge_home, "Stop")
+
+
+def test_a_symlinked_machine_key_is_refused(tmp_path: Path) -> None:
+    home = paths.ensure_bridge_home(tmp_path / ".rheo-bridge")
+    target = tmp_path / "planted.key"
+    target.write_bytes(bytes(32))
+    (home / "machine.key").symlink_to(target)
+    with pytest.raises(keys.MachineKeyError, match="symlink"):
+        keys.load_or_create_machine_key(home)
+
+
+def test_a_leftover_temp_file_does_not_block_key_creation(tmp_path: Path) -> None:
+    home = paths.ensure_bridge_home(tmp_path / ".rheo-bridge")
+    leftover = home / ".machine.key.crashed0"
+    leftover.write_bytes(b"")
+    os.chmod(leftover, 0o600)
+    key = keys.load_or_create_machine_key(home)
+    assert len(key) == 32
+    assert keys.load_or_create_machine_key(home) == key
+    # Only the key and the untouched leftover; the creator's own temp is gone.
+    assert sorted(p.name for p in home.iterdir()) == [
+        ".machine.key.crashed0",
+        "machine.key",
+    ]
+
+
+def test_an_empty_machine_key_is_a_clear_error(tmp_path: Path) -> None:
+    home = paths.ensure_bridge_home(tmp_path / ".rheo-bridge")
+    (home / "machine.key").write_bytes(b"")
+    with pytest.raises(keys.MachineKeyError, match="0 bytes"):
+        keys.load_or_create_machine_key(home)
+
+
+@pytest.mark.parametrize("kind", ["not-utf8", "unreadable"])
+def test_config_load_wraps_read_failures_as_config_error(
+    tmp_path: Path, kind: str
+) -> None:
+    home = paths.ensure_bridge_home(tmp_path / ".rheo-bridge")
+    if kind == "not-utf8":
+        (home / "config.json").write_bytes(b"\xff\xfe{}")
+    else:
+        (home / "config.json").mkdir()
+    with pytest.raises(bridge_config.ConfigError):
+        bridge_config.load(home)

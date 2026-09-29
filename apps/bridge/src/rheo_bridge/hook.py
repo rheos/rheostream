@@ -30,6 +30,7 @@ import fcntl
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -48,7 +49,8 @@ Spawn = Callable[[list[str]], object]
 
 def _read_config(bridge_home: Path) -> tuple[str, list[str]] | None:
     try:
-        with open(bridge_home / "config.json", encoding="utf-8") as handle:
+        fd = os.open(bridge_home / "config.json", os.O_RDONLY | os.O_NOFOLLOW)
+        with open(fd, encoding="utf-8") as handle:
             raw = json.load(handle)
     except (OSError, ValueError):
         return None
@@ -91,8 +93,24 @@ def _append(bridge_home: Path, line: dict[str, object], now: float) -> None:
     os.makedirs(spool, mode=0o700, exist_ok=True)
     name = time.strftime("%Y-%m-%d", time.gmtime(now)) + ".jsonl"
     data = (json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    fd = os.open(spool / name, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    # Neither the spool directory nor the day file may be a symlink: O_NOFOLLOW
+    # on both makes a planted link fail closed (the catch-all keeps it silent)
+    # instead of appending somewhere else. The fchmods tighten a directory or
+    # file that already existed with a looser mode; makedirs' mode only applies
+    # when it creates the directory.
+    dir_fd = os.open(spool, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        os.fchmod(dir_fd, 0o700)
+        fd = os.open(
+            name,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=dir_fd,
+        )
+    finally:
+        os.close(dir_fd)
+    try:
+        os.fchmod(fd, 0o600)
         # One write of one line under O_APPEND, so concurrent hooks do not
         # interleave within a line.
         os.write(fd, data)
@@ -101,7 +119,9 @@ def _append(bridge_home: Path, line: dict[str, object], now: float) -> None:
 
 
 def _worker_lock_free(bridge_home: Path) -> bool:
-    fd = os.open(bridge_home / "worker.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(
+        bridge_home / "worker.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
+    )
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -174,19 +194,31 @@ def main(
     """
     try:
         _run(argv, stdin, bridge_home, spawn)
-    except Exception:  # noqa: BLE001 - a hook must never break the session
+    except BaseException:  # noqa: BLE001 - a hook must never break the session
         pass
     return 0
 
 
+def _ignore_signal(signum: int, frame: object) -> None:
+    """SIGINT handler that does nothing.
+
+    SessionEnd fires on Ctrl-C exits, so the hook can itself receive SIGINT
+    while it waits on stdin. A no-op Python handler, rather than ``SIG_IGN``,
+    keeps the read going (PEP 475 retries it) and is not inherited across the
+    worker's exec: an ignored disposition would be, and the worker would then
+    ignore SIGINT too.
+    """
+
+
 if __name__ == "__main__":
     try:
+        signal.signal(signal.SIGINT, _ignore_signal)
         main(
             sys.argv[1:],
             stdin=sys.stdin.buffer,
             bridge_home=Path(__file__).resolve().parent,
             spawn=spawn_detached,
         )
-    except Exception:  # noqa: BLE001 - a hook must never break the session
+    except BaseException:  # noqa: BLE001 - a hook must never break the session
         pass
     sys.exit(0)
