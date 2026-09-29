@@ -51,9 +51,7 @@ def now() -> datetime:
 
 
 @pytest.fixture(autouse=True)
-def clean_evidence_rows(
-    cluster: ClusterSession, workspace: UUID
-) -> Iterator[None]:
+def clean_evidence_rows(cluster: ClusterSession, workspace: UUID) -> Iterator[None]:
     """Remove rows from this test's private workspace before the next test runs."""
     yield
     database = cluster.registry_row(workspace).database_name
