@@ -4,7 +4,10 @@ One case per payload-removal rule and per injection-marker pattern, the #149 mas
 split (secret references masked, contact values kept), the five negative controls that
 are FR 4's boundary, and the one named accepted false positive. #195 adds the
 line-granular and inline rules, CRLF normalisation, the collapsed re-check, and a
-negative control for each angle-bracket or brace shape in prose that stays kept.
+negative control for each angle-bracket or brace shape in prose that stays kept. #225
+adds paths with spaces and the other path roots, Python and JSON literals inline,
+mid-sentence stack frames, encoded blobs and shell or REPL transcripts, each with the
+prose controls that must survive it.
 """
 
 import sys
@@ -66,6 +69,73 @@ PAYLOADS = {
         "at Object.handler\n(/srv/app/index.js:12:5)"
     ),
 }
+PAYLOADS_225 = {
+    "posix path with a space": "/Users/example/My Documents/secret.txt",
+    "home path with a space": "~/My Documents/secret.txt",
+    "relative path with a space": "./My Documents/secret.txt",
+    "forward-slash windows path": "C:/Users/example/secrets.txt",
+    "unc path": "\\\\server\\share\\x",
+    "forward-slash unc path": "//server/share/x",
+    "python dict inline": "Run this {'tool': 'bash', 'cmd': 'cat /etc/passwd'} please",
+    "json array inline": 'values ["rm","-rf","/"] here',
+    "json array opening a line, prose after": '["rm","-rf","/"] is what it ran',
+    "list with a number before the string": 'It sent [1, "rm -rf /"] back.',
+    "python set inline": "It ran {'rm', '-rf'} twice.",
+    "jvm cause mid-sentence": "Caused by: java.io.IOException: /var/secret/db.key",
+    "jvm cause with no message": "It said Caused by: com.example.db.PoolTimeout again.",
+    "python frame mid-sentence": 'Error in File "/app/x.py", line 3 inside a sentence.',
+    "jvm frame mid-sentence": (
+        "It failed at com.example.Service.run(Service.java:42) today."
+    ),
+    "qualified exception with its message": (
+        "Then java.lang.IllegalStateException: bad state came back."
+    ),
+    "traceback header mid-sentence": "It printed Traceback (most recent call last): x",
+    "base64 blob": (
+        "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IGJsb2IgMTIzNDU2Nzg5MA=="
+    ),
+    "base64 key in a sentence": (
+        "The key is wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY for now."
+    ),
+    "url-safe token": "Use ghp_Q7xT2mK9vR4nL8pW3sJ6yH1cF5dB0aZeXuGi to pull.",
+    "shell prompt and its output": "$ cat /etc/passwd\nroot:x:0:0:root:/root:/bin/bash",
+    "user@host prompt": "dana@build:~/app$ make deploy",
+    "repl lines": ">>> import os\n>>> os.listdir('/')",
+    "bare repl prompt": ">>>",
+}
+PAYLOADS_225_REVIEW = {
+    "windows copy-as-path, quoted": (
+        '"C:\\Users\\example\\My Documents\\tax 2025.pdf"'
+    ),
+    "posix path in single quotes": "'/Users/example/My Documents/x'",
+    "posix path in backticks": "`/Users/example/My Documents/x`",
+    "posix path as a list item": "- /Users/example/My Documents/x",
+    "path as a numbered item in backticks": "1. `C:/Users/example/x y.txt`",
+    "python errno exception": (
+        "PermissionError: [Errno 13] Permission denied: '/Users/example/My Documents/x'"
+    ),
+    "cause with a bare exception name": "Caused by: IOException: /var/secret/db.key",
+    "cause, bare name, no message": "It said Caused by: SocketTimeoutException again.",
+    "node error code": (
+        "Error: ENOENT: no such file or directory, open '/Users/example/x'"
+    ),
+    "bare exception then a quoted path": "It said FileNotFoundError: '/tmp/x' again.",
+    "zsh prompt": "robin@mac rheo-stream % make test",
+    "zsh root prompt": "robin@mac ~ # ls",
+    "bracketed prompt": "[dana@build app]$ ls -la",
+    "bracketed root prompt": "[root@build ~]# cat /etc/shadow",
+    "bulleted prompt": "- $ make deploy",
+    "backticked prompt": "`$ make deploy`",
+    "powershell prompt": "PS C:\\Users\\example> Get-ChildItem",
+    "ipython prompt": "In [1]: import os",
+    "pem key with short body lines": (
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIB\nabc\n-----END RSA PRIVATE KEY-----"
+    ),
+    "pem certificate header": "-----BEGIN CERTIFICATE-----",
+    "pem key header in a sentence": "It starts -----BEGIN OPENSSH PRIVATE KEY----- ok",
+}
+PAYLOADS_225.update(PAYLOADS_225_REVIEW)
+PAYLOADS.update(PAYLOADS_225)
 
 
 @pytest.mark.parametrize("payload", PAYLOADS.values(), ids=PAYLOADS.keys())
@@ -144,6 +214,19 @@ SHARED = {
         "Installed to: That is all.",
     ),
     "json array after prose": ('Results:\n[1, 2, {"a": "b"}]', "Results:"),
+    # #225: the path roots, each on a line of its own between prose lines.
+    "posix path with a space between prose": (
+        "Saved it to:\n/Users/example/My Documents/secret.txt\nThat is all.",
+        "Saved it to: That is all.",
+    ),
+    "forward-slash windows path between prose": (
+        "Saved it to:\nC:/Users/example/secrets.txt\nThat is all.",
+        "Saved it to: That is all.",
+    ),
+    "unc path between prose": (
+        "Saved it to:\n\\\\server\\share\\My Files\nThat is all.",
+        "Saved it to: That is all.",
+    ),
 }
 
 
@@ -205,6 +288,13 @@ def test_crlf_segments_stay_apart() -> None:
     )
 
 
+def test_a_prompt_line_takes_its_segment_output_and_all() -> None:
+    """The lines after ``$ cmd`` or ``>>>`` are its output, and no line grammar tells
+    them from prose, so the segment goes whole; the next segment stays."""
+    assert sanitize(f"Run it:\n$ make deploy\nDeployed 3 hosts.\n\n{KEPT}") == KEPT
+    assert sanitize(f"Try:\n>>> 2 + 2\n4\n\n{KEPT}") == KEPT
+
+
 def test_a_headerless_diff_body_is_kept_on_purpose() -> None:
     """Kept by design (sanitize docstring): without a hunk header, ``+``/``-``/space
     lines are indistinguishable from a Markdown list. Behind a header it goes."""
@@ -235,6 +325,59 @@ def test_a_headerless_diff_body_is_kept_on_purpose() -> None:
 )
 def test_prose_that_merely_mentions_a_payload_shape_is_kept(prose: str) -> None:
     assert sanitize(prose) == prose
+
+
+CONTROLS_225 = {
+    "a price": "$5",
+    "a price in a sentence": "It costs $20 a month.",
+    "a home path mid-sentence": "see ~/notes",
+    "a version": "Upgrade to v1.2.3 first.",
+    "a language version": "It needs Python 3.12 or later.",
+    "a short git sha": "Fixed in 3f9a2b1 yesterday.",
+    "a full lowercase sha-1": "Pin 3f9a2b1c4d5e6f708192a3b4c5d6e7f8091a2b3c for now.",
+    "a uuid": "Row 550e8400-e29b-41d4-a716-446655440000 is the one.",
+    "a url": "Read https://example.com/docs/setup?step=2 today.",
+    "a mixed-case url path": (
+        "See https://example.com/Novadiem-Studio/bureau/blob/main/Docs2/x please."
+    ),
+    "a slug": "The post is state-of-the-art-Release-2026-notes-for-everyone.",
+    "a snake_case name": "Rename very_long_function_name_with_Mixed_Case_2 later.",
+    "the C: drive": "The C: drive is nearly full.",
+    "a C: line": "C: is nearly full",
+    "the >>> symbol": "Type >>> to see the prompt.",
+    "a citation": "As shown in [1] and [2, 3], it holds.",
+    "a task box": "- [ ] buy milk",
+    "a markdown link": "See [the docs](https://example.com) first.",
+    "a slash command": "/review the PR",
+    "a clock time in parentheses": "Meet at noon (room 4:30) on Friday.",
+    "a clock time": "It ran at 10:30:00 sharp.",
+    "caused by in prose": "Caused by: the rain, mostly.",
+    "an exception named in passing": "We saw a java.lang.NullPointerException today.",
+    "a dollar at a line start": "Budget:\n$20 for lunch",
+    # #225 review: bare exception names, percent signs, quotes and bullets.
+    "an exception named in prose": "It raised a ValueError, oddly.",
+    "a bare error message": "The error was: Error: something broke.",
+    "a js error in prose": "He said: TypeError: undefined is not a function.",
+    "an error count": "Error: 5 retries left",
+    "a percentage with a space": "About 50 % of users",
+    "a fee": "a 5 % fee",
+    "a bare percentage": "100%",
+    "an address before a percent": "dana@example.com % of the time",
+    "a citation with In": "In [1] Smith argues it.",
+    "a quoted line": '"hello there"',
+    "a backticked command in prose": "`ls` is a command",
+    "a bulleted price": "- $5 lunch",
+    "unspaced cjk with a latin word and a number": (
+        "我在2026年用Python写了一个小工具然后把结果发给了团队里的每一位同事请大家看看效果"
+    ),
+}
+
+
+@pytest.mark.parametrize("prose", CONTROLS_225.values(), ids=CONTROLS_225.keys())
+def test_prose_near_a_225_shape_is_kept(prose: str) -> None:
+    """Each sits next to a #225 rule and must survive it: sanitized once, it is the
+    input with its whitespace collapsed."""
+    assert sanitize(prose) == " ".join(prose.split())
 
 
 # --- step 1: masking ------------------------------------------------------------------
@@ -403,6 +546,38 @@ def test_the_accepted_costs_are_pinned() -> None:
     assert sanitize("I <em>really</em> liked it") is None
 
 
+def test_the_225_accepted_costs_are_pinned() -> None:
+    """Named in the sanitize docstring. A quoted list in prose has the shape of
+    ``["rm","-rf","/"]`` and the privacy floor drops it; a line opening with a
+    multi-directory path is a path to its end; ``>>>`` and ``$ `` at a line start read
+    as prompts. Missing memories, never leaked payloads."""
+    assert sanitize('I said ["yes", "no"] earlier.') is None
+    assert sanitize(f"{KEPT}\n\nI said ['yes', 'no'] earlier.") == KEPT
+    assert sanitize(f"{KEPT}\n/srv/app is where it lives") == KEPT
+    assert sanitize(">>> I agree with the plan") is None
+    assert sanitize("$ 5 a month") is None
+
+
+GOOGLE_DOC = (
+    "https://docs.google.com/document/d/1aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789AbCdEf"
+)
+
+
+def test_the_225_review_accepted_costs_are_pinned() -> None:
+    """Named in the sanitize docstring. A one-level ``~/``, ``./`` or ``../`` line
+    start is a path to its end; a prose "Traceback (most recent call last):" is the
+    header; a 40+ mixed-case id with a digit is a blob, and so is a Google Docs id,
+    which takes its URL's segment with it. That last one is no URL exemption: a
+    link-shared document's id works like a password."""
+    assert sanitize(f"{KEPT}\n~/notes is where I keep stuff") == KEPT
+    assert sanitize(f"{KEPT}\n./configure then make") == KEPT
+    assert sanitize(f"{KEPT}\n../ is the parent") == KEPT
+    assert sanitize("I got a Traceback (most recent call last): error") is None
+    assert sanitize("fooBarBazQux1FooBarBazQux2FooBarBazQux3Xy is the id") is None
+    assert sanitize(f"Open {GOOGLE_DOC}/edit please") is None
+    assert sanitize(f"{KEPT}\n\nOpen {GOOGLE_DOC}/edit please") == KEPT
+
+
 DEPTH = 12_000
 """Far past the parser's recursion depth, and every shape stays under the cap."""
 TOO_DEEP = {
@@ -459,6 +634,30 @@ ADVERSARIAL = {
     "unclosed quoted attribute": "<a " + _fit("b='x' = ")[3:],
     "deep array": "x\n" + "[" * (MAX_INPUT_CHARS - 2),
     "array lines then prose": _fit("[\n")[:-4] + "] x.",
+    # #225: one per new pattern.
+    "dict key quotes": _fit("{'"),
+    "keyed dict, no colon": _fit('{"a" '),
+    "list quotes": _fit("['"),
+    "one long number list": "[" + _fit("1,")[1:],
+    "number lists": _fit("[1,"),
+    "dotted run": _fit("a."),
+    "caused by": _fit("Caused by: a"),
+    "file quotes": _fit('File "'),
+    "at frame openers": _fit("at x (a.b:"),
+    "base64 near-runs": _fit("aA1" * 13 + " "),
+    "base64 run": _fit("aA1"),
+    "prompt lines": _fit("$ x\n"),
+    "user@host": _fit("u@h:"),
+    "unc roots": _fit("\\\\"),
+    # #225 review.
+    "pem openers": _fit("-----BEGIN A "),
+    "bare exception words": _fit("AError"),
+    "bare exception colons": _fit("Error: '"),
+    "zsh near-prompt": _fit("u@h d "),
+    "zsh near-prompt lines": _fit("u@h d %\n"),
+    "bracketed near-prompt": _fit("[u@h "),
+    "powershell near-prompt": "PS C:\\" + _fit("x")[6:],
+    "bulleted quoted path lines": _fit('- "/a b\n'),
 }
 
 
@@ -498,6 +697,7 @@ IDEMPOTENCE_SAMPLE = (
             "inline json object",
             "hunk header split across lines",
             "javascript frame split across lines",
+            *PAYLOADS_225,
         )
     ),
     *(text for text, _ in SHARED.values()),
@@ -513,6 +713,13 @@ IDEMPOTENCE_SAMPLE = (
     'He typed {" once, {" twice and {" again.',
     "Groceries\n\tmilk\n\teggs",
     *NEGATIVE_CONTROLS,
+    *CONTROLS_225.values(),
+    f"{KEPT}\n/srv/app is where it lives",
+    f"{KEPT}\n\nI said ['yes', 'no'] earlier.",
+    f"Run it:\n$ make deploy\nDeployed 3 hosts.\n\n{KEPT}",
+    f"{KEPT}\n~/notes is where I keep stuff",
+    f"{KEPT}\n\nOpen {GOOGLE_DOC}/edit please",
+    f"{KEPT}\n- `/Users/example/My Documents/x`\nThat is all.",
 )
 
 
