@@ -1,24 +1,52 @@
 # rheoStream
 
-An open, self-hostable framework for composing agent-assisted working environments.
+rheoStream runs agent-accessible workspace operations, background jobs and
+persistent memory through a self-hostable FastAPI core, MCP facade and Next.js shell.
 
-> Leads enter the stream. Current carries the work. Recallatron remembers.
+## Mechanisms you can inspect
 
-rheoStream is for independent professionals whose working life is spread across
-too many tools. You assemble a workspace from modules: **Leads** develops
-opportunities from whatever sources feed you work, **Current** carries active
-commitments and projects, and **Recallatron** keeps the context that would
-otherwise be lost between sessions. An agent named **rheo** operates all of it
-in conversation, over Claude, Telegram, or voice. Conversation is the interface,
-not the database: the modules stay explicit systems of record that you can
-inspect, export, and own.
+- Each workspace has its own Postgres database. Server-resolved identity selects
+  the database; an operation's payload cannot redirect it to another workspace.
+- Jobs persist with leases and terminal operation records. A transactional outbox
+  tracks event delivery, with consumer deduplication and retry.
+- Successful mutations commit with their audit records. Field sensitivity tiers
+  control redaction before data reaches a model.
+- Recallatron stores memories with `remember`, `derive`, `correct` and `supersede`.
+  Hybrid retrieval combines lexical search with local embeddings.
+- Public code and synthetic examples stay in Git; private workspace data stays
+  outside it. Workspace export and restore are implemented.
 
-The first reference configuration serves a freelance web developer and software
-entrepreneur. The same contracts are meant to carry other professions: an HR
-consultant, a regulatory consultant, a sales representative, or a business
-routing inquiries from its own websites and forms. Job search is one optional
-workflow; a workspace can feed Leads from its own funnels and referral partners
-and never touch a job board.
+## Current status and limits
+
+The core, worker, shell, Recallatron, module install/enable and Claude CLI adapter
+are implemented. Leads, Current and Relationships are stubs; connectors, channels,
+packs and module disable/remove/purge are unimplemented. Modules are trusted code,
+not sandboxed plugins. Job enqueue spans two databases without a shared transaction:
+a crash between writes can delay discovery until reconciliation. The
+[architecture tour](docs/architecture/code-tour.md) documents recovery and its limits.
+
+## Try this in 5 minutes
+
+Check the public/private repository rules. Requires Git and Python 3.9+;
+no database, model account or API key is needed.
+
+```sh
+git clone https://github.com/rheos/rheostream.git
+cd rheostream
+python3 scripts/check_repository.py
+```
+
+The check validates private-path exclusions, tracked artifacts and local Markdown
+links. It does not scan file contents for secrets or exercise the running app.
+For the Docker stack, follow the [deployment guide](deploy/README.md).
+
+## Follow the evidence
+
+Start with the [architecture tour](docs/architecture/code-tour.md): trace one
+request through authorization, storage routing, audit and the worker.
+Its test links cover workspace isolation, failed commits and missed due-work marks.
+The [decision index](docs/architecture/README.md) records architecture choices;
+the [workspace guide](docs/workspace-layout.md) defines the public/private layout.
 
 ## Status
 
