@@ -458,11 +458,11 @@ def _check_bound_to_context(
     for record in records:
         if account_id is None or record.speaker_account_id != account_id:
             raise ValueError(
-                "record_evidence refuses a speaker that is not the context's account"
+                "evidence recording refuses a speaker that is not the context's account"
             )
         if bound_purpose is None or record.purpose != bound_purpose:
             raise ValueError(
-                "record_evidence refuses a purpose that is not the context's bound"
+                "evidence recording refuses a purpose that is not the context's bound"
                 " purpose"
             )
 

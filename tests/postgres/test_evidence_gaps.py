@@ -22,7 +22,7 @@ from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
-from harness.evidence import EvidenceWorkspace, probe_registry
+from harness.evidence import EvidenceWorkspace, handler_uow, probe_registry
 from rheo_contracts import ContextPurpose, WorkspaceContext
 from rheo_core.evidence.record import GapReason, NewGap, record_gaps
 from rheo_core.evidence.retention import purge_evidence
@@ -166,8 +166,17 @@ def test_a_gap_of_another_speaker_refuses_the_whole_batch(
     own = _gap(ctx, authority_id=authority_id)
     other = _gap(ctx, authority_id=authority_id, speaker_account_id=uuid7())
 
-    with pytest.raises(ValueError, match="speaker"):
-        _record(ev, [own, other], now=_AT)
+    # Counted on the refused call's own open connection, before anything could roll
+    # back: nothing was written, not written and then undone.
+    with ev.unit_of_work() as uow:
+        with pytest.raises(ValueError, match="speaker"):
+            record_gaps(ctx, handler_uow(uow, probe_registry()), [own, other], now=_AT)
+        written = uow.connection.execute(
+            select(func.count())
+            .select_from(evidence_unit)
+            .where(evidence_unit.c.native_key.in_([own.native_key, other.native_key]))
+        ).scalar_one()
+    assert written == 0
 
     assert _rows(ev, own.native_key) == []
     assert _rows(ev, other.native_key) == []
