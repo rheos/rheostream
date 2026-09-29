@@ -33,6 +33,7 @@ from rheo_core.exports import (
     run_export_job,
     run_restore_job,
 )
+from rheo_core.log_config import configure_logging
 from rheo_core.modules import load_modules, register_module_settings
 from rheo_core.modules.operations import (
     MODULE_INSTALL,
@@ -155,6 +156,10 @@ def register_modules() -> None:
 
 
 def main() -> None:
+    # First (issue #229): every line this process logs after this point, including a
+    # deferred or failed job's content-free evidence line, renders its ``extra``
+    # fields instead of dropping them.
+    configure_logging()
     # Before refuse_misconfigured_login()'s resolve (#108): an allowed module's own
     # RHEO__<module>__* variable is a stray until its settings are registered.
     register_module_settings()

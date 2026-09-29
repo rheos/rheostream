@@ -50,6 +50,7 @@ from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_from_operation
 from rheo_core.evidence.errors import EvidenceDatabaseError
 from rheo_core.evidence.record import NewEvidence, record_evidence, recording_allowed
+from rheo_core.log_config import content_free_extra
 from rheo_core.operations.records import (
     finish_cancelled,
     finish_failed,
@@ -481,10 +482,12 @@ def _log_evidence_failure(error: Exception, payload: RuntimeJobPayload) -> None:
     """One content-free line: the error's class and the operation, never its text."""
     _evidence_logger.warning(
         "evidence_record_failed",
-        extra={
-            "error_type": type(error).__name__,
-            "operation_id": str(payload.operation_id),
-        },
+        extra=content_free_extra(
+            {
+                "error_type": type(error).__name__,
+                "operation_id": str(payload.operation_id),
+            }
+        ),
     )
 
 

@@ -70,6 +70,7 @@ from rheo_core.boundary import (
 from rheo_core.evidence.authority import RuntimeEvidenceAuthority
 from rheo_core.evidence.extract import NOOP_EVIDENCE, digest, validate_extraction
 from rheo_core.evidence.providers import resolve_provider
+from rheo_core.log_config import content_free_extra
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from rheo_core.storage.backend import HandlerUnitOfWork, StorageRefusal, UnitOfWork
@@ -483,7 +484,9 @@ def claim_units(
         # The type name and a count only: a provider may fill a message with text.
         logger.warning(
             EXTRACTION_FAILED_LOG,
-            extra={"error_type": failure, "unit_count": len(verified)},
+            extra=content_free_extra(
+                {"error_type": failure, "unit_count": len(verified)}
+            ),
         )
         return ClaimedBatch(
             units=(), follow_up_at=_follow_up_at(uow, now=now, taken=taken, more=more)
@@ -571,5 +574,7 @@ def defer_unit(uow: HandlerUnitOfWork, claimed: ClaimedUnit, *, now: datetime) -
         # failing row, so neither it nor the error type is carried here.
         logger.warning(
             ACCEPTANCE_FAILED_LOG,
-            extra={"evidence_id": str(claimed.evidence_id), "attempts": attempts},
+            extra=content_free_extra(
+                {"evidence_id": str(claimed.evidence_id), "attempts": attempts}
+            ),
         )

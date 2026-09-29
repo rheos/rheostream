@@ -98,6 +98,7 @@ from rheo_core.evidence import (
     defer_unit,
     settle_unit,
 )
+from rheo_core.log_config import content_free_extra
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
@@ -313,11 +314,13 @@ def _drain(
             deferred += 1
             _log.warning(
                 ACCEPTANCE_DEFERRED_LOG,
-                extra={
-                    "evidence_id": str(claimed.evidence_id),
-                    "error_type": type(refused).__name__,
-                    "sqlstate": _sqlstate(refused),
-                },
+                extra=content_free_extra(
+                    {
+                        "evidence_id": str(claimed.evidence_id),
+                        "error_type": type(refused).__name__,
+                        "sqlstate": _sqlstate(refused),
+                    }
+                ),
             )
             continue
         # Outside the savepoint (#221): a settlement fault rolls the drain back.
@@ -332,7 +335,9 @@ def _drain(
     if dropped_mentions:
         _log.info(
             MENTIONS_DROPPED_LOG,
-            extra={"mention_count": dropped_mentions, "unit_count": trimmed_units},
+            extra=content_free_extra(
+                {"mention_count": dropped_mentions, "unit_count": trimmed_units}
+            ),
         )
     follow_up_at = batch.follow_up_at
     if deferred:
