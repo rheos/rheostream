@@ -18,12 +18,17 @@ Seams under test:
   receipt, ``recorded`` event and ``core.evidence.accept`` row together and leaves
   the unit pending with its body; a ``noop`` writes no audit row, so a raising sink
   never touches it.
+- **#215: one poison unit costs only itself.** A database refusal of one unit's
+  acceptance rolls back only that unit's savepoint; its partition neighbour is
+  accepted in the same drain, the poison unit backs off on the extraction schedule,
+  and its fifth attempt settles ``gap/acceptance_failed``.
 
 Every drain runs through a real ``visit_workspace`` with the job kinds and the
 subscription taken off Recallatron's ``MANIFEST``. Every text is synthetic.
 """
 
 import dataclasses
+import logging
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -63,12 +68,15 @@ from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.evidence_tables import evidence_unit
 from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_recallatron import automatic
+from rheo_recallatron.automatic import ACCEPTANCE_DEFERRED_LOG
 from rheo_recallatron.configuration import (
     MODULE_ID,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
 )
+from rheo_recallatron.source_units import accept_source_unit
 from rheo_recallatron.storage import tables as memory_tables
+from sqlalchemy import text
 from sqlalchemy.engine import Row
 
 from postgres.test_automatic_memory_acceptance import (
@@ -611,3 +619,126 @@ def test_card5c_a_noop_settles_with_no_audit_row_while_the_raising_sink_is_insta
     assert receipt.state == "noop"
     assert _rows(ev, memory_tables.memory) == []
     assert _audit_names(ev).count(_ACCEPT_AUDIT) == 0
+
+
+# --- #215: one poison unit costs only itself -----------------------------------------
+
+_POISON_TAG: Final = "poison-unit"
+_POISON_ROW: Final = "Example Hall Rentals, 555-0142"
+"""What the forced refusal's message quotes, as Postgres quotes a failing row."""
+
+
+def _poisoned_acceptance(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Acceptance at the drain's call site, refused by the database for the unit
+    whose body carries :data:`_POISON_TAG`.
+
+    The real seam runs first, so the refusal lands after it wrote the memory, as a
+    CHECK failure on a later insert would. The refusal is a real one, SQLSTATE 23514
+    from the server, which aborts the transaction until the savepoint rolls back.
+    Answers the kinds of the units it refused, in order.
+    """
+    refused: list[str] = []
+
+    def accept(ctx: Any, uow: Any, unit: Any, **kwargs: Any) -> Any:
+        outcome = accept_source_unit(ctx, uow, unit, **kwargs)
+        if _POISON_TAG in unit.evidence.body:
+            refused.append(unit.evidence.kind)
+            uow.connection.execute(
+                text(
+                    "DO $$ BEGIN RAISE EXCEPTION USING ERRCODE = 'check_violation', "
+                    f"MESSAGE = 'Failing row contains ({_POISON_ROW})'; END $$"
+                )
+            )
+        return outcome
+
+    monkeypatch.setattr(automatic, "accept_source_unit", accept)
+    return refused
+
+
+def test_215_a_poison_unit_backs_off_and_its_partition_neighbour_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    ev: EvidenceWorkspace,
+    now: datetime,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two units, one partition, one refused by the database. The other is accepted
+    in the same drain, the poison unit counts one attempt and backs off, and the
+    drain job succeeds; the next drain is due at the poison unit's ``retry_after``.
+    Nothing the refusal's message quoted reaches a log line or the job row."""
+    refused = _poisoned_acceptance(monkeypatch)
+    poison_body = f"{FAKE_EXTRACTION_MARKER} The {_POISON_TAG} lanterns."
+    _record_batch(
+        ev,
+        [
+            _evidence(ev, poison_body, at=now - timedelta(seconds=10)),
+            _evidence(ev, _TURN, at=now - timedelta(seconds=5)),
+        ],
+        at=now,
+    )
+    first = _enqueue_drain(ev, at=now)
+    with caplog.at_level(logging.DEBUG):
+        _at(monkeypatch, ev, now)
+
+    assert refused == ["note"]
+    assert _counts(ev) == _ONE_ACCEPTANCE
+    # A settled row's body is cleared, so only the poison unit still has one.
+    [poison] = [u for u in _units(ev) if u.body is not None and _POISON_TAG in u.body]
+    [healthy] = [u for u in _units(ev) if u.id != poison.id]
+    assert (healthy.state, healthy.outcome) == ("settled", "active")
+    assert (poison.state, poison.outcome) == ("pending", None)
+    assert poison.extraction_attempts == 1
+    assert poison.retry_after == now + timedelta(seconds=5)
+    [drain] = [job for job in _jobs(ev) if job.id == first]
+    assert (drain.state, drain.attempts, drain.last_error) == ("succeeded", 1, None)
+    queued = [job for job in _jobs(ev) if job.state == "queued"]
+    assert [job.next_run_at for job in queued] == [poison.retry_after]
+
+    [deferred] = [
+        r for r in caplog.records if r.getMessage() == ACCEPTANCE_DEFERRED_LOG
+    ]
+    assert (vars(deferred)["error_type"], vars(deferred)["sqlstate"]) == (
+        "IntegrityError",
+        "23514",
+    )
+    assert _POISON_ROW not in caplog.text
+    assert _POISON_TAG not in caplog.text
+    assert all(job.last_error is None for job in _jobs(ev))
+
+
+def test_215_a_poison_unit_settles_acceptance_failed_on_its_fifth_attempt(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime
+) -> None:
+    """The deferral's own follow-ups carry the unit to its fifth attempt, on the
+    extraction schedule (5, 20, 80, 320 s), with no drain job ever retried."""
+    refused = _poisoned_acceptance(monkeypatch)
+    body = f"{FAKE_EXTRACTION_MARKER} The {_POISON_TAG} lanterns."
+    _record_batch(ev, [_evidence(ev, body, at=now)], at=now)
+    _enqueue_drain(ev, at=now)
+
+    at = now
+    for attempt, step in enumerate((5, 20, 80, 320, None), start=1):
+        _at(monkeypatch, ev, at)
+        [unit] = _units(ev)
+        assert unit.extraction_attempts == attempt
+        if step is None:
+            break
+        assert (unit.state, unit.retry_after) == (
+            "pending",
+            at + timedelta(seconds=step),
+        )
+        # The one queued drain is the next attempt's, due exactly then.
+        queued = [job for job in _jobs(ev) if job.state == "queued"]
+        assert [job.next_run_at for job in queued] == [unit.retry_after]
+        at = unit.retry_after
+
+    assert len(refused) == 5
+    [unit] = _units(ev)
+    assert (unit.state, unit.outcome) == ("gap", "acceptance_failed")
+    assert unit.body is None
+    assert unit.settled_at == at
+    assert _counts(ev) == _NO_RECEIPTS
+    assert _rows(ev, memory_tables.memory_entity) == []
+    drains = _jobs(ev)
+    assert {(job.state, job.attempts, job.last_error) for job in drains} == {
+        ("succeeded", 1, None)
+    }

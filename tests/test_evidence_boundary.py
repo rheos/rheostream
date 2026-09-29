@@ -8,7 +8,7 @@ Three scans, each with its own positive control:
   name is in ``rheo_core.evidence.__all__``. A submodule
   (``rheo_core.evidence.service``), the evidence table module, a bare package handle
   and a star import are all refused.
-- **(b) Public surface.** ``rheo_core.evidence.__all__`` is exactly seven names, and
+- **(b) Public surface.** ``rheo_core.evidence.__all__`` is exactly eight names, and
   none of them is, returns, or carries in a field a raw database handle: a SQLAlchemy
   ``Connection``, ``Engine``, ``Table``, ``Select`` or ``Row``, or core's
   ``UnitOfWork``. The runtime half, on a batch a real claim returned, is in
@@ -59,23 +59,26 @@ _EVIDENCE_TABLES: Final = "rheo_core.storage.evidence_tables"
 _PUBLIC_NAMES: Final = (
     "claim_units",
     "settle_unit",
+    "defer_unit",
     "ClaimedBatch",
     "ClaimedUnit",
     "EvidenceClaimInconsistent",
     "EvidenceAuditUnwritable",
     "EVIDENCE_RECORDED",
 )
-"""Prompt 10's seven, written out here rather than read back from ``__all__``, so the
-pin compares two independently written lists."""
+"""Prompt 10's seven plus #215's ``defer_unit``, written out here rather than read back
+from ``__all__``, so the pin compares two independently written lists."""
 
 _NEVER_PUBLIC: Final = (
     "EvidenceWorkspaceUnresolved",
     "RuntimeEvidenceAuthority",
     "workspace_id_for_database",
     "evidence_unit",
+    "EvidenceDatabaseError",
 )
 """Names that exist in core's evidence code or beside it and must never join the
-public surface: the workspace resolution, the authority, and the table."""
+public surface: the workspace resolution, the authority, the table, and the
+content-free database error only core raises."""
 
 _RAW_HANDLES: Final[tuple[type, ...]] = (
     Connection,
@@ -245,7 +248,7 @@ def _raw_handles_in(annotation: Any) -> list[str]:
     )
 
 
-def test_the_public_surface_is_exactly_the_seven_names() -> None:
+def test_the_public_surface_is_exactly_the_eight_names() -> None:
     assert len(evidence.__all__) == len(set(evidence.__all__))
     assert sorted(evidence.__all__) == sorted(_PUBLIC_NAMES)
     for name in _NEVER_PUBLIC:
@@ -286,6 +289,7 @@ def test_no_public_name_is_returns_or_carries_a_raw_handle() -> None:
     assert classified == {
         "claim_units": "function",
         "settle_unit": "function",
+        "defer_unit": "function",
         "ClaimedBatch": "dataclass",
         "ClaimedUnit": "dataclass",
         "EvidenceClaimInconsistent": "exception",

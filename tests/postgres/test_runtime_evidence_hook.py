@@ -68,6 +68,7 @@ from rheo_contracts import (
 )
 from rheo_core.boundary.factories import context_from_token
 from rheo_core.events import ConsumerRegistry
+from rheo_core.evidence.errors import EvidenceDatabaseError
 from rheo_core.evidence.record import EVIDENCE_RECORDED, NewEvidence, record_evidence
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.core_ops import TOKEN_ISSUE
@@ -529,6 +530,12 @@ def test_a_database_failure_while_recording_leaves_the_run_unchanged(
     )
 
 
+class _DriverDrop(Exception):
+    """A driver error with a SQLSTATE, as psycopg's carry one."""
+
+    sqlstate = "08006"
+
+
 def test_a_dropped_connection_while_recording_is_not_swallowed(
     monkeypatch: pytest.MonkeyPatch,
     recording: EvidenceWorkspace,
@@ -536,11 +543,19 @@ def test_a_dropped_connection_while_recording_is_not_swallowed(
 ) -> None:
     """An invalidated connection takes the session whatever a savepoint does, so the
     hook re-raises it: the attempt fails and rolls back, and nothing is logged as a
-    recording failure."""
+    recording failure.
+
+    It is re-raised content-free (#215). The synthetic error quotes the turn in its
+    statement, its parameters and its driver message, as a real one quotes the failing
+    row; none of that reaches the raised exception, the job's ``last_error`` or a log
+    line. Only the class name and the SQLSTATE do."""
 
     def drops(*_args: object, **_kwargs: object) -> None:
         raise DBAPIError(
-            "SELECT 1", None, Exception("synthetic drop"), connection_invalidated=True
+            f"INSERT INTO core.evidence_unit (body) VALUES ('{TURN}')",
+            {"body": TURN},
+            _DriverDrop(f"synthetic drop: {TURN}"),
+            connection_invalidated=True,
         )
 
     monkeypatch.setattr("rheo_core.runtime.operations.record_evidence", drops)
@@ -557,7 +572,21 @@ def test_a_dropped_connection_while_recording_is_not_swallowed(
     job = job_row(_engine(recording), operation_id)
     assert job["state"] == "queued"  # the attempt raised; the job waits to retry
     assert job["attempts"] == 1
-    assert "synthetic drop" in str(job["last_error"])  # this raise reached the worker
+    # This raise reached the worker, as itself in kind but with none of its text.
+    assert job["last_error"] == "DBAPIError (SQLSTATE 08006)"
+    [raised] = [
+        record.args[1]
+        for record in caplog.records
+        if record.msg == "job %s raised: %s" and isinstance(record.args, tuple)
+    ]
+    assert isinstance(raised, EvidenceDatabaseError)
+    assert raised.connection_invalidated is True
+    assert (raised.error_type, raised.sqlstate) == ("DBAPIError", "08006")
+    assert raised.__cause__ is None and raised.__context__ is None
+    for rendered in (str(raised), repr(raised), str(job["last_error"]), caplog.text):
+        assert TURN not in rendered
+        assert "synthetic drop" not in rendered
+        assert "evidence_unit" not in rendered
     assert _requests(recording, operation_id) == []  # the whole attempt rolled back
     assert _units(recording) == []
     assert not [r for r in caplog.records if r.getMessage() == "evidence_record_failed"]

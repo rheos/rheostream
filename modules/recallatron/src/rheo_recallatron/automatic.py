@@ -24,6 +24,26 @@ any follow-up drain job commit together or not at all. An extraction failure nev
 reaches this module: ``claim_units`` contains it to its partition and returns no
 units, so the drain succeeds and the per-row attempt counts commit.
 
+**One poison unit costs only itself (#215).** Each unit's accept-then-settle runs in
+its own savepoint. A database refusal of that unit's writes (``IntegrityError`` or
+``DataError`` on a live connection) rolls the savepoint back and hands the unit to
+core's ``defer_unit``, which counts the attempt and backs the row off, or settles it
+``gap/acceptance_failed`` on the fifth. The drain then carries on with the next unit
+and succeeds, so the count commits. Anything else still rolls the whole drain back:
+``EvidenceAuditUnwritable``, a dropped connection, any other raise.
+
+**A model's mention kinds are not trusted.** Extraction accepts any kind string, and
+the ``memory_entity_kind`` CHECK allows only :data:`EntityKind`. A mention of any other
+kind is dropped before acceptance, and the same rebuilt unit is settled, so the
+success audit's digest is of what was accepted.
+
+**Content-free failures.** A psycopg error's text quotes the failing row and SQLAlchemy
+adds the bound parameters, and the worker stores ``str(failure)`` as the job's
+``last_error``. So no ``StatementError`` (the base of ``DBAPIError``, and what
+SQLAlchemy raises when binding a parameter fails) leaves the drain as itself:
+:class:`DrainDatabaseError` carries its class name and SQLSTATE only. The two log lines
+here carry counts, a class name and a SQLSTATE, never a kind, a name or a message.
+
 **The due-mark requests are for the direct path.** On the worker path nothing reads a
 ``HandlerUnitOfWork``'s due-mark request; the visit that ran this handler reads the
 remaining due instant itself, after its jobs and deliveries, and so sees the job
@@ -33,21 +53,59 @@ written here. A directly built view (a dispatch, a test) does read it.
 pins time for both by replacing it.
 """
 
+import dataclasses
+import logging
 from datetime import UTC, datetime
+from typing import Final, get_args
 
 from pydantic import BaseModel, ConfigDict
 from rheo_contracts import EventEnvelope
-from rheo_core.events.consumers import HandlerUnitOfWork
-from rheo_core.evidence import claim_units, settle_unit
+from rheo_core.events.consumers import ConsumerRegistry, HandlerUnitOfWork
+from rheo_core.evidence import ClaimedUnit, claim_units, defer_unit, settle_unit
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
+from sqlalchemy.exc import DataError, IntegrityError, StatementError
 
 from rheo_recallatron.configuration import (
     DRAIN_JOB_KIND,
     DRAIN_MAX_ATTEMPTS,
     MODULE_ID,
 )
+from rheo_recallatron.contracts import EntityKind
 from rheo_recallatron.source_units import accept_source_unit
+
+_log = logging.getLogger(__name__)
+
+_ENTITY_KINDS: Final = frozenset(get_args(EntityKind))
+
+MENTIONS_DROPPED_LOG: Final = "automatic_memory_mentions_dropped"
+ACCEPTANCE_DEFERRED_LOG: Final = "automatic_memory_acceptance_deferred"
+
+
+def _sqlstate(error: StatementError) -> str | None:
+    """The driver's SQLSTATE, when it is a string; anything else could carry text."""
+    raw = getattr(error.orig, "sqlstate", None)
+    return raw if isinstance(raw, str) else None
+
+
+class DrainDatabaseError(Exception):
+    """A ``StatementError`` that escaped the drain, with its message, statement and
+    parameters dropped: ``str()`` and ``repr()`` are the class name and SQLSTATE.
+
+    Core's own equivalent is not on the evidence surface Recallatron may import, so
+    this module keeps its own. ``connection_invalidated`` is kept.
+    """
+
+    def __init__(self, error: StatementError) -> None:
+        sqlstate = _sqlstate(error)
+        super().__init__(f"{type(error).__name__} (SQLSTATE {sqlstate})")
+        self.error_type: str = type(error).__name__
+        self.sqlstate: str | None = sqlstate
+        # Only a ``DBAPIError`` knows whether the connection went; a bind failure
+        # never touched it.
+        self.connection_invalidated: bool = bool(
+            getattr(error, "connection_invalidated", False)
+        )
 
 
 class DrainJobPayload(BaseModel):
@@ -82,6 +140,20 @@ def on_evidence_recorded(uow: HandlerUnitOfWork, envelope: EventEnvelope) -> Non
     _enqueue_drain(uow, now=_now())
 
 
+def _known_mentions(claimed: ClaimedUnit) -> tuple[ClaimedUnit, int]:
+    """``claimed`` without any mention whose kind is not an :data:`EntityKind`, and
+    how many were dropped. The unit is rebuilt only when something was."""
+    evidence = claimed.unit.evidence
+    kept = tuple(m for m in evidence.mentions if m.kind in _ENTITY_KINDS)
+    dropped = len(evidence.mentions) - len(kept)
+    if not dropped:
+        return claimed, 0
+    unit = claimed.unit.model_copy(
+        update={"evidence": evidence.model_copy(update={"mentions": kept})}
+    )
+    return dataclasses.replace(claimed, unit=unit), dropped
+
+
 def run_drain_job(
     uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
 ) -> None:
@@ -96,25 +168,73 @@ def run_drain_job(
     consumers = uow.consumers
     if consumers is None:
         raise RuntimeError("the drain job was handed no consumer registry")
+    escaped: DrainDatabaseError | None = None
+    try:
+        _drain(uow, token, consumers=consumers)
+    except StatementError as error:
+        escaped = DrainDatabaseError(error)
+    if escaped is not None:
+        # Outside the ``except`` block, so the original is not on ``__context__``.
+        raise escaped from None
+
+
+def _drain(
+    uow: HandlerUnitOfWork, token: CancellationToken, *, consumers: ConsumerRegistry
+) -> None:
+    """The drain proper: :func:`run_drain_job` only guards what may escape it."""
     now = _now()
     batch = claim_units(uow, now=now)
+    dropped_mentions = 0
+    trimmed_units = 0
+    deferred = 0
     for claimed in batch.units:
         token.checkpoint()
-        outcome = accept_source_unit(
-            claimed.context,
-            uow,
-            claimed.unit,
-            authority=claimed.authority,
-            consumers=consumers,
-            now=now,
+        claimed, dropped = _known_mentions(claimed)
+        if dropped:
+            dropped_mentions += dropped
+            trimmed_units += 1
+        try:
+            with uow.connection.begin_nested():
+                outcome = accept_source_unit(
+                    claimed.context,
+                    uow,
+                    claimed.unit,
+                    authority=claimed.authority,
+                    consumers=consumers,
+                    now=now,
+                )
+                settle_unit(
+                    uow,
+                    claimed,
+                    outcome=outcome.state,
+                    memory_ref=outcome.memory_ref,
+                    audit_module_id=MODULE_ID,
+                    now=now,
+                )
+        except (IntegrityError, DataError) as error:
+            if error.connection_invalidated:
+                raise
+            defer_unit(uow, claimed, now=now)
+            deferred += 1
+            _log.warning(
+                ACCEPTANCE_DEFERRED_LOG,
+                extra={
+                    "evidence_id": str(claimed.evidence_id),
+                    "error_type": type(error).__name__,
+                    "sqlstate": _sqlstate(error),
+                },
+            )
+    if dropped_mentions:
+        _log.info(
+            MENTIONS_DROPPED_LOG,
+            extra={"mention_count": dropped_mentions, "unit_count": trimmed_units},
         )
-        settle_unit(
-            uow,
-            claimed,
-            outcome=outcome.state,
-            memory_ref=outcome.memory_ref,
-            audit_module_id=MODULE_ID,
-            now=now,
-        )
-    if batch.follow_up_at is not None:
-        _enqueue_drain(uow, now=now, next_run_at=batch.follow_up_at)
+    follow_up_at = batch.follow_up_at
+    if deferred:
+        # The claim read its follow-up before this drain deferred anything. A drain
+        # due now finds each deferred row waiting and schedules itself at the
+        # earliest ``retry_after``, so the backed-off rows are not left for the next
+        # recorded turn to pick up.
+        follow_up_at = now
+    if follow_up_at is not None:
+        _enqueue_drain(uow, now=now, next_run_at=follow_up_at)
