@@ -73,6 +73,7 @@ from rheo_core.evidence.local_authority import (
 )
 from rheo_core.evidence.providers import FAKE_EXTRACTION_MARKER
 from rheo_core.evidence.record import ENABLED_KEY, MAX_RECORDS_KEY
+from rheo_core.evidence.sanitize import MAX_INPUT_CHARS
 from rheo_core.operations import (
     INPUT_INVALID,
     OPERATION_NOT_PERMITTED,
@@ -564,6 +565,29 @@ def test_a_resent_scrubbed_batch_answers_the_same_tuples(
     assert again == first
     assert {(u.native_key, u.id, u.body) for u in _units(ev)} == rows
     assert _recorded_events(ev) == events
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [
+        "word " * (MAX_INPUT_CHARS // 5 + 1),
+        "word " * ((MAX_INPUT_CHARS - 520) // 5) + " secret://a/b" * 40,
+    ],
+    ids=["raw_over_the_cap", "masked_over_the_cap"],
+)
+def test_an_over_cap_record_is_dropped_and_its_neighbours_land(
+    ev: EvidenceWorkspace, middle: str
+) -> None:
+    enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
+    payload, keys, gap = _scrub_batch(enrolled, middle)
+    four = _four(_ingest(enrolled.ctx(), payload))
+    assert four == {
+        "accepted": (keys[0], keys[2]),
+        "deferred": (),
+        "gapped": (gap,),
+        "dropped": (keys[1],),
+    }
+    assert {u.native_key for u in _units(ev)} == {keys[0], keys[2], gap}
 
 
 def test_the_budget_defers_a_tail_in_submission_order(ev: EvidenceWorkspace) -> None:

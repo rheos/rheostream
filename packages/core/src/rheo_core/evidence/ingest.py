@@ -37,7 +37,7 @@ from rheo_core.evidence.record import (
     record_gaps,
     recording_allowed,
 )
-from rheo_core.evidence.sanitize import MAX_INPUT_CHARS, strip_unstorable
+from rheo_core.evidence.sanitize import strip_unstorable
 from rheo_core.operations.refusals import OUTPUT_INVALID, OperationRefused
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -70,15 +70,17 @@ class IngestRecord(BaseModel):
 
     native_key: str = Field(pattern=RECORD_KEY_PATTERN)
     recorded_at: AwareDatetime
-    text: str = Field(max_length=MAX_INPUT_CHARS)
+    text: str
+    """No length bound here: a bound would refuse the whole batch for one long record.
+    ``record_evidence``'s ``sanitize`` drops text over ``MAX_INPUT_CHARS`` whole, so
+    that record lands in ``dropped`` and its neighbours are admitted."""
 
     @field_validator("text", mode="before")
     @classmethod
     def _scrub_unstorable(cls, value: object) -> object:
         """Scrub NUL and lone surrogates before pydantic-core's ``str`` check, which
-        refuses a lone surrogate and so the whole request, and before ``max_length``,
-        which then bounds the scrubbed text. Anything but a ``str`` passes through for
-        pydantic to refuse normally."""
+        refuses a lone surrogate and so the whole request. Anything but a ``str``
+        passes through for pydantic to refuse normally."""
         return strip_unstorable(value) if isinstance(value, str) else value
 
 

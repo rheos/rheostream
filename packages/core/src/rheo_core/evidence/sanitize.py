@@ -10,7 +10,10 @@ step runs. It fails closed on purpose: a human turn that long is a paste, not a
 memory, and the Rheo-owned producer records the task text on its own. The cap also
 bounds the work: ``sanitize`` runs inside the recording transaction, before the byte
 budget, so its cost must be bounded by the input, not by what an adversary puts in
-it. Under the cap every scan is linear or capped: the JSON rules make at most
+it. **Output over the cap is dropped too:** a secret mask is longer than a short
+reference, so masking can push text under the cap over it, and such output would
+sanitize to ``None`` the second time; dropping it keeps ``sanitize`` idempotent.
+Under the cap every scan is linear or capped: the JSON rules make at most
 :data:`_MAX_JSON_ATTEMPTS` failed parses per segment and treat a segment that needs
 more as a payload, and JSON nested deeper than the parser can recurse is a payload
 too.
@@ -899,4 +902,8 @@ def sanitize(text: str) -> str | None:
     if any(_carries_injection_marker(segment) for segment in screened):
         return None
     result = "\n\n".join(_collapsed(segment) for segment in kept)
+    if len(result) > MAX_INPUT_CHARS:
+        # Masking can lengthen text, so output over the cap is dropped too: it would
+        # sanitize to ``None`` a second time, and no longer fits an ingest record.
+        return None
     return result or None

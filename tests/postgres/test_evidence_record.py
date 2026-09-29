@@ -435,6 +435,21 @@ def test_a_record_that_sanitizes_to_nothing_is_dropped_without_a_row(
     assert _units(recording) == []
 
 
+def test_the_runtime_producer_stores_nul_and_lone_surrogates_scrubbed(
+    recording: EvidenceWorkspace,
+) -> None:
+    """``record_evidence`` directly, as the runtime producer calls it, with no ingest
+    model in front: ``sanitize``'s step 0 alone keeps both out of the insert."""
+    nul = _evidence(recording, "tea\x00 over")
+    surrogate = _evidence(recording, "tea\ud800 over")
+    attempt, _ = _record(recording, [nul, surrogate])
+    assert attempt.accepted == (nul.native_key, surrogate.native_key)
+    assert {u.native_key: u.body for u in _units(recording)} == {
+        nul.native_key: "tea over",
+        surrogate.native_key: "tea over",
+    }
+
+
 def test_the_same_native_key_twice_leaves_one_row_and_the_first_clock(
     recording: EvidenceWorkspace,
 ) -> None:

@@ -971,3 +971,32 @@ def test_a_text_of_only_nul_and_surrogates_sanitizes_to_none() -> None:
 def test_an_astral_character_survives_sanitize() -> None:
     text = "Tea at four \U0001f375 on the porch."
     assert sanitize(text) == text
+
+
+# --- output over the cap (1a4b Prompt 8-A review) -------------------------------------
+
+_SHORT_REFERENCE = "secret://a/b"
+
+
+def _grows_past_the_cap(references: int) -> str:
+    """Prose under the cap plus short secret references, each masked longer."""
+    tail = f" {_SHORT_REFERENCE}" * references
+    return "word " * ((MAX_INPUT_CHARS - len(tail)) // 5) + tail.lstrip()
+
+
+def test_masking_that_pushes_output_over_the_cap_drops_it() -> None:
+    assert len(SECRET_MASK) > len(_SHORT_REFERENCE)
+    grown = _grows_past_the_cap(40)
+    assert len(grown) <= MAX_INPUT_CHARS
+    assert len(grown.replace(_SHORT_REFERENCE, SECRET_MASK)) > MAX_INPUT_CHARS
+    assert sanitize(grown) is None
+
+
+def test_output_at_or_under_the_cap_is_kept_and_idempotent() -> None:
+    fits = "word " * 13_000 + _SHORT_REFERENCE
+    assert len(fits.replace(_SHORT_REFERENCE, SECRET_MASK)) <= MAX_INPUT_CHARS
+    once = sanitize(fits)
+    assert once is not None
+    assert SECRET_MASK in once
+    assert len(once) <= MAX_INPUT_CHARS
+    assert sanitize(once) == once

@@ -978,7 +978,6 @@
             "type": "string"
           },
           "text": {
-            "maxLength": 65536,
             "title": "Text",
             "type": "string"
           }
