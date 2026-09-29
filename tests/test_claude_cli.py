@@ -12,6 +12,7 @@ import json
 import stat
 import time
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -151,21 +152,21 @@ def _spawn(
     config_dir = tmp_path / "config-dir"
     work_dir.mkdir()
     config_dir.parent.mkdir(parents=True, exist_ok=True)
-    spawn = AdapterSpawn(
-        mcp_url="http://127.0.0.1:8080/mcp",
-        run_token="rheo_runtime_test_token",
-        work_dir=str(work_dir),
-        config_dir=str(config_dir),
-        native_handle=native_handle,
-    )
-    # The new fields are set only when a test asks, so the default spawn is
-    # built exactly as every pre-existing caller builds it.
-    update: dict[str, object] = {}
+    fields: dict[str, Any] = {
+        "mcp_url": "http://127.0.0.1:8080/mcp",
+        "run_token": "rheo_runtime_test_token",
+        "work_dir": str(work_dir),
+        "config_dir": str(config_dir),
+        "native_handle": native_handle,
+    }
+    # The new fields reach the constructor only when a test sets them, so the
+    # default spawn is built exactly as every pre-existing caller builds it
+    # and a set value still goes through validation.
     if model_override is not None:
-        update["model_override"] = model_override
+        fields["model_override"] = model_override
     if disable_builtin_tools is not None:
-        update["disable_builtin_tools"] = disable_builtin_tools
-    return spawn.model_copy(update=update) if update else spawn
+        fields["disable_builtin_tools"] = disable_builtin_tools
+    return AdapterSpawn(**fields)
 
 
 def _configure(
@@ -326,6 +327,19 @@ def test_default_spawn_emits_neither_model_nor_tools(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     argv = _captured_argv(monkeypatch, tmp_path)
+    work = tmp_path / "work"
+    assert argv[1:] == [
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--max-turns",
+        "7",
+        "--mcp-config",
+        str(work / "mcp.json"),
+        "--allowedTools",
+        "core.note.get",
+    ]
     assert "--model" not in argv
     assert "--tools" not in argv
     # The request's own model_id is still ignored, as before.
