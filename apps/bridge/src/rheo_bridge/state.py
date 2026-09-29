@@ -209,6 +209,12 @@ def set_spool_offset(connection: sqlite3.Connection, file: str, offset: int) -> 
         )
 
 
+def delete_spool_offset(connection: sqlite3.Connection, file: str) -> None:
+    """Forget a spool file's offset once the file itself is deleted."""
+    with transaction(connection):
+        connection.execute("DELETE FROM spool_offset WHERE file = ?", (file,))
+
+
 # --- session ----------------------------------------------------------------
 
 

@@ -17,8 +17,7 @@ from pathlib import Path
 
 from rheo_bridge import hook
 
-# Prompt 12 adds ``rheo_bridge.worker`` here once it exists.
-BRIDGE_MODULES = ("rheo_bridge.state", "rheo_bridge.client")
+BRIDGE_MODULES = ("rheo_bridge.state", "rheo_bridge.client", "rheo_bridge.worker")
 
 
 def _cold_env() -> dict[str, str]:
