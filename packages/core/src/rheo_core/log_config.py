@@ -1,4 +1,4 @@
-"""The one logging setup shared by every process entry point (issue #229).
+"""The one logging setup shared by every process entry point (issue #228).
 
 Without this module the tree had no ``logging.config`` and no formatter that reads
 ``extra``: the content-free operational lines the evidence paths log —
@@ -12,13 +12,21 @@ logs; :class:`JsonLogFormatter` is what renders ``extra`` at all, one JSON objec
 line, so Coolify's captured stdout/stderr keeps every field instead of the message
 name alone.
 
-**The content-free guard.** The five lines above are content-free by design — a
-provider's exception carries no evidence text, so the log call passes only a type
-name, a count or an id — and that is an invariant worth keeping automatically rather
-than by review alone. :func:`content_free_extra` is what those call sites wrap their
-``extra`` mapping in: a field name outside :data:`ALLOWED_EXTRA_FIELDS`, or a string
-value long enough to plausibly be quoted evidence rather than a short diagnostic
-token, raises :class:`ContentFreeExtraError` before the record reaches a handler.
+**The content-free guard never raises.** The five lines above are content-free by
+design — a provider's exception carries no evidence text, so the log call passes
+only a type name, a count or an id — and that is an invariant worth keeping
+automatically rather than by review alone. :func:`content_free_extra` is what those
+call sites wrap their ``extra`` mapping in, but every one of those call sites logs a
+deliberately non-fatal failure (the runtime hook's recording failure that #197 made
+never fail a user's run; the drain's deferral and acceptance-failed lines that
+#215/#220 made back off a poison unit instead of rolling the drain back). A validator
+that raised there would hand both bugs back the moment an unregistered field or an
+overlong value reached it. So it sanitises instead: a field name outside
+:data:`ALLOWED_EXTRA_FIELDS`, or a string value long enough to plausibly be quoted
+evidence rather than a short diagnostic token, is dropped, and the count of dropped
+fields is reported under the fixed, allowlisted ``extra_dropped`` key. What the
+allowlist is *for* — proving every call site names only reviewed fields — is a static
+check in ``tests/test_logging.py``, not a runtime raise.
 """
 
 from __future__ import annotations
@@ -31,7 +39,6 @@ from typing import Any, Final
 
 __all__ = [
     "ALLOWED_EXTRA_FIELDS",
-    "ContentFreeExtraError",
     "JsonLogFormatter",
     "configure_logging",
     "content_free_extra",
@@ -101,13 +108,15 @@ ALLOWED_EXTRA_FIELDS: Final = frozenset(
         "attempts",
         "sqlstate",
         "mention_count",
+        "extra_dropped",
     }
 )
-"""Every field name a content-free evidence log line may carry (issue #229's
+"""Every field name a content-free evidence log line may carry (issue #228's
 acceptance: "a check that nothing in a field can carry evidence text ... perhaps
 with an allowlist of field names"). Adding a field here is a deliberate, reviewed
 decision that the new name can only ever hold a type name, a count or an id —
-never a native key, a record body or anything a provider said."""
+never a native key, a record body or anything a provider said. ``extra_dropped`` is
+the one field :func:`content_free_extra` itself writes, never a call site."""
 
 _MAX_FIELD_LENGTH: Final = 100
 """Longer than any id, count or exception class name this tree names
@@ -115,29 +124,34 @@ _MAX_FIELD_LENGTH: Final = 100
 enough that a stray sentence of evidence text cannot pass as a token."""
 
 
-class ContentFreeExtraError(ValueError):
-    """Raised by :func:`content_free_extra` when a field name or value looks like it
-    could carry evidence text rather than a short diagnostic token."""
-
-
 def content_free_extra(fields: Mapping[str, object]) -> dict[str, object]:
-    """Validate one content-free log line's ``extra`` before it is logged.
+    """Sanitise one content-free log line's ``extra`` before it is logged.
 
-    Every key must be in :data:`ALLOWED_EXTRA_FIELDS`, and every string value must be
-    short. Both are structural, not content checks: they cannot prove a field holds no
-    evidence text, but they stop the obvious ways one would arrive — a new field
-    added without registering it here first, or a value that is a rendered object, a
-    message or a body rather than a type name, a count or an id.
+    Never raises: every one of this function's call sites logs a deliberately
+    non-fatal failure (the runtime hook's recording failure, the drain's deferral
+    and acceptance-failed lines), and a validator that raised there would fail a
+    user's run or roll back a drain over a logging mistake — precisely the bugs
+    #197, #215 and #220 already fixed. Instead, a field name outside
+    :data:`ALLOWED_EXTRA_FIELDS`, or a string value longer than
+    :data:`_MAX_FIELD_LENGTH`, is dropped, and the number dropped is reported under
+    the fixed, allowlisted ``extra_dropped`` key so the drop itself is visible in
+    the rendered line rather than silent.
+
+    That every *call site* only ever names an allowlisted field is a static
+    property, proved once for all of them by ``tests/test_logging.py``, not a
+    runtime check — a call site cannot un-register a field at runtime, so nothing
+    here needs to raise to keep it true.
     """
+    sanitized: dict[str, object] = {}
+    dropped = 0
     for key, value in fields.items():
         if key not in ALLOWED_EXTRA_FIELDS:
-            raise ContentFreeExtraError(
-                f"{key!r} is not in ALLOWED_EXTRA_FIELDS; a content-free log line "
-                "may only carry a reviewed, registered field name"
-            )
+            dropped += 1
+            continue
         if isinstance(value, str) and len(value) > _MAX_FIELD_LENGTH:
-            raise ContentFreeExtraError(
-                f"{key!r} is {len(value)} characters, longer than a type name, a "
-                "count or an id should ever be"
-            )
-    return dict(fields)
+            dropped += 1
+            continue
+        sanitized[key] = value
+    if dropped:
+        sanitized["extra_dropped"] = dropped
+    return sanitized
