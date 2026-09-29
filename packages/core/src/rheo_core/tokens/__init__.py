@@ -1,7 +1,7 @@
 """Tokens (``cli``/``mcp``) and their operation-set snapshots (C8, run 0b2).
 
 ``format.py`` -- the ``rheo_<kind>_<43 chars>`` string shape. ``policy.py`` --
-``NON_TOKEN_ISSUABLE``, the six names no token may ever carry. ``sets.py`` --
+``NON_TOKEN_ISSUABLE``, the eight names no token may ever carry. ``sets.py`` --
 the three named package sets, evaluated against the registry at issuance, and
 the MCP facade's tool table. ``issue.py`` -- the handlers behind
 ``core.token.issue``/``core.token.revoke`` (registered in

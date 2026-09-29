@@ -258,9 +258,9 @@ class ToolRegistry:
       is there).
     - **Carried, and specific to tools: a tool may not name a non-token-issuable
       operation.** An operation registration has no equivalent, because an operation
-      may legitimately be one of the six; a *tool* naming one would put it in
+      may legitimately be one of the eight; a *tool* naming one would put it in
       ``agent_default`` and hand the façade a lever R3 item 6 exists to remove ("a
-      model cannot approve what it proposed"). ``tokens/issue.py`` strips the six
+      model cannot approve what it proposed"). ``tokens/issue.py`` strips the eight
       again at mint time, so this is the outer of two layers rather than the only
       one — but it is the layer that keeps ``issue.py``'s own docstring true where it
       says a named package set "never contained them in the first place, by

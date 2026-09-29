@@ -21,7 +21,7 @@ account's* role in the target workspace, since an operator context carries no
 role of its own that means anything here) -> expand the named set or the
 explicit list -> intersect with the issuer's permitted set -> strip
 :data:`~rheo_core.tokens.policy.NON_TOKEN_ISSUABLE` (an **explicit** list naming
-one of the six is refused ``SET_NOT_ISSUABLE`` naming the operation; a **named
+one of the eight is refused ``SET_NOT_ISSUABLE`` naming the operation; a **named
 package set** silently loses them -- it never contained them in the first
 place, by ``sets.py``'s own construction) -> refuse ``SET_EMPTY`` if nothing
 survives -> write one ``access_token`` row and one ``access_token_operation``
@@ -68,7 +68,7 @@ from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 from rheo_core.tokens.sets import PACKAGE_SETS, agent_default, cli_full, read_only
 
 SET_NOT_ISSUABLE: Final = "set_not_issuable"
-"""An explicit ``operations`` list named one of the six non-token-issuable
+"""An explicit ``operations`` list named one of the eight non-token-issuable
 operations. Module-local (a handler's ``OperationRefused``), not a
 ``boundary.context`` constant -- see ``core_ops.py``'s own comment on this
 pattern for ``COMPOSITION_MISSING``/``ACTOR_REQUIRED``."""
@@ -155,7 +155,7 @@ def _expand(model_input: TokenIssueInput) -> frozenset[str]:
     non-token-issuable operation is refused here, immediately, naming it --
     before any permitted-set intersection, so the refusal is specific to
     "you asked for this by name", distinct from a named set (which never
-    contains one of the six to begin with)."""
+    contains one of the eight to begin with)."""
     if (model_input.set_name is None) == (model_input.operations is None):
         raise OperationRefused(
             SET_SELECTION_INVALID,
@@ -335,5 +335,52 @@ def issue_runtime_token(
         )
         insert_access_token_operations(
             connection, token_id=row.id, operation_names=names
+        )
+    return row.id, value
+
+
+BRIDGE_TOKEN_OPERATIONS: Final = ("core.evidence.ingest",)
+"""A bridge token's whole snapshot. A literal: ``core.evidence.ingest`` is declared
+in ``rheo_core.evidence``, which imports this module."""
+
+
+def issue_bridge_token(
+    *,
+    account_id: UUID,
+    workspace_id: UUID,
+    purpose: str,
+    issued_from: str,
+) -> tuple[UUID, str]:
+    """Mint a local bridge's ``kind='cli'`` token. Opens the control-plane engine.
+
+    Shaped like :func:`issue_runtime_token`: one ``access_token`` row and its snapshot
+    rows in one control-plane transaction. The snapshot is exactly
+    :data:`BRIDGE_TOKEN_OPERATIONS`, the expiry ``identity.token_max_days.cli`` days
+    out for ``workspace_id``. ``issued_from`` is ``"session"`` or ``"operator"``, the
+    caller's actor kind as :func:`_issuer_permitted_set` chooses it; the
+    ``access_token_issued_from`` CHECK refuses anything else.
+
+    Returns ``(token_id, raw_value)``.
+    """
+    settings = resolve(workspace_id=workspace_id, source=PostgresOverrideSource())
+    max_days = settings.get_int("identity.token_max_days.cli")
+    expires_at = datetime.now(UTC) + timedelta(days=max_days)
+    value, raw = mint("cli")
+    token_hash = hashlib.sha256(raw).digest()
+    backend = get_backend()
+    with backend.control_engine.begin() as connection:
+        row = insert_access_token(
+            connection,
+            account_id=account_id,
+            workspace_id=workspace_id,
+            kind="cli",
+            issued_from=issued_from,
+            token_hash=token_hash,
+            set_name=None,
+            purpose=purpose,
+            expires_at=expires_at,
+        )
+        insert_access_token_operations(
+            connection, token_id=row.id, operation_names=list(BRIDGE_TOKEN_OPERATIONS)
         )
     return row.id, value

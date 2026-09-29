@@ -339,13 +339,13 @@ def test_agent_default_evaluates_to_registered_tools(
     assert operations == expected
 
 
-def test_cli_full_excludes_the_six_names(session_ctx: WorkspaceContext) -> None:
+def test_cli_full_excludes_the_eight_names(session_ctx: WorkspaceContext) -> None:
     """B7, row 18: ``cli_full`` for an owner contains every registered
-    operation except the six ``NON_TOKEN_ISSUABLE`` names.
+    operation except the eight ``NON_TOKEN_ISSUABLE`` names.
 
     Asserted twice, deliberately: directly against ``sets.cli_full()``'s own
     return value (independent of ``issue.py``'s own separate strip, so a
-    ``cli_full`` mutant that stopped excluding the six is caught here even
+    ``cli_full`` mutant that stopped excluding the eight is caught here even
     though ``issue.py``'s own defense-in-depth would otherwise mask it at the
     issued-token layer below), and against the actual issued token's
     persisted snapshot (the end-to-end shape B7 names).
@@ -358,6 +358,11 @@ def test_cli_full_excludes_the_six_names(session_ctx: WorkspaceContext) -> None:
     assert "core.approval.refuse" not in operations
     assert "core.standing_grant.create" not in operations
     assert "core.standing_grant.revoke" not in operations
+    assert "core.evidence_enrollment.create" not in operations
+    assert "core.evidence_enrollment.rotate" not in operations
+    # Revoking an enrollment only removes capability, so a token may carry it.
+    assert "core.evidence_enrollment.revoke" in operations
+    assert len(NON_TOKEN_ISSUABLE) == 8
     assert "core.workspace.status" in operations
     assert NOTE_GET in operations
 

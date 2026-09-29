@@ -91,7 +91,7 @@ TOKEN_WRONG_KIND: Final = "token_wrong_kind"
 ``cli``, ``mcp``; ``mcp``: ``mcp``, ``runtime``)."""
 
 TOKEN_SCOPE_INVALID: Final = "token_scope_invalid"
-"""The token's snapshotted operation set contains one of the six
+"""The token's snapshotted operation set contains one of the eight
 non-token-issuable operations -- reachable only from a row inserted outside
 ``core.token.issue``, checked anyway so the rule holds at both ends."""
 

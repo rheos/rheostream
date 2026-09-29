@@ -4,15 +4,14 @@ Checked by name, in two places: ``issue.py`` strips it from any set a token coul
 ever carry (an explicit list naming one is refused; a named package set never
 contained one in the first place, by ``sets.py``'s own construction), and
 ``presentation.py``/``context_from_token`` refuses any presented token whose
-snapshot somehow contains one of these six names anyway (a row that cannot arise
+snapshot somehow contains one of these eight names anyway (a row that cannot arise
 from ``issue()`` itself -- only from a row inserted directly, outside it -- checked
 regardless, so the rule holds at both ends).
 
-It names two operations that do not exist yet this run (``core.approval.*``,
-``core.standing_grant.*``) alongside two that do (``core.token.issue``,
-``core.token.revoke``, registered in ``operations/core_ops.py``). That is
-deliberate: the whole point of a name-based policy constant is that it holds
-*before* the approval operations exist, not only once they do.
+The policy is by name, so it held before the approval and standing-grant operations
+were registered, not only once they were. ``core.evidence_enrollment.create`` and
+``.rotate`` joined in run 1a4b: each mints a bridge token itself, the reason
+``core.token.issue`` is here. ``.revoke`` did not join; it only removes capability.
 """
 
 from typing import Final
@@ -21,13 +20,15 @@ NON_TOKEN_ISSUABLE: Final[frozenset[str]] = frozenset(
     {
         "core.approval.approve",
         "core.approval.refuse",
+        "core.evidence_enrollment.create",
+        "core.evidence_enrollment.rotate",
         "core.standing_grant.create",
         "core.standing_grant.revoke",
         "core.token.issue",
         "core.token.revoke",
     }
 )
-"""The six operation names no token may ever carry. Literal strings, not imported
+"""The eight operation names no token may ever carry. Literal strings, not imported
 constants: ``core.token.issue``/``core.token.revoke`` are also declared in
 ``operations/core_ops.py`` as ``TOKEN_ISSUE``/``TOKEN_REVOKE``, but importing them
 from there would route ``rheo_core.tokens.policy`` -> ``rheo_core.operations.

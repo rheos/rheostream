@@ -51,6 +51,11 @@ from rheo_core.audit import (
     reset_sinks,
 )
 from rheo_core.deletion.operations import RECORD_DELETE
+from rheo_core.evidence.enrollment import (
+    ENROLLMENT_CREATE,
+    ENROLLMENT_REVOKE,
+    ENROLLMENT_ROTATE,
+)
 from rheo_core.modules.operations import MODULE_ENABLE, MODULE_INSTALL
 from rheo_core.operations import (
     CORE_MODULE_ID,
@@ -286,6 +291,9 @@ def test_migrate_and_doctor_return_zero(
     assert any(
         line.startswith(f"ok   evidence acceptance {workspace} (") for line in report
     ), report
+    assert any(
+        line.startswith(f"ok   bridge enrollments {workspace} (") for line in report
+    ), report
     assert any(line.startswith("ok   data root:") for line in report), report
     assert any(line.startswith("ok   settings: profile test") for line in report)
     assert any(line.startswith("ok   cluster: reachable") for line in report)
@@ -357,7 +365,8 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         # C6 adds core.approval.approve and core.approval.refuse, 0c3's C7 adds
         # core.standing_grant.create and core.standing_grant.revoke, 0c4 adds
         # core.runtime.run, run 1a0 adds core.module.install and then
-        # core.module.enable, and run 1a1 adds core.record.delete. Sorted by the
+        # core.module.enable, run 1a1 adds core.record.delete, and run 1a4b adds
+        # the three core.evidence_enrollment.* names. Sorted by the
         # name string, so the two core.approval.* names lead ("approval" before
         # "audit"), the two core.module.* names sit between core.audit.list and
         # core.operation.get with enable before install ("e" before "i"), the three
@@ -384,6 +393,10 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             APPROVAL_APPROVE,
             APPROVAL_REFUSE,
             "core.audit.list",
+            # Run 1a4b's three enrollment operations ("evidence" before "module").
+            ENROLLMENT_CREATE,
+            ENROLLMENT_REVOKE,
+            ENROLLMENT_ROTATE,
             MODULE_ENABLE,
             MODULE_INSTALL,
             OPERATION_GET,
