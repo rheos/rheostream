@@ -6,7 +6,8 @@ Three scans, each with its own positive control:
 - **(a) Import source.** Every import of core's evidence code anywhere under
   Recallatron's source tree is ``from rheo_core.evidence import <name>``, and each
   name is in ``rheo_core.evidence.__all__``. A submodule
-  (``rheo_core.evidence.service``), the evidence table module, a bare package handle
+  (``rheo_core.evidence.service``), either evidence table module (0010's, or 0011's,
+  which re-exports ``evidence_unit``), a bare package handle
   and a star import are all refused.
 - **(b) Public surface.** ``rheo_core.evidence.__all__`` is exactly eight names, and
   none of them is, returns, or carries in a field a raw database handle: a SQLAlchemy
@@ -54,7 +55,11 @@ _RECALLATRON_SRC: Final = _REPO_ROOT / "modules/recallatron/src"
 _EVIDENCE_SRC: Final = _REPO_ROOT / "packages/core/src/rheo_core/evidence"
 
 _EVIDENCE_PACKAGE: Final = "rheo_core.evidence"
-_EVIDENCE_TABLES: Final = "rheo_core.storage.evidence_tables"
+_EVIDENCE_TABLES: Final = (
+    "rheo_core.storage.evidence_tables",
+    # Re-exports ``evidence_unit`` (it builds the live-shape sibling from it).
+    "rheo_core.storage.evidence_enrollment_tables",
+)
 
 _PUBLIC_NAMES: Final = (
     "claim_units",
@@ -108,6 +113,10 @@ def _is_or_under(module: str, package: str) -> bool:
     return module == package or module.startswith(f"{package}.")
 
 
+def _is_table_module(module: str) -> bool:
+    return any(_is_or_under(module, table) for table in _EVIDENCE_TABLES)
+
+
 def _python_files(root: Path) -> list[Path]:
     return sorted(
         path for path in root.rglob("*.py") if "__pycache__" not in path.parts
@@ -130,8 +139,8 @@ def _evidence_imports(
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if _is_or_under(alias.name, _EVIDENCE_PACKAGE) or _is_or_under(
-                    alias.name, _EVIDENCE_TABLES
+                if _is_or_under(alias.name, _EVIDENCE_PACKAGE) or _is_table_module(
+                    alias.name
                 ):
                     violations.append(f"import {alias.name}@{node.lineno}")
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
@@ -143,16 +152,12 @@ def _evidence_imports(
                         sanctioned.append(f"name {site}")
                     else:
                         violations.append(f"name {site}")
-            elif _is_or_under(module, _EVIDENCE_PACKAGE) or _is_or_under(
-                module, _EVIDENCE_TABLES
-            ):
+            elif _is_or_under(module, _EVIDENCE_PACKAGE) or _is_table_module(module):
                 violations.append(f"submodule {module}@{node.lineno}")
             else:
                 for alias in node.names:
                     full = f"{module}.{alias.name}"
-                    if _is_or_under(full, _EVIDENCE_PACKAGE) or _is_or_under(
-                        full, _EVIDENCE_TABLES
-                    ):
+                    if _is_or_under(full, _EVIDENCE_PACKAGE) or _is_table_module(full):
                         violations.append(f"handle {full}@{node.lineno}")
     return sorted(violations), sorted(sanctioned)
 
@@ -198,7 +203,10 @@ def test_the_evidence_import_scan_flags_every_other_route(tmp_path: Path) -> Non
         "from rheo_core.storage import evidence_tables\n"
         "from rheo_core.evidence import *\n"
         "def later():\n"
-        "    import rheo_core.evidence.authority\n",
+        "    import rheo_core.evidence.authority\n"
+        "from rheo_core.storage.evidence_enrollment_tables import evidence_unit\n"
+        "from rheo_core.storage import evidence_enrollment_tables\n"
+        "import rheo_core.storage.evidence_enrollment_tables\n",
         encoding="utf-8",
     )
     scanned, violations, sanctioned = _scan_evidence_imports(
@@ -218,6 +226,9 @@ def test_the_evidence_import_scan_flags_every_other_route(tmp_path: Path) -> Non
                 "handle rheo_core.storage.evidence_tables@7",
                 "name rheo_core.evidence.*@8",
                 "import rheo_core.evidence.authority@10",
+                "submodule rheo_core.storage.evidence_enrollment_tables@11",
+                "handle rheo_core.storage.evidence_enrollment_tables@12",
+                "import rheo_core.storage.evidence_enrollment_tables@13",
             ]
         )
     }
