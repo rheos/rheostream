@@ -1,7 +1,8 @@
 """``rheo doctor``: the allowed modules' settings registration, data-root validity,
 cluster reachability, the control-plane head,
-the connection budget, the reconcile interval, per-workspace state, and the
-``CREATE EXTENSION`` privilege report for ``vector`` and ``pg_trgm``.
+the connection budget, the reconcile interval, per-workspace state, per-workspace
+evidence acceptance failures, and the ``CREATE EXTENSION`` privilege report for
+``vector`` and ``pg_trgm``.
 
 The privilege report is kept in this run per the run spec (Technical Risks item 11):
 nothing in 0b installs an extension, but ``storage.template_database`` and this
@@ -19,8 +20,10 @@ report shows everything that is wrong.
 import argparse
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
+from rheo_core.evidence.health import SettlementCounts, settlement_counts_since
 from rheo_core.migrations.orchestrator import (
     CONTROL_CHAIN,
     known_revisions,
@@ -30,7 +33,7 @@ from rheo_core.modules import ManifestInvalid, register_module_settings
 from rheo_core.secrets import SecretRefusal, check_env_references
 from rheo_core.settings import PROFILE_KEY, SettingsError, resolve
 from rheo_core.storage.backend import StorageRefusal
-from rheo_core.storage.control_plane import list_workspaces
+from rheo_core.storage.control_plane import WorkspaceRow, list_workspaces
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.data_root import DataRootRefusal, resolve_data_root
 from rheo_core.storage.postgres import PostgresBackend, get_backend
@@ -49,6 +52,12 @@ BUDGET_HEADROOM_PERCENT: Final = 80
 The rest is for connections the two-process figure does not count: an operator's
 ``rheo`` command (this one included, and a migration or import run) is a third
 process with its own engines, ``psql`` sessions, and the superuser-reserved slots."""
+ACCEPTANCE_WINDOW: Final = timedelta(hours=24)
+"""How far back the evidence-acceptance check counts settlements (#221)."""
+ACCEPTANCE_FAILED_FAIL_AT: Final = 5
+"""``gap/acceptance_failed`` settlements in one workspace, within
+:data:`ACCEPTANCE_WINDOW`, at which the check fails rather than warns: one full run of
+five attempts per unit, five units lost in a day."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +250,69 @@ def _check_workspaces(backend: PostgresBackend) -> Iterator[Check]:
         yield Check(f"workspace {row.id} ({row.slug})", level, detail)
 
 
+def _acceptance_check(name: str, counts: SettlementCounts | None) -> Check:
+    """The level for one workspace's settlement counts (#221).
+
+    ``FAIL`` at :data:`ACCEPTANCE_FAILED_FAIL_AT` failures, or when every unit settled
+    in the window failed (the quiet-workspace case: a batch of one, lost); ``warn`` at
+    one or more; ``ok`` otherwise. No table is ``ok`` and says so. Counts only: the
+    detail never carries evidence text.
+    """
+    hours = int(ACCEPTANCE_WINDOW.total_seconds() // 3600)
+    if counts is None:
+        return Check(name, "ok", "not applicable: no evidence table in this workspace")
+    failed, settled = counts.acceptance_failed, counts.settled
+    detail = (
+        f"{failed} of {settled} evidence units settled in the last {hours} h ended "
+        f"gap/acceptance_failed (fail at {ACCEPTANCE_FAILED_FAIL_AT} or when all do)"
+    )
+    if failed == 0:
+        return Check(name, "ok", detail)
+    if failed >= ACCEPTANCE_FAILED_FAIL_AT or failed == settled:
+        return Check(name, "FAIL", f"{detail}; the evidence of each is lost")
+    return Check(name, "warn", f"{detail}; the evidence of each is lost")
+
+
+def _check_workspace_acceptance(
+    backend: PostgresBackend, row: WorkspaceRow, *, now: datetime
+) -> Check:
+    """One active workspace's ``gap/acceptance_failed`` settlements in the window.
+
+    A drain that contains an acceptance fault succeeds, so this is where a unit lost
+    to one shows up (#221). Read-only, on the workspace's own database.
+    """
+    name = f"evidence acceptance {row.id} ({row.slug})"
+    try:
+        with backend.pools.acquire(row.database_name) as engine:
+            with engine.connect() as connection:
+                counts = settlement_counts_since(
+                    connection, since=now - ACCEPTANCE_WINDOW
+                )
+    except SQLAlchemyError as exc:
+        return Check(name, "FAIL", f"cannot read: {type(exc).__name__}")
+    return _acceptance_check(name, counts)
+
+
+def _check_evidence_acceptance(
+    backend: PostgresBackend, *, now: datetime | None = None
+) -> Iterator[Check]:
+    """:func:`_check_workspace_acceptance` for every active workspace; one ``ok``
+    line when there is none. Other states are skipped: their database may be absent
+    or half-built, and the workspace-state line already reports them."""
+    at = datetime.now(UTC) if now is None else now
+    try:
+        with backend.control_engine.connect() as connection:
+            rows = list_workspaces(connection, state=WorkspaceState.ACTIVE)
+    except SQLAlchemyError as exc:
+        yield Check("evidence acceptance", "FAIL", f"cannot list: {type(exc).__name__}")
+        return
+    if not rows:
+        yield Check("evidence acceptance", "ok", "not applicable: no active workspace")
+        return
+    for row in rows:
+        yield _check_workspace_acceptance(backend, row, now=at)
+
+
 def _check_extensions(backend: PostgresBackend) -> Iterator[Check]:
     try:
         report = backend.extension_report(EXTENSIONS)
@@ -290,6 +362,7 @@ def doctor(args: argparse.Namespace) -> int:
         checks.append(_check_connection_budget(backend))
         checks.append(_check_reconcile_interval())
         checks.extend(_check_workspaces(backend))
+        checks.extend(_check_evidence_acceptance(backend))
         checks.extend(_check_extensions(backend))
     for check in checks:
         print(check.line())
