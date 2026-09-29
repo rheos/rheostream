@@ -35,12 +35,13 @@ audit row or anything else is not the unit's fault, so it rolls the whole drain 
 and fails the job attempt, as does ``EvidenceAuditUnwritable``, a dropped connection
 or any other raise.
 
-**A run of deferrals is not a poison unit (#221).** A schema or code fault that
-refuses every acceptance would otherwise defer every unit and, five drains later,
-settle them all ``gap/acceptance_failed`` while each drain job reports success. So
-when at least :data:`DEFERRAL_RUN_MINIMUM` units of one batch defer and they are more
-than half of it, the drain raises :class:`DrainDeferralRun`. That rolls the drain
-back, deferral counts included, and the job fails where people look.
+**Every deferral commits, however many a batch has.** Two or more poison units in
+one batch are still each deferred and counted. Rolling the batch back instead would
+leave ``extraction_attempts`` unmoved, and since that column leads the claim order,
+every later drain would anchor on the same partition and send the same evidence to
+the model again: the #215 jam. A fault that refuses every acceptance therefore still
+settles ``gap/acceptance_failed`` after five attempts; making that loud is a
+separate follow-up to #221.
 
 **Workspace-wide acceptance preconditions are checked before the model call
 (#217).** Two things acceptance needs do not depend on the unit: an audit sink for
@@ -48,9 +49,10 @@ this module, which ``settle_unit`` writes the success row through, and a usable
 retention policy, which ``accept_source_unit`` refuses ``retention_unavailable``
 without. Either missing rolls the whole drain back, and with it the claim's
 extraction, so each retry would send the same evidence to the provider again. The
-drain hands ``claim_units`` :func:`_acceptance_ready`, which core calls just before
-the provider, and it raises the same ``EvidenceAuditUnwritable`` or refusal the
-acceptance would have raised, with no model call made.
+drain hands ``claim_units`` :func:`_acceptance_ready`, which core calls once the
+authority pre-check leaves units to extract and before it resolves the provider. It
+raises the same ``EvidenceAuditUnwritable`` or refusal the acceptance would have
+raised, with no model call made.
 
 **A model's mention kinds are not trusted.** Extraction accepts any kind string, and
 the ``memory_entity_kind`` CHECK allows only :data:`EntityKind`. The drain tells the
@@ -135,9 +137,6 @@ a wrong kind is worse than no mention. The six kinds themselves need no entry.""
 MENTIONS_DROPPED_LOG: Final = "automatic_memory_mentions_dropped"
 ACCEPTANCE_DEFERRED_LOG: Final = "automatic_memory_acceptance_deferred"
 
-DEFERRAL_RUN_MINIMUM: Final = 2
-"""The fewest deferred units that can make a run: one deferral is a poison unit."""
-
 
 def _sqlstate(error: StatementError) -> str | None:
     """The driver's SQLSTATE, when it is a string; anything else could carry text."""
@@ -163,21 +162,6 @@ class DrainDatabaseError(Exception):
         self.connection_invalidated: bool = bool(
             getattr(error, "connection_invalidated", False)
         )
-
-
-class DrainDeferralRun(Exception):
-    """More than half of one batch's units deferred, and at least
-    :data:`DEFERRAL_RUN_MINIMUM` of them: a workspace-wide acceptance fault, not a
-    poison unit. ``str()`` is the two counts and nothing else."""
-
-    def __init__(self, *, deferred: int, claimed: int) -> None:
-        super().__init__(f"{deferred} of {claimed} claimed units deferred")
-        self.deferred: int = deferred
-        self.claimed: int = claimed
-
-
-def _is_deferral_run(deferred: int, claimed: int) -> bool:
-    return deferred >= DEFERRAL_RUN_MINIMUM and 2 * deferred > claimed
 
 
 class DrainJobPayload(BaseModel):
@@ -245,7 +229,7 @@ def _known_mentions(claimed: ClaimedUnit) -> tuple[ClaimedUnit, int]:
 def _acceptance_ready(
     uow: HandlerUnitOfWork, *, now: datetime
 ) -> Callable[[WorkspaceContext], None]:
-    """The check ``claim_units`` runs just before the provider call (#217): raise what
+    """The check ``claim_units`` runs before extraction (#217): raise what
     acceptance would raise for any unit of this workspace, before the model is asked.
 
     The sink is looked up exactly as ``record_evidence_acceptance_audit`` looks it
@@ -334,10 +318,6 @@ def _drain(
                     "sqlstate": _sqlstate(refused),
                 },
             )
-            if _is_deferral_run(deferred, len(batch.units)):
-                # Outside the ``except`` block, so the refusal, whose text quotes the
-                # failing row, is not on ``__context__``.
-                raise DrainDeferralRun(deferred=deferred, claimed=len(batch.units))
             continue
         # Outside the savepoint (#221): a settlement fault rolls the drain back.
         settle_unit(

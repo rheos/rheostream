@@ -26,8 +26,8 @@ Seams under test:
   audit sink, or no usable retention policy, two drains in a row fail without calling
   the provider once.
 - **#221: only the accept step is contained.** A refused audit insert rolls the whole
-  drain back and fails the job attempt, and a batch whose every unit is refused fails
-  the drain job terminally instead of gapping the batch.
+  drain back and fails the job attempt, while two refused units in one batch are
+  each still deferred and counted, so the #215 jam cannot come back.
 
 Every drain runs through a real ``visit_workspace`` with the job kinds and the
 subscription taken off Recallatron's ``MANIFEST``. Every text is synthetic.
@@ -77,7 +77,6 @@ from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_recallatron import automatic
 from rheo_recallatron.automatic import ACCEPTANCE_DEFERRED_LOG
 from rheo_recallatron.configuration import (
-    DRAIN_MAX_ATTEMPTS,
     MODULE_ID,
     RETENTION_DAYS_KEY,
     RETENTION_EXPIRE_BY_AGE_KEY,
@@ -801,49 +800,53 @@ def test_221_a_fault_in_the_audit_insert_rolls_the_drain_back_and_gaps_nothing(
     assert (unit.extraction_attempts, unit.retry_after) == (0, None)
 
 
-def test_221_every_unit_refused_fails_the_drain_job_instead_of_gapping_the_batch(
-    monkeypatch: pytest.MonkeyPatch,
-    ev: EvidenceWorkspace,
-    now: datetime,
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize("good", [0, 1], ids=["two_of_two", "two_of_three"])
+def test_221_two_poison_units_in_one_batch_each_back_off_and_the_drain_succeeds(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace, now: datetime, good: int
 ) -> None:
-    """A workspace-wide acceptance fault: every unit's acceptance is refused. The
-    run of deferrals raises, so each drain attempt rolls back with nothing counted,
-    the job fails terminally after ``DRAIN_MAX_ATTEMPTS``, and no unit is gapped."""
+    """The #215 regression guard. Two refused units in one partition, alone or
+    beside a good one: every deferral commits, so each poison unit counts one
+    attempt and backs off, the good unit is accepted, and the job succeeds. Rolling
+    the batch back instead would leave ``extraction_attempts`` at 0, and since it
+    leads the claim order the next drain would anchor on the poison partition
+    again, ahead of a healthy one recorded later."""
     refused = _poisoned_acceptance(monkeypatch)
+    poison = [
+        _evidence(
+            ev,
+            f"{FAKE_EXTRACTION_MARKER} The {_POISON_TAG} lanterns {n}.",
+            at=now - timedelta(seconds=20 - n),
+        )
+        for n in range(2)
+    ]
+    healthy = [_evidence(ev, _TURN, at=now - timedelta(seconds=5))][:good]
+    _record_batch(ev, [*poison, *healthy], at=now)
+    first = _enqueue_drain(ev, at=now)
+    batches = _spy_claims(monkeypatch)
+    _at(monkeypatch, ev, now)
+
+    assert len(refused) == 2
+    assert [len(batch.units) for batch in batches[:1]] == [2 + good]
+    [drain] = [job for job in _jobs(ev) if job.id == first]
+    assert (drain.state, drain.attempts, drain.last_error) == ("succeeded", 1, None)
+    stuck = [u for u in _units(ev) if u.body is not None and _POISON_TAG in u.body]
+    assert len(stuck) == 2
+    for unit in stuck:
+        assert (unit.state, unit.extraction_attempts) == ("pending", 1)
+        assert unit.retry_after == now + timedelta(seconds=5)
+    settled = [u for u in _units(ev) if u.id not in {s.id for s in stuck}]
+    assert [(u.state, u.outcome) for u in settled] == [("settled", "active")] * good
+    assert len(_rows(ev, memory_tables.memory)) == good
+
+    # A healthy partition recorded after the poison one is taken first next time.
+    later = ContextPurpose.INTERNAL_ANALYSIS
     _record_batch(
-        ev,
-        [
-            _evidence(
-                ev, f"{FAKE_EXTRACTION_MARKER} The {_POISON_TAG} lanterns {n}.", at=now
-            )
-            for n in range(3)
-        ],
-        at=now,
+        ev, [_evidence(ev, _TURN, at=now, purpose=later)], purpose=later, at=now
     )
-    _enqueue_drain(ev, at=now)
-
-    at = now
-    with caplog.at_level(logging.DEBUG):
-        for attempt in range(1, DRAIN_MAX_ATTEMPTS + 1):
-            _at(monkeypatch, ev, at)
-            [drain] = _jobs(ev)
-            assert drain.attempts == attempt
-            expected = "failed" if attempt == DRAIN_MAX_ATTEMPTS else "queued"
-            assert drain.state == expected, (attempt, drain.state)
-            assert drain.last_error == "2 of 3 claimed units deferred"
-            at = drain.next_run_at
-
-    # Two refusals per drain: the second makes the run and stops the batch.
-    assert len(refused) == 2 * DRAIN_MAX_ATTEMPTS
-    units = _units(ev)
-    assert len(units) == 3
-    assert {(u.state, u.outcome, u.extraction_attempts) for u in units} == {
-        ("pending", None, 0)
-    }
-    assert _counts(ev) == _NO_RECEIPTS
-    assert _POISON_ROW not in caplog.text
-    assert _POISON_TAG not in caplog.text
+    _drain_at(monkeypatch, ev, now + timedelta(seconds=1))
+    [fresh] = [u for u in _units(ev) if u.purpose == later.value]
+    assert (fresh.state, fresh.outcome) == ("settled", "active")
+    assert len(refused) == 2  # the poison units were not claimed again yet
 
 
 # --- #217: workspace-wide acceptance faults never reach the provider -----------------

@@ -37,9 +37,10 @@ extraction commits only with the drain that runs it, so a fault that rolls the w
 drain back (no audit sink for the accepting module, no usable retention policy) would
 otherwise call the provider again on every retry with the same evidence. The accepting
 module passes ``before_extraction``, and the claim calls it with the acceptance
-context after step 3 and before step 4, only when a provider call is about to happen.
-What it raises leaves :func:`claim_units` uncontained: no provider call is made, and
-the drain rolls back and retries as it would have after the call.
+context after step 3 whenever units survive it, before step 4 resolves the provider
+(so it runs even when no provider resolves). What it raises leaves
+:func:`claim_units` uncontained: no provider call is made, and the drain rolls back
+and retries as it would have after the call.
 
 **Content-free.** No exception, log line or audit row here carries evidence text, a
 native key or anything a provider said.
@@ -382,9 +383,10 @@ def claim_units(
     surviving units with the follow-up instant (5).
 
     ``before_extraction``, when given, is called with the acceptance context between
-    steps 3 and 4, and only when step 4 will call the provider. It checks what the
-    accepting module's acceptance needs regardless of the unit, and raises when that
-    is missing; the raise is not contained (#217).
+    steps 3 and 4 whenever step 3 leaves units to extract, before the provider is
+    resolved, so it runs even when none resolves. It checks what the accepting
+    module's acceptance needs regardless of the unit, and raises when that is
+    missing; the raise is not contained (#217).
 
     ``mention_kinds`` is the entity-kind vocabulary the accepting module keeps. It is
     handed to the provider on the batch, unread by core, so the model can be told the
@@ -450,8 +452,9 @@ def claim_units(
             units=(), follow_up_at=_follow_up_at(uow, now=now, taken=taken, more=more)
         )
 
-    # #217: a workspace-wide acceptance fault raises here, before the model call,
-    # rather than after it in a drain that rolls the extraction back.
+    # #217: a workspace-wide acceptance fault raises here, before the provider is
+    # resolved or called, rather than after it in a drain that rolls the extraction
+    # back.
     if before_extraction is not None:
         before_extraction(context)
 
