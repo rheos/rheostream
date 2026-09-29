@@ -19,9 +19,10 @@ The steps, in this order (spec Architecture, System Components item 1):
 
 0. **Normalise line breaks and spaces.** NUL (``\\x00``) and every surrogate code
    point (U+D800 to U+DFFF, which a Python string only holds unpaired) are removed
-   first: Postgres refuses NUL in text, and a lone surrogate does not encode as UTF-8.
-   They are removed, not spaced, so ``ign\\x00ore previous instructions`` still reads
-   as the marker it hides. Every line boundary :meth:`str.splitlines`
+   first (:func:`strip_unstorable`): Postgres refuses NUL in text, and a lone surrogate
+   does not encode as UTF-8, so either would sink its whole batch. They are removed,
+   not spaced, so ``ign\\x00ore previous instructions`` still reads as the marker it
+   hides. Every line boundary :meth:`str.splitlines`
    knows, ``\\r\\n`` and a lone ``\\r`` included, becomes ``\\n`` before anything else,
    so CRLF text segments exactly like LF text. Then every other whitespace character
    (no-break space, the U+2000 to U+200A spaces, the ideographic space U+3000 and the
@@ -196,6 +197,18 @@ _TO_PLAIN_SPACE: Final = str.maketrans(dict.fromkeys(_ODD_SPACES, " "))
 _UNSTORABLE: Final = re.compile(r"[\x00\ud800-\udfff]")
 """NUL, which Postgres refuses in a text value, and the surrogate code points, which
 do not encode as UTF-8 on their own. Step 0 removes them before anything else."""
+
+
+def strip_unstorable(text: str) -> str:
+    """``text`` without U+0000 and without any code point in U+D800 to U+DFFF.
+
+    Step 0's strip, public because ingest runs it on every text field before
+    pydantic-core sees the payload: a lone surrogate there, or a NUL at the database,
+    would sink the whole batch that carries it. In a ``str`` every surrogate code point
+    is lone, because a valid pair decodes to one character.
+    """
+    return _UNSTORABLE.sub("", text)
+
 
 # --- step 3: the closed injection-marker list (spec component 1, verbatim) ------------
 
@@ -879,7 +892,7 @@ def sanitize(text: str) -> str | None:
     """The text as it may be stored and shown to a model, or ``None`` to drop it."""
     if len(text) > MAX_INPUT_CHARS:
         return None
-    storable = _UNSTORABLE.sub("", text)
+    storable = strip_unstorable(text)
     normalised = "\n".join(storable.splitlines()).translate(_TO_PLAIN_SPACE)
     masked = mask_secret_references(normalised)
     screened, kept = _screened_segments(masked)

@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any, Final, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from rheo_contracts import ActorKind, ContextPurpose, WorkspaceContext
 from sqlalchemy import select
 from sqlalchemy.engine import Row
@@ -37,7 +37,7 @@ from rheo_core.evidence.record import (
     record_gaps,
     recording_allowed,
 )
-from rheo_core.evidence.sanitize import MAX_INPUT_CHARS
+from rheo_core.evidence.sanitize import MAX_INPUT_CHARS, strip_unstorable
 from rheo_core.operations.refusals import OUTPUT_INVALID, OperationRefused
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -71,6 +71,15 @@ class IngestRecord(BaseModel):
     native_key: str = Field(pattern=RECORD_KEY_PATTERN)
     recorded_at: AwareDatetime
     text: str = Field(max_length=MAX_INPUT_CHARS)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def _scrub_unstorable(cls, value: object) -> object:
+        """Scrub NUL and lone surrogates before pydantic-core's ``str`` check, which
+        refuses a lone surrogate and so the whole request, and before ``max_length``,
+        which then bounds the scrubbed text. Anything but a ``str`` passes through for
+        pydantic to refuse normally."""
+        return strip_unstorable(value) if isinstance(value, str) else value
 
 
 class IngestGap(BaseModel):
