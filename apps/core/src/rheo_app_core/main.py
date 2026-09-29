@@ -36,7 +36,7 @@ from rheo_app_core.mcp_mount import McpSurfaceRouter, mounted_mcp
 from rheo_app_core.startup import run_startup
 
 # Before anything else in this process logs (the lifespan's ``core_startup_complete``
-# included): the one JSON-lines setup issue #229 gives every entry point, so a
+# included): the one JSON-lines setup issue #228 gives every entry point, so a
 # content-free evidence line's ``extra`` reaches Coolify's captured stderr with its
 # fields intact instead of as a bare message name.
 configure_logging()

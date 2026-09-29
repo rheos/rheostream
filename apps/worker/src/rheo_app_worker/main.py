@@ -156,7 +156,7 @@ def register_modules() -> None:
 
 
 def main() -> None:
-    # First (issue #229): every line this process logs after this point, including a
+    # First (issue #228): every line this process logs after this point, including a
     # deferred or failed job's content-free evidence line, renders its ``extra``
     # fields instead of dropping them.
     configure_logging()
