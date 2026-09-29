@@ -30,8 +30,8 @@ dev = [
     # nothing else. Declared rather than leaned on as a transitive of `mcp`: a test
     # importing a package nothing declares breaks the day that package's own
     # dependencies drop it, and the break lands on whoever next runs `uv lock`.
-    "httpx2>=2.13",
-    "ruff>=0.16.8",
+    "httpx2>=2.13.1",
+    "ruff>=0.16.9",
     "mypy>=1.11",
 ]
 
