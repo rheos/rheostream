@@ -72,7 +72,7 @@ from rheo_core.operations import (
 )
 from rheo_core.settings import ValueType
 from rheo_core.storage.backend import HandlerUnitOfWork
-from rheo_core.storage.evidence_tables import evidence_unit
+from rheo_core.storage.evidence_tables import OUTCOME_ACCEPTANCE_FAILED, evidence_unit
 from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_recallatron import automatic
 from rheo_recallatron.automatic import ACCEPTANCE_DEFERRED_LOG
@@ -83,7 +83,7 @@ from rheo_recallatron.configuration import (
 )
 from rheo_recallatron.source_units import accept_source_unit
 from rheo_recallatron.storage import tables as memory_tables
-from sqlalchemy import text
+from sqlalchemy import delete, text
 from sqlalchemy.engine import Row
 
 from postgres.test_automatic_memory_acceptance import (
@@ -135,6 +135,17 @@ def ev(
 @pytest.fixture
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+@pytest.fixture
+def clean_acceptance_failure(ev: EvidenceWorkspace) -> Iterator[None]:
+    yield
+    with ev.cluster.backend.pools.engine_for(ev.database_name).begin() as connection:
+        connection.execute(
+            delete(evidence_unit).where(
+                evidence_unit.c.outcome == OUTCOME_ACCEPTANCE_FAILED
+            )
+        )
 
 
 # --- helpers ----------------------------------------------------------------------
@@ -719,6 +730,7 @@ def test_215_a_poison_unit_backs_off_and_its_partition_neighbour_is_accepted(
 def test_215_a_poison_unit_settles_acceptance_failed_on_its_fifth_attempt(
     monkeypatch: pytest.MonkeyPatch,
     ev: EvidenceWorkspace,
+    clean_acceptance_failure: None,
     now: datetime,
     caplog: pytest.LogCaptureFixture,
 ) -> None:

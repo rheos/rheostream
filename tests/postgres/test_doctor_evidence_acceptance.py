@@ -18,6 +18,7 @@ counts are exact; the session's other workspaces are only reached through
 Every text is synthetic.
 """
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -37,7 +38,7 @@ from rheo_core.storage.evidence_tables import (
     STATE_SETTLED,
     evidence_unit,
 )
-from sqlalchemy import text
+from sqlalchemy import delete, inspect, text
 
 pytestmark = pytest.mark.postgres
 
@@ -47,6 +48,17 @@ _MARKER = "doctor-acceptance-canary-text"
 @pytest.fixture
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+@pytest.fixture(autouse=True)
+def clean_evidence_rows(cluster: ClusterSession, workspace: UUID) -> Iterator[None]:
+    """Remove rows from this test's private workspace before the next test runs."""
+    yield
+    database = cluster.registry_row(workspace).database_name
+    engine = cluster.backend.pools.engine_for(database)
+    if inspect(engine).has_table("evidence_unit", schema="core"):
+        with engine.begin() as connection:
+            connection.execute(delete(evidence_unit))
 
 
 def _insert(
