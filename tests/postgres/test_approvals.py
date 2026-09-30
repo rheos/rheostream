@@ -42,6 +42,7 @@ them; it is a property of this tree (one immutable record type, a binding check 
 refuses an expired window before the guards see it), not a shortcut.
 """
 
+import dataclasses
 import hashlib
 import json
 import threading
@@ -72,7 +73,14 @@ from harness.registry import (
 )
 from pydantic import BaseModel
 from rheo_app_core.main import public_app
-from rheo_contracts import ActorKind, Entry, RecordRef, Role, WorkspaceContext
+from rheo_contracts import (
+    ActorKind,
+    Entry,
+    RecordRef,
+    Role,
+    StaleRecord,
+    WorkspaceContext,
+)
 from rheo_core.approvals import (
     APPROVAL_APPROVE,
     APPROVAL_REFUSE,
@@ -100,6 +108,7 @@ from rheo_core.operations import (
     register_core_operations,
 )
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
+from rheo_core.operations.registry import REGISTRY
 from rheo_core.refs.resolver import (
     DELETED,
     LIVE,
@@ -1554,4 +1563,49 @@ async def test_the_http_envelope_carries_the_approval_id_as_a_field(
 
     record = _record(_approve(owner, approval_id))
     assert record.operation_id == UUID(body["operation_id"])
+    assert _acts(engine, database) == (note,)
+
+
+def test_an_approved_handler_that_raises_stale_record_answers_record_stale(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    note: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #12: the approval-executed path answers a handler's ``StaleRecord`` the
+    way ``dispatch()`` answers it for an ordinary call.
+
+    ``execute_approved`` calls the handler itself rather than going back through
+    ``dispatch()``, and translates ``StaleRecord`` to ``record_stale`` there. Today its
+    one caller is ``core.approval.approve``'s own dispatch, whose ``StaleRecord``
+    branch would answer the same word even without that translation, so this pins the
+    end-to-end contract rather than the gate's line alone; the translation is what
+    keeps it true for any caller that is not a dispatch. The handler is swapped on the
+    process-wide registry for one that raises, because the harness fixture has no
+    compare-and-set of its own. The approve rolls back
+    whole, so the approval is still usable: once the real handler is back, the same
+    approval executes the fixture exactly once.
+    """
+    approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
+    registered = REGISTRY.lookup(FIXTURE_ACT)
+    assert registered is not None
+
+    def stale(*_: object) -> BaseModel:
+        raise StaleRecord("the subject has moved since the revision you hold")
+
+    with monkeypatch.context() as patch:
+        patch.setitem(
+            REGISTRY._operations,  # noqa: SLF001 - the only seam to the approved call
+            FIXTURE_ACT,
+            dataclasses.replace(registered, handler=stale),
+        )
+        outcome = _approve(owner, approval_id)
+
+    assert outcome.state == "record_stale", outcome
+    assert outcome.error is not None and outcome.error.error_code == "record_stale"
+    assert _acts(engine, database) == ()
+    assert _operation_state(owner, operation_id) == "approval_required"
+
+    assert _record(_approve(owner, approval_id)).state == "executed"
     assert _acts(engine, database) == (note,)

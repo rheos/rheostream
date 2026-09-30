@@ -226,7 +226,7 @@ def _compare_and_set(
         .where(t.memory.c.id == memory_id, t.memory.c.revision == expected_revision)
         .values(**values, revision=revision)
     )
-    if result.rowcount != 1:
+    if result.rowcount == 0:
         raise StaleRecord("that memory has moved since the revision you hold")
     return revision
 
@@ -407,6 +407,9 @@ def set_memory_successor(
     column deliberately: the invalidation state that *accompanies* a supersession is
     already on the imported row and re-deriving it here would let a restore disagree
     with the artifact it is restoring.
+
+    Exempt from the revision compare-and-set rule (issue #12): restore-only, it never
+    advances ``revision``, and it runs into a workspace no live writer can reach yet.
     """
     conn.execute(
         update(t.memory)

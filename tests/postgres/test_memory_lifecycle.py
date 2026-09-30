@@ -121,6 +121,7 @@ from rheo_recallatron.storage.repository import (
     insert_memory_mention,
     insert_memory_purpose,
     insert_source_receipt,
+    invalidate_memory,
     list_memory_links,
 )
 from sqlalchemy import Engine, func, select, text
@@ -1640,3 +1641,157 @@ def test_two_dispatched_corrects_racing_behind_the_lock_yield_one_winner(
     stored = lifecycle.stored(target.id)
     assert stored is not None
     assert (stored.title, stored.revision) == (winners[0], 2)
+
+
+@contextmanager
+def _row_locked(memory: LifecycleWorkspace, memory_id: UUID) -> Iterator[Any]:
+    """A second connection holding one memory row ``FOR UPDATE`` and changing
+    nothing, so a lifecycle write that reaches that row parks there. Rolled back on
+    exit, which releases the row exactly as it was."""
+    with memory.engine.connect() as holder:
+        transaction = holder.begin()
+        holder.execute(
+            text("SELECT id FROM recallatron.memory WHERE id = :id FOR UPDATE"),
+            {"id": memory_id},
+        )
+        try:
+            yield holder
+        finally:
+            transaction.rollback()
+
+
+def _count(memory: LifecycleWorkspace, table: Any) -> int:
+    with memory.reading() as uow:
+        return int(
+            uow.connection.execute(select(func.count()).select_from(table)).scalar_one()
+        )
+
+
+@pytest.mark.parametrize("skipper", ["correct", "invalidate"])
+def test_a_supersede_whose_predecessor_moves_after_its_check_is_record_stale(
+    lifecycle: LifecycleWorkspace, skipper: str
+) -> None:
+    """A lock-skipping writer commits a change to the predecessor **between**
+    ``_target``'s comparison and step 4's retirement.
+
+    The supersede is paused mid-operation by parking it on a closure row that a third
+    connection holds; while it waits, the skipper writes the predecessor at the
+    revision everyone read and commits. Step 4 must compare against the revision
+    ``_target`` checked. A late re-read would see the skipper's revision and succeed
+    (``correct``: the supersede retires content it never saw, at revision 3) or find
+    the row already retired and trip an assertion (``invalidate``: ``handler_failed``).
+    Either way the caller must be told ``record_stale``, and the replacement, the
+    closure marks and the events must all roll back.
+    """
+    predecessor = _seed(lifecycle, _row(title="the predecessor"))
+    derivative = _seed(
+        lifecycle, _row(title="built on it"), links=[_derived(predecessor)]
+    )
+    ctx = lifecycle.context()
+    before = lifecycle.rows()
+    results: list[OperationOutcome] = []
+
+    with _row_locked(lifecycle, derivative.id):
+        caller = threading.Thread(
+            target=lambda: results.append(
+                _supersede(lifecycle, ctx, predecessor, title="the replacement")
+            )
+        )
+        caller.start()
+        assert _wait_until_parked(caller, "_mark_invalidated"), (
+            "the supersede never parked on the closure row, so it was never paused "
+            "between its revision check and the predecessor's retirement"
+        )
+        with lifecycle.engine.connect() as conn, conn.begin():
+            if skipper == "correct":
+                _cas_write(conn, predecessor.id, title="the skipper", take_lock=False)
+            else:
+                invalidate_memory(
+                    conn,
+                    predecessor.id,
+                    reason=_SOURCE_CORRECTED,
+                    invalidated_at=datetime.now(UTC),
+                    expected_revision=1,
+                )
+        assert caller.is_alive()
+    caller.join(timeout=60)
+    assert not caller.is_alive(), "the supersede never resumed"
+
+    (outcome,) = results
+    _refused(outcome, "record_stale")
+    assert lifecycle.rows() == before, "the replacement was not rolled back"
+    stored = lifecycle.stored(predecessor.id)
+    assert stored is not None
+    assert stored.revision == 2 and stored.superseded_by_id is None
+    marked = lifecycle.stored(derivative.id)
+    assert marked is not None and marked.invalidation_reason is None
+    assert lifecycle.invalidated_refs() == []
+
+
+def test_a_correct_that_meets_a_moved_closure_row_rolls_back_whole(
+    lifecycle: LifecycleWorkspace,
+) -> None:
+    """A lock-skipper moves the second of two closure rows while ``correct`` is
+    writing, so the correction's ``StaleRecord`` arrives after it has already
+    rewritten its target, dropped the target's vectors and marked the first closure
+    row. Nothing of that may survive: the target keeps its text, revision and vector,
+    neither closure row is half-invalidated, no event and no embed job is left, and
+    the dispatch leaves one ``refused`` audit row. ``correct`` is not long-running, so
+    it mints no operation record and none may be left behind either.
+    """
+    target = _seed(lifecycle, _row(title="the target"))
+    first = _seed(lifecycle, _row(title="first derivative"), links=[_derived(target)])
+    second = _seed(lifecycle, _row(title="second derivative"), links=[_derived(target)])
+    assert first.id < second.id, "closure rows are marked in identifier order"
+    ctx = lifecycle.context()
+    before = lifecycle.rows()
+    jobs_before = _count(lifecycle, work_tables.job)
+    results: list[OperationOutcome] = []
+
+    with lifecycle.engine.connect() as skipper, skipper.begin():
+        _cas_write(skipper, second.id, title="the skipper", take_lock=False)
+        caller = threading.Thread(
+            target=lambda: results.append(
+                _correct(lifecycle, ctx, target, title="the correction")
+            )
+        )
+        caller.start()
+        assert _wait_until_parked(caller, "_mark_invalidated"), (
+            "the correction never parked on the skipper's closure row"
+        )
+        assert caller.is_alive()
+    caller.join(timeout=60)
+    assert not caller.is_alive(), "the correction never resumed after the commit"
+
+    (outcome,) = results
+    _refused(outcome, "record_stale")
+    assert lifecycle.rows() == before
+    kept = lifecycle.stored(target.id)
+    assert kept is not None
+    assert (kept.title, kept.revision, kept.corrected_at) == ("the target", 1, None)
+    assert _embedded(lifecycle, target.id)
+    untouched = lifecycle.stored(first.id)
+    assert untouched is not None
+    assert (untouched.invalidation_reason, untouched.revision) == (None, 1)
+    moved = lifecycle.stored(second.id)
+    assert moved is not None
+    assert (moved.title, moved.revision, moved.invalidation_reason) == (
+        "the skipper",
+        2,
+        None,
+    )
+    assert lifecycle.invalidated_refs() == []
+    assert _count(lifecycle, work_tables.job) == jobs_before
+    with lifecycle.reading() as uow:
+        audits = uow.connection.execute(
+            select(work_tables.audit_record.c.outcome).where(
+                work_tables.audit_record.c.operation_name == MEMORY_CORRECT
+            )
+        ).all()
+        operations = uow.connection.execute(
+            select(func.count())
+            .select_from(work_tables.operation)
+            .where(work_tables.operation.c.name == MEMORY_CORRECT)
+        ).scalar_one()
+    assert [row.outcome for row in audits] == ["refused"]
+    assert operations == 0
