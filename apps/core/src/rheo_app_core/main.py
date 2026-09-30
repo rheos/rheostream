@@ -27,12 +27,19 @@ from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 from rheo_contracts import CONTRACT_VERSION
+from rheo_core.log_config import configure_logging
 from rheo_core.storage.postgres import get_backend
 
 from rheo_app_core import api_routes, auth_routes
 from rheo_app_core.internal_app import internal_app as internal_app
 from rheo_app_core.mcp_mount import McpSurfaceRouter, mounted_mcp
 from rheo_app_core.startup import run_startup
+
+# Before anything else in this process logs (the lifespan's ``core_startup_complete``
+# included): the one JSON-lines setup issue #228 gives every entry point, so a
+# content-free evidence line's ``extra`` reaches Coolify's captured stderr with its
+# fields intact instead of as a bare message name.
+configure_logging()
 
 
 def _dispose_backend() -> None:

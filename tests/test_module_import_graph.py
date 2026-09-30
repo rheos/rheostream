@@ -45,6 +45,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/test_flagship_overlay.py",
     "tests/test_history_extract.py",
     "tests/test_migration_extract.py",
+    "tests/test_logging.py",
     "tests/test_migration_predecessor_reader.py",
     "tests/test_migration_private_paths.py",
     "tests/test_module_import_graph.py",
@@ -118,6 +119,10 @@ curated and owner-only history search against independently labelled synthetic
 questions;
 ``test_relevance_reranker.py`` checks this module's local relevance runtime and its
 outage/network guards. Neither adds a core/application dependency on the module.
+``test_logging.py`` (issue #228) reads ``modules/recallatron/src/rheo_recallatron/
+automatic.py`` as a static AST scan target, alongside two ``rheo_core`` files, to prove
+every ``content_free_extra()`` call site names only an allowlisted field; naming that
+one module file to scan it is not a dependency on it.
 
 ``tests/postgres/test_workspace_status.py`` was in this set and is deliberately not any
 more: it carries four phase-one acceptance demonstrators, and being *allowed* to name
