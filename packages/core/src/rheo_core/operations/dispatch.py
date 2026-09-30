@@ -11,7 +11,9 @@ operation record is minted and committed on its own; then **one** work ``UnitOfW
 is opened through ``route(ctx)``, the handler runs, the audit row is written, and the
 unit of work commits. A handler that raises
 :class:`OperationRefused` (or a
-``StorageRefusal``) rolls back and yields that state; any other exception rolls back,
+``StorageRefusal``) rolls back and yields that state; a
+:class:`~rheo_contracts.StaleRecord` out of a repository's compare-and-set rolls back
+and yields ``record_stale``; any other exception rolls back,
 is logged with the context's ``request_id``, and yields ``failed`` with the fixed
 code ``handler_failed`` and only the exception's class name as the text — never its
 message, which for a driver error carries the statement and its parameters.
@@ -92,12 +94,12 @@ the work transaction cannot undo it: without this, a handler that raised, refuse
 returned the wrong type or queued nothing would leave a committed ``pending`` record
 that no worker will ever see and nothing can ever move — while the caller was told the
 dispatch failed. Six exits reach :func:`_fail_operation`: a ``StorageRefusal`` opening
-the work transaction, ``OperationRefused`` or ``StorageRefusal`` out of the handler,
-any other exception (a commit failure included, since the commit runs inside the same
-``try``), an output that is not the declared type, and a ``long_running`` handler that
-queued no job at all. The three refusals **above** the mint — ``context_required``,
-``authorize`` and ``input_invalid`` — return before anything is written, so none of
-them leaves a record behind.
+the work transaction, ``OperationRefused``, ``StorageRefusal`` or ``StaleRecord`` out
+of the handler, any other exception (a commit failure included, since the commit runs
+inside the same ``try``), an output that is not the declared type, and a
+``long_running`` handler that queued no job at all. The three refusals **above** the
+mint — ``context_required``, ``authorize`` and ``input_invalid`` — return before
+anything is written, so none of them leaves a record behind.
 
 **A ``long_running`` dispatch marks its workspace due once its work transaction has
 committed, so the job is discovered on the very next pass.** ``work.jobs.enqueue``
@@ -153,6 +155,7 @@ from rheo_contracts import (
     OperationDeclaration,
     RecordRef,
     SafetyClass,
+    StaleRecord,
     WorkspaceContext,
 )
 
@@ -178,6 +181,7 @@ from rheo_core.operations.refusals import (
     HANDLER_FAILED,
     INPUT_INVALID,
     OUTPUT_INVALID,
+    RECORD_STALE,
     SUCCEEDED,
     OperationRefused,
 )
@@ -1234,6 +1238,20 @@ def dispatch(
             )
             _audit_alone(ctx, audit, outcome=AUDIT_REFUSED, operation_id=operation_id)
             return _refused(refusal.state, refusal.detail, operation_id=operation_id)
+        except StaleRecord as stale:
+            # A repository's compare-and-set matched no row: the record moved between
+            # the handler's read and its write (issue #12). A refusal the caller can
+            # retry, not a ``failed`` dispatch, and the same word for every module, so
+            # it is answered here rather than left to each handler to translate. The
+            # message is the repository's own and, like ``OperationRefused.detail``,
+            # must be safe to show.
+            _rollback(uow)
+            detail = str(stale) or RECORD_STALE
+            _fail_operation(
+                ctx, operation_id, error_code=RECORD_STALE, error_text=detail
+            )
+            _audit_alone(ctx, audit, outcome=AUDIT_REFUSED, operation_id=operation_id)
+            return _refused(RECORD_STALE, detail, operation_id=operation_id)
         except Exception as exc:
             _rollback(uow)
             # The exception text is for the log, never the outcome: a driver error

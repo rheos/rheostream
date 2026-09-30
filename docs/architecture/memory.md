@@ -444,7 +444,10 @@ Both take `expected_revision` and are a compare-and-set judged under the workspa
 lock. An authorized caller whose revision is not the one the row holds is told `record_stale`
 rather than `not_found`, which is also what the loser of two concurrent supersessions receives:
 the winner has already incremented the predecessor's revision, so the loser learns its copy has
-moved rather than that the record is gone.
+moved rather than that the record is gone. The lock is not the only guard: every write that
+advances a memory's revision also carries `AND revision = $expected`, so a writer that skipped
+the lock is refused `record_stale` instead of losing an update silently
+([storage adapter seam](storage-and-workspaces.md#revision-is-a-compare-and-set-not-a-counter)).
 
 A replacement stores its own retention clock, inherited audience/purposes, and independent copies
 of every actual source restriction. Its immutable marked ancestry is content-free and need not

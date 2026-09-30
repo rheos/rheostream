@@ -14,10 +14,13 @@ deliberately not named here — ``UnitOfWork`` lives in ``rheo_core.storage`` an
 concrete repository names its own transaction type where it is defined, in a package
 that may import storage.
 
-**Declared only, and this run ships no implementation.** The six core tables carry no
-mutable domain record type, so the first repository bound to this protocol is the first
-one a module writes. The contract is stated here rather than there so that the first
-module author inherits the compare-and-set rule instead of inventing it. Per-record
+**The core ships no implementation of this protocol.** The core tables carry no mutable
+domain record type, so the repositories bound to the rule are the modules'. The first is
+Recallatron's memory (``rheo_recallatron.storage.repository``), whose every
+revision-advancing write is ``... WHERE id = $id AND revision = $expected`` and raises
+:class:`StaleRecord` on zero rows, beside the workspace lifecycle lock rather than
+instead of it (issue #12). The contract is stated here so that every module author
+inherits the compare-and-set rule instead of inventing it. Per-record
 protocols (``OpportunityRepository`` and its like) stay in the module that owns the
 record, or in this distribution when genuinely shared; this is the shape they all take,
 not a base class they inherit.
@@ -37,8 +40,11 @@ class StaleRecord(Exception):
 
     Raised by :meth:`Repository.save` when ``expected_revision`` does not match, which
     means the record changed under the caller between the read and the write. The
-    dispatcher surfaces it as the refusal ``record_stale`` — a name that has no constant
-    yet, because no operation can raise this until the first mutable record type exists.
+    dispatcher surfaces it as the refusal ``record_stale``
+    (``rheo_core.operations.RECORD_STALE``): it catches this exception out of any
+    handler, rolls the unit of work back and answers that state, so a module raises it
+    from its repository and never translates it itself. The message becomes the
+    outcome's ``error_text`` and must be safe to show.
     """
 
 
@@ -71,5 +77,11 @@ class Repository(Protocol[M]):
         equal against a revision that does not describe the state the approver saw. The
         failure is silent, and it is in the safety path. A module cannot opt out of the
         rule here, because a module does not write SQL outside its repository.
+
+        **A lock does not replace the predicate.** A module that serializes its writers
+        with an advisory lock still writes with ``AND revision = $expected``: the lock
+        orders the writers that take it, and the predicate is what refuses one that
+        forgot to. Of two racing writers exactly one succeeds and the other raises
+        :class:`StaleRecord`, whether or not either took the lock.
         """
         ...

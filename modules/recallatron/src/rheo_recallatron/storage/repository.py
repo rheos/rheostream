@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Final
 from uuid import UUID
 
+from rheo_contracts import StaleRecord
 from sqlalchemy import (
     ColumnElement,
     Connection,
@@ -145,24 +146,26 @@ def correct_memory(
     title: str,
     body: str,
     confidence: float | None,
-    revision: int,
+    expected_revision: int,
     corrected_at: datetime,
-) -> None:
-    """Write a correction's five columns in place, and no others.
+) -> int:
+    """Write a correction's columns in place, and no others; answer the new revision.
 
     ``search_tsv`` is generated from ``title`` and ``body``, so the database rebuilds
     it with this statement; there is no second write to keep it in step.
+
+    **A compare-and-set** (issue #12): see :func:`_compare_and_set`.
     """
-    conn.execute(
-        update(t.memory)
-        .where(t.memory.c.id == memory_id)
-        .values(
-            title=title,
-            body=body,
-            confidence=confidence,
-            revision=revision,
-            corrected_at=corrected_at,
-        )
+    return _compare_and_set(
+        conn,
+        memory_id,
+        expected_revision,
+        {
+            "title": title,
+            "body": body,
+            "confidence": confidence,
+            "corrected_at": corrected_at,
+        },
     )
 
 
@@ -172,25 +175,60 @@ def invalidate_memory(
     *,
     reason: str,
     invalidated_at: datetime,
-    revision: int,
+    expected_revision: int,
     superseded_by_id: UUID | None = None,
-) -> None:
-    """Mark one row invalidated, at its new revision, in the caller's transaction.
+) -> int:
+    """Mark one row invalidated, one revision on, in the caller's transaction; answer
+    the new revision.
 
     ``superseded_by_id`` is written by the supersession path and left alone by every
     other one: the column names the *replacement*, and a row invalidated because a
     source was corrected has none. The paired ``invalidated_at``/
     ``invalidation_reason`` are written together because the table's own check
     constraint refuses one without the other.
+
+    **A compare-and-set** (issue #12): see :func:`_compare_and_set`.
     """
     values: dict[str, object] = {
         "invalidated_at": invalidated_at,
         "invalidation_reason": reason,
-        "revision": revision,
     }
     if superseded_by_id is not None:
         values["superseded_by_id"] = superseded_by_id
-    conn.execute(update(t.memory).where(t.memory.c.id == memory_id).values(**values))
+    return _compare_and_set(conn, memory_id, expected_revision, values)
+
+
+def _compare_and_set(
+    conn: Connection,
+    memory_id: UUID,
+    expected_revision: int,
+    values: dict[str, object],
+) -> int:
+    """The one statement shape every revision-advancing memory write takes.
+
+    ``UPDATE ... SET ..., revision = $expected + 1 WHERE id = $id AND revision =
+    $expected``, and zero rows affected raises :class:`~rheo_contracts.StaleRecord`,
+    which the dispatcher answers as ``record_stale``. The storage adapter seam's rule
+    (``docs/architecture/storage-and-workspaces.md``), and the reason it is here as
+    well as behind the workspace lifecycle lock: the lock serializes writers that take
+    it, and the predicate is what still refuses one that does not. Under ``READ
+    COMMITTED`` a second writer's ``UPDATE`` waits on the first's row lock and then
+    re-evaluates the predicate against the committed row, so of two racing writers
+    exactly one matches and the other matches nothing, rather than both succeeding and
+    one update being lost with the revision landing at *n+1* either way.
+
+    ``revision`` is written here and nowhere else, which is why ``values`` never
+    carries it. The message is safe to show: it becomes the outcome's ``error_text``.
+    """
+    revision = expected_revision + 1
+    result = conn.execute(
+        update(t.memory)
+        .where(t.memory.c.id == memory_id, t.memory.c.revision == expected_revision)
+        .values(**values, revision=revision)
+    )
+    if result.rowcount != 1:
+        raise StaleRecord("that memory has moved since the revision you hold")
+    return revision
 
 
 def delete_memory(conn: Connection, memory_id: UUID) -> bool:

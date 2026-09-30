@@ -24,6 +24,14 @@ made the predecessor noncurrent *and* incremented its revision, and the loser mu
 told ``record_stale`` — its copy has moved — rather than ``not_found``, which would
 say the record is gone and give it nothing to retry against.
 
+**The lock is not the only guard, and that is deliberate** (issue #12). Every write here
+that advances a revision is itself a compare-and-set, ``... WHERE id = $id AND
+revision = $expected``, through the repository, and a write that matches no row raises
+:class:`~rheo_contracts.StaleRecord`, which the dispatcher answers ``record_stale``. The
+lock serializes every writer that takes it, so between two of those the predicate never
+fires; it is there for the writer that forgot the lock, which would otherwise lose an
+update without any signal.
+
 **What each disposition does** (§ A5's closure table, and this file implements it
 verbatim):
 
@@ -273,13 +281,14 @@ def _mark_invalidated(
     row = get_memory(uow.connection, memory_id)
     if row is None or row.invalidation_reason is not None:
         return None
-    revision = row.revision + 1
-    invalidate_memory(
+    # A compare-and-set against the revision just read: a writer that skipped the
+    # lifecycle lock and moved the row in between makes this raise ``StaleRecord``.
+    revision = invalidate_memory(
         uow.connection,
         memory_id,
         reason=reason,
         invalidated_at=now,
-        revision=revision,
+        expected_revision=row.revision,
         superseded_by_id=successor,
     )
     delete_memory_embeddings(uow.connection, memory_id)
@@ -351,7 +360,6 @@ def correct(
         ctx, uow, model_input.ref, model_input.expected_revision, request=request
     )
     affected = dependent_closure(uow.connection, row.id, include_marked=True)
-    revision = row.revision + 1
     # **Rewrite first, then delete the old text's vectors — the order is the fix.** The
     # rewrite takes the row lock an in-flight embed holds ``FOR SHARE`` from reading
     # the old text until its vector commits, so it waits for that embed, and the delete
@@ -360,13 +368,17 @@ def correct(
     # new text. Deleting first would find nothing to delete while an embed of the old
     # text was still to commit, and that stale vector would stay for good: every later
     # fill skips a memory that already has one.
-    correct_memory(
+    #
+    # The rewrite is also the compare-and-set: ``AND revision = $expected``, with the
+    # revision ``_target`` already compared under the lock. The lock is what serializes
+    # writers that take it; the predicate is what still refuses one that did not.
+    revision = correct_memory(
         uow.connection,
         row.id,
         title=model_input.title,
         body=model_input.body,
         confidence=model_input.confidence,
-        revision=revision,
+        expected_revision=row.revision,
         corrected_at=request.now,
     )
     delete_memory_embeddings(uow.connection, row.id)

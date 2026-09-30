@@ -937,7 +937,7 @@ def test_a_memory_retired_before_its_job_runs_is_skipped_beside_a_sibling_that_i
                 retired,
                 reason="source_corrected",
                 invalidated_at=now,
-                revision=2,
+                expected_revision=1,
             )
         else:
             assert delete_memory(uow.connection, retired)
@@ -1221,7 +1221,7 @@ def test_dense_index_writes_nothing_for_text_the_row_no_longer_holds(
             retired,
             reason="source_corrected",
             invalidated_at=datetime.now(UTC),
-            revision=2,
+            expected_revision=1,
         )
     with embedding.unit() as uow:
         DenseStrategy().index(embedding.context(), uow, stale)

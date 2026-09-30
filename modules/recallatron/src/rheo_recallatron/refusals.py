@@ -1,7 +1,7 @@
 """The refusal states Recallatron's read surface answers with.
 
-Three of them are new vocabulary this module owns, one is re-declared from the core's
-runtime package on purpose, and two are imported from the core rather than restated.
+Several of them are new vocabulary this module owns, one is re-declared from the core's
+runtime package on purpose, and three are imported from the core rather than restated.
 
 **Why ``PURPOSE_MISMATCH`` is spelled here instead of imported.** The core declares the
 same string beside its runtime-job refusals, and AC 3's import-graph scan asserts that
@@ -15,11 +15,27 @@ own boundary package makes the same call for the same reason, one cycle further 
 boundary this module must not cross, both are the states the dispatcher and the record
 resolver already answer with, and a second copy of either would be a second vocabulary
 a caller has to learn.
+
+**Why ``RECORD_STALE`` is imported.** It is the repository protocol's word, not this
+module's (issue #12): the dispatcher answers it for any module whose compare-and-set
+write misses, so a second spelling here could drift from the one the dispatcher uses.
+Recallatron answers it from two places. :func:`~rheo_recallatron.lifecycle._target`
+compares the supplied ``expected_revision`` **before** the current-state test and after
+the history-capable authorization, which is what makes it the answer the loser of a
+concurrent supersession gets: the winner has already incremented the predecessor's
+revision, so the loser is told its copy is stale rather than that the record is gone.
+And every revision-advancing write in :mod:`rheo_recallatron.storage.repository` carries
+``AND revision = $expected``, so a writer that skipped the lifecycle lock still cannot
+lose an update silently: its write matches nothing and raises ``StaleRecord``.
+Distinct from ``not_found``, and the distinction is the whole value: ``not_found`` means
+"nothing you may act on is here", ``record_stale`` means "something is, and it has
+moved".
 """
 
 from typing import Final
 
 from rheo_core.operations.refusals import INPUT_INVALID as INPUT_INVALID
+from rheo_core.operations.refusals import RECORD_STALE as RECORD_STALE
 from rheo_core.refs.resolver import NOT_FOUND as NOT_FOUND
 
 RETENTION_UNAVAILABLE: Final = "retention_unavailable"
@@ -96,21 +112,6 @@ A changed digest, a noncurrent or missing representation, and an erased, expired
 noop, denied or orphaned receipt all answer with this single state. They are one word
 on purpose: telling them apart would report whether a source was once accepted and
 then erased, which is exactly the fact an erasure removes.
-"""
-
-RECORD_STALE: Final = "record_stale"
-"""The supplied ``expected_revision`` is not the revision the row holds (§ A7).
-
-Compared **before** the current-state test and after the history-capable
-authorization, which is what makes it the answer the loser of a concurrent
-supersession gets: the winner has already incremented the predecessor's revision, so
-the loser's compare-and-set misses and it is told its copy is stale rather than told
-the record is gone.
-
-Distinct from ``not_found``, and the distinction is the whole value: ``not_found``
-means "nothing you may act on is here", ``record_stale`` means "something is, and it
-has moved". A caller that got ``not_found`` for a revision mismatch would retry
-nothing; one that gets this rereads and retries.
 """
 
 EMBEDDING_PROVIDER_UNAVAILABLE: Final = "embedding_provider_unavailable"
