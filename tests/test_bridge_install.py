@@ -1181,3 +1181,45 @@ def test_main_dispatches_refusals_to_1_and_passes_drain_codes_through(
     assert cli.main(["drain"]) == 2
     assert built == [(API_URL, token)]
     assert "refused" in capsys.readouterr().err
+
+
+# --- a corrupt config.json never blocks uninstall -------------------------------
+
+
+@pytest.mark.parametrize("purge", [False, True], ids=["plain", "purge"])
+def test_uninstall_with_a_corrupt_config_still_removes_hooks_and_credentials(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str], purge: bool
+) -> None:
+    set_token(initialised, new_token())
+    assert install(initialised) == 0
+    paths.config_path(initialised.bridge_home).write_text("{not json")
+    capsys.readouterr()
+
+    assert (
+        cli.uninstall(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            purge=purge,
+            now=lambda: NOW,
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+
+    # With no usable record, only our entries go: no container, no file.
+    assert load_json(initialised.settings) == {"hooks": {"Stop": [], "SessionEnd": []}}
+    assert "rheo evidence revoke <ENROLLMENT_ID>" in out
+    if purge:
+        assert "discarded_unacknowledged: 0\n" in out
+        assert not initialised.bridge_home.exists()
+    else:
+        assert not paths.token_path(initialised.bridge_home).exists()
+        assert not paths.machine_key_path(initialised.bridge_home).exists()
+
+
+def test_remove_hook_alone_still_refuses_a_corrupt_config(initialised: Dirs) -> None:
+    assert install(initialised) == 0
+    paths.config_path(initialised.bridge_home).write_text("[]")
+    with pytest.raises(cli.CliError):
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled)
+    assert len(our_commands(load_json(initialised.settings))) == 2

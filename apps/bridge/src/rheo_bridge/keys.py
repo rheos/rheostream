@@ -65,7 +65,18 @@ def load_or_create_machine_key(bridge_home: Path) -> bytes:
             pass  # another creator won the race; use its key
     finally:
         os.unlink(tmp_name)
+    # The new directory entry must survive a power loss too, or a later call
+    # would find no key and mint a different one.
+    _fsync_dir(bridge_home)
     return _read_machine_key(path)
+
+
+def _fsync_dir(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def machine_fingerprint(machine_key: bytes) -> str:

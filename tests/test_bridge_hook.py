@@ -421,6 +421,29 @@ def test_the_machine_key_is_created_once_private_and_reread(tmp_path: Path) -> N
     paths.check_private(home)
 
 
+def test_creating_the_machine_key_fsyncs_bridge_home_after_the_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The key's directory entry is fsynced once published, so a power loss cannot
+    leave a later call to mint a different key."""
+    home = paths.ensure_bridge_home(tmp_path / ".rheo-bridge")
+    real_fsync = os.fsync
+    synced: list[tuple[str, bool]] = []
+
+    def watching_fsync(fd: int) -> None:
+        kind = "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        synced.append((kind, (home / "machine.key").exists()))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", watching_fsync)
+    keys.load_or_create_machine_key(home)
+    # The temp file first (before the link), then the directory (after it).
+    assert synced == [("file", False), ("dir", True)]
+    synced.clear()
+    keys.load_or_create_machine_key(home)
+    assert synced == []  # rereading an existing key writes nothing
+
+
 def test_the_key_digests_match_spec_a5() -> None:
     key = bytes(range(32))
     assert (

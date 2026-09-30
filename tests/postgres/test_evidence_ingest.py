@@ -42,6 +42,7 @@ from harness.evidence import (
 )
 from harness.modules import install_and_enable_module, loaded_probe_modules
 from harness.registry import add_member
+from pydantic import ValidationError
 from rheo_app_core import api_routes
 from rheo_app_core.main import public_app
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
@@ -65,6 +66,7 @@ from rheo_core.evidence.ingest import (
     INGEST_MAX_RECORDS,
     INGEST_MAX_TEXT_CHARS,
     IngestInput,
+    IngestRecord,
     ingest_handler,
 )
 from rheo_core.evidence.local_authority import (
@@ -652,6 +654,39 @@ def test_a_malformed_request_is_input_invalid_before_any_row(
             [(_record_key(), at, _PLAIN), (_record_key(), at, over)]
         )
     _assert_refused(ev, _ingest(enrolled.ctx(), payload), INPUT_INVALID)
+
+
+def test_text_over_the_guard_is_refused_without_the_scrub_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``max_length`` refuses over-guard text; the before-validator must not scrub it
+    first. Text between ``MAX_INPUT_CHARS`` and the guard is still scrubbed, so it
+    reaches ``record_evidence`` and drops per record."""
+    scrubbed: list[int] = []
+    real = ingest_module.strip_unstorable
+
+    def spy(value: str) -> str:
+        scrubbed.append(len(value))
+        return real(value)
+
+    monkeypatch.setattr(ingest_module, "strip_unstorable", spy)
+    at = datetime.now(UTC)
+    with pytest.raises(ValidationError):
+        IngestRecord.model_validate(
+            {
+                "native_key": _record_key(),
+                "recorded_at": at,
+                "text": "x" * (INGEST_MAX_TEXT_CHARS + 1),
+            }
+        )
+    assert scrubbed == []
+
+    between = "x" * (MAX_INPUT_CHARS + 1)
+    record = IngestRecord.model_validate(
+        {"native_key": _record_key(), "recorded_at": at, "text": between}
+    )
+    assert record.text == between
+    assert scrubbed == [MAX_INPUT_CHARS + 1]
 
 
 def test_a_miswired_unit_of_work_is_refused_not_answered_inert(

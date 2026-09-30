@@ -85,8 +85,12 @@ class IngestRecord(BaseModel):
     def _scrub_unstorable(cls, value: object) -> object:
         """Scrub NUL and lone surrogates before pydantic-core's ``str`` check, which
         refuses a lone surrogate and so the whole request. Anything but a ``str``
-        passes through for pydantic to refuse normally."""
-        return strip_unstorable(value) if isinstance(value, str) else value
+        passes through for pydantic to refuse normally, and so does a ``str`` over
+        the request-size guard: ``max_length`` refuses it without paying for a scrub
+        of arbitrarily long text."""
+        if not isinstance(value, str) or len(value) > INGEST_MAX_TEXT_CHARS:
+            return value
+        return strip_unstorable(value)
 
 
 class IngestGap(BaseModel):

@@ -418,17 +418,25 @@ def install_hook(
     return EXIT_OK
 
 
-def remove_hook(bridge_home: Path, *, enrolled_dir: Path) -> int:
+def remove_hook(
+    bridge_home: Path, *, enrolled_dir: Path, tolerate_bad_config: bool = False
+) -> int:
     """Remove only this bridge's hook entries from ``enrolled_dir``'s settings.
 
     An emptied ``hooks`` table or event list is dropped only if install
     created it, and the file is deleted only when install created it and it
     is ``{}`` once the entries are gone: what was there before comes back.
+
+    ``tolerate_bad_config`` (``uninstall``'s path) treats an unusable
+    ``config.json`` as no record: the entries naming the bridge hook are still
+    removed, and no container or file is deleted.
     """
     try:
         config = bridge_config.load(bridge_home)
     except bridge_config.ConfigError as exc:
-        raise CliError(str(exc)) from exc
+        if not tolerate_bad_config:
+            raise CliError(str(exc)) from exc
+        config = None
     target_dir = Path(os.path.realpath(enrolled_dir))
     record = (
         config
@@ -487,15 +495,16 @@ def uninstall(
     try:
         config = bridge_config.load(bridge_home)
     except bridge_config.ConfigError:
+        # A corrupt config must not keep the credentials on disk.
         config = None
     enrollment_id = config.enrollment_id if config is not None else None
     if not purge:
-        remove_hook(bridge_home, enrolled_dir=enrolled_dir)
+        remove_hook(bridge_home, enrolled_dir=enrolled_dir, tolerate_bad_config=True)
         _delete_credentials(bridge_home)
         print(f"operator revoke command: {_revoke_command(enrollment_id)}")
         return EXIT_OK
     if not bridge_home.is_dir():
-        remove_hook(bridge_home, enrolled_dir=enrolled_dir)
+        remove_hook(bridge_home, enrolled_dir=enrolled_dir, tolerate_bad_config=True)
         print("discarded_unacknowledged: 0")
         print(f"operator revoke command: {_revoke_command(enrollment_id)}")
         return EXIT_OK
@@ -504,7 +513,7 @@ def uninstall(
             raise CliError("a bridge worker is running; retry once it exits")
         count = _unacknowledged_count(bridge_home, now=now())
         print(f"discarded_unacknowledged: {count}")
-        remove_hook(bridge_home, enrolled_dir=enrolled_dir)
+        remove_hook(bridge_home, enrolled_dir=enrolled_dir, tolerate_bad_config=True)
         _delete_credentials(bridge_home)
         shutil.rmtree(bridge_home)
     print(f"operator revoke command: {_revoke_command(enrollment_id)}")
