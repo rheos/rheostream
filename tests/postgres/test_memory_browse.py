@@ -51,9 +51,14 @@ from rheo_core.refs.resolver import register_resolver
 from rheo_core.storage.backend import UnitOfWork
 from rheo_recallatron import MANIFEST
 from rheo_recallatron import eligibility as memory_eligibility
+from rheo_recallatron import operations as memory_operations
 from rheo_recallatron.configuration import MEMORY_RECORD_TYPE
 from rheo_recallatron.contracts import EntityItem
-from rheo_recallatron.eligibility import ReferenceBudget, memory_reference
+from rheo_recallatron.eligibility import (
+    MemoryRequest,
+    ReferenceBudget,
+    memory_reference,
+)
 from rheo_recallatron.embedding.operations import EMBEDDING_COVERAGE
 from rheo_recallatron.entities import ENTITY_GET, normalized_name
 from rheo_recallatron.operations import (
@@ -78,6 +83,7 @@ from rheo_recallatron.storage.repository import (
     insert_memory_mention,
     insert_memory_purpose,
 )
+from rheo_recallatron.writes import opened
 from sqlalchemy import Connection, Engine, insert
 
 pytestmark = pytest.mark.postgres
@@ -552,6 +558,157 @@ def test_an_entity_read_that_exhausts_the_shared_budget_refuses_reference_scan_l
         browse.read(browse.owner(), container_ref=entity, target_ref=target),
         "reference_scan_limit",
     )
+
+
+@dataclass(frozen=True)
+class _ThreeEntities:
+    """A visible, a hidden and an unknown entity, and one readable target whose own
+    link graph costs a known number of references."""
+
+    visible: str
+    hidden: str
+    unknown: str
+    target: str
+    target_cost: int
+
+
+def _three_entities(browse: BrowseWorkspace) -> _ThreeEntities:
+    """The fixture #182 turns on.
+
+    The target derives from three readable sources, so authorizing it charges four
+    references: itself and each source. It mentions the visible entity, and nothing
+    else does. The hidden entity's only mention is a workspace-audience memory that
+    derives from the other member's private memory: the row-local prefilter keeps it
+    and only full eligibility removes it, so deciding the entity walks that mention
+    rather than skipping it in SQL.
+    """
+    with browse.unit() as conn:
+        visible_id = _entity(conn, "Visible Entity")
+        hidden_id = _entity(conn, "Hidden Entity")
+        sources = [
+            _write(conn, _row(f"source {index}", at=index)) for index in range(3)
+        ]
+        target = _write(
+            conn,
+            _row("the target", at=10),
+            mentions=[visible_id],
+            derived_from=[source.id for source in sources],
+        )
+        private = _write(
+            conn, _row("the other member's", at=20, audience_id=browse.other_account_id)
+        )
+        _write(
+            conn,
+            _row("hidden by its source", at=30),
+            mentions=[hidden_id],
+            derived_from=[private.id],
+        )
+    return _ThreeEntities(
+        visible=entity_reference(visible_id),
+        hidden=entity_reference(hidden_id),
+        unknown=entity_reference(uuid7()),
+        target=memory_reference(target.id),
+        target_cost=1 + len(sources),
+    )
+
+
+def _answer(outcome: OperationOutcome) -> tuple[bool, str | None, str | None]:
+    """Everything a caller sees of a refusal: success, the code and the words."""
+    if outcome.error is None:
+        return (outcome.ok, None, None)
+    return (outcome.ok, outcome.error.error_code, outcome.error.error_text)
+
+
+def _spend_the_shared_budget_to(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+    """Give every ``read`` a shared allowance of exactly ``limit`` references.
+
+    Only the request ``read`` opens is shrunk; a request built anywhere else keeps
+    § A13's full allowance, as ``entity.get``'s does. That is the shape of the attack:
+    the caller cannot shrink any budget, but it can choose a target whose link graph
+    spends the shared one to any edge it likes.
+    """
+
+    def shrunk(ctx: WorkspaceContext, uow: UnitOfWork) -> MemoryRequest:
+        request = opened(ctx, uow)
+        request.budget = ReferenceBudget(limit=limit)
+        return request
+
+    monkeypatch.setattr(memory_operations, "_opened", shrunk)
+
+
+def test_a_target_that_spends_the_budget_cannot_tell_hidden_from_unknown_entity(
+    browse: BrowseWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#182: a targeted read decides the entity on a budget of its own.
+
+    The target's own graph spends the shared allowance to the edge: authorizing it
+    succeeds with nothing left over. On the shared budget the hidden entity's walk
+    then overflows on its first hidden mention and answers ``reference_scan_limit``,
+    while an unknown entity answers ``not_found`` without charging anything. That
+    difference is one bit of existence. On its own budget both are the same
+    ``not_found`` with the same words, and a visible entity still opens its window.
+    """
+    fixture = _three_entities(browse)
+    owner = browse.owner()
+    _spend_the_shared_budget_to(monkeypatch, fixture.target_cost)
+
+    def targeted(entity: str) -> OperationOutcome:
+        return browse.read(owner, container_ref=entity, target_ref=fixture.target)
+
+    hidden = targeted(fixture.hidden)
+    unknown = targeted(fixture.unknown)
+    _refused(hidden, _NOT_FOUND)
+    _refused(unknown, _NOT_FOUND)
+    assert _answer(hidden) == _answer(unknown)
+
+    # The control: the edge is exactly the target's cost, not below it. The target
+    # is authorized and is the one member it can open a window over.
+    window = _window(targeted(fixture.visible))
+    assert _titles(window) == ["the target"]
+    assert _shape(window) == (1, 0, 1, False, 0)
+
+    # One reference below the edge the target itself cannot be authorized, so the
+    # allowance above really was spent to the last reference.
+    _spend_the_shared_budget_to(monkeypatch, fixture.target_cost - 1)
+    _refused(targeted(fixture.visible), "reference_scan_limit")
+
+
+@pytest.mark.parametrize("spent", [False, True], ids=["full-budget", "spent-budget"])
+def test_a_targeted_entity_read_agrees_with_entity_get(
+    browse: BrowseWorkspace, monkeypatch: pytest.MonkeyPatch, spent: bool
+) -> None:
+    """#182's other half: for a visible, a hidden and an unknown entity, a targeted
+    read opens a window exactly when ``entity.get`` answers, and is ``not_found``
+    exactly when ``entity.get`` is. It holds whether the target left the shared
+    budget whole or spent it to the edge.
+    """
+    fixture = _three_entities(browse)
+    owner = browse.owner()
+    if spent:
+        _spend_the_shared_budget_to(monkeypatch, fixture.target_cost)
+
+    def targeted(entity: str) -> OperationOutcome:
+        return browse.read(owner, container_ref=entity, target_ref=fixture.target)
+
+    got_visible = browse.call(owner, ENTITY_GET, {"entity_ref": fixture.visible})
+    assert got_visible.ok and isinstance(got_visible.result, EntityItem)
+    assert got_visible.result.mention_count == 1
+    assert _titles(_window(targeted(fixture.visible))) == ["the target"]
+
+    got_answers: set[tuple[bool, str | None, str | None]] = set()
+    read_answers: set[tuple[bool, str | None, str | None]] = set()
+    for entity in (fixture.hidden, fixture.unknown):
+        got = browse.call(owner, ENTITY_GET, {"entity_ref": entity})
+        read = targeted(entity)
+        _refused(got, _NOT_FOUND)
+        _refused(read, _NOT_FOUND)
+        got_answers.add(_answer(got))
+        read_answers.add(_answer(read))
+    # Each operation answers hidden and unknown alike, by its code and its words.
+    # (``entity.get`` says "no such entity" and ``read`` "no such memory"; the two
+    # operations have always used their own words, and neither varies here.)
+    assert len(got_answers) == 1, got_answers
+    assert len(read_answers) == 1, read_answers
 
 
 def test_a_link_container_without_a_target_is_input_invalid(

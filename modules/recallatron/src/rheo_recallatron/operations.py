@@ -50,8 +50,9 @@ see. A failure is the ``not_found`` an unknown container gets.
 
 **An entity container swaps that step and may drop two.** Its membership is a mention
 rather than a link, and its own visibility — ``entity.get``'s answer, always in
-``current`` mode — is the container step instead. Named with no target, it skips steps
-2 and 3 and answers its newest eligible members.
+``current`` mode — is the container step instead. With a target it is decided on a
+reference budget of its own, as a link container's is (#182). Named with no target, it
+skips steps 2 and 3 and answers its newest eligible members.
 
 **Refusals are raised, not returned.** The dispatcher turns
 :class:`~rheo_core.operations.refusals.OperationRefused` into an outcome whose state is
@@ -127,6 +128,7 @@ from rheo_recallatron.entities import (
     ENTITY_OPERATIONS,
     resolve_mentions,
     visible_entity,
+    visible_entity_container,
 )
 from rheo_recallatron.events import consumers_for_dispatch
 from rheo_recallatron.history import HISTORY_OPERATIONS
@@ -567,7 +569,8 @@ def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> Read
     container's own eligibility inserted after the target's authorization and before
     membership. For a link container that is ``eligible_link_container`` in the
     requested mode (#112). For an entity container it is **its visibility, decided by
-    the function behind ``entity.get`` and always in ``current`` mode**. A read can
+    the function behind ``entity.get`` and always in ``current`` mode**, on a budget
+    of its own when there is a target (#182). A read can
     open a window over an entity
     exactly when ``entity.get`` would answer for it, whatever ``include_invalidated``
     asks for, so an entity reachable only through retained history is ``not_found``
@@ -606,9 +609,16 @@ def read(ctx: WorkspaceContext, uow: UnitOfWork, model_input: ReadInput) -> Read
 
     # 2a. An entity container's own visibility, in ``current`` mode by construction:
     # ``visible_entity`` takes no mode. A denial is the same ``not_found`` an unknown
-    # memory gets; a spent budget passes through as ``reference_scan_limit``.
+    # memory gets; a spent budget passes through as ``reference_scan_limit``. With a
+    # target it is decided on a budget of its own (#182), so a target that spent the
+    # shared allowance cannot turn a hidden entity's walk into a refusal an unknown
+    # entity never gives. Without one it runs first on the shared budget, unchanged.
     if entity_id is not None:
-        visible = visible_entity(ctx, uow, entity_id, request=request)
+        visible = (
+            visible_entity(ctx, uow, entity_id, request=request)
+            if target is None
+            else visible_entity_container(ctx, uow, entity_id, request=request)
+        )
         if isinstance(visible, Denied):
             raise _refuse(visible)
     else:
