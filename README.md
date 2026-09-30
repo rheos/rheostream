@@ -51,9 +51,11 @@ the [workspace guide](docs/workspace-layout.md) defines the public/private layou
 ## Status
 
 **Release one is two phases in, and the reference instance is live.** Phase one (the
-walking skeleton) and phase two's Recallatron work are merged. Phase two's last piece,
-migrating the predecessor memory service into Recallatron and cutting over (run 1b), has
-not started. The license is AGPL-3.0.
+walking skeleton) and phase two (Recallatron) are merged. On 2026-09-30 the reference
+instance finished phase two's last piece: the predecessor memory service's data moved into
+Recallatron in one accounted transfer, and Recallatron became the only memory writer.
+Automatic memory now saves from enrolled Claude Code sessions, and clients recall through
+the one MCP surface. Phase three (Leads) is next. The license is AGPL-3.0.
 
 **The flagship runs on `rheo.stream`.** One Coolify-managed server hosts it in subdomain
 mode, with a Let's Encrypt wildcard certificate: `circuit.` (the shell), `auth.` (GitHub
