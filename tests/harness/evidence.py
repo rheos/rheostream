@@ -40,7 +40,7 @@ ENABLED_ENV: Final = "RHEO__automatic_memory__enabled"
 PROVIDER_ENV: Final = "RHEO__automatic_memory__extraction__provider"
 
 
-def _ignore(envelope: EventEnvelope, uow: HandlerUnitOfWork) -> None:
+def _ignore(uow: HandlerUnitOfWork, envelope: EventEnvelope) -> None:
     """The probe's handler: a subscriber that does nothing when delivered to."""
     return None
 
