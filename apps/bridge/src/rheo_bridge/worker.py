@@ -109,7 +109,9 @@ class LineCandidate:
     entrypoint: str | None
 
 
-SkipReason = Literal["clock_unreadable", "line_oversize"]
+SkipReason = Literal[
+    "clock_unreadable", "line_oversize", "missing_ids", "sanitized_empty"
+]
 
 
 @dataclass(frozen=True)
@@ -852,6 +854,7 @@ def _select(
             continue
         ids = transcript.extract_ids(line)
         if ids is None:
+            skips.append(LineSkip("missing_ids", line_start, line_end))
             continue
         session_id, line_uuid = ids
         if clock < cutoff:
@@ -873,6 +876,7 @@ def _select(
         # so no posted text carries either; None drops the line locally.
         clean = sanitize(text)
         if clean is None:
+            skips.append(LineSkip("sanitized_empty", line_start, line_end))
             continue
         items.append(
             LineCandidate(

@@ -84,6 +84,8 @@ LEDGER_REASONS: Final = frozenset(
         "source_unreadable",
         "spool_unreadable",
         "line_oversize",
+        "missing_ids",
+        "sanitized_empty",
         # Refusals of a whole batch by the ingest operation. Each needs a
         # person (rotate the token, re-enroll, or report a bridge bug); the
         # worker holds instead of resending.

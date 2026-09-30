@@ -89,14 +89,15 @@ WORKDIR /app
 # manifest or lock and fails.
 COPY pyproject.toml uv.lock .python-version ./
 
-# Python workspace members the lock resolves (every member except apps/web,
-# which is a pnpm app excluded from the uv workspace).
+# Python workspace members the lock resolves (except apps/web, excluded from
+# the uv workspace). Keep the bridge manifest for the frozen workspace lock,
+# but not its source or distribution in the server image.
 COPY packages/ ./packages/
 COPY apps/core ./apps/core
 COPY apps/worker ./apps/worker
 COPY apps/mcp ./apps/mcp
 COPY apps/cli ./apps/cli
-COPY apps/bridge ./apps/bridge
+COPY apps/bridge/pyproject.toml ./apps/bridge/pyproject.toml
 COPY modules/ ./modules/
 COPY connectors/ ./connectors/
 COPY runtimes/ ./runtimes/
@@ -109,7 +110,7 @@ COPY channels/ ./channels/
 # defence is each env.py refusing to run without the orchestrator's connection;
 # this closes the doc/reality gap around it.
 ARG UV_SYNC_ARGS=""
-RUN uv sync --frozen $UV_SYNC_ARGS \
+RUN uv sync --frozen --no-install-package rheo-app-bridge $UV_SYNC_ARGS \
     && rm -f /app/.venv/bin/alembic
 
 # Start from the venv exactly as built above, with no network (#152). A plain

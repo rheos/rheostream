@@ -884,6 +884,30 @@ def test_nul_is_scrubbed_and_a_nul_only_line_is_dropped_but_passed(
     assert batch.end_offset == len(data)
 
 
+@pytest.mark.parametrize("reason", ["sanitized_empty", "missing_ids"])
+def test_local_drops_count_once_when_cursor_passes_them(
+    env: Env, conn: sqlite3.Connection, capsys: pytest.CaptureFixture[str], reason: str
+) -> None:
+    dropped = human("\u0000\u0000" if reason == "sanitized_empty" else "no ids")
+    if reason == "missing_ids":
+        dropped.pop("sessionId")
+        dropped.pop("uuid")
+    data = write_transcript(env.transcript(), [dropped])
+    spool(env, [locator("Stop", path=env.transcript(), at=100)])
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    assert client.calls == []
+    row = state.get_session(conn, SESSION_HASH)
+    assert row is not None and row.cursor_offset == len(data)
+    assert state.get_ledger(conn)[reason].count == 1
+    assert drain(env, client) == worker.EXIT_OK
+    assert state.get_ledger(conn)[reason].count == 1
+    from rheo_bridge import cli
+
+    assert cli.status(env.bridge_home, now=NOW) == 0
+    assert f"ledger.{reason}: 1\n" in capsys.readouterr().out
+
+
 def test_a_lone_surrogate_is_scrubbed_before_sending(
     env: Env, conn: sqlite3.Connection
 ) -> None:

@@ -765,6 +765,49 @@ def test_remove_keeps_every_other_key_and_hook(initialised: Dirs) -> None:
     assert load_json(initialised.settings) == EXISTING
 
 
+@pytest.mark.parametrize("indent,newline", [(4, "\n"), ("\t", "\r\n")])
+def test_remove_restores_detectable_formatting(
+    initialised: Dirs, indent: int | str, newline: str
+) -> None:
+    initialised.settings.parent.mkdir()
+    original = (
+        json.dumps(EXISTING, indent=indent, ensure_ascii=False).replace("\n", newline)
+        + newline
+    )
+    initialised.settings.write_bytes(original.encode("utf-8"))
+    assert install(initialised) == 0
+    assert (
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled) == 0
+    )
+    assert initialised.settings.read_bytes() == original.encode("utf-8")
+
+
+@pytest.mark.parametrize("created", [False, True])
+def test_remove_refuses_a_settings_file_changed_after_read(
+    initialised: Dirs, monkeypatch: pytest.MonkeyPatch, created: bool
+) -> None:
+    if not created:
+        initialised.settings.parent.mkdir()
+        initialised.settings.write_text(json.dumps(EXISTING))
+    assert install(initialised) == 0
+    changed = initialised.settings.read_bytes() + b" \n"
+    real_read = settings_file.read
+    reads = 0
+
+    def concurrent_read(path: Path) -> tuple[settings_file.Document, str | None]:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            path.write_bytes(changed)
+        return real_read(path)
+
+    monkeypatch.setattr(settings_file, "read", concurrent_read)
+    with pytest.raises(cli.CliError, match="changed since it was read"):
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled)
+    assert initialised.settings.read_bytes() == changed
+    assert config_of(initialised).hook_created_settings is created
+
+
 @pytest.mark.parametrize(
     "original",
     [{"permissions": {"allow": ["Bash(ls:*)"]}}, {}],

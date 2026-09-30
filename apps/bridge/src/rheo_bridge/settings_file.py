@@ -30,6 +30,7 @@ import copy
 import difflib
 import json
 import os
+import re
 import shlex
 import stat
 import tempfile
@@ -118,7 +119,8 @@ def read(path: Path) -> tuple[Document, str | None]:
     if info.st_size > MAX_SETTINGS_BYTES:
         raise SettingsError(f"{path} is larger than {MAX_SETTINGS_BYTES} bytes")
     try:
-        text = path.read_text(encoding="utf-8")
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            text = handle.read()
     except UnicodeDecodeError as exc:
         raise SettingsError(f"{path} is not UTF-8") from exc
     try:
@@ -286,9 +288,35 @@ def remove(
     return pruned
 
 
-def render(document: Document) -> str:
-    """The text written for ``document``: two-space JSON and a final newline."""
-    return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+def render(document: Document, *, before: str | None = None) -> str:
+    """Render JSON with detectable indentation and newline style from ``before``."""
+    indent: int | str = 2
+    if before is not None:
+        match = re.search(r'(?m)^([ \t]+)"(?:[^"\\]|\\.)*"\s*:', before)
+        if match is not None:
+            indent = match.group(1)
+    text = json.dumps(document, indent=indent, ensure_ascii=False)
+    if before is None or before.endswith(("\n", "\r")):
+        text += "\n"
+    if (
+        before is not None
+        and "\r\n" in before
+        and "\n" not in before.replace("\r\n", "")
+    ):
+        text = text.replace("\n", "\r\n")
+    return text
+
+
+def ensure_unchanged(path: Path, before: str) -> None:
+    """Refuse to overwrite a settings file edited since the initial read."""
+    try:
+        _, current = read(path)
+    except SettingsError as exc:
+        raise SettingsError(
+            f"{path} changed since it was read; refusing to edit"
+        ) from exc
+    if current != before:
+        raise SettingsError(f"{path} changed since it was read; refusing to edit")
 
 
 def unified_diff(path: Path, before: str | None, after: str) -> str:
@@ -311,7 +339,7 @@ def unified_diff(path: Path, before: str | None, after: str) -> str:
     )
 
 
-def write_atomic(path: Path, text: str) -> None:
+def write_atomic(path: Path, text: str, *, expected_before: str | None = None) -> None:
     """Replace ``path`` with ``text``: temp file, fsync, rename, fsync the dir.
 
     A file that exists keeps its permission bits; a new one is 0600.
@@ -323,11 +351,13 @@ def write_atomic(path: Path, text: str) -> None:
         mode = NEW_FILE_MODE
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(tmp_name, mode)
+        if expected_before is not None:
+            ensure_unchanged(path, expected_before)
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
