@@ -8,8 +8,9 @@ claims a criterion is demonstrated merely because a row exists.
 
 **Ten rows, not fourteen.** Phase two's criteria run 24 to 37, and criteria 32, 34, 35 and
 37 have no row. Retrieval-strategy selection (31) was run 1a2's and its row was added at
-that run's close-out. The predecessor migration (32) is run 1b's: its code-only preparation
-has shipped, but final data transfer and criterion-32 acceptance evidence are outstanding.
+that run's close-out. The predecessor migration (32) is run 1b's: the one-time transfer and the
+cutover to one writer finished on the reference instance on 2026-09-30 (#193), but the
+criterion-32 row and its captured mutation are not added yet (#281).
 The naming gate, fixture-provenance gate and re-asserted CI
 gates (34, 35, 37) are run 1a3's. That run built the ported interface surface they name,
 and their gates run in continuous integration over it: the `repository-checks` job's
@@ -19,9 +20,10 @@ gate plants violations in a self-test on every run, so it cannot pass by scannin
 None of the three has a row yet, because adding one widens the guard's expected set and each
 row needs a captured mutation. Criterion 34's also has a constraint of its own: this file is
 inside the legacy-name scan, so a fenced hunk that plants a legacy name would itself fail the
-gate. The other route is to mutate the scanner itself so its self-test goes red, and that
-needs a maintainer's go-ahead before anyone edits a gate script. The rows are tracked as
-#120. Do not add a row for one of those on the strength of a test that happens to pass; the
+gate. The other route is to mutate the scanner itself so its self-test goes red. The
+maintainer chose that route on 2026-09-29: the mutation is captured on a throwaway branch
+that is never merged, so the scanner on `main` and this file stay untouched. The rows are
+tracked as #120. Do not add a row for one of those on the strength of a test that happens to pass; the
 guard's per-file completeness check is what keeps the set exact, and widening the set is a
 decision, not a fix.
 
@@ -36,8 +38,8 @@ The forward-function gate is new eligible memories automatically saved and recal
 through the intended client with correct access; benign operator-chosen examples
 suffice, not an owner-authored benchmark. Legacy overlap and ranking improvements
 are not migration prerequisites.
-This clarification adds no criterion-32 row and claims no completed transfer,
-mutation demonstration or real-data acceptance pass. Source preservation/loss,
+This clarification adds no criterion-32 row and claims no mutation demonstration;
+the row is #281. Source preservation/loss,
 privacy, ambient producer/drain, backup/rollback and deliberate cutover gates
 remain; see [decision-ledger entry 16](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).
 
