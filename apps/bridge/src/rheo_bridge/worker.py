@@ -77,6 +77,10 @@ EXIT_REFUSED: Final = 2
 HOLD_BASE_SECONDS: Final = 15 * 60
 HOLD_CAP_SECONDS: Final = 6 * 60 * 60
 TOKEN_EXPIRY_WARNING: Final = timedelta(days=14)
+# How long a closed session's row is kept as a tombstone. A session sighted
+# again within it resumes from its final cursor; after it, a new sighting
+# starts a fresh row at 0.
+TOMBSTONE_RETENTION_SECONDS: Final = 30 * 24 * 60 * 60
 
 RECORD_KEY_PREFIX: Final = "cc1:"
 GAP_KEY_PREFIX: Final = "cc1g:"
@@ -251,6 +255,7 @@ def _run(
 ) -> int:
     at = int(now.timestamp())
     fold_spool(connection, bridge_home, now=now)
+    state.prune_closed(connection, closed_before=at - TOMBSTONE_RETENTION_SECONDS)
     if token_expiring(config, now):
         state.bump_ledger(connection, "token_expiring", at=at)
     hold = state.get_hold(connection)
@@ -406,6 +411,9 @@ def _fold_file(
     with state.transaction(connection):
         for session_hash, sighting in sightings.items():
             existing = state.get_session(connection, session_hash)
+            if existing is not None and existing.closed_at is not None:
+                _reopen(connection, existing, sighting)
+                continue
             seen_at = sighting.seen_at
             if existing is not None and existing.last_seen_at is not None:
                 # Never move last_seen_at backwards for a late-read old line.
@@ -422,6 +430,34 @@ def _fold_file(
         state.set_spool_offset(connection, name, new_offset)
     if past and len(complete) == len(data):
         _delete_consumed(connection, dir_fd, name, new_offset)
+
+
+def _reopen(
+    connection: sqlite3.Connection, tombstone: state.SessionRow, sighting: _Sighting
+) -> None:
+    """A closed session sighted again resumes from its tombstone cursor.
+
+    Resuming, not replaying from 0, matters: turns the server already accepted
+    may by now be older than ``max_pending_hours``, and a replay would send
+    them again as ``expired_pending`` gaps under different keys, a false loss.
+    A sighting from before the close is stale and changes nothing. If the file
+    was replaced meanwhile, the next read sees a new inode and follows the
+    ordinary replacement rule.
+    """
+    closed_at = tombstone.closed_at
+    assert closed_at is not None
+    if sighting.seen_at < closed_at:
+        return
+    ended_at = sighting.ended_at
+    if ended_at is not None and ended_at < closed_at:
+        ended_at = None
+    state.reopen_session(
+        connection,
+        tombstone.session_hash,
+        transcript_path=sighting.transcript_path,
+        seen_at=sighting.seen_at,
+        ended_at=ended_at,
+    )
 
 
 def _read_spool_file(
@@ -981,13 +1017,18 @@ def _post_and_settle(
     """Step 6 and step 7 for one pass.
 
     A range with nothing to send (only skipped lines, or none) commits
-    locally with no request. Everything an answer moves, in every session,
-    commits in one SQLite transaction with the hold: a crash before that
-    commit leaves the state as it was before the request, and the next run
-    resends a range the server answers identically.
+    locally first, with no request, so it moves whatever the request's
+    outcome. Everything an answer moves, in every session, commits in one
+    SQLite transaction with the hold: a crash before that commit leaves the
+    state as it was before the request, and the next run resends a range the
+    server answers identically.
     """
     connection = context.connection
     local = [batch for batch in batches if not _items(batch)]
+    moved = False
+    with state.transaction(connection):
+        for batch in local:
+            moved = _settle(context, batch, _NO_ANSWER) or moved
     if probe:
         chosen = _probe(batches)
         posted = [] if chosen is None else [chosen]
@@ -1022,9 +1063,8 @@ def _post_and_settle(
             # All deferred (recording off): nothing moves.
             _hold(context)
             return _Outcome.HELD
-    moved = False
     with state.transaction(connection):
-        for batch in (*posted, *local):
+        for batch in posted:
             moved = _settle(context, batch, answer) or moved
         if items:
             state.clear_hold(connection)
@@ -1123,10 +1163,10 @@ def _settled(context: _PassContext, row: state.SessionRow) -> bool:
 def _close_at_eof(
     context: _PassContext, row: state.SessionRow, target: int, inode: int | None
 ) -> bool:
-    """Rule (a): delete the row when the committed cursor sits at EOF."""
+    """Rule (a): close the session when the committed cursor sits at EOF."""
     match _source_now(context, row):
         case _Present(size=size, inode=current) if size == target and current == inode:
-            state.delete_session(context.connection, row.session_hash)
+            _close(context, row)
             return True
         case _Present() | _Gone() | _Unreadable():
             # More arrived, or the source went: a later pass deals with it.
@@ -1150,7 +1190,7 @@ def _settle_gone(
         return False
     match _source_now(context, row):
         case _Gone():
-            state.delete_session(context.connection, row.session_hash)
+            _close(context, row)
             return True
         case _Present():
             # It came back: the server holds the gap, and the next pass reads
@@ -1164,6 +1204,12 @@ def _settle_gone(
             return True
         case unexpected:
             assert_never(unexpected)
+
+
+def _close(context: _PassContext, row: state.SessionRow) -> None:
+    state.close_session(
+        context.connection, row.session_hash, at=int(context.now.timestamp())
+    )
 
 
 def _drop_refused(

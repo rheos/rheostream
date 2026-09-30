@@ -54,10 +54,75 @@ def test_connect_creates_the_four_tables_exactly_as_named(
             "cursor_offset",
             "cursor_inode",
             "pending_gap_key",
+            "closed_at",
         ],
         "hold": ["id", "hold_until", "hold_step"],
         "ledger": ["reason", "count", "last_at"],
     }
+
+
+def test_a_file_from_before_closed_at_gains_the_column_and_keeps_its_rows(
+    db_path: Path,
+) -> None:
+    old = sqlite3.connect(db_path)
+    old.execute(
+        "CREATE TABLE session (session_hash TEXT PRIMARY KEY, transcript_path TEXT, "
+        "first_seen_at INTEGER, last_seen_at INTEGER, ended_at INTEGER, "
+        "cursor_offset INTEGER NOT NULL DEFAULT 0, cursor_inode INTEGER, "
+        "pending_gap_key TEXT)"
+    )
+    old.execute(
+        "INSERT INTO session (session_hash, transcript_path, first_seen_at, "
+        "last_seen_at, cursor_offset, cursor_inode) VALUES (?, ?, 1, 2, 64, 9)",
+        (SESSION, TRANSCRIPT),
+    )
+    old.commit()
+    old.close()
+    conn = state.connect(db_path)
+    try:
+        row = state.get_session(conn, SESSION)
+        assert row is not None
+        assert (row.cursor_offset, row.cursor_inode, row.closed_at) == (64, 9, None)
+        # Reconnecting finds the column already there.
+        state.close(conn)
+        conn = state.connect(db_path)
+        assert state.get_session(conn, SESSION) == row
+    finally:
+        state.close(conn)
+
+
+def test_a_closed_session_is_a_tombstone_that_reopens_at_its_cursor(
+    conn: sqlite3.Connection,
+) -> None:
+    state.upsert_session(
+        conn, SESSION, transcript_path=TRANSCRIPT, seen_at=100, ended_at=150
+    )
+    state.advance_cursor(conn, SESSION, offset=512, inode=7)
+    state.close_session(conn, SESSION, at=160)
+    assert state.list_sessions(conn) == []
+    [tombstone] = state.list_sessions(conn, include_closed=True)
+    assert (tombstone.closed_at, tombstone.cursor_offset) == (160, 512)
+    state.reopen_session(
+        conn, SESSION, transcript_path=TRANSCRIPT, seen_at=300, ended_at=None
+    )
+    row = state.get_session(conn, SESSION)
+    assert row is not None
+    assert (row.closed_at, row.ended_at, row.last_seen_at) == (None, None, 300)
+    assert (row.cursor_offset, row.cursor_inode, row.first_seen_at) == (512, 7, 100)
+
+
+def test_pruning_deletes_only_tombstones_closed_before_the_bound(
+    conn: sqlite3.Connection,
+) -> None:
+    state.upsert_session(conn, SESSION, transcript_path=TRANSCRIPT, seen_at=100)
+    state.upsert_session(conn, OTHER, transcript_path=TRANSCRIPT, seen_at=100)
+    state.close_session(conn, SESSION, at=200)
+    state.prune_closed(conn, closed_before=200)
+    assert state.get_session(conn, SESSION) is not None
+    state.prune_closed(conn, closed_before=201)
+    assert state.get_session(conn, SESSION) is None
+    # An open session is never pruned, however old.
+    assert state.get_session(conn, OTHER) is not None
 
 
 def test_the_file_is_private_and_reopening_keeps_the_data(db_path: Path) -> None:

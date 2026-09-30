@@ -49,7 +49,8 @@ SCHEMA: Final = (
         ended_at INTEGER,
         cursor_offset INTEGER NOT NULL DEFAULT 0,
         cursor_inode INTEGER,
-        pending_gap_key TEXT
+        pending_gap_key TEXT,
+        closed_at INTEGER
     )
     """,
     """
@@ -110,6 +111,15 @@ class SessionRow:
     cursor_offset: int
     cursor_inode: int | None
     pending_gap_key: str | None
+    # Set when the session closed. The row stays as a tombstone holding the
+    # final cursor, so a later sighting of the same session resumes there.
+    closed_at: int | None = None
+
+
+_SESSION_COLUMNS: Final = (
+    "session_hash, transcript_path, first_seen_at, last_seen_at, ended_at, "
+    "cursor_offset, cursor_inode, pending_gap_key, closed_at"
+)
 
 
 @dataclass(frozen=True)
@@ -154,10 +164,14 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def migrate(connection: sqlite3.Connection) -> None:
-    """Create any of the four tables that is absent. Idempotent."""
+    """Create any of the four tables that is absent, and add any column a file
+    written by an earlier version lacks. Idempotent."""
     with transaction(connection):
         for statement in SCHEMA:
             connection.execute(statement)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(session)")}
+        if "closed_at" not in columns:
+            connection.execute("ALTER TABLE session ADD COLUMN closed_at INTEGER")
 
 
 def close(connection: sqlite3.Connection) -> None:
@@ -261,23 +275,67 @@ def upsert_session(
 
 
 def get_session(connection: sqlite3.Connection, session_hash: str) -> SessionRow | None:
+    """A session's row, open or closed."""
     row = connection.execute(
-        "SELECT session_hash, transcript_path, first_seen_at, last_seen_at, "
-        "ended_at, cursor_offset, cursor_inode, pending_gap_key "
-        "FROM session WHERE session_hash = ?",
+        f"SELECT {_SESSION_COLUMNS} FROM session WHERE session_hash = ?",
         (session_hash,),
     ).fetchone()
     return None if row is None else SessionRow(*row)
 
 
-def list_sessions(connection: sqlite3.Connection) -> list[SessionRow]:
-    """Every known session, oldest first sighting first."""
+def list_sessions(
+    connection: sqlite3.Connection, *, include_closed: bool = False
+) -> list[SessionRow]:
+    """Every open session (and the tombstones too if asked), oldest first
+    sighting first."""
+    where = "" if include_closed else "WHERE closed_at IS NULL "
     rows = connection.execute(
-        "SELECT session_hash, transcript_path, first_seen_at, last_seen_at, "
-        "ended_at, cursor_offset, cursor_inode, pending_gap_key "
-        "FROM session ORDER BY first_seen_at, session_hash"
+        f"SELECT {_SESSION_COLUMNS} FROM session {where}"
+        "ORDER BY first_seen_at, session_hash"
     ).fetchall()
     return [SessionRow(*row) for row in rows]
+
+
+def close_session(
+    connection: sqlite3.Connection, session_hash: str, *, at: int
+) -> None:
+    """Close a session, keeping its row and final cursor as a tombstone."""
+    with transaction(connection):
+        connection.execute(
+            "UPDATE session SET closed_at = ? WHERE session_hash = ?",
+            (at, session_hash),
+        )
+
+
+def reopen_session(
+    connection: sqlite3.Connection,
+    session_hash: str,
+    *,
+    transcript_path: str,
+    seen_at: int,
+    ended_at: int | None,
+) -> None:
+    """Reopen a closed session on a new sighting, from its tombstone cursor.
+
+    The old ``ended_at`` belongs to the closed stretch, so it is replaced by
+    this sighting's (``None`` for a ``Stop``). The cursor, its inode and any
+    pending gap key are kept.
+    """
+    with transaction(connection):
+        connection.execute(
+            "UPDATE session SET closed_at = NULL, transcript_path = ?, "
+            "last_seen_at = ?, ended_at = ? WHERE session_hash = ?",
+            (transcript_path, seen_at, ended_at, session_hash),
+        )
+
+
+def prune_closed(connection: sqlite3.Connection, *, closed_before: int) -> None:
+    """Delete tombstones closed before ``closed_before``."""
+    with transaction(connection):
+        connection.execute(
+            "DELETE FROM session WHERE closed_at IS NOT NULL AND closed_at < ?",
+            (closed_before,),
+        )
 
 
 def advance_cursor(

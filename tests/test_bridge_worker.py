@@ -959,6 +959,17 @@ def row_of(env: Env, session_hash: str = SESSION_HASH) -> state.SessionRow | Non
         return state.get_session(connection, session_hash)
 
 
+def is_open(env: Env, session_hash: str = SESSION_HASH) -> bool:
+    row = row_of(env, session_hash)
+    return row is not None and row.closed_at is None
+
+
+def is_closed(env: Env, session_hash: str = SESSION_HASH) -> bool:
+    """Closed, and kept as a tombstone at the final cursor."""
+    row = row_of(env, session_hash)
+    return row is not None and row.closed_at is not None
+
+
 def cursor_of(env: Env, session_hash: str = SESSION_HASH) -> int:
     row = row_of(env, session_hash)
     assert row is not None
@@ -1349,16 +1360,16 @@ def test_a_session_with_no_end_keeps_its_row_until_everything_is_acknowledged(
     for _ in range(10):
         assert drain(env, client, at) == worker.EXIT_OK
         row = row_of(env)
-        assert row is not None
+        assert row is not None and row.closed_at is None
         assert (row.cursor_offset, row.cursor_inode) == (0, None)
         at = until(env)
     assert len(client.calls) == 10
 
     client.respond = accept_all
     assert drain(env, client, at) == worker.EXIT_OK  # the probe: one item
-    assert row_of(env) is not None
+    assert is_open(env)
     assert drain(env, client, at) == worker.EXIT_OK
-    assert row_of(env) is None
+    assert is_closed(env)
     delivered = client.calls[-2:]
     assert sum(len(c.keys) for c in delivered) == 2
     # Aged past max_pending_hours by now: content-free gaps, never text.
@@ -1374,12 +1385,12 @@ def test_an_ended_session_whose_final_batch_is_unacknowledged_is_kept(
     spool(env, [locator("SessionEnd", path=path, at=NOW_TS - 60)])
     client = FakeClient(defer_all)
     assert drain(env, client) == worker.EXIT_OK
-    assert row_of(env) is not None
+    assert is_open(env)
     assert drain(env, client, after(minutes=1)) == worker.EXIT_OK
-    assert row_of(env) is not None
+    assert is_open(env)
     client.respond = accept_all
     assert drain(env, client, until(env)) == worker.EXIT_OK
-    assert row_of(env) is None
+    assert is_closed(env)
 
 
 def test_a_settled_session_with_one_deferred_key_is_kept(env: Env) -> None:
@@ -1400,7 +1411,7 @@ def test_a_settled_session_with_one_deferred_key_is_kept(env: Env) -> None:
     assert cursor_of(env) == line_bounds(data)[1][0]
     # The run's second pass re-posted only two, got all-deferred, and held.
     assert drain(env, FakeClient(), until(env)) == worker.EXIT_OK
-    assert row_of(env) is None
+    assert is_closed(env)
 
 
 def test_a_line_that_lands_after_the_session_end_is_read_by_the_settle_pass(
@@ -1420,7 +1431,7 @@ def test_a_line_that_lands_after_the_session_end_is_read_by_the_settle_pass(
         "before the end",
         "after the hook",
     ]
-    assert row_of(env) is None
+    assert is_closed(env)
 
 
 def test_repeated_and_out_of_order_locators_post_each_turn_once(env: Env) -> None:
@@ -1451,7 +1462,7 @@ def test_repeated_and_out_of_order_locators_post_each_turn_once(env: Env) -> Non
     assert drain(env, client, after(seconds=10)) == worker.EXIT_OK
     assert sorted(client.posted_keys) == sorted(rkey(env, line) for line in lines)
     assert ledger_of(env)["accepted:cli"] == 3
-    assert row_of(env) is None
+    assert is_closed(env)
 
 
 def test_accepted_counts_are_kept_per_entrypoint_and_never_sent(env: Env) -> None:
@@ -1503,7 +1514,7 @@ def test_a_gone_source_closes_once_its_gap_comes_back_gapped(env: Env) -> None:
     gap = client.calls[-1].gaps[0]
     assert gap.native_key == gap_key(env, SESSION_HASH, len(data))
     assert gap.reason == "source_truncated"
-    assert row_of(env) is None
+    assert is_closed(env)
 
 
 def test_a_deferred_gap_keeps_the_row_and_its_pending_key(env: Env) -> None:
@@ -1530,6 +1541,122 @@ def test_a_source_back_before_the_close_keeps_its_row(env: Env) -> None:
     assert client.calls[0].gaps[0].native_key == gap_key(env, SESSION_HASH, 0)
     row = row_of(env)
     assert row is not None and row.pending_gap_key is None
+
+
+def at_ts(moment: datetime) -> int:
+    return int(moment.timestamp())
+
+
+def test_an_idle_closed_session_sighted_a_day_later_sends_only_its_new_lines(
+    env: Env,
+) -> None:
+    """The tombstone keeps the final cursor, so the accepted turn, by now older
+    than max_pending_hours, is not replayed as an ``expired_pending`` gap."""
+    path = env.transcript()
+    first = human("first turn", when=after(minutes=-10))
+    write_transcript(path, [first])
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 600)])
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    # Idle past max_pending_hours with nothing new: closed with no request.
+    assert drain(env, client, after(minutes=25 * 60)) == worker.EXIT_OK
+    assert is_closed(env) and len(client.calls) == 1
+
+    later = after(minutes=49 * 60)
+    second = human("next day turn", when=later - timedelta(minutes=1))
+    append(path, [second])
+    spool(
+        env,
+        [locator("Stop", path=path, at=at_ts(later) - 30)],
+        name="2026-10-01.jsonl",
+    )
+    assert drain(env, client, later) == worker.EXIT_OK
+    assert client.calls[1].keys == [rkey(env, second)]
+    assert all(call.gaps == () for call in client.calls)
+    assert ledger_of(env)["accepted:cli"] == 2
+    assert is_open(env) and cursor_of(env) == path.stat().st_size
+
+
+def test_a_sighting_from_before_the_close_leaves_the_tombstone(env: Env) -> None:
+    path = env.transcript()
+    write_transcript(path, [human("done")])
+    spool(env, [locator("SessionEnd", path=path, at=NOW_TS - 60)])
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    assert is_closed(env)
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 30)])
+    assert drain(env, client, after(minutes=1)) == worker.EXIT_OK
+    assert is_closed(env) and len(client.calls) == 1
+
+
+def test_a_closed_session_whose_file_was_replaced_follows_the_replacement_rule(
+    env: Env,
+) -> None:
+    path = env.transcript()
+    first = write_transcript(path, [human("alpha " * 20)])
+    spool(env, [locator("SessionEnd", path=path, at=NOW_TS - 60)])
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    assert is_closed(env)
+    fresh = human("gamma")
+    write_transcript(path.with_name("r.tmp"), [fresh])
+    os.replace(path.with_name("r.tmp"), path)
+    spool(env, [locator("Stop", path=path, at=NOW_TS + 60)])
+    assert drain(env, client, after(minutes=2)) == worker.EXIT_OK
+    call = client.calls[1]
+    assert [g.native_key for g in call.gaps] == [gap_key(env, SESSION_HASH, len(first))]
+    assert [r.native_key for r in call.records] == [rkey(env, fresh)]
+    row = row_of(env)
+    assert row is not None and row.closed_at is None
+    assert (row.cursor_offset, row.cursor_inode) == (
+        path.stat().st_size,
+        path.stat().st_ino,
+    )
+
+
+def test_tombstones_are_pruned_after_the_retention_bound(env: Env) -> None:
+    path = env.transcript()
+    write_transcript(path, [human("done")])
+    spool(env, [locator("SessionEnd", path=path, at=NOW_TS - 60)])
+    assert drain(env, FakeClient()) == worker.EXIT_OK
+    assert is_closed(env)
+    retention = timedelta(seconds=worker.TOMBSTONE_RETENTION_SECONDS)
+    assert retention == timedelta(days=30)
+    assert drain(env, FakeClient(), NOW + retention) == worker.EXIT_OK
+    assert is_closed(env)
+    past = NOW + retention + timedelta(seconds=1)
+    assert drain(env, FakeClient(), past) == worker.EXIT_OK
+    assert row_of(env) is None
+
+
+@pytest.mark.parametrize("outcome", ["deferred", "unreachable", "refused"])
+def test_a_range_with_no_candidates_commits_even_when_the_run_holds(
+    env: Env, outcome: str
+) -> None:
+    quiet, busy = env.transcript("quiet.jsonl"), env.transcript("busy.jsonl")
+    data = write_transcript(quiet, [assistant("a"), assistant("b")])
+    write_transcript(busy, [human("one")])
+    spool(
+        env,
+        [
+            locator("Stop", session_hash=SESSION_HASH, path=quiet, at=NOW_TS - 60),
+            locator("Stop", session_hash=OTHER_HASH, path=busy, at=NOW_TS - 60),
+        ],
+    )
+
+    def fail(
+        records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+    ) -> IngestResponse:
+        if outcome == "unreachable":
+            raise IngestTransportError("synthetic outage")
+        raise IngestRefused("token_revoked", 401)
+
+    client = FakeClient(defer_all if outcome == "deferred" else fail)
+    expected = worker.EXIT_REFUSED if outcome == "refused" else worker.EXIT_OK
+    assert drain(env, client) == expected
+    assert len(client.calls) == 1 and hold_of(env).hold_step == 1
+    assert cursor_of(env, SESSION_HASH) == len(data)
+    assert cursor_of(env, OTHER_HASH) == 0
 
 
 def test_a_session_parked_behind_the_byte_budget_is_read_first_next_pass(
