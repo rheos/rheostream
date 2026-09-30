@@ -494,6 +494,64 @@ def test_api_key_resolves_into_child_env_only(
     assert "secret://env/RHEO_ANTHROPIC_API_KEY" in CLAUDE_CLI_SCOPE_PREFIXES
 
 
+@pytest.mark.parametrize(
+    ("kind", "credential_ref", "secret", "variable", "digest_file"),
+    [
+        (
+            "api_key",
+            "secret://file/runtime/claude-cli/api-key",
+            _API_SECRET,
+            "ANTHROPIC_API_KEY",
+            "api_key_sha256.txt",
+        ),
+        (
+            "oauth_token",
+            "secret://file/runtime/claude-cli/oauth-token",
+            _OAUTH_SECRET,
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "oauth_token_sha256.txt",
+        ),
+    ],
+)
+def test_file_secret_resolves_into_the_expected_child_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+    credential_ref: str,
+    secret: str,
+    variable: str,
+    digest_file: str,
+) -> None:
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    _configure(
+        monkeypatch,
+        tmp_path,
+        executable=stub,
+        kind=kind,
+        credential_ref=credential_ref,
+    )
+    secret_path = (
+        tmp_path
+        / "data-root"
+        / "secrets"
+        / credential_ref.removeprefix("secret://file/")
+    )
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    secret_path.write_text(secret)
+    secret_path.chmod(0o600)
+    spawn = _spawn(tmp_path)
+
+    event = drain_until_terminal(ClaudeCliRuntime().start(_request(), spawn=spawn))
+
+    assert event.type == "final_output"
+    work = Path(spawn.work_dir)
+    assert (work / digest_file).read_text() == hashlib.sha256(
+        secret.encode()
+    ).hexdigest()
+    env_names = set((work / "env_names.txt").read_text().splitlines())
+    assert env_names & _CREDENTIAL_VARIABLES == {variable}
+
+
 def test_empty_api_key_ref_is_credential_invalid_before_spawn(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -704,7 +762,7 @@ def test_the_continuation_credential_scope_names_the_bound_account(
 
 def test_the_oauth_scope_admits_its_own_references_and_no_wider() -> None:
     assert CLAUDE_CLI_OAUTH_SCOPE_PREFIXES == (
-        "secret://file/runtime/claude_cli/",
+        "secret://file/runtime/claude-cli/",
         "secret://env/RHEO_CLAUDE_OAUTH_TOKEN",
     )
     assert "secret://env/RHEO_CLAUDE_OAUTH_TOKEN" not in CLAUDE_CLI_SCOPE_PREFIXES
@@ -717,7 +775,7 @@ def test_the_oauth_scope_admits_its_own_references_and_no_wider() -> None:
         pytest.param("secret://env/RHEO_CLAUDE_OAUTH_TOKEN", None, id="unset-variable"),
         pytest.param("secret://env/RHEO_CLAUDE_OAUTH_TOKEN", "", id="empty-token"),
         pytest.param(
-            "secret://file/runtime/claude_cli/no-such-token", None, id="missing-file"
+            "secret://file/runtime/claude-cli/no-such-token", None, id="missing-file"
         ),
         pytest.param(
             "secret://env/RHEO_ANTHROPIC_API_KEY", _OAUTH_SECRET, id="api-key-variable"
