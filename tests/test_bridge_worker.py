@@ -1,10 +1,16 @@
-"""The bridge worker's drain, steps 1-5: fold, validate, read, select, sanitize.
+"""The bridge worker's drain: fold, validate, read, select, sanitize (steps
+1-5), then post or hold, and settle and close (steps 6-7).
 
 Every test builds a temporary ``bridge_home`` and ``projects_root`` and writes
 synthetic spool lines and synthetic transcripts into them; nothing here reads a
-real home, a real transcript or a real settings file, and the fake client
-refuses nothing because nothing may call it yet. Session ids, uuids, salts and
-paths are invented.
+real home, a real transcript or a real settings file, and no request leaves the
+process: the client is a scripted fake. Session ids, uuids, salts and paths are
+invented.
+
+Seams under test (steps 6-7, through :func:`worker.drain`): the cursor commits
+only with the acknowledgement that covers it, and never past a deferred key;
+the hold backs off and probes; a refusal stops the run with nothing moved; a
+session row is deleted only once its whole range is acknowledged.
 """
 
 from __future__ import annotations
@@ -18,8 +24,9 @@ import sqlite3
 import stat
 import tracemalloc
 import uuid
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -27,10 +34,18 @@ from typing import Any
 import pytest
 from rheo_bridge import config as bridge_config
 from rheo_bridge import keys, paths, state, transcript, worker
-from rheo_bridge.client import IngestGap, IngestRecord, IngestResponse
+from rheo_bridge.client import (
+    IngestGap,
+    IngestRecord,
+    IngestRefused,
+    IngestResponse,
+    IngestTransportError,
+    request_body,
+)
 from rheo_bridge.transcript import Ok
 
 NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+NOW_TS = int(NOW.timestamp())
 TODAY_SPOOL = "2026-09-29.jsonl"
 YESTERDAY_SPOOL = "2026-09-28.jsonl"
 SESSION_ID = "0c1d2e3f-0000-4000-8000-00000000beef"
@@ -38,11 +53,49 @@ SESSION_HASH = "5a1e" * 8
 OTHER_HASH = "0b0e" * 8
 
 
-class FakeClient:
-    """Records every call; this prompt's drain must make none."""
+Responder = Callable[[Sequence[IngestRecord], Sequence[IngestGap]], IngestResponse]
 
-    def __init__(self) -> None:
-        self.calls: list[tuple[object, ...]] = []
+
+def accept_all(
+    records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+) -> IngestResponse:
+    return IngestResponse(
+        accepted=tuple(r.native_key for r in records),
+        deferred=(),
+        gapped=tuple(g.native_key for g in gaps),
+        dropped=(),
+    )
+
+
+def defer_all(
+    records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+) -> IngestResponse:
+    return IngestResponse(
+        accepted=(),
+        deferred=tuple(item.native_key for item in (*records, *gaps)),
+        gapped=(),
+        dropped=(),
+    )
+
+
+@dataclass(frozen=True)
+class Call:
+    machine_fingerprint: str
+    project_fingerprint: str
+    records: tuple[IngestRecord, ...]
+    gaps: tuple[IngestGap, ...]
+
+    @property
+    def keys(self) -> list[str]:
+        return [item.native_key for item in (*self.records, *self.gaps)]
+
+
+class FakeClient:
+    """Records every call and answers through ``respond`` (accept by default)."""
+
+    def __init__(self, respond: Responder = accept_all) -> None:
+        self.respond = respond
+        self.calls: list[Call] = []
 
     def post(
         self,
@@ -51,8 +104,14 @@ class FakeClient:
         records: Sequence[IngestRecord],
         gaps: Sequence[IngestGap],
     ) -> IngestResponse:
-        self.calls.append((machine_fingerprint, project_fingerprint, records, gaps))
-        return IngestResponse((), (), (), ())
+        self.calls.append(
+            Call(machine_fingerprint, project_fingerprint, tuple(records), tuple(gaps))
+        )
+        return self.respond(records, gaps)
+
+    @property
+    def posted_keys(self) -> list[str]:
+        return [key for call in self.calls for key in call.keys]
 
 
 @dataclass
@@ -205,9 +264,9 @@ def acknowledge(connection: sqlite3.Connection, batch: worker.SessionBatch) -> N
     )
 
 
-def drain(env: Env, client: FakeClient) -> int:
+def drain(env: Env, client: FakeClient, at: datetime = NOW) -> int:
     return worker.drain(
-        env.bridge_home, projects_root=env.projects_root, client=client, now=lambda: NOW
+        env.bridge_home, projects_root=env.projects_root, client=client, now=lambda: at
     )
 
 
@@ -842,22 +901,6 @@ def test_a_lone_surrogate_is_scrubbed_before_sending(
 # --- the drain ----------------------------------------------------------------
 
 
-def test_the_drain_folds_and_reads_but_posts_nothing(env: Env) -> None:
-    path = env.transcript()
-    write_transcript(path, [human("hello there")])
-    spool(env, [locator("Stop", path=path, at=100)])
-    client = FakeClient()
-    assert drain(env, client) == worker.EXIT_OK
-    assert client.calls == []
-    connection = env.conn()
-    try:
-        row = state.get_session(connection, SESSION_HASH)
-        # No acknowledgement, so the cursor has not moved.
-        assert row is not None and row.cursor_offset == 0
-    finally:
-        state.close(connection)
-
-
 def test_a_group_readable_bridge_home_stops_the_drain_before_reading(
     env: Env,
 ) -> None:
@@ -897,3 +940,619 @@ def test_the_worker_writes_state_privately(env: Env) -> None:
     paths.check_private(env.bridge_home)
     mode = stat.S_IMODE(paths.worker_lock_path(env.bridge_home).stat().st_mode)
     assert mode == 0o600
+
+
+# --- step 6: post, or hold ------------------------------------------------------
+
+
+@contextmanager
+def opened(env: Env) -> Iterator[sqlite3.Connection]:
+    connection = env.conn()
+    try:
+        yield connection
+    finally:
+        state.close(connection)
+
+
+def row_of(env: Env, session_hash: str = SESSION_HASH) -> state.SessionRow | None:
+    with opened(env) as connection:
+        return state.get_session(connection, session_hash)
+
+
+def cursor_of(env: Env, session_hash: str = SESSION_HASH) -> int:
+    row = row_of(env, session_hash)
+    assert row is not None
+    return row.cursor_offset
+
+
+def ledger_of(env: Env) -> dict[str, int]:
+    with opened(env) as connection:
+        return {k: v.count for k, v in state.get_ledger(connection).items()}
+
+
+def hold_of(env: Env) -> state.Hold:
+    with opened(env) as connection:
+        return state.get_hold(connection)
+
+
+def line_bounds(data: bytes) -> list[tuple[int, int]]:
+    bounds = [0] + [i + 1 for i, byte in enumerate(data) if byte == ord("\n")]
+    return list(zip(bounds, bounds[1:], strict=False))
+
+
+def rkey(env: Env, line: dict[str, Any]) -> str:
+    return worker.record_key(env.machine_key, line["sessionId"], line["uuid"])
+
+
+def append(path: Path, lines: Sequence[dict[str, Any]]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        for line in lines:
+            handle.write(json.dumps(line) + "\n")
+
+
+def after(minutes: float = 0, seconds: float = 0) -> datetime:
+    return NOW + timedelta(minutes=minutes, seconds=seconds)
+
+
+def until(env: Env) -> datetime:
+    """The moment the current hold ends."""
+    hold_until = hold_of(env).hold_until
+    assert hold_until is not None
+    return datetime.fromtimestamp(hold_until, UTC)
+
+
+def crash(records: Sequence[IngestRecord], gaps: Sequence[IngestGap]) -> IngestResponse:
+    raise RuntimeError("synthetic crash before the answer is committed")
+
+
+def test_the_drain_posts_and_commits_the_cursor_on_acknowledgement(env: Env) -> None:
+    path = env.transcript()
+    data = write_transcript(path, [human("first"), assistant("reply"), human("second")])
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    (call,) = client.calls
+    assert call.machine_fingerprint == keys.machine_fingerprint(env.machine_key)
+    assert call.project_fingerprint == keys.project_fingerprint(env.enrolled_dir)
+    assert [r.text for r in call.records] == ["first", "second"]
+    row = row_of(env)
+    assert row is not None and row.cursor_offset == len(data)
+    assert row.cursor_inode == path.stat().st_ino
+    assert ledger_of(env)["accepted:cli"] == 2
+    assert hold_of(env) == state.NO_HOLD
+    # Nothing new: no request, and the open session keeps its row.
+    assert drain(env, client) == worker.EXIT_OK
+    assert len(client.calls) == 1
+    assert row_of(env) == row
+
+
+def test_a_partial_answer_stops_the_cursor_at_the_first_deferred_key(env: Env) -> None:
+    path = env.transcript()
+    no_clock = human("clockless")
+    no_clock["timestamp"] = "not a time"
+    lines = [human("one"), assistant("reply"), human("two"), no_clock, human("three")]
+    data = write_transcript(path, lines)
+    bounds = line_bounds(data)
+    one, two, three = rkey(env, lines[0]), rkey(env, lines[2]), rkey(env, lines[4])
+
+    def defer_two(
+        records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+    ) -> IngestResponse:
+        keys_ = tuple(r.native_key for r in records)
+        return IngestResponse(tuple(k for k in keys_ if k != two), (two,), (), ())
+
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    client = FakeClient(defer_two)
+    assert drain(env, client) == worker.EXIT_OK
+    # The reply between one and two passes; two's line and all after it wait.
+    assert cursor_of(env) == bounds[2][0]
+    ledger = ledger_of(env)
+    assert ledger["accepted:cli"] == 1
+    # The clockless line lies past the deferred key: not counted yet.
+    assert "clock_unreadable" not in ledger
+    assert client.calls[0].keys == [one, two, three]
+    assert client.calls[1:] and all(one not in c.keys for c in client.calls[1:])
+    # An answer that acknowledges some keys clears no hold it did not set.
+    assert hold_of(env) == state.NO_HOLD
+
+    client.respond = accept_all
+    assert drain(env, client) == worker.EXIT_OK
+    assert cursor_of(env) == len(data)
+    ledger = ledger_of(env)
+    # three was acknowledged twice but counted once, when the cursor passed it.
+    assert ledger["accepted:cli"] == 3
+    assert ledger["clock_unreadable"] == 1
+    assert client.posted_keys.count(one) == 1
+
+
+def test_a_range_with_no_candidates_commits_locally_with_no_request(env: Env) -> None:
+    path = env.transcript()
+    no_clock = human("clockless")
+    no_clock["timestamp"] = "not a time"
+    data = write_transcript(path, [assistant("a"), no_clock, assistant("b")])
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    assert client.calls == []
+    assert cursor_of(env) == len(data)
+    assert ledger_of(env)["clock_unreadable"] == 1
+
+
+def test_a_replacement_gap_must_be_acknowledged_before_the_new_file_counts(
+    env: Env,
+) -> None:
+    path = env.transcript()
+    first = write_transcript(path, [human("alpha " * 20)])
+    old_inode = path.stat().st_ino
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    assert drain(env, FakeClient()) == worker.EXIT_OK
+    write_transcript(path.with_name("r.tmp"), [human("gamma")])
+    os.replace(path.with_name("r.tmp"), path)
+    gap = gap_key(env, SESSION_HASH, len(first))
+
+    def defer_gap(
+        records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+    ) -> IngestResponse:
+        answer = accept_all(records, gaps)
+        return IngestResponse(answer.accepted, (gap,), (), ())
+
+    assert drain(env, FakeClient(defer_gap)) == worker.EXIT_OK
+    row = row_of(env)
+    assert row is not None
+    assert (row.cursor_offset, row.cursor_inode) == (len(first), old_inode)
+
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    assert client.calls[0].gaps[0].native_key == gap
+    row = row_of(env)
+    assert row is not None
+    assert (row.cursor_offset, row.cursor_inode) == (
+        path.stat().st_size,
+        path.stat().st_ino,
+    )
+
+
+# --- AC 4, Edge Case 7: restart recovery ----------------------------------------
+
+
+def test_a_crash_before_the_acknowledgement_moves_nothing_and_resends(
+    env: Env,
+) -> None:
+    path = env.transcript()
+    lines = [human("one"), human("two")]
+    data = write_transcript(path, lines)
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    with pytest.raises(RuntimeError):
+        drain(env, FakeClient(crash))
+    row = row_of(env)
+    assert row is not None and row.cursor_offset == 0 and row.cursor_inode is None
+    assert "accepted:cli" not in ledger_of(env)
+
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    assert client.calls[0].keys == [rkey(env, line) for line in lines]
+    assert cursor_of(env) == len(data)
+
+
+def test_a_crash_mid_drain_resumes_from_the_last_committed_cursor(
+    tmp_path: Path,
+) -> None:
+    env = make_env(tmp_path, max_records=2)
+    path = env.transcript()
+    lines = [human(f"turn {n}") for n in range(4)]
+    data = write_transcript(path, lines)
+    bounds = line_bounds(data)
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    answers = iter([accept_all, crash])
+    client = FakeClient(lambda records, gaps: next(answers)(records, gaps))
+    with pytest.raises(RuntimeError):
+        drain(env, client)
+    # The first pass's range committed; the second's answer never did.
+    assert cursor_of(env) == bounds[1][1]
+    assert ledger_of(env)["accepted:cli"] == 2
+
+    resumed = FakeClient()
+    assert drain(env, resumed) == worker.EXIT_OK
+    assert resumed.posted_keys == [rkey(env, line) for line in lines[2:]]
+    assert cursor_of(env) == len(data)
+    assert ledger_of(env)["accepted:cli"] == 4
+
+
+def test_a_failed_state_write_after_the_answer_leaves_the_pre_commit_state(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full disk: the commit fails, the run ends, and nothing half-applies."""
+    path = env.transcript()
+    data = write_transcript(path, [human("one"), human("two")])
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+
+    def full_disk(*args: Any, **kwargs: Any) -> None:
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(state, "advance_cursor", full_disk)
+    client = FakeClient()
+    with pytest.raises(sqlite3.OperationalError):
+        drain(env, client)
+    monkeypatch.undo()
+    row = row_of(env)
+    assert row is not None and row.cursor_offset == 0 and row.cursor_inode is None
+    # The accepted count bumped before the failing write was rolled back too.
+    assert "accepted:cli" not in ledger_of(env)
+    assert hold_of(env) == state.NO_HOLD
+
+    again = FakeClient()
+    assert drain(env, again) == worker.EXIT_OK
+    assert again.posted_keys == client.posted_keys
+    assert cursor_of(env) == len(data)
+    assert ledger_of(env)["accepted:cli"] == 2
+
+
+# --- R9: hold and back-off --------------------------------------------------------
+
+
+def test_an_all_deferred_answer_holds_then_probes_with_one_item(env: Env) -> None:
+    path = env.transcript()
+    lines = [human(f"turn {n}", when=after(minutes=-10 + n)) for n in range(3)]
+    data = write_transcript(path, lines)
+    bounds = line_bounds(data)
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    client = FakeClient(defer_all)
+    assert drain(env, client) == worker.EXIT_OK
+    assert [len(c.keys) for c in client.calls] == [3]
+    assert hold_of(env) == state.Hold(hold_until=NOW_TS + 15 * 60, hold_step=1)
+    assert cursor_of(env) == 0
+
+    # Inside the window: no request, but every run still folds the spool.
+    for minutes in (1, 5, 14):
+        other = f"{minutes:04x}" * 16
+        empty = env.transcript(f"{other[:8]}.jsonl")
+        empty.write_bytes(b"")
+        at = NOW_TS + minutes * 60
+        spool(env, [locator("Stop", session_hash=other, path=empty, at=at)])
+        assert drain(env, client, after(minutes=minutes)) == worker.EXIT_OK
+        assert len(client.calls) == 1
+        assert row_of(env, other) is not None
+
+    # The window ends: one probe of exactly one item, the oldest.
+    probe_at = after(minutes=15)
+    assert drain(env, client, probe_at) == worker.EXIT_OK
+    assert client.calls[1].keys == [rkey(env, lines[0])]
+    assert hold_of(env) == state.Hold(
+        hold_until=int(probe_at.timestamp()) + 30 * 60, hold_step=2
+    )
+    assert cursor_of(env) == 0
+
+    # An acknowledged probe clears the hold and moves only its own line.
+    client.respond = accept_all
+    assert drain(env, client, until(env)) == worker.EXIT_OK
+    assert client.calls[2].keys == [rkey(env, lines[0])]
+    assert hold_of(env) == state.NO_HOLD
+    assert cursor_of(env) == bounds[0][1]
+
+    # The next run posts the rest in full.
+    assert drain(env, client, after(minutes=46)) == worker.EXIT_OK
+    assert client.calls[3].keys == [rkey(env, line) for line in lines[1:]]
+    assert cursor_of(env) == len(data)
+
+
+def test_the_hold_window_doubles_and_caps_at_six_hours(env: Env) -> None:
+    path = env.transcript()
+    write_transcript(path, [human("one")])
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+
+    def unreachable(
+        records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+    ) -> IngestResponse:
+        raise IngestTransportError("synthetic outage")
+
+    outcomes: list[Responder] = [defer_all, unreachable] * 4
+    windows = []
+    at = NOW
+    for respond in outcomes:
+        client = FakeClient(respond)
+        assert drain(env, client, at) == worker.EXIT_OK
+        assert len(client.calls) == 1
+        hold = hold_of(env)
+        assert hold.hold_until is not None
+        windows.append(hold.hold_until - int(at.timestamp()))
+        at = until(env)
+    assert windows == [m * 60 for m in (15, 30, 60, 120, 240, 360, 360, 360)]
+    assert hold_of(env).hold_step == len(outcomes)
+    assert cursor_of(env) == 0
+
+
+@pytest.mark.parametrize(
+    ("code", "http_status", "reason"),
+    [
+        ("token_revoked", 401, "token_rejected"),
+        ("token_expired", 401, "token_rejected"),
+        ("operation_not_permitted", 403, "token_not_permitted"),
+        ("role_not_permitted", 403, "token_not_permitted"),
+        ("enrollment_inactive", 400, "enrollment_inactive"),
+        ("enrollment_mismatch", 400, "enrollment_mismatch"),
+        ("input_invalid", 422, "input_invalid"),
+    ],
+)
+def test_a_refusal_stops_the_run_with_nothing_moved(
+    env: Env, code: str, http_status: int, reason: str
+) -> None:
+    path = env.transcript()
+    lines = [human("one"), human("two")]
+    write_transcript(path, lines)
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+
+    def refuse(
+        records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+    ) -> IngestResponse:
+        raise IngestRefused(code, http_status)
+
+    client = FakeClient(refuse)
+    assert drain(env, client) == worker.EXIT_REFUSED
+    assert worker.EXIT_REFUSED not in (worker.EXIT_OK, worker.EXIT_FAILURE)
+    row = row_of(env)
+    assert row is not None
+    assert (row.cursor_offset, row.cursor_inode, row.pending_gap_key) == (0, None, None)
+    ledger = ledger_of(env)
+    assert ledger[reason] == 1
+    assert not any(name.startswith("accepted:") for name in ledger)
+    # No resend loop: runs inside the window send nothing, and the one after
+    # it sends a single probe, never the backlog.
+    assert drain(env, client, after(minutes=1)) == worker.EXIT_OK
+    assert len(client.calls) == 1
+    assert drain(env, client, until(env)) == worker.EXIT_REFUSED
+    assert client.calls[1].keys == [rkey(env, lines[0])]
+    assert ledger_of(env)[reason] == 2
+    assert cursor_of(env) == 0
+
+
+def test_every_run_inside_fourteen_days_of_expiry_counts_token_expiring(
+    env: Env,
+) -> None:
+    expiring = (NOW + timedelta(days=10)).isoformat()
+    bridge_config.save(
+        env.bridge_home, replace(env.config(), token_expires_at=expiring)
+    )
+    path = env.transcript()
+    write_transcript(path, [human("one")])
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    client = FakeClient(defer_all)
+    assert drain(env, client) == worker.EXIT_OK
+    # Held: posts nothing, and still counts.
+    assert drain(env, client, after(minutes=1)) == worker.EXIT_OK
+    assert len(client.calls) == 1
+    assert ledger_of(env)["token_expiring"] == 2
+
+
+def test_a_distant_expiry_counts_nothing(env: Env) -> None:
+    spool(env, [locator("Stop", path=env.transcript(), at=NOW_TS - 60)])
+    assert drain(env, FakeClient()) == worker.EXIT_OK
+    assert "token_expiring" not in ledger_of(env)
+
+
+# --- step 7: settle and close -----------------------------------------------------
+
+
+def test_a_session_with_no_end_keeps_its_row_until_everything_is_acknowledged(
+    env: Env,
+) -> None:
+    """Edge Case 4 and 5: no SessionEnd, idle past ``max_pending_hours``."""
+    path = env.transcript()
+    idle_since = NOW - timedelta(hours=30)
+    lines = [
+        human("an old turn", when=idle_since - timedelta(minutes=1)),
+        human("a later turn", when=NOW - timedelta(hours=2)),
+    ]
+    write_transcript(path, lines)
+    spool(env, [locator("Stop", path=path, at=int(idle_since.timestamp()))])
+    client = FakeClient(defer_all)
+    at = NOW
+    for _ in range(10):
+        assert drain(env, client, at) == worker.EXIT_OK
+        row = row_of(env)
+        assert row is not None
+        assert (row.cursor_offset, row.cursor_inode) == (0, None)
+        at = until(env)
+    assert len(client.calls) == 10
+
+    client.respond = accept_all
+    assert drain(env, client, at) == worker.EXIT_OK  # the probe: one item
+    assert row_of(env) is not None
+    assert drain(env, client, at) == worker.EXIT_OK
+    assert row_of(env) is None
+    delivered = client.calls[-2:]
+    assert sum(len(c.keys) for c in delivered) == 2
+    # Aged past max_pending_hours by now: content-free gaps, never text.
+    assert all(g.reason == "expired_pending" for c in delivered for g in c.gaps)
+    assert delivered[0].gaps and delivered[0].records == ()
+
+
+def test_an_ended_session_whose_final_batch_is_unacknowledged_is_kept(
+    env: Env,
+) -> None:
+    path = env.transcript()
+    write_transcript(path, [human("last words")])
+    spool(env, [locator("SessionEnd", path=path, at=NOW_TS - 60)])
+    client = FakeClient(defer_all)
+    assert drain(env, client) == worker.EXIT_OK
+    assert row_of(env) is not None
+    assert drain(env, client, after(minutes=1)) == worker.EXIT_OK
+    assert row_of(env) is not None
+    client.respond = accept_all
+    assert drain(env, client, until(env)) == worker.EXIT_OK
+    assert row_of(env) is None
+
+
+def test_a_settled_session_with_one_deferred_key_is_kept(env: Env) -> None:
+    path = env.transcript()
+    lines = [human("one"), human("two")]
+    data = write_transcript(path, lines)
+    two = rkey(env, lines[1])
+
+    def defer_two(
+        records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+    ) -> IngestResponse:
+        keys_ = tuple(r.native_key for r in records)
+        return IngestResponse(tuple(k for k in keys_ if k != two), (two,), (), ())
+
+    spool(env, [locator("SessionEnd", path=path, at=NOW_TS - 60)])
+    assert drain(env, FakeClient(defer_two)) == worker.EXIT_OK
+    # Ended and settled, but two is still owed: the row stays.
+    assert cursor_of(env) == line_bounds(data)[1][0]
+    # The run's second pass re-posted only two, got all-deferred, and held.
+    assert drain(env, FakeClient(), until(env)) == worker.EXIT_OK
+    assert row_of(env) is None
+
+
+def test_a_line_that_lands_after_the_session_end_is_read_by_the_settle_pass(
+    env: Env,
+) -> None:
+    """[capture 5]: the last turn may reach the file after the hook fires."""
+    path = env.transcript()
+    data = write_transcript(path, [human("before the end")])
+    spool(env, [locator("SessionEnd", path=path, at=NOW_TS)])
+    client = FakeClient()
+    assert drain(env, client, after(seconds=1)) == worker.EXIT_OK
+    # Inside settle_seconds: acknowledged, at EOF, and still not closed.
+    assert cursor_of(env) == len(data)
+    append(path, [human("after the hook")])
+    assert drain(env, client, after(seconds=6)) == worker.EXIT_OK
+    assert [r.text for c in client.calls for r in c.records] == [
+        "before the end",
+        "after the hook",
+    ]
+    assert row_of(env) is None
+
+
+def test_repeated_and_out_of_order_locators_post_each_turn_once(env: Env) -> None:
+    """AC 5 through the posting path."""
+    path = env.transcript()
+    lines = [human(f"turn {n}") for n in range(3)]
+    write_transcript(path, lines[:2])
+    spool(
+        env,
+        [
+            locator("SessionEnd", path=path, at=NOW_TS),
+            locator("Stop", path=path, at=NOW_TS - 20),
+            locator("Stop", path=path, at=NOW_TS - 20),
+        ],
+    )
+    client = FakeClient()
+    assert drain(env, client, after(seconds=1)) == worker.EXIT_OK
+    append(path, lines[2:])
+    spool(
+        env,
+        [
+            locator("Stop", path=path, at=NOW_TS - 30),
+            locator("SessionEnd", path=path, at=NOW_TS),
+            locator("Stop", path=path, at=NOW_TS - 5),
+        ],
+    )
+    assert drain(env, client, after(seconds=2)) == worker.EXIT_OK
+    assert drain(env, client, after(seconds=10)) == worker.EXIT_OK
+    assert sorted(client.posted_keys) == sorted(rkey(env, line) for line in lines)
+    assert ledger_of(env)["accepted:cli"] == 3
+    assert row_of(env) is None
+
+
+def test_accepted_counts_are_kept_per_entrypoint_and_never_sent(env: Env) -> None:
+    """[capture 8]: ``entrypoint`` is local-only."""
+    cli_path, desk_path = env.transcript("cli.jsonl"), env.transcript("desk.jsonl")
+    write_transcript(cli_path, [human("typed in a terminal") for _ in range(2)])
+    desk = [human("typed in the app", entrypoint="claude-desktop") for _ in range(4)]
+    write_transcript(desk_path, desk)
+    dropped = rkey(env, desk[0])
+
+    def drop_one(
+        records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+    ) -> IngestResponse:
+        keys_ = tuple(r.native_key for r in records)
+        return IngestResponse(
+            tuple(k for k in keys_ if k != dropped), (), (), (dropped,)
+        )
+
+    spool(
+        env,
+        [
+            locator("Stop", session_hash=SESSION_HASH, path=cli_path, at=NOW_TS - 60),
+            locator("Stop", session_hash=OTHER_HASH, path=desk_path, at=NOW_TS - 60),
+        ],
+    )
+    client = FakeClient(drop_one)
+    assert drain(env, client) == worker.EXIT_OK
+    ledger = ledger_of(env)
+    assert ledger["accepted:cli"] == 2
+    # A dropped record is acknowledged (the cursor passes it) but not accepted.
+    assert ledger["accepted:claude-desktop"] == 3
+    assert cursor_of(env, OTHER_HASH) == desk_path.stat().st_size
+    assert all("entrypoint" not in vars(r) for c in client.calls for r in c.records)
+    for call in client.calls:
+        body = request_body(
+            call.machine_fingerprint, call.project_fingerprint, call.records, call.gaps
+        )
+        assert b"entrypoint" not in body and b"claude-desktop" not in body
+
+
+def test_a_gone_source_closes_once_its_gap_comes_back_gapped(env: Env) -> None:
+    path = env.transcript()
+    data = write_transcript(path, [human("alpha")])
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    path.unlink()
+    assert drain(env, client) == worker.EXIT_OK
+    gap = client.calls[-1].gaps[0]
+    assert gap.native_key == gap_key(env, SESSION_HASH, len(data))
+    assert gap.reason == "source_truncated"
+    assert row_of(env) is None
+
+
+def test_a_deferred_gap_keeps_the_row_and_its_pending_key(env: Env) -> None:
+    path = env.transcript()
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+    assert drain(env, FakeClient(defer_all)) == worker.EXIT_OK
+    row = row_of(env)
+    assert row is not None and row.pending_gap_key == gap_key(env, SESSION_HASH, 0)
+
+
+def test_a_source_back_before_the_close_keeps_its_row(env: Env) -> None:
+    """Rule (b) re-validates: the gap came back gapped, but the file returned."""
+    path = env.transcript()
+    spool(env, [locator("Stop", path=path, at=NOW_TS - 60)])
+
+    def restore_then_accept(
+        records: Sequence[IngestRecord], gaps: Sequence[IngestGap]
+    ) -> IngestResponse:
+        write_transcript(path, [human("back again")])
+        return accept_all(records, gaps)
+
+    client = FakeClient(restore_then_accept)
+    assert drain(env, client) == worker.EXIT_OK
+    assert client.calls[0].gaps[0].native_key == gap_key(env, SESSION_HASH, 0)
+    row = row_of(env)
+    assert row is not None and row.pending_gap_key is None
+
+
+def test_a_session_parked_behind_the_byte_budget_is_read_first_next_pass(
+    tmp_path: Path,
+) -> None:
+    """The start order rotates each pass, so a long line is not starved."""
+    first_lines = [human("a" * 40) for _ in range(6)]
+    size = len(json.dumps(first_lines[0])) + 1
+    env = make_env(tmp_path, max_bytes=2 * size + 10)
+    first_path, second_path = env.transcript("a.jsonl"), env.transcript("b.jsonl")
+    write_transcript(first_path, first_lines)
+    big = human("b" * (4 * size))
+    write_transcript(second_path, [big])
+    spool(
+        env,
+        [
+            locator("Stop", session_hash=SESSION_HASH, path=first_path, at=NOW_TS - 90),
+            locator("Stop", session_hash=OTHER_HASH, path=second_path, at=NOW_TS - 60),
+        ],
+    )
+    client = FakeClient()
+    assert drain(env, client) == worker.EXIT_OK
+    first_call, second_call = client.calls[:2]
+    assert rkey(env, big) not in first_call.keys
+    assert second_call.keys == [rkey(env, big)]
+    assert cursor_of(env, OTHER_HASH) == second_path.stat().st_size

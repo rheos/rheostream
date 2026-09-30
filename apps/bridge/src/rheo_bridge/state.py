@@ -83,6 +83,14 @@ LEDGER_REASONS: Final = frozenset(
         "source_unreadable",
         "spool_unreadable",
         "line_oversize",
+        # Refusals of a whole batch by the ingest operation. Each needs a
+        # person (rotate the token, re-enroll, or report a bridge bug); the
+        # worker holds instead of resending.
+        "token_rejected",
+        "token_not_permitted",
+        "enrollment_inactive",
+        "enrollment_mismatch",
+        "input_invalid",
     }
 )
 ACCEPTED_PREFIX: Final = "accepted:"
@@ -340,6 +348,11 @@ def clear_hold(connection: sqlite3.Connection) -> None:
 def accepted_reason(entrypoint: str) -> str:
     """The ledger reason counting acknowledged-accepted records for one client."""
     return ACCEPTED_PREFIX + entrypoint
+
+
+def is_client_kind(entrypoint: str) -> bool:
+    """Whether ``entrypoint`` may name an ``accepted:`` counter."""
+    return _ENTRYPOINT.fullmatch(entrypoint) is not None
 
 
 def _check_reason(reason: str) -> None:

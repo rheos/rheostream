@@ -22,6 +22,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_automatic_memory_limits.py",
     "tests/postgres/test_automatic_memory_local_poison.py",
     "tests/postgres/test_automatic_memory_shapes.py",
+    "tests/postgres/test_bridge_ingest_roundtrip.py",
     "tests/postgres/test_evidence_ingest.py",
     "tests/postgres/test_history_records.py",
     "tests/postgres/test_local_authority.py",
@@ -113,6 +114,9 @@ through Recallatron's real drain and seam, so its neighbours must become real me
 and no receipt, which only Recallatron's own tables can show.
 ``test_evidence_ingest.py`` drains a clamped ingest to a real memory, and proves a
 failed ingest leaves no memory or receipt, which only Recallatron's drain can show.
+``test_bridge_ingest_roundtrip.py`` drains a synthetic transcript through the laptop
+worker and the real ingest operation, and needs one real memory per human turn,
+which only Recallatron's drain can show.
 ``test_evidence_boundary.py`` scans Recallatron's source tree for the FR 2 import
 boundary, so it names that tree's path. ``test_search_quality.py`` drives the real
 curated and owner-only history search against independently labelled synthetic
