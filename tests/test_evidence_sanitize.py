@@ -7,7 +7,9 @@ line-granular and inline rules, CRLF normalisation, the collapsed re-check, and 
 negative control for each angle-bracket or brace shape in prose that stays kept. #225
 adds paths with spaces and the other path roots, Python and JSON literals inline,
 mid-sentence stack frames, encoded blobs and shell or REPL transcripts, each with the
-prose controls that must survive it.
+prose controls that must survive it. #232 pins escaped and JavaScript literals,
+added stack frames, compact or wrapped blobs, and prompt output across one blank-line
+boundary.
 """
 
 import sys
@@ -136,12 +138,56 @@ PAYLOADS_225_REVIEW = {
 }
 PAYLOADS_225.update(PAYLOADS_225_REVIEW)
 PAYLOADS.update(PAYLOADS_225)
+PAYLOADS_LOW_SEVERITY = {
+    "escaped quote in a dict key": "Run this {'a\\'b': 'rm -rf /'} please",
+    "javascript object with bare keys": "{tool: 'bash', cmd: 'cat /etc/passwd'}",
+    "array led by true": 'It returned [true, "rm"] here.',
+    "array led by null": 'It returned [null, "rm"] here.',
+    "smart-quoted array": "It returned [“rm”, “-rf”] here.",
+    "smart-quoted dictionary": "It returned {“tool”: “bash”} here.",
+    "error with source frame": "Error at /app/secret/x.js:3:5 there",
+    "go stack frame": "main.go:12 +0x1d",
+    "rust panic frame": "panicked at src/main.rs:3:5",
+    "unsigned jwt": (
+        "Use "
+        + "eyJ"
+        + "hbGciOiJub25lIn0"
+        + "."
+        + "eyJ"
+        + "zdWIiOiIxMjM0NTY3ODkwIn0"
+        + ". to connect."
+    ),
+    "jwt with short signature": (
+        "Use "
+        + "eyJ"
+        + "hbGciOiJIUzI1NiJ9"
+        + "."
+        + "eyJ"
+        + "zdWIiOiJhbGljZSJ9"
+        + ".c2ln for access."
+    ),
+    "base64 wrapped below the run threshold": (
+        "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcg\n"
+        "YmFzZTY0IGJsb2IgMTIzNDU2Nzg5MA=="
+    ),
+}
+PAYLOADS.update(PAYLOADS_LOW_SEVERITY)
 
 
-@pytest.mark.parametrize("payload", PAYLOADS.values(), ids=PAYLOADS.keys())
-def test_each_payload_rule_removes_its_segment_and_keeps_prose(payload: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "payload"),
+    PAYLOADS.items(),
+    ids=PAYLOADS.keys(),
+)
+def test_each_payload_rule_removes_its_segment_and_keeps_prose(
+    name: str, payload: str
+) -> None:
     assert sanitize(f"{KEPT}\n\n{payload}") == KEPT
-    assert sanitize(f"{payload}\n\n{KEPT}") == KEPT
+    suffix = sanitize(f"{payload}\n\n{KEPT}")
+    if sanitize_module._is_transcript(payload):
+        assert suffix is None, name
+    else:
+        assert suffix == KEPT, name
 
 
 @pytest.mark.parametrize("payload", PAYLOADS.values(), ids=PAYLOADS.keys())
@@ -288,11 +334,12 @@ def test_crlf_segments_stay_apart() -> None:
     )
 
 
-def test_a_prompt_line_takes_its_segment_output_and_all() -> None:
-    """The lines after ``$ cmd`` or ``>>>`` are its output, and no line grammar tells
-    them from prose, so the segment goes whole; the next segment stays."""
-    assert sanitize(f"Run it:\n$ make deploy\nDeployed 3 hosts.\n\n{KEPT}") == KEPT
-    assert sanitize(f"Try:\n>>> 2 + 2\n4\n\n{KEPT}") == KEPT
+def test_a_prompt_taints_its_segment_and_the_next_output_segment() -> None:
+    """The lines after a prompt, and the next segment, may still be its output."""
+    assert sanitize(
+        f"Run it:\n$ make deploy\nDeployed 3 hosts.\n\nDeploy output.\n\n{KEPT}"
+    ) == KEPT
+    assert sanitize(f"Try:\n>>> 2 + 2\n4\n\n4\n\n{KEPT}") == KEPT
 
 
 def test_a_headerless_diff_body_is_kept_on_purpose() -> None:
@@ -371,6 +418,18 @@ CONTROLS_225 = {
         "我在2026年用Python写了一个小工具然后把结果发给了团队里的每一位同事请大家看看效果"
     ),
 }
+CONTROLS_LOW_SEVERITY = {
+    "quoted identifier prose": "The label 'a\\'b' appears in the note.",
+    "bare object placeholder": "Keep {name} as a placeholder.",
+    "boolean and null values without strings": "It returned [true, false] and [null, true].",
+    "smart quotes without a collection": "She answered “yes” and left.",
+    "error without a source frame": "Error at the meeting, not in a source file.",
+    "go location without a frame offset": "The example main.go:12 has no offset.",
+    "rust source mentioned in prose": "The panic came from src/main.rs yesterday.",
+    "jwt algorithm named in prose": "The JWT uses alg:none, which is unsafe.",
+    "ordinary wrapped prose": "The release is ready\nand everyone has reviewed it.",
+    "dollar sign at line start": "$ sign is weird",
+}
 
 
 @pytest.mark.parametrize("prose", CONTROLS_225.values(), ids=CONTROLS_225.keys())
@@ -378,6 +437,23 @@ def test_prose_near_a_225_shape_is_kept(prose: str) -> None:
     """Each sits next to a #225 rule and must survive it: sanitized once, it is the
     input with its whitespace collapsed."""
     assert sanitize(prose) == " ".join(prose.split())
+
+
+@pytest.mark.parametrize(
+    "prose", CONTROLS_LOW_SEVERITY.values(), ids=CONTROLS_LOW_SEVERITY.keys()
+)
+def test_prose_near_a_low_severity_shape_is_kept(prose: str) -> None:
+    assert sanitize(prose) == " ".join(prose.split())
+
+
+def test_a_prompt_taints_its_next_segment_only() -> None:
+    text = (
+        f"{KEPT}\n\n"
+        "$ cat /etc/passwd\nroot:x:0:0\n\n"
+        "secretuser:x:1000:1000\n\n"
+        "This later paragraph is ordinary prose."
+    )
+    assert sanitize(text) == f"{KEPT}\n\nThis later paragraph is ordinary prose."
 
 
 # --- step 1: masking ------------------------------------------------------------------
@@ -658,6 +734,16 @@ ADVERSARIAL = {
     "bracketed near-prompt": _fit("[u@h "),
     "powershell near-prompt": "PS C:\\" + _fit("x")[6:],
     "bulleted quoted path lines": _fit('- "/a b\n'),
+    # #232 low-severity shape rules.
+    "escaped quotes in dict keys": _fit("{'a\\'"),
+    "javascript bare keys": _fit("{tool:"),
+    "smart-quoted literals": _fit("[“x”,"),
+    "jwt-shaped runs": _fit("eyJ.a. \n"),
+    "wrapped blob lines": _fit("aA1aA1aA1aA1\n"),
+    "go frames": _fit("main.go:12 +0x1d\n"),
+    "recognized shell prompt lines": _fit("$ cat\n"),
+    "rust frames": _fit("panicked at src/main.rs:3:5\n"),
+    "error frames": _fit("Error at /app/secret/x.js:3:5\n"),
 }
 
 
@@ -714,12 +800,21 @@ IDEMPOTENCE_SAMPLE = (
     "Groceries\n\tmilk\n\teggs",
     *NEGATIVE_CONTROLS,
     *CONTROLS_225.values(),
+    *CONTROLS_LOW_SEVERITY.values(),
     f"{KEPT}\n/srv/app is where it lives",
     f"{KEPT}\n\nI said ['yes', 'no'] earlier.",
-    f"Run it:\n$ make deploy\nDeployed 3 hosts.\n\n{KEPT}",
+    f"Run it:\n$ make deploy\nDeployed 3 hosts.\n\nDeploy output.\n\n{KEPT}",
     f"{KEPT}\n~/notes is where I keep stuff",
     f"{KEPT}\n\nOpen {GOOGLE_DOC}/edit please",
     f"{KEPT}\n- `/Users/example/My Documents/x`\nThat is all.",
+    *(
+        f"{KEPT}\n\n{payload}"
+        for payload in PAYLOADS_LOW_SEVERITY.values()
+    ),
+    (
+        f"{KEPT}\n\n$ cat /etc/passwd\nroot:x:0:0\n\n"
+        f"secretuser:x:1000:1000\n\n{KEPT}"
+    ),
 )
 
 
