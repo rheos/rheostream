@@ -3,11 +3,10 @@
 **Two module-internal entry points, and deliberately nothing else.** These are not
 operations, not MCP tools, not HTTP endpoints and not a generic ingestion registry.
 Nothing registers them, nothing advertises them, and no caller reaches them from
-outside this distribution. In 1a1 the only things that call them are the validated
-importer and a synthetic authority adapter, both of which live in the test suite: the
-two real producer adapters belong to the later automatic-memory carrier and to the
-migration run, and building either here would be building a producer this run is not
-authorized to build.
+outside this distribution. In 1a1 the callers were the validated importer and a
+synthetic authority adapter, both in the test suite. The current production callers are
+the migration importer and Recallatron's automatic-memory drain
+(``automatic.py:run_drain_job``).
 
 **The ordering is the security property, and it is § A5's, in this order:**
 

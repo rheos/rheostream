@@ -162,8 +162,9 @@ evidence_unit = Table(
         "native_key",
         unique=True,
     ),
-    # The claim order over claimable rows: ORDER BY extraction_attempts,
-    # source_recorded_at WHERE state = 'pending'. Keep the two in step.
+    # The claim order's indexed leading columns: extraction_attempts,
+    # source_recorded_at WHERE state = 'pending'. ``id`` is a cheap tie-break outside
+    # the index. Keep the two indexed columns in step.
     Index(
         "evidence_unit_pending_claim",
         "extraction_attempts",
