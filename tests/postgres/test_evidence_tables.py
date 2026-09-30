@@ -372,13 +372,16 @@ def test_migration_downgrade_path_leaves_nothing_behind_and_upgrades_again(
         command.downgrade(build_config(CORE_CHAIN, connection), "0011_local_evidence")
     with engine.connect() as connection:
         assert recorded_revisions(connection, CORE_CHAIN) == {"0011_local_evidence"}
-        assert connection.execute(
-            text(
-                "SELECT count(*) FROM pg_indexes "
-                "WHERE schemaname = 'core' AND tablename = 'evidence_unit' "
-                "AND indexname = 'evidence_unit_settled_retention'"
-            )
-        ).scalar_one() == 0
+        assert (
+            connection.execute(
+                text(
+                    "SELECT count(*) FROM pg_indexes "
+                    "WHERE schemaname = 'core' AND tablename = 'evidence_unit' "
+                    "AND indexname = 'evidence_unit_settled_retention'"
+                )
+            ).scalar_one()
+            == 0
+        )
 
     with engine.begin() as connection:
         run_chain(connection, CORE_CHAIN, expected_database=database_name)
