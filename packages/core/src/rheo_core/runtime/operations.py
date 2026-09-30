@@ -101,6 +101,11 @@ DEADLINE_EXCEEDED: Final = "deadline_exceeded"
 STREAM_TRUNCATED: Final = "stream_truncated"
 HARD_DEADLINE_SECONDS: Final = 3600
 CREDENTIAL_SLOT: Final = "model"
+# The ``runtime.claude_cli.credential_kind`` values that are one person's subscription
+# (the seeded ``login``, and the ``oauth_token`` that ``claude setup-token`` mints for
+# it), so each serves only ``credential_account_id``. ``api_key`` is a service
+# credential and carries no binding.
+ACCOUNT_BOUND_CREDENTIAL_KINDS: Final = frozenset({"login", "oauth_token"})
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
 _OUTPUT_ADAPTER: TypeAdapter[RuntimeOutput] = TypeAdapter(RuntimeOutput)
 _evidence_logger = logging.getLogger("rheo_core.evidence")
@@ -440,9 +445,9 @@ def _snapshot_operations(ctx: WorkspaceContext, tool_names: Sequence[str]) -> li
 
 def _credential_scope(settings: ResolvedSettings) -> str:
     kind = settings.get_str("runtime.claude_cli.credential_kind")
-    if kind == "login":
+    if kind in ACCOUNT_BOUND_CREDENTIAL_KINDS:
         account_id = settings.get_str("runtime.claude_cli.credential_account_id")
-        return f"login:{account_id}"
+        return f"{kind}:{account_id}"
     return "api_key"
 
 
@@ -861,7 +866,10 @@ def make_run_runtime_job(
             settings = resolve(
                 workspace_id=payload.workspace_id, source=PostgresOverrideSource()
             )
-            if settings.get_str("runtime.claude_cli.credential_kind") == "login":
+            if (
+                settings.get_str("runtime.claude_cli.credential_kind")
+                in ACCOUNT_BOUND_CREDENTIAL_KINDS
+            ):
                 wanted = settings.get_str("runtime.claude_cli.credential_account_id")
                 if account_id is None or str(account_id) != wanted:
                     _fail(

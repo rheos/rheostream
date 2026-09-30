@@ -37,6 +37,7 @@ from rheo_contracts import (
     UsageReporting,
 )
 from rheo_runtimes.claude_cli import (
+    CLAUDE_CLI_OAUTH_SCOPE_PREFIXES,
     CLAUDE_CLI_SCOPE_COMPONENT,
     CLAUDE_CLI_SCOPE_PREFIXES,
     POLL_WAIT_SECONDS,
@@ -52,6 +53,8 @@ _TASK = "UNIQUE_TASK_TEXT_FOR_ARGV"
 _ITEM_A = "UNIQUE_ITEM_ALPHA"
 _ITEM_B = "UNIQUE_ITEM_BRAVO"
 _API_SECRET = "sk-ant-test-not-a-real-key"
+_OAUTH_SECRET = "sk-ant-oat-test-not-a-real-token"
+_CREDENTIAL_VARIABLES = frozenset({"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})
 _RUNTIMES_SRC = (
     Path(__file__).resolve().parents[1] / "runtimes" / "src" / "rheo_runtimes"
 )
@@ -67,9 +70,17 @@ stdin = sys.stdin.read()
 Path("stdin.txt").write_text(stdin)
 Path("argv.json").write_text(json.dumps(sys.argv))
 Path("env_names.txt").write_text("\\n".join(sorted(os.environ)))
+Path("fixed_env.json").write_text(json.dumps({
+    name: os.environ.get(name)
+    for name in ("DISABLE_AUTOUPDATER", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+}))
 key = os.environ.get("ANTHROPIC_API_KEY", "")
 Path("api_key_sha256.txt").write_text(
     hashlib.sha256(key.encode()).hexdigest() if key else ""
+)
+oauth = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+Path("oauth_token_sha256.txt").write_text(
+    hashlib.sha256(oauth.encode()).hexdigest() if oauth else ""
 )
 payload = Path("result.json")
 if payload.is_file():
@@ -497,6 +508,284 @@ def test_empty_api_key_ref_is_credential_invalid_before_spawn(
     assert not (Path(spawn.work_dir) / "argv.json").exists()
 
 
+# --- oauth_token: a `claude setup-token` token on the operator's subscription ---------
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("login", frozenset()),
+        ("api_key", frozenset({"ANTHROPIC_API_KEY"})),
+        ("oauth_token", frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})),
+    ],
+)
+def test_the_child_sees_exactly_its_kinds_one_credential_variable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+    expected: frozenset[str],
+) -> None:
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    refs = {
+        "login": "",
+        "api_key": "secret://env/RHEO_ANTHROPIC_API_KEY",
+        "oauth_token": "secret://env/RHEO_CLAUDE_OAUTH_TOKEN",
+    }
+    _configure(
+        monkeypatch,
+        tmp_path,
+        executable=stub,
+        kind=kind,
+        seed=_fill_seed(tmp_path / "seed"),
+        credential_ref=refs[kind],
+    )
+    monkeypatch.setenv("RHEO_ANTHROPIC_API_KEY", _API_SECRET)
+    monkeypatch.setenv("RHEO_CLAUDE_OAUTH_TOKEN", _OAUTH_SECRET)
+    # Host decoys: the allowlist must keep both out whatever the kind.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "host-decoy-api-key")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "host-decoy-oauth-token")
+    # A host that turns updates back on must not reach the child either.
+    monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
+    spawn = _spawn(tmp_path)
+
+    event = drain_until_terminal(ClaudeCliRuntime().start(_request(), spawn=spawn))
+
+    assert event.type == "final_output"
+    work = Path(spawn.work_dir)
+    env_names = set((work / "env_names.txt").read_text().splitlines())
+    assert env_names & _CREDENTIAL_VARIABLES == expected
+    assert json.loads((work / "fixed_env.json").read_text()) == {
+        "DISABLE_AUTOUPDATER": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    }
+    api_digest = (work / "api_key_sha256.txt").read_text()
+    oauth_digest = (work / "oauth_token_sha256.txt").read_text()
+    if kind == "api_key":
+        assert api_digest == hashlib.sha256(_API_SECRET.encode()).hexdigest()
+    if kind == "oauth_token":
+        assert oauth_digest == hashlib.sha256(_OAUTH_SECRET.encode()).hexdigest()
+
+
+def test_oauth_token_gets_an_empty_config_dir_and_no_login_seed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    _configure(
+        monkeypatch,
+        tmp_path,
+        executable=stub,
+        kind="oauth_token",
+        seed=_fill_seed(tmp_path / "seed", marker="must-not-be-copied"),
+        credential_ref="secret://env/RHEO_CLAUDE_OAUTH_TOKEN",
+    )
+    monkeypatch.setenv("RHEO_CLAUDE_OAUTH_TOKEN", _OAUTH_SECRET)
+    spawn = _spawn(tmp_path)
+
+    event = drain_until_terminal(ClaudeCliRuntime().start(_request(), spawn=spawn))
+
+    assert event.type == "final_output"
+    config_dir = Path(spawn.config_dir)
+    assert config_dir.is_dir()
+    assert list(config_dir.iterdir()) == []
+    assert stat.S_IMODE(config_dir.stat().st_mode) == 0o700
+    work = Path(spawn.work_dir)
+    assert _OAUTH_SECRET not in (work / "argv.json").read_text()
+    assert _OAUTH_SECRET not in (work / "stdin.txt").read_text()
+    assert _OAUTH_SECRET not in (work / "mcp.json").read_text()
+
+
+@pytest.mark.parametrize(
+    ("kind", "credential_ref", "variable", "value"),
+    [
+        (
+            "oauth_token",
+            "secret://env/RHEO_CLAUDE_OAUTH_TOKEN",
+            "RHEO_CLAUDE_OAUTH_TOKEN",
+            _OAUTH_SECRET,
+        ),
+        (
+            "api_key",
+            "secret://env/RHEO_ANTHROPIC_API_KEY",
+            "RHEO_ANTHROPIC_API_KEY",
+            _API_SECRET,
+        ),
+    ],
+)
+def test_a_secret_kind_removes_a_stale_login_seed_but_keeps_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+    credential_ref: str,
+    variable: str,
+    value: str,
+) -> None:
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    seed = tmp_path / "seed"
+    (seed / ".claude").mkdir(parents=True)
+    (seed / ".credentials.json").write_text("stale-login")
+    (seed / ".claude" / ".credentials.json").write_text("stale-login-home")
+    (seed / "settings.json").write_text("{}")
+    _configure(monkeypatch, tmp_path, executable=stub, seed=seed)
+    spawn = _spawn(tmp_path)
+    runtime = ClaudeCliRuntime()
+    # The workspace runs under login first, which copies the seed in.
+    drain_until_terminal(runtime.start(_request(), spawn=spawn))
+    config_dir = Path(spawn.config_dir)
+    assert (config_dir / ".credentials.json").is_file()
+    session = config_dir / "projects" / "p" / "session.jsonl"
+    session.parent.mkdir(parents=True)
+    session.write_text("native-session")
+
+    # The deployment then switches kind; the workspace's directory stays.
+    monkeypatch.setenv("RHEO__runtime__claude_cli__credential_kind", kind)
+    monkeypatch.setenv("RHEO__runtime__claude_cli__credential_ref", credential_ref)
+    monkeypatch.setenv(variable, value)
+    for stale in ("stdin.txt", "argv.json"):
+        (Path(spawn.work_dir) / stale).unlink()
+    event = drain_until_terminal(runtime.start(_request(), spawn=spawn))
+
+    assert event.type == "final_output"
+    assert not (config_dir / ".credentials.json").exists()
+    assert not (config_dir / ".claude" / ".credentials.json").exists()
+    assert session.read_text() == "native-session"
+    assert (config_dir / "settings.json").is_file()
+
+
+def test_an_unknown_credential_kind_is_credential_invalid_before_any_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import rheo_runtimes.claude_cli as adapter_module
+
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    _configure(monkeypatch, tmp_path, executable=stub)
+    real_resolve = adapter_module.resolve
+
+    class _UnknownKind:
+        """Real settings, except a kind the schema would refuse at load."""
+
+        def __init__(self) -> None:
+            self._real = real_resolve()
+
+        def get_str(self, key: str) -> str:
+            if key == "runtime.claude_cli.credential_kind":
+                return "keychain"
+            return self._real.get_str(key)
+
+    monkeypatch.setattr(adapter_module, "resolve", _UnknownKind)
+    spawn = _spawn(tmp_path)
+
+    event = drain_until_terminal(ClaudeCliRuntime().start(_request(), spawn=spawn))
+
+    assert event.type == "failure"
+    assert event.kind.value == "credential_invalid"
+    assert not (Path(spawn.work_dir) / "argv.json").exists()
+    assert not Path(spawn.config_dir).exists()
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("login", "login:018f6b2f-0000-7000-8000-000000000099"),
+        ("oauth_token", "oauth_token:018f6b2f-0000-7000-8000-000000000099"),
+        ("api_key", "api_key"),
+    ],
+)
+def test_the_continuation_credential_scope_names_the_bound_account(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str, expected: str
+) -> None:
+    from rheo_core.runtime.operations import _credential_scope
+    from rheo_core.settings import resolve
+
+    _configure(monkeypatch, tmp_path, executable=tmp_path / "claude", kind=kind)
+
+    assert _credential_scope(resolve()) == expected
+
+
+def test_the_oauth_scope_admits_its_own_references_and_no_wider() -> None:
+    assert CLAUDE_CLI_OAUTH_SCOPE_PREFIXES == (
+        "secret://file/runtime/claude_cli/",
+        "secret://env/RHEO_CLAUDE_OAUTH_TOKEN",
+    )
+    assert "secret://env/RHEO_CLAUDE_OAUTH_TOKEN" not in CLAUDE_CLI_SCOPE_PREFIXES
+
+
+@pytest.mark.parametrize(
+    ("credential_ref", "env_value"),
+    [
+        pytest.param("", _OAUTH_SECRET, id="empty-ref"),
+        pytest.param("secret://env/RHEO_CLAUDE_OAUTH_TOKEN", None, id="unset-variable"),
+        pytest.param("secret://env/RHEO_CLAUDE_OAUTH_TOKEN", "", id="empty-token"),
+        pytest.param(
+            "secret://file/runtime/claude_cli/no-such-token", None, id="missing-file"
+        ),
+        pytest.param(
+            "secret://env/RHEO_ANTHROPIC_API_KEY", _OAUTH_SECRET, id="api-key-variable"
+        ),
+        pytest.param("secret://env/RHEO_CLUSTER_DSN", _OAUTH_SECRET, id="out-of-scope"),
+        pytest.param("not-a-secret-ref", _OAUTH_SECRET, id="malformed"),
+    ],
+)
+def test_an_unusable_oauth_token_is_credential_invalid_before_any_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    credential_ref: str,
+    env_value: str | None,
+) -> None:
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    _configure(
+        monkeypatch,
+        tmp_path,
+        executable=stub,
+        kind="oauth_token",
+        credential_ref=credential_ref,
+    )
+    if env_value is not None:
+        monkeypatch.setenv("RHEO_CLAUDE_OAUTH_TOKEN", env_value)
+        # The api-key-variable and out-of-scope cases name a variable that holds
+        # the token, so only the scope stands between it and the child.
+        monkeypatch.setenv("RHEO_ANTHROPIC_API_KEY", env_value)
+        monkeypatch.setenv("RHEO_CLUSTER_DSN", env_value)
+    spawn = _spawn(tmp_path)
+    caplog.set_level("DEBUG")
+
+    handle = ClaudeCliRuntime().start(_request(), spawn=spawn)
+    event = drain_until_terminal(handle)
+
+    assert event.type == "failure"
+    assert event.kind.value == "credential_invalid"
+    assert not (Path(spawn.work_dir) / "argv.json").exists()
+    assert not Path(spawn.config_dir).exists()
+    for text in (repr(event), event.detail, str(event.model_dump()), caplog.text):
+        assert _OAUTH_SECRET not in text
+
+
+def test_a_resolved_oauth_token_reaches_no_log_or_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stub = _write_stub(tmp_path / "claude-stub", _AUTH_STUB)
+    _configure(
+        monkeypatch,
+        tmp_path,
+        executable=stub,
+        kind="oauth_token",
+        credential_ref="secret://env/RHEO_CLAUDE_OAUTH_TOKEN",
+    )
+    monkeypatch.setenv("RHEO_CLAUDE_OAUTH_TOKEN", _OAUTH_SECRET)
+    caplog.set_level("DEBUG")
+
+    handle = ClaudeCliRuntime().start(_request(), spawn=_spawn(tmp_path))
+    event = drain_until_terminal(handle)
+
+    assert event.type == "failure"
+    assert event.kind.value == "credential_invalid"
+    for text in (repr(event), event.detail, repr(handle), caplog.text):
+        assert _OAUTH_SECRET not in text
+
+
 def test_auth_error_maps_to_credential_invalid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -721,16 +1010,28 @@ def test_production_registry_holds_claude_cli() -> None:
     assert isinstance(ADAPTERS.lookup("claude_cli"), ClaudeCliRuntime)
 
 
-def test_startup_guard_refuses_login_without_account_id(
+@pytest.mark.parametrize("kind", ["login", "oauth_token"])
+def test_startup_guard_refuses_an_account_bound_kind_without_account_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    isolate_rheo_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv(
+        "RHEO__runtime__claude_cli__executable", str(tmp_path / "claude")
+    )
+    monkeypatch.setenv("RHEO__runtime__claude_cli__credential_kind", kind)
+    with pytest.raises(SystemExit, match="credential_account_id"):
+        main()
+
+
+def test_startup_guard_allows_api_key_without_account_id(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     isolate_rheo_environment(monkeypatch, tmp_path)
     monkeypatch.setenv(
         "RHEO__runtime__claude_cli__executable", str(tmp_path / "claude")
     )
-    monkeypatch.setenv("RHEO__runtime__claude_cli__credential_kind", "login")
-    with pytest.raises(SystemExit, match="credential_account_id"):
-        main()
+    monkeypatch.setenv("RHEO__runtime__claude_cli__credential_kind", "api_key")
+    refuse_misconfigured_login()
 
 
 def test_startup_guard_allows_unconfigured_skeleton(

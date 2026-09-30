@@ -53,7 +53,18 @@ jobs:
         with:
           persist-credentials: false
       - name: Build the core/worker image
-        run: docker build -f Dockerfile .
+        run: docker build -t rheo-core -f Dockerfile .
+      # #258 (gate B): the pinned Claude CLI lands at a stable absolute path
+      # and reports exactly the pinned version, with no network reachable at
+      # check time so a start-of-container auto-update can't be masking this.
+      - name: The pinned Claude CLI is at the documented path and version
+        run: |
+          docker run --rm --network none rheo-core \
+            sh -euc '
+              test -x /opt/claude/bin/claude
+              /opt/claude/bin/claude --version
+            ' | tee /tmp/claude-cli-version.txt
+          grep -q '^2\.1\.257 ' /tmp/claude-cli-version.txt
       - name: Build the web image
         run: docker build -t rheo-web -f apps/web/Dockerfile .
       # A web image that builds is not yet one that serves: `next start` must

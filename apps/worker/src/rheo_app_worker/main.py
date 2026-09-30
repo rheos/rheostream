@@ -41,6 +41,7 @@ from rheo_core.modules.operations import (
     run_module_install_job,
 )
 from rheo_core.runtime import (
+    ACCOUNT_BOUND_CREDENTIAL_KINDS,
     RUNTIME_RUN,
     AdapterRegistry,
     RuntimeJobPayload,
@@ -116,20 +117,21 @@ def install_stop_signals(stop: threading.Event) -> None:
 
 
 def refuse_misconfigured_login() -> None:
-    """Refuse a configured login adapter that names no owning account.
+    """Refuse a configured account-bound adapter that names no owning account.
 
-    An empty executable is an unconfigured skeleton and must still start.
+    ``login`` and ``oauth_token`` are both one person's subscription. An empty
+    executable is an unconfigured skeleton and must still start.
     """
 
     settings = resolve()
     executable = settings.get_str("runtime.claude_cli.executable")
     kind = settings.get_str("runtime.claude_cli.credential_kind")
     account_id = settings.get_str("runtime.claude_cli.credential_account_id")
-    if executable and kind == "login" and not account_id.strip():
+    if executable and kind in ACCOUNT_BOUND_CREDENTIAL_KINDS and not account_id.strip():
         raise SystemExit(
             "runtime.claude_cli.credential_account_id is required when "
             "runtime.claude_cli.executable is set and "
-            "runtime.claude_cli.credential_kind is login"
+            f"runtime.claude_cli.credential_kind is {kind}"
         )
 
 

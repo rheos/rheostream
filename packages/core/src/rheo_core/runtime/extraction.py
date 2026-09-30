@@ -63,6 +63,7 @@ from rheo_core.refs import uuid7
 from rheo_core.routing.config import MCP, RoutingConfig
 from rheo_core.routing.url_for import url_for
 from rheo_core.runtime.operations import (
+    ACCOUNT_BOUND_CREDENTIAL_KINDS,
     CREDENTIAL_SLOT,
     HARD_DEADLINE_SECONDS,
     build_runtime_request,
@@ -198,8 +199,12 @@ class ClaudeCliExtractionProvider:
         settings = self._settings_for(scope.workspace_id)
         # The runtime's own single-account-login rule, in the shape the runtime job
         # enforces it (``runtime/operations.py``): a login credential serves only the
-        # account it is bound to. Before the adapter starts and before any token.
-        if settings.get_str("runtime.claude_cli.credential_kind") == "login":
+        # account it is bound to, and so does an ``oauth_token`` minted from that
+        # subscription. Before the adapter starts and before any token.
+        if (
+            settings.get_str("runtime.claude_cli.credential_kind")
+            in ACCOUNT_BOUND_CREDENTIAL_KINDS
+        ):
             wanted = settings.get_str("runtime.claude_cli.credential_account_id")
             if str(scope.account_id) != wanted:
                 raise ExtractionCredentialNotOwned(

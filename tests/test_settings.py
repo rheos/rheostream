@@ -268,8 +268,9 @@ def test_the_registry_declares_every_production_key_and_its_shape() -> None:
     assert (kind.scope, kind.floor, kind.choices) == (
         Scope.DEPLOYMENT,
         None,
-        ("login", "api_key"),
+        ("login", "api_key", "oauth_token"),
     )
+    assert kind.default == "login"
     for key in FLOORED_KEYS:
         assert spec_for(key).scope is Scope.WORKSPACE
         assert spec_for(key).floor is not None
