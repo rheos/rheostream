@@ -14,6 +14,19 @@ enrollment id that is absent, or belongs to another account than the target, ans
 ``not_found``, the ``tokens/issue.py`` non-disclosure rule. That covers a token caller
 of ``revoke`` too, the same scoping ``core.token.revoke`` applies to a token actor.
 
+**The fingerprint pair follows the same rule** (#244). ``create`` answers
+``enrollment_exists`` only when the target account itself holds the pair. A pair held
+by another account's active enrollment answers a ``not_found`` refusal instead, so
+``enrollment_exists`` never tells one account that another has enrolled. The
+active-pair index stays global (one live enrollment per machine and directory), so a
+create on a pair another account holds still fails. The refusal names no account and
+no enrollment, but a caller can still tell that the pair is unavailable; hiding even
+that needs the index scoped by account, a migration.
+
+**Membership** is checked by ``create`` and ``rotate``, the two operations that mint a
+token, before anything is read or written. ``revoke`` does not check it, so an account
+that has left the workspace can still have its enrollment revoked.
+
 **Two databases, no shared transaction.** The token lives in the control plane and the
 enrollment row in the workspace database, which ``dispatch()`` commits after the
 handler returns (the limitation ``tokens/issue.py``'s module docstring names). Every
@@ -65,7 +78,23 @@ ENROLLMENT_REVOKE: Final = "core.evidence_enrollment.revoke"
 ``NON_TOKEN_ISSUABLE`` for the import-cycle reason that module gives."""
 
 ENROLLMENT_EXISTS: Final = "enrollment_exists"
-"""An active enrollment already holds the machine and project fingerprint pair."""
+"""An active enrollment of the target account already holds the machine and project
+fingerprint pair. Another account's holds answer :data:`PAIR_UNAVAILABLE_TEXT` under
+``not_found`` instead."""
+
+PAIR_HELD_TEXT: Final = "this machine and directory are already enrolled"
+PAIR_UNAVAILABLE_TEXT: Final = (
+    "no enrollment is available for this machine and directory"
+)
+"""``not_found``'s text for a pair another account holds: no account, no id."""
+
+ENROLLMENT_CONTENDED: Final = "enrollment_contended"
+"""A concurrent create won the pair and was revoked again before this create could say
+whose it was. Nothing was enrolled and the minted token is revoked; retry the create."""
+
+MINTED_TOKEN_REVOKE_FAILED_LOG: Final = "evidence_enrollment_minted_token_revoke_failed"
+"""Logged, with the error type only, when a create that lost the race could not
+revoke the token it had minted."""
 
 ACTIVE_PAIR_INDEX: Final = "evidence_enrollment_active_pair"
 """The partial unique index behind :data:`ENROLLMENT_EXISTS`."""
@@ -215,37 +244,53 @@ def _owned_enrollment(
     return row.token_id, row.state, row.purpose
 
 
-def create_handler(
-    ctx: WorkspaceContext, uow: UnitOfWork, model_input: EnrollmentCreateInput
-) -> EnrollmentCreated:
-    """Mint the bridge token, then insert the enrollment holding its id.
-
-    The token is minted first and committed in the control plane. If the enrollment
-    insert then fails, an orphan token remains whose only operation,
-    ``core.evidence.ingest``, finds no enrollment for it and refuses
-    ``enrollment_inactive``. Accepted, not a bug: the orphan can do nothing.
-    """
-    _refuse_token_actor(ctx, ENROLLMENT_CREATE)
-    account_id = _target_account(ctx, model_input.account_id)
-    _require_membership(account_id, ctx.workspace_id)
-    held = uow.connection.execute(
-        select(evidence_enrollment.c.id).where(
+def _refuse_held_pair(
+    uow: UnitOfWork,
+    model_input: EnrollmentCreateInput,
+    account_id: UUID,
+    *,
+    cause: IntegrityError | None = None,
+) -> None:
+    """Refuse if an active enrollment holds the pair: ``enrollment_exists`` when it is
+    ``account_id``'s own, ``not_found`` when it is another account's. Returns when no
+    active enrollment holds it."""
+    holder: UUID | None = uow.connection.execute(
+        select(evidence_enrollment.c.account_id).where(
             evidence_enrollment.c.machine_fingerprint
             == model_input.machine_fingerprint,
             evidence_enrollment.c.project_fingerprint
             == model_input.project_fingerprint,
             evidence_enrollment.c.state == STATE_ACTIVE,
         )
-    ).first()
-    if held is not None:
-        raise OperationRefused(
-            ENROLLMENT_EXISTS, "this machine and directory are already enrolled"
-        )
+    ).scalar_one_or_none()
+    if holder is None:
+        return
+    if holder == account_id:
+        raise OperationRefused(ENROLLMENT_EXISTS, PAIR_HELD_TEXT) from cause
+    raise OperationRefused(NOT_FOUND, PAIR_UNAVAILABLE_TEXT) from cause
+
+
+def create_handler(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: EnrollmentCreateInput
+) -> EnrollmentCreated:
+    """Mint the bridge token, then insert the enrollment holding its id.
+
+    The token is minted first and committed in the control plane. A create that
+    loses the race on the active-pair index revokes that token before it refuses, so
+    it leaves no orphan. If any other insert failure happens, or that revoke itself
+    fails, an orphan token remains whose only operation, ``core.evidence.ingest``,
+    finds no enrollment for it and refuses ``enrollment_inactive``. Accepted, not a
+    bug: the orphan can do nothing.
+    """
+    _refuse_token_actor(ctx, ENROLLMENT_CREATE)
+    account_id = _target_account(ctx, model_input.account_id)
+    _require_membership(account_id, ctx.workspace_id)
+    _refuse_held_pair(uow, model_input, account_id)
     token_id, value, expires_at = _mint(ctx, account_id, BRIDGE_PURPOSE.value)
     enrollment_id = uuid7()
     # A concurrent create can pass the pre-check above and lose the race on the
-    # partial unique index; it gets the pre-check's answer. The savepoint keeps the
-    # handler's transaction usable after the violation.
+    # partial unique index; it gets the pre-check's answer, read again after the
+    # violation. The savepoint keeps the handler's transaction usable for that read.
     try:
         with uow.connection.begin_nested():
             uow.connection.execute(
@@ -264,8 +309,12 @@ def create_handler(
     except IntegrityError as violation:
         if _constraint_name(violation) != ACTIVE_PAIR_INDEX:
             raise
+        _discard_minted(token_id)
+        _refuse_held_pair(uow, model_input, account_id, cause=violation)
+        # The winner was revoked between the violation and the re-read.
         raise OperationRefused(
-            ENROLLMENT_EXISTS, "this machine and directory are already enrolled"
+            ENROLLMENT_CONTENDED,
+            "a concurrent change moved this machine and directory; retry",
         ) from violation
     return EnrollmentCreated(
         enrollment_id=enrollment_id,
@@ -281,6 +330,19 @@ def _set_token_id(uow: UnitOfWork, enrollment_id: UUID, token_id: UUID) -> None:
         .where(evidence_enrollment.c.id == enrollment_id)
         .values(token_id=token_id)
     )
+
+
+def _discard_minted(token_id: UUID) -> None:
+    """Revoke the token a create minted and then could not use. Logged, not raised,
+    on failure: the refusal the caller is about to get matters more, and the orphan
+    fails closed anyway."""
+    try:
+        _revoke_token_if_live(token_id)
+    except (SQLAlchemyError, StorageRefusal) as failure:
+        logger.warning(
+            MINTED_TOKEN_REVOKE_FAILED_LOG,
+            extra={"error_type": type(failure).__name__},
+        )
 
 
 def _revoke_token_if_live(token_id: UUID) -> None:
@@ -309,10 +371,18 @@ def rotate_handler(
     The workspace row update commits after the old token is already revoked in the
     control plane. If that commit fails, the active row points at a revoked token,
     which fails closed: ``rheo doctor`` shows ``FAIL`` and a retried rotate repairs
-    it. The new token carries the row's stored purpose, not a constant.
+    the enrollment. It does not repair rows already lost: since #244 the authority
+    refuses an enrollment whose token is revoked, so any claim that runs before the
+    retry settles the enrollment's pending rows ``authority_unverified``, which is
+    terminal. A failed rotate of this kind therefore costs those rows. The new token
+    carries the row's stored purpose, not a constant.
+
+    Membership is checked first, exactly as ``create`` checks it, so no token is
+    minted for an account that has left the workspace (#244).
     """
     _refuse_token_actor(ctx, ENROLLMENT_ROTATE)
     account_id = _target_account(ctx, model_input.account_id)
+    _require_membership(account_id, ctx.workspace_id)
     old_token_id, state, purpose = _owned_enrollment(
         uow, model_input.enrollment_id, account_id
     )

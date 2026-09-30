@@ -8,6 +8,11 @@ Seams under test:
   is exactly ``["core.evidence.ingest"]`` and whose purpose is
   ``internal_analysis``; presented, it cannot dispatch any other operation. (Prompt 6
   proves the ingest end; ``core.evidence.ingest`` is not registered yet.)
+- **The fingerprint pair is scoped the same way** (#244): a pair another account
+  holds answers ``not_found``, never ``enrollment_exists``.
+- **Rotate checks membership** as create does (#244).
+- **A bridge token revoked outside the enrollment revoke** stops the enrollment's
+  pending rows verifying (#244).
 - **The target-account rule.** A session acts for its own account; a token for its
   own account (a ``cli_full`` token of member B revoking member A's enrollment, even
   naming A in the payload, answers ``not_found`` and changes nothing); an operator
@@ -41,6 +46,7 @@ from rheo_app_cli.main import main
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_contracts.source_units import (
     AuthorityGrant,
+    AuthorityRefused,
     SanitizedEvidence,
     TrustedSourceUnit,
 )
@@ -49,11 +55,13 @@ from rheo_core.boundary.context import MEMBERSHIP_MISSING, TOKEN_REVOKED, Refusa
 from rheo_core.boundary.factories import context_from_session, context_from_token
 from rheo_core.evidence import enrollment as enrollment_module
 from rheo_core.evidence.enrollment import (
+    ENROLLMENT_CONTENDED,
     ENROLLMENT_CREATE,
     ENROLLMENT_EXISTS,
     ENROLLMENT_REVOKE,
     ENROLLMENT_ROTATE,
     OLD_TOKEN_REVOKE_FAILED_LOG,
+    PAIR_UNAVAILABLE_TEXT,
 )
 from rheo_core.evidence.local_authority import (
     ENROLLMENT_INACTIVE,
@@ -68,10 +76,11 @@ from rheo_core.operations import (
     dispatch,
     register_core_operations,
 )
-from rheo_core.operations.core_ops import TOKEN_ISSUE
+from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import NOT_FOUND
 from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
+from rheo_core.storage import control_tables
 from rheo_core.storage.backend import StorageRefusal
 from rheo_core.storage.control_plane import (
     AccessTokenRow,
@@ -281,6 +290,62 @@ def test_a_second_active_enrollment_for_the_pair_is_refused(
     assert again.state == ENROLLMENT_EXISTS
 
 
+def _enrollments_of(cluster: ClusterSession, workspace: UUID, account_id: UUID) -> int:
+    database = cluster.registry_row(workspace).database_name
+    with cluster.backend.pools.engine_for(database).connect() as connection:
+        return len(
+            connection.execute(
+                select(evidence_enrollment.c.id).where(
+                    evidence_enrollment.c.account_id == account_id
+                )
+            ).all()
+        )
+
+
+def test_a_pair_another_account_holds_answers_not_found(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    """#244: member B, knowing member A's fingerprints, tries to enroll them. The
+    answer is ``not_found``, the refusal another account's enrollment always gets,
+    never ``enrollment_exists``; it names neither A nor A's enrollment, and nothing
+    changes on either side."""
+    member_a = add_member(cluster.backend, workspace, Role.MEMBER, display_name="a")
+    member_b = add_member(cluster.backend, workspace, Role.MEMBER, display_name="b")
+    machine, project = _fingerprint(), _fingerprint()
+    of_a = _created(
+        _create(
+            _operator(workspace), account_id=member_a, machine=machine, project=project
+        )
+    )
+
+    probe = _create(_session(workspace, member_b), machine=machine, project=project)
+
+    assert probe.state == NOT_FOUND
+    assert probe.error is not None
+    assert probe.error.error_text == PAIR_UNAVAILABLE_TEXT
+    for disclosed in (member_a, of_a.enrollment_id, of_a.token_id):
+        assert str(disclosed) not in probe.error.error_text
+    assert _enrollments_of(cluster, workspace, member_b) == 0
+    assert _enrollment(cluster, workspace, of_a.enrollment_id).state == STATE_ACTIVE
+    assert _token(cluster, of_a.token_id).revoked_at is None
+
+
+def test_an_operator_enrolling_a_pair_another_account_holds_gets_not_found(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """The rule is by target account, whoever the actor: the operator enrolling the
+    owner on a pair a member holds gets the same ``not_found``."""
+    member = add_member(cluster.backend, workspace, Role.MEMBER, display_name="m")
+    machine, project = _fingerprint(), _fingerprint()
+    ctx = _operator(workspace)
+    _created(_create(ctx, account_id=member, machine=machine, project=project))
+    outcome = _create(
+        ctx, account_id=owner_account_id, machine=machine, project=project
+    )
+    assert outcome.state == NOT_FOUND
+    assert _enrollments_of(cluster, workspace, owner_account_id) == 0
+
+
 def _insert_enrollment(
     cluster: ClusterSession,
     workspace: UUID,
@@ -339,6 +404,99 @@ def test_a_create_that_loses_the_race_gets_the_same_refusal(
         project=project,
     )
     assert outcome.state == ENROLLMENT_EXISTS
+
+
+def test_a_create_that_loses_the_race_to_another_account_gets_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """#244 on the race path: the concurrent winner is another account, so the index
+    violation answers ``not_found``, as the pre-check would have."""
+    member = add_member(cluster.backend, workspace, Role.MEMBER, display_name="m")
+    machine, project = _fingerprint(), _fingerprint()
+    real_mint = enrollment_module._mint
+
+    def racing_mint(*args: Any, **kwargs: Any) -> Any:
+        result = real_mint(*args, **kwargs)
+        _insert_enrollment(
+            cluster,
+            workspace,
+            member,
+            machine=machine,
+            project=project,
+            token_id=uuid4(),
+        )
+        return result
+
+    monkeypatch.setattr(enrollment_module, "_mint", racing_mint)
+    outcome = _create(
+        _operator(workspace),
+        account_id=owner_account_id,
+        machine=machine,
+        project=project,
+    )
+    assert outcome.state == NOT_FOUND
+    assert outcome.error is not None
+    assert outcome.error.error_text == PAIR_UNAVAILABLE_TEXT
+    assert _enrollments_of(cluster, workspace, owner_account_id) == 0
+
+
+def test_a_race_winner_revoked_before_the_reread_refuses_contended(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """The concurrent winner is revoked between the index violation and the re-read,
+    so no holder is found. The create refuses the named, retryable
+    ``enrollment_contended`` rather than a raw integrity error, enrolls nothing, and
+    revokes the token it minted."""
+    member = add_member(cluster.backend, workspace, Role.MEMBER, display_name="m")
+    machine, project = _fingerprint(), _fingerprint()
+    minted: list[UUID] = []
+    real_mint = enrollment_module._mint
+    real_refuse = enrollment_module._refuse_held_pair
+
+    def racing_mint(*args: Any, **kwargs: Any) -> Any:
+        result = real_mint(*args, **kwargs)
+        minted.append(result[0])
+        _insert_enrollment(
+            cluster,
+            workspace,
+            member,
+            machine=machine,
+            project=project,
+            token_id=uuid4(),
+        )
+        return result
+
+    def revoke_then_refuse(*args: Any, **kwargs: Any) -> None:
+        if kwargs.get("cause") is not None:
+            database = cluster.registry_row(workspace).database_name
+            engine = cluster.backend.pools.engine_for(database)
+            with engine.begin() as connection:
+                connection.execute(
+                    update(evidence_enrollment)
+                    .where(evidence_enrollment.c.account_id == member)
+                    .values(state=STATE_REVOKED, revoked_at=datetime.now(UTC))
+                )
+        real_refuse(*args, **kwargs)
+
+    monkeypatch.setattr(enrollment_module, "_mint", racing_mint)
+    monkeypatch.setattr(enrollment_module, "_refuse_held_pair", revoke_then_refuse)
+    outcome = _create(
+        _operator(workspace),
+        account_id=owner_account_id,
+        machine=machine,
+        project=project,
+    )
+
+    assert outcome.state == ENROLLMENT_CONTENDED
+    assert _enrollments_of(cluster, workspace, owner_account_id) == 0
+    (token_id,) = minted
+    assert _token(cluster, token_id).revoked_at is not None
 
 
 def test_another_integrity_error_on_insert_is_not_enrollment_exists(
@@ -542,6 +700,74 @@ def test_a_token_cannot_rotate(
     assert _enrollment(cluster, workspace, created.enrollment_id).token_id == (
         created.token_id
     )
+
+
+def test_rotate_needs_a_member_account(
+    monkeypatch: pytest.MonkeyPatch, cluster: ClusterSession, workspace: UUID
+) -> None:
+    """#244: rotate checks membership exactly as create does. The account left the
+    workspace after enrolling; rotate refuses before minting, and the enrollment and
+    its token are untouched."""
+    member = add_member(cluster.backend, workspace, Role.MEMBER, display_name="left")
+    ctx = _operator(workspace)
+    created = _created(_create(ctx, account_id=member))
+    with cluster.backend.control_engine.begin() as connection:
+        connection.execute(
+            delete(control_tables.membership).where(
+                (control_tables.membership.c.account_id == member)
+                & (control_tables.membership.c.workspace_id == workspace)
+            )
+        )
+    minted: list[object] = []
+    real_mint = enrollment_module._mint
+
+    def spy_mint(*args: Any, **kwargs: Any) -> Any:
+        minted.append(args)
+        return real_mint(*args, **kwargs)
+
+    monkeypatch.setattr(enrollment_module, "_mint", spy_mint)
+    outcome = dispatch(
+        ctx,
+        ENROLLMENT_ROTATE,
+        {"enrollment_id": str(created.enrollment_id), "account_id": str(member)},
+    )
+
+    assert outcome.state == MEMBERSHIP_MISSING
+    assert minted == []
+    row = _enrollment(cluster, workspace, created.enrollment_id)
+    assert row.token_id == created.token_id
+    assert _token(cluster, created.token_id).revoked_at is None
+
+
+def test_a_bridge_token_revoked_by_token_revoke_stops_its_pending_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """#244: ``core.token.revoke`` on the bridge token, not the enrollment revoke.
+    The enrollment stays ``active``, and a row recorded before the revoke no longer
+    verifies, so it cannot become a memory."""
+    ev = EvidenceWorkspace(cluster, workspace, owner_account_id)
+    enable_recording(monkeypatch, ev)
+    ctx = _operator(workspace)
+    created = _created(_create(ctx, account_id=owner_account_id))
+    pending = _record_pending(ev, created.enrollment_id)
+
+    def verdict() -> Any:
+        with ev.unit_of_work() as uow:
+            return LocalEvidenceAuthority(uow).verify(
+                _unit(pending), workspace_id=workspace, now=datetime.now(UTC)
+            )
+
+    assert isinstance(verdict(), AuthorityGrant)
+    revoked = dispatch(ctx, TOKEN_REVOKE, {"token_id": str(created.token_id)})
+    assert revoked.ok, revoked
+
+    assert _enrollment(cluster, workspace, created.enrollment_id).state == STATE_ACTIVE
+    refused = verdict()
+    assert isinstance(refused, AuthorityRefused), refused
+    assert refused.reason == ENROLLMENT_INACTIVE
 
 
 def test_a_failed_row_update_leaves_the_new_token_matching_nothing(

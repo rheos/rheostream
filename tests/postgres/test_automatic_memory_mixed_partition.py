@@ -25,11 +25,16 @@ import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
-from harness.evidence import EvidenceWorkspace, enable_recording, probe_registry
+from harness.evidence import (
+    EvidenceWorkspace,
+    enable_recording,
+    live_bridge_token,
+    probe_registry,
+)
 from rheo_contracts import ContextPurpose, WorkspaceContext
 from rheo_contracts.source_units import AuthorityGrant, AuthorityRefused
 from rheo_core.evidence import ClaimedBatch, claim_units
@@ -129,7 +134,9 @@ def enroll(ev: EvidenceWorkspace, *, purpose: ContextPurpose = _PURPOSE) -> UUID
             insert(evidence_enrollment).values(
                 id=enrollment_id,
                 account_id=ev.owner_account_id,
-                token_id=uuid4(),
+                token_id=live_bridge_token(
+                    ev.workspace_id, ev.owner_account_id, purpose
+                ),
                 machine_fingerprint=_fingerprint(),
                 project_fingerprint=_fingerprint(),
                 purpose=purpose.value,

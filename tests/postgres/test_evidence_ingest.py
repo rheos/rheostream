@@ -365,6 +365,37 @@ def test_a_wrong_fingerprint_is_refused(ev: EvidenceWorkspace, wrong: str) -> No
     _assert_refused(ev, _ingest(enrolled.ctx(), payload), ENROLLMENT_MISMATCH)
 
 
+def test_another_accounts_pair_is_refused_exactly_like_an_unknown_pair(
+    cluster: ClusterSession, ev: EvidenceWorkspace
+) -> None:
+    """#244: member B's bridge token presents the owner's enrolled fingerprints, then
+    a pair nobody enrolled. The two answers are identical, so B learns nothing about
+    whether the owner has enrolled that machine and directory."""
+    of_a = Enrolled(ev.workspace_id, ev.owner_account_id)
+    member_b = add_member(
+        cluster.backend, ev.workspace_id, Role.MEMBER, display_name="b"
+    )
+    of_b = Enrolled(ev.workspace_id, member_b)
+
+    def probe(machine: str, project: str) -> OperationOutcome:
+        payload = of_b.payload(
+            [(_record_key(), datetime.now(UTC), _PLAIN)],
+            machine=machine,
+            project=project,
+        )
+        return _ingest(of_b.ctx(), payload)
+
+    held = probe(of_a.machine, of_a.project)
+    unknown = probe(_hex(), _hex())
+
+    assert held.state == unknown.state == ENROLLMENT_MISMATCH
+    assert held.error is not None and unknown.error is not None
+    assert held.error.error_text == unknown.error.error_text
+    assert str(of_a.enrollment_id) not in held.error.error_text
+    assert str(ev.owner_account_id) not in held.error.error_text
+    assert _units(ev) == []
+
+
 @pytest.mark.parametrize("column", ["account_id", "purpose"])
 def test_an_enrollment_whose_account_or_purpose_moved_is_refused(
     cluster: ClusterSession, ev: EvidenceWorkspace, column: str
