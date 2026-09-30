@@ -48,6 +48,7 @@ from harness.modules import install_and_enable_module, loaded_probe_modules
 from harness.registry import register_harness
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_core.audit import install_sink, reset_sinks, sink_for
+from rheo_core.audit import sink as sink_module
 from rheo_core.boundary import context_for_harness
 from rheo_core.evidence import ClaimedBatch, claim_units, settle_unit
 from rheo_core.evidence.extract import DigestBatch
@@ -534,12 +535,11 @@ _SINK_IDS: Final = (CORE_MODULE_ID, HARNESS_MODULE_ID, MODULE_ID)
 
 
 @pytest.fixture
-def sinks(ev: EvidenceWorkspace) -> Iterator[None]:
+def sinks(ev: EvidenceWorkspace, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Snapshot the sink table and put it back afterwards, whatever the test did."""
-    installed = {module_id: sink_for(module_id) for module_id in _SINK_IDS}
-    assert installed[MODULE_ID] is not None  # Recallatron's manifest installed one
+    monkeypatch.setattr(sink_module, "_SINKS", dict(sink_module._SINKS))
+    assert sink_for(MODULE_ID) is not None  # Recallatron's manifest installed one
     yield
-    _replace_sinks(installed)
 
 
 def _replace_sinks(table: dict[str, Any]) -> None:
