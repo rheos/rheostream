@@ -47,14 +47,33 @@ this module derives — and only scalars — go to
 short transaction and swallows every failure of its own, so the outcome returned from
 here is the operation's own however the sink fares. ``apps/mcp`` therefore reaches
 telemetry through this façade and still imports no storage package.
+
+**Discover-then-call (issue #262) lives here too, and adds no second call path.** A
+context whose operation set holds
+:data:`~rheo_core.tokens.sets.DISCOVER_THEN_CALL_OPERATION` is *listed* only
+:data:`~rheo_core.tokens.sets.DISCOVER_THEN_CALL_TOOL_NAMES`, and a direct call to
+any other tool is ``not_found`` for it, so "callable directly" still means "listed".
+Its other grants are reached through ``operations_call``, which this module answers
+by calling :func:`_call` again for the named tool with ``via_generic`` set. That
+second pass is the same function a direct call runs: the four availability checks
+against the same context, the tool's own input model with unknown names refused,
+the mask-token refusal, ``dispatch`` with its authorization, class branch, approval
+hold and audit, the telemetry row under the *named* tool, and the model rendering.
+The only differences are the two that make it a generic call: the listing filter is
+not applied (the named tool is hidden from this context's listing by design), and
+none of the three discover-then-call tools may be named, so there is no recursion.
+``operations_catalog`` and ``operations_describe`` are answered here from the same
+availability check, so the catalogue lists exactly what ``operations_call`` would
+accept, and a name it would refuse is ``not_found`` in both. None of the three
+dispatches ``core.tool.call``; its handler refuses (``core_ops.py``).
 """
 
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import Final
+from typing import Any, Final
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import (
     ALL_OPERATIONS,
     SafetyClass,
@@ -108,14 +127,29 @@ from rheo_core.redaction.policy import TierPolicy, policy_for
 # but not ``rheo_core.redaction`` (``tests/test_mcp_boundary.py``).
 from rheo_core.redaction.render import WITHHELD_REASON as WITHHELD_REASON
 from rheo_core.redaction.render import render_output
-from rheo_core.tokens.sets import TOOL_REGISTRY, RegisteredTool, ToolRegistry
+from rheo_core.settings import CORE_ORIGIN
+from rheo_core.tokens.sets import (
+    DISCOVER_THEN_CALL_OPERATION,
+    DISCOVER_THEN_CALL_TOOL_NAMES,
+    OPERATIONS_CALL_TOOL,
+    OPERATIONS_CATALOG_TOOL,
+    OPERATIONS_DESCRIBE_TOOL,
+    TOOL_REGISTRY,
+    RegisteredTool,
+    ToolRegistry,
+)
 
 __all__ = [
     "ConsumerRegistry",
     "TOOL_NOT_FOUND",
     "WITHHELD_REASON",
+    "CatalogEntry",
+    "ToolCatalog",
+    "ToolDescription",
     "call_registered_tool",
+    "discover_then_call",
     "for_model",
+    "tool_description",
     "visible_tools",
 ]
 
@@ -191,24 +225,150 @@ def _available(
     return ctx.role in operation.declaration.roles
 
 
+def discover_then_call(ctx: WorkspaceContext) -> bool:
+    """Whether ``ctx`` is in discover-then-call mode: its operation set, a snapshot,
+    holds :data:`~rheo_core.tokens.sets.DISCOVER_THEN_CALL_OPERATION`.
+
+    ``ALL_OPERATIONS`` (a session, the operator CLI) is never in the mode: it is not a
+    frozenset, so it holds no named grant, and neither reaches the MCP surface.
+    """
+    permitted = ctx.operation_set
+    if not isinstance(permitted, frozenset):
+        return False
+    return DISCOVER_THEN_CALL_OPERATION in permitted
+
+
+def _is_core(tool: RegisteredTool, declaration: ToolDeclaration) -> bool:
+    """``tool`` is the core's own registration of ``declaration``.
+
+    Name and origin both: ``ToolRegistry.register`` refuses a second registration of
+    a name and refuses any tool but these three naming the grant, so either would do
+    today; checking both keeps the answer right if one of those rules ever moves.
+    """
+    return tool.origin == CORE_ORIGIN and tool.declaration == declaration
+
+
+def _meta(tool: RegisteredTool) -> bool:
+    """One of the three tools this module answers itself (they alone name the
+    grant; ``ToolRegistry.register`` refuses any other tool that does)."""
+    return tool.declaration.operation == DISCOVER_THEN_CALL_OPERATION
+
+
+def _reachable(
+    ctx: WorkspaceContext, tool: RegisteredTool, registry: OperationRegistry
+) -> bool:
+    """The one rule for whether ``ctx`` may call ``tool`` at all.
+
+    :func:`_available`'s four checks, and not one of the three discover-then-call
+    tools (those are answered by this module and are never a target). The generic
+    call, the catalogue and the description all ask this and nothing else, and
+    :func:`_listed` is built on it, so a listing can only narrow what this allows.
+
+    **New access rules go here or in :func:`_available`, never only in
+    :func:`_listed`**: a rule that lived only in the listing would hide a tool from
+    ``tools/list`` and leave it callable through ``operations_call``.
+    """
+    return not _meta(tool) and _available(ctx, tool, registry)
+
+
+def _listed(
+    ctx: WorkspaceContext, tool: RegisteredTool, registry: OperationRegistry
+) -> bool:
+    """What ``tools/list`` shows: the listing mode's narrowing of what is callable.
+
+    In discover-then-call mode only the fixed names, registered by the core, are
+    listed; everything else the context may call is reached through
+    ``operations_call``. A direct call is held to the same filter, so a tool a
+    discover-then-call client was never shown is ``not_found`` to it when called by
+    name, exactly as an unlisted tool is to any other client.
+
+    In direct mode it is exactly :func:`_reachable`, so the three discover-then-call
+    tools are never listed, even to a context whose operation set is
+    ``ALL_OPERATIONS`` and so "holds" the grant: the mode is a snapshot fact, and
+    those three exist only for it. In discover-then-call mode it is the three (which
+    still need :func:`_available`, so the grant must be held) plus whichever of
+    ``operations_get``/``operations_list`` are reachable. Either way nothing is
+    listed that :func:`_available` refuses.
+    """
+    if not discover_then_call(ctx):
+        return _reachable(ctx, tool, registry)
+    if tool.origin != CORE_ORIGIN or tool.name not in DISCOVER_THEN_CALL_TOOL_NAMES:
+        return False
+    if _meta(tool):
+        return _available(ctx, tool, registry)
+    return _reachable(ctx, tool, registry)
+
+
 def visible_tools(
     ctx: WorkspaceContext,
     *,
     tools: ToolRegistry = TOOL_REGISTRY,
     registry: OperationRegistry = REGISTRY,
 ) -> tuple[ToolDeclaration, ...]:
-    """The registered tools this context may call **at this moment**.
+    """The registered tools this context may call directly **at this moment**.
 
     Read from the live registries on every call rather than cached anywhere: a tool
     whose module was disabled, whose operation was unregistered, or whose operation
     left this context's scope is absent from the next listing without anything having
-    to invalidate a previous one.
+    to invalidate a previous one. In discover-then-call mode this is at most the five
+    :data:`~rheo_core.tokens.sets.DISCOVER_THEN_CALL_TOOL_NAMES`, whatever else is
+    registered.
     """
     return tuple(
-        tool.declaration
-        for tool in _registered(tools)
-        if _available(ctx, tool, registry)
+        tool.declaration for tool in _registered(tools) if _listed(ctx, tool, registry)
     )
+
+
+def _callable_through_generic(
+    ctx: WorkspaceContext, tools: ToolRegistry, registry: OperationRegistry
+) -> tuple[RegisteredTool, ...]:
+    """What ``operations_call`` would accept for ``ctx``: every available tool but
+    the three discover-then-call tools themselves."""
+    return tuple(tool for tool in _registered(tools) if _reachable(ctx, tool, registry))
+
+
+def tool_description(declaration: ToolDeclaration) -> str:
+    """A tool's description as a client is shown it, in ``tools/list`` and in the
+    catalogue alike: the declaration's own, or one mechanical sentence naming the
+    operation. One function so the two surfaces cannot describe a tool differently.
+    """
+    return declaration.description or f"Calls the {declaration.operation} operation."
+
+
+class CatalogEntry(BaseModel):
+    """One tool ``operations_call`` would accept."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    safety_class: str
+    description: str
+
+
+class ToolCatalog(BaseModel):
+    """``operations_catalog``'s answer, sorted by name.
+
+    ``truncated`` says ``limit`` cut the list; a narrower ``query`` or a higher
+    ``limit`` shows the rest.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tools: list[CatalogEntry]
+    truncated: bool
+
+
+class ToolDescription(BaseModel):
+    """``operations_describe``'s answer: the name, description and input schema
+    ``tools/list`` would have shown for this tool in direct mode, plus its safety
+    class, which ``tools/list`` does not carry."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    safety_class: str
+    description: str
+    input_schema: dict[str, Any]
 
 
 def _registered(tools: ToolRegistry) -> tuple[RegisteredTool, ...]:
@@ -396,9 +556,47 @@ def call_registered_tool(
 
     The clock is :func:`time.monotonic`, so a wall-clock adjustment mid-call cannot
     produce a negative duration against the DDL's non-negative check.
+
+    **``operations_call`` is answered by this same function, called again.** See the
+    module docstring: the named tool runs through every step above, and the generic
+    call writes no telemetry row of its own on that path, so the row names the tool
+    that actually ran. A malformed ``operations_call`` envelope (no ``name``, an
+    unknown argument) is refused ``input_invalid`` and gets its own row, like any
+    other tool's input refusal.
+    """
+    return _call(
+        ctx,
+        name,
+        arguments,
+        consumers=consumers,
+        tools=tools,
+        registry=registry,
+        via_generic=False,
+    )
+
+
+def _call(
+    ctx: WorkspaceContext,
+    name: str,
+    arguments: Mapping[str, object],
+    *,
+    consumers: ConsumerRegistry | None,
+    tools: ToolRegistry,
+    registry: OperationRegistry,
+    via_generic: bool,
+) -> OperationOutcome:
+    """One tool call, direct (``via_generic`` false) or named by ``operations_call``.
+
+    The two differ in the first check only. A direct call must be *listed* for this
+    context (:func:`_listed`); a generic call must be *reachable* (:func:`_reachable`,
+    which :func:`_listed` narrows), so it skips the listing-mode filter and cannot
+    name one of the three discover-then-call tools, ``operations_call`` included.
+    Both refusals are the same ``not_found`` with the same text, so a generic call
+    learns nothing a direct call would not.
     """
     registered = tools.lookup(name)
-    if registered is None or not _available(ctx, registered, registry):
+    check = _reachable if via_generic else _listed
+    if registered is None or not check(ctx, registered, registry):
         return for_model(
             _refused(TOOL_NOT_FOUND, f"{name!r} is not a tool available here"),
             policy_for(ctx),
@@ -412,7 +610,30 @@ def call_registered_tool(
             validated = refused_write
     if isinstance(validated, OperationOutcome):
         outcome, model = validated, None
+    elif _is_core(registered, OPERATIONS_CALL_TOOL):
+        # The named tool's own pass records its own telemetry and renders its own
+        # outcome; returning it untouched is what makes the two calls identical.
+        target = getattr(validated, "name", None)
+        target_input = getattr(validated, "input", None)
+        assert isinstance(target, str) and isinstance(target_input, Mapping)
+        return _call(
+            ctx,
+            target,
+            target_input,
+            consumers=consumers,
+            tools=tools,
+            registry=registry,
+            via_generic=True,
+        )
+    elif _is_core(registered, OPERATIONS_CATALOG_TOOL):
+        model = validated
+        outcome = _catalog(ctx, validated, tools=tools, registry=registry)
+    elif _is_core(registered, OPERATIONS_DESCRIBE_TOOL):
+        model = validated
+        outcome = _describe(ctx, validated, tools=tools, registry=registry)
     else:
+        # ``ToolRegistry.register`` refuses any other tool naming the grant.
+        assert not _meta(registered), registered
         model = validated
         outcome = dispatch(
             ctx,
@@ -433,6 +654,64 @@ def call_registered_tool(
         argument_names=_telemetry_argument_names(declaration, arguments),
     )
     return for_model(outcome, policy_for(ctx))
+
+
+def _catalog(
+    ctx: WorkspaceContext,
+    validated: BaseModel,
+    *,
+    tools: ToolRegistry,
+    registry: OperationRegistry,
+) -> OperationOutcome:
+    """``operations_catalog``: what ``operations_call`` would accept, filtered."""
+    query = getattr(validated, "query", None)
+    limit = getattr(validated, "limit", None)
+    assert isinstance(limit, int)
+    needle = query.casefold() if isinstance(query, str) and query else None
+    entries = [
+        CatalogEntry(
+            name=tool.name,
+            safety_class=tool.declaration.safety_class.value,
+            description=tool_description(tool.declaration),
+        )
+        for tool in _callable_through_generic(ctx, tools, registry)
+    ]
+    if needle is not None:
+        entries = [
+            entry
+            for entry in entries
+            if needle in entry.name.casefold() or needle in entry.description.casefold()
+        ]
+    return OperationOutcome(
+        SUCCEEDED,
+        result=ToolCatalog(tools=entries[:limit], truncated=len(entries) > limit),
+    )
+
+
+def _describe(
+    ctx: WorkspaceContext,
+    validated: BaseModel,
+    *,
+    tools: ToolRegistry,
+    registry: OperationRegistry,
+) -> OperationOutcome:
+    """``operations_describe``: one tool ``operations_call`` would accept, or the
+    ``not_found`` that call would answer, with the same text."""
+    name = getattr(validated, "name", None)
+    assert isinstance(name, str)
+    registered = tools.lookup(name)
+    if registered is None or not _reachable(ctx, registered, registry):
+        return _refused(TOOL_NOT_FOUND, f"{name!r} is not a tool available here")
+    declaration = registered.declaration
+    return OperationOutcome(
+        SUCCEEDED,
+        result=ToolDescription(
+            name=declaration.name,
+            safety_class=declaration.safety_class.value,
+            description=tool_description(declaration),
+            input_schema=declaration.input_model.model_json_schema(),
+        ),
+    )
 
 
 def _mask_token_write(

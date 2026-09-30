@@ -26,6 +26,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_evidence_ingest.py",
     "tests/postgres/test_history_records.py",
     "tests/postgres/test_local_authority.py",
+    "tests/postgres/test_mcp_discover_call.py",
     "tests/postgres/test_memory_browse.py",
     "tests/postgres/test_memory_dedup.py",
     "tests/postgres/test_memory_embedding.py",
@@ -68,6 +69,9 @@ tool facade against the one module in the checkout that registers a tool naming 
 core operation, ``test_memory_redaction_mcp.py`` drives the redaction policy (contact
 masking, the mask-token write-back refusal, excluded types) through Recallatron's real
 tools, since memory bodies are the free text the contact mask exists for,
+``test_mcp_discover_call.py`` compares ``operations_call`` with direct calls over those
+same tools, because it needs a real mutate, a mask-token write refusal and a
+destructive tool held at ``approval_required``,
 ``test_tool_telemetry.py`` drives the telemetry sink through that same tool surface
 — it needs a ``READ`` tool that declares both a query and a lifecycle selector and a
 ``DESTRUCTIVE`` one that answers ``approval_required``, and no fixture

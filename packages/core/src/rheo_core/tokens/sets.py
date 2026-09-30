@@ -18,7 +18,8 @@ policy can never drift apart). :data:`CORE_TOOLS` names the declarations
 :func:`register_core_tools` feeds it: the four production core tools
 (``workspace_status``, ``operations_get``, ``operations_list``, ``audit_list``;
 ``runtime-and-mcp.md`` § Release-one tool set) and ``harness_get_note`` (test
-profile only), mirroring how
+profile only), plus the three discover-then-call tools (``operations_catalog``,
+``operations_describe``, ``operations_call``; issue #262), mirroring how
 ``operations/core_ops.py`` pairs :data:`~rheo_core.operations.core_ops.
 CORE_OPERATIONS` with ``register_core_operations()``.
 
@@ -69,7 +70,7 @@ case-by-case.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -90,6 +91,24 @@ _AUDIT_LIST_OPERATION: Final = "core.audit.list"
 ``OPERATION_LIST`` and ``audit/operations.py``'s ``AUDIT_LIST``, for the cycle
 reason above; ``tests/test_core_tools.py`` proves each names a registered
 operation."""
+
+DISCOVER_THEN_CALL_OPERATION: Final = "core.tool.call"
+"""The one grant behind discover-then-call mode (issue #262).
+
+A token whose snapshot holds this operation is in discover-then-call mode: the MCP
+facade lists only :data:`DISCOVER_THEN_CALL_TOOL_NAMES` to it, however many modules
+are installed, and the model reaches everything else its grants allow through
+``operations_call``. Holding it grants nothing else: every call made through the
+generic tool is judged against the token's own snapshot, exactly as a direct call is
+(``rheo_core.operations.tool_facade``).
+
+It is **never in a named package set**. ``read_only``, ``agent_default`` and
+``cli_full`` below each subtract it, so an existing ``--set`` issuance keeps the
+direct listing it has always had; ``core.token.issue`` adds it only when asked
+(``discover = true``, or an explicit list naming it). Declared in
+``operations/core_ops.py`` as ``TOOL_CALL``, duplicated here as a literal for the
+cycle reason in the module docstring; ``tests/test_core_tools.py`` holds the two
+equal."""
 
 _HARNESS_NOTE_GET_OPERATION: Final = "harness.note.get"
 """Duplicated from ``tests/harness/registry.py``'s ``NOTE_GET`` -- that file's own
@@ -156,6 +175,37 @@ class _HarnessNoteRefToolInput(BaseModel):
     ref: str
 
 
+class _OperationsCatalogToolInput(BaseModel):
+    """What to look for in the catalogue, and how many entries to return."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    query: str | None = Field(default=None, max_length=200)
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class _OperationsDescribeToolInput(BaseModel):
+    """Which tool to describe, by the name the catalogue gave."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(min_length=1, max_length=200)
+
+
+class _OperationsCallToolInput(BaseModel):
+    """Which tool to call, by the name the catalogue gave, and its input.
+
+    ``input`` is handed on unchanged to the named tool's own input model, which is
+    where it is validated: unknown names refused, reserved names impossible, bounds
+    enforced. This model checks only the envelope.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(min_length=1, max_length=200)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
 WORKSPACE_STATUS_TOOL: Final[ToolDeclaration] = ToolDeclaration(
     name="workspace_status",
     safety_class=SafetyClass.READ,
@@ -199,6 +249,46 @@ AUDIT_LIST_TOOL: Final[ToolDeclaration] = ToolDeclaration(
     ),
 )
 
+OPERATIONS_CATALOG_TOOL: Final[ToolDeclaration] = ToolDeclaration(
+    name="operations_catalog",
+    safety_class=SafetyClass.READ,
+    operation=DISCOVER_THEN_CALL_OPERATION,
+    input_model=_OperationsCatalogToolInput,
+    description=(
+        "Lists the tools this token may call through operations_call: name, "
+        "safety class and a one-line description, sorted by name. query filters "
+        "by a case-insensitive substring of the name or description (limit 1 to "
+        "500, default 100). Read a tool's input schema with operations_describe "
+        "before calling it."
+    ),
+)
+
+OPERATIONS_DESCRIBE_TOOL: Final[ToolDeclaration] = ToolDeclaration(
+    name="operations_describe",
+    safety_class=SafetyClass.READ,
+    operation=DISCOVER_THEN_CALL_OPERATION,
+    input_model=_OperationsDescribeToolInput,
+    description=(
+        "Describes one tool from operations_catalog: its description, safety class "
+        "and the JSON schema its input must match. A name this token may not call "
+        "is not_found."
+    ),
+)
+
+OPERATIONS_CALL_TOOL: Final[ToolDeclaration] = ToolDeclaration(
+    name="operations_call",
+    safety_class=SafetyClass.READ,
+    operation=DISCOVER_THEN_CALL_OPERATION,
+    input_model=_OperationsCallToolInput,
+    description=(
+        "Calls one tool from operations_catalog by name with input matching its "
+        "schema, and returns exactly what calling that tool directly would: the "
+        "same result, the same refusals (not_found, input_invalid and the rest) and "
+        "approval_required with an approval_id for a destructive call. The tool's "
+        "own safety class and roles apply, not this one's."
+    ),
+)
+
 HARNESS_GET_NOTE_TOOL: Final[ToolDeclaration] = ToolDeclaration(
     name="harness_get_note",
     safety_class=SafetyClass.READ,
@@ -211,14 +301,41 @@ CORE_TOOLS: Final[tuple[ToolDeclaration, ...]] = (
     OPERATIONS_GET_TOOL,
     OPERATIONS_LIST_TOOL,
     AUDIT_LIST_TOOL,
+    OPERATIONS_CATALOG_TOOL,
+    OPERATIONS_DESCRIBE_TOOL,
+    OPERATIONS_CALL_TOOL,
     HARNESS_GET_NOTE_TOOL,
 )
 """The declarations :func:`register_core_tools` offers the registry.
+
+The three discover-then-call tools all name :data:`DISCOVER_THEN_CALL_OPERATION`,
+so a token holds all three or none; ``tool_facade`` answers each itself rather than
+dispatching that operation.
 
 Declared, not live: what the façade lists and what ``agent_default`` reads is
 :data:`TOOL_REGISTRY`, which holds only what survived registration. The pairing
 mirrors ``operations/core_ops.py``'s ``CORE_OPERATIONS`` /
 ``register_core_operations()``, so a reader who knows one recognises the other."""
+
+DISCOVER_THEN_CALL_TOOLS: Final[tuple[ToolDeclaration, ...]] = (
+    OPERATIONS_CATALOG_TOOL,
+    OPERATIONS_DESCRIBE_TOOL,
+    OPERATIONS_CALL_TOOL,
+)
+"""The three tools only a discover-then-call token sees and no other token can."""
+
+DISCOVER_THEN_CALL_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        *(tool.name for tool in DISCOVER_THEN_CALL_TOOLS),
+        OPERATIONS_LIST_TOOL.name,
+        OPERATIONS_GET_TOOL.name,
+    }
+)
+"""The whole of what a discover-then-call token is listed: five names at most, and
+fewer when its snapshot lacks ``core.operation.list``/``.get``. ``operations_list``
+and ``operations_get`` stay direct because they are how a client polls a
+long-running call or one held at ``approval_required``; everything else is one
+``operations_call`` away."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,9 +410,9 @@ class ToolRegistry:
     def register(self, decl: ToolDeclaration, *, origin: str) -> RegisteredTool:
         """Validate and record ``decl``, or raise ``RegistrationRefused`` naming it.
 
-        Five refusals. Four are the operation registry's own checks, reached through
-        the operation registry's own functions rather than copies of them; the fifth
-        is the one rule that is specific to tools. See the class docstring for the
+        Six refusals. Four are the operation registry's own checks, reached through
+        the operation registry's own functions rather than copies of them; the last
+        two are specific to tools. See the class docstring for the
         two ``OperationRegistry`` rules that deliberately do **not** apply.
 
         - **No declared safety class** -- the same ``isinstance`` test, for the same
@@ -320,6 +437,12 @@ class ToolRegistry:
           spelling rather than on what the model accepts.
         - **A non-token-issuable operation** -- tool-specific; see the class
           docstring.
+        - **The discover-then-call grant, named by anything but the core's own three
+          tools** -- tool-specific too. ``tool_facade`` answers those three itself;
+          any other tool naming :data:`DISCOVER_THEN_CALL_OPERATION` would be
+          reachable by exactly the tokens in that mode and would dispatch an
+          operation whose handler only refuses. Nothing is gained by allowing it,
+          and refusing it keeps "holds the grant" and "sees the three" one fact.
         """
         from rheo_core.operations.refusals import (  # deferred, see module docstring
             RegistrationRefused,
@@ -345,6 +468,15 @@ class ToolRegistry:
                 f"names non-token-issuable operation {decl.operation!r}; a tool "
                 "naming one would carry it into the agent_default set, and no "
                 "token of any kind may hold it",
+            )
+        if decl.operation == DISCOVER_THEN_CALL_OPERATION and not (
+            origin == CORE_ORIGIN and decl in DISCOVER_THEN_CALL_TOOLS
+        ):
+            raise RegistrationRefused(
+                name,
+                f"names {DISCOVER_THEN_CALL_OPERATION!r}, the discover-then-call "
+                "grant, which only the core's own operations_catalog, "
+                "operations_describe and operations_call may name",
             )
         input_model = decl.input_model
         if not (isinstance(input_model, type) and issubclass(input_model, BaseModel)):
@@ -408,11 +540,12 @@ def register_core_tools(
 
 
 def read_only() -> frozenset[str]:
-    """Every registered operation of ``SafetyClass.READ``."""
+    """Every registered operation of ``SafetyClass.READ``, except the
+    discover-then-call grant (see :data:`DISCOVER_THEN_CALL_OPERATION`)."""
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
     names: set[str] = set()
-    for name in REGISTRY.names():
+    for name in REGISTRY.names() - {DISCOVER_THEN_CALL_OPERATION}:
         registered = REGISTRY.lookup(name)
         assert registered is not None  # names() and lookup() share one table
         if registered.declaration.safety_class is SafetyClass.READ:
@@ -425,19 +558,23 @@ def agent_default() -> frozenset[str]:
 
     Reads :data:`TOOL_REGISTRY`, not :data:`CORE_TOOLS`: a declaration that never
     reached the registry -- because nothing called :func:`register_core_tools`, or
-    because ``register`` refused it -- names no operation here.
+    because ``register`` refused it -- names no operation here. The
+    discover-then-call grant is subtracted: the three tools naming it are the one
+    mode switch, and a set that carried it would flip every ``agent_default`` token
+    into that mode.
     """
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
     declared = frozenset(tool.operation for tool in TOOL_REGISTRY.declarations())
-    return declared & REGISTRY.names()
+    return (declared & REGISTRY.names()) - {DISCOVER_THEN_CALL_OPERATION}
 
 
 def cli_full() -> frozenset[str]:
-    """Every registered operation except :data:`NON_TOKEN_ISSUABLE`."""
+    """Every registered operation except :data:`NON_TOKEN_ISSUABLE` and the
+    discover-then-call grant."""
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
-    return REGISTRY.names() - NON_TOKEN_ISSUABLE
+    return REGISTRY.names() - NON_TOKEN_ISSUABLE - {DISCOVER_THEN_CALL_OPERATION}
 
 
 PACKAGE_SETS: Final[dict[str, Callable[[], frozenset[str]]]] = {

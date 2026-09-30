@@ -235,6 +235,14 @@ each other (a real import cycle either way)."""
 
 WORK_FAILURES: Final = "core.work.failures"
 
+TOOL_CALL: Final = "core.tool.call"
+"""The discover-then-call grant (issue #262). A literal, matching
+``rheo_core.tokens.sets.DISCOVER_THEN_CALL_OPERATION`` for the cycle reason
+``TOKEN_ISSUE`` gives; ``tests/test_core_tools.py`` holds the two equal."""
+
+TOOL_FACADE_ONLY: Final = "tool_facade_only"
+"""The refusal :data:`TOOL_CALL`'s handler always raises."""
+
 _TOKEN_OPERATION_ROLES: Final = frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR})
 """Shared by both token declarations, built inside :func:`register_core_operations`
 — see that function's own docstring for why ``operator`` is safe to declare, and
@@ -582,6 +590,60 @@ RUNTIME_RUN_DECLARATION: Final = OperationDeclaration(
     long_running=True,
 )
 
+
+class ToolCallInput(BaseModel):
+    """The shape ``operations_call`` sends: a tool name and that tool's input.
+
+    Declared so the operation has an honest schema in the generated API document.
+    The facade validates the tool's own copy of this shape and never dispatches the
+    operation, so nothing reads this model at run time.
+    """
+
+    model_config = _IGNORE_EXTRA
+
+    name: str
+    input: dict[str, object] = {}
+
+
+class ToolCallRefused(BaseModel):
+    """Never returned: :func:`_tool_call` always refuses. Declared because every
+    operation names an output model."""
+
+    model_config = ConfigDict(frozen=True)
+
+
+def _tool_call(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: ToolCallInput
+) -> ToolCallRefused:
+    """Refuse: this operation is a grant, not a thing to run.
+
+    ``core.tool.call`` is what puts a token in discover-then-call mode, and the three
+    MCP tools that name it are answered by ``tool_facade`` itself, which lists and
+    calls the token's other tools against the token's own snapshot. Dispatching the
+    operation directly (the ``api`` surface, a ``cli`` token with an explicit list
+    naming it) has nothing to run, and running a named tool from here would be a
+    second call path beside the facade's, with a nested unit of work and a second
+    audit row, which is exactly what the facade's design avoids. So it refuses.
+    """
+    raise OperationRefused(
+        TOOL_FACADE_ONLY,
+        f"{TOOL_CALL} is the MCP discover-then-call grant; call a tool through the "
+        "MCP surface's operations_call instead",
+    )
+
+
+TOOL_CALL_DECLARATION: Final = OperationDeclaration(
+    name=TOOL_CALL,
+    # ``READ``: the grant itself reads and writes nothing. Each call made through
+    # ``operations_call`` is judged by its own tool's class.
+    safety_class=SafetyClass.READ,
+    roles=frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR, Role.SERVICE}),
+    input_model=ToolCallInput,
+    output=ToolCallRefused,
+    idempotency=Idempotency.NONE,
+    audit=None,
+)
+
 CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (WORKSPACE_STATUS_DECLARATION, _workspace_status),
     (SETTINGS_SET_DECLARATION, _settings_set),
@@ -599,6 +661,7 @@ CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (WORKSPACE_DIGEST_DECLARATION, digest_handler),
     (WORKSPACE_RESTORE_DECLARATION, restore_handler),
     (RUNTIME_RUN_DECLARATION, runtime_run_handler),
+    (TOOL_CALL_DECLARATION, _tool_call),
 )
 """The three 0b1 operations, 0c1's ``core.work.failures``, and 0c2's three
 ``core.operation`` operations plus ``core.audit.list``. The two token operations

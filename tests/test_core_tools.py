@@ -16,7 +16,7 @@ them is exercised end to end in ``tests/postgres/test_mcp_mount.py``.
 from typing import Any
 
 import pytest
-from rheo_contracts import Role, SafetyClass
+from rheo_contracts import Role, SafetyClass, ToolDeclaration
 from rheo_core.audit.operations import AuditListInput
 from rheo_core.operations import (
     AUDIT_LIST,
@@ -25,16 +25,28 @@ from rheo_core.operations import (
     REGISTRY,
     register_core_operations,
 )
-from rheo_core.operations.core_ops import WORKSPACE_STATUS
+from rheo_core.operations.core_ops import (
+    TOOL_CALL,
+    TOOL_FACADE_ONLY,
+    WORKSPACE_STATUS,
+)
+from rheo_core.operations.refusals import OperationRefused, RegistrationRefused
+from rheo_core.settings import CORE_ORIGIN
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 from rheo_core.tokens.sets import (
     AUDIT_LIST_TOOL,
     CORE_TOOLS,
+    DISCOVER_THEN_CALL_OPERATION,
+    DISCOVER_THEN_CALL_TOOLS,
+    OPERATIONS_CALL_TOOL,
     OPERATIONS_GET_TOOL,
     OPERATIONS_LIST_TOOL,
     TOOL_REGISTRY,
     WORKSPACE_STATUS_TOOL,
+    ToolRegistry,
     agent_default,
+    cli_full,
+    read_only,
     register_core_tools,
 )
 
@@ -135,3 +147,59 @@ def test_agent_default_carries_the_three_new_operations() -> None:
     assert {WORKSPACE_STATUS, OPERATION_GET, OPERATION_LIST, AUDIT_LIST} <= (
         agent_default()
     )
+
+
+# --- issue #262: the discover-then-call grant ------------------------------------
+
+
+def test_the_grant_literal_matches_the_declared_operation() -> None:
+    assert DISCOVER_THEN_CALL_OPERATION == TOOL_CALL
+    registered = REGISTRY.lookup(TOOL_CALL)
+    assert registered is not None
+    assert registered.declaration.safety_class is SafetyClass.READ
+    assert TOOL_CALL not in NON_TOKEN_ISSUABLE
+
+
+def test_the_three_discover_tools_name_the_grant_and_nothing_else_does() -> None:
+    naming = sorted(
+        tool.name
+        for tool in TOOL_REGISTRY.declarations()
+        if tool.operation == DISCOVER_THEN_CALL_OPERATION
+    )
+    assert naming == ["operations_call", "operations_catalog", "operations_describe"]
+    assert {tool.name for tool in DISCOVER_THEN_CALL_TOOLS} == set(naming)
+
+
+@pytest.mark.parametrize("package_set", [read_only, agent_default, cli_full])
+def test_no_named_set_carries_the_grant(package_set: Any) -> None:
+    """A ``--set`` issuance keeps its direct listing; only ``--discover`` (or an
+    explicit list naming the grant) puts a token in the mode."""
+    assert TOOL_CALL not in package_set()
+
+
+def test_a_module_tool_naming_the_grant_is_refused() -> None:
+    """Only the core's own three tools may name ``core.tool.call``: a module tool
+    naming it would be answered by nobody and reachable by exactly the tokens in
+    discover mode."""
+    registry = ToolRegistry()
+    impostor = ToolDeclaration(
+        name="probe_call",
+        safety_class=SafetyClass.READ,
+        operation=TOOL_CALL,
+        input_model=OPERATIONS_CALL_TOOL.input_model,
+    )
+    with pytest.raises(RegistrationRefused, match="discover-then-call"):
+        registry.register(impostor, origin="probe")
+    with pytest.raises(RegistrationRefused, match="discover-then-call"):
+        registry.register(OPERATIONS_CALL_TOOL, origin="probe")
+    assert registry.register(OPERATIONS_CALL_TOOL, origin=CORE_ORIGIN)
+
+
+def test_the_grant_operation_refuses_when_dispatched_directly() -> None:
+    """Nothing runs a tool from ``core.tool.call`` itself; the facade answers the
+    three tools, and a direct dispatch (the ``api`` surface) is refused."""
+    registered = REGISTRY.lookup(TOOL_CALL)
+    assert registered is not None
+    with pytest.raises(OperationRefused) as refused:
+        registered.handler(None, None, None)  # type: ignore[arg-type]
+    assert refused.value.state == TOOL_FACADE_ONLY

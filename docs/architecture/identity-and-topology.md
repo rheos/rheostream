@@ -132,7 +132,7 @@ rechecked from `control.membership` at every presentation):
 | Issuing authority | Its permitted set | What `core.token.issue` does |
 | --- | --- | --- |
 | A web session | Every operation whose declared roles include the account's role in the target workspace. | Expands the named package set against the registry, intersects with that set, strips the non-token-issuable set, refuses `set_empty` if nothing remains, and snapshots the rest. A member's `cli_full` is therefore the member's full set, not the owner's. |
-| The operator command | The package sets, for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. |
+| The operator command | The package sets, for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. `--discover` adds `core.tool.call` to the expansion ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
 | The core's `runtime` package, for a run | The permitted set of the actor that started the run: that actor's own token snapshot when it is a token, or the role-permitted set when it is an account. | Takes the explicit list of operations the run's permitted tools name, intersects with that set, strips the non-token-issuable set, and snapshots; a run can therefore never reach past the person or token that started it, however the operation's tool needs are declared. |
 
 ### The named package operation sets
@@ -146,6 +146,13 @@ operation is added:
 | `read_only` | Every registered operation of class `read`. | Workspace status, operation reads, audit (owner), every module read. |
 | `agent_default` | Every operation named by a registered MCP tool ([tool set](runtime-and-mcp.md#the-mcp-facade)). | The reads, drafts, and mutates a tool exposes, plus the request right for the three deletion tools' `core.record.delete`; by construction no configuration, token, grant, or approval operation, because none has a tool. |
 | `cli_full` | Every registered operation except the non-token-issuable set. | Everything the account's role permits, including configuration operations for an owner, minus the six operations no token may carry. |
+
+None of the three contains `core.tool.call`, the discover-then-call grant: each subtracts it, so
+it reaches a snapshot only when an issuance asks for it (`discover: true`, or an explicit list
+naming it). A token holding it is listed a fixed set of MCP tools and reaches its other grants
+through `operations_call` ([discover-then-call](runtime-and-mcp.md#discover-then-call)); it
+grants nothing else, and an issuance whose only surviving operation would be the grant is refused
+`set_empty`.
 
 Workspace-defined named sets are not release-one machinery; nothing in the requirements needs
 one, and a snapshot per token makes criterion 9's "one permitted operation set" a property of

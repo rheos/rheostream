@@ -67,6 +67,8 @@ from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.tokens.format import mint
 from rheo_core.tokens.issue import (
     ACCOUNT_REQUIRED,
+    DISCOVER_NOT_PERMITTED,
+    SET_EMPTY,
     SET_NOT_ISSUABLE,
     SET_SELECTION_INVALID,
     TokenRevoked,
@@ -75,7 +77,12 @@ from rheo_core.tokens.issue import (
     revoke_handler,
 )
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
-from rheo_core.tokens.sets import agent_default, cli_full, register_core_tools
+from rheo_core.tokens.sets import (
+    DISCOVER_THEN_CALL_OPERATION,
+    agent_default,
+    cli_full,
+    register_core_tools,
+)
 from sqlalchemy import func, select, update
 
 pytestmark = pytest.mark.postgres
@@ -152,10 +159,13 @@ def _issue(
     set_name: str | None = None,
     operations: list[str] | None = None,
     account_id: UUID | None = None,
+    discover: bool = False,
 ) -> tuple[str, UUID, frozenset[str]]:
     """Dispatch ``core.token.issue``, asserting success; returns ``(value,
     token_id, operations)``."""
     payload: dict[str, object] = {"kind": kind}
+    if discover:
+        payload["discover"] = True
     if set_name is not None:
         payload["set_name"] = set_name
     if operations is not None:
@@ -245,6 +255,58 @@ def test_operator_issued_token_via_real_dispatch_path(
     with cluster.backend.control_engine.connect() as connection:
         stored = list_access_token_operations(connection, token_id)
     assert stored == operations
+
+
+def test_discover_adds_exactly_the_grant_to_a_named_set(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    """Issue #262: ``--discover`` is the named set plus ``core.tool.call`` and
+    nothing else, and the same set without it carries no grant."""
+    ctx = _operator_ctx(workspace)
+    _, _, direct = _issue(
+        ctx, kind="mcp", set_name="agent_default", account_id=owner_account_id
+    )
+    value, _, discovering = _issue(
+        ctx,
+        kind="mcp",
+        set_name="agent_default",
+        account_id=owner_account_id,
+        discover=True,
+    )
+    assert DISCOVER_THEN_CALL_OPERATION not in direct
+    assert discovering == direct | {DISCOVER_THEN_CALL_OPERATION}
+    presented = context_from_token(value, surface="mcp")
+    assert isinstance(presented, WorkspaceContext), presented
+    assert presented.operation_set == discovering
+
+
+def test_a_token_holding_only_the_grant_is_refused_set_empty(
+    session_ctx: WorkspaceContext,
+) -> None:
+    outcome = dispatch(
+        session_ctx,
+        TOKEN_ISSUE,
+        {"kind": "mcp", "operations": [DISCOVER_THEN_CALL_OPERATION]},
+    )
+    assert outcome.state == SET_EMPTY, outcome
+
+
+def test_discover_is_refused_for_a_cli_token(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    """A ``cli`` token never reaches the MCP surface, so it has no listing to
+    shrink; asking for the mode is a mistake worth saying out loud."""
+    outcome = dispatch(
+        _operator_ctx(workspace),
+        TOKEN_ISSUE,
+        {
+            "kind": "cli",
+            "set_name": "read_only",
+            "account_id": str(owner_account_id),
+            "discover": True,
+        },
+    )
+    assert outcome.state == DISCOVER_NOT_PERMITTED, outcome
 
 
 def test_revoke_via_real_dispatch_path(

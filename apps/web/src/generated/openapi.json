@@ -1878,6 +1878,11 @@
             "default": null,
             "title": "Account Id"
           },
+          "discover": {
+            "default": false,
+            "title": "Discover",
+            "type": "boolean"
+          },
           "kind": {
             "enum": [
               "cli",
@@ -1996,6 +2001,32 @@
           "token_id"
         ],
         "title": "TokenRevoked",
+        "type": "object"
+      },
+      "ToolCallInput": {
+        "description": "The shape ``operations_call`` sends: a tool name and that tool's input.\n\nDeclared so the operation has an honest schema in the generated API document.\nThe facade validates the tool's own copy of this shape and never dispatches the\noperation, so nothing reads this model at run time.",
+        "properties": {
+          "input": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Input",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ToolCallInput",
+        "type": "object"
+      },
+      "ToolCallRefused": {
+        "description": "Never returned: :func:`_tool_call` always refuses. Declared because every\noperation names an output model.",
+        "properties": {},
+        "title": "ToolCallRefused",
         "type": "object"
       },
       "ToolTelemetryRecord": {
@@ -3487,6 +3518,73 @@
           }
         },
         "summary": "core.token.revoke (mutate)"
+      }
+    },
+    "/api/v1/operations/core.tool.call": {
+      "post": {
+        "operationId": "core.tool.call",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolCallInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ToolCallRefused"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.tool.call (read)"
       }
     },
     "/api/v1/operations/core.work.failure_summary": {

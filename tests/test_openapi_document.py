@@ -60,6 +60,7 @@ from rheo_core.operations.core_ops import (
     SETTINGS_SET_MEMBER,
     TOKEN_ISSUE,
     TOKEN_REVOKE,
+    TOOL_CALL,
     WORK_FAILURE_SUMMARY,
     WORK_FAILURES,
     WORK_REPLAY,
@@ -166,6 +167,10 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             WORKSPACE_DIGEST,
             WORKSPACE_RESTORE,
             RUNTIME_RUN,
+            # Issue #262's discover-then-call grant, in CORE_OPERATIONS; its
+            # handler only refuses, because the MCP facade answers the three tools
+            # that name it.
+            TOOL_CALL,
             # Run 1a0's ``core.module.install`` and ``core.module.enable``, both
             # declared in ``rheo_core.modules.operations`` and registered inside the
             # registrar for the same import-direction reason the token pair is.

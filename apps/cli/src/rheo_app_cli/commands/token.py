@@ -1,5 +1,10 @@
-"""``rheo token issue --account --workspace --set --kind`` and
+"""``rheo token issue --account --workspace --set --kind [--discover]`` and
 ``rheo token revoke <token-id>``.
+
+``--discover`` issues the token in discover-then-call mode (issue #262): the named
+set's grants plus ``core.tool.call``, so an MCP client sees a fixed handful of tools
+however many modules are installed and reaches the rest through ``operations_call``
+(``docs/architecture/runtime-and-mcp.md`` § Discover-then-call).
 
 Both dispatch under an operator context (``context_for_operator``) through the
 real, role-checked path -- ``context_for_operator`` -> ``registry.authorize``
@@ -48,6 +53,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[
     issue.add_argument("--workspace", required=True, type=UUID, metavar="WORKSPACE_ID")
     issue.add_argument("--set", dest="set_name", required=True, metavar="NAME")
     issue.add_argument("--kind", required=True, choices=["cli", "mcp"])
+    issue.add_argument(
+        "--discover",
+        action="store_true",
+        help="discover-then-call mode: the MCP client sees a fixed tool list",
+    )
     issue.set_defaults(handler=issue_token)
 
     revoke = commands.add_parser("revoke", help="revoke a token by id")
@@ -107,6 +117,7 @@ def issue_token(args: argparse.Namespace) -> int:
             "account_id": str(args.account),
             "set_name": args.set_name,
             "kind": args.kind,
+            "discover": args.discover,
         },
     )
     if not outcome.ok or outcome.result is None:

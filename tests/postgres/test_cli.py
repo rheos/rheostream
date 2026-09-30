@@ -413,6 +413,8 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             STANDING_GRANT_REVOKE,
             TOKEN_ISSUE,
             TOKEN_REVOKE,
+            # Issue #262's discover-then-call grant.
+            "core.tool.call",
             "core.work.failure_summary",
             WORK_FAILURES,
             "core.work.replay",
