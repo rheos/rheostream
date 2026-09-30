@@ -744,6 +744,9 @@ ADVERSARIAL = {
     "recognized shell prompt lines": _fit("$ cat\n"),
     "rust frames": _fit("panicked at src/main.rs:3:5\n"),
     "error frames": _fit("Error at /app/secret/x.js:3:5\n"),
+    "rust path separators": (
+        "panicked at " + "!/" * ((MAX_INPUT_CHARS - len("panicked at ")) // 2)
+    ),
 }
 
 

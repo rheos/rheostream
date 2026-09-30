@@ -248,7 +248,7 @@ _STACK_FRAME_LINES: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r'\bFile "[^"\n]+", line \d+'),
     re.compile(r"\bError at /[^:\s]+\.[A-Za-z0-9]+:\d+:\d+\b"),
     re.compile(r"\b[\w./-]+\.go:\d+\s+\+0x[0-9a-fA-F]+\b"),
-    re.compile(r"\bpanicked at [^:\s]+(?:/[^:\s]+)*\.rs:\d+:\d+\b"),
+    re.compile(r"\bpanicked at [^:/\s]+(?:/[^:/\s]+)*\.rs:\d+:\d+\b"),
     re.compile(r"^\s*at [^\s(]+ ?\([^()\n]*:\d+(?::\d+)?\)\s*$", re.MULTILINE),
     re.compile(r"\bat [^\s(]+ ?\([^()\s]*\.\w+:\d+(?::\d+)?\)"),
     re.compile(r"^\s*at \S+:\d+:\d+\s*$", re.MULTILINE),
