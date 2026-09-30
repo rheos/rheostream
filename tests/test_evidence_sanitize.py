@@ -821,8 +821,7 @@ ADVERSARIAL = {
     "rust path separators": (
         "panicked at " + "!/" * ((MAX_INPUT_CHARS - len("panicked at ")) // 2)
     ),
-    # #232 review: each took 45 to 97 s before its fix.
-    "dotted word run": _fit("a."),
+    # #232 review: each took 20 to 97 s before its fix ("dotted run" above too).
     "dotted number run": _fit("1."),
     "hyphenated run": _fit("a-"),
     "rust panic over a slashed run": (
