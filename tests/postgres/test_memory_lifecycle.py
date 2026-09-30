@@ -48,7 +48,7 @@ from harness.modules import (
     loaded_probe_modules,
 )
 from harness.registry import add_member
-from rheo_contracts import RecordRef, Role, WorkspaceContext
+from rheo_contracts import RecordRef, Role, StaleRecord, WorkspaceContext
 from rheo_core.approvals import APPROVAL_APPROVE
 from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.context import Refusal
@@ -60,6 +60,7 @@ from rheo_core.deletion import (
     DeletionRecordRow,
     Disposition,
     get_deletion_record,
+    lock_workspace_lifecycle,
 )
 from rheo_core.deletion.operations import (
     RECORD_DELETE,
@@ -108,6 +109,7 @@ from rheo_recallatron.storage.repository import (
     MemoryPurposeRow,
     MemoryRow,
     SourceReceiptRow,
+    correct_memory,
     get_memory,
     get_memory_embedding,
     get_memory_entity,
@@ -119,6 +121,7 @@ from rheo_recallatron.storage.repository import (
     insert_memory_mention,
     insert_memory_purpose,
     insert_source_receipt,
+    invalidate_memory,
     list_memory_links,
 )
 from sqlalchemy import Engine, func, select, text
@@ -1441,3 +1444,354 @@ def test_a_writer_committed_before_the_closure_is_visible_to_it(
     assert marked is not None, "the row the holder committed is gone"
     assert marked.invalidation_reason == _SOURCE_CORRECTED
     assert lifecycle.invalidated_refs() == [memory_reference(late.id)]
+
+
+# --- the compare-and-set under concurrency (issue #12) --------------------------------
+#
+# The lifecycle lock serializes every writer that takes it, so between two of those
+# the revision predicate on the write never fires. These cases are about the writer
+# that does not take it: the repository's ``... WHERE id = $id AND revision =
+# $expected`` is what still turns its lost update into a ``StaleRecord`` rather than a
+# silent overwrite. Two real connections each time, never one pretending to be two.
+
+
+def _cas_write(conn: Any, memory_id: UUID, *, title: str, take_lock: bool) -> int:
+    """One writer's revision-1 compare-and-set, optionally behind the lifecycle lock."""
+    if take_lock:
+        lock_workspace_lifecycle(conn)
+    return correct_memory(
+        conn,
+        memory_id,
+        title=title,
+        body=f"{title}, the body",
+        confidence=None,
+        expected_revision=1,
+        corrected_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.parametrize(
+    ("first_locks", "second_locks"),
+    [(True, True), (True, False), (False, True), (False, False)],
+    ids=["both-lock", "second-skips-lock", "first-skips-lock", "neither-locks"],
+)
+def test_of_two_racing_compare_and_set_writers_exactly_one_wins(
+    lifecycle: LifecycleWorkspace, first_locks: bool, second_locks: bool
+) -> None:
+    """The storage seam's named backend-difference case, on the real memory table.
+
+    Both writers read revision 1 and both write expecting it. The first holds its row
+    lock uncommitted while the second is parked on it (or, when both lock, on the
+    advisory lock ahead of it), then commits. Under ``READ COMMITTED`` the second
+    statement re-evaluates its predicate against the committed row and matches
+    nothing, so it raises ``StaleRecord``. A bare ``SET revision = revision + 1`` would
+    have let both succeed, discarded the first writer's text, and landed at revision 2
+    either way, which is the lost update the predicate exists to refuse.
+    """
+    target = _seed(lifecycle, _row(title="before either writer"))
+    raised: list[BaseException] = []
+    written: list[int] = []
+
+    def second() -> None:
+        with lifecycle.engine.connect() as conn, conn.begin():
+            try:
+                written.append(
+                    _cas_write(
+                        conn, target.id, title="the second", take_lock=second_locks
+                    )
+                )
+            except StaleRecord as exc:
+                raised.append(exc)
+
+    with lifecycle.engine.connect() as first, first.begin():
+        first_revision = _cas_write(
+            first, target.id, title="the first", take_lock=first_locks
+        )
+        assert first_revision == 2
+        racer = threading.Thread(target=second)
+        racer.start()
+        assert _wait_until_parked(racer, "_cas_write"), (
+            "the second writer never parked behind the first, so the two never raced"
+        )
+        assert racer.is_alive()
+    racer.join(timeout=60)
+    assert not racer.is_alive(), "the second writer never resumed after the commit"
+
+    assert written == [], "both racing writers succeeded: an update was lost"
+    assert len(raised) == 1 and isinstance(raised[0], StaleRecord), raised
+    stored = lifecycle.stored(target.id)
+    assert stored is not None
+    assert (stored.title, stored.revision) == ("the first", 2)
+
+
+def test_two_unsynchronized_writers_released_together_still_yield_one_winner(
+    lifecycle: LifecycleWorkspace,
+) -> None:
+    """The same property with no orchestration of who goes first.
+
+    Neither writer takes the lock and a barrier releases both at once, so the order
+    is the scheduler's. Whichever wins, exactly one succeeds and the other is told
+    ``StaleRecord``; the stored row carries the winner's text at revision 2.
+    """
+    target = _seed(lifecycle, _row(title="before either writer"))
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, int | StaleRecord] = {}
+
+    def writer(name: str) -> None:
+        with lifecycle.engine.connect() as conn, conn.begin():
+            barrier.wait(timeout=30)
+            try:
+                outcomes[name] = _cas_write(
+                    conn, target.id, title=name, take_lock=False
+                )
+            except StaleRecord as exc:
+                outcomes[name] = exc
+            # Hold the row lock a moment so the other writer overlaps this one
+            # rather than starting after it committed.
+            time.sleep(0.2)
+
+    threads = [threading.Thread(target=writer, args=(name,)) for name in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+
+    winners = [name for name, got in outcomes.items() if got == 2]
+    losers = [name for name, got in outcomes.items() if isinstance(got, StaleRecord)]
+    assert len(winners) == 1 and len(losers) == 1, outcomes
+    stored = lifecycle.stored(target.id)
+    assert stored is not None
+    assert (stored.title, stored.revision) == (winners[0], 2)
+
+
+def test_a_dispatched_correct_that_loses_to_a_lock_skipping_writer_is_record_stale(
+    lifecycle: LifecycleWorkspace,
+) -> None:
+    """The lock-taking operation reads revision 1 and passes its own comparison; a
+    writer that skipped the lock has already moved the row, uncommitted.
+
+    This is the ordering lock-then-compare alone cannot see: ``_target``'s check ran
+    against the committed revision 1 and passed, so without the predicate the
+    correction's ``UPDATE`` would wait for the skipper, then overwrite its text and
+    report revision 2 over a row that had already been at revision 2. With it, the
+    write matches nothing, the dispatcher answers ``record_stale`` and rolls the whole
+    operation back, and the skipper's write is the one that stands.
+    """
+    target = _seed(lifecycle, _row(title="before either writer"))
+    ctx = lifecycle.context()
+    results: list[OperationOutcome] = []
+
+    with lifecycle.engine.connect() as skipper, skipper.begin():
+        _cas_write(skipper, target.id, title="the skipper", take_lock=False)
+        caller = threading.Thread(
+            target=lambda: results.append(
+                _correct(lifecycle, ctx, target, title="the dispatched correction")
+            )
+        )
+        caller.start()
+        assert _wait_until_parked(caller, "_compare_and_set"), (
+            "the correction never parked on the skipper's row lock at its own write, "
+            "so it never raced the skipper past its revision check"
+        )
+        assert caller.is_alive()
+    caller.join(timeout=60)
+    assert not caller.is_alive(), "the correction never resumed after the commit"
+
+    (outcome,) = results
+    _refused(outcome, "record_stale")
+    stored = lifecycle.stored(target.id)
+    assert stored is not None
+    assert (stored.title, stored.revision) == ("the skipper", 2)
+
+
+def test_two_dispatched_corrects_racing_behind_the_lock_yield_one_winner(
+    lifecycle: LifecycleWorkspace,
+) -> None:
+    """Both writers take the lock, so the lock serializes them and the loser is
+    refused by the comparison it rereads after the lock rather than by the predicate.
+    The operation-level answer is the same word either way."""
+    target = _seed(lifecycle, _row(title="before either writer"))
+    ctx = lifecycle.context()
+    results: dict[str, OperationOutcome] = {}
+
+    def caller(name: str) -> threading.Thread:
+        return threading.Thread(
+            target=lambda: results.__setitem__(
+                name, _correct(lifecycle, ctx, target, title=name)
+            )
+        )
+
+    callers = [caller("a"), caller("b")]
+    with _holding_the_lifecycle_lock(lifecycle):
+        for thread in callers:
+            thread.start()
+        for thread in callers:
+            assert _wait_until_parked(thread, "correct"), (
+                "a correction never queued behind the lifecycle lock"
+            )
+    for thread in callers:
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+
+    winners = [name for name, got in results.items() if got.ok]
+    assert len(winners) == 1, results
+    (loser,) = [got for got in results.values() if not got.ok]
+    _refused(loser, "record_stale")
+    stored = lifecycle.stored(target.id)
+    assert stored is not None
+    assert (stored.title, stored.revision) == (winners[0], 2)
+
+
+@contextmanager
+def _row_locked(memory: LifecycleWorkspace, memory_id: UUID) -> Iterator[Any]:
+    """A second connection holding one memory row ``FOR UPDATE`` and changing
+    nothing, so a lifecycle write that reaches that row parks there. Rolled back on
+    exit, which releases the row exactly as it was."""
+    with memory.engine.connect() as holder:
+        transaction = holder.begin()
+        holder.execute(
+            text("SELECT id FROM recallatron.memory WHERE id = :id FOR UPDATE"),
+            {"id": memory_id},
+        )
+        try:
+            yield holder
+        finally:
+            transaction.rollback()
+
+
+def _count(memory: LifecycleWorkspace, table: Any) -> int:
+    with memory.reading() as uow:
+        return int(
+            uow.connection.execute(select(func.count()).select_from(table)).scalar_one()
+        )
+
+
+@pytest.mark.parametrize("skipper", ["correct", "invalidate"])
+def test_a_supersede_whose_predecessor_moves_after_its_check_is_record_stale(
+    lifecycle: LifecycleWorkspace, skipper: str
+) -> None:
+    """A lock-skipping writer commits a change to the predecessor **between**
+    ``_target``'s comparison and step 4's retirement.
+
+    The supersede is paused mid-operation by parking it on a closure row that a third
+    connection holds; while it waits, the skipper writes the predecessor at the
+    revision everyone read and commits. Step 4 must compare against the revision
+    ``_target`` checked. A late re-read would see the skipper's revision and succeed
+    (``correct``: the supersede retires content it never saw, at revision 3) or find
+    the row already retired and trip an assertion (``invalidate``: ``handler_failed``).
+    Either way the caller must be told ``record_stale``, and the replacement, the
+    closure marks and the events must all roll back.
+    """
+    predecessor = _seed(lifecycle, _row(title="the predecessor"))
+    derivative = _seed(
+        lifecycle, _row(title="built on it"), links=[_derived(predecessor)]
+    )
+    ctx = lifecycle.context()
+    before = lifecycle.rows()
+    results: list[OperationOutcome] = []
+
+    with _row_locked(lifecycle, derivative.id):
+        caller = threading.Thread(
+            target=lambda: results.append(
+                _supersede(lifecycle, ctx, predecessor, title="the replacement")
+            )
+        )
+        caller.start()
+        assert _wait_until_parked(caller, "_mark_invalidated"), (
+            "the supersede never parked on the closure row, so it was never paused "
+            "between its revision check and the predecessor's retirement"
+        )
+        with lifecycle.engine.connect() as conn, conn.begin():
+            if skipper == "correct":
+                _cas_write(conn, predecessor.id, title="the skipper", take_lock=False)
+            else:
+                invalidate_memory(
+                    conn,
+                    predecessor.id,
+                    reason=_SOURCE_CORRECTED,
+                    invalidated_at=datetime.now(UTC),
+                    expected_revision=1,
+                )
+        assert caller.is_alive()
+    caller.join(timeout=60)
+    assert not caller.is_alive(), "the supersede never resumed"
+
+    (outcome,) = results
+    _refused(outcome, "record_stale")
+    assert lifecycle.rows() == before, "the replacement was not rolled back"
+    stored = lifecycle.stored(predecessor.id)
+    assert stored is not None
+    assert stored.revision == 2 and stored.superseded_by_id is None
+    marked = lifecycle.stored(derivative.id)
+    assert marked is not None and marked.invalidation_reason is None
+    assert lifecycle.invalidated_refs() == []
+
+
+def test_a_correct_that_meets_a_moved_closure_row_rolls_back_whole(
+    lifecycle: LifecycleWorkspace,
+) -> None:
+    """A lock-skipper moves the second of two closure rows while ``correct`` is
+    writing, so the correction's ``StaleRecord`` arrives after it has already
+    rewritten its target, dropped the target's vectors and marked the first closure
+    row. Nothing of that may survive: the target keeps its text, revision and vector,
+    neither closure row is half-invalidated, no event and no embed job is left, and
+    the dispatch leaves one ``refused`` audit row. ``correct`` is not long-running, so
+    it mints no operation record and none may be left behind either.
+    """
+    target = _seed(lifecycle, _row(title="the target"))
+    first = _seed(lifecycle, _row(title="first derivative"), links=[_derived(target)])
+    second = _seed(lifecycle, _row(title="second derivative"), links=[_derived(target)])
+    assert first.id < second.id, "closure rows are marked in identifier order"
+    ctx = lifecycle.context()
+    before = lifecycle.rows()
+    jobs_before = _count(lifecycle, work_tables.job)
+    results: list[OperationOutcome] = []
+
+    with lifecycle.engine.connect() as skipper, skipper.begin():
+        _cas_write(skipper, second.id, title="the skipper", take_lock=False)
+        caller = threading.Thread(
+            target=lambda: results.append(
+                _correct(lifecycle, ctx, target, title="the correction")
+            )
+        )
+        caller.start()
+        assert _wait_until_parked(caller, "_mark_invalidated"), (
+            "the correction never parked on the skipper's closure row"
+        )
+        assert caller.is_alive()
+    caller.join(timeout=60)
+    assert not caller.is_alive(), "the correction never resumed after the commit"
+
+    (outcome,) = results
+    _refused(outcome, "record_stale")
+    assert lifecycle.rows() == before
+    kept = lifecycle.stored(target.id)
+    assert kept is not None
+    assert (kept.title, kept.revision, kept.corrected_at) == ("the target", 1, None)
+    assert _embedded(lifecycle, target.id)
+    untouched = lifecycle.stored(first.id)
+    assert untouched is not None
+    assert (untouched.invalidation_reason, untouched.revision) == (None, 1)
+    moved = lifecycle.stored(second.id)
+    assert moved is not None
+    assert (moved.title, moved.revision, moved.invalidation_reason) == (
+        "the skipper",
+        2,
+        None,
+    )
+    assert lifecycle.invalidated_refs() == []
+    assert _count(lifecycle, work_tables.job) == jobs_before
+    with lifecycle.reading() as uow:
+        audits = uow.connection.execute(
+            select(work_tables.audit_record.c.outcome).where(
+                work_tables.audit_record.c.operation_name == MEMORY_CORRECT
+            )
+        ).all()
+        operations = uow.connection.execute(
+            select(func.count())
+            .select_from(work_tables.operation)
+            .where(work_tables.operation.c.name == MEMORY_CORRECT)
+        ).scalar_one()
+    assert [row.outcome for row in audits] == ["refused"]
+    assert operations == 0

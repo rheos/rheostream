@@ -24,6 +24,14 @@ made the predecessor noncurrent *and* incremented its revision, and the loser mu
 told ``record_stale`` — its copy has moved — rather than ``not_found``, which would
 say the record is gone and give it nothing to retry against.
 
+**The lock is not the only guard, and that is deliberate** (issue #12). Every write here
+that advances a revision is itself a compare-and-set, ``... WHERE id = $id AND
+revision = $expected``, through the repository, and a write that matches no row raises
+:class:`~rheo_contracts.StaleRecord`, which the dispatcher answers ``record_stale``. The
+lock serializes every writer that takes it, so between two of those the predicate never
+fires; it is there for the writer that forgot the lock, which would otherwise lose an
+update without any signal.
+
 **What each disposition does** (§ A5's closure table, and this file implements it
 verbatim):
 
@@ -71,7 +79,7 @@ from datetime import datetime
 from typing import Final
 from uuid import UUID
 
-from rheo_contracts import RecordRef, WorkspaceContext
+from rheo_contracts import RecordRef, StaleRecord, WorkspaceContext
 from rheo_core.boundary.context import Refusal
 from rheo_core.deletion import (
     NOTHING_REMOVED,
@@ -258,9 +266,83 @@ def _mark_invalidated(
     reason: str,
     now: datetime,
     consumers: ConsumerRegistry,
-    successor: UUID | None = None,
 ) -> int | None:
-    """Mark one row non-erasure invalidated and publish it; ``None`` if it already was.
+    """Mark one closure row non-erasure invalidated and publish it; ``None`` if it
+    already was.
+
+    A closure row is compared against the revision read here, because nothing earlier
+    in the operation read it: the closure is a set of identifiers. A writer that
+    skipped the lifecycle lock and moved the row after this read makes the write raise
+    ``StaleRecord``, and the whole operation rolls back.
+    """
+    row = get_memory(uow.connection, memory_id)
+    if row is None or row.invalidation_reason is not None:
+        return None
+    return _invalidate_row(
+        ctx,
+        uow,
+        row,
+        expected_revision=row.revision,
+        reason=reason,
+        now=now,
+        consumers=consumers,
+    )
+
+
+def _retire_predecessor(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    predecessor: MemoryRow,
+    *,
+    successor: UUID,
+    now: datetime,
+    consumers: ConsumerRegistry,
+) -> int:
+    """Supersession's step 4: invalidate the predecessor **at the revision** ``_target``
+    **compared**, never at one re-read here.
+
+    Everything the supersession built (the replacement's purposes, links and the
+    closure it invalidated) was derived from the row ``_target`` read. Re-reading the
+    revision at this point would let a lock-skipping writer that committed in between
+    move the row to *n+1*, and this write would then retire content the caller never
+    saw at *n+2* and report success. Compared against ``predecessor.revision``, that
+    writer makes this raise ``StaleRecord`` instead (issue #12).
+
+    A predecessor that is gone or already retired by then is the same case, a copy
+    that moved, so it is ``StaleRecord`` too, not a silent ``None`` and not an
+    assertion that would surface as ``handler_failed``.
+    """
+    row = get_memory(uow.connection, predecessor.id)
+    if (
+        row is None
+        or row.invalidation_reason is not None
+        or row.superseded_by_id is not None
+    ):
+        raise StaleRecord("that memory has moved since the revision you hold")
+    return _invalidate_row(
+        ctx,
+        uow,
+        row,
+        expected_revision=predecessor.revision,
+        reason=SOURCE_SUPERSEDED,
+        now=now,
+        consumers=consumers,
+        successor=successor,
+    )
+
+
+def _invalidate_row(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    row: MemoryRow,
+    *,
+    expected_revision: int,
+    reason: str,
+    now: datetime,
+    consumers: ConsumerRegistry,
+    successor: UUID | None = None,
+) -> int:
+    """The compare-and-set mark, the embedding delete and the publish, for one row.
 
     The mark and the embedding delete are one transaction, so no committed state has a
     vector outliving the row's claim to be current. **The mark goes first**, and that
@@ -270,24 +352,20 @@ def _mark_invalidated(
     Deleting first would find nothing, and the embed's vector would then commit onto a
     row that is no longer current.
     """
-    row = get_memory(uow.connection, memory_id)
-    if row is None or row.invalidation_reason is not None:
-        return None
-    revision = row.revision + 1
-    invalidate_memory(
+    revision = invalidate_memory(
         uow.connection,
-        memory_id,
+        row.id,
         reason=reason,
         invalidated_at=now,
-        revision=revision,
+        expected_revision=expected_revision,
         superseded_by_id=successor,
     )
-    delete_memory_embeddings(uow.connection, memory_id)
+    delete_memory_embeddings(uow.connection, row.id)
     publish_memory_event(
         ctx,
         uow,
         event_type=MEMORY_INVALIDATED,
-        memory_ref=memory_reference(memory_id),
+        memory_ref=memory_reference(row.id),
         kind=row.kind,
         reason=reason,
         revision=revision,
@@ -351,7 +429,6 @@ def correct(
         ctx, uow, model_input.ref, model_input.expected_revision, request=request
     )
     affected = dependent_closure(uow.connection, row.id, include_marked=True)
-    revision = row.revision + 1
     # **Rewrite first, then delete the old text's vectors — the order is the fix.** The
     # rewrite takes the row lock an in-flight embed holds ``FOR SHARE`` from reading
     # the old text until its vector commits, so it waits for that embed, and the delete
@@ -360,13 +437,17 @@ def correct(
     # new text. Deleting first would find nothing to delete while an embed of the old
     # text was still to commit, and that stale vector would stay for good: every later
     # fill skips a memory that already has one.
-    correct_memory(
+    #
+    # The rewrite is also the compare-and-set: ``AND revision = $expected``, with the
+    # revision ``_target`` already compared under the lock. The lock is what serializes
+    # writers that take it; the predicate is what still refuses one that did not.
+    revision = correct_memory(
         uow.connection,
         row.id,
         title=model_input.title,
         body=model_input.body,
         confidence=model_input.confidence,
-        revision=revision,
+        expected_revision=row.revision,
         corrected_at=request.now,
     )
     delete_memory_embeddings(uow.connection, row.id)
@@ -451,21 +532,17 @@ def supersede(
         now=request.now,
         consumers=consumers,
     )
-    # (4) the predecessor last, so its successor pointer names a row that exists.
-    revision = _mark_invalidated(
+    # (4) the predecessor last, so its successor pointer names a row that exists, and
+    # at the revision (1) compared: a writer that skipped the lock and moved it since
+    # makes this ``StaleRecord``, which rolls the replacement back with everything else.
+    revision = _retire_predecessor(
         ctx,
         uow,
-        predecessor.id,
-        reason=SOURCE_SUPERSEDED,
+        predecessor,
+        successor=canonical_ref(written.ref).id,
         now=request.now,
         consumers=consumers,
-        successor=canonical_ref(written.ref).id,
     )
-    # Unreachable: ``_target`` refused a noncurrent predecessor three statements up,
-    # and this transaction holds the lifecycle lock, so nothing can have invalidated
-    # it in between. Asserted rather than defaulted, because a ``None`` here would
-    # otherwise be reported to the caller as a revision.
-    assert revision is not None, "the predecessor was invalidated under the lock"
     return MemorySuperseded(
         replacement=written,
         predecessor_ref=memory_reference(predecessor.id),

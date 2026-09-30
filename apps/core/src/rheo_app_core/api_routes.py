@@ -41,6 +41,7 @@ from rheo_core.operations import (
     INPUT_INVALID,
     OPERATION_NOT_PERMITTED,
     PENDING,
+    RECORD_STALE,
     ROLE_NOT_PERMITTED,
     SUCCEEDED,
     OperationOutcome,
@@ -64,6 +65,10 @@ _STATUS_BY_STATE: Final[dict[str, int]] = {
     OPERATION_NOT_PERMITTED: 403,
     ROLE_NOT_PERMITTED: 403,
     NOT_FOUND: 404,
+    # 409 Conflict: the caller's copy is behind the stored revision (issue #12). Not
+    # 404, which would say there is nothing to retry against, and not the 400 default,
+    # which would say the request itself was malformed.
+    RECORD_STALE: 409,
     INPUT_INVALID: 422,
 }
 _DEFAULT_ERROR_STATUS: Final = 400

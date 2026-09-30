@@ -287,7 +287,11 @@ columns, vector distance ordering, and `ON CONFLICT` semantics, each as a named 
 future SQLite adapter has a contract to fail against rather than a vague promise. As built, the
 suite is not yet written against a `backend` fixture: several of these cases exist as named
 Postgres tests (concurrent compare-and-set, concurrent job leasing, the migration advisory
-lock), and the receipt case waits for intake.
+lock), and the receipt case waits for intake. The compare-and-set case is
+`test_of_two_racing_compare_and_set_writers_exactly_one_wins` in
+`tests/postgres/test_memory_lifecycle.py`: two real connections write the same memory
+expecting the same revision, with either, both or neither taking the lifecycle lock, and
+exactly one succeeds while the other raises `StaleRecord`.
 
 ### `revision` is a compare-and-set, not a counter
 
@@ -307,14 +311,36 @@ of a record type carrying `revision` names the revision it read, and a write tha
 is a refusal rather than a no-op. A module cannot opt out, because a module does not write SQL
 outside its repository.
 
+The contract, stated once:
+
+- Every write that advances a mutable type's `revision` is one statement,
+  `UPDATE ... SET ..., revision = $expected + 1 WHERE id = $id AND revision = $expected`.
+  No write sets `revision` any other way.
+- Zero rows affected raises `StaleRecord` (`rheo_contracts`). The dispatcher catches it out of
+  any handler, rolls the unit of work back, and answers the refusal `record_stale`
+  (`rheo_core.operations.RECORD_STALE`), which the HTTP listener maps to 409 Conflict. A
+  module raises it from its repository and never translates it itself.
+- **A lock does not replace the predicate.** A module may also serialize its writers with an
+  advisory lock (Recallatron's lifecycle writes take the workspace record-lifecycle lock, and
+  must, for the closure reasons in [memory](memory.md)). The lock orders the writers that take
+  it; the predicate is what refuses the one that forgot to. Lock-then-compare alone is not
+  enough: a writer that skipped the lock would still lose an update without any signal.
+- Of two racing writers expecting the same revision, exactly one succeeds and the other raises
+  `StaleRecord`, whether or not either took the lock. Under `READ COMMITTED` the second
+  `UPDATE` waits on the first's row lock and then re-evaluates its predicate against the
+  committed row, which is why this holds without a stronger isolation level.
+
 An immutable type (an observation, a receipt, a qualification) carries no `revision` column and
 reports the constant `1`, so the guard on it can only fail by deletion
 ([identifiers](identifiers.md#resolution-under-permission)).
 
-The core tables carry no mutable domain record type, so the first record type it binds is
-`recallatron.memory` (run 1a1), whose lifecycle writes refuse a stale revision as
-`record_stale`. It is stated here rather than there so that every module author inherits the
-rule instead of inventing it.
+The core tables carry no mutable domain record type and the core ships no implementation of
+`Repository.save(..., expected_revision)`; a core implementation, when one lands, takes the same
+statement shape. The first record type the rule binds is `recallatron.memory` (run 1a1): its
+`correct` and `supersede` compare the supplied revision under the lifecycle lock, and every
+revision-advancing write under them (the correction itself, and each invalidation of the
+predecessor and its closure) carries the predicate (issue #12). It is stated here rather than
+there so that every module author inherits the rule instead of inventing it.
 
 ## Retrieval adapter (D9, FR 30)
 

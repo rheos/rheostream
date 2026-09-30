@@ -22,6 +22,16 @@ MODULE_DISABLED: Final = "module_disabled"
 ROLE_NOT_PERMITTED: Final = "role_not_permitted"
 INPUT_INVALID: Final = "input_invalid"
 OUTPUT_INVALID: Final = "output_invalid"
+RECORD_STALE: Final = "record_stale"
+"""A compare-and-set write named a revision the row no longer holds (issue #12).
+
+The dispatcher answers it for any handler that lets a
+:class:`~rheo_contracts.StaleRecord` escape, which is what a repository raises when its
+``... WHERE id = $id AND revision = $expected`` write affects zero rows. Declared here
+rather than in a module because the rule is the repository protocol's, not one module's:
+every mutable record type answers a lost race with the same word. A caller told this
+should reread and retry; ``not_found`` would tell it there was nothing to retry against.
+"""
 
 SUCCEEDED: Final = "succeeded"
 FAILED: Final = "failed"

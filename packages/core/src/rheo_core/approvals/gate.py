@@ -43,6 +43,7 @@ from pydantic import BaseModel, ValidationError
 from rheo_contracts import (
     OperationDeclaration,
     RecordRef,
+    StaleRecord,
     WorkspaceContext,
 )
 
@@ -69,6 +70,7 @@ from rheo_core.operations.records import (
 from rheo_core.operations.refusals import (
     OPERATION_UNKNOWN,
     OUTPUT_INVALID,
+    RECORD_STALE,
     OperationRefused,
 )
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
@@ -387,6 +389,9 @@ def execute_approved(
       process. A deployment that dropped a module between the hold and the approval.
     - ``invalid_approval`` — the snapshot is gone, no longer validates, or the
       binding tuple does not match what is about to run (criterion 60).
+    - ``record_stale`` — the handler's own compare-and-set missed and it raised
+      :class:`~rheo_contracts.StaleRecord`, translated here because this call does not
+      go back through ``dispatch()``'s own ``except``.
     - ``output_invalid`` — the handler returned something that is not its declared
       output type; the same check ``dispatch()`` makes on an ordinary call, made here
       because this call does not go back through ``dispatch()``.
@@ -490,7 +495,14 @@ def execute_approved(
             uow.scheduled_execution if isinstance(uow, HandlerUnitOfWork) else None
         ),
     )
-    output = operation.handler(held_caller, held_view, model_input)
+    try:
+        output = operation.handler(held_caller, held_view, model_input)
+    except StaleRecord as stale:
+        # The approved call's own compare-and-set missed (issue #12). Raised as the
+        # same refusal ``dispatch()`` answers for an ordinary call, so the approve
+        # dispatch rolls back and answers ``record_stale`` rather than letting the
+        # exception reach a generic ``handler_failed``.
+        raise OperationRefused(RECORD_STALE, str(stale) or RECORD_STALE) from stale
     # A gated handler that made work due (a publish that wrote a delivery row, #180)
     # asked on ``held_view``, which no dispatcher reads. ``core.approval.approve``'s
     # own dispatch reads the view it built, so the request is passed up to that one

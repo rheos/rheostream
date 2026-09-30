@@ -357,14 +357,14 @@ second, and a purpose bug would not widen who can read the derived row.
 **Mutation:**
 ```diff
 diff --git a/modules/recallatron/src/rheo_recallatron/lifecycle.py b/modules/recallatron/src/rheo_recallatron/lifecycle.py
-index fa43b78..fe7e17b 100644
+index 6561cab..2f9a512 100644
 --- a/modules/recallatron/src/rheo_recallatron/lifecycle.py
 +++ b/modules/recallatron/src/rheo_recallatron/lifecycle.py
-@@ -282,7 +282,6 @@ def _mark_invalidated(
-         revision=revision,
+@@ -360,7 +360,6 @@ def _invalidate_row(
+         expected_revision=expected_revision,
          superseded_by_id=successor,
      )
--    delete_memory_embeddings(uow.connection, memory_id)
+-    delete_memory_embeddings(uow.connection, row.id)
      publish_memory_event(
          ctx,
          uow,
@@ -373,12 +373,18 @@ index fa43b78..fe7e17b 100644
 **Cost:** `pytest:tests/postgres/test_memory_lifecycle.py::test_correction_removes_the_embeddings_of_every_row_it_touches` — first observed failure line: `E       AssertionError: assert not True`, at the assertion that the *derivative* `b` no longer has an embedding; the target row `a`'s own assertion one line above still passes
 
 **Performed by:** P7 (2026-09-21); re-performed by run 1a2 Prompt 3 (2026-09-23) after the
-delete moved below the mark, with the same first failure line
+delete moved below the mark, with the same first failure line; re-performed for issue #12
+(2026-09-30) after the delete moved into `_invalidate_row`, with the same first failure line
+(`test_supersession_marks_the_pre_existing_derivatives_and_bumps_each_revision` also fails;
+the other two demonstrators pass)
 
 **Why the hunk moved:** run 1a2 made `_mark_invalidated` mark the row *before* deleting its
 embeddings, so the mark's row lock waits out an embed writer holding that row `FOR SHARE`
 and the delete then removes the vector it committed. The mutation is the same line, removed
-from its new place.
+from its new place. Issue #12 then split `_mark_invalidated` so supersession's predecessor
+is retired at the revision its check read: the mark, the embedding delete and the publish
+now live in `_invalidate_row`, which both the closure rows and the predecessor go through,
+so the same line is removed from there.
 
 **Note:** the mutation is deliberately the narrow one. Correction drops the target's own
 embeddings at its own call site and the closure drops each affected derivative's inside
