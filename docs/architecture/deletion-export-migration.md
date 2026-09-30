@@ -155,6 +155,13 @@ enforces the schema. The core writes its own tables. Secret values are absent by
 no exporter can resolve one. Copies of workspace files are to travel with the records that
 reference them; no module stores files yet, so the artifact carries none.
 
+`export_format_version` is the compatibility contract for a module's exported rows. If the
+row shape changes, the module must bump that version; the core refuses an artifact whose
+recorded version differs from the host's version. An importer owns the upgrade logic for
+older rows within the format it accepts. The manifest's recorded `schema_version` is
+informational for the restored workspace and is not used to select a migration point for
+export rows.
+
 ### Export records
 
 | Table | Columns |
@@ -174,12 +181,15 @@ owner into a workspace the control plane does not yet know:
 
 1. Read and validate `manifest.json`; refuse if the contract version is unsupported, or if any
    listed module is not loaded by this host or declares an `export_format_version` other than
-   the host's, naming it.
+   the host's, naming it. An older format is therefore refused; the module's importer upgrades
+   older rows only when they remain within the current format contract.
 2. Create the workspace row with the recorded id and slug (identifiers are globally safe, so the
    id is kept and comparison in criteria 21, 36, 67 is by id), provision the database, apply the
    core chain, and hold the row in state `restoring`.
 3. In one transaction from here to the commit: create each loadable module's extensions and run
-   its whole chain to the host's head, then write its `module_state` row from the artifact.
+   its whole chain to the host's head, then write its `module_state` row from the artifact. This
+   schema migration is separate from export-row compatibility; the module importer handles any
+   older rows admitted by its format contract.
 4. Import settings, approvals, operations and the audit log; then each module's rows through its
    `importer`, parents first; then the deletion records, which a module's ancestry check reads;
    then each module's second pass, which resolves self-references.
