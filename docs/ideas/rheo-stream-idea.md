@@ -1586,6 +1586,14 @@ history.
   of the selected runtime and model. Their rollout order is settled below.
 - Ignore rules accompany a clean-publication process; they do not make existing
   tracked data, Git history, or packaged artifacts safe to publish by themselves.
+- One MCP surface is a goal in itself (decided 2026-09-30): as many of the
+  operator's MCP services as possible should sit behind the single rheoStream MCP
+  surface, to cut the context every agent session carries. Services get there
+  three ways: a module replaces the service outright, a channel module takes over
+  a chat service (Telegram, and later Discord), or a connector proxies an existing
+  external MCP server. What costs context is the number of tool schemas a client
+  sees, not the number of servers, so the surface keeps its visible tool list
+  small through per-token grants and a discover-then-call mode (#262, #263).
 
 Settled by the [requirements and scope document](../requirements/requirements-and-scope.md),
 which records the rationale for each:
