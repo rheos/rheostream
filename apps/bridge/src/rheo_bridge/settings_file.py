@@ -39,8 +39,11 @@ from pathlib import Path
 from typing import Final
 
 SETTINGS_RELATIVE: Final = Path(".claude") / "settings.local.json"
-# ``remove`` deletes a hook entry when its command names this; it is how the
-# installed command is recognised whatever interpreter wrote it.
+POSIX_SH: Final = "/bin/sh"
+# ``remove`` and ``merge`` treat a hook entry as the bridge's when its command
+# names this. That matches the ``/bin/sh`` wrapper and the older bare
+# ``<python> .../hook.py <event>`` form alike, whatever interpreter wrote it,
+# so a reinstall replaces either.
 HOOK_MARKER: Final = ".rheo-bridge/hook.py"
 HOOK_EVENTS: Final = ("Stop", "SessionEnd")
 # [capture 6] — may be revised at reconciliation.
@@ -61,12 +64,22 @@ def settings_path(enrolled_dir: Path) -> Path:
 
 
 def hook_command(interpreter: str, hook_script: Path, event: str) -> str:
-    """``"<interpreter> <hook_script> <event>"``, each part shell-quoted.
+    """The settings command: run the hook only if both of its paths still exist.
 
-    Claude Code runs the command through a shell. For the ordinary case, paths
-    with no space or shell metacharacter, quoting changes nothing.
+    ``/bin/sh -c '<guard>' <interpreter> <hook_script>``. The guard execs the
+    interpreter on the script when the interpreter is executable and the
+    script is a file, and otherwise exits 0. A bare ``python hook.py`` would
+    exit 2 on a missing script (and 127 on a missing interpreter), and Claude
+    Code reads exit 2 from a ``Stop`` hook as "keep going", so a hook that
+    outlived ``bridge_home`` or a pruned interpreter would loop every turn.
+    The two paths arrive as ``$0`` and ``$1``, never inside the guard's text,
+    so a path with spaces needs no quoting there; the outer command is
+    shell-quoted part by part. ``event`` is one of :data:`HOOK_EVENTS`.
     """
-    return shlex.join([interpreter, str(hook_script), event])
+    if event not in HOOK_EVENTS:
+        raise ValueError(f"not a hook event: {event!r}")
+    guard = f'[ -x "$0" ] && [ -f "$1" ] && exec "$0" "$1" {event}; exit 0'
+    return shlex.join([POSIX_SH, "-c", guard, interpreter, str(hook_script)])
 
 
 def check_location(path: Path) -> None:

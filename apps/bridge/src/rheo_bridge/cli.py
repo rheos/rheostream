@@ -418,6 +418,14 @@ def install_hook(
     return EXIT_OK
 
 
+def _refuse_other_dir(config: bridge_config.Config, enrolled_dir: Path) -> None:
+    if os.path.realpath(enrolled_dir) != config.enrolled_dir:
+        raise CliError(
+            f"--enrolled-dir {enrolled_dir} is not the enrolled directory "
+            f"{config.enrolled_dir}; the hook is installed there. Nothing removed"
+        )
+
+
 def remove_hook(
     bridge_home: Path, *, enrolled_dir: Path, tolerate_bad_config: bool = False
 ) -> int:
@@ -427,6 +435,8 @@ def remove_hook(
     created it, and the file is deleted only when install created it and it
     is ``{}`` once the entries are gone: what was there before comes back.
 
+    A readable config whose ``enrolled_dir`` is not ``enrolled_dir`` is
+    refused with nothing removed: the hook would stay installed where it is.
     ``tolerate_bad_config`` (``uninstall``'s path) treats an unusable
     ``config.json`` as no record: the entries naming the bridge hook are still
     removed, and no container or file is deleted.
@@ -438,11 +448,9 @@ def remove_hook(
             raise CliError(str(exc)) from exc
         config = None
     target_dir = Path(os.path.realpath(enrolled_dir))
-    record = (
-        config
-        if config is not None and str(target_dir) == config.enrolled_dir
-        else None
-    )
+    record = config
+    if record is not None:
+        _refuse_other_dir(record, enrolled_dir)
     created = record is not None and record.hook_created_settings
     path = settings_file.settings_path(target_dir)
     try:
@@ -491,12 +499,18 @@ def uninstall(
     the sessions whose range the server has not acknowledged (including those
     only the spool names so far), then deletes ``bridge_home``. That line is
     the one named record of the one local discard this design allows.
+
+    A readable config naming another enrolled directory is refused before
+    anything is counted or removed: deleting ``bridge_home`` while the hook
+    stays installed elsewhere would leave a hook with no script.
     """
     try:
         config = bridge_config.load(bridge_home)
     except bridge_config.ConfigError:
         # A corrupt config must not keep the credentials on disk.
         config = None
+    if config is not None:
+        _refuse_other_dir(config, enrolled_dir)
     enrollment_id = config.enrollment_id if config is not None else None
     if not purge:
         remove_hook(bridge_home, enrolled_dir=enrolled_dir, tolerate_bad_config=True)
@@ -586,7 +600,25 @@ def status(bridge_home: Path, *, now: datetime) -> int:
         print(f"ledger.{reason}: {entry.count}")
     print(f"last_accepted_at: {_iso(max(accepted_stamps, default=None))}")
     print(f"token_days_remaining: {_days_remaining(config.token_expires_at, now)}")
+    # The worker refuses to run on a loose bridge_home, and a hook-spawned
+    # worker has no terminal, so this line is where that shows.
+    problem = _privacy_problem(bridge_home)
+    print(f"bridge_home_private: {'no' if problem else 'yes'}")
+    if problem:
+        print(f"status: the worker will not run: {problem}", file=sys.stderr)
     return EXIT_OK
+
+
+def _privacy_problem(bridge_home: Path) -> str | None:
+    """Why ``bridge_home`` fails the worker's privacy check, or ``None``.
+
+    The message names only the bridge's own files and their modes.
+    """
+    try:
+        paths.check_private(bridge_home)
+    except OSError as exc:
+        return str(exc)
+    return None
 
 
 # --- drain --------------------------------------------------------------------
@@ -619,11 +651,13 @@ def drain(
         bridge_home, projects_root=projects_root, client=client, now=now
     )
     if code == worker.EXIT_FAILURE:
-        print(
-            "drain: the worker could not run (bridge_home permissions, "
-            "configuration or machine key)",
-            file=sys.stderr,
+        problem = _privacy_problem(bridge_home)
+        reason = (
+            f"bridge_home is not private: {problem}"
+            if problem
+            else "configuration or machine key unusable"
         )
+        print(f"drain: the worker could not run: {reason}", file=sys.stderr)
     elif code == worker.EXIT_REFUSED:
         print(
             "drain: the server refused the batch; see `rheo-bridge status` "

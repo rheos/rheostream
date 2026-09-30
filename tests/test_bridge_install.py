@@ -22,6 +22,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -213,8 +214,14 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def expected_command(d: Dirs, event: str) -> str:
-    return f"{INTERPRETER} {d.bridge_home / 'hook.py'} {event}"
+GUARD = '[ -x "$0" ] && [ -f "$1" ] && exec "$0" "$1" {event}; exit 0'
+
+
+def expected_command(d: Dirs, event: str, interpreter: str = INTERPRETER) -> str:
+    """Written out by hand: the ``/bin/sh`` guard, then the two paths as args.
+    The synthetic paths hold no character ``shlex.quote`` would quote."""
+    guard = GUARD.format(event=event)
+    return f"/bin/sh -c '{guard}' {interpreter} {d.bridge_home / 'hook.py'}"
 
 
 def our_commands(document: dict[str, Any]) -> list[str]:
@@ -467,7 +474,13 @@ def test_the_default_interpreter_is_the_resolved_absolute_one(
     commands = our_commands(load_json(initialised.settings))
     interpreter = os.path.realpath(sys.executable)
     assert os.path.isabs(interpreter)
-    assert all(command.startswith(interpreter + " ") for command in commands)
+    assert sorted(commands) == sorted(
+        settings_file.hook_command(
+            interpreter, initialised.bridge_home / "hook.py", event
+        )
+        for event in ("Stop", "SessionEnd")
+    )
+    assert all(shlex.split(c)[3] == interpreter for c in commands)
 
 
 EXISTING: dict[str, Any] = {
@@ -647,7 +660,8 @@ def test_dry_run_prints_the_diff_and_writes_nothing_for_an_absent_file(
     assert out.splitlines()[:2] == [f"--- {absolute}", f"+++ {absolute}"]
     assert str(initialised.enrolled) in out.splitlines()[0]
     for event in ("Stop", "SessionEnd"):
-        assert expected_command(initialised, event) in out
+        # As the JSON in the diff spells it (its double quotes escaped).
+        assert json.dumps(expected_command(initialised, event))[1:-1] in out
     assert not initialised.settings.exists()
     assert not initialised.settings.parent.exists()
     assert not paths.hook_path(initialised.bridge_home).exists()
@@ -1012,7 +1026,8 @@ def test_status_prints_counts_and_the_enrollment_only(
         == datetime.fromtimestamp(NOW_TS - 60, UTC).isoformat()
     )
     assert lines["token_days_remaining"] == "20"
-    value = re.compile(r"-?\d+|none|unknown|\d{4}-\d{2}-\d{2}T[\d:]+\+00:00")
+    assert lines["bridge_home_private"] == "yes"
+    value = re.compile(r"-?\d+|none|unknown|yes|\d{4}-\d{2}-\d{2}T[\d:]+\+00:00")
     assert all(value.fullmatch(v) for v in lines.values()), lines
     for session_hash in HASHES.values():
         assert session_hash not in out
@@ -1223,3 +1238,236 @@ def test_remove_hook_alone_still_refuses_a_corrupt_config(initialised: Dirs) -> 
     with pytest.raises(cli.CliError):
         cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled)
     assert len(our_commands(load_json(initialised.settings))) == 2
+
+
+# --- an installed hook never outlives its script into a loop --------------------
+
+
+@pytest.mark.parametrize("purge", [False, True], ids=["plain", "purge"])
+def test_uninstall_for_another_directory_is_refused_and_removes_nothing(
+    initialised: Dirs, tmp_path: Path, purge: bool
+) -> None:
+    set_token(initialised, new_token())
+    assert install(initialised) == 0
+    other = tmp_path / "home" / "code" / "another-project"
+    other.mkdir(parents=True)
+    settings_before = initialised.settings.read_bytes()
+
+    with pytest.raises(cli.CliError, match="not the enrolled directory"):
+        cli.uninstall(
+            initialised.bridge_home, enrolled_dir=other, purge=purge, now=lambda: NOW
+        )
+
+    assert initialised.settings.read_bytes() == settings_before
+    assert paths.token_path(initialised.bridge_home).exists()
+    assert paths.machine_key_path(initialised.bridge_home).exists()
+    assert paths.hook_path(initialised.bridge_home).exists()
+
+
+def test_remove_hook_for_another_directory_is_refused(
+    initialised: Dirs, tmp_path: Path
+) -> None:
+    other = tmp_path / "home" / "code" / "another-project"
+    (other / settings_file.SETTINGS_RELATIVE).parent.mkdir(parents=True)
+    foreign = {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": (
+                                "/opt/x/python /opt/y/.rheo-bridge/hook.py Stop"
+                            ),
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    settings_file.settings_path(other).write_text(json.dumps(foreign))
+    with pytest.raises(cli.CliError, match="not the enrolled directory"):
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=other)
+    assert load_json(settings_file.settings_path(other)) == foreign
+
+
+def run_hook_command(
+    command: str, payload: bytes
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a settings command the way Claude Code does: through ``/bin/sh -c``."""
+    return subprocess.run(
+        command, shell=True, input=payload, capture_output=True, timeout=60, check=False
+    )
+
+
+def hook_payload() -> bytes:
+    return json.dumps(
+        {"session_id": SESSION_ID, "transcript_path": "/tmp/rheo-synthetic/t.jsonl"}
+    ).encode()
+
+
+def installed_commands(d: Dirs) -> dict[str, str]:
+    document = load_json(d.settings)
+    return {
+        event: document["hooks"][event][-1]["hooks"][0]["command"]
+        for event in ("Stop", "SessionEnd")
+    }
+
+
+def _real_interpreter() -> str:
+    import sys
+
+    return os.path.realpath(sys.executable)
+
+
+@pytest.mark.parametrize("space", [False, True], ids=["plain", "path-with-space"])
+def test_the_installed_command_runs_the_hook_and_spools_a_line(
+    tmp_path: Path, space: bool
+) -> None:
+    d = make_dirs(tmp_path / "with space" if space else tmp_path)
+    assert (
+        cli.init(
+            d.bridge_home,
+            enrolled_dir=d.enrolled,
+            api_url=API_URL,
+            executable=VENV_PYTHON,
+        )
+        == 0
+    )
+    assert (
+        cli.install_hook(
+            d.bridge_home, enrolled_dir=d.enrolled, interpreter=_real_interpreter()
+        )
+        == 0
+    )
+    for command in installed_commands(d).values():
+        completed = run_hook_command(command, hook_payload())
+        assert (completed.returncode, completed.stdout, completed.stderr) == (
+            0,
+            b"",
+            b"",
+        )
+    spooled = [
+        json.loads(line)
+        for path in sorted(paths.spool_dir(d.bridge_home).glob("*.jsonl"))
+        for line in path.read_text().splitlines()
+    ]
+    assert [line["event"] for line in spooled] == ["Stop", "SessionEnd"]
+    assert all("session_hash" in line for line in spooled)
+
+
+def test_the_installed_command_exits_0_silently_when_the_script_is_gone(
+    initialised: Dirs,
+) -> None:
+    assert (
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            interpreter=_real_interpreter(),
+        )
+        == 0
+    )
+    commands = installed_commands(initialised)
+    # A manual `rm -rf ~/.rheo-bridge`: the settings entry outlives the script.
+    shutil.rmtree(initialised.bridge_home)
+    for command in commands.values():
+        completed = run_hook_command(command, hook_payload())
+        assert (completed.returncode, completed.stdout, completed.stderr) == (
+            0,
+            b"",
+            b"",
+        )
+    assert not initialised.bridge_home.exists()
+
+
+def test_the_installed_command_exits_0_silently_when_the_interpreter_is_gone(
+    initialised: Dirs,
+) -> None:
+    missing = "/opt/rheo-synthetic/pruned/python3.12"
+    assert not os.path.exists(missing)
+    assert (
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            interpreter=missing,
+        )
+        == 0
+    )
+    assert paths.hook_path(initialised.bridge_home).is_file()
+    for command in installed_commands(initialised).values():
+        completed = run_hook_command(command, hook_payload())
+        assert (completed.returncode, completed.stdout, completed.stderr) == (
+            0,
+            b"",
+            b"",
+        )
+    assert not paths.spool_dir(initialised.bridge_home).exists()
+
+
+def test_a_reinstall_replaces_the_old_bare_python_form(initialised: Dirs) -> None:
+    hook = initialised.bridge_home / "hook.py"
+    old = {
+        "hooks": {
+            event: [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"{INTERPRETER} {hook} {event}",
+                            "timeout": 5,
+                        }
+                    ]
+                }
+            ]
+            for event in ("Stop", "SessionEnd")
+        }
+    }
+    initialised.settings.parent.mkdir()
+    initialised.settings.write_text(json.dumps(old))
+    assert install(initialised) == 0
+    document = load_json(initialised.settings)
+    for event in ("Stop", "SessionEnd"):
+        commands = [
+            entry["command"]
+            for group in document["hooks"][event]
+            for entry in group["hooks"]
+        ]
+        assert commands == [expected_command(initialised, event)]
+
+
+# --- OS litter does not stop the worker; a real privacy failure shows ----------
+
+
+def test_finder_litter_does_not_stop_the_worker(initialised: Dirs) -> None:
+    set_token(initialised, new_token())
+    spool_session(initialised, write_transcript(initialised))
+    for litter in (
+        initialised.bridge_home / ".DS_Store",
+        paths.spool_dir(initialised.bridge_home) / ".DS_Store",
+        paths.spool_dir(initialised.bridge_home) / "._2026-09-29.jsonl",
+    ):
+        litter.write_bytes(b"\x00\x00\x00\x01Bud1")
+        os.chmod(litter, 0o644)
+    paths.check_private(initialised.bridge_home)
+    client = FakeClient()
+    assert run_drain(initialised, client) == 0
+    assert client.calls >= 1
+
+
+def test_a_loose_bridge_file_is_named_by_drain_and_status(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    set_token(initialised, new_token())
+    os.chmod(paths.token_path(initialised.bridge_home), 0o644)
+    capsys.readouterr()
+
+    client = FakeClient()
+    assert run_drain(initialised, client) == 1
+    assert client.calls == 0
+    err = capsys.readouterr().err
+    assert "not private" in err and "token: file mode 0644" in err
+
+    assert cli.status(initialised.bridge_home, now=NOW) == 0
+    captured = capsys.readouterr()
+    assert "bridge_home_private: no\n" in captured.out
+    assert "token: file mode 0644" in captured.err
