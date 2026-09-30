@@ -344,6 +344,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.tool.call": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.tool.call (read) */
+        post: operations["core.tool.call"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.work.failure_summary": {
         parameters: {
             query?: never;
@@ -1506,6 +1523,11 @@ export interface components {
              */
             account_id: string | null;
             /**
+             * Discover
+             * @default false
+             */
+            discover: boolean;
+            /**
              * Kind
              * @enum {string}
              */
@@ -1561,6 +1583,31 @@ export interface components {
              */
             token_id: string;
         };
+        /**
+         * ToolCallInput
+         * @description The shape ``operations_call`` sends: a tool name and that tool's input.
+         *
+         *     Declared so the operation has an honest schema in the generated API document.
+         *     The facade validates the tool's own copy of this shape and never dispatches the
+         *     operation, so nothing reads this model at run time.
+         */
+        ToolCallInput: {
+            /**
+             * Input
+             * @default {}
+             */
+            input: {
+                [key: string]: unknown;
+            };
+            /** Name */
+            name: string;
+        };
+        /**
+         * ToolCallRefused
+         * @description Never returned: :func:`_tool_call` always refuses. Declared because every
+         *     operation names an output model.
+         */
+        ToolCallRefused: Record<string, never>;
         /**
          * ToolTelemetryRecord
          * @description One ``core.tool_telemetry`` row as this operation publishes it.
@@ -2338,6 +2385,41 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["TokenRevoked"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.tool.call": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolCallInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ToolCallRefused"];
                         state: string;
                     };
                 };

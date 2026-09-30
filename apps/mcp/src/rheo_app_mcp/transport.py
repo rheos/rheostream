@@ -68,7 +68,11 @@ from mcp.server.lowlevel import Server
 from mcp.server.transport_security import TransportSecuritySettings
 from rheo_contracts import ToolDeclaration, WorkspaceContext
 from rheo_core.boundary.context import TOKEN_MALFORMED, Refusal
-from rheo_core.operations.tool_facade import WITHHELD_REASON, ConsumerRegistry
+from rheo_core.operations.tool_facade import (
+    WITHHELD_REASON,
+    ConsumerRegistry,
+    tool_description,
+)
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -211,13 +215,13 @@ def _as_tool(declaration: ToolDeclaration) -> types.Tool:
     failure modes there -- and falls back to naming the operation when it does
     not. Nothing is invented here either way: a second, unreviewed source of tool
     documentation in the transport layer is exactly what the fallback's one
-    mechanical sentence avoids being.
+    mechanical sentence avoids being. The rule is the facade's
+    ``tool_description``, so ``operations_catalog`` describes a tool in the same
+    words this listing would.
     """
     return types.Tool(
         name=declaration.name,
-        description=(
-            declaration.description or f"Calls the {declaration.operation} operation."
-        ),
+        description=tool_description(declaration),
         input_schema=declaration.input_model.model_json_schema(),
     )
 

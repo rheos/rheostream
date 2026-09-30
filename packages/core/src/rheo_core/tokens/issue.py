@@ -65,7 +65,13 @@ from rheo_core.storage.control_plane import (
 from rheo_core.storage.postgres import get_backend
 from rheo_core.tokens.format import mint
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
-from rheo_core.tokens.sets import PACKAGE_SETS, agent_default, cli_full, read_only
+from rheo_core.tokens.sets import (
+    DISCOVER_THEN_CALL_OPERATION,
+    PACKAGE_SETS,
+    agent_default,
+    cli_full,
+    read_only,
+)
 
 SET_NOT_ISSUABLE: Final = "set_not_issuable"
 """An explicit ``operations`` list named one of the eight non-token-issuable
@@ -75,6 +81,10 @@ pattern for ``COMPOSITION_MISSING``/``ACTOR_REQUIRED``."""
 
 SET_EMPTY: Final = "set_empty"
 """Nothing survived expansion, intersection and the strip below."""
+
+DISCOVER_NOT_PERMITTED: Final = "discover_not_permitted"
+"""``discover`` was asked for and ``core.tool.call`` did not survive the issuer's
+permitted set, so the token would silently have come out in direct mode."""
 
 SET_SELECTION_INVALID: Final = "set_selection_invalid"
 """Neither or both of ``set_name``/``operations`` were given."""
@@ -101,6 +111,12 @@ class TokenIssueInput(BaseModel):
     operations: list[str] | None = None
     account_id: UUID | None = None
     purpose: str | None = None
+    discover: bool = False
+    """Issue the token in discover-then-call mode (issue #262): its snapshot also
+    holds ``core.tool.call``, so the MCP facade lists it a fixed handful of tools
+    and it reaches the rest of its grants through ``operations_call``. Adds no
+    other operation. An explicit ``operations`` list naming ``core.tool.call``
+    does the same thing; this is the spelling a named set needs."""
 
 
 class TokenIssued(BaseModel):
@@ -177,6 +193,14 @@ def _expand(model_input: TokenIssueInput) -> frozenset[str]:
     return resolver()
 
 
+def _requested(model_input: TokenIssueInput) -> frozenset[str]:
+    """:func:`_expand`, plus the discover-then-call grant when it was asked for."""
+    requested = _expand(model_input)
+    if model_input.discover:
+        requested |= {DISCOVER_THEN_CALL_OPERATION}
+    return requested
+
+
 def _issuer_permitted_set(
     ctx: WorkspaceContext, model_input: TokenIssueInput
 ) -> tuple[UUID, str, frozenset[str]]:
@@ -212,7 +236,12 @@ def _issuer_permitted_set(
                 f"account {target_account_id} has no membership in workspace "
                 f"{ctx.workspace_id}",
             )
-        package_union = read_only() | agent_default() | cli_full()
+        # The grant is outside every named set by construction, so it joins the
+        # union here: it is the one operation a ``--discover`` issuance adds, and it
+        # grants nothing a call through it is not already judged against.
+        package_union = (
+            read_only() | agent_default() | cli_full() | {DISCOVER_THEN_CALL_OPERATION}
+        )
         return (
             target_account_id,
             "operator",
@@ -228,14 +257,21 @@ def _issuer_permitted_set(
 def issue_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: TokenIssueInput
 ) -> TokenIssued:
-    requested = _expand(model_input)
+    requested = _requested(model_input)
     target_account_id, issued_from, issuer_permitted = _issuer_permitted_set(
         ctx, model_input
     )
     survivors = (requested & issuer_permitted) - NON_TOKEN_ISSUABLE
-    if not survivors:
+    if not survivors - {DISCOVER_THEN_CALL_OPERATION}:
+        # A token holding only the grant could discover nothing and call nothing.
         raise OperationRefused(
             SET_EMPTY, "no operation survives the issuer's permitted set"
+        )
+    if model_input.discover and DISCOVER_THEN_CALL_OPERATION not in survivors:
+        raise OperationRefused(
+            DISCOVER_NOT_PERMITTED,
+            f"{DISCOVER_THEN_CALL_OPERATION} is not in the issuer's permitted set, "
+            "so this token cannot be issued in discover-then-call mode",
         )
     settings = resolve(workspace_id=ctx.workspace_id, source=PostgresOverrideSource())
     max_days = settings.get_int(f"identity.token_max_days.{model_input.kind}")

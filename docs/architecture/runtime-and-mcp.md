@@ -455,6 +455,8 @@ no tool runs (criterion 9).
 **Listing.** `tools/list` returns the registered tools whose operation is in the token's operation
 set and whose module is enabled in the workspace, filtered again on every `tools/call`, so a tool
 listed before a revocation is refused after it (idea document: discovery grants nothing).
+That is **direct mode**, the default. A token issued in discover-then-call mode is listed a fixed
+set instead ([discover-then-call](#discover-then-call)).
 
 **Signature conventions.**
 
@@ -528,6 +530,7 @@ operation tables in the module documents are authoritative.
 | One (core) | `workspace_status` | read | owner, member, operator |
 | One (core) | `operations_get`, `operations_list` | read | owner, member, operator |
 | One (core) | `audit_list` (`limit` only; see below) | read | owner, operator |
+| Core, discover-then-call only | `operations_catalog`, `operations_describe`, `operations_call` | read (the named tool's own class applies to a call) | owner, member, operator, service |
 | Two (memory) | recallatron_recall, recallatron_read | read | owner, member, service |
 | Two (memory) | recallatron_remember, recallatron_derive | mutate | owner, member, service |
 | Two (memory) | recallatron_correct, recallatron_supersede | mutate | owner, member |
@@ -571,6 +574,54 @@ Release one ships **no no-query context bundle**: every memory a run is shown is
 named by reference in `core.runtime.run` or one the run fetched itself through
 `recallatron_recall` or `recallatron_read`, and a tool that handed a model a bundle of memories
 it never asked for is out of scope for this release.
+
+### Discover-then-call
+
+Every tool a client can see costs its schema in every session's context, and every module adds
+tools to the one surface. A token issued with `--discover` (`rheo token issue ... --set
+agent_default --kind mcp --discover`, or `discover: true` on `core.token.issue`) is listed at
+most five tools, however many modules are installed:
+
+| Tool | What it does |
+| --- | --- |
+| `operations_catalog` | Lists the tools this token may call through `operations_call`: name, class and description, sorted by name, with an optional `query` substring filter and a `limit` (1 to 500, default 100). |
+| `operations_describe` | One of those tools' description, class and input JSON schema: exactly what `tools/list` would have shown for it in direct mode. |
+| `operations_call` | Calls one of those tools by name with `input`, and returns what calling it directly returns. |
+| `operations_get`, `operations_list` | Unchanged. They stay direct because they are how a client polls a long-running call or one held at `approval_required`. |
+
+`operations_list` lists this workspace's operation *records* (calls that ran or are pending), not
+the operations a token may call; the catalogue is `operations_catalog`. `workspace_status`,
+`audit_list` and every module tool are one `operations_call` away when the token holds them.
+
+**How the mode is represented.** `--discover` adds one operation, `core.tool.call`, to the token's
+snapshot, and holding it is the mode. The three new tools name it, so a token holds all three or
+none. No named package set contains it (`read_only`, `agent_default` and `cli_full` each subtract
+it), so every existing token and every `--set` issuance keeps the direct listing. No schema change:
+the grant is an ordinary `access_token_operation` row, and revoking the token or deleting that row
+returns nothing but the listing to direct mode. `core.tool.call`'s own handler refuses
+`tool_facade_only` if it is dispatched directly (the `api` surface, a `cli` token): the facade
+answers the three tools itself, and the tool registry refuses any other tool that names the grant.
+
+**`operations_call` is the direct path, not a second one.** The facade answers it by running its
+own call function again for the named tool, so the named tool goes through every step a direct
+call does, in the same order, against the same context: tool origin, delegated operation, the
+token's snapshot and the role (a tool outside the grants is `not_found` with the same text a direct
+call gets); the tool's own input model, with unknown argument names refused `input_invalid` and
+reserved names impossible; the mask-token refusal for a write-class tool; `dispatch` with its
+authorization, safety class, approval hold (`approval_required` with `approval_id` and
+`operation_id`, never a success wrapping it) and audit row, which names the operation that ran;
+the telemetry row, which names the tool that ran; and the rendering under the token's `purpose`.
+`operations_call` cannot name itself or the other two discover tools. The catalogue and the
+description are built from the same availability check, so they list exactly what
+`operations_call` accepts, and a name it would refuse is `not_found` in both. A token in this mode
+that calls a hidden tool directly by name gets `not_found`: callable directly still means listed.
+
+**When to use which.** Use direct mode for a client that calls a few tools often and benefits from
+seeing their schemas up front: a runtime run's token (which already holds only the tools its caller
+named), or a token scoped to one module. Use discover-then-call for a general-purpose agent client
+whose token spans many modules, where paying for every schema in every session costs more than one
+extra `operations_describe` round trip before the first call to a tool. The grants are the
+authority either way; the mode changes only what is listed.
 
 ## The redaction contract
 
