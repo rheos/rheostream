@@ -68,6 +68,24 @@ CONFIG_DIR_MODE: Final = 0o700
 MCP_CONFIG_MODE: Final = 0o600
 
 _LOCALE_KEYS: Final = frozenset({"LANG", "LANGUAGE", "LC_ALL"})
+# Set on every child whatever the host has, since the allowlist drops the image's own
+# ENV. Both names are from code.claude.com/docs: DISABLE_AUTOUPDATER stops the
+# background update check (en/setup, "Disable auto-updates"), and
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC also stops telemetry, error reporting and
+# feature-flag fetching (en/env-vars).
+_FIXED_CHILD_ENV: Final[Mapping[str, str]] = {
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+}
+# Where a copied login seed keeps its credential: ``.credentials.json`` under
+# CLAUDE_CONFIG_DIR (code.claude.com/docs/en/authentication), and under
+# ``$HOME/.claude`` too, since HOME is the same directory. A secret-backed kind
+# removes both at spawn, so a workspace that ran under ``login`` cannot fall back
+# to the old seed.
+_LOGIN_CREDENTIAL_FILES: Final = (
+    Path(".credentials.json"),
+    Path(".claude") / ".credentials.json",
+)
 
 
 class ClaudeCliHandle:
@@ -354,13 +372,28 @@ def _copy_login_seed(config_dir: Path) -> FailureEvent | None:
     return None
 
 
-def _prepare_empty_config_dir(config_dir: Path) -> None:
-    """The configuration directory for a secret credential: created empty, no seed."""
+def _prepare_secret_config_dir(config_dir: Path) -> FailureEvent | None:
+    """The configuration directory for a secret credential: no login seed in it.
+
+    Created empty the first time. The directory is per workspace, so it may already
+    hold a seed copied under ``login``: the known credential files are removed and
+    everything else (``projects/``, the native sessions continuation resumes) stays.
+    A credential file that cannot be removed refuses the spawn.
+    """
     config_dir.mkdir(mode=CONFIG_DIR_MODE, parents=True, exist_ok=True)
     try:
         os.chmod(config_dir, CONFIG_DIR_MODE)
     except OSError:
         pass
+    for relative in _LOGIN_CREDENTIAL_FILES:
+        try:
+            (config_dir / relative).unlink(missing_ok=True)
+        except OSError:
+            return FailureEvent(
+                kind=FailureKind.CREDENTIAL_INVALID,
+                detail="a stale login credential could not be removed",
+            )
+    return None
 
 
 def _resolve_secret_credential(prefixes: tuple[str, ...]) -> str | FailureEvent:
@@ -411,6 +444,7 @@ def _child_env(
     for key, value in os.environ.items():
         if key in _LOCALE_KEYS or key.startswith("LC_"):
             env[key] = value
+    env.update(_FIXED_CHILD_ENV)
     env["CLAUDE_CONFIG_DIR"] = config_dir
     env["HOME"] = config_dir
     if credential is not None:
@@ -541,8 +575,14 @@ class ClaudeCliRuntime:
                     json_schema=json_schema,
                     queued=[resolved],
                 )
+            failure = _prepare_secret_config_dir(config_dir)
+            if failure is not None:
+                return ClaudeCliHandle(
+                    output_kind=output_kind,
+                    json_schema=json_schema,
+                    queued=[failure],
+                )
             credential = (variable, resolved)
-            _prepare_empty_config_dir(config_dir)
         else:
             return ClaudeCliHandle(
                 output_kind=output_kind,

@@ -69,10 +69,11 @@ RUN set -eu; \
     rm -f /tmp/claude
 # Stable absolute path; this is the value for runtime.claude_cli.executable.
 # DISABLE_AUTOUPDATER=1 is the documented env var (code.claude.com/docs/en/setup
-# "Disable auto-updates") that keeps a running `claude` from checking for or
-# installing an update on its own, matching this image's no-install-at-start
-# policy even though a raw binary install (no launcher, no `versions/` dir)
-# has no updater of its own to begin with.
+# "Disable auto-updates"). Here it covers only a `claude` run by hand in the
+# container (for example `claude --version`). The runtime's children do not
+# inherit it: the adapter builds their environment from an allowlist and sets
+# DISABLE_AUTOUPDATER=1 and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 itself
+# (runtimes/src/rheo_runtimes/claude_cli.py, _FIXED_CHILD_ENV).
 ENV PATH="/opt/claude/bin:$PATH" \
     DISABLE_AUTOUPDATER=1
 
