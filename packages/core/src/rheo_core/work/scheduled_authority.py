@@ -306,7 +306,7 @@ def _still_verified(conn: Connection, capability: VerifiedScheduledExecution) ->
     a forged one asserts facts the database does not agree with, and this function is
     where the database is asked.
     """
-    on = conn.execute(text("SELECT current_database()")).scalar_one()
+    on: str = conn.execute(text("SELECT current_database()")).scalar_one()
     if str(on) != capability.database:
         return False
     entry = _single_enabled_schedule(conn, capability.job_kind)

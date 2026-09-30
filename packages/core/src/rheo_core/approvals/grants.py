@@ -23,6 +23,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import Connection, Row, insert, select, update
+from sqlalchemy.engine import ScalarResult
 
 from rheo_core.approvals import grant_tables as t
 from rheo_core.refs import uuid7
@@ -101,7 +102,7 @@ def operation_names(conn: Connection, *, grant_id: UUID) -> tuple[str, ...]:
     Ordered by name rather than by insertion, so two reads of the same grant answer
     the same sequence and a test can compare against a sorted literal.
     """
-    rows = conn.execute(
+    rows: ScalarResult[str] = conn.execute(
         select(t.standing_grant_operation.c.operation_name)
         .where(t.standing_grant_operation.c.grant_id == grant_id)
         .order_by(t.standing_grant_operation.c.operation_name)

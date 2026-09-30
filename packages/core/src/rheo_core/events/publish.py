@@ -124,7 +124,7 @@ def publish(
         if isinstance(uow, HandlerUnitOfWork) and uow.operation_id is not None
         else ctx.request_id
     )
-    position = connection.execute(
+    position: int = connection.execute(
         insert(t.outbox_event)
         .values(
             id=event_id,

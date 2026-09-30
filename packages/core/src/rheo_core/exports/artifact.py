@@ -254,7 +254,7 @@ def collect_export_snapshot(
                     f"the export source snapshot expected database "
                     f"{row.database_name!r} but opened on {source!r}",
                 )
-            snapshot_at = uow.connection.execute(
+            snapshot_at: datetime = uow.connection.execute(
                 text("SELECT statement_timestamp()")
             ).scalar_one()
             assert isinstance(snapshot_at, datetime), snapshot_at
