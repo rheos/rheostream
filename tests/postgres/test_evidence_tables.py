@@ -3,9 +3,10 @@
 Seams: every CHECK constraint on the table (``purpose``, ``state``, the
 ``audience_kind``/``audience_id`` pairing, the ``body``/``state`` pairing and the
 ``outcome``/``state`` pairing), each proven by a refused insert rather than by reading
-the DDL; the two named indexes; and the revision's downgrade path, which must leave
-nothing of the table behind in ``pg_catalog`` and upgrade back cleanly. Also AC 10's
-first half: the revision adds a sibling table, not a new ``runtime_transcript.kind``.
+the DDL; the 0010 indexes and the 0012 retention index; and the revision's downgrade
+path, which must leave nothing of the table behind in ``pg_catalog`` and upgrade back
+cleanly. Also AC 10's first half: the revision adds a sibling table, not a new
+``runtime_transcript.kind``.
 """
 
 from collections.abc import Iterator
@@ -37,7 +38,7 @@ from sqlalchemy.exc import IntegrityError
 
 pytestmark = pytest.mark.postgres
 
-HEAD = "0011_local_evidence"
+HEAD = "0012_evidence_retention_index"
 PREVIOUS = "0009_runtime_session_policy"
 
 CHECK_CONSTRAINTS = {
@@ -55,6 +56,7 @@ INDEXES = {
     "evidence_unit_pkey",
     "evidence_unit_native_key",
     "evidence_unit_pending_claim",
+    "evidence_unit_settled_retention",
 }
 
 
@@ -308,10 +310,10 @@ def test_producer_kind_and_native_key_length_are_bounded(
     _refused(engine, "evidence_unit_native_key_length", native_key="k" * 257)
 
 
-# --- the two named indexes ------------------------------------------------------------
+# --- the named indexes ---------------------------------------------------------------
 
 
-def test_exactly_the_two_named_indexes_and_the_unit_identity_is_unique(
+def test_exactly_the_named_indexes_and_the_unit_identity_is_unique(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
     _, engine = _engine(cluster, workspace)
@@ -331,6 +333,12 @@ def test_exactly_the_two_named_indexes_and_the_unit_identity_is_unique(
     assert "UNIQUE" not in claim
     assert "(extraction_attempts, source_recorded_at)" in claim
     assert "WHERE (state = 'pending'::text)" in claim
+    retention = indexes["evidence_unit_settled_retention"]
+    assert retention.startswith("CREATE INDEX")
+    assert "(settled_at)" in retention
+    assert "WHERE" in retention
+    assert "'settled'::text" in retention
+    assert "'gap'::text" in retention
 
     first = _row()
     duplicate = _row(
@@ -359,6 +367,27 @@ def test_migration_downgrade_path_leaves_nothing_behind_and_upgrades_again(
         present = _catalog(connection)
     assert present["relations"] == {"evidence_unit"} | INDEXES
     assert present["constraints"] >= CHECK_CONSTRAINTS | {"evidence_unit_pkey"}
+
+    with engine.begin() as connection:
+        command.downgrade(build_config(CORE_CHAIN, connection), "0011_local_evidence")
+    with engine.connect() as connection:
+        assert recorded_revisions(connection, CORE_CHAIN) == {"0011_local_evidence"}
+        assert (
+            connection.execute(
+                text(
+                    "SELECT count(*) FROM pg_indexes "
+                    "WHERE schemaname = 'core' AND tablename = 'evidence_unit' "
+                    "AND indexname = 'evidence_unit_settled_retention'"
+                )
+            ).scalar_one()
+            == 0
+        )
+
+    with engine.begin() as connection:
+        run_chain(connection, CORE_CHAIN, expected_database=database_name)
+    with engine.connect() as connection:
+        assert recorded_revisions(connection, CORE_CHAIN) == {HEAD}
+        assert _catalog(connection) == present
 
     with engine.begin() as connection:
         command.downgrade(build_config(CORE_CHAIN, connection), PREVIOUS)
