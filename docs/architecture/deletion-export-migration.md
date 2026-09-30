@@ -181,8 +181,8 @@ owner into a workspace the control plane does not yet know:
 
 1. Read and validate `manifest.json`; refuse if the contract version is unsupported, or if any
    listed module is not loaded by this host or declares an `export_format_version` other than
-   the host's, naming it. An older format is therefore refused unless the module's current
-   importer and format declaration still accept it.
+   the host's, naming it. An older format is therefore refused; the module's importer upgrades
+   older rows only when they remain within the current format contract.
 2. Create the workspace row with the recorded id and slug (identifiers are globally safe, so the
    id is kept and comparison in criteria 21, 36, 67 is by id), provision the database, apply the
    core chain, and hold the row in state `restoring`.
