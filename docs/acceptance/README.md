@@ -10,6 +10,12 @@ working tree, watched go red, and reverted.
 `phase-2-matrix.md` does the same for phase two, over criteria 24-31, 33 and 36 so far, under
 the same grammar. The two files are validated independently and share no criterion number.
 
+`ambient-capability-manifest.md` is not a matrix. It lists each client that can produce
+automatic memory (the Rheo runtime, and the local Claude Code bridge under the CLI and
+under Desktop Code), whether that path is operative, what it needs and refuses, and the
+`pytest:` ids that prove its refusal and replay. `tests/test_ambient_manifest.py` checks
+that every cited id names an existing test function.
+
 ## What this is not
 
 **Not a coverage report.** Coverage answers "is this line executed by some test". The

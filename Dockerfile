@@ -39,6 +39,7 @@ COPY apps/core ./apps/core
 COPY apps/worker ./apps/worker
 COPY apps/mcp ./apps/mcp
 COPY apps/cli ./apps/cli
+COPY apps/bridge ./apps/bridge
 COPY modules/ ./modules/
 COPY connectors/ ./connectors/
 COPY runtimes/ ./runtimes/

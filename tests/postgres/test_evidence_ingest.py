@@ -23,6 +23,7 @@ Every fingerprint, key and text is synthetic. Every evidence and enrollment row 
 removed in teardown (#238's rule).
 """
 
+import json
 import secrets
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,8 @@ from harness.evidence import (
 )
 from harness.modules import install_and_enable_module, loaded_probe_modules
 from harness.registry import add_member
+from pydantic import ValidationError
+from rheo_app_core import api_routes
 from rheo_app_core.main import public_app
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_core.audit import AUDIT_SUCCEEDED
@@ -61,7 +64,9 @@ from rheo_core.evidence.ingest import (
     EVIDENCE_INGEST,
     INGEST_MAX_GAPS,
     INGEST_MAX_RECORDS,
+    INGEST_MAX_TEXT_CHARS,
     IngestInput,
+    IngestRecord,
     ingest_handler,
 )
 from rheo_core.evidence.local_authority import (
@@ -71,6 +76,7 @@ from rheo_core.evidence.local_authority import (
 )
 from rheo_core.evidence.providers import FAKE_EXTRACTION_MARKER
 from rheo_core.evidence.record import ENABLED_KEY, MAX_RECORDS_KEY
+from rheo_core.evidence.sanitize import MAX_INPUT_CHARS
 from rheo_core.operations import (
     INPUT_INVALID,
     OPERATION_NOT_PERMITTED,
@@ -472,6 +478,121 @@ def test_a_replayed_batch_answers_the_same_and_writes_nothing_new(
     assert (events, _recorded_events(ev)) == (1, 1)
 
 
+# --- 8-A: NUL and lone surrogates cannot sink a batch (FR 6, AC 7) -------------------
+
+_NEIGHBOUR: Final = "The garden hose hangs on the second hook."
+
+
+def _scrub_batch(
+    enrolled: Enrolled, middle: str
+) -> tuple[dict[str, object], list[str], str]:
+    """Good records either side of ``middle`` and one gap: the payload and its keys."""
+    at = datetime.now(UTC) - timedelta(seconds=5)
+    keys = [_record_key() for _ in range(3)]
+    gap = _gap_key()
+    bodies = [_PLAIN, middle, _NEIGHBOUR]
+    payload = enrolled.payload(
+        list(zip(keys, [at] * 3, bodies, strict=True)), [(gap, at)]
+    )
+    return payload, keys, gap
+
+
+def _holds_unstorable(body: str) -> bool:
+    return any(c == "\x00" or 0xD800 <= ord(c) <= 0xDFFF for c in body)
+
+
+def _assert_scrubbed_batch_landed(
+    ev: EvidenceWorkspace,
+    four: dict[str, tuple[str, ...]],
+    keys: list[str],
+    gap: str,
+) -> None:
+    assert four == {
+        "accepted": tuple(keys),
+        "deferred": (),
+        "gapped": (gap,),
+        "dropped": (),
+    }
+    assert _unit(ev, keys[1]).body == "tea over"
+    assert not any(_holds_unstorable(u.body) for u in _units(ev) if u.body is not None)
+    assert _unit(ev, gap).state == STATE_GAP
+
+
+def test_a_nul_record_does_not_sink_its_batch(ev: EvidenceWorkspace) -> None:
+    enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
+    payload, keys, gap = _scrub_batch(enrolled, "tea\x00 over")
+    _assert_scrubbed_batch_landed(
+        ev, _four(_ingest(enrolled.ctx(), payload)), keys, gap
+    )
+
+
+def test_a_lone_surrogate_record_does_not_sink_its_batch(ev: EvidenceWorkspace) -> None:
+    enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
+    payload, keys, gap = _scrub_batch(enrolled, "tea\ud800 over")
+    _assert_scrubbed_batch_landed(
+        ev, _four(_ingest(enrolled.ctx(), payload)), keys, gap
+    )
+
+
+def test_a_record_that_is_only_nul_and_surrogates_is_dropped(
+    ev: EvidenceWorkspace,
+) -> None:
+    enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
+    payload, keys, gap = _scrub_batch(enrolled, "\x00\ud800\x00")
+    four = _four(_ingest(enrolled.ctx(), payload))
+    assert four == {
+        "accepted": (keys[0], keys[2]),
+        "deferred": (),
+        "gapped": (gap,),
+        "dropped": (keys[1],),
+    }
+    assert {u.native_key for u in _units(ev)} == {keys[0], keys[2], gap}
+
+
+@pytest.mark.parametrize(
+    "middle",
+    ["tea\x00 over", "tea\ud800 over", "\x00\ud800\x00"],
+    ids=["nul", "lone_surrogate", "only_unstorable"],
+)
+def test_a_resent_scrubbed_batch_answers_the_same_tuples(
+    ev: EvidenceWorkspace, middle: str
+) -> None:
+    enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
+    payload, _, _ = _scrub_batch(enrolled, middle)
+    first = _four(_ingest(enrolled.ctx(), payload))
+    rows = {(u.native_key, u.id, u.body) for u in _units(ev)}
+    events = _recorded_events(ev)
+
+    again = _four(_ingest(enrolled.ctx(), payload))
+
+    assert again == first
+    assert {(u.native_key, u.id, u.body) for u in _units(ev)} == rows
+    assert _recorded_events(ev) == events
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [
+        "word " * (INGEST_MAX_TEXT_CHARS // 5),
+        "word " * ((MAX_INPUT_CHARS - 520) // 5) + " secret://a/b" * 40,
+    ],
+    ids=["raw_over_the_cap", "masked_over_the_cap"],
+)
+def test_an_over_cap_record_is_dropped_and_its_neighbours_land(
+    ev: EvidenceWorkspace, middle: str
+) -> None:
+    enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
+    payload, keys, gap = _scrub_batch(enrolled, middle)
+    four = _four(_ingest(enrolled.ctx(), payload))
+    assert four == {
+        "accepted": (keys[0], keys[2]),
+        "deferred": (),
+        "gapped": (gap,),
+        "dropped": (keys[1],),
+    }
+    assert {u.native_key for u in _units(ev)} == {keys[0], keys[2], gap}
+
+
 def test_the_budget_defers_a_tail_in_submission_order(ev: EvidenceWorkspace) -> None:
     ev.set_workspace(MAX_RECORDS_KEY, 2)
     enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
@@ -505,6 +626,7 @@ def test_gaps_land_in_gapped_as_content_free_rows(ev: EvidenceWorkspace) -> None
         "naive_clock",
         "over_the_cap",
         "over_the_gap_cap",
+        "over_the_text_ceiling",
     ],
 )
 def test_a_malformed_request_is_input_invalid_before_any_row(
@@ -522,11 +644,49 @@ def test_a_malformed_request_is_input_invalid_before_any_row(
         payload = enrolled.payload(
             [(_record_key(), at, _PLAIN) for _ in range(INGEST_MAX_RECORDS + 1)]
         )
-    else:
+    elif shape == "over_the_gap_cap":
         payload = enrolled.payload(
             [], [(_gap_key(), at) for _ in range(INGEST_MAX_GAPS + 1)]
         )
+    else:
+        over = "x" * (INGEST_MAX_TEXT_CHARS + 1)
+        payload = enrolled.payload(
+            [(_record_key(), at, _PLAIN), (_record_key(), at, over)]
+        )
     _assert_refused(ev, _ingest(enrolled.ctx(), payload), INPUT_INVALID)
+
+
+def test_text_over_the_guard_is_refused_without_the_scrub_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``max_length`` refuses over-guard text; the before-validator must not scrub it
+    first. Text between ``MAX_INPUT_CHARS`` and the guard is still scrubbed, so it
+    reaches ``record_evidence`` and drops per record."""
+    scrubbed: list[int] = []
+    real = ingest_module.strip_unstorable
+
+    def spy(value: str) -> str:
+        scrubbed.append(len(value))
+        return real(value)
+
+    monkeypatch.setattr(ingest_module, "strip_unstorable", spy)
+    at = datetime.now(UTC)
+    with pytest.raises(ValidationError):
+        IngestRecord.model_validate(
+            {
+                "native_key": _record_key(),
+                "recorded_at": at,
+                "text": "x" * (INGEST_MAX_TEXT_CHARS + 1),
+            }
+        )
+    assert scrubbed == []
+
+    between = "x" * (MAX_INPUT_CHARS + 1)
+    record = IngestRecord.model_validate(
+        {"native_key": _record_key(), "recorded_at": at, "text": between}
+    )
+    assert record.text == between
+    assert scrubbed == [MAX_INPUT_CHARS + 1]
 
 
 def test_a_miswired_unit_of_work_is_refused_not_answered_inert(
@@ -717,6 +877,37 @@ async def _post(value: str, payload: dict[str, object]) -> httpx.Response:
             headers={"Authorization": f"Bearer {value}"},
             json=payload,
         )
+
+
+async def test_a_lone_surrogate_record_does_not_sink_its_batch_over_http(
+    monkeypatch: pytest.MonkeyPatch, ev: EvidenceWorkspace
+) -> None:
+    """The path a real bridge takes. ``json.dumps`` ASCII-escapes the lone surrogate, so
+    the six characters ``\\ud800`` go on the wire; a UTF-8 encoder could not encode the
+    surrogate itself, which is why the body is sent as pre-encoded bytes. The route's
+    registry is swapped for the probe's, as every ``dispatch()`` test here passes it, so
+    recording is on and the batch is not answered inert."""
+    monkeypatch.setattr(api_routes, "CONSUMERS", probe_registry())
+    enrolled = Enrolled(ev.workspace_id, ev.owner_account_id)
+    payload, keys, gap = _scrub_batch(enrolled, "tea\ud800 over")
+    wire = json.dumps(payload).encode("ascii")
+    assert b"\\ud800" in wire
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=public_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/operations/{EVIDENCE_INGEST}",
+            headers={
+                "Authorization": f"Bearer {enrolled.value}",
+                "Content-Type": "application/json",
+            },
+            content=wire,
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "succeeded"
+    four = {name: tuple(found) for name, found in body["result"].items()}
+    _assert_scrubbed_batch_landed(ev, four, keys, gap)
 
 
 async def test_ingest_over_http(ev: EvidenceWorkspace) -> None:

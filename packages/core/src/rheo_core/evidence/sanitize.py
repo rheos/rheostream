@@ -10,7 +10,10 @@ step runs. It fails closed on purpose: a human turn that long is a paste, not a
 memory, and the Rheo-owned producer records the task text on its own. The cap also
 bounds the work: ``sanitize`` runs inside the recording transaction, before the byte
 budget, so its cost must be bounded by the input, not by what an adversary puts in
-it. Under the cap every scan is linear or capped: the JSON rules make at most
+it. **Output over the cap is dropped too:** a secret mask is longer than a short
+reference, so masking can push text under the cap over it, and such output would
+sanitize to ``None`` the second time; dropping it keeps ``sanitize`` idempotent.
+Under the cap every scan is linear or capped: the JSON rules make at most
 :data:`_MAX_JSON_ATTEMPTS` failed parses per segment and treat a segment that needs
 more as a payload, and JSON nested deeper than the parser can recurse is a payload
 too.
@@ -19,9 +22,10 @@ The steps, in this order (spec Architecture, System Components item 1):
 
 0. **Normalise line breaks and spaces.** NUL (``\\x00``) and every surrogate code
    point (U+D800 to U+DFFF, which a Python string only holds unpaired) are removed
-   first: Postgres refuses NUL in text, and a lone surrogate does not encode as UTF-8.
-   They are removed, not spaced, so ``ign\\x00ore previous instructions`` still reads
-   as the marker it hides. Every line boundary :meth:`str.splitlines`
+   first (:func:`strip_unstorable`): Postgres refuses NUL in text, and a lone surrogate
+   does not encode as UTF-8, so either would sink its whole batch. They are removed,
+   not spaced, so ``ign\\x00ore previous instructions`` still reads as the marker it
+   hides. Every line boundary :meth:`str.splitlines`
    knows, ``\\r\\n`` and a lone ``\\r`` included, becomes ``\\n`` before anything else,
    so CRLF text segments exactly like LF text. Then every other whitespace character
    (no-break space, the U+2000 to U+200A spaces, the ideographic space U+3000 and the
@@ -196,6 +200,18 @@ _TO_PLAIN_SPACE: Final = str.maketrans(dict.fromkeys(_ODD_SPACES, " "))
 _UNSTORABLE: Final = re.compile(r"[\x00\ud800-\udfff]")
 """NUL, which Postgres refuses in a text value, and the surrogate code points, which
 do not encode as UTF-8 on their own. Step 0 removes them before anything else."""
+
+
+def strip_unstorable(text: str) -> str:
+    """``text`` without U+0000 and without any code point in U+D800 to U+DFFF.
+
+    Step 0's strip, public because ingest runs it on every text field before
+    pydantic-core sees the payload: a lone surrogate there, or a NUL at the database,
+    would sink the whole batch that carries it. In a ``str`` every surrogate code point
+    is lone, because a valid pair decodes to one character.
+    """
+    return _UNSTORABLE.sub("", text)
+
 
 # --- step 3: the closed injection-marker list (spec component 1, verbatim) ------------
 
@@ -879,11 +895,15 @@ def sanitize(text: str) -> str | None:
     """The text as it may be stored and shown to a model, or ``None`` to drop it."""
     if len(text) > MAX_INPUT_CHARS:
         return None
-    storable = _UNSTORABLE.sub("", text)
+    storable = strip_unstorable(text)
     normalised = "\n".join(storable.splitlines()).translate(_TO_PLAIN_SPACE)
     masked = mask_secret_references(normalised)
     screened, kept = _screened_segments(masked)
     if any(_carries_injection_marker(segment) for segment in screened):
         return None
     result = "\n\n".join(_collapsed(segment) for segment in kept)
+    if len(result) > MAX_INPUT_CHARS:
+        # Masking can lengthen text, so output over the cap is dropped too: it would
+        # sanitize to ``None`` a second time, and no longer fits an ingest record.
+        return None
     return result or None

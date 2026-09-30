@@ -161,8 +161,135 @@ subscribes to `core.evidence.recorded`; the speaker is a person (an account, or 
 person-held `cli` token, never an `mcp` or `runtime` token); the run is bound to a purpose;
 and the task text is non-empty after sanitation. A failure while recording is logged without
 content and the run carries on without its evidence, and the recorder only accepts a turn
-attributed to the run's own account and bound purpose. No transcript reader or hook ships
-with it.
+attributed to the run's own account and bound purpose. The runtime producer itself has no
+transcript reader or hook; the local bridge below ships both.
+
+### The local Claude Code bridge
+
+The second producer is `apps/bridge`, installed as the `rheo-bridge` command and run on the
+person's own machine from a checkout's virtualenv. A standard-library-only hook in one
+enrolled directory notes where each session's transcript is. A worker reads the human-typed
+lines from those transcripts, runs the same `sanitize()` locally, and posts them to one
+core operation. The rows it creates carry `producer_kind = "claude_code_local"`; revision
+`0011_local_evidence` admits that value in `core.evidence_unit`'s CHECK and adds
+`core.evidence_enrollment`. The frozen 0010 tuples are not edited.
+
+**Enrollment.** One `core.evidence_enrollment` row binds one account, one machine and one
+directory. The machine is `machine_fingerprint`, the sha256 of `"rheo-machine:"` plus the
+hex of a 32-byte `machine.key` that never leaves the laptop. The directory is
+`project_fingerprint`, the sha256 of `"rheo-project:"` plus the directory's realpath; the
+path itself never leaves the laptop either. A partial unique index allows one active
+enrollment per fingerprint pair. The row's id is the `authority_id` of every evidence row
+ingested under it. Its purpose is always `internal_analysis` in this version, and every row
+it admits is audience `member`, bound to the enrolled account. The operator runs
+`rheo evidence enroll`, `rotate` and `revoke` inside the deployment's `core` container
+(operations `core.evidence_enrollment.create`, `.rotate` and `.revoke`); no token may carry
+`create` or `rotate`.
+
+**The bridge token.** A `cli` token whose snapshot is exactly `core.evidence.ingest` and
+whose purpose is the enrollment's; every other operation refuses it. `rotate` mints a
+replacement under the same enrollment id, so rows still pending stay verifiable, and revokes
+the old token. `enroll --json` and `rotate --json` print one JSON line, `enrollment_id`,
+`token` and `expires_at`, and nothing else on stdout, so the line pipes straight into
+`rheo-bridge set-token` over ssh. `rheo doctor` reports each active enrollment's token:
+`FAIL` when it is revoked, expired or within 7 days of expiry, `warn` within 14. Rotation is
+an operator step; nothing rotates on its own.
+
+**Ingest.** `core.evidence.ingest` is an ordinary operation on the existing bearer route,
+`POST /api/v1/operations/core.evidence.ingest`. It finds the one active enrollment bound to
+the presenting token, compares the two fingerprints the request carries, asks the recording
+gate unchanged, clamps any future clock to the server's `now`, and hands records to
+`record_evidence` and gaps to `record_gaps`. Speaker and audience come from the enrollment
+row, never from the request. The server re-sanitizes every record with its own `sanitize()`,
+whatever version the bridge ran. The answer is four tuples of native keys, `accepted`,
+`deferred`, `gapped` and `dropped`, with no text and no counts. While recording is off every
+key comes back `deferred`, and the worker holds (15 minutes, doubling to a 6-hour cap) and
+re-probes with a single item instead of resending its backlog. From there the runtime
+producer's pipeline runs as it does for runtime rows, except that `claim_units` picks each
+row's authority by that row's own `producer_kind`. `LocalEvidenceAuthority` refuses with one
+of six words: `producer_mismatch`, `source_unavailable`, `speaker_mismatch`,
+`enrollment_inactive`, `enrollment_mismatch` and `membership_revoked`. Revoking an enrollment
+makes each of its still-pending rows settle `authority_unverified` at its next claim.
+
+**Keys.** Nothing that leaves the laptop names a session, a message, a path or a project. A
+record's native key is `cc1:` plus 64 hex, the HMAC-SHA256 under `machine.key` of the
+transcript line's session id and message id; a gap's is `cc1g:` plus 64 hex. The keys do not
+change with the sanitizer or the model, so a resent range is answered from what the server
+already holds and writes nothing new. The cost: a lost `machine.key` means new keys, and a
+replay after re-enrolling is not recognised as held.
+
+**The laptop side.** The hook runs on `Stop` and `SessionEnd`, appends one line to
+`~/.rheo-bridge/spool/` (the event, a salted hash of the session id, the transcript path and
+the time, and no other payload string), spawns the worker detached if none holds
+`worker.lock`, prints nothing and exits 0. The worker reads only the transcripts the spool
+names, and only under `~/.claude/projects/<slug>` for the enrolled directory's slug; a path
+anywhere else is refused and counted. It reads from a byte cursor that moves only in the same
+SQLite commit as the server's acknowledgement, so a crash re-reads a range the server already
+holds. Local limits in `~/.rheo-bridge/config.json` bound one pass: 1 MiB, 1000 records, and
+24 hours before an unsent line becomes a gap. A session's local row is kept until its whole
+range is acknowledged. `entrypoint` (`cli` for Claude Code CLI, `claude-desktop` for Desktop
+Code) is counted locally and never sent; both clients run the same project hook.
+
+**Gaps.** The bridge reports what it knows it cannot deliver as content-free gap rows:
+`source_truncated` when a transcript shrank, was replaced or vanished under the cursor, and
+`expired_pending` for a line older than the local pending limit by the time the worker could
+send it. What leaves no trace is not reported: if every hook call for a session failed (a
+full disk, a disabled hook), there is no locator to gap-report. No hook-finality guarantee
+is claimed.
+
+**Known limit: the slug is lossy.** The slug maps every character outside `[A-Za-z0-9]` to
+`-`, so `/work/a-b`, `/work/a_b` and `/work/a/b` share one slug, and an exact-slug match is
+not an exact-directory match. The mitigation is that the worker reads only paths the enrolled
+directory's own hook wrote to the spool and never crawls `~/.claude/projects`, so a session
+from a colliding directory is read only if that directory also runs the enrolled hook. A
+bridge home holds one enrollment, so each bridge home captures one enrolled directory.
+
+**`rheo-bridge` commands.**
+
+| Command | What it does |
+| --- | --- |
+| `init --enrolled-dir <dir> --api-url <url>` | Creates `~/.rheo-bridge/` (0700), the machine key, the install salt and `config.json`, then prints both fingerprints and the `rheo evidence enroll ... --json` command for the operator. No network call. Refuses if a machine key already exists. |
+| `set-token` | Reads the one JSON line from stdin, refuses a terminal, never echoes the token, stores it at 0600, and clears any back-off hold so the next drain posts at once. Also takes a `rotate --json` line. |
+| `install-hook --enrolled-dir <dir> [--dry-run]` | Adds the `Stop` and `SessionEnd` hooks to `<dir>/.claude/settings.local.json` with an absolute interpreter path. Refuses a directory other than the enrolled one, and refuses inside a Git working tree unless Git ignores that file. `--dry-run` prints the diff and writes nothing. |
+| `remove-hook --enrolled-dir <dir>` | Removes only this bridge's entries, and deletes the file or an emptied container only if install created it. |
+| `uninstall --enrolled-dir <dir> [--purge]` | Removes the hooks, the token and the machine key, then prints the `rheo evidence revoke` command. `--purge` first prints `discarded_unacknowledged: N`, the sessions the server has not acknowledged, then deletes `~/.rheo-bridge/`. |
+| `status` | Session counts, hold state, local ledger counters, `enrollment_id`, `token_expires_at` and days remaining. Never a hash, key, path or text. |
+| `drain` | One worker pass in the foreground. Exit 0 ok, 1 the worker could not run, 2 the server refused the batch (rotate the token or re-enroll). |
+
+**Enrollment `create` and `rotate` are not idempotent.** An operator retrying either needs
+to know two things:
+
+- A `create` whose response was lost, for example because the
+  `ssh ... | rheo-bridge set-token` pipe broke, has still enrolled the pair, under a token
+  nobody holds. Retrying `create` answers `enrollment_exists`. Find that enrollment's id with
+  a read-only query that selects the id and no other column. The table lives in the
+  enrolling workspace's own database, not the control database: that database is named
+  `ws_` followed by the workspace id's 32 hex digits without dashes (the id is the first
+  column of `rheo workspace list`, run in the `core` container). Run the query there, for
+  example with `psql -d ws_<32 hex>` in the Postgres container:
+  `SELECT id FROM core.evidence_enrollment WHERE machine_fingerprint = '<machine>' AND
+  project_fingerprint = '<project>' AND state = 'active'`, using the two fingerprints
+  `rheo-bridge init` printed. Then run `rheo evidence rotate <enrollment-id> --account
+  <account> --workspace <workspace> --json` through the same pipe into `rheo-bridge
+  set-token`. That keeps the enrollment id and revokes the token nobody holds.
+  `rheo evidence revoke <enrollment-id>` followed by a fresh `enroll` also works, but mints
+  a new enrollment id.
+- A retried `rotate` mints a second token and revokes the first, so the token the first call
+  returned is already dead. Never retry a rotate outside the pipe. If a rotate's response was
+  lost, run one more `rotate` through the pipe, so `set-token` receives the token that is now
+  current.
+
+**The two gates.** Nothing here records anything until two separate steps are taken, each
+authorized on its own. Gate A installs the hook in the real enrolled directory; until then
+the worker has no locator to read, and the installer's tests run only against a settings
+file under a temporary home. Gate B sets `automatic_memory.extraction.provider =
+"claude_cli"` (default `"none"`), which registers at both composition roots but resolves
+only when configured; `automatic_memory.extraction.model_id` picks its model, and empty
+leaves the CLI's default. The provider runs one tool-less CLI turn per batch: no built-in
+tools (`--tools ""`), an empty-snapshot run token, nothing pre-approved, and an empty
+throwaway directory. Between the two gates the server defers every key and the worker holds,
+so turns stay local, and those that age past the pending limit arrive later as
+`expired_pending` gaps, not memories.
 
 ## `ClaudeCliRuntime`
 

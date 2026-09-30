@@ -12,7 +12,7 @@ an operator names the account in the payload. A payload ``account_id`` from a se
 or token actor is ignored, as ``core.token.issue`` ignores it for a session issuer. An
 enrollment id that is absent, or belongs to another account than the target, answers
 ``not_found``, the ``tokens/issue.py`` non-disclosure rule. That covers a token caller
-of ``revoke`` too, which ``core.token.revoke``'s own ownership check does not.
+of ``revoke`` too, the same scoping ``core.token.revoke`` applies to a token actor.
 
 **Two databases, no shared transaction.** The token lives in the control plane and the
 enrollment row in the workspace database, which ``dispatch()`` commits after the

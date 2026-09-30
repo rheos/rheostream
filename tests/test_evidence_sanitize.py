@@ -17,7 +17,7 @@ import time
 
 import pytest
 from rheo_core.evidence import sanitize as sanitize_module
-from rheo_core.evidence.sanitize import MAX_INPUT_CHARS, sanitize
+from rheo_core.evidence.sanitize import MAX_INPUT_CHARS, sanitize, strip_unstorable
 from rheo_core.redaction.masking import SECRET_MASK
 
 KEPT = "Please remember that the release train leaves on Thursdays."
@@ -933,3 +933,70 @@ def test_a_payload_on_the_line_after_prose_is_removed_and_the_prose_kept() -> No
     assert sanitize(inline_json) == PROSE
     tool_use = f"{PROSE}\n<tool_use><name>read_file</name></tool_use>"
     assert sanitize(tool_use) == PROSE
+
+
+# --- step 0: NUL and lone surrogates (1a4b Prompt 8-A) --------------------------------
+
+UNSTORABLE = {
+    "nul": ("tea\x00 over", "tea over"),
+    "lone high surrogate": ("tea\ud800 over", "tea over"),
+    "lone low surrogate": ("tea\udfff over", "tea over"),
+    "reversed halves": ("tea\ude00\ud83d over", "tea over"),
+}
+
+
+@pytest.mark.parametrize("text,expected", UNSTORABLE.values(), ids=UNSTORABLE.keys())
+def test_strip_unstorable_removes_nul_and_lone_surrogates(
+    text: str, expected: str
+) -> None:
+    assert strip_unstorable(text) == expected
+
+
+@pytest.mark.parametrize("text", [KEPT, "Tea at four \U0001f375 on the porch.", ""])
+def test_strip_unstorable_leaves_storable_text_unchanged(text: str) -> None:
+    assert strip_unstorable(text) == text
+
+
+@pytest.mark.parametrize("text,expected", UNSTORABLE.values(), ids=UNSTORABLE.keys())
+def test_sanitize_stores_no_nul_or_surrogate(text: str, expected: str) -> None:
+    once = sanitize(text)
+    assert once == expected
+    assert sanitize(once) == once
+
+
+def test_a_text_of_only_nul_and_surrogates_sanitizes_to_none() -> None:
+    assert sanitize("\x00\ud800\x00\udc00") is None
+
+
+def test_an_astral_character_survives_sanitize() -> None:
+    text = "Tea at four \U0001f375 on the porch."
+    assert sanitize(text) == text
+
+
+# --- output over the cap (1a4b Prompt 8-A review) -------------------------------------
+
+_SHORT_REFERENCE = "secret://a/b"
+
+
+def _grows_past_the_cap(references: int) -> str:
+    """Prose under the cap plus short secret references, each masked longer."""
+    tail = f" {_SHORT_REFERENCE}" * references
+    return "word " * ((MAX_INPUT_CHARS - len(tail)) // 5) + tail.lstrip()
+
+
+def test_masking_that_pushes_output_over_the_cap_drops_it() -> None:
+    assert len(SECRET_MASK) > len(_SHORT_REFERENCE)
+    grown = _grows_past_the_cap(40)
+    assert len(grown) <= MAX_INPUT_CHARS
+    assert len(grown.replace(_SHORT_REFERENCE, SECRET_MASK)) > MAX_INPUT_CHARS
+    assert sanitize(grown) is None
+
+
+def test_output_at_or_under_the_cap_is_kept_and_idempotent() -> None:
+    fits = "word " * 13_000 + _SHORT_REFERENCE
+    assert len(fits.replace(_SHORT_REFERENCE, SECRET_MASK)) <= MAX_INPUT_CHARS
+    once = sanitize(fits)
+    assert once is not None
+    assert SECRET_MASK in once
+    assert len(once) <= MAX_INPUT_CHARS
+    assert sanitize(once) == once

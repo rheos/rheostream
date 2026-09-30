@@ -467,6 +467,9 @@ limits (`automatic_memory.max_bytes_per_attempt`, `automatic_memory.max_records_
 `<module>.redaction.exclude_types`, which the module loader declares for every loaded module
 that owns a record type (issue #130). `automatic_memory.extraction.provider` is a
 deployment-only key with no floor, default `"none"`, that selects the extraction provider.
+`automatic_memory.extraction.model_id` is its deployment-only companion, default `""`: the
+model the `claude_cli` provider asks for, where empty leaves the CLI on its own default. No
+other provider reads it.
 The evidence-unit retention sweep declares no key of its own: it deletes settled and gap
 `core.evidence_unit` rows older than `runtime.transcript_retention_days`.
 `approvals.confirm_operations` and `approvals.standing_grant_classes` are not declared

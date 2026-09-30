@@ -102,6 +102,7 @@ PUBLIC_PATHS = (
     "apps/worker/pyproject.toml",
     "apps/cli/pyproject.toml",
     "apps/mcp/pyproject.toml",
+    "apps/bridge/pyproject.toml",
     "pnpm-workspace.yaml",
     "package.json",
     "pnpm-lock.yaml",

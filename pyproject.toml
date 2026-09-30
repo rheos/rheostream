@@ -50,10 +50,10 @@ exclude = ["docs/notes/**"]
 [tool.mypy]
 strict = true
 python_version = "3.12"
-# The four Python `apps/*` directories are named explicitly rather than a bare
+# The Python `apps/*` directories are named explicitly rather than a bare
 # `apps` glob: mypy has no default `node_modules` exclusion and does not read
 # `.gitignore`, so a bare `apps` glob would recurse into `apps/web/node_modules`
-# once 04's `pnpm install` runs. Naming the four Python dirs keeps `apps/web`
+# once 04's `pnpm install` runs. Naming the Python dirs keeps `apps/web`
 # (03 creates it) out of mypy's walk with no exclusion regex to maintain.
 files = [
     "packages",
@@ -61,6 +61,7 @@ files = [
     "apps/worker",
     "apps/mcp",
     "apps/cli",
+    "apps/bridge",
     "modules",
     "connectors",
     "runtimes",
@@ -77,6 +78,7 @@ mypy_path = [
     "apps/worker/src",
     "apps/mcp/src",
     "apps/cli/src",
+    "apps/bridge/src",
     "modules/recallatron/src",
     "modules/relationships/src",
     "modules/leads/src",

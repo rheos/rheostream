@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any, Final, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from rheo_contracts import ActorKind, ContextPurpose, WorkspaceContext
 from sqlalchemy import select
 from sqlalchemy.engine import Row
@@ -37,7 +37,7 @@ from rheo_core.evidence.record import (
     record_gaps,
     recording_allowed,
 )
-from rheo_core.evidence.sanitize import MAX_INPUT_CHARS
+from rheo_core.evidence.sanitize import MAX_INPUT_CHARS, strip_unstorable
 from rheo_core.operations.refusals import OUTPUT_INVALID, OperationRefused
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -58,6 +58,9 @@ INGEST_MAX_GAPS: Final = 1000
 """Request-size guards, not tunable limits: the ``automatic_memory.*`` budgets inside
 ``record_evidence`` govern what is admitted. Over either answers ``input_invalid``."""
 
+INGEST_MAX_TEXT_CHARS: Final = 4 * MAX_INPUT_CHARS
+"""A request-size guard, not the sanitizer's cap: only text over it refuses a batch."""
+
 RECORD_KEY_PATTERN: Final = "^cc1:[0-9a-f]{64}$"
 GAP_KEY_PATTERN: Final = "^cc1g:[0-9a-f]{64}$"
 
@@ -70,7 +73,24 @@ class IngestRecord(BaseModel):
 
     native_key: str = Field(pattern=RECORD_KEY_PATTERN)
     recorded_at: AwareDatetime
-    text: str = Field(max_length=MAX_INPUT_CHARS)
+    text: str = Field(max_length=INGEST_MAX_TEXT_CHARS)
+    """Bounded at the request-size guard, not at ``MAX_INPUT_CHARS``: text between the
+    two is dropped per record by ``record_evidence``'s ``sanitize``, so it lands in
+    ``dropped`` and its neighbours are admitted. Only text over the guard refuses the
+    batch, and a bridge never sends it, since its own ``sanitize`` drops over-cap
+    text."""
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def _scrub_unstorable(cls, value: object) -> object:
+        """Scrub NUL and lone surrogates before pydantic-core's ``str`` check, which
+        refuses a lone surrogate and so the whole request. Anything but a ``str``
+        passes through for pydantic to refuse normally, and so does a ``str`` over
+        the request-size guard: ``max_length`` refuses it without paying for a scrub
+        of arbitrarily long text."""
+        if not isinstance(value, str) or len(value) > INGEST_MAX_TEXT_CHARS:
+            return value
+        return strip_unstorable(value)
 
 
 class IngestGap(BaseModel):
