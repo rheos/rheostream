@@ -524,7 +524,8 @@ SecretStore.resolve(ref: SecretRef, scope: SecretScope) -> SecretValue
 `SecretScope` is an unforgeable token the core constructs for a component at registration time,
 naming the full reference prefixes that component may resolve, each a `file` path plus the one
 environment variable it reads: the Claude CLI adapter gets `secret://file/runtime/claude_cli/`
-and `RHEO_ANTHROPIC_API_KEY`, the GitHub identity provider `secret://file/identity/github/` and
+and `RHEO_ANTHROPIC_API_KEY` under `api_key`, or the same file prefix and
+`RHEO_CLAUDE_OAUTH_TOKEN` under `oauth_token`, the GitHub identity provider `secret://file/identity/github/` and
 `RHEO_GITHUB_CLIENT_SECRET`, the storage component `secret://file/cluster/` and
 `RHEO_CLUSTER_DSN`, and the internal listener `secret://file/internal/` and
 `RHEO_INTERNAL_SECRET`. The intake receiver is to get `ws/*/connection/*/signing` when intake is

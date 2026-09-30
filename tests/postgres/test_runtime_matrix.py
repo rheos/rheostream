@@ -326,13 +326,17 @@ def test_never_answer_fails_deadline_exceeded_without_hang(
     )
 
 
+@pytest.mark.parametrize("kind", ["login", "oauth_token"])
 def test_login_from_other_member_is_credential_not_owned_without_spawn(
     cluster: ClusterSession,
     workspace: UUID,
     owner_account_id: UUID,
     monkeypatch: pytest.MonkeyPatch,
+    kind: str,
 ) -> None:
-    monkeypatch.setenv("RHEO__runtime__claude_cli__credential_kind", "login")
+    # oauth_token is minted from the same personal subscription, so it is bound the
+    # same way.
+    monkeypatch.setenv("RHEO__runtime__claude_cli__credential_kind", kind)
     monkeypatch.setenv(
         "RHEO__runtime__claude_cli__credential_account_id", str(owner_account_id)
     )

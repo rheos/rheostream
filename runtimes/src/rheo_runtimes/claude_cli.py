@@ -43,10 +43,23 @@ from rheo_core.settings import resolve
 from rheo_core.storage.data_root import resolve_data_root
 
 CLAUDE_CLI_SCOPE_COMPONENT: Final = "runtime.claude_cli"
+# The references ``credential_ref`` may name, per credential kind. Each kind gets the
+# adapter's file prefix and its own one environment variable, and nothing else, so an
+# ``api_key`` deployment cannot read the OAuth token's variable or the reverse.
 CLAUDE_CLI_SCOPE_PREFIXES: Final = (
     "secret://file/runtime/claude_cli/",
     "secret://env/RHEO_ANTHROPIC_API_KEY",
 )
+CLAUDE_CLI_OAUTH_SCOPE_PREFIXES: Final = (
+    "secret://file/runtime/claude_cli/",
+    "secret://env/RHEO_CLAUDE_OAUTH_TOKEN",
+)
+# credential_kind -> (the admitted references, the one child variable it is passed as).
+# ``login`` is absent: it passes no credential variable and copies the login seed.
+_SECRET_CREDENTIALS: Final[Mapping[str, tuple[tuple[str, ...], str]]] = {
+    "api_key": (CLAUDE_CLI_SCOPE_PREFIXES, "ANTHROPIC_API_KEY"),
+    "oauth_token": (CLAUDE_CLI_OAUTH_SCOPE_PREFIXES, "CLAUDE_CODE_OAUTH_TOKEN"),
+}
 DEFAULT_LOGIN_SEED: Final = Path("config") / "claude-cli-login"
 MCP_CONFIG_NAME: Final = "mcp.json"
 POLL_WAIT_SECONDS: Final = 0.05
@@ -341,7 +354,8 @@ def _copy_login_seed(config_dir: Path) -> FailureEvent | None:
     return None
 
 
-def _prepare_api_key_dir(config_dir: Path) -> None:
+def _prepare_empty_config_dir(config_dir: Path) -> None:
+    """The configuration directory for a secret credential: created empty, no seed."""
     config_dir.mkdir(mode=CONFIG_DIR_MODE, parents=True, exist_ok=True)
     try:
         os.chmod(config_dir, CONFIG_DIR_MODE)
@@ -349,7 +363,12 @@ def _prepare_api_key_dir(config_dir: Path) -> None:
         pass
 
 
-def _resolve_api_key() -> str | FailureEvent:
+def _resolve_secret_credential(prefixes: tuple[str, ...]) -> str | FailureEvent:
+    """``credential_ref`` through the adapter's scope for one credential kind.
+
+    Every failure is a fixed-text ``credential_invalid``: neither the reference's
+    value nor the refusal's own message is carried into the event.
+    """
     ref_text = resolve().get_str("runtime.claude_cli.credential_ref")
     if not ref_text.strip():
         return FailureEvent(
@@ -357,9 +376,7 @@ def _resolve_api_key() -> str | FailureEvent:
             detail="runtime.claude_cli.credential_ref is empty",
         )
     store = SecretStore(resolve_data_root().path)
-    scope = SecretStore.scope_for(
-        CLAUDE_CLI_SCOPE_COMPONENT, *CLAUDE_CLI_SCOPE_PREFIXES
-    )
+    scope = SecretStore.scope_for(CLAUDE_CLI_SCOPE_COMPONENT, *prefixes)
     try:
         secret = store.resolve(SecretRef.parse(ref_text), scope)
         try:
@@ -379,7 +396,14 @@ def _resolve_api_key() -> str | FailureEvent:
     return value
 
 
-def _child_env(*, config_dir: str, api_key: str | None) -> dict[str, str]:
+def _child_env(
+    *, config_dir: str, credential: tuple[str, str] | None
+) -> dict[str, str]:
+    """The allowlisted child environment.
+
+    ``credential`` is ``(variable, value)`` for a secret credential kind, and the
+    only credential variable the child ever sees; ``None`` under ``login``.
+    """
     env: dict[str, str] = {}
     path = os.environ.get("PATH")
     if path:
@@ -389,8 +413,9 @@ def _child_env(*, config_dir: str, api_key: str | None) -> dict[str, str]:
             env[key] = value
     env["CLAUDE_CONFIG_DIR"] = config_dir
     env["HOME"] = config_dir
-    if api_key is not None:
-        env["ANTHROPIC_API_KEY"] = api_key
+    if credential is not None:
+        variable, value = credential
+        env[variable] = value
     return env
 
 
@@ -498,7 +523,7 @@ class ClaudeCliRuntime:
             )
         kind = settings.get_str("runtime.claude_cli.credential_kind")
         config_dir = Path(spawn.config_dir)
-        api_key: str | None = None
+        credential: tuple[str, str] | None = None
         if kind == "login":
             failure = _copy_login_seed(config_dir)
             if failure is not None:
@@ -507,16 +532,28 @@ class ClaudeCliRuntime:
                     json_schema=json_schema,
                     queued=[failure],
                 )
-        else:
-            resolved = _resolve_api_key()
+        elif kind in _SECRET_CREDENTIALS:
+            prefixes, variable = _SECRET_CREDENTIALS[kind]
+            resolved = _resolve_secret_credential(prefixes)
             if isinstance(resolved, FailureEvent):
                 return ClaudeCliHandle(
                     output_kind=output_kind,
                     json_schema=json_schema,
                     queued=[resolved],
                 )
-            api_key = resolved
-            _prepare_api_key_dir(config_dir)
+            credential = (variable, resolved)
+            _prepare_empty_config_dir(config_dir)
+        else:
+            return ClaudeCliHandle(
+                output_kind=output_kind,
+                json_schema=json_schema,
+                queued=[
+                    FailureEvent(
+                        kind=FailureKind.CREDENTIAL_INVALID,
+                        detail="runtime.claude_cli.credential_kind is not supported",
+                    )
+                ],
+            )
 
         work_dir = Path(spawn.work_dir)
         try:
@@ -529,7 +566,7 @@ class ClaudeCliRuntime:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 cwd=str(work_dir),
-                env=_child_env(config_dir=str(config_dir), api_key=api_key),
+                env=_child_env(config_dir=str(config_dir), credential=credential),
                 text=True,
                 encoding="utf-8",
                 errors="replace",

@@ -866,7 +866,7 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default="login",
-        choices=("login", "api_key"),
+        choices=("login", "api_key", "oauth_token"),
     ),
     KeySpec(
         key="runtime.claude_cli.login_seed_dir",

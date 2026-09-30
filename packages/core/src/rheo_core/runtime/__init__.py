@@ -12,6 +12,7 @@ issued by ``rheo_core.tokens.issue.issue_runtime_token``, not here.
 # (``tests/test_evidence_imports.py`` imports ``rheo_core.runtime.extraction`` cold).
 import rheo_core.operations  # noqa: F401
 from rheo_core.runtime.operations import (
+    ACCOUNT_BOUND_CREDENTIAL_KINDS,
     RUNTIME_RUN,
     RuntimeJobPayload,
     RuntimeRunInput,
@@ -24,6 +25,7 @@ from rheo_core.runtime.operations import (
 from rheo_core.runtime.registry import AdapterRegistry
 
 __all__ = [
+    "ACCOUNT_BOUND_CREDENTIAL_KINDS",
     "RUNTIME_RUN",
     "AdapterRegistry",
     "RuntimeJobPayload",

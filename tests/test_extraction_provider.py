@@ -456,9 +456,11 @@ def test_the_deadline_cancels_the_run_and_raises(
 # --- the credential binding and the adapter source ------------------------------------
 
 
-def test_a_login_bound_to_another_account_refuses_before_any_start(
-    tokens: _Tokens, popen: PopenGuard
+@pytest.mark.parametrize("kind", ["login", "oauth_token"])
+def test_a_credential_bound_to_another_account_refuses_before_any_start(
+    monkeypatch: pytest.MonkeyPatch, tokens: _Tokens, popen: PopenGuard, kind: str
 ) -> None:
+    monkeypatch.setenv(_KIND_ENV, kind)
     adapter = ScriptedAdapter(_answered())
     with pytest.raises(ExtractionCredentialNotOwned):
         _provider(adapter, tokens).extract(_batch(account_id=_OTHER_ACCOUNT))
@@ -467,6 +469,29 @@ def test_a_login_bound_to_another_account_refuses_before_any_start(
     assert tokens.issued == []
     assert popen.calls == []
     assert not (workspace_dir_for(_WORKSPACE, Purpose.SCRATCH) / "extract").exists()
+
+
+def test_an_oauth_token_without_an_account_id_refuses_every_speaker(
+    monkeypatch: pytest.MonkeyPatch, tokens: _Tokens, popen: PopenGuard
+) -> None:
+    monkeypatch.setenv(_KIND_ENV, "oauth_token")
+    monkeypatch.setenv(_ACCOUNT_ENV, "")
+    adapter = ScriptedAdapter(_answered())
+    with pytest.raises(ExtractionCredentialNotOwned):
+        _provider(adapter, tokens).extract(_batch())
+
+    assert adapter.starts == []
+    assert tokens.issued == []
+
+
+def test_an_oauth_token_serves_its_own_account(
+    monkeypatch: pytest.MonkeyPatch, tokens: _Tokens, popen: PopenGuard
+) -> None:
+    monkeypatch.setenv(_KIND_ENV, "oauth_token")
+    adapter = ScriptedAdapter(_answered())
+
+    assert _provider(adapter, tokens).extract(_batch()) == _ANSWER
+    _served(adapter, popen)
 
 
 def test_an_api_key_credential_serves_any_account(
