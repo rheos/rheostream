@@ -22,7 +22,7 @@ test that reads it.
 
 import hashlib
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from conftest import ClusterSession
@@ -49,6 +49,7 @@ from rheo_core.operations import (
     register_core_operations,
 )
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import NOT_FOUND
 from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
 from rheo_core.storage import control_tables as t
@@ -68,7 +69,10 @@ from rheo_core.tokens.issue import (
     ACCOUNT_REQUIRED,
     SET_NOT_ISSUABLE,
     SET_SELECTION_INVALID,
+    TokenRevoked,
+    TokenRevokeInput,
     issue_runtime_token,
+    revoke_handler,
 )
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 from rheo_core.tokens.sets import agent_default, cli_full, register_core_tools
@@ -285,6 +289,106 @@ def test_member_session_cannot_revoke_another_accounts_token(
 
     operator_outcome = dispatch(ctx, TOKEN_REVOKE, {"token_id": str(token_id)})
     assert operator_outcome.ok, operator_outcome
+    with cluster.backend.control_engine.connect() as connection:
+        revoked = get_access_token(connection, token_id)
+    assert revoked is not None and revoked.revoked_at is not None
+
+
+def _presented_token_ctx(workspace: UUID, account_id: UUID) -> WorkspaceContext:
+    """A real token actor for ``account_id``: a ``cli_full`` token presented at
+    ``api`` through ``context_from_token``, the boundary's own factory."""
+    session = _session_ctx_for(workspace, account_id)
+    value, _, _ = _issue(session, kind="cli", set_name="cli_full")
+    ctx = context_from_token(value, "api")
+    assert isinstance(ctx, WorkspaceContext), ctx
+    assert ctx.principal.account_id == account_id
+    return ctx
+
+
+def _revoke_as(
+    cluster: ClusterSession, ctx: WorkspaceContext, token_id: UUID
+) -> OperationRefused | TokenRevoked:
+    """Run ``revoke_handler`` directly under ``ctx``; the refusal, or the result.
+
+    Direct, not through ``dispatch``: ``core.token.revoke`` is in
+    ``NON_TOKEN_ISSUABLE``, so no presented token holds it and dispatch refuses
+    ``operation_not_permitted`` before the handler runs. The handler's own check is
+    the second layer #242 adds, and only a direct call reaches it with a token
+    actor. The workspace unit of work is real but unused; the handler writes only
+    the control plane.
+    """
+    row = cluster.registry_row(ctx.workspace_id)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    with UnitOfWork(engine, row.database_name) as uow:
+        try:
+            return revoke_handler(ctx, uow, TokenRevokeInput(token_id=token_id))
+        except OperationRefused as refused:
+            return refused
+
+
+def test_token_actor_cannot_revoke_another_accounts_token(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """#242: a token actor of member B naming the owner's token id is refused
+    exactly as an unknown id is (same state, same detail but for the id), and the
+    owner's token stays live. The account comes from the presented token, never
+    from the payload."""
+    _, owner_token_id, _ = _issue(
+        _operator_ctx(workspace),
+        kind="cli",
+        set_name="read_only",
+        account_id=owner_account_id,
+    )
+    member_id = add_member(
+        cluster.backend, workspace, Role.MEMBER, display_name="member-token-revoke"
+    )
+    token_ctx = _presented_token_ctx(workspace, member_id)
+    # The first layer: no presented token reaches the handler through dispatch.
+    via_dispatch = dispatch(token_ctx, TOKEN_REVOKE, {"token_id": str(owner_token_id)})
+    assert via_dispatch.state == OPERATION_NOT_PERMITTED
+
+    cross = _revoke_as(cluster, token_ctx, owner_token_id)
+    unknown_id = uuid4()
+    unknown = _revoke_as(cluster, token_ctx, unknown_id)
+    assert isinstance(cross, OperationRefused), cross
+    assert isinstance(unknown, OperationRefused), unknown
+    assert cross.state == unknown.state == NOT_FOUND
+    assert cross.detail is not None and unknown.detail is not None
+    assert cross.detail.replace(str(owner_token_id), "<id>") == (
+        unknown.detail.replace(str(unknown_id), "<id>")
+    )
+    with cluster.backend.control_engine.connect() as connection:
+        untouched = get_access_token(connection, owner_token_id)
+    assert untouched is not None and untouched.revoked_at is None
+
+
+def test_token_actor_revokes_its_own_accounts_token(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    """#242's other half: a token actor still revokes a token of its own account."""
+    member_id = add_member(
+        cluster.backend, workspace, Role.MEMBER, display_name="member-token-self"
+    )
+    token_ctx = _presented_token_ctx(workspace, member_id)
+    _, own_token_id, _ = _issue(
+        _session_ctx_for(workspace, member_id), kind="cli", set_name="read_only"
+    )
+    result = _revoke_as(cluster, token_ctx, own_token_id)
+    assert result == TokenRevoked(token_id=own_token_id), result
+    with cluster.backend.control_engine.connect() as connection:
+        revoked = get_access_token(connection, own_token_id)
+    assert revoked is not None and revoked.revoked_at is not None
+
+
+def test_session_revokes_its_own_token(
+    cluster: ClusterSession, session_ctx: WorkspaceContext
+) -> None:
+    """Session callers are unchanged by #242: a session still revokes its own
+    account's token (the cross-account refusal and the operator's cross-account
+    success are the member-session test above)."""
+    _, token_id, _ = _issue(session_ctx, kind="cli", set_name="read_only")
+    outcome = dispatch(session_ctx, TOKEN_REVOKE, {"token_id": str(token_id)})
+    assert outcome.ok, outcome
     with cluster.backend.control_engine.connect() as connection:
         revoked = get_access_token(connection, token_id)
     assert revoked is not None and revoked.revoked_at is not None
