@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -37,11 +38,17 @@ from harness.modules import (
     install_and_enable_module,
     loaded_probe_modules,
 )
-from harness.registry import NOTE_GET, enable_harness_module, register_harness
+from harness.registry import (
+    NOTE_GET,
+    add_member,
+    enable_harness_module,
+    register_harness,
+)
 from rheo_app_mcp.session import resolve_context
 from rheo_app_mcp.tools import call_tool, list_tools
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.approvals import tables as approval_tables
+from rheo_core.audit import AUDIT_LIST
 from rheo_core.audit.telemetry_tables import tool_telemetry
 from rheo_core.boundary import context_for_harness
 from rheo_core.deletion import OWNED_DELETIONS
@@ -121,13 +128,21 @@ class Discover:
     surfaces: LoadedSurfaces
     database_name: str
 
-    def token(self, operations: Iterable[str]) -> WorkspaceContext:
-        """An ``mcp`` token holding exactly ``operations``, resolved by the boundary."""
+    def token(
+        self, operations: Iterable[str], *, account_id: UUID | None = None
+    ) -> WorkspaceContext:
+        """An ``mcp`` token holding exactly ``operations``, resolved by the boundary.
+
+        Issued to the owner unless ``account_id`` names another member, whose
+        membership role the boundary then reads onto the context.
+        """
         value, raw = mint("mcp")
         with self.cluster.backend.control_engine.begin() as connection:
             row = insert_access_token(
                 connection,
-                account_id=self.owner_account_id,
+                account_id=(
+                    self.owner_account_id if account_id is None else account_id
+                ),
                 workspace_id=self.workspace,
                 kind="mcp",
                 issued_from="operator",
@@ -144,11 +159,19 @@ class Discover:
         return ctx
 
     def pair(
-        self, operations: Iterable[str]
+        self, operations: Iterable[str], *, account_id: UUID | None = None
     ) -> tuple[WorkspaceContext, WorkspaceContext]:
         """(direct, discover): two tokens with the same grants, one in each mode."""
         grants = tuple(operations)
-        return self.token(grants), self.token((*grants, TOOL_CALL))
+        return (
+            self.token(grants, account_id=account_id),
+            self.token((*grants, TOOL_CALL), account_id=account_id),
+        )
+
+    def catalogue(self, ctx: WorkspaceContext) -> list[str]:
+        outcome = self.call(ctx, "operations_catalog", {"limit": 500})
+        assert outcome.ok, outcome
+        return [entry.name for entry in outcome.result.tools]  # type: ignore[union-attr]
 
     def listed(
         self,
@@ -246,13 +269,18 @@ class Discover:
             uow.commit()
 
 
-@pytest.fixture
-def discover(
+@contextmanager
+def _loaded(
     monkeypatch: pytest.MonkeyPatch,
     cluster: ClusterSession,
     workspace: UUID,
     owner_account_id: UUID,
+    *,
+    enable: bool,
 ) -> Iterator[Discover]:
+    """Recallatron loaded, and installed and enabled in ``workspace`` when
+    ``enable``. Disabled is still *loaded*: its tools are registered and their
+    operations resolve, so the only reason one is unreachable is the module state."""
     register_core_operations()
     register_core_tools()
     register_resolver(
@@ -263,9 +291,12 @@ def discover(
     ) as surfaces:
         register_core_operations(surfaces.operations)
         register_core_tools(surfaces.tools)
-        bootstrap = context_for_harness(workspace, owner_account_id, Role.OWNER)
-        assert isinstance(bootstrap, WorkspaceContext), bootstrap
-        install_and_enable_module(cluster.backend, bootstrap, workspace, _MEMORY_MODULE)
+        if enable:
+            bootstrap = context_for_harness(workspace, owner_account_id, Role.OWNER)
+            assert isinstance(bootstrap, WorkspaceContext), bootstrap
+            install_and_enable_module(
+                cluster.backend, bootstrap, workspace, _MEMORY_MODULE
+            )
         row = cluster.registry_row(workspace)
         yield Discover(
             cluster=cluster,
@@ -274,6 +305,32 @@ def discover(
             surfaces=surfaces,
             database_name=row.database_name,
         )
+
+
+@pytest.fixture
+def discover(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> Iterator[Discover]:
+    with _loaded(
+        monkeypatch, cluster, workspace, owner_account_id, enable=True
+    ) as loaded:
+        yield loaded
+
+
+@pytest.fixture
+def disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> Iterator[Discover]:
+    with _loaded(
+        monkeypatch, cluster, workspace, owner_account_id, enable=False
+    ) as loaded:
+        yield loaded
 
 
 def _text(outcome: OperationOutcome) -> str | None:
@@ -392,8 +449,9 @@ def test_a_hidden_tool_called_directly_is_not_found_to_a_discover_token(
 def test_the_catalogue_lists_exactly_what_the_token_may_call(
     discover: Discover,
 ) -> None:
-    """Granted and available only: no ungranted tool, no tool whose role or module
-    rules exclude it, and none of the three discover tools themselves."""
+    """Only granted tools, and none of the three discover tools themselves. The
+    role and module-origin exclusions are asserted on the catalogue in the two
+    tests below that disable each."""
     _, discovering = discover.pair((WORKSPACE_STATUS, MEMORY_RECALL, OPERATION_LIST))
     outcome = discover.call(discovering, "operations_catalog", {})
     assert outcome.ok, outcome
@@ -590,3 +648,55 @@ def test_a_scope_narrowed_after_the_catalogue_still_refuses(
     narrowed = discover.token((MEMORY_RECALL, TOOL_CALL))
     outcome = _remember(discover, narrowed, generic=True)
     assert outcome.state == _NOT_FOUND, outcome
+
+
+# --- the origin and role checks, through the generic path -------------------------
+
+
+def test_a_tool_whose_own_module_is_disabled_is_refused_like_a_direct_call(
+    disabled: Discover,
+) -> None:
+    """``recallatron_forget`` names the core's ``core.record.delete``, whose module
+    is always enabled; its *own* module is loaded but not enabled here. The origin
+    check is the only thing refusing it, and the generic call must refuse it exactly
+    as a direct call does, before any approval work."""
+    direct, discovering = disabled.pair((RECORD_DELETE, WORKSPACE_STATUS))
+    assert "workspace_status" in disabled.listed(direct), "positive control"
+    before = disabled.counts()
+    arguments = {"ref": f"{_MEMORY_MODULE}.memory:{uuid4()}"}
+    by_name = disabled.call(
+        direct, "recallatron_forget", arguments, consumers=ConsumerRegistry()
+    )
+    generic = disabled.generic(
+        discovering, "recallatron_forget", arguments, consumers=ConsumerRegistry()
+    )
+    assert by_name.state == _NOT_FOUND, by_name
+    _same(by_name, generic)
+    assert disabled.counts() == before
+    assert "recallatron_forget" not in disabled.catalogue(discovering)
+    assert "workspace_status" in disabled.catalogue(discovering)
+
+
+def test_a_role_outside_the_operations_roles_is_refused_like_a_direct_call(
+    discover: Discover,
+) -> None:
+    """``core.audit.list`` is owner and operator only. A member's token that holds
+    the grant anyway is refused by the role check, through the generic call exactly
+    as directly, and the catalogue does not offer the tool."""
+    member = add_member(
+        discover.cluster.backend, discover.workspace, Role.MEMBER, display_name="m"
+    )
+    direct, discovering = discover.pair(
+        (AUDIT_LIST, WORKSPACE_STATUS), account_id=member
+    )
+    assert discovering.role is Role.MEMBER
+    by_name = discover.call(direct, "audit_list", {})
+    generic = discover.generic(discovering, "audit_list", {})
+    assert by_name.state == _NOT_FOUND, by_name
+    _same(by_name, generic)
+    assert "audit_list" not in discover.catalogue(discovering)
+    assert "workspace_status" in discover.catalogue(discovering)
+
+    owner_direct, owner_discovering = discover.pair((AUDIT_LIST,))
+    assert discover.call(owner_direct, "audit_list", {}).ok, "positive control"
+    assert discover.generic(owner_discovering, "audit_list", {}).ok

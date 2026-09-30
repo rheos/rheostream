@@ -51,6 +51,7 @@ from rheo_core.runtime import (
     RuntimeJobPayload,
     make_run_runtime_job,
 )
+from rheo_core.runtime.operations import DISCOVER_TOOL_NOT_PERMITTED
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import PostgresOverrideSource
 from rheo_core.storage import runtime_tables, work_tables
@@ -289,6 +290,29 @@ def test_runtime_dispatch_refuses_unknown_runtime_before_enqueue(
     payload["runtime_id"] = "not_a_runtime"
     outcome = dispatch(ctx, RUNTIME_RUN, payload)
     assert outcome.state == "runtime_unknown"
+    engine = workspace_engine(cluster, workspace)
+    with engine.connect() as connection:
+        count = connection.execute(
+            select(func.count()).select_from(work_tables.job)
+        ).scalar_one()
+    assert count == 0
+
+
+@pytest.mark.parametrize(
+    "tool",
+    ["operations_call", "operations_catalog", "operations_describe", "core.tool.call"],
+)
+def test_runtime_dispatch_refuses_a_discover_tool_before_enqueue(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID, tool: str
+) -> None:
+    """Issue #262: a run's permitted tools are pre-approved for the adapter, and
+    ``operations_call`` would pre-approve every tool the run's snapshot reaches. The
+    three discover tools and their grant are refused, and no job is written."""
+    ctx = _owner_context(cluster, workspace, owner_account_id)
+    payload = _payload()
+    payload["permitted_tools"] = ["workspace_status", tool]
+    outcome = dispatch(ctx, RUNTIME_RUN, payload)
+    assert outcome.state == DISCOVER_TOOL_NOT_PERMITTED, outcome
     engine = workspace_engine(cluster, workspace)
     with engine.connect() as connection:
         count = connection.execute(

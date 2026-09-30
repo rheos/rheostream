@@ -84,7 +84,9 @@ SET_EMPTY: Final = "set_empty"
 
 DISCOVER_NOT_PERMITTED: Final = "discover_not_permitted"
 """``discover`` was asked for and ``core.tool.call`` did not survive the issuer's
-permitted set, so the token would silently have come out in direct mode."""
+permitted set, so the token would silently have come out in direct mode; or it was
+asked for a token kind other than ``mcp``, which never reaches the MCP surface and so
+has no tool list to shrink."""
 
 SET_SELECTION_INVALID: Final = "set_selection_invalid"
 """Neither or both of ``set_name``/``operations`` were given."""
@@ -195,6 +197,12 @@ def _expand(model_input: TokenIssueInput) -> frozenset[str]:
 
 def _requested(model_input: TokenIssueInput) -> frozenset[str]:
     """:func:`_expand`, plus the discover-then-call grant when it was asked for."""
+    if model_input.discover and model_input.kind != "mcp":
+        raise OperationRefused(
+            DISCOVER_NOT_PERMITTED,
+            f"discover-then-call is an MCP listing mode; a {model_input.kind!r} "
+            "token never reaches the MCP surface",
+        )
     requested = _expand(model_input)
     if model_input.discover:
         requested |= {DISCOVER_THEN_CALL_OPERATION}

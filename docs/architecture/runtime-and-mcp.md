@@ -585,7 +585,7 @@ most five tools, however many modules are installed:
 | Tool | What it does |
 | --- | --- |
 | `operations_catalog` | Lists the tools this token may call through `operations_call`: name, class and description, sorted by name, with an optional `query` substring filter and a `limit` (1 to 500, default 100). |
-| `operations_describe` | One of those tools' description, class and input JSON schema: exactly what `tools/list` would have shown for it in direct mode. |
+| `operations_describe` | One of those tools' name, description and input JSON schema, as `tools/list` would have shown them in direct mode, plus its safety class. |
 | `operations_call` | Calls one of those tools by name with `input`, and returns what calling it directly returns. |
 | `operations_get`, `operations_list` | Unchanged. They stay direct because they are how a client polls a long-running call or one held at `approval_required`. |
 
@@ -616,9 +616,14 @@ description are built from the same availability check, so they list exactly wha
 `operations_call` accepts, and a name it would refuse is `not_found` in both. A token in this mode
 that calls a hidden tool directly by name gets `not_found`: callable directly still means listed.
 
+**Not for runtime runs.** A run's `permitted_tools` become the adapter's pre-approved tool list
+(the Claude CLI's `--allowedTools`), and pre-approving `operations_call` would pre-approve every
+tool the run's snapshot reaches, including ones the caller never named. So `core.runtime.run`
+refuses `operations_call`, `operations_catalog`, `operations_describe` and `core.tool.call` in
+`permitted_tools` with `discover_tool_not_permitted`, and a run's token is always in direct mode.
+
 **When to use which.** Use direct mode for a client that calls a few tools often and benefits from
-seeing their schemas up front: a runtime run's token (which already holds only the tools its caller
-named), or a token scoped to one module. Use discover-then-call for a general-purpose agent client
+seeing their schemas up front, or a token scoped to one module; runtime runs are always direct. Use discover-then-call for a general-purpose agent client
 whose token spans many modules, where paying for every schema in every session costs more than one
 extra `operations_describe` round trip before the first call to a tool. The grants are the
 authority either way; the mode changes only what is listed.

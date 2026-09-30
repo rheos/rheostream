@@ -67,6 +67,7 @@ from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.tokens.format import mint
 from rheo_core.tokens.issue import (
     ACCOUNT_REQUIRED,
+    DISCOVER_NOT_PERMITTED,
     SET_EMPTY,
     SET_NOT_ISSUABLE,
     SET_SELECTION_INVALID,
@@ -288,6 +289,24 @@ def test_a_token_holding_only_the_grant_is_refused_set_empty(
         {"kind": "mcp", "operations": [DISCOVER_THEN_CALL_OPERATION]},
     )
     assert outcome.state == SET_EMPTY, outcome
+
+
+def test_discover_is_refused_for_a_cli_token(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    """A ``cli`` token never reaches the MCP surface, so it has no listing to
+    shrink; asking for the mode is a mistake worth saying out loud."""
+    outcome = dispatch(
+        _operator_ctx(workspace),
+        TOKEN_ISSUE,
+        {
+            "kind": "cli",
+            "set_name": "read_only",
+            "account_id": str(owner_account_id),
+            "discover": True,
+        },
+    )
+    assert outcome.state == DISCOVER_NOT_PERMITTED, outcome
 
 
 def test_revoke_via_real_dispatch_path(

@@ -75,7 +75,11 @@ from rheo_core.storage.control_plane import delete_access_token, get_access_toke
 from rheo_core.storage.data_root import Purpose, run_dir_for, workspace_dir_for
 from rheo_core.storage.postgres import get_backend
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
-from rheo_core.tokens.sets import TOOL_REGISTRY
+from rheo_core.tokens.sets import (
+    DISCOVER_THEN_CALL_OPERATION,
+    DISCOVER_THEN_CALL_TOOLS,
+    TOOL_REGISTRY,
+)
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
 
@@ -94,6 +98,14 @@ Raised by ``boundary/factories.py:context_from_operation`` and reached through
 :data:`RUNTIME_ACTOR_REQUIRED` because it is the same kind of thing -- a rebuilt
 context refusing what the stored payload claims -- and that factory spells the other
 one as a literal for the cycle this module's own import of it creates."""
+DISCOVER_TOOL_NOT_PERMITTED: Final = "discover_tool_not_permitted"
+"""A run's ``permitted_tools`` named a discover-then-call tool (issue #262).
+
+A run's permitted tools become the adapter's pre-approved tool list (the Claude CLI's
+``--allowedTools``). Pre-approving ``operations_call`` would pre-approve every tool
+reachable through the run's snapshot, including tools the caller never named, so the
+three tools, and the grant they name, are refused here rather than filtered."""
+
 RUNTIME_UNKNOWN: Final = "runtime_unknown"
 MODEL_UNKNOWN: Final = "model_unknown"
 CREDENTIAL_NOT_OWNED: Final = "credential_not_owned"
@@ -344,10 +356,32 @@ def _sole_or_refuse(
     return value
 
 
+_DISCOVER_TOOL_NAMES: Final = frozenset(tool.name for tool in DISCOVER_THEN_CALL_TOOLS)
+
+
+def _refuse_discover_tools(requested: Sequence[str]) -> None:
+    """Refuse a run naming a discover-then-call tool or its grant.
+
+    Checked by name as well as through the registry, so the refusal holds whatever
+    the process-wide tool table happens to hold.
+    """
+    for name in requested:
+        tool = TOOL_REGISTRY.lookup(name)
+        operation = tool.declaration.operation if tool is not None else name
+        if name in _DISCOVER_TOOL_NAMES or operation == DISCOVER_THEN_CALL_OPERATION:
+            raise OperationRefused(
+                DISCOVER_TOOL_NOT_PERMITTED,
+                f"{name!r} cannot be a run's permitted tool: a run's tools are "
+                "pre-approved, and the discover-then-call tools would pre-approve "
+                "every tool the run's snapshot reaches; name the tools themselves",
+            )
+
+
 def runtime_run_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: RuntimeRunInput
 ) -> RuntimeRunScheduled:
     _backing_account_id(ctx)
+    _refuse_discover_tools(model_input.permitted_tools)
     if not isinstance(uow, HandlerUnitOfWork):
         raise OperationRefused(
             "output_invalid",
@@ -425,10 +459,14 @@ def _permitted_tools(ctx: WorkspaceContext, requested: Sequence[str]) -> list[st
     names: list[str] = []
     seen: set[str] = set()
     for name in requested:
-        if name in seen:
+        if name in seen or name in _DISCOVER_TOOL_NAMES:
+            # Refused at dispatch (``_refuse_discover_tools``); dropped here too, so
+            # a job payload written before that refusal existed cannot carry one.
             continue
         tool = TOOL_REGISTRY.lookup(name)
         operation = tool.declaration.operation if tool is not None else name
+        if operation == DISCOVER_THEN_CALL_OPERATION:
+            continue
         if _actor_may_call(ctx, operation):
             names.append(name)
             seen.add(name)

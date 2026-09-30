@@ -254,10 +254,27 @@ def _meta(tool: RegisteredTool) -> bool:
     return tool.declaration.operation == DISCOVER_THEN_CALL_OPERATION
 
 
+def _reachable(
+    ctx: WorkspaceContext, tool: RegisteredTool, registry: OperationRegistry
+) -> bool:
+    """The one rule for whether ``ctx`` may call ``tool`` at all.
+
+    :func:`_available`'s four checks, and not one of the three discover-then-call
+    tools (those are answered by this module and are never a target). The generic
+    call, the catalogue and the description all ask this and nothing else, and
+    :func:`_listed` is built on it, so a listing can only narrow what this allows.
+
+    **New access rules go here or in :func:`_available`, never only in
+    :func:`_listed`**: a rule that lived only in the listing would hide a tool from
+    ``tools/list`` and leave it callable through ``operations_call``.
+    """
+    return not _meta(tool) and _available(ctx, tool, registry)
+
+
 def _listed(
     ctx: WorkspaceContext, tool: RegisteredTool, registry: OperationRegistry
 ) -> bool:
-    """Available, and in this context's listing mode.
+    """What ``tools/list`` shows: the listing mode's narrowing of what is callable.
 
     In discover-then-call mode only the fixed names, registered by the core, are
     listed; everything else the context may call is reached through
@@ -265,15 +282,21 @@ def _listed(
     discover-then-call client was never shown is ``not_found`` to it when called by
     name, exactly as an unlisted tool is to any other client.
 
-    In direct mode the three discover-then-call tools are never listed, even to a
-    context whose operation set is ``ALL_OPERATIONS`` and so "holds" the grant: the
-    mode is a snapshot fact, and those three exist only for it.
+    In direct mode it is exactly :func:`_reachable`, so the three discover-then-call
+    tools are never listed, even to a context whose operation set is
+    ``ALL_OPERATIONS`` and so "holds" the grant: the mode is a snapshot fact, and
+    those three exist only for it. In discover-then-call mode it is the three (which
+    still need :func:`_available`, so the grant must be held) plus whichever of
+    ``operations_get``/``operations_list`` are reachable. Either way nothing is
+    listed that :func:`_available` refuses.
     """
-    if not _available(ctx, tool, registry):
-        return False
     if not discover_then_call(ctx):
-        return not _meta(tool)
-    return tool.origin == CORE_ORIGIN and tool.name in DISCOVER_THEN_CALL_TOOL_NAMES
+        return _reachable(ctx, tool, registry)
+    if tool.origin != CORE_ORIGIN or tool.name not in DISCOVER_THEN_CALL_TOOL_NAMES:
+        return False
+    if _meta(tool):
+        return _available(ctx, tool, registry)
+    return _reachable(ctx, tool, registry)
 
 
 def visible_tools(
@@ -301,11 +324,7 @@ def _callable_through_generic(
 ) -> tuple[RegisteredTool, ...]:
     """What ``operations_call`` would accept for ``ctx``: every available tool but
     the three discover-then-call tools themselves."""
-    return tuple(
-        tool
-        for tool in _registered(tools)
-        if not _meta(tool) and _available(ctx, tool, registry)
-    )
+    return tuple(tool for tool in _registered(tools) if _reachable(ctx, tool, registry))
 
 
 def tool_description(declaration: ToolDeclaration) -> str:
@@ -340,8 +359,9 @@ class ToolCatalog(BaseModel):
 
 
 class ToolDescription(BaseModel):
-    """``operations_describe``'s answer: what ``tools/list`` would have said about
-    this tool to a client in direct mode."""
+    """``operations_describe``'s answer: the name, description and input schema
+    ``tools/list`` would have shown for this tool in direct mode, plus its safety
+    class, which ``tools/list`` does not carry."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -568,22 +588,15 @@ def _call(
     """One tool call, direct (``via_generic`` false) or named by ``operations_call``.
 
     The two differ in the first check only. A direct call must be *listed* for this
-    context (:func:`_listed`); a generic call must be *available* (:func:`_available`,
-    the same four checks without the listing-mode filter) and must not itself be one
-    of the three discover-then-call tools, so ``operations_call`` cannot name
-    ``operations_call``. Both refusals are the same ``not_found`` with the same text,
-    so a generic call learns nothing a direct call would not.
+    context (:func:`_listed`); a generic call must be *reachable* (:func:`_reachable`,
+    which :func:`_listed` narrows), so it skips the listing-mode filter and cannot
+    name one of the three discover-then-call tools, ``operations_call`` included.
+    Both refusals are the same ``not_found`` with the same text, so a generic call
+    learns nothing a direct call would not.
     """
     registered = tools.lookup(name)
-    if via_generic:
-        reachable = (
-            registered is not None
-            and not _meta(registered)
-            and _available(ctx, registered, registry)
-        )
-    else:
-        reachable = registered is not None and _listed(ctx, registered, registry)
-    if registered is None or not reachable:
+    check = _reachable if via_generic else _listed
+    if registered is None or not check(ctx, registered, registry):
         return for_model(
             _refused(TOOL_NOT_FOUND, f"{name!r} is not a tool available here"),
             policy_for(ctx),
@@ -618,10 +631,9 @@ def _call(
     elif _is_core(registered, OPERATIONS_DESCRIBE_TOOL):
         model = validated
         outcome = _describe(ctx, validated, tools=tools, registry=registry)
-    elif _meta(registered):  # pragma: no cover - registration refuses this shape
-        model = validated
-        outcome = _refused(TOOL_NOT_FOUND, f"{name!r} is not a tool available here")
     else:
+        # ``ToolRegistry.register`` refuses any other tool naming the grant.
+        assert not _meta(registered), registered
         model = validated
         outcome = dispatch(
             ctx,
@@ -688,11 +700,7 @@ def _describe(
     name = getattr(validated, "name", None)
     assert isinstance(name, str)
     registered = tools.lookup(name)
-    if (
-        registered is None
-        or _meta(registered)
-        or not _available(ctx, registered, registry)
-    ):
+    if registered is None or not _reachable(ctx, registered, registry):
         return _refused(TOOL_NOT_FOUND, f"{name!r} is not a tool available here")
     declaration = registered.declaration
     return OperationOutcome(
