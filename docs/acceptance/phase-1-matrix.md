@@ -949,11 +949,11 @@ index 9296e2f..97e5124 100644
 ```
 
 **Cost:**
-- `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record` — first observed failure line: `E       AssertionError: ['core', 'harness']`, then `E       assert {'core', 'harness'} == {'core.approv....create', ...}` with `'core'` and `'harness'` as the extra items in the left set and the fourteen operation names in the right.
+- `pytest:tests/postgres/test_audit_dispatch.py::test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record` — current-tree re-run (2026-09-30), first observed failure line: `E       AssertionError: ['core', 'harness']`; the set comparison is against the 27 currently registered non-read operation names.
 - `pytest:tests/postgres/test_audit_dispatch.py::test_the_success_row_names_the_actor_the_entry_and_the_request` — first observed failure line: `E       AssertionError: assert 'core' == 'core.settings.set'`.
 - `pytest:tests/postgres/test_audit_dispatch.py::test_an_operation_above_mutate_is_audited_too` — first observed failure line: `E       AssertionError: assert 'harness' == 'harness.probe.destroy'`.
 
-13 failed, 10 passed.
+13 failed, 10 passed (2026-09-30 re-run; 5.21s).
 
 **Performed by:** C2 (2026-09-16), C6 (2026-09-16)
 
@@ -1029,9 +1029,18 @@ module install, module enable and record delete (`b37b692`, `3ac1ce8`, `cf252b6`
 twenty, fifteen core and five harness, with no further rename. The test's own docstring says the name stays at
 "seventeen" on purpose because renaming it would break this row's demonstrator id. The
 `_fourteen` names in the two notes above are the names those tests had when C6 and C7 ran
-them. The hunk still applies and every demonstrator still resolves, but the `Cost` lines and
-the "13 failed, 10 passed" aggregate were observed against fourteen operations and have not
-been re-captured against twenty.
+them. The hunk still applies and every demonstrator still resolves. Those original `Cost` lines
+and aggregate were observed against fourteen operations; the current-tree re-run below
+supersedes that evidence.
+
+**Current-tree re-run (2026-09-30, issue #135).** The recorded hunk was applied, the full
+`tests/postgres/test_audit_dispatch.py` file was run, and the hunk was reverted immediately
+afterward. It now covers 27 registered non-read operations (22 core and five harness), as
+the test's `THE_SEVENTEEN` docstring records; three work operations and four evidence
+enrollment/ingest operations were added after the 2026-09-24 count of twenty. The run
+returned `13 failed, 10 passed` in 5.21s. Its first failure line was
+`E       AssertionError: ['core', 'harness']`; the assertion now compares those collapsed names against
+all 27 registered non-read operation names.
 
 **Note on one clause with a live demonstrator and no performed mutation.** "A mutating operation
 registered without an audit path fails registration at startup with a named operation" is

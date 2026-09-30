@@ -5,7 +5,8 @@ it, and no more: completeness both ways over that file's own expected set; every
 non-``deferred`` demonstrator still resolves (``pytest:`` against
 ``pytest --collect-only``, ``ci:`` as a bound job/step pair); every
 non-``deferred`` mutation hunk still applies (``git apply --check``); every
-non-``deferred`` row names a performer.
+non-``deferred`` row names a performer. A separate check asserts that each
+quoted build-plan citation still contains its text.
 
 **Two files, validated independently, plus one check between them.**
 :data:`MATRICES` is an ordered list of ``(path, expected_criteria)`` pairs —
@@ -50,6 +51,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ACCEPTANCE = _REPO_ROOT / "docs" / "acceptance"
+_BUILD_PLAN = _REPO_ROOT / "docs" / "requirements" / "build-plan.md"
 _PHASE_ONE = _ACCEPTANCE / "phase-1-matrix.md"
 _PHASE_TWO = _ACCEPTANCE / "phase-2-matrix.md"
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "repository-checks.yml"
@@ -76,6 +78,10 @@ _MATRIX_IDS: Final = tuple(path.name for path, _ in MATRICES)
 
 _HEADING = re.compile(r"^### Criterion (\d+)\s*$", re.MULTILINE)
 _FIELD = re.compile(r"^\*\*(.+?):\*\*\s*(.*)$")
+_TEXT_CITATION = re.compile(
+    r'\A"(?P<quote>.*?)"\s+\(`build-plan\.md:(?P<start>\d+)-(?P<end>\d+)`\)\Z',
+    re.DOTALL,
+)
 _DEMO_BULLET = re.compile(r"^- `([^`]+)`\s*$")
 _DIFF_FENCE = re.compile(r"```diff\n(.*?)```", re.DOTALL)
 _JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
@@ -178,6 +184,38 @@ def cross_file_errors(parsed: Sequence[tuple[Path, Sequence[Row]]]) -> list[str]
                     f"criteria {shared} appear in both "
                     f"{left_path.name} and {right_path.name}"
                 )
+    return errors
+
+
+def _citation_errors(path: Path) -> list[str]:
+    """Check that each row's quoted text occurs within its cited build-plan lines."""
+    matrix = path.read_text(encoding="utf-8")
+    plan_lines = _BUILD_PLAN.read_text(encoding="utf-8").splitlines()
+    headings = list(_HEADING.finditer(matrix))
+    errors: list[str] = []
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(matrix)
+        fields = _fields(matrix[heading.end() : end])
+        citation = _TEXT_CITATION.fullmatch(fields.get("Text", ""))
+        number = heading.group(1)
+        if citation is None:
+            errors.append(f"criterion {number}: Text has no build-plan line citation")
+            continue
+        start, stop = int(citation.group("start")), int(citation.group("end"))
+        if start < 1 or stop < start or stop > len(plan_lines):
+            errors.append(
+                f"criterion {number}: build-plan citation "
+                f"{start}-{stop} is out of range"
+            )
+            continue
+        cited_text = " ".join(line.strip() for line in plan_lines[start - 1 : stop])
+        cited_text = re.sub(r"^\d+\.\s*", "", cited_text)
+        quote = " ".join(citation.group("quote").split())
+        if quote not in " ".join(cited_text.split()):
+            errors.append(
+                f"criterion {number}: quoted text is absent from "
+                f"build-plan.md:{start}-{stop}"
+            )
     return errors
 
 
@@ -392,6 +430,33 @@ def test_each_live_matrix_is_clean(path: Path, expected: frozenset[int]) -> None
         )
         == []
     )
+
+
+@pytest.mark.parametrize("path", [path for path, _ in MATRICES], ids=_MATRIX_IDS)
+def test_each_build_plan_citation_contains_its_quoted_text(path: Path) -> None:
+    assert _citation_errors(path) == []
+
+
+def test_a_drifted_build_plan_quote_is_rejected(tmp_path: Path) -> None:
+    matrix = _PHASE_ONE.read_text(encoding="utf-8")
+    heading = next(_HEADING.finditer(matrix))
+    end = _HEADING.search(matrix, heading.end())
+    fields = _fields(matrix[heading.end() : end.start() if end else len(matrix)])
+    citation = _TEXT_CITATION.fullmatch(fields.get("Text", ""))
+    assert citation is not None
+    broken = matrix.replace(
+        f'"{citation.group("quote")}"',
+        '"text that is not in the cited build-plan range"',
+        1,
+    )
+    path = tmp_path / "matrix.md"
+    path.write_text(broken, encoding="utf-8")
+
+    errors = _citation_errors(path)
+    assert errors
+    assert any(
+        "criterion 1" in error and "quoted text is absent" in error for error in errors
+    ), errors
 
 
 def test_every_state_is_one_of_the_three_the_grammar_defines() -> None:
