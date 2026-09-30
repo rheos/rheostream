@@ -68,7 +68,8 @@ def hook_command(interpreter: str, hook_script: Path, event: str) -> str:
 
     ``/bin/sh -c '<guard>' <interpreter> <hook_script>``. The guard execs the
     interpreter on the script when the interpreter is executable and the
-    script is a file, and otherwise exits 0. A bare ``python hook.py`` would
+    script is a readable file, and otherwise exits 0 (an unreadable script
+    would make Python exit 2 too). A bare ``python hook.py`` would
     exit 2 on a missing script (and 127 on a missing interpreter), and Claude
     Code reads exit 2 from a ``Stop`` hook as "keep going", so a hook that
     outlived ``bridge_home`` or a pruned interpreter would loop every turn.
@@ -78,7 +79,9 @@ def hook_command(interpreter: str, hook_script: Path, event: str) -> str:
     """
     if event not in HOOK_EVENTS:
         raise ValueError(f"not a hook event: {event!r}")
-    guard = f'[ -x "$0" ] && [ -f "$1" ] && exec "$0" "$1" {event}; exit 0'
+    guard = (
+        f'[ -x "$0" ] && [ -f "$1" ] && [ -r "$1" ] && exec "$0" "$1" {event}; exit 0'
+    )
     return shlex.join([POSIX_SH, "-c", guard, interpreter, str(hook_script)])
 
 
@@ -152,6 +155,18 @@ def _commands(groups: list[object]) -> list[str]:
 
 def names_bridge_hook(command: str) -> bool:
     return HOOK_MARKER in command
+
+
+def bridge_commands(document: Document) -> list[str]:
+    """Every hook command in the document, under any event."""
+    hooks = document.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    found: list[str] = []
+    for groups in hooks.values():
+        if isinstance(groups, list):
+            found.extend(_commands(groups))
+    return found
 
 
 def _strip(

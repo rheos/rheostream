@@ -79,7 +79,13 @@ def check_private(bridge_home: Path) -> None:
     """
     problems: list[str] = []
     for path in (bridge_home, *sorted(bridge_home.rglob("*"))):
-        info = path.lstat()
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            if path == bridge_home:
+                raise
+            # Listed, then gone (SQLite's rollback journal comes and goes).
+            continue
         mode = stat.S_IMODE(info.st_mode)
         if _is_os_litter(path, info):
             continue

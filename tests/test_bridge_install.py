@@ -214,7 +214,7 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-GUARD = '[ -x "$0" ] && [ -f "$1" ] && exec "$0" "$1" {event}; exit 0'
+GUARD = '[ -x "$0" ] && [ -f "$1" ] && [ -r "$1" ] && exec "$0" "$1" {event}; exit 0'
 
 
 def expected_command(d: Dirs, event: str, interpreter: str = INTERPRETER) -> str:
@@ -1027,7 +1027,8 @@ def test_status_prints_counts_and_the_enrollment_only(
     )
     assert lines["token_days_remaining"] == "20"
     assert lines["bridge_home_private"] == "yes"
-    value = re.compile(r"-?\d+|none|unknown|yes|\d{4}-\d{2}-\d{2}T[\d:]+\+00:00")
+    assert lines["hook_runnable"] == "no"  # no hook installed in this fixture
+    value = re.compile(r"-?\d+|none|unknown|yes|no|\d{4}-\d{2}-\d{2}T[\d:]+\+00:00")
     assert all(value.fullmatch(v) for v in lines.values()), lines
     for session_hash in HASHES.values():
         assert session_hash not in out
@@ -1471,3 +1472,137 @@ def test_a_loose_bridge_file_is_named_by_drain_and_status(
     captured = capsys.readouterr()
     assert "bridge_home_private: no\n" in captured.out
     assert "token: file mode 0644" in captured.err
+
+
+def test_the_installed_command_exits_0_silently_when_the_script_is_unreadable(
+    initialised: Dirs,
+) -> None:
+    assert (
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            interpreter=_real_interpreter(),
+        )
+        == 0
+    )
+    script = paths.hook_path(initialised.bridge_home)
+    os.chmod(script, 0o000)
+    try:
+        for command in installed_commands(initialised).values():
+            completed = run_hook_command(command, hook_payload())
+            assert (completed.returncode, completed.stdout, completed.stderr) == (
+                0,
+                b"",
+                b"",
+            )
+    finally:
+        os.chmod(script, 0o600)
+    assert not paths.spool_dir(initialised.bridge_home).exists()
+
+
+# --- status: hook_runnable, and a vanishing journal is not a privacy failure ---
+
+
+def _status_lines(d: Dirs, capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
+    capsys.readouterr()
+    assert cli.status(d.bridge_home, now=NOW) == 0
+    captured = capsys.readouterr()
+    assert str(d.user_home) not in captured.out + captured.err
+    return dict(line.split(": ", 1) for line in captured.out.splitlines())
+
+
+def test_status_reports_whether_the_installed_hook_can_run(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _status_lines(initialised, capsys)["hook_runnable"] == "no"  # not installed
+
+    assert (
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            interpreter=_real_interpreter(),
+        )
+        == 0
+    )
+    assert _status_lines(initialised, capsys)["hook_runnable"] == "yes"
+
+    script = paths.hook_path(initialised.bridge_home)
+    os.chmod(script, 0o000)
+    try:
+        assert _status_lines(initialised, capsys)["hook_runnable"] == "no"
+    finally:
+        os.chmod(script, 0o600)
+    script.unlink()
+    assert _status_lines(initialised, capsys)["hook_runnable"] == "no"
+
+
+def test_status_says_no_for_a_pruned_interpreter(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            interpreter="/opt/rheo-synthetic/pruned/python3.12",
+        )
+        == 0
+    )
+    assert _status_lines(initialised, capsys)["hook_runnable"] == "no"
+
+
+def test_status_reads_an_old_bare_form_install(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    hook = paths.hook_path(initialised.bridge_home)
+    hook.write_bytes(Path(cli.hook.__file__).read_bytes())
+    os.chmod(hook, 0o600)
+    bare = {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"{_real_interpreter()} {hook} Stop",
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    initialised.settings.parent.mkdir()
+    initialised.settings.write_text(json.dumps(bare))
+    assert _status_lines(initialised, capsys)["hook_runnable"] == "yes"
+
+
+def test_an_entry_that_vanishes_mid_check_is_not_a_privacy_failure(
+    initialised: Dirs,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = initialised.bridge_home / "state.sqlite-journal"
+    journal.write_bytes(b"")
+    os.chmod(journal, 0o644)  # would fail the mode check if it were looked at
+    real_lstat = os.lstat
+
+    def racing_lstat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if os.path.basename(path) == journal.name:
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", racing_lstat)
+    paths.check_private(initialised.bridge_home)
+    assert _status_lines(initialised, capsys)["bridge_home_private"] == "yes"
+
+
+def test_status_never_prints_a_full_path_for_a_privacy_failure(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    set_token(initialised, new_token())
+    os.chmod(paths.token_path(initialised.bridge_home), 0o644)
+    capsys.readouterr()
+    assert cli.status(initialised.bridge_home, now=NOW) == 0
+    captured = capsys.readouterr()
+    assert "bridge_home_private: no\n" in captured.out
+    assert "token: file mode 0644" in captured.err
+    assert str(initialised.bridge_home) not in captured.out + captured.err

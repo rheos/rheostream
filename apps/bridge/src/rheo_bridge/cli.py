@@ -24,6 +24,7 @@ import json
 import math
 import os
 import secrets
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -422,7 +423,7 @@ def _refuse_other_dir(config: bridge_config.Config, enrolled_dir: Path) -> None:
     if os.path.realpath(enrolled_dir) != config.enrolled_dir:
         raise CliError(
             f"--enrolled-dir {enrolled_dir} is not the enrolled directory "
-            f"{config.enrolled_dir}; the hook is installed there. Nothing removed"
+            f"recorded in config ({config.enrolled_dir}); nothing removed"
         )
 
 
@@ -606,18 +607,72 @@ def status(bridge_home: Path, *, now: datetime) -> int:
     print(f"bridge_home_private: {'no' if problem else 'yes'}")
     if problem:
         print(f"status: the worker will not run: {problem}", file=sys.stderr)
+    # The installed guard exits 0 silently when it cannot run the hook, so a
+    # pruned interpreter or a lost script would otherwise stop capture unseen.
+    print(f"hook_runnable: {'yes' if _hook_runnable(config) else 'no'}")
     return EXIT_OK
+
+
+def _command_paths(command: str) -> tuple[str, str] | None:
+    """``(interpreter, hook script)`` from an installed bridge command.
+
+    Reads the ``/bin/sh`` guard form and the older bare
+    ``<python> <hook.py> <event>`` form.
+    """
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    if len(parts) >= 5 and parts[0] == settings_file.POSIX_SH and parts[1] == "-c":
+        return parts[3], parts[4]
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+    return None
+
+
+def _hook_runnable(config: bridge_config.Config) -> bool:
+    """Whether every installed bridge command would actually run the hook.
+
+    ``False`` when no bridge hook is installed in the enrolled directory, or
+    when any installed command's interpreter is not an executable file or its
+    script is not a readable file.
+    """
+    path = settings_file.settings_path(Path(config.enrolled_dir))
+    try:
+        document, _ = settings_file.read(path)
+    except settings_file.SettingsError:
+        return False
+    commands = [
+        command
+        for command in settings_file.bridge_commands(document)
+        if settings_file.names_bridge_hook(command)
+    ]
+    if not commands:
+        return False
+    for command in commands:
+        found = _command_paths(command)
+        if found is None:
+            return False
+        interpreter, script = found
+        if not (os.path.isfile(interpreter) and os.access(interpreter, os.X_OK)):
+            return False
+        if not (os.path.isfile(script) and os.access(script, os.R_OK)):
+            return False
+    return True
 
 
 def _privacy_problem(bridge_home: Path) -> str | None:
     """Why ``bridge_home`` fails the worker's privacy check, or ``None``.
 
-    The message names only the bridge's own files and their modes.
+    The message names only the bridge's own files (by base name) and their
+    modes, never a full path.
     """
     try:
         paths.check_private(bridge_home)
-    except OSError as exc:
+    except paths.InsecurePermissionsError as exc:
         return str(exc)
+    except OSError as exc:
+        return f"bridge_home cannot be checked: {exc.strerror or type(exc).__name__}"
     return None
 
 
