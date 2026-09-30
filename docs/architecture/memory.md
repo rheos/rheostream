@@ -328,10 +328,11 @@ hidden (`reference_scan_limit` part-way through walking them) from one that does
 (`not_found`). On its own budget the answer depends on the entity alone and matches
 `entity.get`, which opens a fresh request too. A targetless read decides visibility first, on
 the shared budget, before anything else is charged. Every count, bound, `has_more` and
-`target_position` in a window comes from the fully evaluated eligible ordering, never from the row-local candidate list: the SQL
-prefilter removes only what one row can answer for itself (audience, bound purpose, retention,
-lifecycle mode), and a `workspace`-audience memory whose `about` or `derived_from` link the
-caller cannot read survives it and is removed only by full eligibility.
+`target_position` in a window comes from the fully evaluated eligible ordering, never from the
+row-local candidate list: the SQL prefilter removes only what one row can answer for itself
+(audience, bound purpose, retention, lifecycle mode), and a `workspace`-audience memory whose
+`about` or `derived_from` link the caller cannot read survives it and is removed only by full
+eligibility.
 
 At most 500 row-locally eligible candidates are evaluated and the 501st identifier is an
 existence test only; past it the call refuses `window_scan_limit`, a fixed, content-free refusal
@@ -385,6 +386,12 @@ total, bounds, `has_more` flag or partial item.
 > visibility in history mode, which the `current`-mode rule above deliberately does not do, or
 > lifting the reference budget that keeps the scan bounded.
 
+A targeted read is not covered by these residuals, and one related bit is still open. Its
+entity and link-container checks run on their own allowance (#182, #112), but its candidate scan
+still shares the request budget with the target. A caller who spends that budget to the edge can
+get `reference_scan_limit` from a mention it cannot read, which reveals that such a mention
+exists. That is not an accepted residual; #272 holds the decision.
+
 **The tool requires a target; the operation does not.** The MCP tool `recallatron_read`
 validates against an input that always requires `target_ref`, so an agent's reach through the
 tool is unchanged by entity containers. The operation itself is not gated by the tool: any
@@ -398,10 +405,11 @@ One request-wide budget of 4096 distinct references and depth 64 is shared by th
 candidate and every link any of them reaches, and by the entity check of a targetless read;
 exhausting it refuses `reference_scan_limit` with no partial content and no window metadata. The
 container check of a targeted read, for a link container and an entity container alike, runs on
-an allowance of its own of the same size. `context` is 0 to 10 neighbours either side (default 2); `recall` takes a query of 1 to 1000 characters and a `k` of
-1 to 50 (default 10), and entity listing a limit of 1 to 50 (default 10). Every read path refuses
-`retention_unavailable` before any container scan or content resolution when the workspace states
-a retention window it cannot read.
+an allowance of its own of the same size. `context` is 0 to 10 neighbours either side (default
+2); `recall` takes a query of 1 to 1000 characters and a `k` of 1 to 50 (default 10), and entity
+listing a limit of 1 to 50 (default 10). Every read path refuses `retention_unavailable` before
+any container scan or content resolution when the workspace states a retention window it cannot
+read.
 
 ### Near-duplicate candidates
 

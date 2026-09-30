@@ -711,6 +711,25 @@ def test_a_targeted_entity_read_agrees_with_entity_get(
     assert len(read_answers) == 1, read_answers
 
 
+def test_a_targetless_entity_read_still_decides_visibility_on_the_shared_budget(
+    browse: BrowseWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#182 changed the targeted branch only. The targetless branch keeps deciding
+    visibility on the request's shared budget, as the accepted residuals describe, so
+    a change that gave it a fresh allowance must fail here.
+
+    With the shared budget at zero, walking the hidden entity's one mention overflows
+    it: the targetless read answers ``reference_scan_limit``. On a fresh allowance the
+    same read would be ``not_found``. The unknown entity charges nothing either way.
+    """
+    fixture = _three_entities(browse)
+    owner = browse.owner()
+    _spend_the_shared_budget_to(monkeypatch, 0)
+
+    _refused(browse.read(owner, container_ref=fixture.hidden), "reference_scan_limit")
+    _refused(browse.read(owner, container_ref=fixture.unknown), _NOT_FOUND)
+
+
 def test_a_link_container_without_a_target_is_input_invalid(
     browse: BrowseWorkspace,
 ) -> None:
