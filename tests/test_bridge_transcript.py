@@ -199,6 +199,12 @@ def test_slug_keeps_letters_and_digits_and_replaces_everything_else(
     assert transcript.slug(path) == expected
 
 
+def test_distinct_directories_can_share_a_slug() -> None:
+    """The known limit: a slug match is not a directory match."""
+    slugs = {transcript.slug(p) for p in ("/work/a-b", "/work/a_b", "/work/a/b")}
+    assert slugs == {"-work-a-b"}
+
+
 # --- validate_source ------------------------------------------------------
 
 

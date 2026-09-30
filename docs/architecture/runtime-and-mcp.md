@@ -262,7 +262,11 @@ to know two things:
 - A `create` whose response was lost, for example because the
   `ssh ... | rheo-bridge set-token` pipe broke, has still enrolled the pair, under a token
   nobody holds. Retrying `create` answers `enrollment_exists`. Find that enrollment's id with
-  a read-only query in the `core` container, selecting the id and no other column:
+  a read-only query that selects the id and no other column. The table lives in the
+  enrolling workspace's own database, not the control database: that database is named
+  `ws_` followed by the workspace id's 32 hex digits without dashes (the id is the first
+  column of `rheo workspace list`, run in the `core` container). Run the query there, for
+  example with `psql -d ws_<32 hex>` in the Postgres container:
   `SELECT id FROM core.evidence_enrollment WHERE machine_fingerprint = '<machine>' AND
   project_fingerprint = '<project>' AND state = 'active'`, using the two fingerprints
   `rheo-bridge init` printed. Then run `rheo evidence rotate <enrollment-id> --account

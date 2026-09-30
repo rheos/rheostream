@@ -16,9 +16,10 @@ by the row, as in the phase matrices.
 
 "Operative" means the mechanism is built and proven by the fixtures below. For the two local
 rows it is **operative, pending CP-A/CP-B for real use**: the tests prove the mechanism on
-synthetic transcripts, settings files and tokens. The real-session proof waits for the two
-separately authorized steps, gate A (installing the hook in a real enrolled directory) and
-gate B (setting `automatic_memory.extraction.provider = "claude_cli"`).
+synthetic transcripts, settings files and tokens. CP-A is gate A, installing the hook on a
+real machine; CP-B is gate B, the first real model call, made once
+`automatic_memory.extraction.provider = "claude_cli"` is set. Each is authorized separately,
+and a real session is proven only after both.
 
 ## Row: `rheo_runtime`
 
@@ -98,10 +99,10 @@ default) by the time it can be sent. Both are content-free rows.
 - `pytest:tests/postgres/test_local_authority.py::test_a_revoked_enrollment_refuses_enrollment_inactive`
 - `pytest:tests/postgres/test_local_authority.py::test_an_enrollment_of_another_account_refuses_enrollment_mismatch`
 - `pytest:tests/postgres/test_local_authority.py::test_a_speaker_whose_membership_was_revoked_refuses_membership_revoked`
-- `pytest:tests/postgres/test_local_authority.py::test_the_refusal_vocabulary_is_exactly_the_six_words`
 - `pytest:tests/postgres/test_evidence_ingest.py::test_a_token_no_enrollment_holds_is_refused`
 - `pytest:tests/postgres/test_evidence_ingest.py::test_a_live_token_under_a_revoked_enrollment_is_refused`
 - `pytest:tests/postgres/test_evidence_ingest.py::test_a_wrong_fingerprint_is_refused`
+- `pytest:tests/postgres/test_evidence_ingest.py::test_an_enrollment_whose_account_or_purpose_moved_is_refused`
 - `pytest:tests/postgres/test_evidence_ingest.py::test_the_bridge_token_is_refused_every_other_operation`
 - `pytest:tests/postgres/test_evidence_ingest.py::test_after_a_rotate_the_new_token_ingests_and_the_old_one_is_refused`
 
@@ -117,9 +118,12 @@ default) by the time it can be sent. Both are content-free rows.
 
 **Gap proof:**
 - `pytest:tests/postgres/test_evidence_ingest.py::test_gaps_land_in_gapped_as_content_free_rows`
+- `pytest:tests/test_bridge_worker.py::test_a_replaced_shorter_transcript_yields_one_gap_and_restarts_at_zero`
 - `pytest:tests/test_bridge_worker.py::test_a_deleted_transcript_yields_the_gap_and_a_pending_key`
 - `pytest:tests/test_bridge_worker.py::test_an_expired_line_becomes_a_textless_gap_not_a_record`
-- `pytest:tests/test_bridge_transcript.py::test_slug_keeps_letters_and_digits_and_replaces_everything_else`
+
+**Slug limit:**
+- `pytest:tests/test_bridge_transcript.py::test_distinct_directories_can_share_a_slug`
 
 **Entrypoint:**
 - `pytest:tests/test_bridge_transcript.py::test_entrypoint`
@@ -130,10 +134,10 @@ default) by the time it can be sent. Both are content-free rows.
 **Client:** Desktop Code sessions opened on the enrolled directory; transcript
 `entrypoint = "claude-desktop"`.
 
-**State:** operative, pending CP-A/CP-B for real use. The capture reconciliation (capture
-point 8) saw the same project hook fire under Desktop Code with the same payload fields, and
-the transcripts land under the same projects root. No test drives a real Desktop Code
-session; that proof is the post-CP-B step.
+**State:** operative, pending CP-A/CP-B for real use. A Desktop Code session fires the same
+project hook with the same payload fields as the CLI, and its transcripts land under the
+same projects root. No test drives a real Desktop Code session; that is proven with a real
+session once both gates have been passed.
 
 **Enrollment requirement:** the same as the CLI row. One enrollment and one hook serve both
 clients, because both run the enrolled directory's project hook.
@@ -151,7 +155,6 @@ slug.
 
 **Refusal:**
 - `pytest:tests/postgres/test_local_authority.py::test_a_revoked_enrollment_refuses_enrollment_inactive`
-- `pytest:tests/postgres/test_local_authority.py::test_the_refusal_vocabulary_is_exactly_the_six_words`
 - `pytest:tests/postgres/test_evidence_ingest.py::test_a_wrong_fingerprint_is_refused`
 - `pytest:tests/postgres/test_evidence_ingest.py::test_a_live_token_under_a_revoked_enrollment_is_refused`
 
