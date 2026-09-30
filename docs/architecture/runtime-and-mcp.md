@@ -181,8 +181,10 @@ hex of a 32-byte `machine.key` that never leaves the laptop. The directory is
 path itself never leaves the laptop either. A partial unique index allows one active
 enrollment per fingerprint pair, across all accounts. `enroll` answers `enrollment_exists`
 only when the target account itself holds the pair; a pair another account holds answers
-`not_found`, the same refusal any other account's enrollment gets. It names no account and
-no enrollment, though the create still fails, so the pair is visibly unavailable. Both
+a `not_found` refusal. It names no account and no enrollment, though the create still
+fails, so the pair is visibly unavailable. A create that loses a race for the pair revokes
+the token it minted; in the rare case the winner is revoked again before the loser can
+answer, it refuses `enrollment_contended`, and a retried `create` is safe. Both
 `enroll` and `rotate` refuse `membership_missing` for an account that is not a member of the
 workspace, before a token is minted. The row's id is the `authority_id` of every evidence
 row ingested under it. Its purpose is always `internal_analysis` in this version, and every row
@@ -288,6 +290,10 @@ to know two things:
   returned is already dead. Never retry a rotate outside the pipe. If a rotate's response was
   lost, run one more `rotate` through the pipe, so `set-token` receives the token that is now
   current.
+- A `rotate` can revoke the old token in the control plane and then fail to commit the
+  workspace row, leaving the enrollment pointing at a revoked token (`rheo doctor` shows
+  `FAIL`). Retry the rotate at once. Until it succeeds, any claim settles the enrollment's
+  pending rows `authority_unverified`, and the retry does not bring those rows back.
 
 **The two gates.** Nothing here records anything until two separate steps are taken, each
 authorized on its own. Gate A installs the hook in the real enrolled directory; until then

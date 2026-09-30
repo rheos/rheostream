@@ -16,12 +16,12 @@ of ``revoke`` too, the same scoping ``core.token.revoke`` applies to a token act
 
 **The fingerprint pair follows the same rule** (#244). ``create`` answers
 ``enrollment_exists`` only when the target account itself holds the pair. A pair held
-by another account's active enrollment answers ``not_found``, the refusal every other
-account's enrollment gets, so ``enrollment_exists`` never tells one account that
-another has enrolled. The active-pair index stays global (one live enrollment per
-machine and directory), so a create on a pair another account holds still fails. The
-refusal names no account and no enrollment, but a caller can still tell that the pair
-is unavailable; hiding even that needs the index scoped by account, a migration.
+by another account's active enrollment answers a ``not_found`` refusal instead, so
+``enrollment_exists`` never tells one account that another has enrolled. The
+active-pair index stays global (one live enrollment per machine and directory), so a
+create on a pair another account holds still fails. The refusal names no account and
+no enrollment, but a caller can still tell that the pair is unavailable; hiding even
+that needs the index scoped by account, a migration.
 
 **Membership** is checked by ``create`` and ``rotate``, the two operations that mint a
 token, before anything is read or written. ``revoke`` does not check it, so an account
@@ -87,6 +87,14 @@ PAIR_UNAVAILABLE_TEXT: Final = (
     "no enrollment is available for this machine and directory"
 )
 """``not_found``'s text for a pair another account holds: no account, no id."""
+
+ENROLLMENT_CONTENDED: Final = "enrollment_contended"
+"""A concurrent create won the pair and was revoked again before this create could say
+whose it was. Nothing was enrolled and the minted token is revoked; retry the create."""
+
+MINTED_TOKEN_REVOKE_FAILED_LOG: Final = "evidence_enrollment_minted_token_revoke_failed"
+"""Logged, with the error type only, when a create that lost the race could not
+revoke the token it had minted."""
 
 ACTIVE_PAIR_INDEX: Final = "evidence_enrollment_active_pair"
 """The partial unique index behind :data:`ENROLLMENT_EXISTS`."""
@@ -267,10 +275,12 @@ def create_handler(
 ) -> EnrollmentCreated:
     """Mint the bridge token, then insert the enrollment holding its id.
 
-    The token is minted first and committed in the control plane. If the enrollment
-    insert then fails, an orphan token remains whose only operation,
-    ``core.evidence.ingest``, finds no enrollment for it and refuses
-    ``enrollment_inactive``. Accepted, not a bug: the orphan can do nothing.
+    The token is minted first and committed in the control plane. A create that
+    loses the race on the active-pair index revokes that token before it refuses, so
+    it leaves no orphan. If any other insert failure happens, or that revoke itself
+    fails, an orphan token remains whose only operation, ``core.evidence.ingest``,
+    finds no enrollment for it and refuses ``enrollment_inactive``. Accepted, not a
+    bug: the orphan can do nothing.
     """
     _refuse_token_actor(ctx, ENROLLMENT_CREATE)
     account_id = _target_account(ctx, model_input.account_id)
@@ -299,8 +309,13 @@ def create_handler(
     except IntegrityError as violation:
         if _constraint_name(violation) != ACTIVE_PAIR_INDEX:
             raise
+        _discard_minted(token_id)
         _refuse_held_pair(uow, model_input, account_id, cause=violation)
-        raise  # the holder was revoked in the meantime; the violation stands
+        # The winner was revoked between the violation and the re-read.
+        raise OperationRefused(
+            ENROLLMENT_CONTENDED,
+            "a concurrent change moved this machine and directory; retry",
+        ) from violation
     return EnrollmentCreated(
         enrollment_id=enrollment_id,
         token_id=token_id,
@@ -315,6 +330,19 @@ def _set_token_id(uow: UnitOfWork, enrollment_id: UUID, token_id: UUID) -> None:
         .where(evidence_enrollment.c.id == enrollment_id)
         .values(token_id=token_id)
     )
+
+
+def _discard_minted(token_id: UUID) -> None:
+    """Revoke the token a create minted and then could not use. Logged, not raised,
+    on failure: the refusal the caller is about to get matters more, and the orphan
+    fails closed anyway."""
+    try:
+        _revoke_token_if_live(token_id)
+    except (SQLAlchemyError, StorageRefusal) as failure:
+        logger.warning(
+            MINTED_TOKEN_REVOKE_FAILED_LOG,
+            extra={"error_type": type(failure).__name__},
+        )
 
 
 def _revoke_token_if_live(token_id: UUID) -> None:
@@ -343,7 +371,11 @@ def rotate_handler(
     The workspace row update commits after the old token is already revoked in the
     control plane. If that commit fails, the active row points at a revoked token,
     which fails closed: ``rheo doctor`` shows ``FAIL`` and a retried rotate repairs
-    it. The new token carries the row's stored purpose, not a constant.
+    the enrollment. It does not repair rows already lost: since #244 the authority
+    refuses an enrollment whose token is revoked, so any claim that runs before the
+    retry settles the enrollment's pending rows ``authority_unverified``, which is
+    terminal. A failed rotate of this kind therefore costs those rows. The new token
+    carries the row's stored purpose, not a constant.
 
     Membership is checked first, exactly as ``create`` checks it, so no token is
     minted for an account that has left the workspace (#244).

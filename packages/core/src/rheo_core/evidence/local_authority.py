@@ -71,18 +71,6 @@ REFUSAL_REASONS: Final = frozenset(
 """The closed vocabulary of this authority's refusals."""
 
 
-def _token_live(token_id: UUID, now: datetime) -> bool:
-    """Whether the enrollment's current bridge token has a control-plane row that is
-    neither revoked nor expired at ``now``.
-
-    Read on its own control-plane connection, as :func:`_is_member` reads membership:
-    the same window, the same accepted risk.
-    """
-    with get_backend().control_engine.connect() as connection:
-        token = get_access_token(connection, token_id)
-    return token is not None and token.revoked_at is None and token.expires_at > now
-
-
 class LocalEvidenceAuthority:
     """Verifies a local Claude Code turn against its evidence row and enrollment.
 
@@ -90,10 +78,34 @@ class LocalEvidenceAuthority:
     in, as :class:`~rheo_core.evidence.authority.RuntimeEvidenceAuthority` is.
     """
 
-    __slots__ = ("_uow",)
+    __slots__ = ("_tokens", "_uow")
 
     def __init__(self, uow: UnitOfWork) -> None:
         self._uow = uow
+        self._tokens: dict[UUID, tuple[datetime | None, datetime] | None] = {}
+        """``token_id -> (revoked_at, expires_at)``, or ``None`` for no row. One
+        authority serves one claim batch, so this spares a control-plane connection
+        per row of an enrollment already read in the batch."""
+
+    def _token_live(self, token_id: UUID, now: datetime) -> bool:
+        """Whether the enrollment's current bridge token has a control-plane row that
+        is neither revoked nor expired at ``now``.
+
+        Read on its own control-plane connection, as :func:`_is_member` reads
+        membership: the same window, the same accepted risk. The row is cached for
+        this authority's life, one claim batch; ``now`` is applied on every call.
+        """
+        if token_id not in self._tokens:
+            with get_backend().control_engine.connect() as connection:
+                token = get_access_token(connection, token_id)
+            self._tokens[token_id] = (
+                None if token is None else (token.revoked_at, token.expires_at)
+            )
+        cached = self._tokens[token_id]
+        if cached is None:
+            return False
+        revoked_at, expires_at = cached
+        return revoked_at is None and expires_at > now
 
     def verify(
         self, unit: TrustedSourceUnit, *, workspace_id: UUID, now: datetime
@@ -145,7 +157,7 @@ class LocalEvidenceAuthority:
         ).one_or_none()
         if enrollment is None or enrollment.state != STATE_ACTIVE:
             return AuthorityRefused(reason=ENROLLMENT_INACTIVE)
-        if not _token_live(enrollment.token_id, now):
+        if not self._token_live(enrollment.token_id, now):
             return AuthorityRefused(reason=ENROLLMENT_INACTIVE)
         if (
             enrollment.account_id != row.speaker_account_id

@@ -55,6 +55,7 @@ from rheo_core.boundary.context import MEMBERSHIP_MISSING, TOKEN_REVOKED, Refusa
 from rheo_core.boundary.factories import context_from_session, context_from_token
 from rheo_core.evidence import enrollment as enrollment_module
 from rheo_core.evidence.enrollment import (
+    ENROLLMENT_CONTENDED,
     ENROLLMENT_CREATE,
     ENROLLMENT_EXISTS,
     ENROLLMENT_REVOKE,
@@ -439,6 +440,63 @@ def test_a_create_that_loses_the_race_to_another_account_gets_not_found(
     assert outcome.state == NOT_FOUND
     assert outcome.error is not None
     assert outcome.error.error_text == PAIR_UNAVAILABLE_TEXT
+    assert _enrollments_of(cluster, workspace, owner_account_id) == 0
+
+
+def test_a_race_winner_revoked_before_the_reread_refuses_contended(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """The concurrent winner is revoked between the index violation and the re-read,
+    so no holder is found. The create refuses the named, retryable
+    ``enrollment_contended`` rather than a raw integrity error, enrolls nothing, and
+    revokes the token it minted."""
+    member = add_member(cluster.backend, workspace, Role.MEMBER, display_name="m")
+    machine, project = _fingerprint(), _fingerprint()
+    minted: list[UUID] = []
+    real_mint = enrollment_module._mint
+    real_refuse = enrollment_module._refuse_held_pair
+
+    def racing_mint(*args: Any, **kwargs: Any) -> Any:
+        result = real_mint(*args, **kwargs)
+        minted.append(result[0])
+        _insert_enrollment(
+            cluster,
+            workspace,
+            member,
+            machine=machine,
+            project=project,
+            token_id=uuid4(),
+        )
+        return result
+
+    def revoke_then_refuse(*args: Any, **kwargs: Any) -> None:
+        if kwargs.get("cause") is not None:
+            database = cluster.registry_row(workspace).database_name
+            engine = cluster.backend.pools.engine_for(database)
+            with engine.begin() as connection:
+                connection.execute(
+                    update(evidence_enrollment)
+                    .where(evidence_enrollment.c.account_id == member)
+                    .values(state=STATE_REVOKED, revoked_at=datetime.now(UTC))
+                )
+        real_refuse(*args, **kwargs)
+
+    monkeypatch.setattr(enrollment_module, "_mint", racing_mint)
+    monkeypatch.setattr(enrollment_module, "_refuse_held_pair", revoke_then_refuse)
+    outcome = _create(
+        _operator(workspace),
+        account_id=owner_account_id,
+        machine=machine,
+        project=project,
+    )
+
+    assert outcome.state == ENROLLMENT_CONTENDED
+    assert _enrollments_of(cluster, workspace, owner_account_id) == 0
+    (token_id,) = minted
+    assert _token(cluster, token_id).revoked_at is not None
 
 
 def test_another_integrity_error_on_insert_is_not_enrollment_exists(
