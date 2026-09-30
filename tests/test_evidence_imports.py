@@ -7,6 +7,10 @@ would find it half-initialised. In-process tests never see that, because the sui
 has already imported everything by the time a test runs; a fresh
 ``python -c "import <module>"`` per module, the ``test_entry_point_imports`` shape,
 reds on the cycle in seconds instead of at worker start.
+
+The list also pins the rest of #142's family, library modules that once died on the
+``rheo_core.operations`` cycle when imported first: ``rheo_core.runtime.extraction``
+(#241), and ``rheo_core.tokens.issue`` and ``rheo_core.exports`` (#243).
 """
 
 import subprocess
@@ -23,6 +27,8 @@ MODULES = (
     "rheo_core.evidence.ingest",
     "rheo_core.evidence.enrollment",
     "rheo_core.runtime.extraction",
+    "rheo_core.tokens.issue",
+    "rheo_core.exports",
 )
 
 
