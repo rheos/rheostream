@@ -272,11 +272,18 @@ def revoke_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: TokenRevokeInput
 ) -> TokenRevoked:
     """Revoke a token by id, refusing ``not_found`` for one that does not exist,
-    *belongs to another workspace*, or -- for a session actor -- belongs to
-    another account. All three collapse to the same state and the same
+    *belongs to another workspace*, or -- for a session or token actor -- belongs
+    to another account. All three collapse to the same state and the same
     non-disclosure principle ``harness.note``'s resolver applies to a
     cross-workspace reference: a caller must not learn that a token id exists
     for a workspace or an account that is not theirs.
+
+    A token actor's account is ``ctx.principal.account_id``, the account the
+    presented token was issued to, never a payload field: the rule
+    ``core.evidence_enrollment.revoke``'s ``_target_account`` applies (#242). A
+    token with no account owns no token, so it gets ``not_found`` too.
+    ``core.token.revoke`` is in ``NON_TOKEN_ISSUABLE``, so dispatch already
+    refuses every real token before this runs; the check holds without that.
 
     ``spec.md``'s own line for this operation is "owner, member for self,
     operator for another account" -- ``_issuer_permitted_set`` above already
@@ -288,13 +295,19 @@ def revoke_handler(
     ``context_for_operator`` is constructed nowhere but the ``rheo`` CLI's own
     bootstrap.
     """
+    owner_scoped = ctx.actor.kind in (ActorKind.ACCOUNT, ActorKind.TOKEN)
+    caller_account = (
+        ctx.actor.id
+        if ctx.actor.kind is ActorKind.ACCOUNT
+        else ctx.principal.account_id
+    )
     backend = get_backend()
     with backend.control_engine.begin() as connection:
         row: AccessTokenRow | None = get_access_token(connection, model_input.token_id)
         if (
             row is None
             or row.workspace_id != ctx.workspace_id
-            or (ctx.actor.kind is ActorKind.ACCOUNT and row.account_id != ctx.actor.id)
+            or (owner_scoped and row.account_id != caller_account)
         ):
             raise OperationRefused(
                 NOT_FOUND, f"no access token {model_input.token_id} in this workspace"
