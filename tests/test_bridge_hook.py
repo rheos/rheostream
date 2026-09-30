@@ -151,6 +151,7 @@ def test_the_hook_reads_the_keys_config_save_writes(bridge_home: Path) -> None:
         "enrolled_dir",
         "worker_argv",
         "hook_created_settings",
+        "hook_created_containers",
         "max_bytes",
         "max_records",
         "max_pending_hours",

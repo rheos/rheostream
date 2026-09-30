@@ -8,7 +8,8 @@ the functions run against temporary directories in tests.
 
 Output is content-free by design. No subcommand prints a token value, a session
 hash, a native key, a transcript path or any transcript text. ``install-hook``
-and ``init`` print paths the operator chose; ``status`` prints counts.
+and ``init`` print paths the operator chose; ``status`` prints counts, the
+enrollment id and the token's expiry.
 
 Exit codes: 0 on success, 1 when a subcommand refuses or cannot run (the reason
 goes to stderr), and ``drain`` passes the worker's own code through: 0 ok, 1 the
@@ -100,6 +101,9 @@ def _read_token(bridge_home: Path) -> str:
         raise CliError(f"the token file cannot be read: {exc.strerror}") from exc
     with os.fdopen(fd, "rb") as handle:
         raw = handle.read(SET_TOKEN_MAX_BYTES + 1)
+    if len(raw) > SET_TOKEN_MAX_BYTES:
+        # Never truncate: a cut-down value would be sent as if it were whole.
+        raise CliError("the token file is longer than any bridge token")
     try:
         return raw.decode("ascii")
     except UnicodeDecodeError as exc:
@@ -143,11 +147,15 @@ def _holds_unacknowledged(row: state.SessionRow) -> bool:
     return row.closed_at is None or row.pending_gap_key is not None
 
 
-def _unacknowledged_count(bridge_home: Path) -> int:
-    connection = _open_state(bridge_home)
-    if connection is None:
-        return 0
+def _unacknowledged_count(bridge_home: Path, *, now: datetime) -> int:
+    """Fold the spool, then count the rows that owe the server something.
+
+    The caller holds ``worker.lock``. Folding first counts sessions the hook
+    has named but no worker has read yet: they are discarded too.
+    """
+    connection = state.connect(paths.state_path(bridge_home))
     try:
+        worker.fold_spool(connection, bridge_home, now=now)
         rows = state.list_sessions(connection, include_closed=True)
     finally:
         state.close(connection)
@@ -377,9 +385,10 @@ def install_hook(
         commands = _hook_commands(
             bridge_home, interpreter or os.path.realpath(sys.executable)
         )
-        merged = settings_file.merge(document, commands)
+        result = settings_file.merge(document, commands)
     except settings_file.SettingsError as exc:
         raise CliError(str(exc)) from exc
+    merged = result.document
     after = settings_file.render(merged)
     changed = merged != document
     if dry_run:
@@ -394,8 +403,17 @@ def install_hook(
         return EXIT_OK
     path.parent.mkdir(exist_ok=True)
     settings_file.write_atomic(path, after)
-    if before is None and not config.hook_created_settings:
-        bridge_config.save(bridge_home, replace(config, hook_created_settings=True))
+    # Record what this install made, so remove-hook can put the file back.
+    bridge_config.save(
+        bridge_home,
+        replace(
+            config,
+            hook_created_settings=config.hook_created_settings or before is None,
+            hook_created_containers=sorted(
+                set(config.hook_created_containers) | result.created
+            ),
+        ),
+    )
     print(f"{path.absolute()}: installed the Stop and SessionEnd hooks")
     return EXIT_OK
 
@@ -403,22 +421,30 @@ def install_hook(
 def remove_hook(bridge_home: Path, *, enrolled_dir: Path) -> int:
     """Remove only this bridge's hook entries from ``enrolled_dir``'s settings.
 
-    The file is deleted only when ``install-hook`` created it and it is ``{}``
-    once the entries are gone.
+    An emptied ``hooks`` table or event list is dropped only if install
+    created it, and the file is deleted only when install created it and it
+    is ``{}`` once the entries are gone: what was there before comes back.
     """
     try:
         config = bridge_config.load(bridge_home)
     except bridge_config.ConfigError as exc:
         raise CliError(str(exc)) from exc
     target_dir = Path(os.path.realpath(enrolled_dir))
-    ours = config is not None and str(target_dir) == config.enrolled_dir
-    created = ours and config is not None and config.hook_created_settings
+    record = (
+        config
+        if config is not None and str(target_dir) == config.enrolled_dir
+        else None
+    )
+    created = record is not None and record.hook_created_settings
     path = settings_file.settings_path(target_dir)
     try:
         document, before = settings_file.read(path)
+        pruned = settings_file.remove(
+            document,
+            created=record.hook_created_containers if record is not None else (),
+        )
     except settings_file.SettingsError as exc:
         raise CliError(str(exc)) from exc
-    pruned = settings_file.remove(document)
     if before is None:
         print(f"{path.absolute()}: no settings file; nothing to remove")
     elif created and pruned == {}:
@@ -429,22 +455,34 @@ def remove_hook(bridge_home: Path, *, enrolled_dir: Path) -> int:
         print(f"{path.absolute()}: removed the hooks")
     else:
         print(f"{path.absolute()}: no bridge hook found; no change")
-    if created and config is not None:
-        # The file is gone or is now the user's; a later install that finds it
-        # did not create it.
-        bridge_config.save(bridge_home, replace(config, hook_created_settings=False))
+    if record is not None and (
+        record.hook_created_settings or record.hook_created_containers
+    ):
+        # The file is gone or is the user's again; a later install that finds
+        # it did not create it or anything in it.
+        bridge_config.save(
+            bridge_home,
+            replace(record, hook_created_settings=False, hook_created_containers=[]),
+        )
     return EXIT_OK
 
 
 # --- uninstall ----------------------------------------------------------------
 
 
-def uninstall(bridge_home: Path, *, enrolled_dir: Path, purge: bool = False) -> int:
+def uninstall(
+    bridge_home: Path,
+    *,
+    enrolled_dir: Path,
+    purge: bool = False,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> int:
     """Remove the hooks, then the token and the machine key.
 
-    ``purge`` first prints ``discarded_unacknowledged: N``, the sessions whose
-    range the server has not acknowledged, then deletes ``bridge_home``. That
-    line is the one named record of the one local discard this design allows.
+    ``purge`` first folds the spool and prints ``discarded_unacknowledged: N``,
+    the sessions whose range the server has not acknowledged (including those
+    only the spool names so far), then deletes ``bridge_home``. That line is
+    the one named record of the one local discard this design allows.
     """
     try:
         config = bridge_config.load(bridge_home)
@@ -464,7 +502,8 @@ def uninstall(bridge_home: Path, *, enrolled_dir: Path, purge: bool = False) -> 
     with _worker_lock(bridge_home) as held:
         if not held:
             raise CliError("a bridge worker is running; retry once it exits")
-        print(f"discarded_unacknowledged: {_unacknowledged_count(bridge_home)}")
+        count = _unacknowledged_count(bridge_home, now=now())
+        print(f"discarded_unacknowledged: {count}")
         remove_hook(bridge_home, enrolled_dir=enrolled_dir)
         _delete_credentials(bridge_home)
         shutil.rmtree(bridge_home)
@@ -499,7 +538,8 @@ def _days_remaining(expires_at: str | None, now: datetime) -> str:
 
 
 def status(bridge_home: Path, *, now: datetime) -> int:
-    """Print counts only; never a session hash, a key, a path or any text.
+    """Print counts, plus the enrollment id and token expiry; never a session
+    hash, a key, a path or any transcript text.
 
     ``sessions_pending`` counts open sessions, ``sessions_held`` those of them
     waiting out the back-off hold, ``sessions_closed`` the tombstones kept for
@@ -526,6 +566,9 @@ def status(bridge_home: Path, *, now: datetime) -> int:
         for reason, entry in ledger.items()
         if reason.startswith(state.ACCEPTED_PREFIX) and entry.last_at is not None
     ]
+    # The id is not a secret (it names the enrollment to rotate or revoke).
+    print(f"enrollment_id: {config.enrollment_id or 'none'}")
+    print(f"token_expires_at: {config.token_expires_at or 'none'}")
     print(f"sessions_pending: {pending}")
     print(f"sessions_held: {pending if holding else 0}")
     print(f"sessions_closed: {len(rows) - pending}")

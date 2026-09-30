@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +47,9 @@ class Config:
     # Whether ``install-hook`` created the enrolled directory's settings file,
     # so ``remove-hook`` knows it may delete the file once it is ``{}`` again.
     hook_created_settings: bool = False
+    # The settings containers (``"hooks"``, ``"hooks.<Event>"``) install
+    # created, which ``remove-hook`` may drop again once they are empty.
+    hook_created_containers: list[str] = field(default_factory=list)
     max_bytes: int = DEFAULT_MAX_BYTES
     max_records: int = DEFAULT_MAX_RECORDS
     max_pending_hours: int = DEFAULT_MAX_PENDING_HOURS
@@ -79,6 +82,14 @@ def _from_mapping(raw: object) -> Config:
     if not isinstance(created, bool):
         raise ConfigError("config.json: hook_created_settings must be a boolean")
     values["hook_created_settings"] = created
+    containers = raw.get("hook_created_containers", [])
+    if not isinstance(containers, list) or not all(
+        isinstance(name, str) for name in containers
+    ):
+        raise ConfigError(
+            "config.json: hook_created_containers must be a list of strings"
+        )
+    values["hook_created_containers"] = list(containers)
     argv = raw.get("worker_argv")
     if (
         not isinstance(argv, list)

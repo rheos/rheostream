@@ -504,17 +504,112 @@ def test_install_keeps_unrelated_keys_and_other_hooks(initialised: Dirs) -> None
         expected_command(initialised, e) for e in ("Stop", "SessionEnd")
     )
     # Taking ours back out gives the original structure exactly.
-    assert settings_file.remove(document) == EXISTING
+    created = config_of(initialised).hook_created_containers
+    assert created == ["hooks.SessionEnd"]
+    assert settings_file.remove(document, created=created) == EXISTING
     assert config_of(initialised).hook_created_settings is False
 
 
 def test_installing_twice_is_a_no_op(initialised: Dirs) -> None:
     assert install(initialised) == 0
+    # The user adds a Stop hook of their own after ours.
+    document = load_json(initialised.settings)
+    document["hooks"]["Stop"].append(
+        {"hooks": [{"type": "command", "command": "/usr/bin/true later"}]}
+    )
+    initialised.settings.write_text(json.dumps(document, indent=2) + "\n")
     first = initialised.settings.read_bytes()
     assert install(initialised) == 0
     assert initialised.settings.read_bytes() == first
     commands = our_commands(load_json(initialised.settings))
     assert len(commands) == 2 and len(set(commands)) == 2
+
+
+def test_reinstalling_after_an_interpreter_move_keeps_one_entry_per_event(
+    initialised: Dirs,
+) -> None:
+    assert (
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            interpreter="/opt/rheo-synthetic/old/python3.12",
+        )
+        == 0
+    )
+    assert install(initialised) == 0  # INTERPRETER, the new location
+    document = load_json(initialised.settings)
+    for event in ("Stop", "SessionEnd"):
+        commands = [
+            entry["command"]
+            for group in document["hooks"][event]
+            for entry in group["hooks"]
+        ]
+        assert commands == [expected_command(initialised, event)]
+    # And removal still gives back the file install created: none at all.
+    assert (
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled) == 0
+    )
+    assert not initialised.settings.exists()
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        {"hooks": {}},
+        {"hooks": {"Stop": []}},
+        {"hooks": {"Stop": [], "SessionEnd": []}, "env": {"EXAMPLE_FLAG": "1"}},
+    ],
+    ids=["empty-hooks", "empty-stop", "both-empty"],
+)
+def test_remove_restores_empty_containers_that_were_there_before(
+    initialised: Dirs, original: dict[str, Any]
+) -> None:
+    initialised.settings.parent.mkdir()
+    initialised.settings.write_text(json.dumps(original))
+    assert install(initialised) == 0
+    assert len(our_commands(load_json(initialised.settings))) == 2
+    assert (
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled) == 0
+    )
+    assert load_json(initialised.settings) == original
+    config = config_of(initialised)
+    assert config.hook_created_containers == []
+    assert config.hook_created_settings is False
+
+
+def test_a_symlinked_claude_directory_is_refused(
+    initialised: Dirs, tmp_path: Path
+) -> None:
+    """Outside a Git tree the ignore check does not apply; this guard does."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    initialised.settings.parent.symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(cli.CliError, match="symlink"):
+        install(initialised)
+    with pytest.raises(cli.CliError, match="symlink"):
+        install(initialised, dry_run=True)
+    assert list(elsewhere.iterdir()) == []
+    assert not paths.hook_path(initialised.bridge_home).exists()
+    (elsewhere / "settings.local.json").write_text(json.dumps(EXISTING))
+    with pytest.raises(cli.CliError, match="symlink"):
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled)
+    assert load_json(elsewhere / "settings.local.json") == EXISTING
+
+
+def test_a_settings_path_through_a_symlinked_ancestor_is_refused_by_write(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real"
+    claude_dir = settings_file.settings_path(real).parent
+    claude_dir.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    path = settings_file.settings_path(alias)
+    with pytest.raises(settings_file.SettingsError, match="symlink"):
+        settings_file.write_atomic(path, "{}\n")
+    with pytest.raises(settings_file.SettingsError, match="symlink"):
+        settings_file.read(path)
+    assert list(claude_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize("content", ['["not", "an", "object"]', "42", "{not json"])
@@ -888,16 +983,22 @@ def seed_sessions(d: Dirs) -> None:
         state.close(connection)
 
 
-def test_status_prints_counts_only(
+def test_status_prints_counts_and_the_enrollment_only(
     initialised: Dirs, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    set_token(initialised, new_token(), expires=NOW + timedelta(days=20, hours=3))
+    enrollment_id = str(uuid.uuid4())
+    expires = NOW + timedelta(days=20, hours=3)
+    set_token(initialised, new_token(), enrollment_id=enrollment_id, expires=expires)
     seed_sessions(initialised)
     capsys.readouterr()
 
     assert cli.status(initialised.bridge_home, now=NOW) == 0
     out = capsys.readouterr().out
     lines = dict(line.split(": ", 1) for line in out.splitlines())
+
+    # The two non-count lines, for CP-A's verify step.
+    assert lines.pop("enrollment_id") == enrollment_id
+    assert lines.pop("token_expires_at") == expires.isoformat()
 
     assert lines["sessions_pending"] == "2"
     assert lines["sessions_held"] == "2"
@@ -1009,3 +1110,74 @@ def test_uninstall_without_purge_keeps_bridge_home_and_pending_state(
         state.close(connection)
     assert "discarded_unacknowledged" not in out
     assert f"rheo evidence revoke {enrollment_id}" in out
+
+
+def test_uninstall_purge_counts_sessions_only_the_spool_names_yet(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    set_token(initialised, new_token())
+    # The hook named a session, but no worker has folded the spool yet.
+    spool_session(initialised, write_transcript(initialised))
+    assert not paths.state_path(initialised.bridge_home).exists()
+    capsys.readouterr()
+
+    assert (
+        cli.uninstall(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            purge=True,
+            now=lambda: NOW,
+        )
+        == 0
+    )
+    assert "discarded_unacknowledged: 1\n" in capsys.readouterr().out
+    assert not initialised.bridge_home.exists()
+
+
+# --- the token file is read whole or not at all ---------------------------------
+
+
+def test_an_oversize_token_file_is_refused_not_truncated(initialised: Dirs) -> None:
+    set_token(initialised, new_token())
+    paths.token_path(initialised.bridge_home).write_bytes(
+        b"a" * (cli.SET_TOKEN_MAX_BYTES + 10)
+    )
+    with pytest.raises(cli.CliError, match="longer than"):
+        cli.drain(initialised.bridge_home, projects_root=initialised.projects_root)
+
+
+# --- main() dispatch ------------------------------------------------------------
+
+
+def test_main_dispatches_refusals_to_1_and_passes_drain_codes_through(
+    dirs: Dirs, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # main() is the one place that resolves the home: point it at a tmp root.
+    monkeypatch.setattr(Path, "home", lambda: dirs.user_home)
+
+    assert cli.main(["status"]) == 1
+    assert "rheo-bridge status: the bridge is not set up" in capsys.readouterr().err
+
+    assert (
+        cli.main(["init", "--enrolled-dir", str(dirs.enrolled), "--api-url", API_URL])
+        == 0
+    )
+    assert config_of(dirs).enrolled_dir == str(dirs.enrolled)
+
+    token = new_token()
+    line = token_line(token, str(uuid.uuid4()), NOW + timedelta(days=90))
+    monkeypatch.setattr("sys.stdin", io.StringIO(line))
+    assert cli.main(["set-token"]) == 0
+    capsys.readouterr()
+
+    spool_session(dirs, write_transcript(dirs))
+    built: list[tuple[str, str]] = []
+
+    def fake_client(base_url: str, token_value: str) -> FakeClient:
+        built.append((base_url, token_value))
+        return FakeClient(IngestRefused("token_revoked", 401))
+
+    monkeypatch.setattr(cli, "HttpIngestClient", fake_client)
+    assert cli.main(["drain"]) == 2
+    assert built == [(API_URL, token)]
+    assert "refused" in capsys.readouterr().err
