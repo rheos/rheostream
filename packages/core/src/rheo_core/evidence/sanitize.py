@@ -17,7 +17,11 @@ too.
 
 The steps, in this order (spec Architecture, System Components item 1):
 
-0. **Normalise line breaks and spaces.** Every line boundary :meth:`str.splitlines`
+0. **Normalise line breaks and spaces.** NUL (``\\x00``) and every surrogate code
+   point (U+D800 to U+DFFF, which a Python string only holds unpaired) are removed
+   first: Postgres refuses NUL in text, and a lone surrogate does not encode as UTF-8.
+   They are removed, not spaced, so ``ign\\x00ore previous instructions`` still reads
+   as the marker it hides. Every line boundary :meth:`str.splitlines`
    knows, ``\\r\\n`` and a lone ``\\r`` included, becomes ``\\n`` before anything else,
    so CRLF text segments exactly like LF text. Then every other whitespace character
    (no-break space, the U+2000 to U+200A spaces, the ideographic space U+3000 and the
@@ -69,10 +73,11 @@ The steps, in this order (spec Architecture, System Components item 1):
    c. *Inline payload.* What is left goes whole when it holds markup mid-sentence (a
       closing tag, a self-closing tag, an opening tag with a quoted attribute, a
       comment, declaration or processing instruction), an inline JSON object, a
-      Python or JSON literal (a keyed dict in either quote, ``{'tool': 'bash'}``, or
-      a list or set with a quoted element, ``["rm","-rf","/"]``), or an encoded blob
-      (40 or more base64 characters with a digit and both cases; see
-      :data:`_BASE64_RUN` for the length). The whole segment goes, not the span:
+      Python, JSON or JavaScript literal (a keyed dict in either quote, bare-key
+      objects, or a list or set with a quoted element, ``["rm","-rf","/"]``), an
+      encoded blob (40 or more base64 characters with a digit and both cases; see
+      :data:`_BASE64_RUN` for the length), a compact JWT, or base64 wrapped across
+      lines. The whole segment goes, not the span:
       cutting ``<tool>ls</tool>`` out of "Please inspect <tool>ls</tool> when
       ready." leaves a sentence about a payload that is no longer there, and a span
       rule that misjudges one boundary leaks the payload body. Prose that merely
@@ -94,6 +99,16 @@ The steps, in this order (spec Architecture, System Components item 1):
    across two lines is one only once joined). No step may expose a payload an earlier
    step passed over, so one pass removes everything a second pass would:
    ``sanitize(sanitize(x)) == sanitize(x)``.
+
+   Output can run on past a blank line (``$ cat /etc/passwd`` / ``root:x:0:0`` /
+   blank / ``dana:x:1000:...``), so a segment holding a prompt, raw or once its
+   whitespace collapses, also takes the next segment when that one has no line that
+   reads as prose (:data:`_PROSE_PHRASE`: two words of letters, one space apart). The
+   reply that usually follows a command survives ("Then tell me what fails."), and a
+   segment after that is judged on its own. Two named costs: a reply with no
+   two-word phrase straight after a prompt goes ("Thanks!", or a line of unspaced
+   CJK), and output that happens to read as prose after a blank line ("Deployed 3
+   hosts.") is kept, as before #232.
 
    **Kept on purpose:** a diff body with no hunk header before it. Its line grammar
    (``+``, ``-``, a leading space) is also the grammar of a Markdown list and of a
@@ -117,7 +132,9 @@ The steps, in this order (spec Architecture, System Components item 1):
    **Accepted costs (#225):** a line opening with a multi-directory path loses the
    words after it ("/srv/app is where it lives" on its own line), the twin of "C:\\ is
    nearly full"; a triple-nested e-mail quote (``>>> I agree``) reads as a REPL line;
-   ``$ 5`` with a space at the start of a line reads as a prompt, and so does a line
+   ``$ 5`` or "$ sign is weird" with a space after a line-start ``$`` reads as a
+   prompt (a list of known commands would let ``$ kubectl ...`` through), and so does a
+   line
    opening with an e-mail address, a word and then ``%`` or ``#`` ("dana@example.com
    said % is odd"), which has the zsh prompt's shape. A line opening at a
    one-level ``~/x``, ``./x`` or ``../`` is a path to its end too ("~/notes is where I
@@ -175,6 +192,10 @@ already turn into a line break, less the plain space and the tab, plus U+FEFF, w
 is no ``\\s`` but is invisible in front of a role word all the same. A test derives the
 set from the running Python and compares."""
 _TO_PLAIN_SPACE: Final = str.maketrans(dict.fromkeys(_ODD_SPACES, " "))
+
+_UNSTORABLE: Final = re.compile(r"[\x00\ud800-\udfff]")
+"""NUL, which Postgres refuses in a text value, and the surrogate code points, which
+do not encode as UTF-8 on their own. Step 0 removes them before anything else."""
 
 # --- step 3: the closed injection-marker list (spec component 1, verbatim) ------------
 
@@ -240,6 +261,13 @@ _DIFF_BODY_LINE: Final = re.compile(r"^(?:[+\- ]|\\ No newline)")
 _STACK_FRAME_LINES: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"Traceback \(most recent call last\):"),
     re.compile(r'\bFile "[^"\n]+", line \d+'),
+    re.compile(
+        r"(?i:error|exception) at (?:[A-Za-z]:[\\/]|\\\\|[~.]{0,2}/)"
+        r"[^:\s]*\.[A-Za-z0-9]+:\d+:\d+"
+    ),
+    re.compile(r"(?<=\w)\.go:\d++\s++\+0x[0-9a-fA-F]"),
+    re.compile(r"\bgoroutine \d++ \[[a-z][^\]\n]{0,64}\]:"),
+    re.compile(r"panicked at [^\n]{0,256}?\.rs:\d+:\d+"),
     re.compile(r"^\s*at [^\s(]+ ?\([^()\n]*:\d+(?::\d+)?\)\s*$", re.MULTILINE),
     re.compile(r"\bat [^\s(]+ ?\([^()\s]*\.\w+:\d+(?::\d+)?\)"),
     re.compile(r"^\s*at \S+:\d+:\d+\s*$", re.MULTILINE),
@@ -256,21 +284,32 @@ _STACK_FRAME_LINES: Final[tuple[re.Pattern[str], ...]] = (
         re.VERBOSE,
     ),
 )
-"""Python traceback headers and frames, JavaScript/JVM ``at ...(file:line)`` frames,
-and JVM exception lines. A segment carrying any of them is part of a trace and goes
-whole. Since #225 the distinctive shapes match mid-sentence too: a traceback header, a
-Python ``File "...", line N`` frame, an ``at name(file.ext:N)`` frame whose location
-names a file, a ``Caused by:`` chain naming a dotted class, and a qualified exception
-class followed by its message colon (``java.io.IOException:``), and a bare
-exception name (``PermissionError:``, ``Error:``) when what follows its colon is an
-``[Errno N]``, a Node code such as ``ENOENT:`` or a path, quoted or not. A bare name
-with anything else after it is prose ("it raised a ValueError, oddly", "Error:
-something broke"). Two stay whole-line
-only, because mid-sentence they are also ordinary prose: an ``at`` frame whose
-location has no file extension or holds a space ("meet at noon (room 4:30)"), and the
-bare ``at file:N:N`` form ("at 10:30:00"). The qualified-class pattern starts only at
-the head of a dotted run (the lookbehind) and its inner quantifiers are possessive, so
-a 64 KB ``a.a.a...`` run is one linear scan, not one per position."""
+"""Python traceback headers and frames, JavaScript/JVM ``at ...(file:line)`` frames, and
+exception lines. A segment carrying any of them is part of a trace and goes whole. #232
+adds three, each matched mid-sentence: an ``Error at`` or ``Exception at`` location, in
+any case, that starts at a root (``TypeError at /app/x.js:3:5``,
+``Error at ./x.js:1:2``, ``Error at C:\\app\\x.js:1:2``); a Go frame,
+``main.go:12 +0x1d``, or the ``goroutine 1 [running]:`` header that opens a Go trace
+(its frame lines start at a root and go as path lines first, so the header is what is
+left); and a Rust panic, ``panicked at src/main.rs:3:5``, with an absolute path or the
+older quoted message before the location (``panicked at 'oops', src/main.rs:3:5``). Each
+is linear: the ``Error at`` scan starts only at that literal and stops at a colon or
+space; the Go scan starts only at ``.go:`` after a word character, never at every
+character of the file name before it (``a.a.a...`` at the cap took 80 s when it did);
+and the Rust scan reads at most 256 characters past ``panicked at``. A location with no
+``+0x`` offset ("main.go:12") or no ``panicked at`` before it ("src/main.rs") is kept.
+Since #225 the distinctive shapes match mid-sentence too: a traceback header, a Python
+``File "...", line N`` frame, an ``at name(file.ext:N)`` frame whose location names a
+file, a ``Caused by:`` chain naming a dotted class, and a qualified exception class
+followed by its message colon (``java.io.IOException:``), and a bare exception name
+(``PermissionError:``, ``Error:``) when what follows its colon is an ``[Errno N]``, a
+Node code such as ``ENOENT:`` or a path, quoted or not. A bare name with anything else
+after it is prose ("it raised a ValueError, oddly", "Error: something broke"). Two stay
+whole-line only, because mid-sentence they are also ordinary prose: an ``at`` frame
+whose location has no file extension or holds a space ("meet at noon (room 4:30)"), and
+the bare ``at file:N:N`` form ("at 10:30:00"). The qualified-class pattern starts only
+at the head of a dotted run (the lookbehind) and its inner quantifiers are possessive,
+so a 64 KB ``a.a.a...`` run is one linear scan, not one per position."""
 
 _PROMPT_LEAD: Final = r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?`?"
 """Where a prompt may start: the line start, after an optional list bullet and an
@@ -288,17 +327,26 @@ _TRANSCRIPT_LINES: Final[tuple[re.Pattern[str], ...]] = tuple(
         r"In \[\d+\]: \S",  # IPython
     )
 )
-"""A line that opens with a shell prompt (``$ cmd``, ``user@host:~$ cmd``) or the
-Python REPL's ``>>>``. The segment goes whole, like a trace: the lines after a prompt
-are the command's output, which no line grammar tells apart from prose. ``$5`` and
+"""A line that opens with a shell prompt (``$ cmd``, ``user@host:~$ cmd``) or the Python
+REPL's ``>>>``. The segment goes whole, like a trace: the lines after a prompt are the
+command's output, which no line grammar tells apart from prose. Any command counts,
+never a list of known ones: a whitelist lets ``$ kubectl get secret db -o yaml``,
+``$ terraform output`` or ``$ export API_TOKEN=...`` through with its output, so ``$ 5``
+and "$ sign is weird" at a line start read as prompts too, an accepted cost. ``$5`` and
 "costs $20" are no prompt (no space after a line-start ``$``), and a ``>>>`` in the
-middle of a sentence is not at a line start. The zsh default (``robin@mac app %
-make``), the bracketed ``[user@host dir]$``, PowerShell's ``PS C:\\x>`` and IPython's
-``In [1]:`` count too; a ``%`` is a prompt only after ``user@host dir``, so "50 % of
-users", "a 5 % fee" and ``100%`` are prose. Every pattern is anchored at a line start
-and each variable run stops at a character the next token needs, so each line costs
-one scan. A triple-nested e-mail quote (``>>> I
-agree``) reads as a REPL line and goes, an accepted cost."""
+middle of a sentence is not at a line start. The zsh default (``robin@mac app % make``),
+the bracketed ``[user@host dir]$``, PowerShell's ``PS C:\\x>`` and IPython's ``In [1]:``
+count too; a ``%`` is a prompt only after ``user@host dir``, so "50 % of users", "a 5 %
+fee" and ``100%`` are prose. Every pattern is anchored at a line start and each variable
+run stops at a character the next token needs, so each line costs one scan. A
+triple-nested e-mail quote (``>>> I agree``) reads as a REPL line and goes, an accepted
+cost."""
+
+_PROSE_PHRASE: Final = re.compile(r"(?<![^\W\d_])[^\W\d_]++ [^\W\d_]")
+"""Two words of letters, one space apart: what the segment after a prompt needs on
+some line to be judged as prose rather than taken as the command's output. A match
+starts only at the head of a letter run and the run is possessive, so a 64 KB word
+costs one scan."""
 
 _XML_BLOCK: Final = re.compile(r"<[A-Za-z_!?/][^>]*>.*", re.DOTALL)
 """Opens with a tag (or a comment, declaration or closing tag); the segment must also
@@ -368,20 +416,37 @@ _INLINE_JSON_START: Final = re.compile(r'\{\s*"')
 
 _INLINE_LITERALS: Final = re.compile(
     r"""
-        \{\s*(?:'[^']*'|"[^"]*")\s*:               # a keyed dict, either quote
-      | [\[{]\s*(?:-?\d[\d.eE+-]*+\s*+,\s*+)*+   # a list or set whose first
-        (?:'[^']*'|"[^"]*")\s*[,\]}]              #   non-number is a string
+        \{\s*(?:
+            '(?:\\[^\n]|[^'\\\n])*+' | "(?:\\[^\n]|[^"\\\n])*+"
+          | “[^“”\n]*+” | ‘[^‘’\n]*+’
+        )\s*:                                      # a quoted key
+      | \{\s*(?:[A-Za-z_$][\w$]*+|-?\d++(?:\.\d++)?)\s*+:\s*+['"“‘]
+                                                   # a bare or number key, quoted value
+      | \{\s*[A-Za-z_$][\w$]*+\s*+:[^,{}\n]*+,\s*+[A-Za-z_$][\w$]*+\s*+:
+                                                   # two bare-key pairs
+      | [\[{]\s*(?:(?:-?\d[\d.eE+-]*+|true|false|null|True|False|None)\s*+,\s*+)*+
+        (?:'(?:\\[^\n]|[^'\\\n])*+' | "(?:\\[^\n]|[^"\\\n])*+"
+          | “[^“”\n]*+” | ‘[^‘’\n]*+’) \s*[,\]}]  # string element after literals
     """,
     re.VERBOSE,
 )
-"""A Python or JSON literal mid-sentence (#225): a brace, a quoted key and a colon
-(``{'tool': 'bash'}``, which the JSON rule cannot parse), or a bracket or brace whose
-elements run to a quoted string (``["rm","-rf","/"]``, ``[1, "x"]``, ``{'a', 'b'}``).
-Linear: each quoted span stops at the next quote of its kind. The run of leading
-numbers is possessive as hardening, not for correctness: giving an element back lands
-on a digit, where no quote can start, so it never changes a match, and a failed
-``[1,1,1,...`` at the cap no longer backtracks through every element (measured about
-15 ms without it and 2 ms with it; linear either way).
+"""A Python, JSON or JavaScript literal mid-sentence (#225, #232): a brace, a quoted
+key and a colon (``{'tool': 'bash'}``); a brace, a bare or number key, a colon and a
+quoted value (``{tool: 'bash'}``, ``{0: 'rm -rf /'}``); a brace and two bare-key pairs
+(``{tool: bash, cmd: ls}``); or a bracket or brace whose elements run to a quoted
+string (``["rm","-rf","/"]``, ``[true, "x"]``, ``[None, "x"]``, ``{'a', 'b'}``).
+Escaped quotes and smart quotes count. A bare key with one unquoted value is prose and
+kept: ``{value:.2f}``, ``{note: bring snacks}``, ``{time: 3pm}``.
+
+Linear: each quoted span stops at the next unescaped quote of its kind, within its
+line, and a smart-quoted span stops at the next opening quote too (``“[^“”]*+”``), so
+``{“{“{“...`` costs one scan rather than one per quote (it took 45 s at the cap when
+the span could run over later openers). The bare-key runs are possessive and the
+two-pair value run stops at a comma or brace. The run of leading numbers is
+possessive as hardening, not for correctness: giving an element back lands on a digit,
+where no quote can start, so it never changes a match, and a failed ``[1,1,1,...`` at
+the cap no longer backtracks through every element (measured about 15 ms without it
+and 2 ms with it; linear either way).
 
 A quoted list in prose has the same shape, and the privacy floor decides it: "I said
 ["yes", "no"] earlier" goes whole, as a missing memory, because ``["rm","-rf","/"]``
@@ -409,6 +474,31 @@ characters, so a 40-character blob meets the limit about 99 times in 100. A
 mixed-case URL path (``/Novadiem-Studio/bureau/blob/main/Docs2``), a hyphenated slug
 and a ``snake_case`` name have a separator every few characters, and are kept."""
 _BASE64_CHARS_PER_SEPARATOR: Final = 10
+
+_JWT_RUN: Final = re.compile(
+    r"""(?<![\w-])(?:
+        eyJ[\w-]*+\.(?:eyJ|[\w-]++\.)     # eyJ header: eyJ payload, or a second dot
+      | e[w-z0-9_-][\w-]{6,}+\.eyJ         # another object header, eyJ payload
+    )""",
+    re.ASCII | re.VERBOSE,
+)
+"""A compact JWT too short for the blob rule. Its header and payload are base64 JSON
+objects, so each starts with ``e`` (the encoded ``{``), and ``eyJ`` when the object
+opens ``{"``. It matches an ``eyJ`` header and a dot followed by an ``eyJ`` payload or
+by any segment and a second dot, or any object-shaped header of eight or more
+characters followed by an ``eyJ`` payload (``ewog...``, a header that opens with a line
+break). So ``alg: none`` tokens (empty signature, trailing dot or none) and short
+signatures go. Prose does not start a word with ``eyJ``. The lookbehind starts a match
+only at the head of a word run and every run is possessive, so the scan is linear."""
+
+_BASE64_LINE: Final = re.compile(r"[A-Za-z0-9+/=_-]+", re.ASCII)
+"""A line made only of base64 characters, a candidate piece of a wrapped blob."""
+
+_WRAPPED_BLOB_MEAN_LINE: Final = 10
+"""How long, on average, the lines of a wrapped blob but its last must be. Encoders
+wrap at 64 or 76 characters, some at 40 or 60, and a hand-broken blob keeps long
+pieces; a column of short words ("Milk", "Eggs", "Bread2", "Cheese") averages five or
+six and is a list, not a blob."""
 
 _JSON_DECODER: Final = json.JSONDecoder(strict=False)
 """``strict=False`` accepts raw line breaks inside strings, so a payload that only
@@ -674,11 +764,41 @@ def _carries_blob(segment: str) -> bool:
     return any(_is_blob(match.group()) for match in _BASE64_RUN.finditer(segment))
 
 
+def _carries_wrapped_blob(segment: str) -> bool:
+    """Whether ``segment`` holds base64 wrapped across two or more lines, each shorter
+    than a :data:`_BASE64_RUN` but together a blob. Every line but the last must be
+    :data:`_WRAPPED_BLOB_MEAN_LINE` long on average. A column of identifiers of ten or
+    more characters, with a digit and both cases among them ("AliceSmith",
+    "BobJones42", "CarolWhite"), reads as a blob too, an accepted cost."""
+    lines: list[str] = []
+
+    def is_blob() -> bool:
+        if len(lines) < 2:
+            return False
+        body = lines[:-1]
+        if sum(map(len, body)) < _WRAPPED_BLOB_MEAN_LINE * len(body):
+            return False
+        run = "".join(lines)
+        return len(run) >= 40 and _is_blob(run)
+
+    for line in segment.split("\n"):
+        candidate = line.strip()
+        if candidate and _BASE64_LINE.fullmatch(candidate):
+            lines.append(candidate)
+        else:
+            if is_blob():
+                return True
+            lines.clear()
+    return is_blob()
+
+
 def _carries_inline_payload(segment: str) -> bool:
     return (
         _INLINE_MARKUP.search(segment) is not None
         or _INLINE_LITERALS.search(segment) is not None
+        or _JWT_RUN.search(segment) is not None
         or _carries_blob(segment)
+        or _carries_wrapped_blob(segment)
         or _carries_inline_json(segment)
     )
 
@@ -721,9 +841,15 @@ def _screened_segments(text: str) -> tuple[list[str], list[str]]:
     screened: list[str] = []
     kept: list[str] = []
     in_diff = False
+    after_prompt = False
     for raw in _SEGMENT_BREAK.split(_without_fenced_blocks(text)):
         segment = _without_path_lines(raw)
         if not segment.strip():
+            in_diff = False
+            continue
+        output_of_prompt = after_prompt and _PROSE_PHRASE.search(segment) is None
+        after_prompt = _is_transcript(segment) or _is_transcript(_collapsed(segment))
+        if output_of_prompt:
             in_diff = False
             continue
         if _is_diff(segment) or _is_diff(_collapsed(segment)):
@@ -753,7 +879,8 @@ def sanitize(text: str) -> str | None:
     """The text as it may be stored and shown to a model, or ``None`` to drop it."""
     if len(text) > MAX_INPUT_CHARS:
         return None
-    normalised = "\n".join(text.splitlines()).translate(_TO_PLAIN_SPACE)
+    storable = _UNSTORABLE.sub("", text)
+    normalised = "\n".join(storable.splitlines()).translate(_TO_PLAIN_SPACE)
     masked = mask_secret_references(normalised)
     screened, kept = _screened_segments(masked)
     if any(_carries_injection_marker(segment) for segment in screened):
