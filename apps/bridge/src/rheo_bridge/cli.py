@@ -390,7 +390,7 @@ def install_hook(
     except settings_file.SettingsError as exc:
         raise CliError(str(exc)) from exc
     merged = result.document
-    after = settings_file.render(merged)
+    after = settings_file.render(merged, before=before)
     changed = merged != document
     if dry_run:
         if changed:
@@ -465,10 +465,21 @@ def remove_hook(
     if before is None:
         print(f"{path.absolute()}: no settings file; nothing to remove")
     elif created and pruned == {}:
+        try:
+            settings_file.ensure_unchanged(path, before)
+        except settings_file.SettingsError as exc:
+            raise CliError(str(exc)) from exc
         path.unlink()
         print(f"{path.absolute()}: removed the hooks and the file install created")
     elif pruned != document:
-        settings_file.write_atomic(path, settings_file.render(pruned))
+        try:
+            settings_file.write_atomic(
+                path,
+                settings_file.render(pruned, before=before),
+                expected_before=before,
+            )
+        except settings_file.SettingsError as exc:
+            raise CliError(str(exc)) from exc
         print(f"{path.absolute()}: removed the hooks")
     else:
         print(f"{path.absolute()}: no bridge hook found; no change")
