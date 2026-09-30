@@ -226,12 +226,14 @@ jobs:
         with:
           path: ${{ env.RHEO_TEST_MODEL_CACHE }}
           key: test-models-MiniLM-L6-v2-rerank-a09144355adeed5f58c8ed011d209bf8ee5a1fec
-      # The root conftest.py keeps this shard's files and deselects the rest; the
-      # five shards together select every collected test once.
+      # scripts/ci_pytest_shard.py keeps this shard's files and deselects the rest;
+      # the five shards together select every collected test once. Loaded with -p
+      # here only, so the suite's own pytest subprocesses still see everything.
       - name: Pytest
         env:
           RHEO_TEST_SHARD: ${{ matrix.shard }}/5
-        run: uv run pytest --durations=10
+          PYTHONPATH: scripts
+        run: uv run pytest -p ci_pytest_shard --durations=10
 
   python-criterion-31:
     name: Criterion 31

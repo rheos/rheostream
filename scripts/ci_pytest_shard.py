@@ -1,8 +1,8 @@
-"""Repository-root pytest hooks: CI sharding only (issue #252).
+"""A pytest plugin for CI sharding (issue #252), loaded only by CI's shard jobs:
+`PYTHONPATH=scripts pytest -p ci_pytest_shard`.
 
 `RHEO_TEST_SHARD=i/N` keeps the tests of shard `i` (1-based) out of `N` and deselects
-the rest, so CI can run the suite as N parallel jobs. Unset, it does nothing: a local
-`make test` still runs everything.
+the rest, so CI can run the suite as N parallel jobs. Unset, it does nothing.
 
 Whole files go to one shard, so a module-scoped fixture is built once, in one job.
 Files are assigned greedily, heaviest first, to the lightest shard. A file's weight is
@@ -12,8 +12,11 @@ break on the file path, so every job computes the same partition from the same
 collection, and the shards together select every collected test exactly once
 (`tests/test_shard_partition.py`).
 
-This file lives at the root because `testpaths` covers both `tests/` and `modules/`;
-`tests/conftest.py` would not see the module suites.
+It is a `-p` plugin rather than a conftest on purpose. A root `conftest.py` would
+shadow the `from conftest import ...` the test suite relies on, and a plugin named
+on the command line is not inherited by the suites' own `pytest` subprocesses
+(`--collect-only` for the acceptance matrix, the fail-fast probe), which must see
+the whole suite even inside a shard job.
 """
 
 from __future__ import annotations
