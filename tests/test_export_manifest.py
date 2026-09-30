@@ -131,3 +131,14 @@ def test_restore_still_refuses_a_real_format_mismatch(
 
     with pytest.raises(ArtifactRefused, match="exported format version 2"):
         artifact_module._manifest(_entries(modules))
+
+
+def test_an_older_format_artifact_is_refused_by_the_current_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _host(monkeypatch, {"probe": _versioned("probe", 1)}, installed=("probe",))
+    modules = artifact_module._module_manifest(connection=None)  # type: ignore[arg-type]
+    _host(monkeypatch, {"probe": _versioned("probe", 2)}, installed=("probe",))
+
+    with pytest.raises(ArtifactRefused, match="exported format version 1"):
+        artifact_module._manifest(_entries(modules))

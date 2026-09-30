@@ -24,6 +24,8 @@ depends on this name: ``manifest.contract_tests`` names the *directory*.
 """
 
 import ast
+import hashlib
+import json
 from importlib import resources
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
@@ -70,6 +72,35 @@ def test_the_declared_migrations_path_holds_an_alembic_environment() -> None:
     # `storage.migrations_path` points somewhere real and packaged.
     migrations = resources.files(rheo_recallatron.MANIFEST.storage.migrations_path)
     assert migrations.joinpath("env.py").is_file()
+
+
+def test_export_row_shape_changes_require_a_format_version_bump() -> None:
+    schema = json.loads(
+        resources.files(rheo_recallatron)
+        .joinpath(rheo_recallatron.MANIFEST.export.schema_path)
+        .read_text(encoding="utf-8")
+    )
+    shapes = []
+    for branch in schema["allOf"]:
+        declaration = branch["then"]
+        shapes.append(
+            {
+                "record": declaration["properties"]["record"]["const"],
+                "columns": sorted(declaration["properties"]),
+                "required": sorted(declaration["required"]),
+            }
+        )
+    encoded = json.dumps(
+        sorted(shapes, key=lambda shape: shape["record"]),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+
+    assert (rheo_recallatron.MANIFEST.export.format_version, digest) == (
+        1,
+        "d8250bea0c0027b6a2437a1066b70c566a2b6ff2ddabe8f50562988bb7b4a261",
+    ), "export row columns changed; bump export.format_version and update this pin"
 
 
 def test_the_declared_migrations_path_converts_to_a_filesystem_path() -> None:
