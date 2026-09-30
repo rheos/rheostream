@@ -39,7 +39,7 @@ from sqlalchemy.exc import IntegrityError
 
 pytestmark = pytest.mark.postgres
 
-HEAD = "0011_local_evidence"
+HEAD = "0012_evidence_retention_index"
 PREVIOUS = "0010_evidence_unit"
 PRODUCER_KIND_CHECK = "evidence_unit_producer_kind"
 
@@ -178,6 +178,18 @@ def _live_producer_check(engine: Engine) -> str:
 
 def test_enrollment_metadata_holds_only_the_enrollment_table() -> None:
     assert set(enrollment_metadata.tables) == {"core.evidence_enrollment"}
+
+
+def test_live_evidence_unit_shape_includes_the_retention_index() -> None:
+    index = next(
+        index
+        for index in evidence_unit_live.indexes
+        if index.name == "evidence_unit_settled_retention"
+    )
+    assert [column.name for column in index.columns] == ["settled_at"]
+    assert str(index.dialect_options["postgresql"]["where"]) == (
+        "state IN ('settled', 'gap')"
+    )
 
 
 def test_the_purpose_literal_is_the_context_purposes() -> None:

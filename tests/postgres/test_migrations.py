@@ -186,7 +186,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
     # Every revision the script directory holds, not the one the database records:
-    # the control chain ships two files and the core chain eleven, so these are all
+    # the control chain ships two files and the core chain twelve, so these are all
     # the ids each carries.
     assert known_revisions(CONTROL_CHAIN) == {"0001_control_plane", "0002_work_index"}
     assert known_revisions(CORE_CHAIN) == {
@@ -201,6 +201,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
         "0009_runtime_session_policy",
         "0010_evidence_unit",
         "0011_local_evidence",
+        "0012_evidence_retention_index",
     }
 
 
@@ -228,7 +229,9 @@ def test_core_chain_creates_exactly_the_twenty_seven_tables(
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CORE_CHAIN) == {"0011_local_evidence"}
+        assert recorded_revisions(connection, CORE_CHAIN) == {
+            "0012_evidence_retention_index"
+        }
 
 
 def test_migrate_control_is_idempotent_and_survives_an_existing_database(
@@ -343,7 +346,7 @@ def test_failing_core_revision_marks_unavailable_and_startup_completes(
     with broken_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO core.alembic_version_core (version_num) VALUES (:v)"),
-            {"v": "0011_local_evidence"},
+            {"v": "0012_evidence_retention_index"},
         )
     repair(broken)
     assert cluster.registry_row(broken).state is WorkspaceState.ACTIVE
@@ -381,7 +384,7 @@ def test_schema_ahead_marks_unavailable_and_refuses_repair(
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE core.alembic_version_core SET version_num = :v"),
-            {"v": "0011_local_evidence"},
+            {"v": "0012_evidence_retention_index"},
         )
     repair(workspace)
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE

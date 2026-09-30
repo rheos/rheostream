@@ -1,5 +1,4 @@
-"""DDL for revision ``0011_local_evidence``: the enrollment table and the live shape of
-``core.evidence_unit`` once 0011 widens its ``producer_kind`` CHECK.
+"""DDL for revision ``0011_local_evidence`` and the live shape through revision 0012.
 
 Two ``MetaData`` objects, never merged, the ``runtime_tables.py`` pattern
 (``runtime_session_0006`` frozen, ``runtime_session`` live on
@@ -8,10 +7,10 @@ Two ``MetaData`` objects, never merged, the ``runtime_tables.py`` pattern
 - ``enrollment_metadata`` holds only ``core.evidence_enrollment``. 0011 creates it with
   ``create_all``, so that call can create nothing else.
 - ``evidence_unit_live_metadata`` holds only :data:`evidence_unit_live`, the shape
-  ``core.evidence_unit`` has after 0011. It is never passed to ``create_all`` (the
-  table already exists, created by 0010); 0011 swaps the one CHECK in place. Its one
-  reader is the test that compares its CHECK text with the database's. Every read and
-  write path keeps using ``evidence_tables.evidence_unit``: a CHECK is DDL only.
+  ``core.evidence_unit`` has after 0012: 0011 widens one CHECK and 0012 adds an index.
+  It is never passed to ``create_all`` (the table already exists, created by 0010).
+  Tests compare its CHECK and index with the database's. Every read and write path keeps
+  using ``evidence_tables.evidence_unit``: these are DDL changes only.
 
 An enrollment deliberately has no workspace column (the database is the workspace) and
 no audience-ceiling column (fixed by construction to ``member``/``account_id``, enforced
@@ -138,9 +137,17 @@ evidence_unit_live = Table(
     *(column._copy() for column in evidence_unit.columns),
     *_live_constraints(),
 )
-"""The live shape of ``core.evidence_unit``: 0010's columns and CHECKs, with
-``evidence_unit_producer_kind`` widened to :data:`EVIDENCE_PRODUCER_KINDS_0011`.
+"""The live shape of ``core.evidence_unit`` through 0012: 0010's columns and CHECKs,
+with ``evidence_unit_producer_kind`` widened to :data:`EVIDENCE_PRODUCER_KINDS_0011`.
 
 Named ``evidence_unit`` on its own ``MetaData`` because it is that relation, as
 ``runtime_session`` is on ``session_policy_metadata``. Never created; code reads and
 writes ``evidence_tables.evidence_unit``."""
+
+Index(
+    "evidence_unit_settled_retention",
+    evidence_unit_live.c.settled_at,
+    postgresql_where=text("state IN ('settled', 'gap')"),
+)
+"""The 0012 partial index, represented on the live shape and created by its
+migration."""
