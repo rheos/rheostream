@@ -295,7 +295,9 @@ def context_for_evidence_acceptance(
     Refuses ``membership_missing`` when ``account_id`` holds no ``control.membership``
     row for ``workspace_id``, the read :func:`context_from_operation` runs. Like
     :func:`context_for_memory_expiry` it is a value and not an authority: what admits
-    a unit is the evidence row, checked by core's ``RuntimeEvidenceAuthority``.
+    a unit is the evidence row, checked by the authority core picks for that row's
+    ``producer_kind``: ``RuntimeEvidenceAuthority`` for ``rheo_runtime`` rows,
+    ``LocalEvidenceAuthority`` for ``claude_code_local`` rows.
     """
     if not isinstance(workspace_id, UUID) or not isinstance(account_id, UUID):
         raise TypeError("workspace_id and account_id must be UUIDs")
