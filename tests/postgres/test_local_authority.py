@@ -8,7 +8,8 @@ Seams:
   same account and purpose verifies, and the grant is the row's;
 - the six refusal words, each by its own fixture: ``producer_mismatch``,
   ``source_unavailable`` (a missing, a deleted, a settled and a gap row),
-  ``speaker_mismatch``, ``enrollment_inactive`` (no enrollment, a revoked one),
+  ``speaker_mismatch``, ``enrollment_inactive`` (no enrollment, a revoked one, and
+  #244's revoked, expired or missing bridge token under an active one),
   ``enrollment_mismatch`` (account, purpose, audience) and ``membership_revoked``;
 - AC 2's "absent or already expired by the time it is claimed": an expired pending row
   is aged ``gap/expired_pending`` by ``claim_units`` before any authority runs, so no
@@ -28,11 +29,16 @@ import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
-from harness.evidence import EvidenceWorkspace, enable_recording, probe_registry
+from harness.evidence import (
+    EvidenceWorkspace,
+    enable_recording,
+    live_bridge_token,
+    probe_registry,
+)
 from harness.modules import install_and_enable_module, loaded_probe_modules
 from harness.registry import add_member
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
@@ -62,6 +68,7 @@ from rheo_core.operations import register_core_operations
 from rheo_core.refs import uuid7
 from rheo_core.storage import control_tables
 from rheo_core.storage.backend import HandlerUnitOfWork
+from rheo_core.storage.control_plane import get_access_token, revoke_access_token
 from rheo_core.storage.evidence_enrollment_tables import (
     STATE_ACTIVE,
     STATE_REVOKED,
@@ -155,7 +162,7 @@ def _enroll(
             insert(evidence_enrollment).values(
                 id=enrollment_id,
                 account_id=account_id,
-                token_id=uuid4(),
+                token_id=live_bridge_token(ev.workspace_id, account_id, purpose),
                 machine_fingerprint=_fingerprint(),
                 project_fingerprint=_fingerprint(),
                 purpose=purpose.value,
@@ -486,14 +493,96 @@ def test_a_revoked_enrollment_refuses_enrollment_inactive(
     _refused(_verify(recording, _unit(record)), ENROLLMENT_INACTIVE)
 
 
+def _enrollment_token_id(ev: EvidenceWorkspace, enrollment_id: UUID) -> UUID:
+    with ev.unit_of_work() as uow:
+        token_id: UUID = uow.connection.execute(
+            select(evidence_enrollment.c.token_id).where(
+                evidence_enrollment.c.id == enrollment_id
+            )
+        ).scalar_one()
+    return token_id
+
+
+def test_a_token_revoked_outside_enrollment_revoke_refuses_enrollment_inactive(
+    recording: EvidenceWorkspace,
+) -> None:
+    """#244: the bridge token is revoked straight in the control plane, as
+    ``core.token.revoke`` does, and the enrollment row stays ``active``. Its pending
+    row must not verify."""
+    record = _enrolled_record(recording)
+    assert isinstance(_verify(recording, _unit(record)), AuthorityGrant)
+    token_id = _enrollment_token_id(recording, record.authority_id)
+    with recording.cluster.backend.control_engine.begin() as connection:
+        revoke_access_token(connection, token_id)
+    _refused(_verify(recording, _unit(record)), ENROLLMENT_INACTIVE)
+    with recording.unit_of_work() as uow:
+        state = uow.connection.execute(
+            select(evidence_enrollment.c.state).where(
+                evidence_enrollment.c.id == record.authority_id
+            )
+        ).scalar_one()
+    assert state == STATE_ACTIVE
+
+
+def test_an_expired_token_refuses_enrollment_inactive(
+    recording: EvidenceWorkspace,
+) -> None:
+    """#244: the token's expiry is read against ``verify``'s own ``now``."""
+    record = _enrolled_record(recording)
+    token_id = _enrollment_token_id(recording, record.authority_id)
+    with recording.cluster.backend.control_engine.connect() as connection:
+        token = get_access_token(connection, token_id)
+    assert token is not None
+    unit = _unit(record)
+    with recording.unit_of_work() as uow:
+        before = LocalEvidenceAuthority(uow).verify(
+            unit,
+            workspace_id=recording.workspace_id,
+            now=token.expires_at - timedelta(seconds=1),
+        )
+        at_expiry = LocalEvidenceAuthority(uow).verify(
+            unit, workspace_id=recording.workspace_id, now=token.expires_at
+        )
+    assert isinstance(before, AuthorityGrant), before
+    _refused(at_expiry, ENROLLMENT_INACTIVE)
+
+
+def test_an_enrollment_whose_token_has_no_row_refuses_enrollment_inactive(
+    recording: EvidenceWorkspace,
+) -> None:
+    """#244: an active enrollment naming a token id the control plane never held."""
+    ctx = recording.context(ContextPurpose.INTERNAL_ANALYSIS)
+    enrollment_id = _enroll(
+        recording,
+        account_id=recording.owner_account_id,
+        purpose=ContextPurpose.INTERNAL_ANALYSIS,
+    )
+    with recording.unit_of_work() as uow:
+        uow.connection.execute(
+            update(evidence_enrollment)
+            .where(evidence_enrollment.c.id == enrollment_id)
+            .values(token_id=uuid7())
+        )
+        uow.commit()
+    record = _record(recording, ctx, authority_id=enrollment_id)
+    _refused(_verify(recording, _unit(record)), ENROLLMENT_INACTIVE)
+
+
 # --- enrollment_mismatch ----------------------------------------------------------
 
 
 def test_an_enrollment_of_another_account_refuses_enrollment_mismatch(
     recording: EvidenceWorkspace,
 ) -> None:
+    # A real account: the enrollment's bridge token needs a control-plane row.
+    other = add_member(
+        recording.cluster.backend,
+        recording.workspace_id,
+        Role.MEMBER,
+        display_name="other-enrollment",
+    )
     enrollment_id = _enroll(
-        recording, account_id=uuid7(), purpose=ContextPurpose.INTERNAL_ANALYSIS
+        recording, account_id=other, purpose=ContextPurpose.INTERNAL_ANALYSIS
     )
     record = _record(
         recording,

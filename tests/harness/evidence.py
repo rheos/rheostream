@@ -32,6 +32,7 @@ from rheo_core.operations import HARNESS_MODULE_ID
 from rheo_core.settings import encode_text, spec_for
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.repositories import upsert_workspace_setting
+from rheo_core.tokens.issue import issue_bridge_token
 
 from harness.registry import enable_harness_module
 
@@ -131,3 +132,21 @@ def enable_recording(
     monkeypatch.setenv(ENABLED_ENV, "true")
     monkeypatch.setenv(PROVIDER_ENV, "fake")
     workspace.set_workspace(ENABLED_KEY, True)
+
+
+def live_bridge_token(
+    workspace_id: UUID, account_id: UUID, purpose: ContextPurpose
+) -> UUID:
+    """A real, live bridge token's id, for an enrollment row a test inserts directly.
+
+    ``LocalEvidenceAuthority`` refuses an enrollment whose current token is revoked,
+    expired or missing (#244), so a directly inserted enrollment that must verify
+    needs a token the control plane holds.
+    """
+    token_id, _ = issue_bridge_token(
+        account_id=account_id,
+        workspace_id=workspace_id,
+        purpose=purpose.value,
+        issued_from="operator",
+    )
+    return token_id

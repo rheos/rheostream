@@ -30,10 +30,12 @@ from sqlalchemy import select
 
 from rheo_core.evidence.authority import _is_member, _pending_row
 from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.control_plane import get_access_token
 from rheo_core.storage.evidence_enrollment_tables import (
     STATE_ACTIVE,
     evidence_enrollment,
 )
+from rheo_core.storage.postgres import get_backend
 
 LOCAL_PRODUCER_KIND: Final = "claude_code_local"
 """The one producer kind this authority answers for."""
@@ -48,7 +50,8 @@ SOURCE_UNAVAILABLE: Final = "source_unavailable"
 SPEAKER_MISMATCH: Final = "speaker_mismatch"
 """The unit's principal is not the account the row recorded as the speaker."""
 ENROLLMENT_INACTIVE: Final = "enrollment_inactive"
-"""No enrollment row for the row's ``authority_id``, or it is no longer ``active``."""
+"""No enrollment row for the row's ``authority_id``, or it is no longer ``active``, or
+its current bridge token is revoked, expired or has no control-plane row."""
 ENROLLMENT_MISMATCH: Final = "enrollment_mismatch"
 """The enrollment's account or purpose is not the row's, or the row's audience is not
 the enrolled account's own ``member`` ceiling."""
@@ -66,6 +69,18 @@ REFUSAL_REASONS: Final = frozenset(
     }
 )
 """The closed vocabulary of this authority's refusals."""
+
+
+def _token_live(token_id: UUID, now: datetime) -> bool:
+    """Whether the enrollment's current bridge token has a control-plane row that is
+    neither revoked nor expired at ``now``.
+
+    Read on its own control-plane connection, as :func:`_is_member` reads membership:
+    the same window, the same accepted risk.
+    """
+    with get_backend().control_engine.connect() as connection:
+        token = get_access_token(connection, token_id)
+    return token is not None and token.revoked_at is None and token.expires_at > now
 
 
 class LocalEvidenceAuthority:
@@ -89,11 +104,12 @@ class LocalEvidenceAuthority:
         ``(producer_kind, authority_id, external_source_key)`` exists and is
         ``pending`` (read ``FOR SHARE`` in the caller's transaction); its speaker is
         the unit's principal; the enrollment ``id = row.authority_id`` exists and is
-        ``active`` (read ``FOR SHARE``, same connection); the enrollment's account and
+        ``active`` (read ``FOR SHARE``, same connection) and its current token is live
+        at ``now`` (not revoked, not expired); the enrollment's account and
         purpose are the row's and the row's audience is ``member`` for that account;
         and that account is still a member of ``workspace_id``. The grant's
         principal, audience and purpose are the row's, never the unit's. ``now`` is
-        part of the protocol; the row's own expiry is the drain's to enforce.
+        the token-expiry clock; the row's own expiry is the drain's to enforce.
 
         **The machine check.** This authority never compares a machine fingerprint:
         nothing on the unit carries one. The machine is bound transitively, since
@@ -102,6 +118,13 @@ class LocalEvidenceAuthority:
         at ingest, where a presented fingerprint exists. Revoking the enrollment is
         what makes every still-pending row from it settle ``authority_unverified`` at
         its next claim.
+
+        **The token check** (#244). Revoking the bridge token some other way than
+        ``core.evidence_enrollment.revoke`` (``core.token.revoke``, say) leaves the
+        enrollment ``active``. Its still-pending rows then refuse
+        ``enrollment_inactive`` too, exactly as if the enrollment were revoked, so a
+        revoked or expired token stops its rows becoming memories. A rotate keeps
+        them verifiable, because the enrollment then holds the new, live token.
         """
         if unit.producer_kind != LOCAL_PRODUCER_KIND:
             return AuthorityRefused(reason=PRODUCER_MISMATCH)
@@ -115,11 +138,14 @@ class LocalEvidenceAuthority:
                 evidence_enrollment.c.account_id,
                 evidence_enrollment.c.purpose,
                 evidence_enrollment.c.state,
+                evidence_enrollment.c.token_id,
             )
             .where(evidence_enrollment.c.id == row.authority_id)
             .with_for_update(read=True)
         ).one_or_none()
         if enrollment is None or enrollment.state != STATE_ACTIVE:
+            return AuthorityRefused(reason=ENROLLMENT_INACTIVE)
+        if not _token_live(enrollment.token_id, now):
             return AuthorityRefused(reason=ENROLLMENT_INACTIVE)
         if (
             enrollment.account_id != row.speaker_account_id

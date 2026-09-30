@@ -179,8 +179,13 @@ directory. The machine is `machine_fingerprint`, the sha256 of `"rheo-machine:"`
 hex of a 32-byte `machine.key` that never leaves the laptop. The directory is
 `project_fingerprint`, the sha256 of `"rheo-project:"` plus the directory's realpath; the
 path itself never leaves the laptop either. A partial unique index allows one active
-enrollment per fingerprint pair. The row's id is the `authority_id` of every evidence row
-ingested under it. Its purpose is always `internal_analysis` in this version, and every row
+enrollment per fingerprint pair, across all accounts. `enroll` answers `enrollment_exists`
+only when the target account itself holds the pair; a pair another account holds answers
+`not_found`, the same refusal any other account's enrollment gets. It names no account and
+no enrollment, though the create still fails, so the pair is visibly unavailable. Both
+`enroll` and `rotate` refuse `membership_missing` for an account that is not a member of the
+workspace, before a token is minted. The row's id is the `authority_id` of every evidence
+row ingested under it. Its purpose is always `internal_analysis` in this version, and every row
 it admits is audience `member`, bound to the enrolled account. The operator runs
 `rheo evidence enroll`, `rotate` and `revoke` inside the deployment's `core` container
 (operations `core.evidence_enrollment.create`, `.rotate` and `.revoke`); no token may carry
@@ -209,7 +214,11 @@ producer's pipeline runs as it does for runtime rows, except that `claim_units` 
 row's authority by that row's own `producer_kind`. `LocalEvidenceAuthority` refuses with one
 of six words: `producer_mismatch`, `source_unavailable`, `speaker_mismatch`,
 `enrollment_inactive`, `enrollment_mismatch` and `membership_revoked`. Revoking an enrollment
-makes each of its still-pending rows settle `authority_unverified` at its next claim.
+makes each of its still-pending rows settle `authority_unverified` at its next claim. So does
+revoking its bridge token any other way (`rheo token revoke`, say), or letting it expire: the
+authority answers `enrollment_inactive` when the enrollment's current token is revoked,
+expired or missing, even while the row itself is still `active`. A `rotate` keeps pending
+rows verifiable, because the enrollment then holds the new, live token.
 
 **Keys.** Nothing that leaves the laptop names a session, a message, a path or a project. A
 record's native key is `cc1:` plus 64 hex, the HMAC-SHA256 under `machine.key` of the
@@ -261,8 +270,9 @@ to know two things:
 
 - A `create` whose response was lost, for example because the
   `ssh ... | rheo-bridge set-token` pipe broke, has still enrolled the pair, under a token
-  nobody holds. Retrying `create` answers `enrollment_exists`. Find that enrollment's id with
-  a read-only query that selects the id and no other column. The table lives in the
+  nobody holds. Retrying `create` answers `enrollment_exists`. (`not_found` instead means
+  another account holds the pair: check which enrollment that is before revoking it.) Find
+  that enrollment's id with a read-only query that selects the id and no other column. The table lives in the
   enrolling workspace's own database, not the control database: that database is named
   `ws_` followed by the workspace id's 32 hex digits without dashes (the id is the first
   column of `rheo workspace list`, run in the `core` container). Run the query there, for
