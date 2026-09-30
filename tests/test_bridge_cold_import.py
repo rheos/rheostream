@@ -21,6 +21,7 @@ BRIDGE_MODULES = (
     "rheo_bridge.state",
     "rheo_bridge.client",
     "rheo_bridge.worker",
+    "rheo_bridge.settle",
     "rheo_bridge.settings_file",
     "rheo_bridge.cli",
 )
