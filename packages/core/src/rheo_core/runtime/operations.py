@@ -74,7 +74,6 @@ from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.storage.control_plane import delete_access_token, get_access_token
 from rheo_core.storage.data_root import Purpose, run_dir_for, workspace_dir_for
 from rheo_core.storage.postgres import get_backend
-from rheo_core.tokens.issue import issue_runtime_token
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 from rheo_core.tokens.sets import TOOL_REGISTRY
 from rheo_core.work.cancellation import CancellationToken
@@ -1031,6 +1030,12 @@ def make_run_runtime_job(
                     # ``__context__`` either.
                     raise dropped from None
             expires_at = now + timedelta(seconds=deadline)
+            # Deferred, the approvals/gate.py direction-preserving pattern (#243):
+            # ``tokens.issue`` imports ``operations.refusals``, whose package init
+            # reaches this module through ``core_ops``, so a module-level import
+            # here closes tokens.issue -> operations -> runtime -> tokens.issue.
+            from rheo_core.tokens.issue import issue_runtime_token
+
             token_id, run_token = issue_runtime_token(
                 account_id=account_id,
                 workspace_id=payload.workspace_id,
