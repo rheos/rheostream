@@ -47,11 +47,11 @@ CLAUDE_CLI_SCOPE_COMPONENT: Final = "runtime.claude_cli"
 # adapter's file prefix and its own one environment variable, and nothing else, so an
 # ``api_key`` deployment cannot read the OAuth token's variable or the reverse.
 CLAUDE_CLI_SCOPE_PREFIXES: Final = (
-    "secret://file/runtime/claude_cli/",
+    "secret://file/runtime/claude-cli/",
     "secret://env/RHEO_ANTHROPIC_API_KEY",
 )
 CLAUDE_CLI_OAUTH_SCOPE_PREFIXES: Final = (
-    "secret://file/runtime/claude_cli/",
+    "secret://file/runtime/claude-cli/",
     "secret://env/RHEO_CLAUDE_OAUTH_TOKEN",
 )
 # credential_kind -> (the admitted references, the one child variable it is passed as).

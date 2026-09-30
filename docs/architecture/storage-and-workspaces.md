@@ -505,7 +505,7 @@ slug path:
 ```text
 secret://file/cluster/primary-dsn
 secret://file/identity/github/client-secret
-secret://file/runtime/claude_cli/credential
+secret://file/runtime/claude-cli/credential
 secret://file/ws/018f.../connection/018f.../signing
 secret://env/RHEO_GITHUB_CLIENT_SECRET
 ```
@@ -523,7 +523,7 @@ SecretStore.resolve(ref: SecretRef, scope: SecretScope) -> SecretValue
 
 `SecretScope` is an unforgeable token the core constructs for a component at registration time,
 naming the full reference prefixes that component may resolve, each a `file` path plus the one
-environment variable it reads: the Claude CLI adapter gets `secret://file/runtime/claude_cli/`
+environment variable it reads: the Claude CLI adapter gets `secret://file/runtime/claude-cli/`
 and `RHEO_ANTHROPIC_API_KEY` under `api_key`, or the same file prefix and
 `RHEO_CLAUDE_OAUTH_TOKEN` under `oauth_token`, the GitHub identity provider `secret://file/identity/github/` and
 `RHEO_GITHUB_CLIENT_SECRET`, the storage component `secret://file/cluster/` and
