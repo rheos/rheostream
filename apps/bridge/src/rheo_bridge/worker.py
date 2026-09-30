@@ -950,8 +950,11 @@ _REFUSAL_BY_STATUS: Final = {
 def token_expiring(config: bridge_config.Config, now: datetime) -> bool:
     """Whether the token expires within 14 days of ``now``, or already has.
 
-    An expiry that does not parse counts as expiring, so a person looks.
+    An expiry that does not parse, or none stored yet, counts as expiring, so
+    a person looks.
     """
+    if config.token_expires_at is None:
+        return True
     try:
         expires = datetime.fromisoformat(config.token_expires_at)
     except ValueError:

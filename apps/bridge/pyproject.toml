@@ -8,6 +8,9 @@ requires-python = ">=3.12,<3.13"
 # imports nothing but the standard library and is copied out of the package.
 dependencies = ["rheo-core"]
 
+[project.scripts]
+rheo-bridge = "rheo_bridge.cli:main"
+
 [tool.uv.sources]
 rheo-core = { workspace = true }
 

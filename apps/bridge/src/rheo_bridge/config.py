@@ -34,8 +34,6 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class Config:
     api_url: str
-    enrollment_id: str
-    token_expires_at: str
     # The realpath of the directory whose sessions are captured.
     enrolled_dir: str
     # The drain entry point of the checkout venv that ran ``init``; not
@@ -43,19 +41,21 @@ class Config:
     worker_argv: list[str]
     # Hashes the session id in the hook only; never an HMAC key.
     install_salt: str
+    # ``None`` between ``init`` and the first ``set-token``.
+    enrollment_id: str | None = None
+    token_expires_at: str | None = None
+    # Whether ``install-hook`` created the enrolled directory's settings file,
+    # so ``remove-hook`` knows it may delete the file once it is ``{}`` again.
+    hook_created_settings: bool = False
     max_bytes: int = DEFAULT_MAX_BYTES
     max_records: int = DEFAULT_MAX_RECORDS
     max_pending_hours: int = DEFAULT_MAX_PENDING_HOURS
     settle_seconds: int = DEFAULT_SETTLE_SECONDS
 
 
-_STRING_KEYS = (
-    "api_url",
-    "enrollment_id",
-    "token_expires_at",
-    "enrolled_dir",
-    "install_salt",
-)
+_STRING_KEYS = ("api_url", "enrolled_dir", "install_salt")
+# Absent or null until ``set-token`` stores them.
+_OPTIONAL_STRING_KEYS = ("enrollment_id", "token_expires_at")
 _INT_KEYS = ("max_bytes", "max_records", "max_pending_hours", "settle_seconds")
 
 
@@ -68,6 +68,17 @@ def _from_mapping(raw: object) -> Config:
         if not isinstance(value, str) or not value:
             raise ConfigError(f"config.json: {key} must be a non-empty string")
         values[key] = value
+    for key in _OPTIONAL_STRING_KEYS:
+        value = raw.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value:
+            raise ConfigError(f"config.json: {key} must be a non-empty string")
+        values[key] = value
+    created = raw.get("hook_created_settings", False)
+    if not isinstance(created, bool):
+        raise ConfigError("config.json: hook_created_settings must be a boolean")
+    values["hook_created_settings"] = created
     argv = raw.get("worker_argv")
     if (
         not isinstance(argv, list)

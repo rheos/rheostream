@@ -209,6 +209,16 @@ def _check_token(token: str) -> None:
         raise ValueError("the bridge token is empty or holds invalid characters")
 
 
+def check_base_url(base_url: str) -> None:
+    """Raise ``ValueError`` unless :class:`HttpIngestClient` would accept it."""
+    _ingest_url(base_url)
+
+
+def check_token(token: str) -> None:
+    """Raise ``ValueError`` (never quoting the value) unless the token is usable."""
+    _check_token(token)
+
+
 def _string_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise IngestTransportError("the ingest answer is not four lists of keys")
