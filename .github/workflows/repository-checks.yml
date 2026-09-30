@@ -149,14 +149,42 @@ jobs:
           print(f'AC-10 OK: configured_provider_name() == {provider!r}; resolve_provider() is LocalEmbeddingProvider; fastembed imported')
           "
 
-  python:
-    name: Python checks
+  # Python is split so the suite runs in parallel (#252): static checks, five test
+  # shards and criterion 31 are separate jobs, and `python` below, still named
+  # "Python checks" for branch protection, passes only when every one of them did.
+  python-static:
+    name: Python static checks
     runs-on: ubuntu-latest
-    # On a slow runner, pytest took 25:44 and criterion-31 needs about four more
-    # minutes, so the 30-min cap can cancel a passing suite during the final gate.
-    # 45 minutes leaves room for runner variance; pytest prints its slowest tests
-    # so suite-time creep remains visible.
-    timeout-minutes: 45
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.29"
+      # With the extra: Recallatron's real-provider tests fail, never skip, when the
+      # local embedding runtime is missing, and mypy type-checks against it.
+      - name: Sync (frozen)
+        run: uv sync --frozen --extra local-embeddings
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+      - name: Mypy
+        run: uv run mypy
+
+  python-tests:
+    name: Python tests (${{ matrix.shard }}/5)
+    runs-on: ubuntu-latest
+    # One shard takes about a fifth of the old single-job run (25:44 at worst).
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -189,12 +217,6 @@ jobs:
       # local embedding runtime is missing, and mypy type-checks against it.
       - name: Sync (frozen)
         run: uv sync --frozen --extra local-embeddings
-      - name: Ruff lint
-        run: uv run ruff check .
-      - name: Ruff format check
-        run: uv run ruff format --check .
-      - name: Mypy
-        run: uv run mypy
       # Keyed on the model identifier, so a model change misses the cache instead of
       # restoring the old artifact under the new name. The identifier is
       # embedding/local.py's MODEL_ID and retrieval/rerank.py's immutable revision;
@@ -204,14 +226,85 @@ jobs:
         with:
           path: ${{ env.RHEO_TEST_MODEL_CACHE }}
           key: test-models-MiniLM-L6-v2-rerank-a09144355adeed5f58c8ed011d209bf8ee5a1fec
+      # The root conftest.py keeps this shard's files and deselects the rest; the
+      # five shards together select every collected test once.
       - name: Pytest
-        run: uv run pytest --durations=20
+        env:
+          RHEO_TEST_SHARD: ${{ matrix.shard }}/5
+        run: uv run pytest --durations=10
+
+  python-criterion-31:
+    name: Criterion 31
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rheo
+          POSTGRES_PASSWORD: rheo_dev_only
+          POSTGRES_DB: rheo
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U rheo" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Deliberately NOT RHEO_CLUSTER_DSN: tests/conftest.py derives it from
+      # RHEO_TEST_CLUSTER_DSN so the suite reaches the cluster through the
+      # production settings->secret-scope path, not an injected DSN.
+      RHEO_TEST_CLUSTER_DSN: postgresql://rheo:rheo_dev_only@localhost:5432/postgres
+      RHEO_PROFILE: test
+      # Where tests/conftest.py keeps local model artifacts across sessions. The cache
+      # step below restores it, so the real embedding model is not downloaded on every
+      # run and a third party's availability does not decide whether CI is green.
+      RHEO_TEST_MODEL_CACHE: /home/runner/.cache/rheo-stream/test-models
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.29"
+      # With the extra: Recallatron's real-provider tests fail, never skip, when the
+      # local embedding runtime is missing, and mypy type-checks against it.
+      - name: Sync (frozen)
+        run: uv sync --frozen --extra local-embeddings
+      # Keyed on the model identifier, so a model change misses the cache instead of
+      # restoring the old artifact under the new name. The identifier is
+      # embedding/local.py's MODEL_ID and retrieval/rerank.py's immutable revision;
+      # change the key with either model pin.
+      - name: Restore the test model cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.RHEO_TEST_MODEL_CACHE }}
+          key: test-models-MiniLM-L6-v2-rerank-a09144355adeed5f58c8ed011d209bf8ee5a1fec
       # Project criterion 31: Recallatron's behavioural suite under `lexical`, then
       # under `dense` against the real local model. The dense pass reads the artifact
       # the cache step above restores, so a cold runner that cannot fetch it reds a
       # project criterion here, not a convenience test.
       - name: Criterion 31 (lexical and dense passes)
         run: make criterion-31
+
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [python-static, python-tests, python-criterion-31]
+    # Runs even when a needed job failed or was cancelled, so the required check
+    # reports a real failure instead of being skipped.
+    if: always()
+    steps:
+      - name: Every Python job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "::error::a Python job ended $r"
+              exit 1
+            fi
+          done
 
   absence-proof:
     name: Recallatron absence proof
