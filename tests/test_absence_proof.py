@@ -16,7 +16,7 @@ _SCRIPT = _REPO_ROOT / "scripts" / "absence_proof.py"
 _MATRIX_TEST = _REPO_ROOT / "tests" / "test_acceptance_matrix.py"
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "repository-checks.yml"
 _NODE = "tests/probe.py::test_one"
-_CI = "ci:python / Pytest"
+_CI = "ci:python-tests / Pytest"
 
 
 def _load(path: Path, name: str) -> ModuleType:
@@ -122,7 +122,7 @@ def test_cli_rejects_unsupported_demonstrators_and_accepts_pytest_and_ci(
 
 def test_workflow_runs_the_absence_proof_beside_a_known_positive_control() -> None:
     jobs = matrix.parse_ci_steps(_WORKFLOW)
-    assert "python" in jobs and "Pytest" in jobs["python"]
+    assert "python-tests" in jobs and "Pytest" in jobs["python-tests"]
     assert "absence-proof" in jobs
     assert "Run make absence-proof" in jobs["absence-proof"]
     assert (
