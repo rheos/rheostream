@@ -10,11 +10,13 @@ paths are invented.
 from __future__ import annotations
 
 import builtins
+import errno
 import fcntl
 import json
 import os
 import sqlite3
 import stat
+import tracemalloc
 import uuid
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -299,6 +301,27 @@ def test_labels_come_from_the_malformed_key_first(
     assert state.get_ledger(conn)["hook_malformed"].count == 4
 
 
+def test_an_unreadable_spool_file_is_skipped_and_counted(
+    env: Env, conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    # A symlink planted after check_private: O_NOFOLLOW refuses it (ELOOP).
+    target = tmp_path / "elsewhere.jsonl"
+    target.write_text(json.dumps(locator("Stop", path=env.transcript(), at=100)) + "\n")
+    directory = paths.spool_dir(env.bridge_home)
+    directory.mkdir(mode=0o700)
+    (directory / TODAY_SPOOL).symlink_to(target)
+    good = spool(
+        env,
+        [locator("Stop", session_hash=OTHER_HASH, path=env.transcript(), at=100)],
+        name=YESTERDAY_SPOOL,
+    )
+    worker.fold_spool(conn, env.bridge_home, now=NOW)
+    assert [r.session_hash for r in state.list_sessions(conn)] == [OTHER_HASH]
+    assert state.get_ledger(conn)["spool_unreadable"].count == 1
+    assert state.get_spool_offset(conn, TODAY_SPOOL) == 0
+    assert not good.exists()
+
+
 # --- step 2: validate ---------------------------------------------------------
 
 
@@ -468,9 +491,12 @@ def test_a_missing_source_is_never_opened_and_is_read_once_it_appears(
     batch = only(run_pass(env, conn))
     assert batch.source_gap is None
     assert [r.text for r in records(batch)] == ["arrived"]
+    # The source is back, so the gap the Missing pass noted is no longer owed.
+    row = state.get_session(conn, SESSION_HASH)
+    assert row is not None and row.pending_gap_key is None
 
 
-@pytest.mark.parametrize("kind", ["symlink", "fifo"])
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "absent"])
 def test_a_source_swapped_after_validation_is_not_followed(
     env: Env,
     conn: sqlite3.Connection,
@@ -483,8 +509,9 @@ def test_a_source_swapped_after_validation_is_not_followed(
         target = tmp_path / "elsewhere.jsonl"
         write_transcript(target, [human("must not be read")])
         path.symlink_to(target)
-    else:
+    elif kind == "fifo":
         os.mkfifo(path)
+    # "absent": deleted after validation, so the open fails with ENOENT.
     spool(env, [locator("Stop", path=path, at=100)])
     monkeypatch.setattr(transcript, "validate_source", lambda *args, **kwargs: Ok(path))
     batch = only(run_pass(env, conn))
@@ -493,6 +520,174 @@ def test_a_source_swapped_after_validation_is_not_followed(
     assert batch.source_gap.native_key == gap_key(env, SESSION_HASH, 0)
     row = state.get_session(conn, SESSION_HASH)
     assert row is not None and row.pending_gap_key == batch.source_gap.native_key
+
+
+@pytest.mark.parametrize("failure", ["eacces", "emfile"])
+def test_an_unreadable_source_is_skipped_with_no_gap_and_no_state_change(
+    env: Env,
+    conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    path = env.transcript()
+    data = write_transcript(path, [human("alpha")])
+    spool(env, [locator("Stop", path=path, at=100)])
+    acknowledge(conn, only(run_pass(env, conn)))
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(human("beta")) + "\n")
+    before = state.get_session(conn, SESSION_HASH)
+    if failure == "eacces":
+        if os.geteuid() == 0:
+            pytest.skip("root reads a mode-000 file")
+        os.chmod(path, 0)
+    else:
+        real_open = os.open
+
+        def exhausted(target: Any, *args: Any, **kwargs: Any) -> int:
+            if os.fspath(target) == os.fspath(path):
+                raise OSError(errno.EMFILE, "Too many open files")
+            return real_open(target, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", exhausted)
+    try:
+        batches = run_pass(env, conn)
+    finally:
+        monkeypatch.undo()
+        os.chmod(path, 0o600)
+    assert batches == []
+    assert state.get_session(conn, SESSION_HASH) == before
+    assert before is not None and before.pending_gap_key is None
+    assert before.cursor_offset == len(data)
+    assert state.get_ledger(conn)["source_unreadable"].count == 1
+    # Readable again: the next pass reads on from the unchanged cursor.
+    batch = only(run_pass(env, conn))
+    assert batch.source_gap is None
+    assert [r.text for r in records(batch)] == ["beta"]
+
+
+def test_source_gaps_count_against_the_record_limit(tmp_path: Path) -> None:
+    env = make_env(tmp_path, max_records=1)
+    spool(
+        env,
+        [
+            locator(
+                "Stop",
+                session_hash=SESSION_HASH,
+                path=env.transcript("a.jsonl"),
+                at=100,
+            ),
+            locator(
+                "Stop", session_hash=OTHER_HASH, path=env.transcript("b.jsonl"), at=200
+            ),
+        ],
+    )
+    connection = env.conn()
+    try:
+        batch = only(run_pass(env, connection))
+        assert batch.session_hash == SESSION_HASH and batch.source_gap is not None
+        later = state.get_session(connection, OTHER_HASH)
+        # Over the limit: no gap and no pending key yet; the next pass retries.
+        assert later is not None and later.pending_gap_key is None
+    finally:
+        state.close(connection)
+
+
+def test_a_replacement_gap_takes_the_last_record_slot(tmp_path: Path) -> None:
+    env = make_env(tmp_path, max_records=1)
+    path = env.transcript()
+    first = write_transcript(path, [human("alpha " * 20)])
+    spool(env, [locator("Stop", path=path, at=100)])
+    connection = env.conn()
+    try:
+        acknowledge(connection, only(run_pass(env, connection)))
+        write_transcript(path.with_name("r.tmp"), [human("gamma")])
+        os.replace(path.with_name("r.tmp"), path)
+        batch = only(run_pass(env, connection))
+    finally:
+        state.close(connection)
+    assert batch.source_gap is not None
+    assert batch.source_gap.native_key == gap_key(env, SESSION_HASH, len(first))
+    assert batch.items == ()
+    assert batch.start_offset == batch.end_offset == 0
+
+
+def test_the_byte_limit_holds_across_sessions(tmp_path: Path) -> None:
+    first_lines = [human("a" * 100) for _ in range(3)]
+    first_size = sum(len(json.dumps(line)) + 1 for line in first_lines)
+    limit = first_size + 50
+    env = make_env(tmp_path, max_bytes=limit)
+    first_path = env.transcript("a.jsonl")
+    second_path = env.transcript("b.jsonl")
+    first = write_transcript(first_path, first_lines)
+    assert len(first) == first_size
+    write_transcript(second_path, [human("b" * 400), human("c")])
+    spool(
+        env,
+        [
+            locator("Stop", session_hash=SESSION_HASH, path=first_path, at=100),
+            locator("Stop", session_hash=OTHER_HASH, path=second_path, at=200),
+        ],
+    )
+    connection = env.conn()
+    try:
+        batches = run_pass(env, connection)
+    finally:
+        state.close(connection)
+    assert sum(b.end_offset - b.start_offset for b in batches) <= limit
+    by_hash = {b.session_hash: b for b in batches}
+    assert by_hash[SESSION_HASH].end_offset == len(first)
+    # The second session's first line does not fit what is left, and the
+    # whole-line path is only for a pass that has read nothing yet.
+    second = by_hash[OTHER_HASH]
+    assert second.items == () and second.end_offset == second.start_offset == 0
+
+
+def test_a_huge_line_is_scanned_over_without_being_buffered(
+    env: Env, conn: sqlite3.Connection
+) -> None:
+    path = env.transcript()
+    huge = 12 * 1024 * 1024
+    assert huge > worker.LINE_CEILING_BYTES
+    head = b'{"type":"user","pad":"'
+    with path.open("wb") as handle:
+        handle.write(head)
+        block = b"x" * (1024 * 1024)
+        for _ in range(huge // len(block)):
+            handle.write(block)
+        handle.write(b'"}\n')
+        tail = (json.dumps(human("after the huge line")) + "\n").encode()
+        handle.write(tail)
+    huge_end = path.stat().st_size - len(tail)
+    spool(env, [locator("Stop", path=path, at=100)])
+    worker.fold_spool(conn, env.bridge_home, now=NOW)
+    tracemalloc.start()
+    try:
+        batch = only(
+            worker.collect(
+                conn,
+                config=env.config(),
+                machine_key=env.machine_key,
+                projects_root=env.projects_root,
+                now=NOW,
+            )
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 3 * worker.LINE_CEILING_BYTES, peak
+    assert batch.items == ()
+    assert batch.skips == (worker.LineSkip("line_oversize", 0, huge_end),)
+    assert batch.end_offset == huge_end
+    acknowledge(conn, batch)
+    batch = only(run_pass(env, conn))
+    assert [r.text for r in records(batch)] == ["after the huge line"]
+
+
+def test_the_ceiling_mirrors_the_servers_text_limit() -> None:
+    from rheo_core.evidence.ingest import INGEST_MAX_TEXT_CHARS
+
+    assert worker.INGEST_MAX_TEXT_CHARS == INGEST_MAX_TEXT_CHARS
+    assert worker.LINE_CEILING_BYTES == 6 * INGEST_MAX_TEXT_CHARS
 
 
 def test_a_line_longer_than_the_byte_limit_is_still_consumed(tmp_path: Path) -> None:
@@ -552,6 +747,18 @@ def test_only_human_lines_become_candidates_and_the_cursor_passes_every_line(
     assert batch.end_offset == len(data)
     assert batch.clock_unreadable == 1
     assert [c.entrypoint for c in batch.items] == ["cli", "cli"]
+    # Each candidate and skip carries its own line's exact byte range, so a
+    # partial acknowledgement can commit the matching cursor and counts.
+    bounds = [0]
+    for index, byte in enumerate(data):
+        if byte == ord("\n"):
+            bounds.append(index + 1)
+    lines = list(zip(bounds, bounds[1:], strict=False))
+    assert [(c.start_offset, c.end_offset) for c in batch.items] == [
+        lines[0],
+        lines[5],
+    ]
+    assert batch.skips == (worker.LineSkip("clock_unreadable", *lines[4]),)
 
 
 def test_record_and_gap_keys_have_the_fixed_shape_and_hide_their_inputs(

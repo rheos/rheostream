@@ -77,6 +77,12 @@ LEDGER_REASONS: Final = frozenset(
         "hook_malformed",
         "clock_unreadable",
         "token_expiring",
+        # The worker's local read failures: a transcript it could not open for
+        # a reason other than its absence, a spool file it could not read,
+        # and a transcript line too large for the server to accept.
+        "source_unreadable",
+        "spool_unreadable",
+        "line_oversize",
     }
 )
 ACCEPTED_PREFIX: Final = "accepted:"
