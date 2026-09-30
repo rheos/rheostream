@@ -1467,7 +1467,7 @@ except the operation it names. Both are true; neither is a pytest node.
 - `pytest:tests/test_contracts.py::test_tool_registration_refuses_a_declaration_with_no_safety_class`
 - `pytest:tests/test_contracts.py::test_tool_declaration_requires_a_safety_class`
 - `pytest:tests/test_contracts.py::test_operation_declaration_requires_a_safety_class`
-- `ci:python / Pytest`
+- `ci:python-tests / Pytest`
 
 **Mutation:**
 ```diff

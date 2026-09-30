@@ -461,7 +461,7 @@ clause of it has a demonstrator, which is what the earlier `Note:` said promotio
 **State:** complete
 
 **Demonstrator:**
-- `ci:python / Criterion 31 (lexical and dense passes)`
+- `ci:python-criterion-31 / Criterion 31 (lexical and dense passes)`
 
 **Mutation:**
 ```diff

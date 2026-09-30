@@ -376,3 +376,70 @@ Read the `psql` output. Errors saying the `rheo` role and the `rheo` database
 already exist are expected, since the image creates both at first start (the
 database takes its name from `POSTGRES_USER` when `POSTGRES_DB` is unset), and the
 dump then restores into that empty database. Any other error needs a look.
+
+### Scheduled doctor and paging
+
+A host cron job runs `deploy/doctor/rheostream-doctor-alert.py` once an hour. It
+runs `rheo doctor` inside the flagship's core container and turns every `FAIL`
+line into a critical ticket in the operator's ticket service, which pages on a
+critical ticket's creation. A repeat failure updates the same open ticket (same
+`source_ref` and `ticket_type`) rather than paging again, and when the check
+recovers the script closes the ticket, so the next failure pages afresh. The
+script's header has the ticket service contract (list open, create or dedupe,
+close; bearer auth).
+
+Each run:
+
+1. Reads `TICKETS_API_KEY` from `RHEO_DOCTOR_ENV_FILE`
+   (`/root/.config/rheostream-doctor.env`, root-only) and lists this pager's open
+   tickets from `RHEO_DOCTOR_TICKETS_URL`. That list is also the preflight: if the
+   service is unreachable or rejects the key, the run exits 2 before doctor's
+   result counts, so a broken pager shows up in syslog instead of passing quietly.
+2. Finds exactly one running container with the compose labels
+   `com.docker.compose.project=$RHEO_DOCTOR_COMPOSE_PROJECT` and
+   `com.docker.compose.service=core`. Zero or several becomes a `doctor run` FAIL.
+3. Runs `rheo doctor` there. A non-zero exit with no `FAIL` line is also a
+   `doctor run` FAIL.
+4. Files each `FAIL` line as a ticket (`ticket_type: infra-alert`, `severity:
+   critical`, `provenance: status-poll`, `source_ref: rheostream-doctor:<check>`,
+   plus any fields in `RHEO_DOCTOR_TICKET_FIELDS`, a JSON object). The ticket body
+   is the FAIL line; doctor's lines are counts, ids and settings keys only.
+5. Closes every open `rheostream-doctor:` ticket whose check no longer fails. When
+   doctor itself could not run, no other check was evaluated, so nothing is closed.
+
+Exit codes: 0 all ok, 1 at least one FAIL paged, 2 the pager could not do its job.
+Log lines go to syslog under the tag `rheostream-doctor`
+(`journalctl -t rheostream-doctor`). `--dry-run` prints what it would file or
+close and writes nothing. `tests/test_doctor_alert.py` covers every path against
+a stub `docker` and a stand-in ticket service.
+
+#### Install or update on the host
+
+Run as root. Pin `SHA` to the `main` commit that carries the version you want, and
+compare the checksum with the same file in your own checkout.
+
+```sh
+set -euo pipefail
+SHA=<main commit sha>
+curl -fsSL -o /root/rheostream-doctor-alert.new \
+  "https://raw.githubusercontent.com/rheos/rheostream/$SHA/deploy/doctor/rheostream-doctor-alert.py"
+sha256sum /root/rheostream-doctor-alert.new      # must match your checkout
+install -m 0755 -o root -g root /root/rheostream-doctor-alert.new /usr/local/sbin/rheostream-doctor-alert
+rm /root/rheostream-doctor-alert.new
+# The ticket service key, once: root-only.
+install -d -m 0700 /root/.config
+umask 077; printf 'TICKETS_API_KEY=%s\n' '<key>' > /root/.config/rheostream-doctor.env
+cat > /etc/cron.d/rheostream-doctor <<'CRON'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RHEO_DOCTOR_COMPOSE_PROJECT=<compose project label>
+RHEO_DOCTOR_TICKETS_URL=<ticket service API base>
+RHEO_DOCTOR_TICKET_FIELDS=<JSON object of service-specific fields, or {}>
+7 * * * * root /usr/local/sbin/rheostream-doctor-alert
+CRON
+# Check it without filing anything (same variables as the cron file):
+RHEO_DOCTOR_COMPOSE_PROJECT=... RHEO_DOCTOR_TICKETS_URL=... /usr/local/sbin/rheostream-doctor-alert --dry-run
+```
+
+To stop paging, delete `/etc/cron.d/rheostream-doctor`. Any tickets it filed stay
+open in the service until closed by hand.
