@@ -44,11 +44,12 @@ cluster, leftover `ws_*` databases from interrupted sessions pile up (thousands,
 of GB), and each new database gets slower to create. Throw the test cluster away
 now and then (`make test-pg-down`) to keep that from happening here.
 
-`TEST_PG_TMPFS=1` puts the data dir on an 8 GB tmpfs, which is faster again, but
-only for a narrow `PYTEST_ARGS` run. The suite keeps every workspace database it
-creates until session teardown, roughly 2,000 of them at about 8.6 MB each, so a
-full run needs about 19 GB. On tmpfs that sits in the Docker VM's memory, which
-every other container shares; the cap makes an oversized run fail instead.
+`TEST_PG_TMPFS=1` puts the data dir on an 8 GB tmpfs, which is faster again. The
+suite now drops each test's workspace databases as the test ends (below), so a run
+holds only a handful at once. Databases from module- or session-scoped fixtures stay
+until teardown, so watch the cap on a full run. On tmpfs the data sits in the Docker
+VM's memory, which every other container shares; the cap makes an oversized run fail
+instead.
 
 It listens on host port 5434 by default. Set `RHEO_TEST_PG_PORT` to run your own on
 another port; the compose project is named after the port
@@ -62,3 +63,12 @@ stop each other's cluster, and none of them touches the `rheo-stream` project th
 dev stack's default `RHEO_PG_PORT`. If your dev stack runs on another port (5432 is
 often taken by another project), either set `RHEO_TEST_CLUSTER_DSN` to match or use
 `make test-fast`.
+
+Each test's `ws_*` workspace databases are dropped when that test finishes, so a run
+holds a handful at a time rather than one per test. A session that gets killed
+(timeout, Ctrl-C, a paused run) still leaves the current test's databases behind, so
+every session starts by reaping `ws_*` databases older than
+`RHEO_TEST_REAP_AFTER_HOURS` (default 6; `0` or `off` turns it off) that nobody is
+connected to. It uses a plain `DROP DATABASE`, so a database another session has open
+refuses and stays, and it prints its counts near the top of the output. It never
+touches a name that isn't `ws_<32 hex>`.
