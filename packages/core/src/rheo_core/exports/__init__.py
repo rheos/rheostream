@@ -1,5 +1,12 @@
 """Workspace export, digest and restore."""
 
+# First, and on purpose (#243, the order ``rheo_core/runtime/__init__.py`` takes for
+# #142): ``rheo_core.operations`` imports ``exports.operations`` through ``core_ops``,
+# and ``exports.artifact`` imports ``rheo_core.approvals``, which imports
+# ``rheo_core.operations`` submodules at module level (``approvals/gate.py``'s stated
+# direction). Only the order that starts at ``rheo_core.operations`` completes;
+# without this line a cold ``import rheo_core.exports`` dies on ``ArtifactIdentity``.
+import rheo_core.operations  # noqa: F401
 from rheo_core.exports.artifact import (
     EXPORT_RESOURCE_UNAVAILABLE,
     MINIMUM_SNAPSHOT_CONNECTIONS,
