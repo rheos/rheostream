@@ -289,7 +289,11 @@ leaves the CLI's default. The provider runs one tool-less CLI turn per batch: no
 tools (`--tools ""`), an empty-snapshot run token, nothing pre-approved, and an empty
 throwaway directory. Between the two gates the server defers every key and the worker holds,
 so turns stay local, and those that age past the pending limit arrive later as
-`expired_pending` gaps, not memories.
+`expired_pending` gaps, not memories. Gate B's documented credential is the subscription
+login (`runtime.claude_cli.credential_kind = login`, the package default), and the shared
+core/worker image now carries the pinned CLI at `/opt/claude/bin/claude` for
+`runtime.claude_cli.executable` to point at; `api_key` remains a supported but unused
+configuration.
 
 ## `ClaudeCliRuntime`
 
