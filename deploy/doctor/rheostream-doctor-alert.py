@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Run `rheo doctor` against the flagship and page on FAIL through M.O.T. (issue #229).
+"""Run `rheo doctor` against the flagship and page on FAIL through a ticket service
+(issue #229).
 
 Usage:
   rheostream-doctor-alert.py [run]     run doctor, file or close tickets
   rheostream-doctor-alert.py --dry-run run doctor and print what it would do
 
 A host cron job calls this. It runs `rheo doctor` inside the flagship's core
-container and turns each FAIL line into a critical M.O.T. ticket. M.O.T. sends
-Robin a Telegram when a critical ticket is *created*, and a repeat with the same
-`source_ref` and `ticket_type` updates the open ticket instead of paging again.
-When a check recovers, the script closes its ticket, so the next failure pages
-afresh. A pager that never closes its tickets pages once and then goes quiet
-for good.
+container and turns each FAIL line into a critical ticket in the operator's ticket
+service, which is expected to page on a critical ticket's *creation* and to update
+the open ticket, not add one, when a ticket with the same `source_ref` and
+`ticket_type` arrives again. When a check recovers, the script closes its ticket, so
+the next failure pages afresh. A pager that never closes its tickets pages once and
+then goes quiet for good.
+
+The ticket service contract: `GET {url}/tickets?status=open&page=N&per_page=M`
+returns `{"tickets": [...], "total": T, "per_page": M}`; `POST {url}/tickets`
+creates (201) or dedupes onto the open ticket (200); `PATCH {url}/tickets/{id}`
+with `{"status": "done"}` closes one. Bearer-token auth. Any field the service
+needs beyond the ones this script sets goes in `RHEO_DOCTOR_TICKET_FIELDS`.
 
 Doctor's lines are content-free by design (counts, ids, slugs, settings keys),
 so a FAIL line is copied into the ticket body as it is.
@@ -19,15 +26,20 @@ so a FAIL line is copied into the ticket body as it is.
 Configuration (environment; the cron file sets what differs from the defaults):
   RHEO_DOCTOR_COMPOSE_PROJECT  compose project label of the app (required)
   RHEO_DOCTOR_SERVICE          compose service to run doctor in (default core)
-  RHEO_DOCTOR_ENV_FILE         file holding MOT_API_KEY=...      (default
+  RHEO_DOCTOR_TICKETS_URL      ticket service API base            (required)
+  RHEO_DOCTOR_ENV_FILE         file holding TICKETS_API_KEY=...   (default
                                /root/.config/rheostream-doctor.env, mode 0600)
-  RHEO_DOCTOR_MOT_URL          M.O.T. API base   (default https://rheo.ca/mot/api)
+  RHEO_DOCTOR_TICKET_FIELDS    JSON object of extra ticket fields (default {})
   RHEO_DOCTOR_LOG              syslog | stderr                   (default syslog)
 
 Exit codes: 0 all ok (tickets closed as needed); 1 at least one FAIL was paged;
-2 the run could not do its job (no M.O.T. key, M.O.T. unreachable, a ticket
+2 the run could not do its job (no key, the ticket service unreachable, a ticket
 write failed). An exit 2 is itself a problem the cron's mail or syslog should
-surface: a pager that cannot reach M.O.T. must not look healthy.
+surface: a pager that cannot reach its ticket service must not look healthy.
+
+**No recovery on a failed run.** When doctor itself could not run (no single core
+container, an exec failure, a non-zero exit with no FAIL line), the other checks
+were never evaluated, so no open ticket is closed on that run.
 
 Standard library only, so the host needs nothing beyond python3 and docker.
 """
@@ -49,6 +61,7 @@ from typing import Any
 TAG = "rheostream-doctor"
 SOURCE_PREFIX = "rheostream-doctor:"
 TICKET_TYPE = "infra-alert"
+DOCTOR_RUN_REF = SOURCE_PREFIX + "doctor-run"
 # ``LEVEL`` padded to four characters, one space, then ``name: detail``.
 LINE_RE = re.compile(r"^(ok|warn|FAIL)\s+(.+?): (.*)$")
 SLUG_RE = re.compile(r"[^a-z0-9()._-]+")
@@ -144,10 +157,11 @@ def run_doctor(project: str, service: str) -> list[Failure]:
     return failures
 
 
-class Mot:
-    def __init__(self, base: str, key: str) -> None:
+class Tickets:
+    def __init__(self, base: str, key: str, extra: dict[str, Any]) -> None:
         self.base = base.rstrip("/")
         self.key = key
+        self.extra = extra
 
     def _request(
         self, method: str, path: str, body: dict[str, Any] | None = None
@@ -169,11 +183,13 @@ class Mot:
         except urllib.error.HTTPError as exc:
             return exc.code, {}
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise Unavailable(f"M.O.T. {method} {path}: {type(exc).__name__}") from None
+            raise Unavailable(
+                f"tickets {method} {path}: {type(exc).__name__}"
+            ) from None
 
     def open_doctor_tickets(self) -> list[dict[str, Any]]:
         """Every open ticket this pager owns. Also the preflight: an unreachable
-        M.O.T. or a rejected key fails the run before doctor's result counts."""
+        service or a rejected key fails the run before doctor's result counts."""
         tickets: list[dict[str, Any]] = []
         page = 1
         while True:
@@ -181,7 +197,7 @@ class Mot:
                 "GET", f"/tickets?status=open&page={page}&per_page=100"
             )
             if status != 200:
-                raise Unavailable(f"M.O.T. open-ticket list answered {status}")
+                raise Unavailable(f"tickets open-ticket list answered {status}")
             batch = body.get("tickets", [])
             tickets.extend(
                 t
@@ -199,8 +215,8 @@ class Mot:
             "POST",
             "/tickets",
             {
+                **self.extra,
                 "title": f"rheo.stream doctor FAIL: {failure.check}"[:200],
-                "ministry": "works",
                 "ticket_type": TICKET_TYPE,
                 "severity": "critical",
                 "provenance": "status-poll",
@@ -209,7 +225,7 @@ class Mot:
             },
         )
         if status not in (200, 201):
-            raise Unavailable(f"M.O.T. ticket write answered {status}")
+            raise Unavailable(f"tickets write answered {status}")
         return status
 
     def close(self, ticket_id: object) -> None:
@@ -219,7 +235,7 @@ class Mot:
             {"status": "done"},
         )
         if status != 200:
-            raise Unavailable(f"M.O.T. ticket close answered {status}")
+            raise Unavailable(f"tickets close answered {status}")
 
 
 def read_key(path: str) -> str:
@@ -227,11 +243,11 @@ def read_key(path: str) -> str:
         with open(path, encoding="utf-8") as handle:
             for line in handle:
                 name, _, value = line.strip().partition("=")
-                if name == "MOT_API_KEY" and value:
+                if name == "TICKETS_API_KEY" and value:
                     return value.strip().strip('"').strip("'")
     except OSError as exc:
         raise Unavailable(f"cannot read {path}: {type(exc).__name__}") from None
-    raise Unavailable(f"no MOT_API_KEY in {path}")
+    raise Unavailable(f"no TICKETS_API_KEY in {path}")
 
 
 def main(argv: list[str]) -> int:
@@ -241,14 +257,25 @@ def main(argv: list[str]) -> int:
         log("error", "RHEO_DOCTOR_COMPOSE_PROJECT is not set")
         return 2
     service = os.environ.get("RHEO_DOCTOR_SERVICE", "core")
+    base = os.environ.get("RHEO_DOCTOR_TICKETS_URL", "")
+    if not base:
+        log("error", "RHEO_DOCTOR_TICKETS_URL is not set")
+        return 2
+    try:
+        extra = json.loads(os.environ.get("RHEO_DOCTOR_TICKET_FIELDS") or "{}")
+    except ValueError:
+        extra = None
+    if not isinstance(extra, dict):
+        log("error", "RHEO_DOCTOR_TICKET_FIELDS is not a JSON object")
+        return 2
     try:
         key = read_key(
             os.environ.get(
                 "RHEO_DOCTOR_ENV_FILE", "/root/.config/rheostream-doctor.env"
             )
         )
-        mot = Mot(os.environ.get("RHEO_DOCTOR_MOT_URL", "https://rheo.ca/mot/api"), key)
-        open_tickets = mot.open_doctor_tickets()
+        tickets = Tickets(base, key, extra)
+        open_tickets = tickets.open_doctor_tickets()
         failures = run_doctor(project, service)
         failing = {f.source_ref for f in failures}
         host = socket.gethostname()
@@ -256,17 +283,19 @@ def main(argv: list[str]) -> int:
             if dry_run:
                 print(f"would file {failure.source_ref}: {failure.line}")
                 continue
-            status = mot.file(failure, host)
+            status = tickets.file(failure, host)
             action = "created" if status == 201 else "updated"
             log("error", f"{failure.source_ref} FAIL, ticket {action}")
-        for ticket in open_tickets:
+        # Doctor did not run, so no other check was evaluated: close nothing.
+        evaluated = DOCTOR_RUN_REF not in failing
+        for ticket in open_tickets if evaluated else []:
             if ticket.get("source_ref") in failing:
                 continue
             ref, ticket_id = ticket.get("source_ref"), ticket.get("id")
             if dry_run:
                 print(f"would close {ref} (ticket {ticket_id})")
                 continue
-            mot.close(ticket_id)
+            tickets.close(ticket_id)
             log("info", f"{ref} recovered, ticket {ticket_id} closed")
     except Unavailable as exc:
         log("error", str(exc))

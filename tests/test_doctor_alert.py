@@ -1,10 +1,10 @@
-"""The scheduled doctor pager: FAIL lines become M.O.T. tickets, recoveries close them
+"""The scheduled doctor pager: FAIL lines become tickets, recoveries close them
 (issue #229).
 
 `deploy/doctor/rheostream-doctor-alert.py` runs as a subprocess against a stub
-`docker` on PATH and a local stand-in for the M.O.T. API. No real Docker, no real
-M.O.T.: the stub records every request, so each test checks exactly what would
-have been filed or closed.
+`docker` on PATH and a local stand-in for the ticket service. No real Docker and no
+real service: the stub records every request, so each test checks exactly what
+would have been filed or closed.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ FAIL_REPORT = (
 FAIL_REF = "rheostream-doctor:evidence-acceptance-0000-(example)"
 
 
-class MotStub:
+class TicketStub:
     def __init__(self) -> None:
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.open_tickets: list[dict[str, Any]] = []
@@ -97,13 +97,13 @@ class MotStub:
 
 
 @pytest.fixture
-def mot() -> Iterator[tuple[MotStub, str]]:
-    stub = MotStub()
+def svc() -> Iterator[tuple[TicketStub, str]]:
+    stub = TicketStub()
     server = HTTPServer(("127.0.0.1", 0), stub.handler())
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield stub, f"http://127.0.0.1:{server.server_port}/mot/api"
+        yield stub, f"http://127.0.0.1:{server.server_port}/api"
     finally:
         server.shutdown()
 
@@ -130,13 +130,14 @@ def run(
     tmp_path: Path, url: str, bindir: Path, *args: str
 ) -> subprocess.CompletedProcess[str]:
     env_file = tmp_path / "doctor.env"
-    env_file.write_text("MOT_API_KEY=test-key\n")
+    env_file.write_text("TICKETS_API_KEY=test-key\n")
     env = {
         **os.environ,
         "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
         "RHEO_DOCTOR_COMPOSE_PROJECT": PROJECT,
         "RHEO_DOCTOR_ENV_FILE": str(env_file),
-        "RHEO_DOCTOR_MOT_URL": url,
+        "RHEO_DOCTOR_TICKETS_URL": url,
+        "RHEO_DOCTOR_TICKET_FIELDS": '{"area": "infra"}',
         "RHEO_DOCTOR_LOG": "stderr",
     }
     return subprocess.run(
@@ -160,9 +161,9 @@ def open_ticket(
 
 
 def test_all_ok_files_nothing_and_exits_0(
-    tmp_path: Path, mot: tuple[MotStub, str]
+    tmp_path: Path, svc: tuple[TicketStub, str]
 ) -> None:
-    stub, url = mot
+    stub, url = svc
     bindir = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
     result = run(tmp_path, url, bindir)
     assert result.returncode == 0, result.stderr
@@ -171,18 +172,19 @@ def test_all_ok_files_nothing_and_exits_0(
 
 
 def test_a_fail_line_files_one_critical_ticket(
-    tmp_path: Path, mot: tuple[MotStub, str]
+    tmp_path: Path, svc: tuple[TicketStub, str]
 ) -> None:
-    stub, url = mot
+    stub, url = svc
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
     result = run(tmp_path, url, bindir)
     assert result.returncode == 1, result.stderr
     [(path, body)] = stub.calls("POST")
-    assert path == "/mot/api/tickets"
+    assert path == "/api/tickets"
     assert body["source_ref"] == FAIL_REF
     assert body["severity"] == "critical"
     assert body["ticket_type"] == "infra-alert"
-    assert body["ministry"] == "works"
+    # Service-specific fields ride through from RHEO_DOCTOR_TICKET_FIELDS.
+    assert body["area"] == "infra"
     assert body["provenance"] == "status-poll"
     assert "gap/acceptance_failed" in body["body"]
     # Only the FAIL line travels: the ok lines stay out of the ticket.
@@ -190,12 +192,12 @@ def test_a_fail_line_files_one_critical_ticket(
 
 
 def test_a_still_failing_check_keeps_its_ticket_open(
-    tmp_path: Path, mot: tuple[MotStub, str]
+    tmp_path: Path, svc: tuple[TicketStub, str]
 ) -> None:
-    stub, url = mot
+    stub, url = svc
     stub.open_tickets = [open_ticket(FAIL_REF, 7)]
     stub.write_status = (
-        200  # M.O.T. dedupes: same source_ref + type updates, no new page
+        200  # the service dedupes: same source_ref + type updates, no new page
     )
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
     result = run(tmp_path, url, bindir)
@@ -205,9 +207,9 @@ def test_a_still_failing_check_keeps_its_ticket_open(
 
 
 def test_a_recovered_check_closes_its_ticket(
-    tmp_path: Path, mot: tuple[MotStub, str]
+    tmp_path: Path, svc: tuple[TicketStub, str]
 ) -> None:
-    stub, url = mot
+    stub, url = svc
     stub.open_tickets = [
         open_ticket(FAIL_REF, 7),
         # Not this pager's: another source, and this prefix under another type.
@@ -217,14 +219,14 @@ def test_a_recovered_check_closes_its_ticket(
     bindir = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
     result = run(tmp_path, url, bindir)
     assert result.returncode == 0, result.stderr
-    assert stub.calls("PATCH") == [("/mot/api/tickets/7", {"status": "done"})]
+    assert stub.calls("PATCH") == [("/api/tickets/7", {"status": "done"})]
 
 
 def test_a_rejected_key_fails_before_doctor_runs(
-    tmp_path: Path, mot: tuple[MotStub, str]
+    tmp_path: Path, svc: tuple[TicketStub, str]
 ) -> None:
-    """The preflight: a pager that cannot reach M.O.T. must fail loudly, not pass."""
-    stub, url = mot
+    """The preflight: a pager that cannot reach its service must fail loudly."""
+    stub, url = svc
     stub.list_status = 401
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
     result = run(tmp_path, url, bindir)
@@ -234,17 +236,17 @@ def test_a_rejected_key_fails_before_doctor_runs(
     assert stub.calls("POST") == []
 
 
-def test_an_unreachable_mot_exits_2(tmp_path: Path) -> None:
+def test_an_unreachable_ticket_service_exits_2(tmp_path: Path) -> None:
     bindir = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
-    result = run(tmp_path, "http://127.0.0.1:9/mot/api", bindir)
+    result = run(tmp_path, "http://127.0.0.1:9/api", bindir)
     assert result.returncode == 2
-    assert "M.O.T." in result.stderr
+    assert "tickets" in result.stderr
 
 
 def test_a_failed_ticket_write_exits_2(
-    tmp_path: Path, mot: tuple[MotStub, str]
+    tmp_path: Path, svc: tuple[TicketStub, str]
 ) -> None:
-    stub, url = mot
+    stub, url = svc
     stub.write_status = 500
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
     result = run(tmp_path, url, bindir)
@@ -254,9 +256,9 @@ def test_a_failed_ticket_write_exits_2(
 
 @pytest.mark.parametrize("containers", ["", "core-1 core-2"])
 def test_no_single_core_container_is_a_fail(
-    tmp_path: Path, mot: tuple[MotStub, str], containers: str
+    tmp_path: Path, svc: tuple[TicketStub, str], containers: str
 ) -> None:
-    stub, url = mot
+    stub, url = svc
     bindir = fake_docker(tmp_path, containers=containers, report=OK_REPORT, code=0)
     result = run(tmp_path, url, bindir)
     assert result.returncode == 1, result.stderr
@@ -265,9 +267,9 @@ def test_no_single_core_container_is_a_fail(
 
 
 def test_doctor_exiting_nonzero_without_a_fail_line_is_a_fail(
-    tmp_path: Path, mot: tuple[MotStub, str]
+    tmp_path: Path, svc: tuple[TicketStub, str]
 ) -> None:
-    stub, url = mot
+    stub, url = svc
     bindir = fake_docker(tmp_path, containers="core-1", report="Traceback\n", code=3)
     result = run(tmp_path, url, bindir)
     assert result.returncode == 1, result.stderr
@@ -276,8 +278,8 @@ def test_doctor_exiting_nonzero_without_a_fail_line_is_a_fail(
     assert "exit 3" in body["body"]
 
 
-def test_dry_run_writes_nothing(tmp_path: Path, mot: tuple[MotStub, str]) -> None:
-    stub, url = mot
+def test_dry_run_writes_nothing(tmp_path: Path, svc: tuple[TicketStub, str]) -> None:
+    stub, url = svc
     stub.open_tickets = [open_ticket("rheostream-doctor:cluster", 4)]
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
     result = run(tmp_path, url, bindir, "--dry-run")
@@ -285,4 +287,19 @@ def test_dry_run_writes_nothing(tmp_path: Path, mot: tuple[MotStub, str]) -> Non
     assert f"would file {FAIL_REF}" in result.stdout
     assert "would close rheostream-doctor:cluster" in result.stdout
     assert stub.calls("POST") == []
+    assert stub.calls("PATCH") == []
+
+
+def test_no_ticket_closes_when_doctor_could_not_run(
+    tmp_path: Path, svc: tuple[TicketStub, str]
+) -> None:
+    """A down or restarting container evaluates no check, so a real FAIL's ticket must
+    stay open rather than read as recovered and page again next run."""
+    stub, url = svc
+    stub.open_tickets = [open_ticket(FAIL_REF, 7)]
+    bindir = fake_docker(tmp_path, containers="", report=OK_REPORT, code=0)
+    result = run(tmp_path, url, bindir)
+    assert result.returncode == 1, result.stderr
+    [(_, body)] = stub.calls("POST")
+    assert body["source_ref"] == "rheostream-doctor:doctor-run"
     assert stub.calls("PATCH") == []
