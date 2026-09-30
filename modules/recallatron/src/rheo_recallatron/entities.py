@@ -179,6 +179,35 @@ def visible_entity(
     return VisibleEntity(row, count)
 
 
+def visible_entity_container(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    entity_id: UUID,
+    *,
+    request: MemoryRequest,
+) -> VisibleEntity | Denied:
+    """An entity container's visibility in a **targeted** read, decided on a reference
+    budget of its own (#182).
+
+    The same question :func:`visible_entity` answers, with the request's frozen clock
+    and retention, and a fresh allowance in place of the shared one. The caller
+    chooses the target, and the target's own link graph is charged first. On the
+    shared budget a caller could spend it to a chosen edge and then watch the entity
+    check: an entity whose only mentions are hidden walks those mentions and
+    overflows (``reference_scan_limit``), while an entity that does not exist is
+    ``not_found`` without charging anything. On its own budget the answer depends on
+    the entity alone, and is exactly what ``entity.get`` of the same reference says,
+    since that operation opens a fresh request too. The cost is bounded by one more
+    allowance of § A13's size, as ``eligible_link_container``'s is (#112).
+
+    The targetless read does not come here. It decides visibility on the shared
+    budget before any other charge, where a fresh allowance would change nothing, and
+    its accepted residuals are documented in ``docs/architecture/memory.md``.
+    """
+    own = MemoryRequest(ctx, now=request.now, retention=request.retention)
+    return visible_entity(ctx, uow, entity_id, request=own)
+
+
 def _item(visible: VisibleEntity) -> EntityItem:
     return EntityItem(
         ref=entity_reference(visible.row.id),

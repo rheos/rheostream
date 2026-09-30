@@ -445,7 +445,9 @@ MAX_DISTINCT_REFERENCES: Final = 4096
 MAX_REFERENCE_DEPTH: Final = 64
 """One request-wide budget, shared by the target, every candidate, and every link
 either of them reaches. Exceeding it refuses ``reference_scan_limit`` with no partial
-content and no window metadata."""
+content and no window metadata. A targeted read's entity check and link-container check
+each get an allowance of their own of the same size (#182, #112); a targetless entity
+read decides visibility on the shared budget."""
 
 # --- Architecture § A13: the write-side bounds ---------------------------------------
 
