@@ -153,5 +153,25 @@
     "path": "modules/recallatron/web/fixtures/recall-populated.json",
     "origin": "synthetic",
     "how": "hand-authored populated recall response from the invented \"sample garden\" scenario"
+  },
+  {
+    "path": "tests/fixtures/existing_bearer/box_bot_mcp.json",
+    "origin": "synthetic",
+    "how": "captured from the unchanged tree with fictional values: an agent_default mcp token listing tools and calling workspace_status, ids, timestamps and lengths normalized"
+  },
+  {
+    "path": "tests/fixtures/existing_bearer/bridge_cli_ingest.json",
+    "origin": "synthetic",
+    "how": "captured from the unchanged tree with fictional values: a bridge cli token ingesting one invented record on the api surface, ids, timestamps and lengths normalized"
+  },
+  {
+    "path": "tests/fixtures/existing_bearer/claude_code_mcp.json",
+    "origin": "synthetic",
+    "how": "captured from the unchanged tree with fictional values: a CLI-issued agent_default mcp token listing tools and recalling over an empty memory store, ids, timestamps and lengths normalized"
+  },
+  {
+    "path": "tests/fixtures/existing_bearer/unconfigured_401.json",
+    "origin": "synthetic",
+    "how": "captured from the unchanged tree: an unauthenticated tools/list POST answered 401 with a bare Bearer challenge, content length normalized"
   }
 ]
