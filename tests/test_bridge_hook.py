@@ -157,6 +157,7 @@ def test_the_hook_reads_the_keys_config_save_writes(bridge_home: Path) -> None:
         "max_pending_hours",
         "settle_seconds",
         "install_salt",
+        "scope",
     }
     loaded = bridge_config.load(bridge_home)
     assert loaded is not None

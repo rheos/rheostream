@@ -61,18 +61,20 @@ not apply: the run token lives for one run and is deleted when it ends.
 
 ## Row: `claude_code_local` via Claude Code CLI
 
-**Client:** Claude Code CLI sessions started in the enrolled directory; transcript
-`entrypoint = "cli"`.
+**Client:** Claude Code CLI sessions started in the enrolled directory, or anywhere on the
+machine for a machine-scope bridge; transcript `entrypoint = "cli"`.
 
 **State:** operative, pending CP-A/CP-B for real use.
 
 **Enrollment requirement:** an active `core.evidence_enrollment` row for this machine and
 directory fingerprint pair, a bridge token (`cli` kind, snapshot exactly
 `core.evidence.ingest`) bound to it and stored by `rheo-bridge set-token`, and the hook
-installed in the enrolled directory's `.claude/settings.local.json`.
+installed in the enrolled directory's `.claude/settings.local.json` (machine scope: the
+enrollment carries the machine-scope fingerprint and the hook is in `~/.claude/settings.json`).
 
 **Fails closed:** with no hook installed nothing is spooled or sent; a transcript path outside
-the enrolled directory's slug is refused and never read; a token no active enrollment holds,
+the enrolled directory's slug (machine scope: outside every project directory) is refused
+and never read; a token no active enrollment holds,
 a revoked enrollment, a wrong machine or project fingerprint, or a moved account or purpose
 is refused before any row is written; the bridge token is refused every other operation;
 after a rotate the old token is refused; with recording off every key is deferred and
@@ -87,8 +89,9 @@ default) by the time it can be sent. Both are content-free rows.
   locator and nothing to gap-report.
 - R10: token rotation is an operator step. A lapsed token stops the worker (exit 2) with its
   state intact until `rheo evidence rotate` is piped into `rheo-bridge set-token`.
-- One enrolled directory per bridge home.
-- The slug is lossy: every character outside `[A-Za-z0-9]` maps to `-`, so `/work/a-b`,
+- One enrolled directory per directory-scope bridge home. A machine-scope bridge home
+  captures every session on the machine, headless CLI runs included.
+- The slug is lossy (directory scope only): every character outside `[A-Za-z0-9]` maps to `-`, so `/work/a-b`,
   `/work/a_b` and `/work/a/b` share one slug. The worker reads only paths the enrolled
   directory's own hook wrote to the spool and never crawls the projects root, so a session
   from a colliding directory is read only if that directory also runs the enrolled hook.
@@ -125,13 +128,22 @@ default) by the time it can be sent. Both are content-free rows.
 **Slug limit:**
 - `pytest:tests/test_bridge_transcript.py::test_distinct_directories_can_share_a_slug`
 
+**Machine scope:**
+- `pytest:tests/test_bridge_transcript.py::test_machine_scope_admits_a_file_in_any_project`
+- `pytest:tests/test_bridge_transcript.py::test_machine_scope_refuses_a_file_outside_the_projects_root`
+- `pytest:tests/test_bridge_transcript.py::test_machine_scope_refuses_a_symlinked_project_directory`
+- `pytest:tests/test_bridge_install.py::test_machine_drain_reads_any_project_and_sends_the_scope_fingerprint`
+- `pytest:tests/test_bridge_install.py::test_machine_install_edits_the_user_settings_and_remove_restores_it`
+- `pytest:tests/test_bridge_install.py::test_set_scope_keeps_the_machine_key_and_state_and_drops_the_token`
+
 **Entrypoint:**
 - `pytest:tests/test_bridge_transcript.py::test_entrypoint`
 - `pytest:tests/test_bridge_worker.py::test_accepted_counts_are_kept_per_entrypoint_and_never_sent`
 
 ## Row: `claude_code_local` via Desktop Code
 
-**Client:** Desktop Code sessions opened on the enrolled directory; transcript
+**Client:** Desktop Code sessions opened on the enrolled directory, or on any directory for
+a machine-scope bridge; transcript
 `entrypoint = "claude-desktop"`.
 
 **State:** operative, pending CP-A/CP-B for real use. A Desktop Code session fires the same
@@ -150,7 +162,8 @@ unchanged.
 Desktop Code and `prompt_input_exit` under the CLI.
 
 **Not guaranteed:** the same four items as the CLI row: R4 (no hook-finality guarantee), R10
-(token rotation is an operator step), one enrolled directory per bridge home, and the lossy
+(token rotation is an operator step), one enrolled directory per directory-scope bridge home,
+and the lossy
 slug.
 
 **Refusal:**

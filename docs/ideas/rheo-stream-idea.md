@@ -1869,6 +1869,16 @@ The following changes are recorded here.
     in private storage and out of public repositories, messages and logs. This
     decision is not a transfer pass or permission to perform live actions. See
     [migration verification](../architecture/deletion-export-migration.md#migration-verification-fr-53).
+17. **The local bridge can capture the whole machine.** Directed by the maintainer on
+    2026-09-30, recorded against issue #283. Entry 9's bridge enrolled one machine and
+    one project directory, so a laptop with many projects captured one of them. A
+    bridge now has a scope. Directory scope is unchanged and stays the default. Machine
+    scope installs the hooks in the user's Claude Code settings, captures every
+    session on the machine, client work included, and enrolls the machine with a fixed
+    scope fingerprint in place of a directory's. The server is unchanged: it compares
+    the fingerprint and never learns a path either way. Everything else in entry 9
+    still binds: the same sanitation, extraction, receipts and recording gate apply to
+    every session. Headless CLI runs on the machine are captured too.
 
 ### Preferred but still to validate
 

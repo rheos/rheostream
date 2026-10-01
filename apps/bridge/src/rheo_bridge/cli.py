@@ -1,10 +1,16 @@
 """``rheo-bridge``: set up, install, inspect and remove the laptop bridge (FR 11).
 
 Each subcommand is a named function that takes ``bridge_home`` (and, where it
-needs them, ``enrolled_dir`` and ``projects_root``) as explicit paths. None of
-them reads ``$HOME``, ``Path.home()``, ``~`` or the working directory; only
-:func:`main` resolves the user's home and derives the two defaults from it, so
-the functions run against temporary directories in tests.
+needs them, ``enrolled_dir``, ``claude_home`` and ``projects_root``) as explicit
+paths. None of them reads ``$HOME``, ``Path.home()``, ``~`` or the working
+directory; only :func:`main` resolves the user's home and derives the defaults
+from it, so the functions run against temporary directories in tests.
+
+A bridge has one of two scopes. A directory-scope bridge captures the sessions
+started in its enrolled directory, and its hooks live in that directory's
+``.claude/settings.local.json``. A machine-scope bridge captures every Claude
+Code session on the machine, and its hooks live in the user settings file,
+``<claude_home>/settings.json``.
 
 Output is content-free by design. No subcommand prints a token value, a session
 hash, a native key, a transcript path or any transcript text. ``install-hook``
@@ -180,22 +186,87 @@ def _default_worker_argv(executable: str) -> list[str]:
     return [str(Path(executable).parent / "rheo-bridge"), "drain"]
 
 
+USER_SETTINGS_NAME: Final = "settings.json"
+
+
+def _user_settings(claude_home: Path | None) -> Path:
+    if claude_home is None:
+        raise CliError("a machine-scope bridge needs the Claude Code home directory")
+    return claude_home / USER_SETTINGS_NAME
+
+
+def _settings_for(
+    config: bridge_config.Config | None,
+    enrolled_dir: Path | None,
+    claude_home: Path | None,
+    *,
+    mismatch: str,
+) -> Path:
+    """The settings file this bridge's hooks belong in.
+
+    Directory scope needs ``enrolled_dir``, and it must be the enrolled one;
+    machine scope refuses one, since its hooks are in the user settings file.
+    ``mismatch`` ends the refusal for a directory other than the enrolled one.
+    With no usable config (``uninstall`` on a corrupt one) the arguments are
+    trusted: ``enrolled_dir`` if given, else the user settings file.
+    """
+    if config is None:
+        if enrolled_dir is not None:
+            return settings_file.settings_path(Path(os.path.realpath(enrolled_dir)))
+        return _user_settings(claude_home)
+    if config.scope == bridge_config.SCOPE_MACHINE:
+        if enrolled_dir is not None:
+            raise CliError(
+                "this bridge captures the whole machine; its hooks are in the user "
+                "settings file, so omit --enrolled-dir"
+            )
+        return _user_settings(claude_home)
+    assert config.enrolled_dir is not None
+    if enrolled_dir is None:
+        raise CliError(
+            f"--enrolled-dir is required; this bridge captures {config.enrolled_dir}"
+        )
+    if os.path.realpath(enrolled_dir) != config.enrolled_dir:
+        raise CliError(
+            f"--enrolled-dir {enrolled_dir} is not the enrolled directory "
+            f"{config.enrolled_dir}; {mismatch}"
+        )
+    return settings_file.settings_path(Path(config.enrolled_dir))
+
+
+def _print_enrollment(machine_key: bytes, enrolled_dir: str | None) -> None:
+    machine_fp = keys.machine_fingerprint(machine_key)
+    project_fp = keys.enrollment_project_fingerprint(enrolled_dir)
+    if enrolled_dir is None:
+        print(f"scope: {bridge_config.SCOPE_MACHINE}")
+    else:
+        print(f"enrolled_dir: {enrolled_dir}")
+    print(f"machine_fingerprint: {machine_fp}")
+    print(f"project_fingerprint: {project_fp}")
+    print(
+        "operator command (run on the flagship; pipe its one output line "
+        "into `rheo-bridge set-token`):"
+    )
+    print(f"  {_enroll_command(machine_fp, project_fp)}")
+
+
 # --- init ---------------------------------------------------------------------
 
 
 def init(
     bridge_home: Path,
     *,
-    enrolled_dir: Path,
+    enrolled_dir: Path | None,
     api_url: str,
     executable: str | None = None,
 ) -> int:
     """Create ``bridge_home``, the machine key, the install salt and the config.
 
-    No network call and no settings write. Refuses when the bridge already has
-    a machine key: a second ``init`` would re-key everything the server holds.
+    ``enrolled_dir`` ``None`` sets up a machine-scope bridge. No network call
+    and no settings write. Refuses when the bridge already has a machine key:
+    a second ``init`` would re-key everything the server holds.
     """
-    if not enrolled_dir.is_dir():
+    if enrolled_dir is not None and not enrolled_dir.is_dir():
         raise CliError(f"--enrolled-dir {enrolled_dir} is not a directory")
     try:
         check_base_url(api_url)
@@ -206,7 +277,7 @@ def init(
             f"{bridge_home} is already set up; run `rheo-bridge uninstall --purge` "
             "first to start over"
         )
-    enrolled = os.path.realpath(enrolled_dir)
+    enrolled = None if enrolled_dir is None else os.path.realpath(enrolled_dir)
     paths.ensure_bridge_home(bridge_home)
     machine_key = keys.load_or_create_machine_key(bridge_home)
     config = bridge_config.Config(
@@ -214,18 +285,84 @@ def init(
         enrolled_dir=enrolled,
         worker_argv=_default_worker_argv(executable or sys.executable),
         install_salt=secrets.token_hex(16),
+        scope=(
+            bridge_config.SCOPE_MACHINE
+            if enrolled is None
+            else bridge_config.SCOPE_DIRECTORY
+        ),
     )
     bridge_config.save(bridge_home, config)
-    machine_fp = keys.machine_fingerprint(machine_key)
-    project_fp = keys.project_fingerprint(enrolled)
-    print(f"enrolled_dir: {enrolled}")
-    print(f"machine_fingerprint: {machine_fp}")
-    print(f"project_fingerprint: {project_fp}")
-    print(
-        "operator command (run on the flagship; pipe its one output line "
-        "into `rheo-bridge set-token`):"
+    _print_enrollment(machine_key, enrolled)
+    return EXIT_OK
+
+
+# --- set-scope ----------------------------------------------------------------
+
+
+def set_scope(
+    bridge_home: Path,
+    *,
+    scope: str,
+    executable: str | None = None,
+) -> int:
+    """Turn a directory-scope bridge into a machine-scope one, in place.
+
+    The machine key, the state and the cursors stay, so every line the server
+    already holds keeps its native key and is answered as held. The enrollment
+    does not carry over: the request's project fingerprint changes, so the old
+    token is deleted and the new enrollment's command is printed, along with
+    the old enrollment's revoke command for once its pending rows have
+    settled. The worker entry point is re-pointed at the checkout running
+    this command, as ``init`` does.
+
+    Refuses while the directory hook is still installed (``remove-hook``
+    first), so no session is spooled by two hooks at once.
+    """
+    if scope != bridge_config.SCOPE_MACHINE:
+        raise CliError("set-scope only converts a bridge to machine scope")
+    config = _load_config(bridge_home)
+    if config.scope == bridge_config.SCOPE_MACHINE:
+        print("scope: machine; no change")
+        return EXIT_OK
+    assert config.enrolled_dir is not None
+    path = settings_file.settings_path(Path(config.enrolled_dir))
+    try:
+        document, _ = settings_file.read(path)
+    except settings_file.SettingsError as exc:
+        raise CliError(str(exc)) from exc
+    if any(
+        settings_file.names_bridge_hook(command)
+        for command in settings_file.bridge_commands(document)
+    ):
+        raise CliError(
+            f"the hook is still installed in {config.enrolled_dir}; run "
+            "`rheo-bridge remove-hook --enrolled-dir` for it first"
+        )
+    try:
+        machine_key = keys.load_or_create_machine_key(bridge_home)
+    except (keys.MachineKeyError, OSError) as exc:
+        raise CliError(f"the machine key cannot be used: {exc}") from exc
+    old_enrollment = config.enrollment_id
+    paths.token_path(bridge_home).unlink(missing_ok=True)
+    bridge_config.save(
+        bridge_home,
+        replace(
+            config,
+            scope=bridge_config.SCOPE_MACHINE,
+            enrolled_dir=None,
+            enrollment_id=None,
+            token_expires_at=None,
+            hook_created_settings=False,
+            hook_created_containers=[],
+            worker_argv=_default_worker_argv(executable or sys.executable),
+        ),
     )
-    print(f"  {_enroll_command(machine_fp, project_fp)}")
+    _print_enrollment(machine_key, None)
+    if old_enrollment is not None:
+        print(
+            "old enrollment (revoke it once its pending rows have settled): "
+            f"{_revoke_command(old_enrollment)}"
+        )
     return EXIT_OK
 
 
@@ -306,17 +443,13 @@ def set_token(bridge_home: Path, *, stdin: TextIO) -> int:
 # --- install-hook / remove-hook -----------------------------------------------
 
 
-def _check_enrolled(config: bridge_config.Config, enrolled_dir: Path) -> Path:
-    if os.path.realpath(enrolled_dir) != config.enrolled_dir:
-        raise CliError(
-            f"--enrolled-dir {enrolled_dir} is not the enrolled directory "
-            f"{config.enrolled_dir}; the worker would refuse its sessions"
-        )
-    return Path(config.enrolled_dir)
-
-
-def git_refusal(enrolled_dir: Path) -> str | None:
+def git_refusal(
+    enrolled_dir: Path, relative: Path = settings_file.SETTINGS_RELATIVE
+) -> str | None:
     """Why the settings file could be committed, or ``None`` if it cannot.
+
+    ``relative`` is the settings file's path under ``enrolled_dir``: the
+    project file by default, ``settings.json`` for the user settings file.
 
     Outside a Git working tree (or with no ``git`` installed) there is nothing
     to commit it to. Inside one, ``git check-ignore`` must report the file
@@ -342,12 +475,12 @@ def git_refusal(enrolled_dir: Path) -> str | None:
         return "git could not tell whether the directory is in a working tree"
     if inside.stdout.strip() != "true":
         return None
-    ignored = run("check-ignore", "-q", "--", str(settings_file.SETTINGS_RELATIVE))
+    ignored = run("check-ignore", "-q", "--", str(relative))
     if ignored.returncode == 0:
         return None
     if ignored.returncode == 1:
         return (
-            f"{settings_file.SETTINGS_RELATIVE} is not ignored by Git here, so the "
+            f"{relative} is not ignored by Git here, so the "
             "hook entry could be committed; add it to .gitignore first"
         )
     return "git check-ignore failed"
@@ -364,21 +497,31 @@ def _hook_commands(bridge_home: Path, interpreter: str) -> dict[str, str]:
 def install_hook(
     bridge_home: Path,
     *,
-    enrolled_dir: Path,
+    enrolled_dir: Path | None,
+    claude_home: Path | None = None,
     dry_run: bool = False,
     interpreter: str | None = None,
 ) -> int:
-    """Add the ``Stop`` and ``SessionEnd`` hooks to the enrolled directory.
+    """Add the ``Stop`` and ``SessionEnd`` hooks to the bridge's settings file.
 
-    Every check runs before any write. ``dry_run`` prints the unified diff of
-    the settings file and writes nothing at all.
+    That is the enrolled directory's project file, or the user settings file
+    under ``claude_home`` in machine scope. Every check runs before any write.
+    ``dry_run`` prints the unified diff of the settings file and writes
+    nothing at all.
     """
     config = _load_config(bridge_home)
-    target_dir = _check_enrolled(config, enrolled_dir)
-    refusal = git_refusal(target_dir)
+    path = _settings_for(
+        config,
+        enrolled_dir,
+        claude_home,
+        mismatch="the worker would refuse its sessions",
+    )
+    if config.scope == bridge_config.SCOPE_MACHINE:
+        refusal = git_refusal(path.parent, Path(path.name))
+    else:
+        refusal = git_refusal(path.parent.parent)
     if refusal is not None:
         raise CliError(refusal)
-    path = settings_file.settings_path(target_dir)
     try:
         document, before = settings_file.read(path)
         # [capture 10] — may be revised at reconciliation: an absolute,
@@ -403,7 +546,10 @@ def install_hook(
         print(f"{path.absolute()}: the hooks are already installed; no change")
         return EXIT_OK
     path.parent.mkdir(exist_ok=True)
-    settings_file.write_atomic(path, after)
+    try:
+        settings_file.write_atomic(path, after, expected_before=before)
+    except settings_file.SettingsError as exc:
+        raise CliError(str(exc)) from exc
     # Record what this install made, so remove-hook can put the file back.
     bridge_config.save(
         bridge_home,
@@ -419,18 +565,14 @@ def install_hook(
     return EXIT_OK
 
 
-def _refuse_other_dir(config: bridge_config.Config, enrolled_dir: Path) -> None:
-    if os.path.realpath(enrolled_dir) != config.enrolled_dir:
-        raise CliError(
-            f"--enrolled-dir {enrolled_dir} is not the enrolled directory "
-            f"recorded in config ({config.enrolled_dir}); nothing removed"
-        )
-
-
 def remove_hook(
-    bridge_home: Path, *, enrolled_dir: Path, tolerate_bad_config: bool = False
+    bridge_home: Path,
+    *,
+    enrolled_dir: Path | None,
+    claude_home: Path | None = None,
+    tolerate_bad_config: bool = False,
 ) -> int:
-    """Remove only this bridge's hook entries from ``enrolled_dir``'s settings.
+    """Remove only this bridge's hook entries from its settings file.
 
     An emptied ``hooks`` table or event list is dropped only if install
     created it, and the file is deleted only when install created it and it
@@ -448,12 +590,9 @@ def remove_hook(
         if not tolerate_bad_config:
             raise CliError(str(exc)) from exc
         config = None
-    target_dir = Path(os.path.realpath(enrolled_dir))
     record = config
-    if record is not None:
-        _refuse_other_dir(record, enrolled_dir)
+    path = _settings_for(record, enrolled_dir, claude_home, mismatch="nothing removed")
     created = record is not None and record.hook_created_settings
-    path = settings_file.settings_path(target_dir)
     try:
         document, before = settings_file.read(path)
         pruned = settings_file.remove(
@@ -501,7 +640,8 @@ def remove_hook(
 def uninstall(
     bridge_home: Path,
     *,
-    enrolled_dir: Path,
+    enrolled_dir: Path | None,
+    claude_home: Path | None = None,
     purge: bool = False,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> int:
@@ -522,15 +662,25 @@ def uninstall(
         # A corrupt config must not keep the credentials on disk.
         config = None
     if config is not None:
-        _refuse_other_dir(config, enrolled_dir)
+        _settings_for(config, enrolled_dir, claude_home, mismatch="nothing removed")
     enrollment_id = config.enrollment_id if config is not None else None
     if not purge:
-        remove_hook(bridge_home, enrolled_dir=enrolled_dir, tolerate_bad_config=True)
+        remove_hook(
+            bridge_home,
+            enrolled_dir=enrolled_dir,
+            claude_home=claude_home,
+            tolerate_bad_config=True,
+        )
         _delete_credentials(bridge_home)
         print(f"operator revoke command: {_revoke_command(enrollment_id)}")
         return EXIT_OK
     if not bridge_home.is_dir():
-        remove_hook(bridge_home, enrolled_dir=enrolled_dir, tolerate_bad_config=True)
+        remove_hook(
+            bridge_home,
+            enrolled_dir=enrolled_dir,
+            claude_home=claude_home,
+            tolerate_bad_config=True,
+        )
         print("discarded_unacknowledged: 0")
         print(f"operator revoke command: {_revoke_command(enrollment_id)}")
         return EXIT_OK
@@ -539,7 +689,12 @@ def uninstall(
             raise CliError("a bridge worker is running; retry once it exits")
         count = _unacknowledged_count(bridge_home, now=now())
         print(f"discarded_unacknowledged: {count}")
-        remove_hook(bridge_home, enrolled_dir=enrolled_dir, tolerate_bad_config=True)
+        remove_hook(
+            bridge_home,
+            enrolled_dir=enrolled_dir,
+            claude_home=claude_home,
+            tolerate_bad_config=True,
+        )
         _delete_credentials(bridge_home)
         shutil.rmtree(bridge_home)
     print(f"operator revoke command: {_revoke_command(enrollment_id)}")
@@ -572,7 +727,7 @@ def _days_remaining(expires_at: str | None, now: datetime) -> str:
     return str(math.floor((expires - now).total_seconds() / 86400))
 
 
-def status(bridge_home: Path, *, now: datetime) -> int:
+def status(bridge_home: Path, *, now: datetime, claude_home: Path | None = None) -> int:
     """Print counts, plus the enrollment id and token expiry; never a session
     hash, a key, a path or any transcript text.
 
@@ -602,6 +757,7 @@ def status(bridge_home: Path, *, now: datetime) -> int:
         if reason.startswith(state.ACCEPTED_PREFIX) and entry.last_at is not None
     ]
     # The id is not a secret (it names the enrollment to rotate or revoke).
+    print(f"scope: {config.scope}")
     print(f"enrollment_id: {config.enrollment_id or 'none'}")
     print(f"token_expires_at: {config.token_expires_at or 'none'}")
     print(f"sessions_pending: {pending}")
@@ -620,7 +776,8 @@ def status(bridge_home: Path, *, now: datetime) -> int:
         print(f"status: the worker will not run: {problem}", file=sys.stderr)
     # The installed guard exits 0 silently when it cannot run the hook, so a
     # pruned interpreter or a lost script would otherwise stop capture unseen.
-    print(f"hook_runnable: {'yes' if _hook_runnable(config) else 'no'}")
+    runnable = _hook_runnable(config, claude_home)
+    print(f"hook_runnable: {'yes' if runnable else 'no'}")
     return EXIT_OK
 
 
@@ -641,14 +798,20 @@ def _command_paths(command: str) -> tuple[str, str] | None:
     return None
 
 
-def _hook_runnable(config: bridge_config.Config) -> bool:
+def _hook_runnable(config: bridge_config.Config, claude_home: Path | None) -> bool:
     """Whether every installed bridge command would actually run the hook.
 
-    ``False`` when no bridge hook is installed in the enrolled directory, or
-    when any installed command's interpreter is not an executable file or its
-    script is not a readable file.
+    ``False`` when no bridge hook is installed in the bridge's settings file,
+    or when any installed command's interpreter is not an executable file or
+    its script is not a readable file.
     """
-    path = settings_file.settings_path(Path(config.enrolled_dir))
+    if config.scope == bridge_config.SCOPE_MACHINE:
+        if claude_home is None:
+            return False
+        path = _user_settings(claude_home)
+    else:
+        assert config.enrolled_dir is not None
+        path = settings_file.settings_path(Path(config.enrolled_dir))
     try:
         document, _ = settings_file.read(path)
     except settings_file.SettingsError:
@@ -742,24 +905,34 @@ def _parser() -> argparse.ArgumentParser:
     commands.required = True
 
     init_parser = commands.add_parser("init", help="set up this machine's bridge")
-    init_parser.add_argument("--enrolled-dir", required=True, type=Path)
+    init_parser.add_argument(
+        "--scope",
+        choices=bridge_config.SCOPES,
+        default=bridge_config.SCOPE_DIRECTORY,
+    )
+    init_parser.add_argument("--enrolled-dir", type=Path)
     init_parser.add_argument("--api-url", required=True)
+
+    scope_parser = commands.add_parser(
+        "set-scope", help="convert this bridge to machine scope"
+    )
+    scope_parser.add_argument("scope", choices=[bridge_config.SCOPE_MACHINE])
 
     commands.add_parser(
         "set-token", help="store the token piped from `rheo evidence enroll --json`"
     )
 
     install = commands.add_parser("install-hook", help="add the Claude Code hooks")
-    install.add_argument("--enrolled-dir", required=True, type=Path)
+    install.add_argument("--enrolled-dir", type=Path)
     install.add_argument("--dry-run", action="store_true")
 
     remove = commands.add_parser("remove-hook", help="remove the Claude Code hooks")
-    remove.add_argument("--enrolled-dir", required=True, type=Path)
+    remove.add_argument("--enrolled-dir", type=Path)
 
     uninstall_parser = commands.add_parser(
         "uninstall", help="remove the hooks, the token and the machine key"
     )
-    uninstall_parser.add_argument("--enrolled-dir", required=True, type=Path)
+    uninstall_parser.add_argument("--enrolled-dir", type=Path)
     uninstall_parser.add_argument("--purge", action="store_true")
 
     commands.add_parser("status", help="counts only")
@@ -768,30 +941,49 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.command == "init":
+        # Refused before main() resolves any home.
+        machine = args.scope == bridge_config.SCOPE_MACHINE
+        if machine and args.enrolled_dir is not None:
+            parser.error("init --scope machine takes no --enrolled-dir")
+        if not machine and args.enrolled_dir is None:
+            parser.error("init --scope directory requires --enrolled-dir")
     user_home = Path.home()
     bridge_home = user_home / ".rheo-bridge"
-    projects_root = user_home / ".claude" / "projects"
+    claude_home = user_home / ".claude"
+    projects_root = claude_home / "projects"
     try:
         match args.command:
             case "init":
                 return init(
                     bridge_home, enrolled_dir=args.enrolled_dir, api_url=args.api_url
                 )
+            case "set-scope":
+                return set_scope(bridge_home, scope=args.scope)
             case "set-token":
                 return set_token(bridge_home, stdin=sys.stdin)
             case "install-hook":
                 return install_hook(
-                    bridge_home, enrolled_dir=args.enrolled_dir, dry_run=args.dry_run
+                    bridge_home,
+                    enrolled_dir=args.enrolled_dir,
+                    claude_home=claude_home,
+                    dry_run=args.dry_run,
                 )
             case "remove-hook":
-                return remove_hook(bridge_home, enrolled_dir=args.enrolled_dir)
+                return remove_hook(
+                    bridge_home, enrolled_dir=args.enrolled_dir, claude_home=claude_home
+                )
             case "uninstall":
                 return uninstall(
-                    bridge_home, enrolled_dir=args.enrolled_dir, purge=args.purge
+                    bridge_home,
+                    enrolled_dir=args.enrolled_dir,
+                    claude_home=claude_home,
+                    purge=args.purge,
                 )
             case "status":
-                return status(bridge_home, now=_utc_now())
+                return status(bridge_home, now=_utc_now(), claude_home=claude_home)
             case "drain":
                 return drain(bridge_home, projects_root=projects_root)
             case _:

@@ -89,6 +89,19 @@ def project_fingerprint(enrolled_dir_realpath: str) -> str:
     ).hexdigest()
 
 
+# A machine-scope enrollment names no directory. The prefix differs from
+# ``rheo-project:`` so no directory's fingerprint can equal it.
+MACHINE_SCOPE_FINGERPRINT = hashlib.sha256(b"rheo-scope:machine").hexdigest()
+
+
+def enrollment_project_fingerprint(enrolled_dir_realpath: str | None) -> str:
+    """What a request's ``project_fingerprint`` carries: the enrolled
+    directory's fingerprint, or the machine-scope one when there is none."""
+    if enrolled_dir_realpath is None:
+        return MACHINE_SCOPE_FINGERPRINT
+    return project_fingerprint(enrolled_dir_realpath)
+
+
 def hmac_key_for(machine_key: bytes, *parts: str) -> str:
     """``HMAC-SHA256(machine_key, ":".join(parts))`` as 64 hex characters.
 

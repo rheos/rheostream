@@ -167,7 +167,7 @@ def _post_and_settle(
         try:
             response = context.client.post(
                 keys.machine_fingerprint(context.machine_key),
-                keys.project_fingerprint(context.config.enrolled_dir),
+                keys.enrollment_project_fingerprint(context.config.enrolled_dir),
                 [item for item in items if isinstance(item, IngestRecord)],
                 [item for item in items if isinstance(item, IngestGap)],
             )

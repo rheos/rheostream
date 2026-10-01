@@ -474,8 +474,8 @@ acceptance criteria.
 Release-one memory also creates conservative memories automatically from eligible explicitly
 stated transcript evidence, without a remember command or mandatory review per note. The
 automatic-memory carrier delivers both Rheo-owned runtime evidence and local Claude Code
-CLI/Desktop Code capture enrolled by machine and project/workspace, after retrieval and before
-migration/cutover. It uses durable sanitation/digestion/extraction and trusted source receipts;
+CLI/Desktop Code capture enrolled by machine and project/workspace (or by machine alone, for
+every session on it; idea ledger entry 17), after retrieval and before migration/cutover. It uses durable sanitation/digestion/extraction and trusted source receipts;
 arbitrary cloud chats and blind promotion of tool/file material are excluded. FR27–29 continue to
 bind every automatic result, and cutover must prove ambient non-regression. D9 remains the
 retrieval-layer rework and is not the authority for extraction.
@@ -588,8 +588,8 @@ These three are appended after FR 50 so that the numbering above stays stable.
 - Release-one memory also creates conservative memories automatically from eligible explicitly
   stated transcript evidence, without a remember command or mandatory review per note. The
   automatic-memory carrier delivers both Rheo-owned runtime evidence and local Claude Code
-  CLI/Desktop Code capture enrolled by machine and project/workspace, after retrieval and before
-  migration/cutover. It uses durable sanitation/digestion/extraction and trusted source receipts;
+  CLI/Desktop Code capture enrolled by machine and project/workspace (or by machine alone, for
+  every session on it; idea ledger entry 17), after retrieval and before migration/cutover. It uses durable sanitation/digestion/extraction and trusted source receipts;
   arbitrary cloud chats and blind promotion of tool/file material are excluded. FR27–29 continue
   to bind every automatic result, and cutover must prove ambient non-regression. D9 remains the
   retrieval-layer rework and is not the authority for extraction.

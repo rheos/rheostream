@@ -405,3 +405,86 @@ def test_validate_source_never_consults_the_home_directory(
     path = layout.session_file(layout.parent_dir)
     assert layout.validate(path, layout.parent_dir) == Ok(path)
     assert not any(empty_home.iterdir())
+
+
+# --- validate_source, machine scope -----------------------------------------------
+
+
+def machine_validate(layout: Layout, path: Path | str) -> transcript.ValidationResult:
+    return transcript.validate_source(
+        str(path), None, projects_root=layout.projects_root
+    )
+
+
+def test_machine_scope_admits_a_file_in_any_project(layout: Layout) -> None:
+    for enrolled in (layout.parent_dir, layout.child_dir, layout.outside):
+        path = layout.session_file(enrolled)
+        assert machine_validate(layout, path) == Ok(path)
+
+
+def test_machine_scope_refuses_a_file_outside_the_projects_root(layout: Layout) -> None:
+    stray = layout.outside / "stray.jsonl"
+    stray.write_text('{"type":"user"}\n', encoding="utf-8")
+    assert machine_validate(layout, stray) == Refused("path_escape")
+
+
+def test_machine_scope_refuses_a_file_directly_in_the_projects_root(
+    layout: Layout,
+) -> None:
+    loose = layout.projects_root / "loose.jsonl"
+    loose.write_text('{"type":"user"}\n', encoding="utf-8")
+    assert machine_validate(layout, loose) == Refused("path_escape")
+
+
+def test_machine_scope_refuses_a_nested_file(layout: Layout) -> None:
+    nested = layout.project(layout.parent_dir) / "session" / "subagents"
+    nested.mkdir(parents=True)
+    (nested / "agent.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    assert machine_validate(layout, nested / "agent.jsonl") == Refused("path_escape")
+
+
+@pytest.mark.parametrize("present", [True, False], ids=["present", "absent"])
+def test_machine_scope_refuses_a_symlinked_project_directory(
+    layout: Layout, present: bool
+) -> None:
+    escaped = layout.outside / "escaped-project"
+    escaped.mkdir()
+    if present:
+        (escaped / "s.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+    link = layout.projects_root / "-linked"
+    link.symlink_to(escaped)
+    assert machine_validate(layout, link / "s.jsonl") == Refused("path_escape")
+
+
+def test_machine_scope_refuses_a_file_symlinked_out_of_its_project(
+    layout: Layout,
+) -> None:
+    target = layout.outside / "target.jsonl"
+    target.write_text('{"type":"user"}\n', encoding="utf-8")
+    link = layout.project(layout.parent_dir) / "linked.jsonl"
+    link.symlink_to(target)
+    assert machine_validate(layout, link) == Refused("path_escape")
+
+
+def test_machine_scope_an_absent_jsonl_in_a_project_is_missing(layout: Layout) -> None:
+    absent = layout.project(layout.parent_dir) / "gone.jsonl"
+    assert machine_validate(layout, absent) == Missing(absent)
+    assert machine_validate(layout, absent.with_suffix(".txt")) == Refused(
+        "path_escape"
+    )
+
+
+@pytest.mark.parametrize("case", ["relative", "dotdot", "nul", "directory"])
+def test_machine_scope_refuses_malformed_paths(layout: Layout, case: str) -> None:
+    project = layout.project(layout.parent_dir)
+    match case:
+        case "relative":
+            path: str = "project/s.jsonl"
+        case "dotdot":
+            path = f"{project}/../{project.name}/s.jsonl"
+        case "nul":
+            path = f"{project}/bad\x00.jsonl"
+        case _:
+            (project / "dir.jsonl").mkdir()
+            path = str(project / "dir.jsonl")
+    assert machine_validate(layout, path) == Refused("path_escape")

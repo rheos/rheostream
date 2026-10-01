@@ -167,18 +167,23 @@ transcript reader or hook; the local bridge below ships both.
 ### The local Claude Code bridge
 
 The second producer is `apps/bridge`, installed as the `rheo-bridge` command and run on the
-person's own machine from a checkout's virtualenv. A standard-library-only hook in one
-enrolled directory notes where each session's transcript is. A worker reads the human-typed
+person's own machine from a checkout's virtualenv. A standard-library-only hook notes where
+each session's transcript is. A bridge has one of two scopes. In directory scope (the
+default) the hook is in one enrolled directory's project settings and captures the sessions
+started there. In machine scope it is in the user's Claude Code settings,
+`~/.claude/settings.json`, and captures every session on the machine. A worker reads the human-typed
 lines from those transcripts, runs the same `sanitize()` locally, and posts them to one
 core operation. The rows it creates carry `producer_kind = "claude_code_local"`; revision
 `0011_local_evidence` admits that value in `core.evidence_unit`'s CHECK and adds
 `core.evidence_enrollment`. The frozen 0010 tuples are not edited.
 
 **Enrollment.** One `core.evidence_enrollment` row binds one account, one machine and one
-directory. The machine is `machine_fingerprint`, the sha256 of `"rheo-machine:"` plus the
-hex of a 32-byte `machine.key` that never leaves the laptop. The directory is
-`project_fingerprint`, the sha256 of `"rheo-project:"` plus the directory's realpath; the
-path itself never leaves the laptop either. A partial unique index allows one active
+directory or the machine scope. The machine is `machine_fingerprint`, the sha256 of
+`"rheo-machine:"` plus the hex of a 32-byte `machine.key` that never leaves the laptop. The
+directory is `project_fingerprint`, the sha256 of `"rheo-project:"` plus the directory's
+realpath; the path itself never leaves the laptop either. A machine-scope bridge sends the
+sha256 of `"rheo-scope:machine"` as its `project_fingerprint`; the different prefix means no
+directory's fingerprint can equal it. The server does not tell the two apart. A partial unique index allows one active
 enrollment per fingerprint pair, across all accounts. `enroll` answers `enrollment_exists`
 only when the target account itself holds the pair; a pair another account holds answers
 a `not_found` refusal. It names no account and no enrollment, though the create still
@@ -234,7 +239,9 @@ replay after re-enrolling is not recognised as held.
 the time, and no other payload string), spawns the worker detached if none holds
 `worker.lock`, prints nothing and exits 0. The worker reads only the transcripts the spool
 names, and only under `~/.claude/projects/<slug>` for the enrolled directory's slug; a path
-anywhere else is refused and counted. It reads from a byte cursor that moves only in the same
+anywhere else is refused and counted. In machine scope the worker accepts a `*.jsonl` file
+directly inside any directory directly under `~/.claude/projects`, where that directory is
+not a symlink and the file resolves inside it; everything else is still refused. It reads from a byte cursor that moves only in the same
 SQLite commit as the server's acknowledgement, so a crash re-reads a range the server already
 holds. Local limits in `~/.rheo-bridge/config.json` bound one pass: 1 MiB, 1000 records, and
 24 hours before an unsent line becomes a gap. A session's local row is kept until its whole
@@ -253,15 +260,18 @@ is claimed.
 not an exact-directory match. The mitigation is that the worker reads only paths the enrolled
 directory's own hook wrote to the spool and never crawls `~/.claude/projects`, so a session
 from a colliding directory is read only if that directory also runs the enrolled hook. A
-bridge home holds one enrollment, so each bridge home captures one enrolled directory.
+bridge home holds one enrollment, so a directory-scope bridge home captures one enrolled
+directory. None of this applies in machine scope, which reads every project's sessions and
+needs no slug match.
 
 **`rheo-bridge` commands.**
 
 | Command | What it does |
 | --- | --- |
-| `init --enrolled-dir <dir> --api-url <url>` | Creates `~/.rheo-bridge/` (0700), the machine key, the install salt and `config.json`, then prints both fingerprints and the `rheo evidence enroll ... --json` command for the operator. No network call. Refuses if a machine key already exists. |
+| `init --enrolled-dir <dir> --api-url <url>`, or `init --scope machine --api-url <url>` | Creates `~/.rheo-bridge/` (0700), the machine key, the install salt and `config.json`, then prints both fingerprints and the `rheo evidence enroll ... --json` command for the operator. No network call. Refuses if a machine key already exists. |
+| `set-scope machine` | Converts a directory-scope bridge home in place. Keeps the machine key, the state and the cursors, so lines the server already holds are answered as held. Deletes the old token, re-points the worker at the checkout running the command, and prints the new `enroll` command and the old enrollment's `revoke` command, to run once its pending rows have settled. Refuses while the directory hook is still installed. |
 | `set-token` | Reads the one JSON line from stdin, refuses a terminal, never echoes the token, stores it at 0600, and clears any back-off hold so the next drain posts at once. Also takes a `rotate --json` line. |
-| `install-hook --enrolled-dir <dir> [--dry-run]` | Adds the `Stop` and `SessionEnd` hooks to `<dir>/.claude/settings.local.json` with an absolute interpreter path. Refuses a directory other than the enrolled one, and refuses inside a Git working tree unless Git ignores that file. `--dry-run` prints the diff and writes nothing. |
+| `install-hook --enrolled-dir <dir> [--dry-run]` | Adds the `Stop` and `SessionEnd` hooks to `<dir>/.claude/settings.local.json` with an absolute interpreter path. Refuses a directory other than the enrolled one, and refuses inside a Git working tree unless Git ignores that file. `--dry-run` prints the diff and writes nothing. In machine scope it takes no `--enrolled-dir` and edits `~/.claude/settings.json` under the same rules; `remove-hook`, `uninstall` and `status` follow the scope the same way. |
 | `remove-hook --enrolled-dir <dir>` | Removes only this bridge's entries, and deletes the file or an emptied container only if install created it. Retains detectable indentation and newline style, but other formatting may be normalised; refuses to overwrite a file changed since it was read (a change after the final check is still possible). |
 | `uninstall --enrolled-dir <dir> [--purge]` | Removes the hooks, the token and the machine key, then prints the `rheo evidence revoke` command. `--purge` first prints `discarded_unacknowledged: N`, the sessions the server has not acknowledged, then deletes `~/.rheo-bridge/`. |
 | `status` | Session counts, hold state, local ledger counters, `enrollment_id`, `token_expires_at` and days remaining. Never a hash, key, path or text. |
