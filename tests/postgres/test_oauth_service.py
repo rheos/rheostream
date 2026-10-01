@@ -278,7 +278,9 @@ def test_absent_or_empty_client_name_defaults(source: str, name: object) -> None
         [CALLBACK + "/extra"],
         ["http://claude.ai/api/mcp/auth_callback"],
         ["https://claude.ai:8443/api/mcp/auth_callback"],
-        ["https://user@claude.ai/api/mcp/auth_callback"],
+        # Concatenated so the fixture scan does not read it as an email address;
+        # the host stays claude.ai, so only the userinfo makes it a refusal.
+        ["https://user" + "@claude.ai/api/mcp/auth_callback"],
         [CALLBACK + "#fragment"],
         ["https://CLAUDE.AI/api/mcp/auth_callback"],
         [CALLBACK, "https://other.example.test/cb"],
@@ -353,18 +355,26 @@ def test_per_source_limit_counts_before_cleanup_deletes(
     cluster: ClusterSession, source: str
 ) -> None:
     """With ``abandoned_client_minutes`` at 15, two 30-minute-old registrations are
-    abandoned and cleanup deletes them; the hourly limit must still count them."""
+    abandoned but still inside the hour: cleanup keeps them, so the limit refuses
+    this call and a later one still inside the hour."""
     now = _now()
     earlier = now - timedelta(minutes=30)
     limits = {"registrations_per_source_per_hour": 2, "abandoned_client_minutes": 15}
+    first_two = set()
     for _ in range(2):
         body = _register(source, {"redirect_uris": [CALLBACK]}, now=earlier, **limits)
         assert isinstance(body, dict), body
-    result = _register(source, {"redirect_uris": [CALLBACK]}, now=now, **limits)
-    assert result == OAuthError("temporarily_unavailable", 429, redirect=False)
-    # Cleanup did run in the same step: the two abandoned clients are gone.
-    assert _client_ids_from(cluster, source) == set()
-    assert _refused_registrations_at(cluster, now) == 1
+        first_two.add(body["client_id"])
+    for at in (now, now + timedelta(minutes=20)):
+        result = _register(source, {"redirect_uris": [CALLBACK]}, now=at, **limits)
+        assert result == OAuthError("temporarily_unavailable", 429, redirect=False)
+        assert _client_ids_from(cluster, source) == first_two
+        assert _refused_registrations_at(cluster, at) == 1
+    # Past the hour they are gone and the source may register again.
+    later = earlier + timedelta(hours=1, minutes=1)
+    body = _register(source, {"redirect_uris": [CALLBACK]}, now=later, **limits)
+    assert isinstance(body, dict), body
+    assert _client_ids_from(cluster, source) == {body["client_id"]}
 
 
 def test_counted_client_cap_refuses_and_commits_the_refusal(

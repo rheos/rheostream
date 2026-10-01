@@ -9,8 +9,7 @@ that same transaction.
 its value or an :class:`OAuthError`. The error is built and returned *inside* the
 ``begin()`` block, so whatever the step wrote before refusing (a ``refused`` event
 row, a decided authorization) commits with it. Only an unexpected exception rolls the
-step back. A store or issuance call that refuses by raising (``OperationRefused``) is
-caught inside the block and turned into an :class:`OAuthError` for the same reason.
+step back.
 
 ``error_description`` is a fixed string per error word and never echoes input. Event
 rows carry ids and an outcome word only: no secret, no client-supplied text.
@@ -147,19 +146,25 @@ def register_client(
     """Register a public client and return RFC 7591's 201 body with the *effective*
     metadata (never a secret).
 
-    Order: count ``source``'s registrations in the last hour, *then* clean up
-    abandoned clients and stale authorization rows, then refuse on the per-source
-    limit or the counted-client cap, then validate. The per-source count is taken
-    before cleanup because cleanup can delete clients younger than an hour (when
-    ``abandoned_client_minutes`` is below 60), which would undercount the limit."""
+    Order: count ``source``'s registrations in the last hour, clean up abandoned
+    clients and stale authorization rows, refuse on the per-source limit or the
+    counted-client cap, then validate.
+
+    The per-source limit counts the ``oauth_client`` rows that still exist, so
+    cleanup never deletes a client inside that hour: its cutoff is the earlier of
+    ``now - abandoned_client_minutes`` and ``now - 1 h``. With
+    ``abandoned_client_minutes`` below 60 an abandoned client therefore lingers up
+    to the hour, but it stops counting toward the cap at its configured age
+    (``count_counted_clients`` keeps the configured ``abandoned_before``)."""
     lifetimes = surface.lifetimes
     with get_backend().control_engine.begin() as conn:
+        window_start = now - REGISTRATION_WINDOW
         recent = oauth_store.count_registrations_from(
-            conn, source=source, since=now - REGISTRATION_WINDOW
+            conn, source=source, since=window_start
         )
         abandoned_before = now - timedelta(minutes=lifetimes.abandoned_client_minutes)
         oauth_store.delete_abandoned_clients(
-            conn, now=now, abandoned_before=abandoned_before
+            conn, now=now, abandoned_before=min(abandoned_before, window_start)
         )
         oauth_store.delete_expired_authorizations(
             conn, before=now - EXPIRED_AUTHORIZATION_RETENTION
