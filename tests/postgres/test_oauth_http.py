@@ -52,6 +52,7 @@ from rheo_core.storage.control_plane import (
     get_workspace,
     insert_account,
     insert_identity,
+    insert_membership_if_absent,
 )
 from rheo_core.tokens.issue import connector_operations
 from rheo_core.tokens.sets import register_core_tools
@@ -314,6 +315,12 @@ async def _fresh_consent(
     return page, nonce
 
 
+def _posted(page: httpx2.Response) -> dict[str, str]:
+    """The page's ``request_id`` and ``account_id``, as the browser posts them."""
+    fields = consent_fields(page.text)
+    return {"request_id": fields["request_id"], "account_id": fields["account_id"]}
+
+
 def _pin_clock(monkeypatch: pytest.MonkeyPatch, at: datetime) -> None:
     monkeypatch.setattr(oauth_routes, "_now", lambda: at)
 
@@ -500,7 +507,9 @@ async def test_deny_redirects_access_denied_and_issues_nothing(
         client_id = await _registered(client)
         page, nonce = await _fresh_consent(client, member, client_id)
         fields = consent_fields(page.text)
-        denied = await client.decide("deny", request_id=fields["request_id"])
+        denied = await client.decide(
+            "deny", request_id=fields["request_id"], account_id=fields["account_id"]
+        )
     _assert_redirect_error(denied, surface, "access_denied")
     assert _nonce_of(denied) == ""
     after = _snapshot(cluster, nonce, member.account_id, client_id)
@@ -526,6 +535,7 @@ async def test_allow_with_a_bad_origin_is_refused_and_writes_nothing(
         refused = await client.decide(
             "allow",
             request_id=fields["request_id"],
+            account_id=fields["account_id"],
             workspace_id=fields["workspace_id"],
             origin=origin,
         )
@@ -596,7 +606,7 @@ async def test_two_workspaces_offer_exactly_those_and_bind_the_chosen_one(
         chosen = owner.workspaces[1]
         allowed = await client.decide(
             "allow",
-            request_id=consent_fields(page.text)["request_id"],
+            **_posted(page),
             workspace_id=str(chosen),
         )
     assert allowed.status_code == 302, allowed.text
@@ -618,7 +628,7 @@ async def test_a_workspace_the_account_is_not_a_member_of_is_refused(
         before = _snapshot(cluster, nonce, member.account_id, client_id)
         refused = await client.decide(
             "allow",
-            request_id=consent_fields(page.text)["request_id"],
+            **_posted(page),
             workspace_id=str(workspace),
         )
     _assert_error_page(refused, 403, "not_a_member")
@@ -681,6 +691,7 @@ async def test_at_expires_at_the_consent_is_authorization_expired(
             refused = await client.decide(
                 "allow",
                 request_id=fields["request_id"],
+                account_id=fields["account_id"],
                 workspace_id=fields["workspace_id"],
             )
     _assert_error_page(refused, 400, "authorization_expired")
@@ -707,6 +718,7 @@ async def test_one_second_before_expires_at_consent_succeeds(
         allowed = await client.decide(
             "allow",
             request_id=fields["request_id"],
+            account_id=fields["account_id"],
             workspace_id=fields["workspace_id"],
         )
     assert allowed.status_code == 302, allowed.text
@@ -728,6 +740,7 @@ async def test_another_browser_without_the_cookie_gets_authorization_expired(
         no_cookie_post = await client.decide(
             "allow",
             request_id=fields["request_id"],
+            account_id=fields["account_id"],
             workspace_id=fields["workspace_id"],
         )
         _replay_cookie(client, "0" * 64)
@@ -735,6 +748,7 @@ async def test_another_browser_without_the_cookie_gets_authorization_expired(
         unknown_post = await client.decide(
             "allow",
             request_id=fields["request_id"],
+            account_id=fields["account_id"],
             workspace_id=fields["workspace_id"],
         )
     for response in (no_cookie_get, no_cookie_post, unknown_get, unknown_post):
@@ -756,10 +770,16 @@ async def test_a_session_holding_its_own_row_cannot_approve_another_rows_id(
         before_first = _snapshot(cluster, first_nonce, member.account_id, client_id)
         before_second = _snapshot(cluster, second_nonce, member.account_id, client_id)
         refused = await client.decide(
-            "allow", request_id=first_id, workspace_id=str(member.workspaces[0])
+            "allow",
+            request_id=first_id,
+            account_id=str(member.account_id),
+            workspace_id=str(member.workspaces[0]),
         )
         random_id = await client.decide(
-            "allow", request_id=str(uuid7()), workspace_id=str(member.workspaces[0])
+            "allow",
+            request_id=str(uuid7()),
+            account_id=str(member.account_id),
+            workspace_id=str(member.workspaces[0]),
         )
     _assert_error_page(refused, 400, "authorization_expired")
     _assert_error_page(random_id, 400, "authorization_expired")
@@ -779,7 +799,9 @@ async def test_a_denied_request_cannot_be_replayed(
         client_id = await _registered(client)
         page, nonce = await _fresh_consent(client, member, client_id)
         fields = consent_fields(page.text)
-        denied = await client.decide("deny", request_id=fields["request_id"])
+        denied = await client.decide(
+            "deny", request_id=fields["request_id"], account_id=fields["account_id"]
+        )
         assert denied.status_code == 302
         decided = _snapshot(cluster, nonce, member.account_id, client_id)
 
@@ -788,9 +810,12 @@ async def test_a_denied_request_cannot_be_replayed(
         replay_allow = await client.decide(
             "allow",
             request_id=fields["request_id"],
+            account_id=fields["account_id"],
             workspace_id=fields["workspace_id"],
         )
-        replay_deny = await client.decide("deny", request_id=fields["request_id"])
+        replay_deny = await client.decide(
+            "deny", request_id=fields["request_id"], account_id=fields["account_id"]
+        )
     for response in (replay_get, replay_allow, replay_deny):
         _assert_error_page(response, 400, "authorization_expired")
     after = _snapshot(cluster, nonce, member.account_id, client_id)
@@ -810,6 +835,7 @@ async def test_an_approved_request_cannot_be_replayed_and_keeps_its_code(
         allowed = await client.decide(
             "allow",
             request_id=fields["request_id"],
+            account_id=fields["account_id"],
             workspace_id=fields["workspace_id"],
         )
         assert allowed.status_code == 302, allowed.text
@@ -822,12 +848,69 @@ async def test_an_approved_request_cannot_be_replayed_and_keeps_its_code(
         replay_allow = await client.decide(
             "allow",
             request_id=fields["request_id"],
+            account_id=fields["account_id"],
             workspace_id=fields["workspace_id"],
         )
-        replay_deny = await client.decide("deny", request_id=fields["request_id"])
+        replay_deny = await client.decide(
+            "deny", request_id=fields["request_id"], account_id=fields["account_id"]
+        )
     for response in (replay_get, replay_allow, replay_deny):
         _assert_error_page(response, 400, "authorization_expired")
     after = _snapshot(cluster, nonce, member.account_id, client_id)
     assert after == approved
     assert after.events.count(("authorization_granted", "succeeded")) == 1
     assert ("authorization_denied", "refused") not in after.events
+
+
+async def test_allow_after_the_session_switched_accounts_is_refused(
+    surface: OAuthSurface,
+    address: str,
+    member: Member,
+    make_member: Any,
+    cluster: ClusterSession,
+) -> None:
+    """The page was shown to account A; the browser then signs in as B (a member
+    of the same workspace) and posts A's page. B must not grant on A's consent,
+    and a post with no ``account_id`` is refused the same way."""
+    other: Member = make_member(0)
+    with cluster.backend.control_engine.begin() as connection:
+        insert_membership_if_absent(
+            connection,
+            account_id=other.account_id,
+            workspace_id=member.workspaces[0],
+            role=Role.MEMBER,
+        )
+    config = _routing()
+    async with oauth_client(surface, client_address=address) as client:
+        client_id = await _registered(client)
+        page, nonce = await _fresh_consent(client, member, client_id)
+        fields = consent_fields(page.text)
+        assert fields["account_id"] == str(member.account_id)
+        before = _snapshot(cluster, nonce, member.account_id, client_id)
+
+        _sign_in_as(other.identity)
+        login = await client.http.get(
+            f"{client.identity_origin}{identity_path(config, '/login')}",
+            params={"return": url_for(config, IDENTITY, "/oauth/consent")},
+        )
+        as_other = await client.follow_chain(login)
+        assert as_other.status_code == 200, as_other.text
+        assert consent_fields(as_other.text)["account_id"] == str(other.account_id)
+
+        switched = await client.decide(
+            "allow",
+            request_id=fields["request_id"],
+            account_id=fields["account_id"],
+            workspace_id=fields["workspace_id"],
+        )
+        absent = await client.decide(
+            "allow",
+            request_id=fields["request_id"],
+            workspace_id=fields["workspace_id"],
+        )
+    _assert_error_page(switched, 400, "authorization_expired")
+    _assert_error_page(absent, 400, "authorization_expired")
+    after = _snapshot(cluster, nonce, member.account_id, client_id)
+    assert after == before
+    _assert_undecided_and_nothing_issued(after)
+    assert _issued(cluster, other.account_id, client_id) == (0, 0)

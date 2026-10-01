@@ -400,9 +400,10 @@ def _terms_markup(operations: tuple[str, ...], days: int) -> str:
     )
 
 
-def _consent_page(view: ConsentView, request_id: UUID) -> Response:
+def _consent_page(view: ConsentView, request_id: UUID, account_id: UUID) -> Response:
     """The consent page for ``view``. Every value from the client, the account or a
-    workspace is escaped; the only markup is this function's own."""
+    workspace is escaped; the only markup is this function's own. ``account_id`` is
+    the account the page was shown to; the POST must come from the same one."""
     redirect_host = urlsplit(view.redirect_uri).hostname or view.redirect_uri
     names = {
         choice.workspace_id: choice.display_name for choice in view.choices.workspaces
@@ -416,6 +417,7 @@ def _consent_page(view: ConsentView, request_id: UUID) -> Response:
         f"<p>Signed in as: <strong>{escape(view.account_display_name)}</strong></p>\n",
         '<form method="post">\n',
         f'<input type="hidden" name="request_id" value="{escape(str(request_id))}">\n',
+        f'<input type="hidden" name="account_id" value="{escape(str(account_id))}">\n',
     ]
     if len(view.choices.workspaces) >= 2:
         options = "".join(
@@ -530,21 +532,23 @@ def consent(request: Request) -> Response:
             else OAuthError(error=WORKSPACE_UNSELECTED, status=403, redirect=False)
         )
         return _clearing_request_cookie(_refusal(error), config)
-    return _consent_page(view, row.id)
+    return _consent_page(view, row.id, session.account_id)
 
 
 # --- POST /auth/oauth/consent ----------------------------------------------------
 
 
-_CONSENT_FIELDS: Final = frozenset({"request_id", "workspace_id", "decision"})
+_CONSENT_FIELDS: Final = frozenset(
+    {"request_id", "account_id", "workspace_id", "decision"}
+)
 
 
 def _decide(
     request: Request, surface: OAuthSurface, config: RoutingConfig, form: dict[str, str]
 ) -> Response:
     """The decision, after the ``Origin`` check and the form parse: the cookie's
-    pending row must be the one the page showed, then a live session, then
-    ``approve`` or ``deny``."""
+    pending row must be the one the page showed, then a live session whose account
+    is the one the page was shown to, then ``approve`` or ``deny``."""
     nonce = request.cookies.get(OAUTH_REQUEST_COOKIE)
     now = _now()
     row = pending(nonce, now)
@@ -553,6 +557,10 @@ def _decide(
     session = _session_row_from_cookie(request, _current_host(request))
     if session is None:
         return _error_page(SESSION_MISSING, 401)
+    if _uuid_or_none(form.get("account_id")) != session.account_id:
+        # The page was shown to another account (the session changed hands since)
+        # or the field is missing: not the decision that page asked for.
+        return _error_page(AUTHORIZATION_EXPIRED, 400)
     decision = form.get("decision")
     if decision == DECISION_ALLOW:
         approval = approve(

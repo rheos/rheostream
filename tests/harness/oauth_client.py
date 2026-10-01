@@ -259,12 +259,15 @@ class OAuthTestClient:
         decision: str,
         *,
         request_id: str,
+        account_id: str | None = None,
         workspace_id: str | None = None,
         origin: str | None = "",
     ) -> httpx2.Response:
         """``POST`` the consent form. ``origin`` ``""`` (the default) is the
         identity host's own; ``None`` sends no ``Origin`` header."""
         form = {"request_id": request_id, "decision": decision}
+        if account_id is not None:
+            form["account_id"] = account_id
         if workspace_id is not None:
             form["workspace_id"] = workspace_id
         headers = {"Content-Type": FORM_CONTENT_TYPE}
@@ -293,6 +296,7 @@ class OAuthTestClient:
         allowed = await self.decide(
             "allow",
             request_id=fields["request_id"],
+            account_id=fields["account_id"],
             workspace_id=workspace_id or fields["workspace_id"],
         )
         assert allowed.status_code == 302, allowed.text
