@@ -580,3 +580,94 @@ def list_oauth_events(
         )
         for row in conn.execute(statement).mappings()
     )
+
+
+# --- operator reads (``rheo token list``, ``rheo doctor``) ---------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorGrantListing:
+    """What ``rheo token list`` adds to a ``connector`` token row. ``client_name`` is
+    the stored (registration-sanitized) name; the CLI cuts it again for display."""
+
+    token_id: UUID
+    client_name: str
+    grant_expires_at: datetime
+
+
+def list_connector_grants(conn: Connection) -> dict[UUID, ConnectorGrantListing]:
+    """Every grant's client name and absolute end, by token id, in one read (the
+    listing joins it onto ``list_access_tokens`` rather than reading per row)."""
+    statement = select(
+        o.oauth_grant.c.token_id,
+        o.oauth_grant.c.grant_expires_at,
+        o.oauth_client.c.client_name,
+    ).join(o.oauth_client, o.oauth_client.c.client_id == o.oauth_grant.c.client_id)
+    return {
+        row["token_id"]: ConnectorGrantListing(
+            token_id=row["token_id"],
+            client_name=row["client_name"],
+            grant_expires_at=row["grant_expires_at"],
+        )
+        for row in conn.execute(statement).mappings()
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorGrantCounts:
+    """``rheo doctor``'s ``connector grants`` figures. Counts only.
+
+    ``active``, ``expired`` and ``revoked`` partition every grant: revoked wins over
+    expired (a revoked grant is ``revoked`` whatever its end). ``ending_soon`` and
+    ``missing_refresh`` are subsets of ``active`` (live grants)."""
+
+    counted_clients: int
+    active: int
+    expired: int
+    revoked: int
+    ending_soon: int
+    missing_refresh: int
+
+
+def connector_grant_counts(
+    conn: Connection,
+    *,
+    now: datetime,
+    abandoned_before: datetime,
+    ending_before: datetime,
+) -> ConnectorGrantCounts:
+    """The doctor's counts at one instant ``now``. A live grant is the module
+    docstring's (not revoked, ``now < grant_expires_at``); a live grant with no
+    ``oauth_refresh_token`` row whose ``rotated_at`` is null breaks the refresh-row
+    invariant and is ``missing_refresh``."""
+    grant, token = o.oauth_grant, t.access_token
+    revoked = token.c.revoked_at.is_not(None)
+    live = and_(token.c.revoked_at.is_(None), grant.c.grant_expires_at > now)
+    has_live_refresh = exists().where(
+        o.oauth_refresh_token.c.token_id == grant.c.token_id,
+        o.oauth_refresh_token.c.rotated_at.is_(None),
+    )
+
+    def _count(condition: ColumnElement[bool]) -> ColumnElement[int]:
+        return func.count().filter(condition)
+
+    statement = select(
+        _count(live).label("active"),
+        _count(and_(~revoked, grant.c.grant_expires_at <= now)).label("expired"),
+        _count(revoked).label("revoked"),
+        _count(and_(live, grant.c.grant_expires_at <= ending_before)).label(
+            "ending_soon"
+        ),
+        _count(and_(live, ~has_live_refresh)).label("missing_refresh"),
+    ).select_from(grant.join(token, token.c.id == grant.c.token_id))
+    row = conn.execute(statement).mappings().one()
+    return ConnectorGrantCounts(
+        counted_clients=count_counted_clients(
+            conn, now=now, abandoned_before=abandoned_before
+        ),
+        active=row["active"],
+        expired=row["expired"],
+        revoked=row["revoked"],
+        ending_soon=row["ending_soon"],
+        missing_refresh=row["missing_refresh"],
+    )

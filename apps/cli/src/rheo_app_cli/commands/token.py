@@ -1,5 +1,12 @@
-"""``rheo token issue --account --workspace --set --kind [--discover]`` and
-``rheo token revoke <token-id>``.
+"""``rheo token issue --account --workspace --set --kind [--discover]``,
+``rheo token revoke <token-id>``, ``rheo token list [--workspace] [--account]`` and
+``rheo token events --workspace [--limit]``.
+
+``list`` reads the control plane directly, as ``revoke``'s lookup does, and prints
+named columns only (never the token hash); a ``connector`` row also shows its
+client's name and the grant's absolute end. ``events`` dispatches
+``core.oauth_event.list`` under an operator context, so its role gate is
+``dispatch()``'s.
 
 ``--discover`` issues the token in discover-then-call mode (issue #262): the named
 set's grants plus ``core.tool.call``, so an MCP client sees a fixed handful of tools
@@ -30,14 +37,19 @@ stays silent on stdout.
 
 import argparse
 import sys
+import unicodedata
+from datetime import datetime
+from typing import Final
 from uuid import UUID
 
 from rheo_core.boundary import Refusal, context_for_operator
 from rheo_core.modules import ManifestInvalid, load_modules
+from rheo_core.oauth.operations import OAUTH_EVENT_LIST, OAuthEventList
 from rheo_core.operations import dispatch
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
 from rheo_core.operations.refusals import RegistrationRefused
-from rheo_core.storage.control_plane import get_access_token
+from rheo_core.storage.control_plane import get_access_token, list_access_tokens
+from rheo_core.storage.oauth_store import list_connector_grants
 from rheo_core.tokens.sets import register_core_tools
 
 from rheo_app_cli.context import bootstrap
@@ -63,6 +75,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[
     revoke = commands.add_parser("revoke", help="revoke a token by id")
     revoke.add_argument("token_id", type=UUID)
     revoke.set_defaults(handler=revoke_token)
+
+    listing = commands.add_parser(
+        "list", help="every token row, connector grants included; no secret"
+    )
+    listing.add_argument("--workspace", type=UUID, metavar="WORKSPACE_ID")
+    listing.add_argument("--account", type=UUID, metavar="ACCOUNT_ID")
+    listing.set_defaults(handler=list_tokens)
+
+    events = commands.add_parser("events", help="a workspace's OAuth connector events")
+    events.add_argument("--workspace", required=True, type=UUID, metavar="WORKSPACE_ID")
+    events.add_argument("--limit", type=int, default=50, metavar="N")
+    events.set_defaults(handler=list_oauth_events)
 
 
 def _print_outcome_error(state: str, error_text: str | None) -> None:
@@ -152,4 +176,86 @@ def revoke_token(args: argparse.Namespace) -> int:
         _print_outcome_error(outcome.state, None if error is None else error.error_text)
         return 1
     print(f"token {args.token_id} revoked", file=sys.stderr)
+    return 0
+
+
+NULL_FIELD: Final = "-"
+LISTED_CLIENT_NAME_LENGTH: Final = 60
+
+
+def _field(value: object) -> str:
+    if value is None:
+        return NULL_FIELD
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _listed_client_name(name: str) -> str:
+    """Registration already sanitized it; strip again (control and format
+    characters, so a name can never break a line or a column) and cut to 60."""
+    kept = "".join(ch for ch in name if not unicodedata.category(ch).startswith("C"))
+    return kept.strip()[:LISTED_CLIENT_NAME_LENGTH].strip() or NULL_FIELD
+
+
+def list_tokens(args: argparse.Namespace) -> int:
+    """One tab-separated line per ``access_token`` row, oldest first: id, kind,
+    issued_from, set, account, workspace, created, expires, last used, revoked,
+    client name, grant end (the last two ``-`` unless the row is a connector grant).
+
+    Each column is projected by name from the row: ``AccessTokenRow`` carries
+    ``token_hash``, which must never reach the output, so nothing iterates the row.
+    """
+    boot = bootstrap()
+    with boot.backend.control_engine.connect() as connection:
+        rows = list_access_tokens(
+            connection, workspace_id=args.workspace, account_id=args.account
+        )
+        grants = list_connector_grants(connection)
+    for row in rows:
+        grant = grants.get(row.id)
+        columns = (
+            row.id,
+            row.kind,
+            row.issued_from,
+            row.set_name,
+            row.account_id,
+            row.workspace_id,
+            row.created_at,
+            row.expires_at,
+            row.last_used_at,
+            row.revoked_at,
+            None if grant is None else _listed_client_name(grant.client_name),
+            None if grant is None else grant.grant_expires_at,
+        )
+        print("\t".join(_field(column) for column in columns))
+    return 0
+
+
+def list_oauth_events(args: argparse.Namespace) -> int:
+    """``core.oauth_event.list`` under an operator context, one tab-separated line
+    per returned event in the order received (newest first): occurred_at, event,
+    outcome, account_id, workspace_id, client_id, token_id (the grant id). Only the
+    operation's own fields are printed, so nothing it does not return can show."""
+    bootstrap()
+    ctx = context_for_operator(args.workspace)
+    if isinstance(ctx, Refusal):
+        print(ctx, file=sys.stderr)
+        return 1
+    outcome = dispatch(ctx, OAUTH_EVENT_LIST, {"limit": args.limit})
+    if not outcome.ok or not isinstance(outcome.result, OAuthEventList):
+        error = outcome.error
+        _print_outcome_error(outcome.state, None if error is None else error.error_text)
+        return 1
+    for record in outcome.result.events:
+        columns = (
+            record.occurred_at,
+            record.event,
+            record.outcome,
+            record.account_id,
+            record.workspace_id,
+            record.client_id,
+            record.token_id,
+        )
+        print("\t".join(_field(column) for column in columns))
     return 0
