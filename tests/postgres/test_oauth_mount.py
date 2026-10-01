@@ -291,13 +291,15 @@ async def test_unconfigured_mount_is_unchanged(
 # --- AC-3: refusals keep their states and gain the pointer --------------------------
 
 
+@pytest.mark.parametrize("mode", MODES)
 async def test_bad_tokens_keep_their_states_and_carry_the_pointer(
     monkeypatch: pytest.MonkeyPatch,
     cluster: ClusterSession,
     operator_ctx: WorkspaceContext,
     owner_account_id: UUID,
+    mode: str,
 ) -> None:
-    url = _set_mode(monkeypatch, "subdomain")
+    url = _set_mode(monkeypatch, mode)
     surface = _configure(monkeypatch)
     expired, expired_id = _issue_mcp(operator_ctx, owner_account_id)
     with cluster.backend.control_engine.begin() as connection:
@@ -361,16 +363,18 @@ async def _call(url: str, bearer: str, tool: str) -> httpx2.Response:
         )
 
 
+@pytest.mark.parametrize("mode", MODES)
 async def test_a_token_lacking_the_operation_gets_the_unchanged_refusal(
     monkeypatch: pytest.MonkeyPatch,
     cluster: ClusterSession,
     workspace: UUID,
     owner_account_id: UUID,
+    mode: str,
 ) -> None:
     """A valid token whose snapshot lacks ``audit_list``'s operation is answered by
     the façade, not the gate: a 200 result in the facade's ``not_found`` state, the
     same answer with the feature off and on, and no challenge either way."""
-    url = _set_mode(monkeypatch, "subdomain")
+    url = _set_mode(monkeypatch, mode)
     value = _token_with(cluster, owner_account_id, workspace, [WORKSPACE_STATUS])
     unconfigured = await _call(url, value, "audit_list")
     _configure(monkeypatch)
@@ -404,3 +408,44 @@ async def test_a_valid_bearer_is_served_not_challenged(
     assert "location" not in response.headers
     names = [tool["name"] for tool in response.json()["result"]["tools"]]
     assert "workspace_status" in names
+
+
+@pytest.mark.parametrize("public_host", ['localhost"x', "lôcalhost"])
+async def test_a_header_unsafe_pointer_leaves_existing_bearers_working(
+    monkeypatch: pytest.MonkeyPatch,
+    operator_ctx: WorkspaceContext,
+    owner_account_id: UUID,
+    public_host: str,
+) -> None:
+    """A routing host that would make the pointer unencodable in the header (a
+    ``"`` or a non-ASCII character in the URL ``url_for`` builds) leaves the surface
+    unconfigured: the feature switched on still yields a bare ``Bearer`` 401 and no
+    metadata document, and an existing bearer is still served.
+
+    Path mode on a loopback ``base_host``, so the request reaches the mount on
+    ``localhost:8443`` (the loopback wildcard admits it) while ``url_for`` builds the
+    advertised URL from the unsafe ``public_host``.
+    """
+    monkeypatch.setenv("RHEO__routing__mode", "path")
+    monkeypatch.setenv("RHEO__routing__scheme", "https")
+    monkeypatch.setenv("RHEO__routing__base_host", "localhost")
+    monkeypatch.setenv("RHEO__routing__public_host", public_host)
+    monkeypatch.setenv("RHEO__identity__oauth__enabled", "true")
+    monkeypatch.setenv("RHEO__identity__providers__github__enabled", "true")
+    monkeypatch.setenv("RHEO__identity__providers__github__client_id", "example-client")
+    settings = resolve()
+    assert oauth_surface(
+        settings, RoutingConfig.from_settings(settings)
+    ) == OAuthUnconfigured("setting_invalid")
+
+    url = "https://localhost:8443/mcp/"
+    value, _ = _issue_mcp(operator_ctx, owner_account_id)
+    async with _wire(url) as client:
+        served = await _post(client, url, bearer=value)
+        refused = await _post(client, url)
+        probe = await client.get("/.well-known/oauth-protected-resource/mcp")
+    assert served.status_code == 200, served.text
+    assert "www-authenticate" not in served.headers
+    assert refused.status_code == 401
+    assert refused.headers.get_list("www-authenticate") == ["Bearer"]
+    assert probe.status_code == 404

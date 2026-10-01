@@ -17,7 +17,9 @@ path's trailing slash dropped, so they follow ``url_for`` in both modes too.
 **Unconfigured means nothing is advertised.** ``identity.oauth.enabled`` false, the
 GitHub provider off (disabled, or enabled with no client id, the rule
 ``identity.provider_config.sync_providers`` applies), an empty allowlist, or any
-setting outside its declared bound all return :class:`OAuthUnconfigured`. The bound
+setting outside its declared bound all return :class:`OAuthUnconfigured`, as does
+a routing host that makes the protected-resource URL unfit for the ``mcp`` gate's
+``WWW-Authenticate`` header (not ASCII, or carrying a ``"``). The bound
 is normally enforced at settings load; it is checked again here so a settings
 mapping built any other way cannot advertise a broken surface.
 """
@@ -150,6 +152,14 @@ def _redirect_uri_valid(uri: str) -> bool:
     return parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
 
 
+def _header_safe(url: str) -> bool:
+    """Whether ``url`` can sit inside the ``WWW-Authenticate`` quoted string the
+    ``mcp`` gate sends: ASCII-encodable and free of ``"``. A routing host that makes
+    the pointer fail this would otherwise break the 401 for every caller, so the
+    surface is refused instead and the gate keeps its bare ``Bearer``."""
+    return url.isascii() and '"' not in url
+
+
 def _allowlist_valid(uris: list[str]) -> bool:
     return all(_redirect_uri_valid(uri) for uri in uris)
 
@@ -182,15 +192,16 @@ def oauth_surface(
         return OAuthUnconfigured("setting_invalid")
     resource = url_for(routing, MCP, "/")
     issuer = resource.removesuffix("/")
+    protected_resource_metadata_url = _well_known(resource, PROTECTED_RESOURCE_DOCUMENT)
+    if not _header_safe(protected_resource_metadata_url):
+        return OAuthUnconfigured("setting_invalid")
     return OAuthSurface(
         resource=resource,
         issuer=issuer,
         authorization_endpoint=url_for(routing, IDENTITY, "/oauth/authorize"),
         token_endpoint=url_for(routing, IDENTITY, "/oauth/token"),
         registration_endpoint=url_for(routing, IDENTITY, "/oauth/register"),
-        protected_resource_metadata_url=_well_known(
-            resource, PROTECTED_RESOURCE_DOCUMENT
-        ),
+        protected_resource_metadata_url=protected_resource_metadata_url,
         authorization_server_metadata_url=_well_known(
             resource, AUTHORIZATION_SERVER_DOCUMENT
         ),

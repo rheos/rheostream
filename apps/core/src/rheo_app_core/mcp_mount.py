@@ -220,12 +220,35 @@ class McpMount:
     mode; ``path`` is the surface path in path mode and ``/`` in subdomain mode.
     ``oauth`` is the OAuth connector surface resolved at lifespan start, or ``None``
     when it is unconfigured, in which case no metadata path is served.
+    ``resource_metadata_paths`` and ``authorization_server_metadata_path`` are that
+    surface's metadata URL paths, parsed once here rather than per request (empty
+    and ``None`` with no surface).
     """
 
     app: ASGIApp
     host: str | None
     path: str
     oauth: OAuthSurface | None = None
+    resource_metadata_paths: tuple[str, ...] = ()
+    authorization_server_metadata_path: str | None = None
+
+    @classmethod
+    def _with_oauth(
+        cls, app: ASGIApp, host: str | None, path: str, oauth: OAuthSurface | None
+    ) -> "McpMount":
+        if oauth is None:
+            return cls(app=app, host=host, path=path)
+        resource_path = urlsplit(oauth.protected_resource_metadata_url).path
+        return cls(
+            app=app,
+            host=host,
+            path=path,
+            oauth=oauth,
+            resource_metadata_paths=(resource_path, f"{resource_path}/"),
+            authorization_server_metadata_path=urlsplit(
+                oauth.authorization_server_metadata_url
+            ).path,
+        )
 
     @classmethod
     def for_config(
@@ -242,7 +265,7 @@ class McpMount:
                     f"routing.mcp.path must be a non-root absolute path without a "
                     f"trailing slash in path mode, not {path!r}"
                 )
-            return cls(app=app, host=None, path=path, oauth=oauth)
+            return cls._with_oauth(app, None, path, oauth)
         label = config.surfaces.mcp.host.strip()
         if not label:
             raise ValueError("routing.mcp.host must name a label in subdomain mode")
@@ -257,7 +280,7 @@ class McpMount:
                 f"routing.mcp.host {label!r} makes the mcp host {host!r}, which is "
                 "already an application host or the api host"
             )
-        return cls(app=app, host=host, path="/", oauth=oauth)
+        return cls._with_oauth(app, host, "/", oauth)
 
     def claims(self, scope: Scope) -> bool | None:
         """``True`` for the endpoint, ``False`` for another path on the ``mcp``
@@ -274,8 +297,8 @@ class McpMount:
 
         ``None`` with no configured surface, for a request on another host in
         subdomain mode, and for every path but the three the module docstring names.
-        The paths come from the surface's own metadata URLs, so they follow
-        ``url_for`` in both modes.
+        The paths come from the surface's own metadata URLs (precomputed in
+        :meth:`for_config`), so they follow ``url_for`` in both modes.
         """
         surface = self.oauth
         if surface is None:
@@ -283,10 +306,9 @@ class McpMount:
         if self.host is not None and _request_host(scope) != self.host:
             return None
         request_path: str = scope.get("path", "")
-        resource_path = urlsplit(surface.protected_resource_metadata_url).path
-        if request_path in (resource_path, f"{resource_path}/"):
+        if request_path in self.resource_metadata_paths:
             return surface.protected_resource_metadata()
-        if request_path == urlsplit(surface.authorization_server_metadata_url).path:
+        if request_path == self.authorization_server_metadata_path:
             return surface.authorization_server_metadata()
         return None
 

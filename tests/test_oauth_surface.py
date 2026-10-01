@@ -251,3 +251,17 @@ def test_lookalike_and_userinfo_redirects_are_setting_invalid(uri: str) -> None:
 def test_valid_redirects_configure(uri: str) -> None:
     surface = _surface("path", identity__oauth__redirect_uris=(uri,))
     assert surface.redirect_uris == (uri,)
+
+
+@pytest.mark.parametrize("mode", ["subdomain", "path"])
+@pytest.mark.parametrize("base_host", ['ex"ample.test', "exämple.test"])
+def test_a_header_unsafe_pointer_is_setting_invalid(mode: str, base_host: str) -> None:
+    """A base host that would put a ``"`` or a non-ASCII character into the
+    protected-resource URL (and so into the ``mcp`` gate's ``WWW-Authenticate``
+    quoted string) leaves the surface unconfigured, so the gate stays bare."""
+    text = (FIXTURES / f"{mode}-mode.json").read_text(encoding="utf-8")
+    data = json.loads(text)
+    data["base_host"] = base_host
+    data["public_host"] = base_host
+    routing = RoutingConfig.model_validate(data)
+    assert oauth_surface(_settings(), routing) == OAuthUnconfigured("setting_invalid")

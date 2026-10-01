@@ -148,7 +148,9 @@ def challenge_for(resource_metadata_url: str | None) -> bytes:
     """
     if resource_metadata_url is None:
         return BARE_CHALLENGE
-    return f'Bearer resource_metadata="{resource_metadata_url}"'.encode("latin-1")
+    if not resource_metadata_url.isascii() or '"' in resource_metadata_url:
+        raise ValueError("resource_metadata_url must be ASCII with no '\"'")
+    return f'Bearer resource_metadata="{resource_metadata_url}"'.encode("ascii")
 
 
 async def _refuse(
@@ -199,13 +201,15 @@ async def _refuse(
 class _BearerGate:
     """Resolve the bearer, or refuse before the request reaches the MCP server.
 
-    ``resource_metadata_url`` changes only the refusal's ``WWW-Authenticate``
-    header; a request whose bearer resolves takes the same path either way.
+    ``challenge`` changes only the refusal's ``WWW-Authenticate`` header; a request
+    whose bearer resolves takes the same path either way. It arrives as bytes
+    :func:`build_mcp_app` already computed, so a URL that cannot be encoded fails at
+    build time, never on a request.
     """
 
-    def __init__(self, app: ASGIApp, resource_metadata_url: str | None = None) -> None:
+    def __init__(self, app: ASGIApp, challenge: bytes = BARE_CHALLENGE) -> None:
         self.app = app
-        self.challenge = challenge_for(resource_metadata_url)
+        self.challenge = challenge
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -439,6 +443,7 @@ def build_mcp_app(
             "the mcp surface keeps DNS-rebinding protection on; pass the hosts "
             "it should admit instead of switching it off"
         )
+    challenge = challenge_for(resource_metadata_url)
     server = build_server(consumers=consumers)
     app = server.streamable_http_app(
         streamable_http_path=path,
@@ -447,7 +452,7 @@ def build_mcp_app(
         host=host,
         transport_security=transport_security,
     )
-    app.add_middleware(_BearerGate, resource_metadata_url=resource_metadata_url)
+    app.add_middleware(_BearerGate, challenge=challenge)
     return app
 
 
