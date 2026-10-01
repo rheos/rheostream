@@ -71,6 +71,11 @@ REFRESH_TOKEN: Final = "refresh_token"
 _MAX_FORM_FIELDS: Final = 32
 """More fields than any token request has; past this the body is refused."""
 
+MAX_BODY_BYTES: Final = 16 * 1024
+"""The largest register or token body read. Both routes are unauthenticated, and
+core has no request-body limit of its own to reuse, so the bound is set here: a
+real registration or token request is well under 2 KiB."""
+
 _NO_STORE: Final = {"Cache-Control": "no-store"}
 
 _ROUTE_DESCRIPTIONS: Final[Mapping[str, str]] = {
@@ -120,6 +125,25 @@ def _route_error(error: str) -> Response:
     return _error_body(error, _ROUTE_DESCRIPTIONS[error], 400)
 
 
+async def _bounded_body(request: Request) -> bytes | None:
+    """The body, or ``None`` once it exceeds :data:`MAX_BODY_BYTES`.
+
+    A declared ``Content-Length`` over the limit (or not a number) is refused
+    before anything is read; otherwise the stream is read chunk by chunk and
+    abandoned the moment it passes the limit, so a chunked or understated body is
+    never buffered whole."""
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        if not declared.strip().isdigit() or int(declared) > MAX_BODY_BYTES:
+            return None
+    received = bytearray()
+    async for chunk in request.stream():
+        received.extend(chunk)
+        if len(received) > MAX_BODY_BYTES:
+            return None
+    return bytes(received)
+
+
 def _source(request: Request) -> str:
     return request.client.host if request.client is not None else ""
 
@@ -132,14 +156,16 @@ async def register(request: Request) -> Response:
     surface = surface_or_404(request)
     if isinstance(surface, Response):
         return surface
-    raw = await request.body()
-    metadata: object
-    try:
-        metadata = json.loads(raw)
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        # Not JSON at all: handed on as a non-object, so the service applies the
-        # rate limit and records the refused registration as it does for ``[]``.
-        metadata = None
+    raw = await _bounded_body(request)
+    metadata: object = None
+    if raw is not None:
+        try:
+            metadata = json.loads(raw)
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            metadata = None
+    # An oversized or non-JSON body is handed on as a non-object, so the service
+    # applies the rate limit and records the refused registration as it does for
+    # ``[]`` (``invalid_client_metadata``).
     outcome = await run_in_threadpool(
         register_client,
         surface,
@@ -186,7 +212,8 @@ async def token(request: Request) -> Response:
         return surface
     if not _is_form(request):
         return _route_error(INVALID_REQUEST)
-    form = _parse_form(await request.body())
+    raw = await _bounded_body(request)
+    form = None if raw is None else _parse_form(raw)
     if form is None:
         return _route_error(INVALID_REQUEST)
     grant_type = form.get("grant_type")

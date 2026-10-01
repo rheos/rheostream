@@ -13,18 +13,20 @@ browser routes come later), never raw SQL. Every URL comes from the resolved
 :class:`~rheo_core.oauth.OAuthSurface`.
 """
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
 import pytest
+from conftest import ClusterSession
 from harness.oauth_client import (
     FORM_CONTENT_TYPE,
     OAuthTestClient,
     oauth_client,
 )
 from harness.registry import register_harness
+from rheo_app_core.oauth_routes import MAX_BODY_BYTES
 from rheo_core.boundary.context import TOKEN_MALFORMED
 from rheo_core.oauth import OAuthSurface, OAuthUnconfigured, oauth_surface
 from rheo_core.oauth.service import Approval, approve, begin_authorization, pending
@@ -32,7 +34,9 @@ from rheo_core.operations import register_core_operations
 from rheo_core.refs import uuid7
 from rheo_core.routing import RoutingConfig
 from rheo_core.settings import resolve
+from rheo_core.storage import oauth_tables as o
 from rheo_core.tokens.sets import register_core_tools
+from sqlalchemy import func, select
 
 pytestmark = pytest.mark.postgres
 
@@ -435,3 +439,82 @@ async def test_routes_on_another_host_are_404(
         )
     assert registered.status_code == 404, registered.text
     assert token.status_code == 404, token.text
+
+
+# --- bounded bodies -----------------------------------------------------------------
+
+
+async def _chunked(body: bytes) -> AsyncIterator[bytes]:
+    """``body`` as a stream with no ``Content-Length`` (chunked on the wire)."""
+    for start in range(0, len(body), 4096):
+        yield body[start : start + 4096]
+
+
+def _refused_registrations(cluster: ClusterSession) -> int:
+    with cluster.backend.control_engine.connect() as connection:
+        return connection.execute(
+            select(func.count())
+            .select_from(o.oauth_event)
+            .where(
+                o.oauth_event.c.event == "client_registered",
+                o.oauth_event.c.outcome == "refused",
+                o.oauth_event.c.client_id.is_(None),
+            )
+        ).scalar_one()
+
+
+def _oversized_form() -> bytes:
+    body = b"grant_type=refresh_token&client_id=c&refresh_token="
+    return body + b"x" * (MAX_BODY_BYTES + 1 - len(body))
+
+
+@pytest.mark.parametrize("declared", [True, False])
+async def test_token_refuses_a_body_over_the_limit(
+    subdomain_surface: OAuthSurface, address: str, declared: bool
+) -> None:
+    body = _oversized_form()
+    assert len(body) == MAX_BODY_BYTES + 1
+    async with oauth_client(subdomain_surface, client_address=address) as client:
+        response = await client.http.post(
+            subdomain_surface.token_endpoint,
+            content=body if declared else _chunked(body),
+            headers={"Content-Type": FORM_CONTENT_TYPE},
+        )
+    assert ("content-length" in response.request.headers) is declared
+    _assert_error(response, 400, "invalid_request")
+
+
+async def test_token_reads_a_body_at_the_limit(
+    subdomain_surface: OAuthSurface, address: str
+) -> None:
+    """Exactly ``MAX_BODY_BYTES`` is parsed: the unknown refresh token then gets
+    the service's ``invalid_grant``, not the size refusal."""
+    body = _oversized_form()[:-1]
+    async with oauth_client(subdomain_surface, client_address=address) as client:
+        response = await client.http.post(
+            subdomain_surface.token_endpoint,
+            content=_chunked(body),
+            headers={"Content-Type": FORM_CONTENT_TYPE},
+        )
+    _assert_error(response, 400, "invalid_grant")
+
+
+@pytest.mark.parametrize("declared", [True, False])
+async def test_registration_refuses_a_body_over_the_limit_and_records_it(
+    subdomain_surface: OAuthSurface,
+    cluster: ClusterSession,
+    address: str,
+    declared: bool,
+) -> None:
+    prefix = b'{"redirect_uris": ["' + CALLBACK.encode() + b'"], "client_name": "'
+    body = prefix + b"x" * (MAX_BODY_BYTES - len(prefix)) + b'"}'
+    assert len(body) > MAX_BODY_BYTES
+    before = _refused_registrations(cluster)
+    async with oauth_client(subdomain_surface, client_address=address) as client:
+        response = await client.http.post(
+            subdomain_surface.registration_endpoint,
+            content=body if declared else _chunked(body),
+            headers={"Content-Type": "application/json"},
+        )
+    _assert_error(response, 400, "invalid_client_metadata")
+    assert _refused_registrations(cluster) == before + 1
