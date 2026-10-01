@@ -1878,7 +1878,8 @@ The following changes are recorded here.
     scope fingerprint in place of a directory's. The server is unchanged: it compares
     the fingerprint and never learns a path either way. Everything else in entry 9
     still binds: the same sanitation, extraction, receipts and recording gate apply to
-    every session. Headless CLI runs on the machine are captured too.
+    every session. A headless CLI run fires the hooks too, but its prompt carries no human
+    origin, so nothing from it is sent.
 
 ### Preferred but still to validate
 

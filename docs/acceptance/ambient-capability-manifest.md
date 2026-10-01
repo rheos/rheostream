@@ -90,7 +90,8 @@ default) by the time it can be sent. Both are content-free rows.
 - R10: token rotation is an operator step. A lapsed token stops the worker (exit 2) with its
   state intact until `rheo evidence rotate` is piped into `rheo-bridge set-token`.
 - One enrolled directory per directory-scope bridge home. A machine-scope bridge home
-  captures every session on the machine, headless CLI runs included.
+  captures every session on the machine. A headless CLI run is spooled, but its prompt
+  carries no human origin, so the worker sends nothing from it.
 - The slug is lossy (directory scope only): every character outside `[A-Za-z0-9]` maps to `-`, so `/work/a-b`,
   `/work/a_b` and `/work/a/b` share one slug. The worker reads only paths the enrolled
   directory's own hook wrote to the spool and never crawls the projects root, so a session
