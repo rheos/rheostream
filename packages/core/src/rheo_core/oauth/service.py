@@ -589,6 +589,11 @@ def exchange_code(
             return _token_error(INVALID_TARGET)
         if row.account_id is None or row.workspace_id is None:
             return _token_error(INVALID_GRANT)
+        # The same rule refresh applies: no grant is issued into a workspace that
+        # stopped being active between consent and redemption.
+        workspace = get_workspace(conn, row.workspace_id)
+        if workspace is None or workspace.state is not WorkspaceState.ACTIVE:
+            return _token_error(INVALID_GRANT)
         grant_expires_at = _grant_end(surface, now, row.workspace_id)
         expires_at = _access_expiry(surface, now, grant_expires_at)
         try:
@@ -597,6 +602,7 @@ def exchange_code(
                 account_id=row.account_id,
                 workspace_id=row.workspace_id,
                 expires_at=expires_at,
+                now=now,
             )
         except OperationRefused:
             # Raised before any insert, so returning here commits only the burn.

@@ -966,3 +966,61 @@ def test_a_scripted_flow_writes_each_event_once(
     granted = events["authorization_granted"]
     assert (granted.account_id, granted.workspace_id) == (owner_account_id, workspace)
     assert events["authorization_denied"].account_id == owner_account_id
+
+
+# --- review follow-ups ----------------------------------------------------------------
+
+
+def test_redemption_into_a_workspace_no_longer_active_is_refused(
+    cluster: ClusterSession, connector: Connector
+) -> None:
+    """The workspace is archived between consent and redemption: ``invalid_grant``,
+    the code stays burned, nothing is issued (refresh applies the same rule)."""
+    with cluster.backend.control_engine.begin() as connection:
+        set_workspace_state(
+            connection,
+            connector.workspace_id,
+            state=WorkspaceState.UNAVAILABLE,
+            state_detail=None,
+        )
+    result = exchange_code(
+        _surface(), _code_form(connector.client_id, connector.code), now=connector.now
+    )
+    assert result == _invalid("invalid_grant")
+    authorization = _authorization(cluster, connector.code)
+    assert authorization.code_used_at == connector.now
+    assert authorization.token_id is None
+    assert _issued(cluster, connector.account_id, connector.client_id) == 0
+
+
+def test_the_backstop_clamp_uses_the_callers_now(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """A redemption whose ``now`` is 40 days past the wall clock: the stored expiry
+    is the caller's ``now + 60 min`` and ``expires_in`` says exactly that."""
+    later = _now() + timedelta(days=40)
+    client_id = _register(now=later)
+    code = _code(client_id, owner_account_id, workspace, now=later)
+    issued = _redeem(client_id, code, now=later)
+    token_id = _authorization(cluster, code).token_id
+    assert token_id is not None
+    stored = _token(cluster, token_id).expires_at
+    assert stored == later + timedelta(minutes=60)
+    assert issued["expires_in"] == int((stored - later).total_seconds())
+
+
+def test_issue_connector_token_clamps_against_the_given_now(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """``now`` an hour ago and an expiry a year out: clamped to that ``now`` plus
+    ``token_max_days.mcp``, not the wall clock's."""
+    then = _now() - timedelta(hours=1)
+    with cluster.backend.control_engine.begin() as connection:
+        token_id, _, _ = issue_module.issue_connector_token(
+            connection,
+            account_id=owner_account_id,
+            workspace_id=workspace,
+            expires_at=then + timedelta(days=365),
+            now=then,
+        )
+    assert _token(cluster, token_id).expires_at == then + timedelta(days=MCP_MAX_DAYS)

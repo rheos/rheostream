@@ -469,6 +469,7 @@ def issue_connector_token(
     account_id: UUID,
     workspace_id: UUID,
     expires_at: datetime,
+    now: datetime | None = None,
 ) -> tuple[UUID, str, list[str]]:
     """Mint the ``kind='mcp'`` access token an OAuth connector grant is (issue #287).
 
@@ -480,7 +481,9 @@ def issue_connector_token(
     ``insert_access_token``/``insert_access_token_operations`` on the **caller's**
     connection, because a code redemption is one transaction. ``expires_at`` is the
     caller's (the access-token lifetime, already capped by the grant's end), clamped
-    here to ``now + identity.token_max_days.mcp`` as a backstop.
+    here to ``now + identity.token_max_days.mcp`` as a backstop. ``now`` is the
+    caller's instant (the code exchange's), so the clamp and the caller's
+    ``expires_in`` agree; it defaults to the wall clock.
 
     Returns ``(token_id, raw_value, operations)``.
     """
@@ -504,7 +507,8 @@ def issue_connector_token(
     # ``issue_handler`` reads it).
     settings = resolve(workspace_id=workspace_id, source=PostgresOverrideSource())
     max_days = settings.get_int("identity.token_max_days.mcp")
-    expires_at = min(expires_at, datetime.now(UTC) + timedelta(days=max_days))
+    clock = datetime.now(UTC) if now is None else now
+    expires_at = min(expires_at, clock + timedelta(days=max_days))
     value, raw = mint("mcp")
     operations = sorted(snapshot)
     row = insert_access_token(
