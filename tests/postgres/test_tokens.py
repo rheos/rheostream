@@ -93,6 +93,7 @@ _FAR_FUTURE = datetime(2999, 1, 1, tzinfo=UTC)
 READ_ONLY_OPERATIONS = frozenset(
     {
         "core.audit.list",
+        "core.oauth_event.list",
         "core.operation.get",
         "core.operation.list",
         "core.work.failure_summary",

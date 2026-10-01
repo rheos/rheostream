@@ -1131,6 +1131,119 @@
         "title": "ModuleStatus",
         "type": "object"
       },
+      "OAuthEventList": {
+        "description": "The most recent events, newest first (``occurred_at`` then ``event_id``,\nboth descending). A named collection field, like ``AuditList.records``, so a\nlater collection beside it is an additive change.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/OAuthEventRecord"
+            },
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "OAuthEventList",
+        "type": "object"
+      },
+      "OAuthEventListInput": {
+        "description": "How many of the most recent events to return.\n\nBounded like ``AuditListInput.limit`` and for its reason: a negative ``limit``\nwould reach the ``SELECT`` and come back ``handler_failed`` instead of\n``input_invalid``, and nothing prunes ``oauth_event``, so an unbounded read\ngrows for the life of the deployment. Extra fields are ignored, as every other\ncore input does; the workspace is the context's and no field can name one.",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "OAuthEventListInput",
+        "type": "object"
+      },
+      "OAuthEventRecord": {
+        "description": "One ``oauth_event`` row as this operation publishes it.\n\nEvery column of the table, with ``id`` published as ``event_id`` (the renaming\n``AuditRecord`` makes for ``audit_id``). The table holds no secret, no\nclient-supplied text and no URL, so there is nothing further to withhold: no\nclient name, redirect URI, registration source address or hash is reachable\nfrom here. ``token_id`` is the grant's id (a grant is one access-token row).",
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "event": {
+            "title": "Event",
+            "type": "string"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "token_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Id"
+          },
+          "workspace_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id"
+          }
+        },
+        "required": [
+          "event_id",
+          "occurred_at",
+          "event",
+          "outcome",
+          "account_id",
+          "workspace_id",
+          "client_id",
+          "token_id"
+        ],
+        "title": "OAuthEventRecord",
+        "type": "object"
+      },
       "OperationList": {
         "description": "The workspace's most recently created operation records, newest first.\n\n``operations`` is a named collection field rather than a bare list, mirroring\n``FailureList``: a later run adding a second collection beside it is then an\nadditive change a reader may ignore, not a change to the response's own type.",
         "properties": {
@@ -2781,6 +2894,73 @@
           }
         },
         "summary": "core.module.install (mutate)"
+      }
+    },
+    "/api/v1/operations/core.oauth_event.list": {
+      "post": {
+        "operationId": "core.oauth_event.list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OAuthEventListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/OAuthEventList"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.oauth_event.list (read)"
       }
     },
     "/api/v1/operations/core.operation.get": {

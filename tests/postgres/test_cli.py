@@ -402,6 +402,7 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             ENROLLMENT_ROTATE,
             MODULE_ENABLE,
             MODULE_INSTALL,
+            "core.oauth_event.list",
             OPERATION_GET,
             OPERATION_LIST,
             OPERATION_RESOLVE,
