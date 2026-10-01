@@ -15,9 +15,11 @@ the ``mcp`` mount after any restart. Unconfigured, or (subdomain mode) a request
 any host but the identity host, answers the same 404 an unrouted path gets, so a
 deployment with the feature off shows no trace of it.
 
-**The route paths.** Served under the identity surface's declared default prefix,
-which is the prefix ``auth_routes`` serves its ``/auth/*`` routes under; the
-advertised URLs are ``url_for(IDENTITY, "/oauth/...")`` on the surface.
+**The route paths.** Served under the identity surface's declared default prefix
+(``rheo_core.oauth.surface.SERVED_IDENTITY_PATH``), the prefix ``auth_routes``
+serves its ``/auth/*`` routes under. The advertised URLs are
+``url_for(IDENTITY, "/oauth/...")``, and ``oauth_surface`` is unconfigured when
+``routing.identity.path`` names any other prefix, so the two always agree.
 
 **The token endpoint reads only the body.** The Content-Type must be
 ``application/x-www-form-urlencoded``; the body is parsed with
@@ -49,10 +51,9 @@ from rheo_core.oauth.service import (
     refresh,
     register_client,
 )
+from rheo_core.oauth.surface import SERVED_IDENTITY_PATH
 from rheo_core.routing import RoutingConfig, RoutingMode
-from rheo_core.routing.config import IDENTITY_PATH_KEY
 from rheo_core.settings import resolve
-from rheo_core.settings.schema import spec_for
 from starlette.concurrency import run_in_threadpool
 
 from rheo_app_core.auth_routes import normalize_host
@@ -60,7 +61,7 @@ from rheo_app_core.routing import routing_config
 
 router = APIRouter()
 
-_ROUTE_PREFIX: Final = str(spec_for(IDENTITY_PATH_KEY).default)
+_ROUTE_PREFIX: Final = SERVED_IDENTITY_PATH
 REGISTER_PATH: Final = f"{_ROUTE_PREFIX}/oauth/register"
 TOKEN_PATH: Final = f"{_ROUTE_PREFIX}/oauth/token"
 

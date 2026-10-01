@@ -518,3 +518,29 @@ async def test_registration_refuses_a_body_over_the_limit_and_records_it(
         )
     _assert_error(response, 400, "invalid_client_metadata")
     assert _refused_registrations(cluster) == before + 1
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_an_identity_path_off_the_served_prefix_advertises_nothing(
+    monkeypatch: pytest.MonkeyPatch, address: str, mode: str
+) -> None:
+    """FR 21: with ``routing.identity.path`` moved off the prefix the routes are
+    served at, the feature on still advertises nothing: a bare ``Bearer`` 401, the
+    metadata paths 404, and the served ``/auth/oauth/*`` paths 404. The probes are
+    the URLs the default identity path configures."""
+    _set_mode(monkeypatch, mode)
+    served = _configure(monkeypatch)
+    monkeypatch.setenv("RHEO__routing__identity__path", "/id")
+    settings = resolve()
+    moved = oauth_surface(settings, RoutingConfig.from_settings(settings))
+    assert moved == OAuthUnconfigured("setting_invalid")
+    async with oauth_client(served, client_address=address) as client:
+        unauthenticated = await client.mcp_call(None)
+        resource_doc = await client.http.get(served.protected_resource_metadata_url)
+        as_doc = await client.http.get(served.authorization_server_metadata_url)
+        registered = await client.register({"redirect_uris": [CALLBACK]})
+        token = await client.token({"grant_type": "refresh_token"})
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.headers.get_list("www-authenticate") == ["Bearer"]
+    for response in (resource_doc, as_doc, registered, token):
+        assert response.status_code == 404, response.text

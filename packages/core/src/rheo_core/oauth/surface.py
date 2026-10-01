@@ -19,7 +19,11 @@ GitHub provider off (disabled, or enabled with no client id, the rule
 ``identity.provider_config.sync_providers`` applies), an empty allowlist, or any
 setting outside its declared bound all return :class:`OAuthUnconfigured`, as does
 a routing host that makes the protected-resource URL unfit for the ``mcp`` gate's
-``WWW-Authenticate`` header (not ASCII, or carrying a ``"``). The bound
+``WWW-Authenticate`` header (not ASCII, or carrying a ``"``), and a
+``routing.identity.path`` other than :data:`SERVED_IDENTITY_PATH`: the
+``/auth/oauth/*`` routes are served at that declared default prefix, so an
+endpoint ``url_for`` built under another prefix would advertise a URL nothing
+answers (FR 21). The bound
 is normally enforced at settings load; it is checked again here so a settings
 mapping built any other way cannot advertise a broken surface.
 """
@@ -29,6 +33,7 @@ from typing import Final, Literal
 from urllib.parse import urlsplit
 
 from rheo_core.routing import IDENTITY, MCP, RoutingConfig, RoutingMode, url_for
+from rheo_core.routing.config import IDENTITY_PATH_KEY
 from rheo_core.settings import ResolvedSettings
 from rheo_core.settings.schema import spec_for
 
@@ -50,6 +55,11 @@ _INT_KEYS: Final = (
 )
 _GITHUB_ENABLED_KEY: Final = "identity.providers.github.enabled"
 _GITHUB_CLIENT_ID_KEY: Final = "identity.providers.github.client_id"
+
+SERVED_IDENTITY_PATH: Final = str(spec_for(IDENTITY_PATH_KEY).default)
+"""The identity prefix the ``/auth/oauth/*`` routes are registered under (the
+declared default of ``routing.identity.path``); the surface is configured only
+when the routing table names this same prefix."""
 
 PROTECTED_RESOURCE_DOCUMENT: Final = "oauth-protected-resource"
 AUTHORIZATION_SERVER_DOCUMENT: Final = "oauth-authorization-server"
@@ -189,6 +199,8 @@ def oauth_surface(
     if not redirect_uris:
         return OAuthUnconfigured("allowlist_empty")
     if not _allowlist_valid(redirect_uris) or not _ints_in_bounds(settings):
+        return OAuthUnconfigured("setting_invalid")
+    if routing.surfaces.identity.path != SERVED_IDENTITY_PATH:
         return OAuthUnconfigured("setting_invalid")
     resource = url_for(routing, MCP, "/")
     issuer = resource.removesuffix("/")

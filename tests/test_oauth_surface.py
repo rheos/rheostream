@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from rheo_core.oauth import OAuthSurface, OAuthUnconfigured, oauth_surface
+from rheo_core.oauth.surface import SERVED_IDENTITY_PATH
 from rheo_core.routing import MCP, RoutingConfig, url_for
 from rheo_core.settings import ResolvedSettings, resolve
 from rheo_core.settings.schema import freeze_value
@@ -263,5 +264,20 @@ def test_a_header_unsafe_pointer_is_setting_invalid(mode: str, base_host: str) -
     data = json.loads(text)
     data["base_host"] = base_host
     data["public_host"] = base_host
+    routing = RoutingConfig.model_validate(data)
+    assert oauth_surface(_settings(), routing) == OAuthUnconfigured("setting_invalid")
+
+
+@pytest.mark.parametrize("mode", ["subdomain", "path"])
+def test_an_identity_path_the_routes_are_not_served_at_is_setting_invalid(
+    mode: str,
+) -> None:
+    """The ``/auth/oauth/*`` routes are served at the declared default prefix, so a
+    routing table naming another one would advertise endpoints nothing answers."""
+    text = (FIXTURES / f"{mode}-mode.json").read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert data["surfaces"]["identity"]["path"] == SERVED_IDENTITY_PATH
+    assert isinstance(oauth_surface(_settings(), _routing(mode)), OAuthSurface)
+    data["surfaces"]["identity"]["path"] = "/id"
     routing = RoutingConfig.model_validate(data)
     assert oauth_surface(_settings(), routing) == OAuthUnconfigured("setting_invalid")
