@@ -52,6 +52,7 @@ from rheo_core.secrets import SECRET_SCOPE_DENIED, SecretRef, SecretRefusal, Sec
 from rheo_core.sessions import create_session, mint_host_secret
 from rheo_core.sessions.cookies import (
     CONTINUE_COOKIE,
+    OAUTH_REQUEST_COOKIE,
     OAUTH_STATE_COOKIE,
     SESSION_COOKIE,
     build_cookie,
@@ -492,7 +493,10 @@ def test_context_from_session_reflects_the_membership_role(
 # --- the cookie builder (row 38's unit half) ---------------------------------------
 
 
-@pytest.mark.parametrize("name", [SESSION_COOKIE, OAUTH_STATE_COOKIE, CONTINUE_COOKIE])
+@pytest.mark.parametrize(
+    "name",
+    [SESSION_COOKIE, OAUTH_STATE_COOKIE, CONTINUE_COOKIE, OAUTH_REQUEST_COOKIE],
+)
 def test_cookie_builder_sets_the_ratified_attributes(
     name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

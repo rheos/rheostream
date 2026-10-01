@@ -109,6 +109,14 @@ PRODUCTION_KEYS = {
     "identity.providers.github.enabled": False,
     "identity.providers.github.client_id": "",
     "identity.providers.github.client_secret_ref": "",
+    "identity.oauth.enabled": False,
+    "identity.oauth.redirect_uris": ("https://claude.ai/api/mcp/auth_callback",),
+    "identity.oauth.access_token_minutes": 60,
+    "identity.oauth.grant_days": 30,
+    "identity.oauth.refresh_grace_seconds": 10,
+    "identity.oauth.max_clients": 100,
+    "identity.oauth.registrations_per_source_per_hour": 30,
+    "identity.oauth.abandoned_client_minutes": 60,
     "internal.secret_ref": "",
     "work.due_reconcile_seconds": 900,
     "work.max_attempts": 8,
@@ -212,6 +220,39 @@ def ignored_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]
 
 
 # --- the registry and the identity check --------------------------------------------
+
+
+def test_the_oauth_keys_are_deployment_scope_with_their_minimums() -> None:
+    """Issue #287: the eight ``identity.oauth.*`` keys. The surface is off by default
+    and the redirect allowlist is exactly the one Claude connector callback."""
+    minimums = {
+        "identity.oauth.enabled": None,
+        "identity.oauth.redirect_uris": None,
+        "identity.oauth.access_token_minutes": 5,
+        "identity.oauth.grant_days": 1,
+        "identity.oauth.refresh_grace_seconds": 0,
+        "identity.oauth.max_clients": 1,
+        "identity.oauth.registrations_per_source_per_hour": 1,
+        "identity.oauth.abandoned_client_minutes": 15,
+    }
+    declared = {
+        key
+        for key in REGISTRY.keys(origin=CORE_ORIGIN)
+        if key.startswith("identity.oauth.")
+    }
+    assert declared == set(minimums)
+    for key, minimum in minimums.items():
+        spec = spec_for(key)
+        assert (spec.scope, spec.floor, spec.minimum) == (
+            Scope.DEPLOYMENT,
+            None,
+            minimum,
+        )
+        assert spec.explicit_per_workspace is False
+    assert PACKAGE_DEFAULTS["identity.oauth.enabled"] is False
+    assert tuple(PACKAGE_DEFAULTS["identity.oauth.redirect_uris"]) == (
+        "https://claude.ai/api/mcp/auth_callback",
+    )
 
 
 def test_the_registry_declares_every_production_key_and_its_shape() -> None:

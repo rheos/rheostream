@@ -12,6 +12,9 @@ here: it is declared in ``work_index_tables.py`` under its own ``MetaData`` and 
 by the chain's second revision, ``0002_work_index``. Adding it to this module would
 silently change what that frozen first revision creates.
 
+``TOKEN_ISSUERS`` below is the frozen 0001 tuple. Revision ``0003_oauth`` widens the
+live ``access_token_issued_from`` CHECK to ``oauth_tables.TOKEN_ISSUERS_0003``.
+
 Six of the ten (``session``, ``session_secret``, ``session_grant``, ``access_token``,
 ``access_token_operation``, ``identity_provider``) are DDL-only at this run's merge
 SHA: their repository functions arrive in 0b2 with their callers and tests.

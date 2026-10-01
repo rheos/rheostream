@@ -921,6 +921,44 @@ def revoke_access_token(conn: Connection, token_id: UUID) -> None:
         )
 
 
+def rotate_access_token(
+    conn: Connection, token_id: UUID, *, token_hash: bytes, expires_at: datetime
+) -> None:
+    """Replace the row's ``token_hash`` and ``expires_at`` in place. A connector
+    grant is one ``access_token`` row whose value is rotated on every refresh, so
+    the grant's id, its snapshot rows and its audit actor id never change; the
+    superseded value then matches no row. Expiry policy is the caller's, as for
+    ``insert_access_token``."""
+    result = conn.execute(
+        update(t.access_token)
+        .where(t.access_token.c.id == token_id)
+        .values(token_hash=token_hash, expires_at=expires_at)
+    )
+    if result.rowcount != 1:
+        raise StorageRefusal(
+            ACCESS_TOKEN_MISSING, f"access token {token_id} has no row"
+        )
+
+
+def list_access_tokens(
+    conn: Connection,
+    *,
+    workspace_id: UUID | None = None,
+    account_id: UUID | None = None,
+) -> tuple[AccessTokenRow, ...]:
+    """Every token row, oldest first (``created_at``, then ``id``), optionally
+    narrowed to one workspace and/or one account. Revoked and expired rows are
+    included; the caller decides what to show for them."""
+    statement = select(t.access_token).order_by(
+        t.access_token.c.created_at, t.access_token.c.id
+    )
+    if workspace_id is not None:
+        statement = statement.where(t.access_token.c.workspace_id == workspace_id)
+    if account_id is not None:
+        statement = statement.where(t.access_token.c.account_id == account_id)
+    return tuple(_access_token(row) for row in conn.execute(statement).mappings())
+
+
 def delete_access_token(conn: Connection, token_id: UUID) -> None:
     """Delete the row (snapshot rows cascade). Not a revoke."""
     result = conn.execute(delete(t.access_token).where(t.access_token.c.id == token_id))
