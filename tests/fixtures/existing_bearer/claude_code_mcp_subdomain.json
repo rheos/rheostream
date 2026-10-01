@@ -40,7 +40,11 @@
               "description": "Reads one operation record of this workspace by its operation_id: its state, outcome and terminal check. Use it to poll a long-running call or a call held at approval_required. An id from another workspace, or one that does not exist, is not_found.",
               "inputSchema": {
                 "properties": {
-                  "operation_id": "<normalized>"
+                  "operation_id": {
+                    "format": "uuid",
+                    "title": "Operation Id",
+                    "type": "string"
+                  }
                 },
                 "required": [
                   "operation_id"
@@ -127,7 +131,11 @@
                         "title": "Record Type",
                         "type": "string"
                       },
-                      "id": "<normalized>"
+                      "id": {
+                        "format": "uuid",
+                        "title": "Id",
+                        "type": "string"
+                      }
                     },
                     "required": [
                       "module",
@@ -214,7 +222,19 @@
                     "default": null,
                     "title": "Confidence"
                   },
-                  "occurred_at": "<normalized>",
+                  "occurred_at": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Occurred At"
+                  },
                   "about_refs": {
                     "default": [],
                     "items": {
@@ -561,7 +581,19 @@
                     "default": null,
                     "title": "Confidence"
                   },
-                  "occurred_at": "<normalized>",
+                  "occurred_at": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Occurred At"
+                  },
                   "about_refs": {
                     "default": [],
                     "items": {
@@ -772,7 +804,19 @@
                     "default": null,
                     "title": "Confidence"
                   },
-                  "occurred_at": "<normalized>"
+                  "occurred_at": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Occurred At"
+                  }
                 },
                 "required": [
                   "ref",
@@ -796,7 +840,11 @@
                         "title": "Record Type",
                         "type": "string"
                       },
-                      "id": "<normalized>"
+                      "id": {
+                        "format": "uuid",
+                        "title": "Id",
+                        "type": "string"
+                      }
                     },
                     "required": [
                       "module",

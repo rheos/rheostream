@@ -155,23 +155,38 @@
     "how": "hand-authored populated recall response from the invented \"sample garden\" scenario"
   },
   {
-    "path": "tests/fixtures/existing_bearer/box_bot_mcp.json",
+    "path": "tests/fixtures/existing_bearer/box_bot_mcp_path.json",
     "origin": "synthetic",
-    "how": "captured from the unchanged tree with fictional values: an agent_default mcp token listing tools and calling workspace_status, ids, timestamps and lengths normalized"
+    "how": "captured at e68a5c9 (no file outside tests/ differs from base dda9f5e) with fictional values: an agent_default mcp token listing tools and calling workspace_status on the path-mode mcp surface; scalar ids, timestamps and lengths normalized"
   },
   {
-    "path": "tests/fixtures/existing_bearer/bridge_cli_ingest.json",
+    "path": "tests/fixtures/existing_bearer/box_bot_mcp_subdomain.json",
     "origin": "synthetic",
-    "how": "captured from the unchanged tree with fictional values: a bridge cli token ingesting one invented record on the api surface, ids, timestamps and lengths normalized"
+    "how": "captured at e68a5c9 (no file outside tests/ differs from base dda9f5e) with fictional values: an agent_default mcp token listing tools and calling workspace_status on the mcp.example.test host; scalar ids, timestamps and lengths normalized"
   },
   {
-    "path": "tests/fixtures/existing_bearer/claude_code_mcp.json",
+    "path": "tests/fixtures/existing_bearer/bridge_cli_ingest_path.json",
     "origin": "synthetic",
-    "how": "captured from the unchanged tree with fictional values: a CLI-issued agent_default mcp token listing tools and recalling over an empty memory store, ids, timestamps and lengths normalized"
+    "how": "captured at e68a5c9 (no file outside tests/ differs from base dda9f5e) with fictional values: a bridge cli token ingesting one invented record at example.test/api; scalar ids, timestamps and lengths normalized"
+  },
+  {
+    "path": "tests/fixtures/existing_bearer/bridge_cli_ingest_subdomain.json",
+    "origin": "synthetic",
+    "how": "captured at e68a5c9 (no file outside tests/ differs from base dda9f5e) with fictional values: a bridge cli token ingesting one invented record on the api.example.test host; scalar ids, timestamps and lengths normalized"
+  },
+  {
+    "path": "tests/fixtures/existing_bearer/claude_code_mcp_path.json",
+    "origin": "synthetic",
+    "how": "captured at e68a5c9 (no file outside tests/ differs from base dda9f5e) with fictional values: a CLI-issued agent_default mcp token listing tools and recalling over an empty memory store on the path-mode mcp surface; scalar ids, timestamps and lengths normalized"
+  },
+  {
+    "path": "tests/fixtures/existing_bearer/claude_code_mcp_subdomain.json",
+    "origin": "synthetic",
+    "how": "captured at e68a5c9 (no file outside tests/ differs from base dda9f5e) with fictional values: a CLI-issued agent_default mcp token listing tools and recalling over an empty memory store on the mcp.example.test host; scalar ids, timestamps and lengths normalized"
   },
   {
     "path": "tests/fixtures/existing_bearer/unconfigured_401.json",
     "origin": "synthetic",
-    "how": "captured from the unchanged tree: an unauthenticated tools/list POST answered 401 with a bare Bearer challenge, content length normalized"
+    "how": "captured at e68a5c9 (no file outside tests/ differs from base dda9f5e): an unauthenticated tools/list POST through build_mcp_app answered 401 with a bare Bearer challenge; content length normalized"
   }
 ]

@@ -1,0 +1,30 @@
+{
+  "exchanges": [
+    {
+      "label": "core.evidence.ingest",
+      "status": 200,
+      "headers": [
+        [
+          "content-length",
+          "<normalized>"
+        ],
+        [
+          "content-type",
+          "application/json"
+        ]
+      ],
+      "body": {
+        "state": "succeeded",
+        "operation_id": "<normalized>",
+        "result": {
+          "accepted": [
+            "cc1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          ],
+          "deferred": [],
+          "gapped": [],
+          "dropped": []
+        }
+      }
+    }
+  ]
+}
