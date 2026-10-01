@@ -47,6 +47,7 @@ those publish no unregister, so each is swapped for a copy through ``monkeypatch
 import json
 import os
 from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -324,6 +325,7 @@ def _origin(url: str) -> str:
     return f"{scheme}://{rest.split('/', 1)[0]}"
 
 
+@asynccontextmanager
 async def _mounted_client(url: str) -> AsyncIterator[httpx2.AsyncClient]:
     async with lifespan(app):
         async with httpx2.AsyncClient(
@@ -340,7 +342,7 @@ async def _list_and_call(
     url: str, bearer: str, tool: str, arguments: Mapping[str, object]
 ) -> list[dict[str, Any]]:
     headers = {**_MCP_HEADERS, "Authorization": f"Bearer {bearer}"}
-    async for http_client in _mounted_client(url):
+    async with _mounted_client(url) as http_client:
         listed = await http_client.post(
             url, json=_rpc("tools/list", {}, 1), headers=headers
         )
