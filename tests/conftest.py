@@ -313,6 +313,17 @@ def _forget_workspaces(control: Engine, workspace_ids: Collection[UUID]) -> None
         raise RuntimeError(f"refusing to edit registry rows in {database!r}")
     ids = list(workspace_ids)
     with control.begin() as connection:
+        # Connector grants hold their access_token row with RESTRICT (a deliberate
+        # backstop against erasing a grant), so the access_token delete below would
+        # fail. Clear the OAuth rows keyed on these workspaces' tokens first.
+        tokens = "SELECT id FROM control.access_token WHERE workspace_id = ANY(:ids)"
+        for statement in (
+            f"DELETE FROM control.oauth_refresh_token WHERE token_id IN ({tokens})",
+            f"DELETE FROM control.oauth_grant WHERE token_id IN ({tokens})",
+            "UPDATE control.oauth_authorization SET token_id = NULL "
+            f"WHERE token_id IN ({tokens})",
+        ):
+            connection.execute(text(statement), {"ids": ids})
         preparer = connection.dialect.identifier_preparer
         references = connection.execute(
             text(
