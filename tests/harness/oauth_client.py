@@ -1,0 +1,202 @@
+"""A test-double OAuth connector client over the real ASGI app (issue #287).
+
+:class:`OAuthTestClient` speaks to ``rheo_app_core.main.app`` the way a connector
+client does: it registers at the surface's ``registration_endpoint``, redeems and
+refreshes at its ``token_endpoint`` and calls the ``mcp`` surface at its
+``resource``, every URL taken from the :class:`~rheo_core.oauth.OAuthSurface` the
+test resolved, never typed out. It records every secret it is handed or makes
+(access and refresh values, codes, PKCE verifiers and challenges) in
+:attr:`OAuthTestClient.issued`, so a later test can scan logs, rows and bodies for
+any of them.
+
+``httpx2`` rather than ``httpx``: one client drives both the FastAPI routes and the
+MCP transport, and the MCP SDK's transport takes only ``httpx2`` (see the dev
+dependency note in ``pyproject.toml``).
+
+:func:`oauth_client` runs the app's lifespan (the ``mcp`` mount exists only inside
+one) and sets the ASGI client address, which is the registration ``source`` the
+per-source limit counts; tests pass a fresh fictional address so the shared control
+plane's other registrations do not count against them.
+"""
+
+import base64
+import contextlib
+import hashlib
+import secrets
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass, field
+from urllib.parse import urlencode
+
+import httpx2
+from rheo_app_core.main import app, lifespan
+from rheo_core.oauth import OAuthSurface
+
+FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+MCP_HEADERS = {
+    "Accept": "application/json, text/event-stream",
+    "Content-Type": "application/json",
+}
+
+
+@dataclass
+class IssuedSecrets:
+    """Every secret value this client saw, by kind."""
+
+    access: list[str] = field(default_factory=list)
+    refresh: list[str] = field(default_factory=list)
+    code: list[str] = field(default_factory=list)
+    verifier: list[str] = field(default_factory=list)
+    challenge: list[str] = field(default_factory=list)
+
+    def all(self) -> list[str]:
+        return [
+            *self.access,
+            *self.refresh,
+            *self.code,
+            *self.verifier,
+            *self.challenge,
+        ]
+
+
+def pkce_pair() -> tuple[str, str]:
+    """A fresh RFC 7636 verifier and its S256 challenge, computed here, not by the
+    server."""
+    verifier = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+class OAuthTestClient:
+    """The connector side of the flow, against one configured surface."""
+
+    def __init__(self, http: httpx2.AsyncClient, surface: OAuthSurface) -> None:
+        self.http = http
+        self.surface = surface
+        self.issued = IssuedSecrets()
+
+    # --- recording -----------------------------------------------------------------
+
+    def new_pkce(self) -> tuple[str, str]:
+        """A verifier/challenge pair, recorded."""
+        verifier, challenge = pkce_pair()
+        self.issued.verifier.append(verifier)
+        self.issued.challenge.append(challenge)
+        return verifier, challenge
+
+    def record_code(self, code: str) -> None:
+        self.issued.code.append(code)
+
+    def _record_tokens(self, response: httpx2.Response) -> None:
+        if response.status_code != 200:
+            return
+        body = response.json()
+        if isinstance(body.get("access_token"), str):
+            self.issued.access.append(body["access_token"])
+        if isinstance(body.get("refresh_token"), str):
+            self.issued.refresh.append(body["refresh_token"])
+
+    # --- registration and the token endpoint ---------------------------------------
+
+    async def register(self, metadata: object) -> httpx2.Response:
+        """``POST`` ``metadata`` as JSON to the registration endpoint."""
+        return await self.http.post(self.surface.registration_endpoint, json=metadata)
+
+    async def register_raw(
+        self, body: bytes, *, content_type: str = "application/json"
+    ) -> httpx2.Response:
+        return await self.http.post(
+            self.surface.registration_endpoint,
+            content=body,
+            headers={"Content-Type": content_type},
+        )
+
+    async def token(
+        self,
+        form: Mapping[str, str] | None = None,
+        *,
+        body: bytes | None = None,
+        content_type: str = FORM_CONTENT_TYPE,
+        url: str | None = None,
+    ) -> httpx2.Response:
+        """``POST`` to the token endpoint: ``form`` encoded, or a raw ``body`` for
+        the malformed cases. Successful answers' values are recorded."""
+        payload = body if body is not None else urlencode(dict(form or {})).encode()
+        response = await self.http.post(
+            url or self.surface.token_endpoint,
+            content=payload,
+            headers={"Content-Type": content_type},
+        )
+        self._record_tokens(response)
+        return response
+
+    async def redeem(
+        self, code: str, client_id: str, redirect_uri: str, verifier: str
+    ) -> httpx2.Response:
+        return await self.token(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "code_verifier": verifier,
+            }
+        )
+
+    async def refresh(self, refresh_token: str, client_id: str) -> httpx2.Response:
+        return await self.token(
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+            }
+        )
+
+    # --- the mcp surface -----------------------------------------------------------
+
+    async def mcp_call(
+        self,
+        access_token: str | None,
+        method: str = "tools/list",
+        params: Mapping[str, object] | None = None,
+    ) -> httpx2.Response:
+        """One JSON-RPC request to the surface's resource, with the bearer."""
+        headers = dict(MCP_HEADERS)
+        if access_token is not None:
+            headers["Authorization"] = f"Bearer {access_token}"
+        return await self.http.post(
+            self.surface.resource,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": dict(params or {}),
+            },
+            headers=headers,
+        )
+
+    # --- browser half: the authorize, login and consent chain ----------------------
+    # The browser routes add their methods here (authorize, consent, the login
+    # chain through the test identity provider), on this same class, recording the
+    # code they obtain through :meth:`record_code`.
+
+
+@contextlib.asynccontextmanager
+async def oauth_client(
+    surface: OAuthSurface, *, client_address: str = "192.0.2.1"
+) -> AsyncIterator[OAuthTestClient]:
+    """An :class:`OAuthTestClient` over ``app`` with its lifespan running, whose
+    requests arrive from ``client_address`` (a TEST-NET address by default)."""
+    async with lifespan(app):
+        transport = httpx2.ASGITransport(app=app, client=(client_address, 40000))
+        async with httpx2.AsyncClient(transport=transport) as http:
+            yield OAuthTestClient(http, surface)
+
+
+__all__ = [
+    "FORM_CONTENT_TYPE",
+    "IssuedSecrets",
+    "OAuthTestClient",
+    "oauth_client",
+    "pkce_pair",
+]
