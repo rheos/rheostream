@@ -28,6 +28,12 @@ callers in both routing modes (the flagship runs subdomain mode, and the cases o
 - ``unconfigured_401``: an unauthenticated POST through ``build_mcp_app`` directly,
   which answers 401 with ``www-authenticate: Bearer`` exactly.
 
+Each ``_path``/``_subdomain`` pair is byte-identical by design: no response field
+carries the host. What proves the subdomain case really ran in subdomain mode is
+therefore not the golden but the request: each test asserts the URL and ``Host`` it
+sent against :data:`_SURFACE_URLS`, and that the same app refuses the other mode's
+``mcp`` URL, so a silently ignored ``RHEO__routing__mode`` goes red.
+
 **Normalization is one closed list, :data:`NORMALIZATION`, and nothing wider.** The
 clock is a per-module ``_now()`` in several modules and ids come from
 ``rheo_core.refs.uuid7``, so there is no single seam to pin; instead the values at the
@@ -392,9 +398,39 @@ def _rpc(method: str, params: Mapping[str, object], rpc_id: int) -> dict[str, ob
     return {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": dict(params)}
 
 
+_SURFACE_URLS: Final[dict[str, dict[str, str]]] = {
+    "path": {MCP: f"https://{BASE_HOST}/mcp/", API: f"https://{BASE_HOST}"},
+    "subdomain": {MCP: f"https://mcp.{BASE_HOST}/", API: f"https://api.{BASE_HOST}"},
+}
+"""Where each mode puts the two surfaces, written out. The ``api`` entry is the
+origin the bridge prefixes ``INGEST_PATH`` with. Asserted against ``url_for`` and
+against the request each capture really sent, so a ``RHEO__routing__mode`` the app
+silently ignored would make the two modes' captures the same requests twice."""
+
+_REFUSED_STATUSES: Final = frozenset({404, 405, 421})
+"""What the app answers a URL that belongs to the other mode: the router's or
+FastAPI's 404/405, or the transport's 421 for a ``Host`` outside its allow-list. Never
+the gate's 401 or a 200, either of which would mean the other mode's URL was served."""
+
+
+def _other_mode(mode: str) -> str:
+    return "subdomain" if mode == "path" else "path"
+
+
+def _assert_sent_to(response: httpx2.Response, expected: str) -> None:
+    """The request behind ``response`` went to ``expected``'s host (and, for a URL
+    with a path, under that path)."""
+    sent = str(response.request.url)
+    assert sent.startswith(expected), (sent, expected)
+    assert response.request.headers["host"] == _origin(expected).split("://", 1)[1]
+
+
 async def _list_and_call(
-    url: str, bearer: str, tool: str, arguments: Mapping[str, object]
+    mode: str, bearer: str, tool: str, arguments: Mapping[str, object]
 ) -> list[dict[str, Any]]:
+    url = _surface_url(MCP, "/")
+    assert url == _SURFACE_URLS[mode][MCP], (mode, url)
+    wrong = _SURFACE_URLS[_other_mode(mode)][MCP]
     headers = {**_MCP_HEADERS, "Authorization": f"Bearer {bearer}"}
     async with _mounted_client(url) as http_client:
         listed = await http_client.post(
@@ -405,6 +441,12 @@ async def _list_and_call(
             json=_rpc("tools/call", {"name": tool, "arguments": dict(arguments)}, 2),
             headers=headers,
         )
+        refused = await http_client.post(
+            wrong, json=_rpc("tools/list", {}, 3), headers=headers
+        )
+    _assert_sent_to(listed, url)
+    _assert_sent_to(called, url)
+    assert refused.status_code in _REFUSED_STATUSES, (mode, wrong, refused.text)
     return [_exchange("tools/list", listed), _exchange(f"tools/call {tool}", called)]
 
 
@@ -442,7 +484,7 @@ async def test_a_claude_code_token_lists_and_recalls_as_before(
 ) -> None:
     captures = [
         await _list_and_call(
-            _surface_url(MCP, "/"),
+            routing_mode,
             _cli_issue(capsys, recallatron_workspace, owner_account_id),
             "recallatron_recall",
             {"query": "where is the spare kettle"},
@@ -472,7 +514,7 @@ async def test_a_box_bot_token_lists_and_calls_as_before(
 ) -> None:
     captures = [
         await _list_and_call(
-            _surface_url(MCP, "/"),
+            routing_mode,
             _operator_issue(recallatron_workspace, owner_account_id),
             "workspace_status",
             {},
@@ -549,16 +591,26 @@ async def test_a_bridge_token_ingests_as_before(
         "gaps": [],
     }
     api_origin = _origin(_surface_url(API, "/"))
+    assert api_origin == _SURFACE_URLS[routing_mode][API], (routing_mode, api_origin)
     assert INGEST_PATH == f"/api/v1/operations/{EVIDENCE_INGEST}"
+    headers = {"Authorization": f"Bearer {value}"}
     captures: list[list[dict[str, Any]]] = []
     async with _mounted_client(api_origin) as client:
         for _ in range(2):
             response = await client.post(
-                f"{api_origin}{INGEST_PATH}",
-                headers={"Authorization": f"Bearer {value}"},
-                json=payload,
+                f"{api_origin}{INGEST_PATH}", headers=headers, json=payload
             )
+            _assert_sent_to(response, f"{api_origin}{INGEST_PATH}")
             captures.append([_exchange(EVIDENCE_INGEST, response)])
+        # The core app serves ``/api/*`` on any ``Host`` in either mode (the edge's
+        # host rules separate ``api.`` from the rest), so the other mode's api URL
+        # is not refused here and cannot be the negative. The ``mcp`` surface is
+        # what the mode moves inside this app, so the other mode's ``mcp`` URL is.
+        wrong = _SURFACE_URLS[_other_mode(routing_mode)][MCP]
+        refused = await client.post(
+            wrong, headers={**_MCP_HEADERS, **headers}, json=_rpc("tools/list", {}, 1)
+        )
+    assert refused.status_code in _REFUSED_STATUSES, (wrong, refused.text)
     _assert_matches_golden(f"bridge_cli_ingest_{routing_mode}", *captures)
 
 
