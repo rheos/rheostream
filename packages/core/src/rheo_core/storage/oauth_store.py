@@ -369,10 +369,13 @@ def set_authorization_token(
 
 def delete_expired_authorizations(conn: Connection, *, before: datetime) -> int:
     """Delete authorization rows whose request and code both ended before
-    ``before`` (the service passes a day ago). Returns how many."""
+    ``before`` (the service passes a day ago) and that issued nothing. A redeemed
+    row (``token_id`` set) is kept: it is what lets a late replay of its code
+    revoke what the code issued (FR 14). Returns how many."""
     authorization = o.oauth_authorization
     result = conn.execute(
         delete(authorization).where(
+            authorization.c.token_id.is_(None),
             authorization.c.expires_at < before,
             or_(
                 authorization.c.code_expires_at.is_(None),

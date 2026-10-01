@@ -363,7 +363,9 @@ def revoke_handler(
                 NOT_FOUND, f"no access token {model_input.token_id} in this workspace"
             )
         revoke_access_token(connection, model_input.token_id)
-        if row.issued_from == CONNECTOR_ISSUED_FROM:
+        # Only the revoke that ended the grant writes the event; a re-revoke of an
+        # already-revoked row changes nothing worth recording.
+        if row.issued_from == CONNECTOR_ISSUED_FROM and row.revoked_at is None:
             grant = oauth_store.get_grant(connection, row.id)
             oauth_store.insert_event(
                 connection,
@@ -477,7 +479,8 @@ def issue_connector_token(
     ``set_empty``, as :func:`issue_handler` does. Writes through
     ``insert_access_token``/``insert_access_token_operations`` on the **caller's**
     connection, because a code redemption is one transaction. ``expires_at`` is the
-    caller's (the access-token lifetime, already capped by the grant's end).
+    caller's (the access-token lifetime, already capped by the grant's end), clamped
+    here to ``now + identity.token_max_days.mcp`` as a backstop.
 
     Returns ``(token_id, raw_value, operations)``.
     """
@@ -496,6 +499,12 @@ def issue_connector_token(
         raise OperationRefused(
             SET_EMPTY, "no agent_default operation survives the member's role"
         )
+    # Backstop: whatever the caller computed, a connector token never outlives what
+    # an operator-minted ``mcp`` token may (resolved under its floor, as
+    # ``issue_handler`` reads it).
+    settings = resolve(workspace_id=workspace_id, source=PostgresOverrideSource())
+    max_days = settings.get_int("identity.token_max_days.mcp")
+    expires_at = min(expires_at, datetime.now(UTC) + timedelta(days=max_days))
     value, raw = mint("mcp")
     operations = sorted(snapshot)
     row = insert_access_token(

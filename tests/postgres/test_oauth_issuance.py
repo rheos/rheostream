@@ -231,6 +231,12 @@ def test_revoking_a_connector_token_writes_grant_revoked(
     )
     assert outcome.ok, outcome
     assert _events(cluster, token_id) == [("grant_revoked", "succeeded")]
+    # A second revoke of the already-revoked grant writes no second event.
+    again = dispatch(
+        _operator_ctx(workspace), TOKEN_REVOKE, {"token_id": str(token_id)}
+    )
+    assert again.ok, again
+    assert _events(cluster, token_id) == [("grant_revoked", "succeeded")]
     with cluster.backend.control_engine.connect() as connection:
         event = (
             connection.execute(
@@ -293,6 +299,7 @@ def test_client_lifecycle_predicates(
             "abandoned",
             "fresh",
             "in_flight",
+            "code_in_flight",
             "idle_live",
             "revoked",
             "past_end",
@@ -311,6 +318,26 @@ def test_client_lifecycle_predicates(
             state=None,
             created_at=now,
             expires_at=now + timedelta(minutes=10),
+        )
+        # The request window has closed but the code it issued is still live.
+        late = oauth_store.insert_authorization(
+            connection,
+            request_hash=uuid7().bytes * 2,
+            client_id=names["code_in_flight"],
+            redirect_uri="https://claude.ai/api/mcp/auth_callback",
+            code_challenge="E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            state=None,
+            created_at=now - timedelta(minutes=20),
+            expires_at=now - timedelta(minutes=10),
+        )
+        oauth_store.record_authorization_decision(
+            connection,
+            late.id,
+            decided_at=now - timedelta(seconds=5),
+            account_id=owner_account_id,
+            workspace_id=workspace,
+            code_hash=uuid7().bytes * 2,
+            code_expires_at=now + timedelta(seconds=55),
         )
     live_end = now + timedelta(days=30)
     idle = _grant(
@@ -342,8 +369,9 @@ def test_client_lifecycle_predicates(
             .values(expires_at=now - timedelta(hours=2))
         )
         revoke_access_token(connection, revoked)
-    # Counted: fresh (pending, young), in_flight (pending, sign-in live), idle_live.
-    assert _counted(cluster, now) - baseline == 3
+    # Counted: fresh (pending, young), in_flight (pending, sign-in live),
+    # code_in_flight (request expired, code live), idle_live.
+    assert _counted(cluster, now) - baseline == 4
     with cluster.backend.control_engine.begin() as connection:
         oauth_store.delete_abandoned_clients(
             connection, now=now, abandoned_before=now - timedelta(minutes=60)
@@ -359,3 +387,79 @@ def test_client_lifecycle_predicates(
     with cluster.backend.control_engine.connect() as connection:
         client = oauth_store.get_client(connection, names["revoked"])
     assert client is not None and client.client_name == "Example connector"
+
+
+def test_snapshot_strips_non_issuable_and_discover_from_the_expansion(
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even an expansion that named them would not carry them: the strip, not the
+    set's construction, is what keeps them out."""
+    leaked = OWNER_SNAPSHOT | {"core.token.issue", DISCOVER_THEN_CALL_OPERATION}
+    monkeypatch.setattr(issue_module, "agent_default", lambda: leaked)
+    token_id, _, operations = _issue(cluster, owner_account_id, workspace)
+    with cluster.backend.control_engine.connect() as connection:
+        stored = list_access_token_operations(connection, token_id)
+    assert "core.token.issue" not in stored
+    assert DISCOVER_THEN_CALL_OPERATION not in stored
+    assert stored == frozenset(operations) == OWNER_SNAPSHOT
+
+
+def test_expiry_beyond_the_mcp_cap_is_clamped(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """A caller's ``expires_at`` past ``identity.token_max_days.mcp`` (default 30)
+    is clamped to the cap."""
+    before = datetime.now(UTC)
+    with cluster.backend.control_engine.begin() as connection:
+        token_id, _, _ = issue_connector_token(
+            connection,
+            account_id=owner_account_id,
+            workspace_id=workspace,
+            expires_at=before + timedelta(days=365),
+        )
+    after = datetime.now(UTC)
+    with cluster.backend.control_engine.connect() as connection:
+        row = get_access_token(connection, token_id)
+    assert row is not None
+    assert before + timedelta(days=30) <= row.expires_at <= after + timedelta(days=30)
+
+
+def test_expired_authorization_cleanup_keeps_redeemed_rows(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """A redeemed row older than the cutoff survives (a late replay must still find
+    what its code issued); an unredeemed expired one is deleted."""
+    now = datetime.now(UTC)
+    client_id = f"client-cleanup-{uuid7().hex}"
+    _register_client(cluster, client_id, now - timedelta(days=3))
+    token_id, _, _ = _issue(cluster, owner_account_id, workspace)
+    with cluster.backend.control_engine.begin() as connection:
+        rows = {}
+        for key in ("redeemed", "unredeemed"):
+            rows[key] = oauth_store.insert_authorization(
+                connection,
+                request_hash=uuid7().bytes * 2,
+                client_id=client_id,
+                redirect_uri="https://claude.ai/api/mcp/auth_callback",
+                code_challenge="E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                state=None,
+                created_at=now - timedelta(days=2, minutes=10),
+                expires_at=now - timedelta(days=2),
+            ).id
+        oauth_store.set_authorization_token(
+            connection, rows["redeemed"], token_id=token_id
+        )
+        oauth_store.delete_expired_authorizations(
+            connection, before=now - timedelta(days=1)
+        )
+        left = set(
+            connection.execute(
+                select(o.oauth_authorization.c.id).where(
+                    o.oauth_authorization.c.client_id == client_id
+                )
+            ).scalars()
+        )
+    assert left == {rows["redeemed"]}
