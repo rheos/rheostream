@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from conftest import ClusterSession
+from conftest import ClusterSession, MakeWorkspace
 from harness.registry import add_member, register_harness
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
@@ -42,6 +42,7 @@ from rheo_core.operations import (
 from rheo_core.refs import uuid7
 from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
 from rheo_core.storage import oauth_store
+from rheo_core.storage.control_plane import insert_account
 from rheo_core.storage.postgres import get_backend
 from rheo_core.tokens.sets import register_core_tools
 
@@ -302,6 +303,41 @@ def test_a_member_is_refused_role_not_permitted(
     assert not outcome.ok
     assert outcome.state == ROLE_NOT_PERMITTED
     assert outcome.result is None
+
+
+def test_another_workspace_s_rows_are_never_shown(
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    make_workspace: MakeWorkspace,
+) -> None:
+    """Two workspaces, two accounts, one flow each: neither the owner nor the
+    operator of the first is shown a row bound to the second. Pins the scope
+    predicate on purpose: with one seeded workspace, ``workspace_id IS NOT NULL``
+    goes red only if some other test happened to leave bound rows behind."""
+    with cluster.backend.control_engine.begin() as connection:
+        other_owner = insert_account(connection, display_name="owner-two").id
+    other_workspace = make_workspace(owner=other_owner)
+    mine = _flow(owner_account_id, workspace)
+    theirs = _flow(other_owner, other_workspace)
+
+    owner_view = _listing(_owner_session(workspace, owner_account_id), {"limit": 500})
+    assert mine in {event.client_id for event in owner_view.events}
+    assert theirs not in {event.client_id for event in owner_view.events}
+    assert other_owner not in {event.account_id for event in owner_view.events}
+    assert other_workspace not in {event.workspace_id for event in owner_view.events}
+
+    # The operator is shown the second flow's two unbound rows (its registration
+    # and its deny name no workspace), and none of its five bound ones.
+    operator_view = _listing(_operator(workspace), {"limit": 500})
+    assert mine in {event.client_id for event in operator_view.events}
+    assert other_workspace not in {event.workspace_id for event in operator_view.events}
+    theirs_shown = [e for e in operator_view.events if e.client_id == theirs]
+    assert sorted(event.event for event in theirs_shown) == [
+        "authorization_denied",
+        "client_registered",
+    ]
+    assert all(event.workspace_id is None for event in theirs_shown)
 
 
 @pytest.mark.parametrize("limit", [0, 501])
