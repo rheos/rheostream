@@ -339,10 +339,20 @@ def unified_diff(path: Path, before: str | None, after: str) -> str:
     )
 
 
-def write_atomic(path: Path, text: str, *, expected_before: str | None = None) -> None:
+def write_atomic(
+    path: Path,
+    text: str,
+    *,
+    expected_before: str | None = None,
+    expect_absent: bool = False,
+) -> None:
     """Replace ``path`` with ``text``: temp file, fsync, rename, fsync the dir.
 
     A file that exists keeps its permission bits; a new one is 0600.
+    ``expect_absent`` creates the file only if nothing holds the name yet:
+    the temp file is hard-linked into place, so a file someone else created
+    since the read (Claude Code writes the user settings file itself) is
+    refused, never overwritten.
     """
     check_location(path)
     try:
@@ -358,7 +368,16 @@ def write_atomic(path: Path, text: str, *, expected_before: str | None = None) -
         os.chmod(tmp_name, mode)
         if expected_before is not None:
             ensure_unchanged(path, expected_before)
-        os.replace(tmp_name, path)
+        if expect_absent:
+            try:
+                os.link(tmp_name, path)
+            except FileExistsError:
+                raise SettingsError(
+                    f"{path} was created since it was read; refusing to edit"
+                ) from None
+            Path(tmp_name).unlink()
+        else:
+            os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise

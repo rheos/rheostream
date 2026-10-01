@@ -1822,6 +1822,29 @@ def test_machine_install_edits_the_user_settings_and_remove_restores_it(
     assert machine.user_settings.read_text() == USER_SETTINGS_TEXT
 
 
+def test_install_refuses_a_settings_file_created_after_it_was_read(
+    machine: Dirs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    machine.claude_home.mkdir(parents=True, exist_ok=True)
+    real_read = settings_file.read
+
+    def read_then_someone_creates(path: Path) -> tuple[Any, str | None]:
+        found = real_read(path)
+        path.write_text(USER_SETTINGS_TEXT)
+        return found
+
+    monkeypatch.setattr(settings_file, "read", read_then_someone_creates)
+    with pytest.raises(cli.CliError, match="created since it was read"):
+        install_machine(machine)
+    assert machine.user_settings.read_text() == USER_SETTINGS_TEXT
+    assert not config_of(machine).hook_created_settings
+    # No temp file is left beside it.
+    assert sorted(p.name for p in machine.claude_home.iterdir()) == [
+        "projects",
+        "settings.json",
+    ]
+
+
 def test_machine_install_refuses_an_enrolled_dir(machine: Dirs) -> None:
     with pytest.raises(cli.CliError, match="omit --enrolled-dir"):
         cli.install_hook(

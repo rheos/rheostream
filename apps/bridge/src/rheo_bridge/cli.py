@@ -307,13 +307,15 @@ def set_scope(
 ) -> int:
     """Turn a directory-scope bridge into a machine-scope one, in place.
 
-    The machine key, the state and the cursors stay, so every line the server
-    already holds keeps its native key and is answered as held. The enrollment
-    does not carry over: the request's project fingerprint changes, so the old
-    token is deleted and the new enrollment's command is printed, along with
-    the old enrollment's revoke command for once its pending rows have
-    settled. The worker entry point is re-pointed at the checkout running
-    this command, as ``init`` does.
+    The machine key, the state and the cursors stay, so lines already sent are
+    not read again. The server dedupes per enrollment, though, so a line that
+    is replayed later (a session resumed after its tombstone expired, a
+    rewritten transcript, a batch whose answer was lost) is stored again under
+    the new enrollment. The enrollment does not carry over: the request's
+    project fingerprint changes, so the old token is deleted and the new
+    enrollment's command is printed, along with the old enrollment's revoke
+    command for once its pending rows have settled. The worker entry point is
+    re-pointed at the checkout running this command, as ``init`` does.
 
     Refuses while the directory hook is still installed (``remove-hook``
     first), so no session is spooled by two hooks at once.
@@ -547,7 +549,9 @@ def install_hook(
         return EXIT_OK
     path.parent.mkdir(exist_ok=True)
     try:
-        settings_file.write_atomic(path, after, expected_before=before)
+        settings_file.write_atomic(
+            path, after, expected_before=before, expect_absent=before is None
+        )
     except settings_file.SettingsError as exc:
         raise CliError(str(exc)) from exc
     # Record what this install made, so remove-hook can put the file back.
