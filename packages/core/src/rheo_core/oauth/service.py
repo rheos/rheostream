@@ -666,18 +666,24 @@ def refresh(
             grace = timedelta(seconds=surface.lifetimes.refresh_grace_seconds)
             if now - row.rotated_at < grace:
                 return _token_error(INVALID_GRANT)
-            _revoke_if_live(conn, row.token_id)
+            ended = _revoke_if_live(conn, row.token_id)
             token = get_access_token(conn, row.token_id)
-            oauth_store.insert_event(
-                conn,
-                event=REFRESH_REUSE_REVOKED,
-                outcome=REFUSED,
-                occurred_at=now,
-                client_id=None if grant is None else grant.client_id,
-                account_id=None if token is None else token.account_id,
-                workspace_id=None if token is None else token.workspace_id,
-                token_id=row.token_id,
-            )
+            # grant_revoked only when this reuse ended a live grant, the rule the
+            # code replay and ``revoke_handler`` follow.
+            events = [(REFRESH_REUSE_REVOKED, REFUSED)]
+            if ended:
+                events.append((GRANT_REVOKED, SUCCEEDED))
+            for event, outcome in events:
+                oauth_store.insert_event(
+                    conn,
+                    event=event,
+                    outcome=outcome,
+                    occurred_at=now,
+                    client_id=None if grant is None else grant.client_id,
+                    account_id=None if token is None else token.account_id,
+                    workspace_id=None if token is None else token.workspace_id,
+                    token_id=row.token_id,
+                )
             return _token_error(INVALID_GRANT)
         token = get_access_token(conn, row.token_id)
         if grant is None or token is None:

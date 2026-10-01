@@ -15,6 +15,9 @@ spec's "grant id" is the grant's access-token id, ``token_id``.
 import base64
 import dataclasses
 import hashlib
+import threading
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -512,11 +515,22 @@ def test_reuse_after_the_grace_revokes_the_grant(
     assert result == _invalid("invalid_grant")
     assert _token(cluster, token_id).revoked_at is not None
     assert _refresh_rows(cluster, token_id) == rows
-    reuse = _events(cluster, connector.client_id)[-1]
+    reuse, ended = _events(cluster, connector.client_id)[-2:]
     assert (reuse.event, reuse.outcome) == ("refresh_reuse_revoked", "refused")
-    assert reuse.token_id == token_id
-    assert reuse.account_id == connector.account_id
-    assert reuse.workspace_id == connector.workspace_id
+    assert (ended.event, ended.outcome) == ("grant_revoked", "succeeded")
+    for row in (reuse, ended):
+        assert row.token_id == token_id
+        assert row.account_id == connector.account_id
+        assert row.workspace_id == connector.workspace_id
+    # A second reuse of the already-revoked grant writes no second grant_revoked.
+    refresh(
+        _surface(),
+        _refresh_form(connector.client_id, _str(first, "refresh_token")),
+        now=rotated_at + timedelta(seconds=20),
+    )
+    words = _event_words(cluster, connector.client_id)
+    assert words.count(("grant_revoked", "succeeded")) == 1
+    assert words.count(("refresh_reuse_revoked", "refused")) == 2
     assert _state(_str(second, "access_token")) == "token_revoked"
     # And the newest refresh token is dead with it.
     assert refresh(
@@ -1024,3 +1038,105 @@ def test_issue_connector_token_clamps_against_the_given_now(
             now=then,
         )
     assert _token(cluster, token_id).expires_at == then + timedelta(days=MCP_MAX_DAYS)
+
+
+# --- the row locks: concurrent refreshes and redemptions serialize -------------------
+
+HOLD_SECONDS = 0.5
+"""How long the first caller holds its transaction open after its locked read, so
+the second caller reaches its own read while the first is still in flight."""
+
+
+def _race(
+    monkeypatch: pytest.MonkeyPatch,
+    pause_in: str,
+    call: Callable[[], object],
+) -> list[object]:
+    """Run ``call`` on two threads. The first to reach ``oauth_store.<pause_in>``
+    (the step's first call after its ``FOR UPDATE`` read) stops there, inside its
+    open transaction, until the second has started and had ``HOLD_SECONDS`` to
+    reach its own read. With the lock the second blocks until the first commits;
+    without it the second reads the same unlocked row."""
+    real = getattr(oauth_store, pause_in)
+    first_in = threading.Event()
+    release = threading.Event()
+    claimed = threading.Lock()
+    state = {"paused": False}
+
+    def paused(*args: object, **kwargs: object) -> object:
+        with claimed:
+            pause = not state["paused"]
+            state["paused"] = True
+        if pause:
+            first_in.set()
+            assert release.wait(timeout=30)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(oauth_store, pause_in, paused)
+    results: list[object] = [None, None]
+
+    def run(slot: int) -> None:
+        try:
+            results[slot] = call()
+        except Exception as exc:  # noqa: BLE001 - the race's loser may raise
+            results[slot] = exc
+
+    first = threading.Thread(target=run, args=(0,))
+    second = threading.Thread(target=run, args=(1,))
+    first.start()
+    assert first_in.wait(timeout=30)
+    second.start()
+    time.sleep(HOLD_SECONDS)
+    release.set()
+    first.join(timeout=30)
+    second.join(timeout=30)
+    assert not first.is_alive() and not second.is_alive()
+    return results
+
+
+def test_two_concurrent_refreshes_serialize_on_the_refresh_row(
+    cluster: ClusterSession, connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token_id, refresh_token = _redeemed(cluster, connector)
+    at = connector.now + timedelta(minutes=50)
+    results = _race(
+        monkeypatch,
+        "get_grant",
+        lambda: refresh(
+            _surface(), _refresh_form(connector.client_id, refresh_token), now=at
+        ),
+    )
+    successes = [result for result in results if isinstance(result, dict)]
+    assert len(successes) == 1, results
+    assert [r for r in results if not isinstance(r, dict)] == [
+        _invalid("invalid_grant")
+    ]
+    live = [row for row in _refresh_rows(cluster, token_id) if row[1] is None]
+    assert live == [(_sha(_str(successes[0], "refresh_token")), None)]
+    assert _token(cluster, token_id).revoked_at is None
+    assert isinstance(_resolves(_str(successes[0], "access_token")), ResolvedToken)
+
+
+def test_two_concurrent_redemptions_serialize_on_the_code_row(
+    cluster: ClusterSession, connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = _race(
+        monkeypatch,
+        "mark_code_used",
+        lambda: exchange_code(
+            _surface(),
+            _code_form(connector.client_id, connector.code),
+            now=connector.now,
+        ),
+    )
+    assert len([result for result in results if isinstance(result, dict)]) == 1, results
+    assert [r for r in results if not isinstance(r, dict)] == [
+        _invalid("invalid_grant")
+    ]
+    with cluster.backend.control_engine.connect() as connection:
+        issued = connection.execute(
+            select(func.count())
+            .select_from(t.access_token)
+            .where(t.access_token.c.account_id == connector.account_id)
+        ).scalar_one()
+    assert issued == 1
