@@ -120,6 +120,11 @@ def test_each_local_row_is_pending_the_gates_and_names_its_limits(row: str) -> N
     body = _rows(_text())[row]
     assert "operative, pending CP-A/CP-B for real use" in _field(body, "State")
     limits = _field(body, "Not guaranteed")
-    for limit in ("R4", "R10", "one enrolled directory per bridge home", "slug"):
+    for limit in (
+        "R4",
+        "R10",
+        "one enrolled directory per directory-scope bridge home",
+        "slug",
+    ):
         assert limit.lower() in limits.lower(), f"{row} does not name {limit}"
     assert _NODE_ID.findall(_field(body, "Entrypoint"))

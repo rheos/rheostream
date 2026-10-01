@@ -26,6 +26,12 @@ DEFAULT_MAX_RECORDS = 1000
 DEFAULT_MAX_PENDING_HOURS = 24
 DEFAULT_SETTLE_SECONDS = 5
 
+# ``directory`` captures the sessions started in ``enrolled_dir``; ``machine``
+# captures every Claude Code session on the machine and has no ``enrolled_dir``.
+SCOPE_DIRECTORY = "directory"
+SCOPE_MACHINE = "machine"
+SCOPES = (SCOPE_DIRECTORY, SCOPE_MACHINE)
+
 
 class ConfigError(ValueError):
     """``config.json`` exists but is not a valid bridge configuration."""
@@ -34,8 +40,9 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class Config:
     api_url: str
-    # The realpath of the directory whose sessions are captured.
-    enrolled_dir: str
+    # The realpath of the directory whose sessions are captured; ``None`` in
+    # machine scope.
+    enrolled_dir: str | None
     # The drain entry point of the checkout venv that ran ``init``; not
     # necessarily inside ``enrolled_dir``.
     worker_argv: list[str]
@@ -54,9 +61,10 @@ class Config:
     max_records: int = DEFAULT_MAX_RECORDS
     max_pending_hours: int = DEFAULT_MAX_PENDING_HOURS
     settle_seconds: int = DEFAULT_SETTLE_SECONDS
+    scope: str = SCOPE_DIRECTORY
 
 
-_STRING_KEYS = ("api_url", "enrolled_dir", "install_salt")
+_STRING_KEYS = ("api_url", "install_salt")
 # Absent or null until ``set-token`` stores them.
 _OPTIONAL_STRING_KEYS = ("enrollment_id", "token_expires_at")
 _INT_KEYS = ("max_bytes", "max_records", "max_pending_hours", "settle_seconds")
@@ -71,6 +79,18 @@ def _from_mapping(raw: object) -> Config:
         if not isinstance(value, str) or not value:
             raise ConfigError(f"config.json: {key} must be a non-empty string")
         values[key] = value
+    # An older config has no scope key: it is a directory-scope bridge.
+    scope = raw.get("scope", SCOPE_DIRECTORY)
+    if scope not in SCOPES:
+        raise ConfigError(f"config.json: scope must be one of {', '.join(SCOPES)}")
+    values["scope"] = scope
+    enrolled_dir = raw.get("enrolled_dir")
+    if scope == SCOPE_DIRECTORY:
+        if not isinstance(enrolled_dir, str) or not enrolled_dir:
+            raise ConfigError("config.json: enrolled_dir must be a non-empty string")
+    elif enrolled_dir is not None:
+        raise ConfigError("config.json: a machine-scope bridge has no enrolled_dir")
+    values["enrolled_dir"] = enrolled_dir
     for key in _OPTIONAL_STRING_KEYS:
         value = raw.get(key)
         if value is None:

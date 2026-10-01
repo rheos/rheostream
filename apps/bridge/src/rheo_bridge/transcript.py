@@ -3,7 +3,7 @@
 Everything here is pure and local. Nothing makes a request, logs a path, or reads
 ``$HOME``, ``Path.home()``, ``~`` or the working directory: the caller hands in
 ``projects_root`` (``user_home / ".claude" / "projects"`` in production) and the
-enrolled directory's realpath.
+enrolled directory's realpath, or ``None`` for a machine-scope bridge.
 
 The transcript shape this module relies on is not a published contract. Each
 place that depends on it carries a ``[capture N]`` tag naming its row in the
@@ -71,20 +71,24 @@ def slug(path: str) -> str:
 
 
 def validate_source(
-    transcript_path: str, enrolled_dir_realpath: str, *, projects_root: Path
+    transcript_path: str, enrolled_dir_realpath: str | None, *, projects_root: Path
 ) -> ValidationResult:
     """Decide whether ``transcript_path`` belongs to the enrolled directory.
 
     [capture 12, 13] — may be revised at reconciliation.
+
+    ``enrolled_dir_realpath`` is ``None`` for a machine-scope bridge, which
+    admits a session of any project: see :func:`_validate_any_project`.
 
     The realpath must be a regular ``*.jsonl`` file directly inside
     ``realpath(projects_root / slug(enrolled_dir_realpath))``. The directory
     match is exact: a session started in a parent or a subdirectory of the
     enrolled directory has a different slug and is ``project_unmatched``. Never
     widen this to a prefix match; the answer for another directory is to enroll
-    it. A file in another project's slug directory is ``project_unmatched``;
-    anything else that fails (a ``..`` component, a symlink resolving
-    elsewhere, a relative path, a nested file, a non-file) is ``path_escape``.
+    it, or to give the bridge machine scope. A file in another project's slug
+    directory is ``project_unmatched``; anything else that fails (a ``..``
+    component, a symlink resolving elsewhere, a relative path, a nested file,
+    a non-file) is ``path_escape``.
 
     The slug directory must itself resolve directly under ``projects_root``: a
     slug directory symlinked elsewhere is ``path_escape`` for every path.
@@ -100,6 +104,8 @@ def validate_source(
     # is an escape by construction; refuse both before touching the disk.
     if not lexical.is_absolute() or ".." in lexical.parts:
         return Refused("path_escape")
+    if enrolled_dir_realpath is None:
+        return _validate_any_project(lexical, projects_root=projects_root)
     try:
         project_dir = Path(
             os.path.realpath(projects_root / slug(enrolled_dir_realpath))
@@ -138,6 +144,44 @@ def validate_source(
         and resolved == lexical_parent / lexical.name
     ):
         return Refused("project_unmatched")
+    return Refused("path_escape")
+
+
+def _validate_any_project(lexical: Path, *, projects_root: Path) -> ValidationResult:
+    """Machine scope: a ``*.jsonl`` file directly inside any project directory.
+
+    ``lexical`` is absolute and has no ``..``. Its parent must sit directly
+    under ``projects_root`` and must not be a symlink, the way a symlinked
+    slug directory admits nothing in directory scope. The file must resolve
+    to a regular file in that same directory. ``project_unmatched`` cannot
+    happen here; every other failure is ``path_escape``, and an absent file of
+    the right shape is ``Missing``.
+    """
+    try:
+        root = Path(os.path.realpath(projects_root))
+        project_dir = Path(os.path.realpath(lexical.parent))
+        lexical_grandparent = Path(os.path.realpath(lexical.parent.parent))
+        parent_is_link = os.path.islink(lexical.parent)
+        resolved = Path(os.path.realpath(lexical))
+        present = os.path.lexists(lexical)
+    except (OSError, ValueError):
+        return Refused("path_escape")
+    if parent_is_link or lexical_grandparent != root or project_dir.parent != root:
+        return Refused("path_escape")
+    if not present:
+        if lexical.suffix == ".jsonl":
+            return Missing(lexical)
+        return Refused("path_escape")
+    try:
+        info = os.stat(resolved)
+    except (OSError, ValueError):
+        return Refused("path_escape")
+    if (
+        resolved.parent == project_dir
+        and stat.S_ISREG(info.st_mode)
+        and resolved.suffix == ".jsonl"
+    ):
+        return Ok(resolved)
     return Refused("path_escape")
 
 

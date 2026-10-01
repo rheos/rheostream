@@ -133,6 +133,15 @@ class Dirs:
     def settings(self) -> Path:
         return settings_file.settings_path(self.enrolled)
 
+    @property
+    def claude_home(self) -> Path:
+        user_home = self.user_home
+        return user_home / ".claude"
+
+    @property
+    def user_settings(self) -> Path:
+        return self.claude_home / "settings.json"
+
 
 def make_dirs(tmp_path: Path) -> Dirs:
     user_home = tmp_path / "home"
@@ -1053,7 +1062,8 @@ def test_status_prints_counts_and_the_enrollment_only(
     out = capsys.readouterr().out
     lines = dict(line.split(": ", 1) for line in out.splitlines())
 
-    # The two non-count lines, for CP-A's verify step.
+    # The three non-count lines, for CP-A's verify step.
+    assert lines.pop("scope") == "directory"
     assert lines.pop("enrollment_id") == enrollment_id
     assert lines.pop("token_expires_at") == expires.isoformat()
 
@@ -1649,3 +1659,342 @@ def test_status_never_prints_a_full_path_for_a_privacy_failure(
     assert "bridge_home_private: no\n" in captured.out
     assert "token: file mode 0644" in captured.err
     assert str(initialised.bridge_home) not in captured.out + captured.err
+
+
+# --- machine scope ----------------------------------------------------------------
+
+
+@pytest.fixture
+def machine(dirs: Dirs, capsys: pytest.CaptureFixture[str]) -> Dirs:
+    assert (
+        cli.init(
+            dirs.bridge_home,
+            enrolled_dir=None,
+            api_url=API_URL,
+            executable=VENV_PYTHON,
+        )
+        == 0
+    )
+    capsys.readouterr()
+    return dirs
+
+
+def install_machine(d: Dirs, *, interpreter: str = INTERPRETER) -> int:
+    return cli.install_hook(
+        d.bridge_home,
+        enrolled_dir=None,
+        claude_home=d.claude_home,
+        interpreter=interpreter,
+    )
+
+
+USER_SETTINGS_TEXT = (
+    json.dumps(
+        {"model": "example-model", "hooks": {}, "permissions": {"allow": ["Read"]}},
+        indent=2,
+    )
+    + "\n"
+)
+
+
+class RecordingClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.project_fingerprints: list[str] = []
+
+    def post(
+        self,
+        machine_fingerprint: str,
+        project_fingerprint: str,
+        records: Sequence[IngestRecord],
+        gaps: Sequence[IngestGap],
+    ) -> IngestResponse:
+        self.project_fingerprints.append(project_fingerprint)
+        return super().post(machine_fingerprint, project_fingerprint, records, gaps)
+
+
+def write_project_transcript(d: Dirs, project: str) -> Path:
+    project_dir = d.projects_root / project
+    project_dir.mkdir(parents=True, exist_ok=True)
+    path = project_dir / "session-0002.jsonl"
+    path.write_text(json.dumps(human_line("an example request")) + "\n")
+    return path
+
+
+def test_init_machine_scope_names_no_directory(
+    dirs: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        cli.init(
+            dirs.bridge_home, enrolled_dir=None, api_url=API_URL, executable=VENV_PYTHON
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    config = config_of(dirs)
+    assert config.scope == "machine"
+    assert config.enrolled_dir is None
+    assert "scope: machine\n" in out
+    assert "enrolled_dir" not in out
+    assert f"project_fingerprint: {keys.MACHINE_SCOPE_FINGERPRINT}\n" in out
+    assert f"--project {keys.MACHINE_SCOPE_FINGERPRINT} --json" in out
+    assert not dirs.user_settings.exists()
+
+
+def test_the_machine_scope_fingerprint_is_no_directory_fingerprint() -> None:
+    assert keys.MACHINE_SCOPE_FINGERPRINT != keys.project_fingerprint("")
+    assert keys.enrollment_project_fingerprint(None) == keys.MACHINE_SCOPE_FINGERPRINT
+    assert keys.enrollment_project_fingerprint("/work/a") == keys.project_fingerprint(
+        "/work/a"
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--scope", "machine", "--enrolled-dir", "/tmp"], "takes no --enrolled-dir"),
+        (["--scope", "directory"], "requires --enrolled-dir"),
+    ],
+)
+def test_init_refuses_a_scope_and_directory_mismatch_before_any_home_lookup(
+    argv: list[str], message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["init", *argv, "--api-url", API_URL])
+    assert raised.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_a_config_without_a_scope_key_is_a_directory_bridge(initialised: Dirs) -> None:
+    path = paths.config_path(initialised.bridge_home)
+    raw = load_json(path)
+    del raw["scope"]
+    path.write_text(json.dumps(raw))
+    config = config_of(initialised)
+    assert config.scope == "directory"
+    assert config.enrolled_dir == str(initialised.enrolled)
+
+
+@pytest.mark.parametrize(
+    ("scope", "enrolled_dir", "message"),
+    [
+        ("machine", "/work/a", "no enrolled_dir"),
+        ("directory", None, "enrolled_dir must be"),
+        ("galaxy", None, "scope must be"),
+    ],
+)
+def test_a_config_with_an_inconsistent_scope_is_refused(
+    initialised: Dirs, scope: str, enrolled_dir: str | None, message: str
+) -> None:
+    path = paths.config_path(initialised.bridge_home)
+    raw = load_json(path)
+    raw["scope"] = scope
+    raw["enrolled_dir"] = enrolled_dir
+    path.write_text(json.dumps(raw))
+    with pytest.raises(bridge_config.ConfigError, match=message):
+        bridge_config.load(initialised.bridge_home)
+
+
+def test_machine_install_edits_the_user_settings_and_remove_restores_it(
+    machine: Dirs,
+) -> None:
+    machine.user_settings.parent.mkdir(parents=True, exist_ok=True)
+    machine.user_settings.write_text(USER_SETTINGS_TEXT)
+
+    assert install_machine(machine) == 0
+    document = load_json(machine.user_settings)
+    assert document["model"] == "example-model"
+    assert document["permissions"] == {"allow": ["Read"]}
+    assert {
+        event: document["hooks"][event][-1]["hooks"][0]["command"]
+        for event in ("Stop", "SessionEnd")
+    } == {event: expected_command(machine, event) for event in ("Stop", "SessionEnd")}
+    assert not machine.settings.exists()  # no project file anywhere
+    assert install_machine(machine) == 0  # a second install is a no-op
+    assert load_json(machine.user_settings) == document
+
+    assert (
+        cli.remove_hook(
+            machine.bridge_home, enrolled_dir=None, claude_home=machine.claude_home
+        )
+        == 0
+    )
+    assert machine.user_settings.read_text() == USER_SETTINGS_TEXT
+
+
+def test_install_refuses_a_settings_file_created_after_it_was_read(
+    machine: Dirs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    machine.claude_home.mkdir(parents=True, exist_ok=True)
+    real_read = settings_file.read
+
+    def read_then_someone_creates(path: Path) -> tuple[Any, str | None]:
+        found = real_read(path)
+        path.write_text(USER_SETTINGS_TEXT)
+        return found
+
+    monkeypatch.setattr(settings_file, "read", read_then_someone_creates)
+    with pytest.raises(cli.CliError, match="created since it was read"):
+        install_machine(machine)
+    assert machine.user_settings.read_text() == USER_SETTINGS_TEXT
+    assert not config_of(machine).hook_created_settings
+    # No temp file is left beside it.
+    assert sorted(p.name for p in machine.claude_home.iterdir()) == [
+        "projects",
+        "settings.json",
+    ]
+
+
+def test_machine_install_refuses_an_enrolled_dir(machine: Dirs) -> None:
+    with pytest.raises(cli.CliError, match="omit --enrolled-dir"):
+        cli.install_hook(
+            machine.bridge_home,
+            enrolled_dir=machine.enrolled,
+            claude_home=machine.claude_home,
+            interpreter=INTERPRETER,
+        )
+    assert not machine.user_settings.exists()
+    assert not machine.settings.exists()
+
+
+def test_directory_install_requires_the_enrolled_dir(initialised: Dirs) -> None:
+    with pytest.raises(cli.CliError, match="--enrolled-dir is required"):
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=None,
+            claude_home=initialised.claude_home,
+            interpreter=INTERPRETER,
+        )
+    assert not initialised.user_settings.exists()
+
+
+def test_machine_install_refuses_a_user_settings_file_git_does_not_ignore(
+    machine: Dirs,
+) -> None:
+    machine.claude_home.mkdir(parents=True, exist_ok=True)
+    git(machine.claude_home, "init", "-q")
+    with pytest.raises(cli.CliError, match="settings.json is not ignored"):
+        install_machine(machine)
+    assert not machine.user_settings.exists()
+
+
+def test_machine_drain_reads_any_project_and_sends_the_scope_fingerprint(
+    machine: Dirs,
+) -> None:
+    set_token(machine, new_token())
+    spool_session(machine, write_project_transcript(machine, "-work-other-project"))
+    client = RecordingClient()
+
+    assert run_drain(machine, client) == 0
+    assert client.calls == 1
+    assert client.project_fingerprints == [keys.MACHINE_SCOPE_FINGERPRINT]
+    connection = state.connect(paths.state_path(machine.bridge_home))
+    try:
+        ledger = state.get_ledger(connection)
+    finally:
+        state.close(connection)
+    assert ledger["accepted:cli"].count == 1
+    assert "project_unmatched" not in ledger and "path_escape" not in ledger
+
+
+def test_machine_drain_still_refuses_a_path_outside_the_projects_root(
+    machine: Dirs, tmp_path: Path
+) -> None:
+    set_token(machine, new_token())
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    stray = outside / "session.jsonl"
+    stray.write_text(json.dumps(human_line("not a project transcript")) + "\n")
+    spool_session(machine, stray)
+    client = RecordingClient()
+
+    assert run_drain(machine, client) == 0
+    assert client.calls == 0
+    connection = state.connect(paths.state_path(machine.bridge_home))
+    try:
+        assert state.get_ledger(connection)["path_escape"].count == 1
+    finally:
+        state.close(connection)
+
+
+def test_set_scope_refuses_while_the_directory_hook_is_installed(
+    initialised: Dirs,
+) -> None:
+    assert install(initialised) == 0
+    with pytest.raises(cli.CliError, match="still installed"):
+        cli.set_scope(initialised.bridge_home, scope="machine")
+    assert config_of(initialised).scope == "directory"
+
+
+def test_set_scope_keeps_the_machine_key_and_state_and_drops_the_token(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    enrollment_id = str(uuid.uuid4())
+    set_token(initialised, new_token(), enrollment_id=enrollment_id)
+    seed_sessions(initialised)
+    assert install(initialised) == 0
+    assert (
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled) == 0
+    )
+    key_before = paths.machine_key_path(initialised.bridge_home).read_bytes()
+    state_before = paths.state_path(initialised.bridge_home).read_bytes()
+    capsys.readouterr()
+
+    code = cli.set_scope(
+        initialised.bridge_home, scope="machine", executable="/opt/new/venv/bin/python"
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+
+    config = config_of(initialised)
+    assert config.scope == "machine" and config.enrolled_dir is None
+    assert config.enrollment_id is None and config.token_expires_at is None
+    assert config.worker_argv == ["/opt/new/venv/bin/rheo-bridge", "drain"]
+    assert paths.machine_key_path(initialised.bridge_home).read_bytes() == key_before
+    assert paths.state_path(initialised.bridge_home).read_bytes() == state_before
+    assert not paths.token_path(initialised.bridge_home).exists()
+    assert f"--project {keys.MACHINE_SCOPE_FINGERPRINT} --json" in out
+    assert f"rheo evidence revoke {enrollment_id}" in out
+    assert str(initialised.enrolled) not in out
+
+    assert cli.set_scope(initialised.bridge_home, scope="machine") == 0
+    assert "no change" in capsys.readouterr().out
+
+
+def test_machine_status_reads_the_user_settings(
+    machine: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def lines() -> dict[str, str]:
+        capsys.readouterr()
+        assert (
+            cli.status(machine.bridge_home, now=NOW, claude_home=machine.claude_home)
+            == 0
+        )
+        out = capsys.readouterr().out
+        assert str(machine.user_home) not in out
+        return dict(line.split(": ", 1) for line in out.splitlines())
+
+    before = lines()
+    assert before["scope"] == "machine"
+    assert before["hook_runnable"] == "no"
+    assert install_machine(machine, interpreter=_real_interpreter()) == 0
+    assert lines()["hook_runnable"] == "yes"
+
+
+def test_machine_uninstall_removes_the_user_hooks_and_the_credentials(
+    machine: Dirs,
+) -> None:
+    machine.user_settings.parent.mkdir(parents=True, exist_ok=True)
+    machine.user_settings.write_text(USER_SETTINGS_TEXT)
+    set_token(machine, new_token())
+    assert install_machine(machine) == 0
+
+    assert (
+        cli.uninstall(
+            machine.bridge_home, enrolled_dir=None, claude_home=machine.claude_home
+        )
+        == 0
+    )
+    assert machine.user_settings.read_text() == USER_SETTINGS_TEXT
+    assert not paths.token_path(machine.bridge_home).exists()
+    assert not paths.machine_key_path(machine.bridge_home).exists()
