@@ -463,6 +463,18 @@ def issue_bridge_token(
     return row.id, value
 
 
+def connector_operations(role: Role) -> frozenset[str]:
+    """The operations a connector token for a member of ``role`` holds:
+    ``(agent_default() & _role_permitted_set(role)) - NON_TOKEN_ISSUABLE -
+    {core.tool.call}``. The consent page lists this same set, so what the user is
+    shown is what :func:`issue_connector_token` grants."""
+    return (
+        (agent_default() & _role_permitted_set(role))
+        - NON_TOKEN_ISSUABLE
+        - {DISCOVER_THEN_CALL_OPERATION}
+    )
+
+
 def issue_connector_token(
     conn: Connection,
     *,
@@ -493,11 +505,7 @@ def issue_connector_token(
             MEMBERSHIP_MISSING,
             f"account {account_id} has no membership in workspace {workspace_id}",
         )
-    snapshot = (
-        (agent_default() & _role_permitted_set(membership.role))
-        - NON_TOKEN_ISSUABLE
-        - {DISCOVER_THEN_CALL_OPERATION}
-    )
+    snapshot = connector_operations(membership.role)
     if not snapshot:
         raise OperationRefused(
             SET_EMPTY, "no agent_default operation survives the member's role"

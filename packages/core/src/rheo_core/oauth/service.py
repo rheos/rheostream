@@ -38,6 +38,7 @@ from rheo_core.storage.control_plane import (
     ACCESS_TOKEN_REVOKED,
     SessionRow,
     get_access_token,
+    get_account,
     get_membership,
     get_workspace,
     list_memberships,
@@ -48,7 +49,7 @@ from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.oauth_store import OAuthAuthorizationRow
 from rheo_core.storage.postgres import get_backend
 from rheo_core.tokens.format import mint
-from rheo_core.tokens.issue import issue_connector_token
+from rheo_core.tokens.issue import connector_operations, issue_connector_token
 
 REQUEST_LIFETIME: Final = timedelta(minutes=10)
 """A pending authorization lives this long (the ``rheo_oauth_request`` Max-Age)."""
@@ -352,6 +353,65 @@ def consent_choices(account_id: UUID, session: SessionRow) -> ConsentChoices:
 
 
 @dataclass(frozen=True, slots=True)
+class GrantTerms:
+    """What a grant into one workspace holds: the operation set
+    ``issue_connector_token`` would snapshot for the member's role, and the grant's
+    lifetime in whole days (``min(grant_days, identity.token_max_days.mcp)``)."""
+
+    workspace_id: UUID
+    operations: tuple[str, ...]
+    days: int
+
+
+@dataclass(frozen=True, slots=True)
+class ConsentView:
+    """Everything the consent page shows: the client's registered name (chosen by
+    the client, unverified), the redirect URI the code goes to, the account's
+    display name, the workspace choices, and the terms for each choice (same
+    order). Every string is raw; the page escapes it."""
+
+    client_name: str
+    redirect_uri: str
+    account_display_name: str
+    choices: ConsentChoices
+    terms: tuple[GrantTerms, ...]
+
+
+def consent_view(
+    surface: OAuthSurface, authorization: OAuthAuthorizationRow, session: SessionRow
+) -> ConsentView:
+    """The :class:`ConsentView` for the pending ``authorization`` and the account
+    signed in as ``session``: read only, nothing is written."""
+    account_id = session.account_id
+    with get_backend().control_engine.connect() as conn:
+        client = oauth_store.get_client(conn, authorization.client_id)
+        account = get_account(conn, account_id)
+        choices = _choices(conn, account_id, session.active_workspace_id)
+        terms: list[GrantTerms] = []
+        for choice in choices.workspaces:
+            membership = get_membership(
+                conn, account_id=account_id, workspace_id=choice.workspace_id
+            )
+            operations = (
+                () if membership is None else connector_operations(membership.role)
+            )
+            terms.append(
+                GrantTerms(
+                    workspace_id=choice.workspace_id,
+                    operations=tuple(sorted(operations)),
+                    days=grant_days(surface, choice.workspace_id),
+                )
+            )
+    return ConsentView(
+        client_name=DEFAULT_CLIENT_NAME if client is None else client.client_name,
+        redirect_uri=authorization.redirect_uri,
+        account_display_name="" if account is None else account.display_name,
+        choices=choices,
+        terms=tuple(terms),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Approval:
     """What the route redirects with: ``redirect_uri?code&state&iss``."""
 
@@ -482,12 +542,17 @@ def _resource_refused(surface: OAuthSurface, form: Mapping[str, str]) -> bool:
     return resource is not None and not surface.resource_matches(resource)
 
 
-def _grant_end(surface: OAuthSurface, now: datetime, workspace_id: UUID) -> datetime:
-    """``now + min(grant_days, identity.token_max_days.mcp)``, the cap resolved for
-    the workspace under its floor, as ``issue_handler`` reads it."""
+def grant_days(surface: OAuthSurface, workspace_id: UUID) -> int:
+    """``min(grant_days, identity.token_max_days.mcp)``, the cap resolved for the
+    workspace under its floor, as ``issue_handler`` reads it."""
     settings = resolve(workspace_id=workspace_id, source=PostgresOverrideSource())
     max_days = settings.get_int(TOKEN_MAX_DAYS_MCP_KEY)
-    return now + timedelta(days=min(surface.lifetimes.grant_days, max_days))
+    return min(surface.lifetimes.grant_days, max_days)
+
+
+def _grant_end(surface: OAuthSurface, now: datetime, workspace_id: UUID) -> datetime:
+    """``now + grant_days(surface, workspace_id)`` days."""
+    return now + timedelta(days=grant_days(surface, workspace_id))
 
 
 def _access_expiry(
