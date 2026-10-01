@@ -214,3 +214,40 @@ def test_loopback_test_redirect_is_allowed() -> None:
         "path", identity__oauth__redirect_uris=("http://127.0.0.1:8765/callback",)
     )
     assert surface.redirect_uris == ("http://127.0.0.1:8765/callback",)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "http://localhost:x@evil.example.com/cb",
+        "http://localhost.evil.example.com/cb",
+        "http://127.0.0.1.evil.example.com/cb",
+        "http://user@localhost/cb",
+        "https://user:pass@claude.example.com/cb",
+        "https://claude.example.com@evil.example.com/cb",
+        "https:///cb",
+        "https://claude.example.com/cb#frag",
+        "http://localhost:notaport/cb",
+        "ftp://localhost/cb",
+        "localhost/cb",
+    ],
+)
+def test_lookalike_and_userinfo_redirects_are_setting_invalid(uri: str) -> None:
+    settings = _settings(identity__oauth__redirect_uris=(uri,))
+    assert oauth_surface(settings, _routing("path")) == OAuthUnconfigured(
+        "setting_invalid"
+    )
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        CLAUDE_CALLBACK,
+        "http://localhost/callback",
+        "http://localhost:8765/callback",
+        "http://127.0.0.1/callback",
+    ],
+)
+def test_valid_redirects_configure(uri: str) -> None:
+    surface = _surface("path", identity__oauth__redirect_uris=(uri,))
+    assert surface.redirect_uris == (uri,)

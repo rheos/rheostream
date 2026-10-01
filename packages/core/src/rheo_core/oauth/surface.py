@@ -52,8 +52,8 @@ _GITHUB_CLIENT_ID_KEY: Final = "identity.providers.github.client_id"
 PROTECTED_RESOURCE_DOCUMENT: Final = "oauth-protected-resource"
 AUTHORIZATION_SERVER_DOCUMENT: Final = "oauth-authorization-server"
 
-_TEST_ORIGINS: Final = ("http://localhost", "http://127.0.0.1")
-"""The non-``https`` redirect URIs an allowlist may hold: a local test client."""
+_LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1"})
+"""The hosts a non-``https`` (``http``) redirect URI may name: a local test client."""
 
 UnconfiguredReason = Literal[
     "disabled", "identity_provider_disabled", "allowlist_empty", "setting_invalid"
@@ -134,14 +134,24 @@ def _well_known(resource: str, name: str) -> str:
     return f"{parts.scheme}://{parts.netloc}/.well-known/{name}{parts.path.rstrip('/')}"
 
 
-def _allowlist_valid(uris: list[str]) -> bool:
-    for uri in uris:
-        if uri.startswith("https://"):
-            continue
-        if any(uri == o or uri.startswith((f"{o}:", f"{o}/")) for o in _TEST_ORIGINS):
-            continue
+def _redirect_uri_valid(uri: str) -> bool:
+    """``https`` with a host, or ``http`` on a loopback host, judged on the parsed
+    URI: a prefix test would pass ``http://localhost:x@other.example/``. No
+    userinfo, no fragment (RFC 6749 s3.1.2), and a port must parse."""
+    try:
+        parts = urlsplit(uri)
+        parts.port  # noqa: B018 - raises ValueError for a malformed port
+    except ValueError:
         return False
-    return True
+    if "@" in parts.netloc or parts.fragment or not parts.hostname:
+        return False
+    if parts.scheme == "https":
+        return True
+    return parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
+
+
+def _allowlist_valid(uris: list[str]) -> bool:
+    return all(_redirect_uri_valid(uri) for uri in uris)
 
 
 def _ints_in_bounds(settings: ResolvedSettings) -> bool:
