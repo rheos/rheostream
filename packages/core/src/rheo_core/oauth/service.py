@@ -1,5 +1,5 @@
 """The OAuth connector flow, HTTP-free (issue #287): registration, the authorization
-request and the consent decision. Code exchange and refresh follow in this module.
+request, the consent decision, the code exchange and refresh rotation.
 
 **One step, one control-plane transaction, one event row.** Every public step opens
 ``get_backend().control_engine.begin()`` once and writes its ``oauth_event`` row in
@@ -15,6 +15,7 @@ step back.
 rows carry ids and an outcome word only: no secret, no client-supplied text.
 """
 
+import base64
 import hashlib
 import re
 import secrets
@@ -28,15 +29,26 @@ from uuid import UUID
 from sqlalchemy import Connection
 
 from rheo_core.oauth.surface import OAuthSurface
+from rheo_core.operations.refusals import OperationRefused
+from rheo_core.settings import resolve
+from rheo_core.settings.storage_source import PostgresOverrideSource
 from rheo_core.storage import oauth_store
+from rheo_core.storage.backend import StorageRefusal
 from rheo_core.storage.control_plane import (
+    ACCESS_TOKEN_REVOKED,
     SessionRow,
+    get_access_token,
+    get_membership,
     get_workspace,
     list_memberships,
+    revoke_access_token,
+    rotate_access_token,
 )
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.oauth_store import OAuthAuthorizationRow
 from rheo_core.storage.postgres import get_backend
+from rheo_core.tokens.format import mint
+from rheo_core.tokens.issue import issue_connector_token
 
 REQUEST_LIFETIME: Final = timedelta(minutes=10)
 """A pending authorization lives this long (the ``rheo_oauth_request`` Max-Age)."""
@@ -67,6 +79,7 @@ AUTHORIZATION_EXPIRED: Final = "authorization_expired"
 NOT_A_MEMBER: Final = "not_a_member"
 WORKSPACE_UNSELECTED: Final = "workspace_unselected"
 ACCESS_DENIED: Final = "access_denied"
+INVALID_GRANT: Final = "invalid_grant"
 
 _DESCRIPTIONS: Final[Mapping[str, str]] = {
     INVALID_CLIENT_METADATA: "The registration body must be a JSON object.",
@@ -80,12 +93,17 @@ _DESCRIPTIONS: Final[Mapping[str, str]] = {
     NOT_A_MEMBER: "The chosen workspace is not one of yours.",
     WORKSPACE_UNSELECTED: "Your account has no active workspace to connect.",
     ACCESS_DENIED: "The request was denied.",
+    INVALID_GRANT: "The grant is invalid, expired or already used.",
 }
 
 # Event words and outcomes (the oauth_event CHECKs).
 CLIENT_REGISTERED: Final = "client_registered"
 AUTHORIZATION_GRANTED: Final = "authorization_granted"
 AUTHORIZATION_DENIED: Final = "authorization_denied"
+CODE_REDEEMED: Final = "code_redeemed"
+REFRESH_USED: Final = "refresh_used"
+REFRESH_REUSE_REVOKED: Final = "refresh_reuse_revoked"
+GRANT_REVOKED: Final = "grant_revoked"
 SUCCEEDED: Final = "succeeded"
 REFUSED: Final = "refused"
 
@@ -430,3 +448,276 @@ def deny(
             account_id=account_id,
         )
         return Denial(redirect_uri=row.redirect_uri, state=row.state)
+
+
+# --- the token endpoint: code exchange and refresh -----------------------------------
+
+TOKEN_TYPE: Final = "Bearer"
+TOKEN_MAX_DAYS_MCP_KEY: Final = "identity.token_max_days.mcp"
+_CODE_VERIFIER: Final = re.compile(r"[A-Za-z0-9._~-]{43,128}")
+"""RFC 7636 s4.1: 43 to 128 unreserved characters."""
+
+
+def _token_error(error: str) -> OAuthError:
+    """RFC 6749 s5.2: a JSON error body, ``invalid_client`` as 401."""
+    return OAuthError(
+        error=error, status=401 if error == INVALID_CLIENT else 400, redirect=False
+    )
+
+
+def _pkce_matches(verifier: str | None, challenge: str) -> bool:
+    """``base64url(sha256(verifier)) == challenge`` in constant time; a missing or
+    malformed verifier never matches."""
+    if verifier is None or _CODE_VERIFIER.fullmatch(verifier) is None:
+        return False
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return secrets.compare_digest(computed, challenge)
+
+
+def _resource_refused(surface: OAuthSurface, form: Mapping[str, str]) -> bool:
+    """Decision 8: an absent ``resource`` is the value bound at ``/authorize``; a
+    present one must match."""
+    resource = form.get("resource")
+    return resource is not None and not surface.resource_matches(resource)
+
+
+def _grant_end(surface: OAuthSurface, now: datetime, workspace_id: UUID) -> datetime:
+    """``now + min(grant_days, identity.token_max_days.mcp)``, the cap resolved for
+    the workspace under its floor, as ``issue_handler`` reads it."""
+    settings = resolve(workspace_id=workspace_id, source=PostgresOverrideSource())
+    max_days = settings.get_int(TOKEN_MAX_DAYS_MCP_KEY)
+    return now + timedelta(days=min(surface.lifetimes.grant_days, max_days))
+
+
+def _access_expiry(
+    surface: OAuthSurface, now: datetime, grant_expires_at: datetime
+) -> datetime:
+    """An access value never outlives its grant."""
+    lifetime = timedelta(minutes=surface.lifetimes.access_token_minutes)
+    return min(now + lifetime, grant_expires_at)
+
+
+def _token_response(
+    access_token: str, expires_at: datetime, now: datetime, refresh_token: str
+) -> dict[str, object]:
+    return {
+        "access_token": access_token,
+        "token_type": TOKEN_TYPE,
+        "expires_in": max(0, int((expires_at - now).total_seconds())),
+        "refresh_token": refresh_token,
+    }
+
+
+def _revoke_if_live(conn: Connection, token_id: UUID) -> bool:
+    """Revoke the grant's access token unless it is already revoked (its first
+    ``revoked_at`` is kept). True when this call ended the grant."""
+    token = get_access_token(conn, token_id)
+    if token is None or token.revoked_at is not None:
+        return False
+    revoke_access_token(conn, token_id)
+    return True
+
+
+def _refuse_code_replay(
+    conn: Connection, row: OAuthAuthorizationRow, now: datetime
+) -> OAuthError:
+    """A second redemption: revoke what the first issued, record the refusal and
+    (when this ended the grant) ``grant_revoked``, all committed with the error."""
+    ended = row.token_id is not None and _revoke_if_live(conn, row.token_id)
+    events = [(CODE_REDEEMED, REFUSED)]
+    if ended:
+        events.append((GRANT_REVOKED, SUCCEEDED))
+    for event, outcome in events:
+        oauth_store.insert_event(
+            conn,
+            event=event,
+            outcome=outcome,
+            occurred_at=now,
+            client_id=row.client_id,
+            account_id=row.account_id,
+            workspace_id=row.workspace_id,
+            token_id=row.token_id,
+        )
+    return _token_error(INVALID_GRANT)
+
+
+def exchange_code(
+    surface: OAuthSurface, form: Mapping[str, str], *, now: datetime
+) -> OAuthResult[dict[str, object]]:
+    """The ``authorization_code`` grant (RFC 6749 s4.1.3 with PKCE).
+
+    The row is read by code hash ``FOR UPDATE``. A code already used is a replay
+    (:func:`_refuse_code_replay`). Otherwise the code is **burned first**, so every
+    later refusal commits the burn and a correct retry of the same code is a
+    replay. Then: another ``client_id`` is ``invalid_client``; another
+    ``redirect_uri``, an expired code (``now >= code_expires_at``) or a verifier
+    that does not hash to the challenge is ``invalid_grant``; a present
+    non-matching ``resource`` is ``invalid_target``. Issuance refusals
+    (``membership_missing``, ``set_empty``) are ``invalid_grant`` too, returned
+    inside the block so the burn still commits.
+
+    Success writes, in this one transaction, the ``mcp`` access token, the
+    ``oauth_grant`` row (``grant_expires_at = now + min(grant_days,
+    token_max_days.mcp)``), the first refresh row, the authorization's
+    ``token_id`` and ``code_redeemed``. The access value expires at ``min(now +
+    access_token_minutes, grant_expires_at)``."""
+    code = form.get("code")
+    with get_backend().control_engine.begin() as conn:
+        row = (
+            oauth_store.get_authorization_by_code_hash(
+                conn, _sha256(code), for_update=True
+            )
+            if code
+            else None
+        )
+        if row is None:
+            return _token_error(INVALID_GRANT)
+        if row.code_used_at is not None:
+            return _refuse_code_replay(conn, row, now)
+        oauth_store.mark_code_used(conn, row.id, used_at=now)
+        if form.get("client_id") != row.client_id:
+            return _token_error(INVALID_CLIENT)
+        if (
+            form.get("redirect_uri") != row.redirect_uri
+            or row.code_expires_at is None
+            or now >= row.code_expires_at
+            or not _pkce_matches(form.get("code_verifier"), row.code_challenge)
+        ):
+            return _token_error(INVALID_GRANT)
+        if _resource_refused(surface, form):
+            return _token_error(INVALID_TARGET)
+        if row.account_id is None or row.workspace_id is None:
+            return _token_error(INVALID_GRANT)
+        grant_expires_at = _grant_end(surface, now, row.workspace_id)
+        expires_at = _access_expiry(surface, now, grant_expires_at)
+        try:
+            token_id, access_token, _ = issue_connector_token(
+                conn,
+                account_id=row.account_id,
+                workspace_id=row.workspace_id,
+                expires_at=expires_at,
+            )
+        except OperationRefused:
+            # Raised before any insert, so returning here commits only the burn.
+            return _token_error(INVALID_GRANT)
+        oauth_store.insert_grant(
+            conn,
+            token_id=token_id,
+            client_id=row.client_id,
+            created_at=now,
+            grant_expires_at=grant_expires_at,
+        )
+        refresh_token = secrets.token_urlsafe(32)
+        oauth_store.insert_refresh_token(
+            conn, token_hash=_sha256(refresh_token), token_id=token_id, created_at=now
+        )
+        oauth_store.set_authorization_token(conn, row.id, token_id=token_id)
+        oauth_store.insert_event(
+            conn,
+            event=CODE_REDEEMED,
+            outcome=SUCCEEDED,
+            occurred_at=now,
+            client_id=row.client_id,
+            account_id=row.account_id,
+            workspace_id=row.workspace_id,
+            token_id=token_id,
+        )
+        return _token_response(access_token, expires_at, now, refresh_token)
+
+
+def refresh(
+    surface: OAuthSurface, form: Mapping[str, str], *, now: datetime
+) -> OAuthResult[dict[str, object]]:
+    """The ``refresh_token`` grant, rotating both values.
+
+    The refresh row is read by hash ``FOR UPDATE``, so two concurrent refreshes of
+    one value serialize and the loser sees it rotated. Unknown is
+    ``invalid_grant``. Rotated: within ``refresh_grace_seconds`` of ``rotated_at``
+    it is ``invalid_grant`` and nothing changes; after that the grant's access
+    token is revoked and ``refresh_reuse_revoked`` written, committed with the
+    ``invalid_grant``. Live: the Grant validity chain in order (client, then not
+    revoked, before ``grant_expires_at``, membership, workspace active), then a
+    present non-matching ``resource`` is ``invalid_target``.
+
+    Success rotates the access value **in place** on the grant's one row (the old
+    value then matches no row, ``token_malformed``), marks the old refresh row
+    rotated, inserts the new one and writes ``refresh_used``. A revoke that lands
+    between the validity read and the rotation makes ``rotate_access_token``
+    refuse ``access_token_revoked``, which is ``invalid_grant`` with nothing
+    written (the rotation is the step's first write)."""
+    presented = form.get("refresh_token")
+    with get_backend().control_engine.begin() as conn:
+        row = (
+            oauth_store.get_refresh_token_for_update(conn, _sha256(presented))
+            if presented
+            else None
+        )
+        if row is None:
+            return _token_error(INVALID_GRANT)
+        grant = oauth_store.get_grant(conn, row.token_id)
+        if row.rotated_at is not None:
+            grace = timedelta(seconds=surface.lifetimes.refresh_grace_seconds)
+            if now - row.rotated_at < grace:
+                return _token_error(INVALID_GRANT)
+            _revoke_if_live(conn, row.token_id)
+            token = get_access_token(conn, row.token_id)
+            oauth_store.insert_event(
+                conn,
+                event=REFRESH_REUSE_REVOKED,
+                outcome=REFUSED,
+                occurred_at=now,
+                client_id=None if grant is None else grant.client_id,
+                account_id=None if token is None else token.account_id,
+                workspace_id=None if token is None else token.workspace_id,
+                token_id=row.token_id,
+            )
+            return _token_error(INVALID_GRANT)
+        token = get_access_token(conn, row.token_id)
+        if grant is None or token is None:
+            return _token_error(INVALID_GRANT)
+        if form.get("client_id") != grant.client_id:
+            return _token_error(INVALID_CLIENT)
+        if token.revoked_at is not None or now >= grant.grant_expires_at:
+            return _token_error(INVALID_GRANT)
+        if (
+            get_membership(
+                conn, account_id=token.account_id, workspace_id=token.workspace_id
+            )
+            is None
+        ):
+            return _token_error(INVALID_GRANT)
+        workspace = get_workspace(conn, token.workspace_id)
+        if workspace is None or workspace.state is not WorkspaceState.ACTIVE:
+            return _token_error(INVALID_GRANT)
+        if _resource_refused(surface, form):
+            return _token_error(INVALID_TARGET)
+        access_token, raw = mint("mcp")
+        expires_at = _access_expiry(surface, now, grant.grant_expires_at)
+        try:
+            rotate_access_token(
+                conn,
+                token.id,
+                token_hash=hashlib.sha256(raw).digest(),
+                expires_at=expires_at,
+            )
+        except StorageRefusal as refusal:
+            if refusal.state != ACCESS_TOKEN_REVOKED:
+                raise
+            return _token_error(INVALID_GRANT)
+        oauth_store.mark_refresh_rotated(conn, row.token_hash, rotated_at=now)
+        refresh_token = secrets.token_urlsafe(32)
+        oauth_store.insert_refresh_token(
+            conn, token_hash=_sha256(refresh_token), token_id=token.id, created_at=now
+        )
+        oauth_store.insert_event(
+            conn,
+            event=REFRESH_USED,
+            outcome=SUCCEEDED,
+            occurred_at=now,
+            client_id=grant.client_id,
+            account_id=token.account_id,
+            workspace_id=token.workspace_id,
+            token_id=token.id,
+        )
+        return _token_response(access_token, expires_at, now, refresh_token)
