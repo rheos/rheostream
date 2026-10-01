@@ -788,6 +788,10 @@ in the same transaction, so a miss here means an internal invariant broke, not a
 reachable API state -- the same reasoning ``session``'s ``SESSION_ROW_MISSING``
 documents for itself above."""
 
+ACCESS_TOKEN_REVOKED: Final = "access_token_revoked"
+"""``rotate_access_token`` on a row whose ``revoked_at`` is set: a revoked grant is
+never given a fresh value, and the row is left exactly as it was."""
+
 
 @dataclass(frozen=True, slots=True)
 class AccessTokenRow:
@@ -928,16 +932,20 @@ def rotate_access_token(
     grant is one ``access_token`` row whose value is rotated on every refresh, so
     the grant's id, its snapshot rows and its audit actor id never change; the
     superseded value then matches no row. Expiry policy is the caller's, as for
-    ``insert_access_token``."""
+    ``insert_access_token``. ``access_token_revoked`` on a revoked row, which is
+    left unchanged; ``access_token_missing`` when there is no row."""
     result = conn.execute(
         update(t.access_token)
-        .where(t.access_token.c.id == token_id)
+        .where(t.access_token.c.id == token_id, t.access_token.c.revoked_at.is_(None))
         .values(token_hash=token_hash, expires_at=expires_at)
     )
-    if result.rowcount != 1:
+    if result.rowcount == 1:
+        return
+    if get_access_token(conn, token_id) is None:
         raise StorageRefusal(
             ACCESS_TOKEN_MISSING, f"access token {token_id} has no row"
         )
+    raise StorageRefusal(ACCESS_TOKEN_REVOKED, f"access token {token_id} is revoked")
 
 
 def list_access_tokens(

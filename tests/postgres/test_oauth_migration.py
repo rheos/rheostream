@@ -32,6 +32,7 @@ from rheo_core.storage import control_tables, oauth_tables
 from rheo_core.storage.backend import StorageRefusal
 from rheo_core.storage.control_plane import (
     ACCESS_TOKEN_MISSING,
+    ACCESS_TOKEN_REVOKED,
     get_access_token,
     get_access_token_by_hash,
     insert_access_token,
@@ -39,6 +40,7 @@ from rheo_core.storage.control_plane import (
     insert_membership_if_absent,
     insert_workspace_if_absent,
     list_access_tokens,
+    revoke_access_token,
     rotate_access_token,
     set_workspace_state,
 )
@@ -390,6 +392,55 @@ def test_rotate_access_token_replaces_the_value_in_place(scratch: Scratch) -> No
                 connection, uuid7(), token_hash=new_hash, expires_at=new_expiry
             )
         assert excinfo.value.state == ACCESS_TOKEN_MISSING
+
+
+def test_rotate_access_token_refuses_a_revoked_row_and_leaves_it(
+    scratch: Scratch,
+) -> None:
+    with scratch.engine.connect() as connection:
+        token_id = _insert_token(connection, scratch, "connector")
+        revoke_access_token(connection, token_id)
+        before = get_access_token(connection, token_id)
+        assert before is not None and before.revoked_at is not None
+        with pytest.raises(StorageRefusal) as excinfo:
+            rotate_access_token(
+                connection,
+                token_id,
+                token_hash=hashlib.sha256(uuid7().bytes).digest(),
+                expires_at=datetime(2099, 6, 1, tzinfo=UTC),
+            )
+        assert excinfo.value.state == ACCESS_TOKEN_REVOKED
+        assert get_access_token(connection, token_id) == before
+
+
+_DELETE_RULES = {
+    # (table, column) -> pg_constraint.confdeltype: 'r' RESTRICT, 'c' CASCADE.
+    ("oauth_grant", "token_id"): "r",
+    ("oauth_grant", "client_id"): "r",
+    ("oauth_refresh_token", "token_id"): "r",
+    ("oauth_client_redirect_uri", "client_id"): "c",
+    ("oauth_authorization", "client_id"): "c",
+}
+
+
+def test_the_foreign_keys_carry_their_declared_delete_rules(scratch: Scratch) -> None:
+    """The rule itself, not only its effect: a NO ACTION key would also refuse the
+    deletes above (at statement end), so pin ``confdeltype`` from the catalog."""
+    with scratch.engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT cl.relname, a.attname, c.confdeltype "
+                "FROM pg_constraint c "
+                "JOIN pg_class cl ON cl.oid = c.conrelid "
+                "JOIN pg_namespace n ON n.oid = cl.relnamespace "
+                "JOIN pg_attribute a ON a.attrelid = c.conrelid "
+                "AND a.attnum = c.conkey[1] "
+                "WHERE c.contype = 'f' AND n.nspname = 'control' "
+                "AND cardinality(c.conkey) = 1"
+            )
+        ).all()
+    found = {(str(r[0]), str(r[1])): str(r[2]) for r in rows}
+    assert {key: found.get(key) for key in _DELETE_RULES} == _DELETE_RULES
 
 
 def test_list_access_tokens_filters_by_workspace_and_account(scratch: Scratch) -> None:
