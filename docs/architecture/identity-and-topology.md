@@ -182,7 +182,8 @@ with a reason. With the surface unconfigured the `mcp` gate's `401` is the bare 
 was, the metadata paths are 404 and `/auth/oauth/*` answer 404, so nothing is advertised that does
 not work. Its reasons are `disabled` (`identity.oauth.enabled` false, the default),
 `identity_provider_disabled` (GitHub sign-in off or without a client id), `allowlist_empty`, and
-`setting_invalid` (an allowlist entry that is not `https`, or `http` on `localhost`/`127.0.0.1`;
+`setting_invalid` (an allowlist entry that is neither `https` with a host nor `http` on
+`localhost` or `127.0.0.1`, or that carries userinfo, a fragment or an unparseable port;
 `routing.identity.path` other than the served `/auth`; or a routing host that makes the metadata
 pointer unfit for a `WWW-Authenticate` header: not ASCII, or carrying a `"`). Every reason except
 `disabled` is `rheo doctor`'s `oauth surface` line as `FAIL enabled but unconfigured: <reason>`.

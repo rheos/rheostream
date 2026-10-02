@@ -318,7 +318,8 @@ and restart core. The surface is resolved when core starts, so every
 - `oauth surface FAIL enabled but unconfigured: <reason>` means enabled but
   incomplete, and nothing is advertised: `identity_provider_disabled` (GitHub sign-in
   off or no client id), `allowlist_empty`, or `setting_invalid` (an allowlist entry
-  that is not `https`, an identity path other than `/auth`, or a routing host that
+  that is neither `https` with a host nor `http` on `localhost` or `127.0.0.1`, or
+  that carries userinfo, a fragment or an unparseable port; an identity path other than `/auth`, or a routing host that
   cannot sit in a `WWW-Authenticate` header).
 - An `identity.oauth.*` integer below its minimum (for example
   `access_token_minutes` under 5) refuses the settings load, so core does not start

@@ -1616,7 +1616,10 @@ which records the rationale for each:
   release implements install and enable only. Disable, remove, purge, and restore
   are a defined later milestone.
 - GitHub OAuth is the first login provider, behind a pluggable identity-provider
-  boundary. Command-line and MCP access uses local tokens.
+  boundary. Command-line access, and MCP access from Claude Code, the local bridge and
+  bots, uses local tokens, which stay valid. An MCP connector that cannot send a header
+  signs in with OAuth on the identity host and receives an ordinary `mcp` token, with
+  GitHub still the only login. See the recorded change of direction below.
 - URL topology is configuration. Single-host path mode is the default for
   self-hosters; subdomain-per-module is supported and is what the reference
   deployment uses. See the recorded change of direction below.

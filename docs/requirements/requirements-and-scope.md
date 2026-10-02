@@ -384,7 +384,10 @@ acceptance criteria.
   actor, a workspace, and a permitted operation set. A token is issued in one of two ways: from
   an already-authenticated web session, or, on a headless install with no browser available, by
   an operator-level command against the control plane. Once issued, the token is presented and
-  used without any browser flow.
+  used without any browser flow. An MCP connector that cannot send a header gets its `mcp` token
+  a third way, through an OAuth sign-in on the identity host (D6; [recorded change of direction
+  18](../ideas/rheo-stream-idea.md#recorded-changes-of-direction)); presenting it needs no browser
+  flow either.
 - **FR 5.** Membership carries a role of `owner` or `member`; every authorization check reads
   the role rather than assuming a single user (see R1).
 - **FR 6.** Personal preferences and personal credentials are distinguishable in the model from
