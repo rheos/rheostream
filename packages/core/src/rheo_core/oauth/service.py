@@ -42,7 +42,7 @@ from rheo_core.storage.control_plane import (
     get_membership,
     get_workspace,
     list_memberships,
-    revoke_access_token,
+    revoke_access_token_if_live,
     rotate_access_token,
 )
 from rheo_core.storage.control_tables import WorkspaceState
@@ -589,14 +589,11 @@ def _token_response(
     }
 
 
-def _revoke_if_live(conn: Connection, token_id: UUID) -> bool:
+def _revoke_if_live(conn: Connection, token_id: UUID, now: datetime) -> bool:
     """Revoke the grant's access token unless it is already revoked (its first
-    ``revoked_at`` is kept). True when this call ended the grant."""
-    token = get_access_token(conn, token_id)
-    if token is None or token.revoked_at is not None:
-        return False
-    revoke_access_token(conn, token_id)
-    return True
+    ``revoked_at`` is kept). True when this call ended the grant; the conditional
+    ``UPDATE`` makes that true for exactly one of two concurrent revocations."""
+    return revoke_access_token_if_live(conn, token_id, now=now)
 
 
 def _refuse_code_replay(
@@ -604,7 +601,7 @@ def _refuse_code_replay(
 ) -> OAuthError:
     """A second redemption: revoke what the first issued, record the refusal and
     (when this ended the grant) ``grant_revoked``, all committed with the error."""
-    ended = row.token_id is not None and _revoke_if_live(conn, row.token_id)
+    ended = row.token_id is not None and _revoke_if_live(conn, row.token_id, now)
     events = [(CODE_REDEEMED, REFUSED)]
     if ended:
         events.append((GRANT_REVOKED, SUCCEEDED))
@@ -746,7 +743,7 @@ def refresh(
             grace = timedelta(seconds=surface.lifetimes.refresh_grace_seconds)
             if now - row.rotated_at < grace:
                 return _token_error(INVALID_GRANT)
-            ended = _revoke_if_live(conn, row.token_id)
+            ended = _revoke_if_live(conn, row.token_id, now)
             token = get_access_token(conn, row.token_id)
             # grant_revoked only when this reuse ended a live grant, the rule the
             # code replay and ``revoke_handler`` follow.

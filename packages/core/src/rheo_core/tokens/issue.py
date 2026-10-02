@@ -63,6 +63,7 @@ from rheo_core.storage.control_plane import (
     insert_access_token,
     insert_access_token_operations,
     revoke_access_token,
+    revoke_access_token_if_live,
 )
 from rheo_core.storage.postgres import get_backend
 from rheo_core.tokens.format import mint
@@ -362,16 +363,20 @@ def revoke_handler(
             raise OperationRefused(
                 NOT_FOUND, f"no access token {model_input.token_id} in this workspace"
             )
-        revoke_access_token(connection, model_input.token_id)
-        # Only the revoke that ended the grant writes the event; a re-revoke of an
-        # already-revoked row changes nothing worth recording.
-        if row.issued_from == CONNECTOR_ISSUED_FROM and row.revoked_at is None:
+        if row.issued_from != CONNECTOR_ISSUED_FROM:
+            revoke_access_token(connection, model_input.token_id)
+            return TokenRevoked(token_id=model_input.token_id)
+        # Only the revoke that ended the grant writes the event. The conditional
+        # UPDATE decides it, not the unlocked read above, so of two concurrent
+        # revocations exactly one writes grant_revoked; a re-revoke changes nothing.
+        now = datetime.now(UTC)
+        if revoke_access_token_if_live(connection, row.id, now=now):
             grant = oauth_store.get_grant(connection, row.id)
             oauth_store.insert_event(
                 connection,
                 event="grant_revoked",
                 outcome="succeeded",
-                occurred_at=datetime.now(UTC),
+                occurred_at=now,
                 client_id=None if grant is None else grant.client_id,
                 account_id=row.account_id,
                 workspace_id=row.workspace_id,

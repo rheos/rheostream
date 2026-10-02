@@ -1051,8 +1051,10 @@ def _race(
     monkeypatch: pytest.MonkeyPatch,
     pause_in: str,
     call: Callable[[], object],
+    second_call: Callable[[], object] | None = None,
 ) -> list[object]:
-    """Run ``call`` on two threads. The first to reach ``oauth_store.<pause_in>``
+    """Run ``call`` on two threads (the second runs ``second_call`` when given; it
+    starts only once the first is paused). The first to reach ``oauth_store.<pause_in>``
     (the step's first call after its ``FOR UPDATE`` read) stops there, inside its
     open transaction, until the second has started and had ``HOLD_SECONDS`` to
     reach its own read. With the lock the second blocks until the first commits;
@@ -1077,7 +1079,8 @@ def _race(
 
     def run(slot: int) -> None:
         try:
-            results[slot] = call()
+            chosen = call if slot == 0 or second_call is None else second_call
+            results[slot] = chosen()
         except Exception as exc:  # noqa: BLE001 - the race's loser may raise
             results[slot] = exc
 
@@ -1140,3 +1143,66 @@ def test_two_concurrent_redemptions_serialize_on_the_code_row(
             .where(t.access_token.c.account_id == connector.account_id)
         ).scalar_one()
     assert issued == 1
+
+
+def _grant_revoked_rows(cluster: ClusterSession, token_id: UUID) -> int:
+    with cluster.backend.control_engine.connect() as connection:
+        return connection.execute(
+            select(func.count())
+            .select_from(o.oauth_event)
+            .where(
+                o.oauth_event.c.token_id == token_id,
+                o.oauth_event.c.event == "grant_revoked",
+            )
+        ).scalar_one()
+
+
+def test_two_concurrent_revocations_write_one_grant_revoked(
+    cluster: ClusterSession, connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first ``core.token.revoke`` holds its transaction open after its
+    conditional revoke (paused at ``get_grant``); the second read the row live but
+    its ``UPDATE ... WHERE revoked_at IS NULL`` waits, then changes nothing."""
+    token_id, _ = _redeemed(cluster, connector)
+
+    def revoke() -> object:
+        return dispatch(
+            _operator_ctx(connector.workspace_id),
+            TOKEN_REVOKE,
+            {"token_id": str(token_id)},
+        )
+
+    results = _race(monkeypatch, "get_grant", revoke)
+    assert all(getattr(result, "ok", False) for result in results), results
+    assert _token(cluster, token_id).revoked_at is not None
+    assert _grant_revoked_rows(cluster, token_id) == 1
+
+
+def test_a_code_replay_racing_a_revocation_writes_one_grant_revoked(
+    cluster: ClusterSession, connector: Connector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_revoke_if_live`` on the replay path loses to an in-flight revoke."""
+    token_id, _ = _redeemed(cluster, connector)
+
+    def revoke() -> object:
+        return dispatch(
+            _operator_ctx(connector.workspace_id),
+            TOKEN_REVOKE,
+            {"token_id": str(token_id)},
+        )
+
+    def replay() -> object:
+        return exchange_code(
+            _surface(),
+            _code_form(connector.client_id, connector.code),
+            now=connector.now + timedelta(seconds=5),
+        )
+
+    revoked, replayed = _race(monkeypatch, "get_grant", revoke, replay)
+    assert getattr(revoked, "ok", False), revoked
+    assert replayed == _invalid("invalid_grant")
+    assert _grant_revoked_rows(cluster, token_id) == 1
+    assert _event_words(cluster, connector.client_id)[-1] == (
+        "code_redeemed",
+        "refused",
+    )

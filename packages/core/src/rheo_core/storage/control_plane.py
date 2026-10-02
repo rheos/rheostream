@@ -925,6 +925,22 @@ def revoke_access_token(conn: Connection, token_id: UUID) -> None:
         )
 
 
+def revoke_access_token_if_live(
+    conn: Connection, token_id: UUID, *, now: datetime
+) -> bool:
+    """Set ``revoked_at = now`` only on a row that is not yet revoked; True when
+    this call changed the row. The condition is in the ``UPDATE`` itself, so of two
+    concurrent revocations the second waits on the first's row lock, re-checks
+    ``revoked_at`` after it commits and changes nothing: exactly one caller ends a
+    connector grant (and writes its ``grant_revoked``). A missing row is False."""
+    result = conn.execute(
+        update(t.access_token)
+        .where(t.access_token.c.id == token_id, t.access_token.c.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    return result.rowcount == 1
+
+
 def rotate_access_token(
     conn: Connection, token_id: UUID, *, token_hash: bytes, expires_at: datetime
 ) -> None:
