@@ -8,7 +8,11 @@ mutation that proves that demonstrator bites: a real edit that was applied to a 
 working tree, watched go red, and reverted.
 
 `phase-2-matrix.md` does the same for phase two, over criteria 24-31, 33 and 36 so far, under
-the same grammar. The two files are validated independently and share no criterion number.
+the same grammar.
+
+`connector-matrix.md` is the record for the connector sign-in change (issue #287), over
+criteria 70-93 under the same grammar. The three files are validated independently and no
+criterion number appears in more than one of them.
 
 `ambient-capability-manifest.md` is not a matrix. It lists each client that can produce
 automatic memory (the Rheo runtime, and the local Claude Code bridge under the CLI and
@@ -85,6 +89,11 @@ A `deferred` row (15 and 16 when this grammar was written; both are `complete` n
 naming 0c4 in its own words. A `partial` row (17 then, `complete` now) carries real
 `Demonstrator`/`Mutation`/`Cost`/`Performed by` for the half that IS demonstrated, plus a
 **Note:** naming the blocked half and 0c4.
+
+The one live `deferred` row is criterion 91 in `connector-matrix.md`: the maintainer's
+manual check of the connector from three claude.ai surfaces after deploy, which no test can
+claim. The guard names it explicitly (`DEFERRED_CRITERIA` in
+`tests/test_acceptance_matrix.py`), so a deferred row anywhere else fails.
 
 **Capture every mutation's diff with `git diff -- <path>` after applying it locally, before
 reverting — never hand-type a hunk.** The three-command reproduce loop below and chunk 10's

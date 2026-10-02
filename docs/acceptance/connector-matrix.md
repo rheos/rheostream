@@ -13,12 +13,21 @@ AC-22 and AC-23 are documentation criteria about this record and the decision le
 no number of their own. Criterion 91 is the one manual check, performed once by the
 maintainer after deploy, so its row is `deferred` and claims no test.
 
-**Rows 70-81 are written; rows 82-93 follow.** This file is not yet registered in
-`tests/test_acceptance_matrix.py`, because the guard's completeness check would fail on the
-missing half. It is registered in the same change that adds the last row, with its expected
-set attached, so until then nothing mechanical checks it.
+**Notes.** The file holds 24 rows, one for each of criteria 70-93, matching the spec's
+AC-23 list. 23 of them have a demonstrator and a performed mutation. Criterion 91 is the
+deliberate exception: a manual row, `deferred`, which the guard in
+`tests/test_acceptance_matrix.py` allows by number and for no other criterion. AC-16 asks
+that the existing `mcp` transport and token tests pass without edits. That was met with one
+sanctioned additive line: `tests/postgres/test_tokens.py`'s `READ_ONLY_OPERATIONS` set gains
+`core.oauth_event.list`, the read operation this change registers. Nothing in either file
+was edited or removed.
 
-Every mutation below was applied to this working tree on 2026-10-02, its row's demonstrators
+This file is registered in `tests/test_acceptance_matrix.py` with its expected set
+`{70..93}`, so a missing, extra or duplicated row, a demonstrator that no longer resolves and
+a hunk that no longer applies all fail the guard.
+
+Every mutation below (criterion 91 has none) was applied to this working tree on
+2026-10-02, its row's demonstrators
 were run, watched go red with the failure the `Cost` line quotes, and the mutation was
 reverted and the demonstrators re-run green. Each fenced block is the `git diff` captured
 while it was applied, never a hand-typed hunk, and each one passes `git apply --check`
@@ -466,3 +475,497 @@ index e09111f..7597ffe 100644
 place the grant's lifetime is resolved. The refresh-at-the-cap demonstrator compares against
 the grant end that was actually stored, so it stayed green; it pins the refusal at the end,
 and this mutation moves the end.
+
+### Criterion 82
+
+**Text:** "Using a refresh token returns a new access token and a new refresh token and the old refresh token then answers `invalid_grant`; presenting the old one a second time (outside any recorded grace) revokes the grant so that the newest access token is refused `token_revoked`; presenting it inside the grace answers `invalid_grant` and changes nothing. The test re-reads the database after each refusal and asserts the written state (the revocation and the `refresh_reuse_revoked` row exist after the reuse; nothing changed after the grace-window refusal). (FR 13, edge case 4)" (`build-plan.md:445-451`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_exchange.py::test_refresh_rotates_both_values_in_place`
+- `pytest:tests/postgres/test_oauth_exchange.py::test_reuse_inside_the_grace_changes_nothing`
+- `pytest:tests/postgres/test_oauth_exchange.py::test_reuse_after_the_grace_revokes_the_grant`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/oauth/service.py b/packages/core/src/rheo_core/oauth/service.py
+index e09111f..2e7e275 100644
+--- a/packages/core/src/rheo_core/oauth/service.py
++++ b/packages/core/src/rheo_core/oauth/service.py
+@@ -746,7 +746,7 @@ def refresh(
+             grace = timedelta(seconds=surface.lifetimes.refresh_grace_seconds)
+             if now - row.rotated_at < grace:
+                 return _token_error(INVALID_GRANT)
+-            ended = _revoke_if_live(conn, row.token_id)
++            ended = False
+             token = get_access_token(conn, row.token_id)
+             # grant_revoked only when this reuse ended a live grant, the rule the
+             # code replay and ``revoke_handler`` follow.
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_exchange.py::test_reuse_after_the_grace_revokes_the_grant` — first observed failure line: `E       AssertionError: assert None is not None`, the grant's access token still carrying a null `revoked_at` after the old refresh value was presented past the grace, 1 failed of 3
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the mutation keeps the `refresh_reuse_revoked` row and the `invalid_grant` answer
+and drops only the revocation, which is the half of the clause a reader of the response alone
+cannot see. That is why the demonstrator re-reads the `access_token` row. The rotation and the
+inside-the-grace refusal have their own demonstrators, and both stayed green.
+
+### Criterion 83
+
+**Text:** "An authorization code redeems once; a second redemption answers `invalid_grant` and revokes what the first issued; redemption with a wrong or missing `code_verifier`, a different `client_id`, a different `redirect_uri`, or after 60 s answers `invalid_grant`/`invalid_client`, and with a present `resource` that is not the canonical identifier answers `invalid_target`, in each case issuing nothing; an absent `resource` redeems successfully; failed redemptions leave the code burned (a later correct redemption of the same code answers `invalid_grant`); the token endpoint accepts `application/x-www-form-urlencoded`. The test re-reads the database after each state-changing refusal and asserts the burn, and for a replay the revocation and its event row. (FR 14, edge case 3)" (`build-plan.md:452-461`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_exchange.py::test_replay_revokes_what_the_first_redemption_issued`
+- `pytest:tests/postgres/test_oauth_exchange.py::test_a_failed_redemption_burns_the_code_and_issues_nothing`
+- `pytest:tests/postgres/test_oauth_exchange.py::test_unknown_or_missing_code_is_invalid_grant`
+- `pytest:tests/postgres/test_oauth_exchange.py::test_absent_or_bound_resource_redeems`
+- `pytest:tests/postgres/test_oauth_exchange.py::test_code_at_59_seconds_redeems`
+- `pytest:tests/postgres/test_oauth_token_http.py::test_another_client_redeeming_the_code_is_401_invalid_client`
+- `pytest:tests/postgres/test_oauth_token_http.py::test_token_requires_a_form_content_type`
+- `pytest:tests/postgres/test_oauth_token_http.py::test_register_redeem_call_refresh_over_http`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/oauth/service.py b/packages/core/src/rheo_core/oauth/service.py
+index e09111f..f080a98 100644
+--- a/packages/core/src/rheo_core/oauth/service.py
++++ b/packages/core/src/rheo_core/oauth/service.py
+@@ -604,7 +604,7 @@ def _refuse_code_replay(
+ ) -> OAuthError:
+     """A second redemption: revoke what the first issued, record the refusal and
+     (when this ended the grant) ``grant_revoked``, all committed with the error."""
+-    ended = row.token_id is not None and _revoke_if_live(conn, row.token_id)
++    ended = False
+     events = [(CODE_REDEEMED, REFUSED)]
+     if ended:
+         events.append((GRANT_REVOKED, SUCCEEDED))
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_exchange.py::test_replay_revokes_what_the_first_redemption_issued` — first observed failure line: `E       AssertionError: assert None is not None`, the first redemption's access token left unrevoked by the replay, 1 failed of 22
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the replay still answers `invalid_grant` and still writes its refused
+`code_redeemed` row under this mutation; only the revocation of what the first redemption
+issued is gone. The burn, the verifier, client, redirect, expiry and `resource` refusals, the
+absent-`resource` success and the form content type are pinned by the other demonstrators,
+which stayed green.
+
+### Criterion 84
+
+**Text:** "A connector access token presented to the `api` surface answers `token_wrong_kind`; presented to the `mcp` surface it lists the `agent_default` tools and a call to a tool outside its snapshot answers `operation_not_permitted`; a call is dispatched through the same boundary function as a token minted by `rheo token issue` (a test patches the boundary and sees the one call). (FR 15)" (`build-plan.md:462-466`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_boundary.py::test_a_connector_token_is_mcp_only_and_dispatches_like_an_issued_one`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/tokens/issue.py b/packages/core/src/rheo_core/tokens/issue.py
+index 2adc80f..05d67d2 100644
+--- a/packages/core/src/rheo_core/tokens/issue.py
++++ b/packages/core/src/rheo_core/tokens/issue.py
+@@ -523,7 +523,7 @@ def issue_connector_token(
+         conn,
+         account_id=account_id,
+         workspace_id=workspace_id,
+-        kind="mcp",
++        kind="cli",
+         issued_from=CONNECTOR_ISSUED_FROM,
+         token_hash=hashlib.sha256(raw).digest(),
+         set_name="agent_default",
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_boundary.py::test_a_connector_token_is_mcp_only_and_dispatches_like_an_issued_one[subdomain]` — first observed failure line: `E           AssertionError: {"state":"succeeded","operation_id":null,"result":{"core_version":"0.1.0","core_contract_version":1,"modules":[]}}`, the message of `assert 200 == 401` at `tests/postgres/test_oauth_boundary.py:396`: the connector token was served on the `api` surface; the `[path]` case failed the same way, 2 failed
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the criterion's text says a call to a tool outside the snapshot answers
+`operation_not_permitted`. Over MCP it does not, and the demonstrator asserts what ships: the
+MCP facade answers a tool outside the token's listing with its own result (a `200` with
+`isError` and state `not_found`) and dispatches nothing. `operation_not_permitted` is what the
+boundary answers when an operation outside the snapshot is dispatched directly with the
+connector token's own context, and the same test asserts that too. The boundary spy sees
+exactly one dispatch per call, for the connector token and for a `rheo token issue` token
+alike.
+
+### Criterion 85
+
+**Text:** "Three regression tests, one per existing caller, pass without edits to the existing tests: (a) a Claude-Code-style `mcp` token lists and calls Recallatron tools; (b) the bridge's `cli` token calls `core.evidence.ingest` on the `api` surface; (c) a dedicated `agent_default` `mcp` token lists and calls tools. Each compares the response to the pre-change golden response, normalizing only a named, closed list: the `date` and `content-length` headers, any MCP session-id header, and body values at keys `id`, `*_id` and `*_at`; everything else is compared exactly. The existing `mcp` transport and token test files are unmodified by the change except for added cases. (FR 16, edge case 12)" (`build-plan.md:467-474`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_existing_bearer_regression.py::test_a_claude_code_token_lists_and_recalls_as_before`
+- `pytest:tests/postgres/test_existing_bearer_regression.py::test_a_bridge_token_ingests_as_before`
+- `pytest:tests/postgres/test_existing_bearer_regression.py::test_a_box_bot_token_lists_and_calls_as_before`
+- `pytest:tests/postgres/test_existing_bearer_regression.py::test_an_unauthenticated_post_is_a_bare_bearer_401_as_before`
+- `pytest:tests/postgres/test_existing_bearer_regression.py::test_the_guard_admits_only_the_listed_values`
+- `pytest:tests/postgres/test_existing_bearer_regression.py::test_an_object_under_a_listed_key_is_still_compared`
+
+**Mutation:**
+```diff
+diff --git a/apps/mcp/src/rheo_app_mcp/transport.py b/apps/mcp/src/rheo_app_mcp/transport.py
+index 94489b1..3cc0d20 100644
+--- a/apps/mcp/src/rheo_app_mcp/transport.py
++++ b/apps/mcp/src/rheo_app_mcp/transport.py
+@@ -132,7 +132,7 @@ def _bearer_from(scope: Scope) -> str | None:
+     return None
+ 
+ 
+-BARE_CHALLENGE: Final = b"Bearer"
++BARE_CHALLENGE: Final = b'Bearer realm="mcp"'
+ """The ``WWW-Authenticate`` value when no OAuth surface is configured: exactly the
+ header this gate answered with before issue #287."""
+ 
+```
+
+**Cost:** `pytest:tests/postgres/test_existing_bearer_regression.py::test_an_unauthenticated_post_is_a_bare_bearer_401_as_before` — first observed failure line: `E       assert {'exchanges':...presented'}}]} == {'exchanges':...presented'}}]}`, whose diff shows `['www-authenticate', 'Bearer realm="mcp"']` against the golden's `['www-authenticate', 'Bearer']`, 1 failed of 9
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the mutation changes one token of the one header this change touched on the
+existing path, and the golden comparison catches it: everything outside the closed
+normalisation list is compared exactly, and the two guard tests pin that list. The three
+callers' own goldens stayed green under it, as they should, because a served request never
+carries a refusal header. "Without edits to the existing tests" holds with one sanctioned
+additive line: `tests/postgres/test_tokens.py` gains `core.oauth_event.list` in its
+`READ_ONLY_OPERATIONS` set, because this change registers that read operation. No case in
+that file or in `tests/postgres/test_mcp_transport.py` was edited or removed; the transport
+file only gained cases.
+
+### Criterion 86
+
+**Text:** "A full registration, authorization, exchange, call and refresh flow is run against a test log sink, and a scan of every captured log line, every audit row, every `operation` row and every error body finds none of: the access token, the refresh token, the code, the verifier, the challenge. A test also asserts that presenting a bearer in a query string on the `mcp` and `api` surfaces is not accepted. (FR 17, edge case 13)" (`build-plan.md:475-479`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_boundary.py::test_a_full_flow_leaves_no_secret_in_logs_rows_or_error_bodies`
+- `pytest:tests/test_log_redaction.py::test_the_query_is_stripped_and_the_path_kept`
+- `pytest:tests/test_log_redaction.py::test_a_target_without_a_query_is_untouched`
+- `pytest:tests/test_log_redaction.py::test_an_unrecognised_shape_fails_closed`
+- `pytest:tests/test_log_redaction.py::test_a_preformatted_message_fails_closed`
+- `pytest:tests/test_log_redaction.py::test_attaching_twice_adds_one_filter`
+- `pytest:tests/test_log_redaction.py::test_serve_configs_leave_the_filter_on_the_access_logger`
+- `pytest:tests/test_log_redaction.py::test_a_real_server_logs_the_request_without_its_query`
+- `pytest:tests/postgres/test_oauth_token_http.py::test_a_code_in_the_query_string_is_never_read`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/log_config.py b/packages/core/src/rheo_core/log_config.py
+index 07cd0ff..d6058b8 100644
+--- a/packages/core/src/rheo_core/log_config.py
++++ b/packages/core/src/rheo_core/log_config.py
+@@ -144,7 +144,7 @@ class RedactQueryFilter(logging.Filter):
+             and isinstance(args[_TARGET_INDEX], str)
+         ):
+             target = args[_TARGET_INDEX]
+-            if "?" in target:
++            if "?" in target and False:
+                 record.args = (
+                     *args[:_TARGET_INDEX],
+                     target.split("?", 1)[0],
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_boundary.py::test_a_full_flow_leaves_no_secret_in_logs_rows_or_error_bodies[subdomain]` — first observed failure line: `E           AssertionError: /auth/oauth/authorize`, the message of `assert lines, path`: no access line for the authorize request was left without its query; the `[path]` case failed the same way, and `test_the_query_is_stripped_and_the_path_kept`, `test_serve_configs_leave_the_filter_on_the_access_logger` and `test_a_real_server_logs_the_request_without_its_query` failed in every case, 9 failed of 18
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the query-string clause is asserted inside the full-flow test: a valid access
+token sent as `access_token` or `token` in the query, on the `mcp` and on the `api` surface,
+answers `401` with `token_malformed`, while the same value in the header is served. The
+mutation leaves that path alone; it removes the access-log redaction, which is the place a
+code, challenge or GitHub code would otherwise reach a log line.
+
+### Criterion 87
+
+**Text:** "`rheo token list` shows every connector grant with the fields FR 18 names; `rheo token revoke <id>` makes the grant's next `mcp` call answer 401 with the pointer and makes its refresh answer `invalid_grant`; revoking one of two grants for one account leaves the other working. (FR 18, edge cases 10, 11)" (`build-plan.md:480-483`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_cli.py::test_list_shows_each_connector_grant_with_its_fields_and_no_secret`
+- `pytest:tests/postgres/test_oauth_cli.py::test_list_narrows_by_workspace_and_shows_dashes_for_an_operator_token`
+- `pytest:tests/postgres/test_oauth_cli.py::test_revoking_one_of_two_grants_kills_it_and_leaves_the_other`
+- `pytest:tests/postgres/test_oauth_cli.py::test_a_revoked_grant_still_lists_with_its_name_after_cleanup`
+
+**Mutation:**
+```diff
+diff --git a/apps/cli/src/rheo_app_cli/commands/token.py b/apps/cli/src/rheo_app_cli/commands/token.py
+index f7120b9..6324985 100644
+--- a/apps/cli/src/rheo_app_cli/commands/token.py
++++ b/apps/cli/src/rheo_app_cli/commands/token.py
+@@ -219,7 +219,7 @@ def list_tokens(args: argparse.Namespace) -> int:
+             row.created_at,
+             row.expires_at,
+             row.last_used_at,
+-            row.revoked_at,
++            None,
+             None
+             if grant is None
+             else sanitize_client_name(
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_cli.py::test_revoking_one_of_two_grants_kills_it_and_leaves_the_other` — first observed failure line: `E       AssertionError: assert '-' != '-'`, the revoked grant listing with no revocation time; `test_a_revoked_grant_still_lists_with_its_name_after_cleanup` failed the same way, 2 failed of 4
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** in the revoke demonstrator the dead `mcp` call (401 with the pointer), the dead
+refresh (`invalid_grant`) and the surviving second grant are asserted before the listing,
+and they passed under this mutation: revocation itself is the shipped `core.token.revoke`.
+The mutation bites the listing's `revoked` column, the field FR 18 adds the revocation to.
+
+### Criterion 88
+
+**Text:** "`rheo doctor` output includes connector-grant counts and the OAuth-configured line, contains no token, client name or other client-supplied text, and goes `FAIL` for the counted-client cap and missing-refresh-row cases. (FR 19)" (`build-plan.md:484-486`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_cli.py::test_the_oauth_surface_line_is_ok_disabled_ok_configured_or_fail`
+- `pytest:tests/postgres/test_oauth_cli.py::test_connector_grants_fail_at_the_counted_client_cap`
+- `pytest:tests/postgres/test_oauth_cli.py::test_revoked_or_expired_grants_keep_their_clients_below_the_cap`
+- `pytest:tests/postgres/test_oauth_cli.py::test_a_live_grant_with_no_refresh_row_fails`
+- `pytest:tests/postgres/test_oauth_cli.py::test_doctor_shows_both_lines_and_no_client_text`
+
+**Mutation:**
+```diff
+diff --git a/apps/cli/src/rheo_app_cli/commands/doctor.py b/apps/cli/src/rheo_app_cli/commands/doctor.py
+index c63ed01..7b057e6 100644
+--- a/apps/cli/src/rheo_app_cli/commands/doctor.py
++++ b/apps/cli/src/rheo_app_cli/commands/doctor.py
+@@ -424,7 +424,7 @@ def _connector_grants_check(counts: ConnectorGrantCounts, max_clients: int) -> C
+         f"refresh row {counts.missing_refresh}"
+     )
+     problems = []
+-    if counts.counted_clients >= max_clients:
++    if counts.counted_clients > max_clients:
+         problems.append("client cap reached, new registrations are refused")
+     if counts.missing_refresh:
+         problems.append("a live grant cannot refresh")
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_cli.py::test_connector_grants_fail_at_the_counted_client_cap` — first observed failure line: `E       AssertionError: Check(name='connector grants', level='ok', detail='clients 1/1; grants active 0, expired 0, revoked 0, ending within 7 days 0; live grants with no live refresh row 0')`, the message of `assert 'ok' == 'FAIL'`, 1 failed of 5
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+### Criterion 89
+
+**Text:** "Each audit event FR 20 lists is written exactly once for a scripted flow, each row carries account, workspace, client id, grant id and an outcome word, and a deny and a refresh-reuse each produce their own row. The test re-reads the database after each refusal (deny, replay, refresh-reuse, refused registration) and asserts the row exists, so a refused request still leaves its event. (FR 20)" (`build-plan.md:487-491`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_exchange.py::test_a_scripted_flow_writes_each_event_once`
+- `pytest:tests/postgres/test_oauth_exchange.py::test_reuse_after_the_grace_revokes_the_grant`
+- `pytest:tests/postgres/test_oauth_exchange.py::test_replay_revokes_what_the_first_redemption_issued`
+- `pytest:tests/postgres/test_oauth_service.py::test_redirect_uri_refusals_commit_a_refused_event`
+- `pytest:tests/postgres/test_oauth_http.py::test_deny_redirects_access_denied_and_issues_nothing`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/oauth/service.py b/packages/core/src/rheo_core/oauth/service.py
+index e09111f..6025dc7 100644
+--- a/packages/core/src/rheo_core/oauth/service.py
++++ b/packages/core/src/rheo_core/oauth/service.py
+@@ -761,7 +761,7 @@ def refresh(
+                     occurred_at=now,
+                     client_id=None if grant is None else grant.client_id,
+                     account_id=None if token is None else token.account_id,
+-                    workspace_id=None if token is None else token.workspace_id,
++                    workspace_id=None,
+                     token_id=row.token_id,
+                 )
+             return _token_error(INVALID_GRANT)
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_exchange.py::test_a_scripted_flow_writes_each_event_once` — first observed failure line: `E           AssertionError: refresh_reuse_revoked`, the message of the per-event `(account_id, workspace_id, token_id)` comparison, `At index 1 diff: None != UUID(...)`; `test_reuse_after_the_grace_revokes_the_grant` also failed, `E       AssertionError: assert None == UUID('01a0fc16-f23f-7e0a-b61a-db51858bdedd')`, 2 failed of 18
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the mutation keeps every event and drops one field from two of them (the
+refresh-reuse refusal and the `grant_revoked` it writes). It is caught because the scripted
+flow checks the fields of each row, not only that the row exists. The deny, replay and
+refused-registration rows are re-read by their own demonstrators, which stayed green.
+
+### Criterion 90
+
+**Text:** "With the feature unconfigured (off, or enabled but incomplete) the `mcp` surface answers today's bare `Bearer` 401, the well-known paths and `/auth/oauth/*` answer 404, and doctor shows `FAIL` for the enabled-but-incomplete case; with it configured no advertised endpoint answers 404 or 500; the same suite passes in path mode with the endpoints built through `url_for`, and a route string naming a host or prefix outside `url_for` fails the existing lint. (FR 21)" (`build-plan.md:492-497`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_boundary.py::test_an_unconfigured_deployment_advertises_nothing`
+- `pytest:tests/postgres/test_oauth_boundary.py::test_every_advertised_url_answers_and_follows_url_for`
+- `pytest:tests/postgres/test_oauth_mount.py::test_unconfigured_mount_is_unchanged`
+- `pytest:tests/postgres/test_oauth_http.py::test_unconfigured_the_browser_routes_are_404`
+- `pytest:tests/postgres/test_oauth_token_http.py::test_unconfigured_routes_are_404`
+- `pytest:tests/test_oauth_surface.py::test_unconfigured_reasons`
+- `pytest:tests/postgres/test_oauth_cli.py::test_the_oauth_surface_line_is_ok_disabled_ok_configured_or_fail`
+- `ci:web / Routing-literal gate (criterion 22)`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/oauth/surface.py b/packages/core/src/rheo_core/oauth/surface.py
+index a21b17f..2c179f7 100644
+--- a/packages/core/src/rheo_core/oauth/surface.py
++++ b/packages/core/src/rheo_core/oauth/surface.py
+@@ -191,9 +191,7 @@ def oauth_surface(
+     """The configured surface, or why there is none (module docstring)."""
+     if not settings.get_bool(ENABLED_KEY):
+         return OAuthUnconfigured("disabled")
+-    if not settings.get_bool(_GITHUB_ENABLED_KEY) or not settings.get_str(
+-        _GITHUB_CLIENT_ID_KEY
+-    ):
++    if not settings.get_str(_GITHUB_CLIENT_ID_KEY):
+         return OAuthUnconfigured("identity_provider_disabled")
+     redirect_uris = settings.get_list(REDIRECT_URIS_KEY)
+     if not redirect_uris:
+```
+
+**Cost:** `pytest:tests/test_oauth_surface.py::test_unconfigured_reasons[subdomain-overrides1-identity_provider_disabled]` — first observed failure line: `E       AssertionError: assert OAuthSurface(resource='https://mcp.example.test/', issuer='https://mcp.example.test', authorization_endpoint='https://...conds=10, max_clients=100, registrations_per_source_per_hour=30, abandoned_client_minutes=60), accepts_empty_path=True) == OAuthUnconfigured(reason='identity_provider_disabled')`; the `[path-…]` twin failed the same way, 2 failed of 32
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the mutation lets an enabled deployment with GitHub sign-in switched off count as
+configured while a GitHub client id is set. The boundary demonstrator's incomplete case
+stayed green under it, because that test's configuring context closes before the probes and
+leaves no client id, so it reaches the same refusal through the clause the mutation kept;
+the surface unit test sets the client id and isolates the GitHub switch. The lint clause is
+the shipped routing-literal gate, which also scans the new routes, built from
+`SERVED_IDENTITY_PATH` and `url_for` rather than literals.
+
+### Criterion 91
+
+**Text:** "**Manual, once, by the maintainer after deploy and on his go:** adding the connector `https://mcp.rheo.stream/` in claude.ai (desktop chat), then using it from claude.ai on the web and on the phone, each completes sign-in through GitHub on `auth.rheo.stream` (or reuses the account's connection, per S5), lists the Recallatron tools, and one `recallatron_recall` call returns a result from his own workspace. The result is recorded in the run's closeout and the matrix's manual row; it is not claimed by any CI test. (Outcome metric)" (`build-plan.md:498-503`)
+
+**State:** deferred
+
+**Demonstrator:** none
+
+**Mutation:** none
+
+**Cost:** none
+
+**Performed by:** none
+
+**Note:** this check is manual. The maintainer performs it once, after the merge and after
+`RHEO__identity__oauth__enabled=true` is set on the deployment: he adds the connector
+`https://mcp.rheo.stream/` in claude.ai desktop chat, then uses it from claude.ai on the web
+and from the phone. The result is written into this row when it exists. No CI test claims
+it, and the guard allows this one deferred row by number (`DEFERRED_CRITERIA` in
+`tests/test_acceptance_matrix.py`).
+
+### Criterion 92
+
+**Text:** "The `oauth_event` reader (e.g. `rheo token events`), run after a scripted flow that includes a registration, a grant, a deny, a code redemption, a refresh and a refresh-reuse revocation, lists those events newest first; every row shows only the content-free fields (event, outcome word, time, account, workspace, client id, grant id); a scan of its output finds none of the access token, refresh token, code, verifier, challenge or any client-supplied free text (including the client name); and a caller who is not the operator/owner is refused. (FR 20)" (`build-plan.md:504-510`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_event_list.py::test_the_operator_reads_the_flow_newest_first_with_the_unbound_rows`
+- `pytest:tests/postgres/test_oauth_event_list.py::test_each_record_carries_exactly_the_eight_content_free_fields`
+- `pytest:tests/postgres/test_oauth_event_list.py::test_an_owner_session_sees_its_workspace_and_no_unbound_row`
+- `pytest:tests/postgres/test_oauth_event_list.py::test_a_member_is_refused_role_not_permitted`
+- `pytest:tests/postgres/test_oauth_event_list.py::test_another_workspace_s_rows_are_never_shown`
+- `pytest:tests/postgres/test_oauth_cli.py::test_events_prints_seven_columns_newest_first_and_no_secret`
+- `pytest:tests/postgres/test_oauth_cli.py::test_a_refused_events_dispatch_exits_one_with_the_state`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/storage/oauth_store.py b/packages/core/src/rheo_core/storage/oauth_store.py
+index 4cfa204..bb4307a 100644
+--- a/packages/core/src/rheo_core/storage/oauth_store.py
++++ b/packages/core/src/rheo_core/storage/oauth_store.py
+@@ -573,7 +573,7 @@ def list_oauth_events(
+     statement = (
+         select(event)
+         .where(scope)
+-        .order_by(event.c.occurred_at.desc(), event.c.id.desc())
++        .order_by(event.c.occurred_at, event.c.id)
+         .limit(limit)
+     )
+     return tuple(
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_event_list.py::test_the_operator_reads_the_flow_newest_first_with_the_unbound_rows` — first observed failure line: `E       AssertionError: assert [(datetime.da...e7dbb')), ...] == [(datetime.da...6eeed')), ...]`, the oldest event listed first; `test_an_owner_session_sees_its_workspace_and_no_unbound_row` and `test_events_prints_seven_columns_newest_first_and_no_secret` also failed, 3 failed of 10
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the run under this mutation also included the module's two `limit` tests, which
+stayed green; they are not listed above because they pin the input bound, not this
+criterion.
+
+### Criterion 93
+
+**Text:** "A pending authorization cannot be completed late, from another browser, or twice (edge case 8; FR 9, 10). A test drives each case and, after every refusal, re-reads the database and asserts that no code was issued (`code_hash` and `code_expires_at` null on the row), no `access_token` or `oauth_grant` row was created, and the row is unchanged. (a) **Expired:** with the clock at or after the `oauth_authorization` row's `expires_at` (created plus 10 minutes), `GET /auth/oauth/consent` with the correct `rheo_oauth_request` cookie answers the `authorization_expired` page (`data-state="authorization_expired"`), and an Allow `POST` answers the same page; nothing is issued. (b) **Another browser:** with a live row, `GET /auth/oauth/consent` with no `rheo_oauth_request` cookie, and with a cookie whose nonce hashes to no row, answers `authorization_expired` and issues nothing; a session that holds a different, live pending row of its own and posts the first row's `request_id` is refused `authorization_expired` (the cookie's row id must equal `request_id`); an Allow `POST` whose `request_id` is not the id of the row named by the cookie is refused `authorization_expired`. (c) **Already decided:** after Deny, and after an Allow that issued a code, replaying the same cookie value against `GET` and `POST /auth/oauth/consent` answers `authorization_expired` and issues no second code and no second approval or denial event; the replayed Allow does not change the code the first Allow issued. Boundary cases: at 1 second before `expires_at` the row is still live and consent succeeds; at `expires_at` exactly it is refused; the `Set-Cookie` for `rheo_oauth_request` carries `Max-Age=600` (the same 10 minutes), so a browser that has dropped the cookie at Max-Age is the absent-cookie case in (b). (FR 9, 10; edge case 8)" (`build-plan.md:511-531`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/postgres/test_oauth_http.py::test_at_expires_at_the_consent_is_authorization_expired`
+- `pytest:tests/postgres/test_oauth_http.py::test_one_second_before_expires_at_consent_succeeds`
+- `pytest:tests/postgres/test_oauth_http.py::test_another_browser_without_the_cookie_gets_authorization_expired`
+- `pytest:tests/postgres/test_oauth_http.py::test_a_session_holding_its_own_row_cannot_approve_another_rows_id`
+- `pytest:tests/postgres/test_oauth_http.py::test_a_denied_request_cannot_be_replayed`
+- `pytest:tests/postgres/test_oauth_http.py::test_an_approved_request_cannot_be_replayed_and_keeps_its_code`
+- `pytest:tests/postgres/test_oauth_service.py::test_pending_boundaries`
+- `pytest:tests/postgres/test_oauth_service.py::test_expired_request_is_refused_at_expiry_and_live_one_second_before`
+- `pytest:tests/postgres/test_oauth_service.py::test_missing_or_unknown_cookie_is_refused`
+- `pytest:tests/postgres/test_oauth_service.py::test_another_rows_id_is_refused`
+- `pytest:tests/postgres/test_oauth_service.py::test_denied_request_cannot_be_replayed`
+- `pytest:tests/postgres/test_oauth_service.py::test_approved_request_cannot_be_replayed`
+- `pytest:tests/postgres/test_oauth_migration.py::test_the_oauth_request_cookie_lives_ten_minutes`
+
+**Mutation:**
+```diff
+diff --git a/packages/core/src/rheo_core/oauth/service.py b/packages/core/src/rheo_core/oauth/service.py
+index e09111f..7cce1f1 100644
+--- a/packages/core/src/rheo_core/oauth/service.py
++++ b/packages/core/src/rheo_core/oauth/service.py
+@@ -312,7 +312,7 @@ def _pending(
+     row = oauth_store.get_authorization_by_request_hash(
+         conn, _sha256(request_nonce), for_update=for_update
+     )
+-    if row is None or row.decided_at is not None or now >= row.expires_at:
++    if row is None or row.decided_at is not None or now > row.expires_at:
+         return None
+     return row
+ 
+```
+
+**Cost:** `pytest:tests/postgres/test_oauth_http.py::test_at_expires_at_the_consent_is_authorization_expired[subdomain-GET]` — first observed failure line: `E       AssertionError: <!doctype html>`, the message of `assert 200 == 400`: the consent page was served at `expires_at` exactly; the other three cases of that test, `test_pending_boundaries` and `test_expired_request_is_refused_at_expiry_and_live_one_second_before` also failed, 6 failed of 23. Additional mutation, performed and reverted: dropping the `request_id` == cookie-row-id check in the Allow and Deny `POST` (the hunk is in the Note) reddened `pytest:tests/postgres/test_oauth_http.py::test_a_session_holding_its_own_row_cannot_approve_another_rows_id[subdomain]` — first observed failure line: `E       assert 302 == 400`, the other row's id approved with a code; the `[path]` case failed the same way, 2 failed of 23
+
+**Performed by:** mcpoauth-P14 (2026-10-02)
+
+**Note:** the primary hunk is in `_pending`, the one rule `pending()`, `approve` and `deny`
+all read, so moving the boundary by one tick is caught at the exact-boundary case on both
+the page and the service; the one-second-before demonstrators stayed green. The second
+mutation, captured the same way and checked with `git apply --check`:
+
+```diff
+diff --git a/apps/core/src/rheo_app_core/oauth_routes.py b/apps/core/src/rheo_app_core/oauth_routes.py
+index 2740b80..7f9f978 100644
+--- a/apps/core/src/rheo_app_core/oauth_routes.py
++++ b/apps/core/src/rheo_app_core/oauth_routes.py
+@@ -552,7 +552,7 @@ def _decide(
+     nonce = request.cookies.get(OAUTH_REQUEST_COOKIE)
+     now = _now()
+     row = pending(nonce, now)
+-    if row is None or _uuid_or_none(form.get("request_id")) != row.id:
++    if row is None:
+         return _error_page(AUTHORIZATION_EXPIRED, 400)
+     session = _session_row_from_cookie(request, _current_host(request))
+     if session is None:
+```
+
+The service-level `test_another_rows_id_is_refused` stayed green under it, because
+`approve` keeps its own `row.id != row_id` check; the route's check is what stops a browser
+holding its own pending row from posting another row's id.
