@@ -27,7 +27,8 @@ adds the eleven ``runtime.*`` keys, for fifty; run 1a0's module contract adds
 fifty-three, and issue #130 adds the two ``redaction.*`` keys the tier policy reads
 (``rheo_core/redaction/policy.py``), for fifty-five. Run 1a4 adds the six
 ``automatic_memory.*`` keys, for sixty-one, and run 1a4b adds
-``automatic_memory.extraction.model_id``, for sixty-two.
+``automatic_memory.extraction.model_id``, for sixty-two. Issue #287 adds the eight
+``identity.oauth.*`` keys, for seventy.
 ``api.cors_origins`` is still not declared here, for the reason this key was not
 until now: a key with no reader is machinery with no caller, and the registry/TOML
 identity check holds per merge SHA — every later chunk that adds a key adds it to
@@ -759,6 +760,80 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default="",
+    ),
+    # --- identity.oauth (issue #287) -------------------------------------------------
+    # The MCP OAuth connector surface. Off by default: an unconfigured deployment keeps
+    # today's bare ``Bearer`` 401 and advertises nothing. ``redirect_uris`` is an exact
+    # allowlist; the one default is the Claude connector callback.
+    KeySpec(
+        key="identity.oauth.enabled",
+        type=ValueType.BOOL,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=False,
+    ),
+    KeySpec(
+        key="identity.oauth.redirect_uris",
+        type=ValueType.STR_LIST,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=("https://claude.ai/api/mcp/auth_callback",),
+    ),
+    KeySpec(
+        key="identity.oauth.access_token_minutes",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=60,
+        minimum=5,
+    ),
+    KeySpec(
+        key="identity.oauth.grant_days",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=30,
+        minimum=1,
+    ),
+    KeySpec(
+        key="identity.oauth.refresh_grace_seconds",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=10,
+        minimum=0,
+    ),
+    KeySpec(
+        key="identity.oauth.max_clients",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=100,
+        minimum=1,
+    ),
+    KeySpec(
+        key="identity.oauth.registrations_per_source_per_hour",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=30,
+        minimum=1,
+    ),
+    KeySpec(
+        key="identity.oauth.abandoned_client_minutes",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=60,
+        minimum=15,
     ),
     # Same empty-string reasoning as the GitHub client secret above: the real
     # ``secret://env/RHEO_INTERNAL_SECRET`` reference is 11's deployment concern.

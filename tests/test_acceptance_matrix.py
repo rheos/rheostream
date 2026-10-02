@@ -8,29 +8,33 @@ non-``deferred`` mutation hunk still applies (``git apply --check``); every
 non-``deferred`` row names a performer. A separate check asserts that each
 quoted build-plan citation still contains its text.
 
-**Two files, validated independently, plus one check between them.**
+**Three files, validated independently, plus one check across them.**
 :data:`MATRICES` is an ordered list of ``(path, expected_criteria)`` pairs —
-``phase-1-matrix.md`` over ``{1..23} ∪ {69}`` and ``phase-2-matrix.md`` over
-``{24, 25, 26, 27, 28, 29, 30, 31, 33, 36}``. Each is parsed and validated on its own,
-so a stale row in one cannot be masked by the other, and
-:func:`cross_file_errors` then asserts that **no criterion number appears in more
-than one matrix**. That last check is the only thing the two files share: they are
-not merged, not concatenated, and not reconciled into one set. A criterion has
-exactly one home and the pair is what proves it, because a number that drifted
-into both would otherwise satisfy both files' completeness checks at once.
+``phase-1-matrix.md`` over ``{1..23} ∪ {69}``, ``phase-2-matrix.md`` over
+``{24, 25, 26, 27, 28, 29, 30, 31, 33, 36}`` and ``connector-matrix.md`` over
+``{70..93}``. Each is parsed and validated on its own, so a stale row in one cannot
+be masked by another, and :func:`cross_file_errors` then asserts that **no criterion
+number appears in more than one matrix**. That last check is the only thing the
+live matrices share: they are not merged, not concatenated, and not reconciled into
+one set. A criterion has exactly one home and the pairwise check is what proves it,
+because a number that drifted into two files would otherwise satisfy both files'
+completeness checks at once.
 
 The list is deliberately a small tuple rather than a directory scan. A scan would
 make "which matrices exist" an incidental property of the filesystem; naming them
-is what makes adding a third a reviewed decision with an expected set attached.
+is what made adding the third a reviewed decision with an expected set attached.
 
 A ``deferred`` row is routed past checks 2 and 3 the moment ``State`` reads
 ``deferred``. Its ``Demonstrator`` and ``Mutation`` fields hold the literal
 ``none`` by grammar; they are never resolved and never passed to ``git apply``.
-Neither live matrix holds one today; phase one's rows 15-17 are ``complete``, and
-so is every phase-two row. Criterion 24 was a ``partial`` row, holding back its
-interface contributions, until run 1a3 shipped them and promoted it; criterion 30
-was the second such row until the public retention amendment landed and its
-evidence covered the amended text.
+Only the connector matrix holds one: criterion 91, the maintainer's manual
+three-surface check after deploy, which no CI test can claim.
+:data:`DEFERRED_CRITERIA` names it by file and number, so any other deferred row
+fails :func:`test_each_live_matrix_is_clean`. Phase one's rows 15-17 are
+``complete``, and so is every phase-two row. Criterion 24 was a ``partial`` row,
+holding back its interface contributions, until run 1a3 shipped them and promoted
+it; criterion 30 was the second such row until the public retention amendment
+landed and its evidence covered the amended text.
 
 ``vitest:`` stays in the schema and is not resolved here: no matrix row uses it,
 so ``validate`` takes no ``known_vitest_ids``. The positive control and the
@@ -54,6 +58,7 @@ _ACCEPTANCE = _REPO_ROOT / "docs" / "acceptance"
 _BUILD_PLAN = _REPO_ROOT / "docs" / "requirements" / "build-plan.md"
 _PHASE_ONE = _ACCEPTANCE / "phase-1-matrix.md"
 _PHASE_TWO = _ACCEPTANCE / "phase-2-matrix.md"
+_CONNECTOR = _ACCEPTANCE / "connector-matrix.md"
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "repository-checks.yml"
 
 EXPECTED_CRITERIA = frozenset(range(1, 24)) | {69}
@@ -69,10 +74,22 @@ why). The completeness check is what keeps them absent: a row for one of them fa
 here as ``unexpected`` rather than quietly widening what the repository claims.
 """
 
+CONNECTOR_CRITERIA = frozenset(range(70, 94))
+"""The connector sign-in change's set (issue #287): criteria 70-93, all of them."""
+
 MATRICES: Final[tuple[tuple[Path, frozenset[int]], ...]] = (
     (_PHASE_ONE, EXPECTED_CRITERIA),
     (_PHASE_TWO, PHASE_TWO_CRITERIA),
+    (_CONNECTOR, CONNECTOR_CRITERIA),
 )
+
+DEFERRED_CRITERIA: Final[dict[Path, frozenset[int]]] = {_CONNECTOR: frozenset({91})}
+"""The only ``deferred`` rows a live matrix may hold, by file.
+
+Criterion 91 is a manual check the maintainer performs once after deploy; no test
+can claim it. Naming it here, rather than relaxing the clean-matrix check, keeps
+every other row of every matrix on the complete-or-partial path.
+"""
 
 _MATRIX_IDS: Final = tuple(path.name for path, _ in MATRICES)
 
@@ -167,12 +184,14 @@ def validate(
 def cross_file_errors(parsed: Sequence[tuple[Path, Sequence[Row]]]) -> list[str]:
     """No criterion number may appear in more than one matrix.
 
-    The one check that spans files. Each file's own completeness check is blind to
-    the others by construction — it compares that file's rows against that file's
-    expected set — so a number written into two matrices satisfies both and is
-    reported by neither. The error names **both** files, because "criterion 24 is
-    duplicated" without saying where is not an actionable report when the whole
-    point is that it is in two places.
+    The one check that spans files, run over every pair of live matrices
+    (``phase-1-matrix.md``, ``phase-2-matrix.md`` and ``connector-matrix.md``).
+    Each file's own completeness check is blind to the others by construction — it
+    compares that file's rows against that file's expected set — so a number
+    written into two matrices satisfies both and is reported by neither. The error
+    names **both** files of the pair, because "criterion 24 is duplicated" without
+    saying where is not an actionable report when the whole point is that it is in
+    two places.
     """
     errors: list[str] = []
     for index, (left_path, left_rows) in enumerate(parsed):
@@ -408,6 +427,24 @@ def _rows_of(path: Path) -> list[Row]:
     return next(rows for candidate, rows in parsed if candidate == path)
 
 
+def deferred_allowance_errors(path: Path, rows: Sequence[Row]) -> list[str]:
+    """The file's ``deferred`` rows must be exactly its :data:`DEFERRED_CRITERIA`
+    entry (empty for a file with none). Errors name the file and the numbers."""
+    deferred = frozenset(row.number for row in rows if row.state == "deferred")
+    allowed = DEFERRED_CRITERIA.get(path, frozenset())
+    errors: list[str] = []
+    if deferred - allowed:
+        errors.append(
+            f"{path.name}: deferred rows not allowed: {sorted(deferred - allowed)}"
+        )
+    if allowed - deferred:
+        errors.append(
+            f"{path.name}: allowed deferred rows are not deferred: "
+            f"{sorted(allowed - deferred)}"
+        )
+    return errors
+
+
 @pytest.mark.parametrize(("path", "expected"), MATRICES, ids=_MATRIX_IDS)
 def test_each_live_matrix_is_clean(path: Path, expected: frozenset[int]) -> None:
     _, known_pytest_ids, known_ci_steps = _known()
@@ -417,7 +454,7 @@ def test_each_live_matrix_is_clean(path: Path, expected: frozenset[int]) -> None
         demo.startswith("vitest:") for row in rows for demo in row.demonstrators
     )
     deferred = {row.number: row for row in rows if row.state == "deferred"}
-    assert set(deferred) == set()
+    assert deferred_allowance_errors(path, rows) == []
     assert all(
         row.demonstrators == () and row.mutation == "none" for row in deferred.values()
     )
@@ -430,6 +467,44 @@ def test_each_live_matrix_is_clean(path: Path, expected: frozenset[int]) -> None
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "number"),
+    [(_PHASE_ONE, 1), (_CONNECTOR, 70)],
+    ids=["phase-one", "connector"],
+)
+def test_a_deferred_row_outside_the_allowance_is_rejected(
+    path: Path, number: int
+) -> None:
+    """The allowance is one criterion in one file, not a loophole.
+
+    ``validate`` routes a ``deferred`` row past its demonstrator, mutation and
+    performer checks, so a row quietly switched to ``deferred`` would pass it.
+    :func:`deferred_allowance_errors`, the check the clean-matrix test runs, is
+    what stops that, in a matrix with no allowance and in the one with an
+    allowance for 91.
+    """
+    _, known_pytest_ids, known_ci_steps = _known()
+    rows = _rows_of(path)
+    expected = dict(MATRICES)[path]
+    copied = [
+        replace(row, state="deferred", demonstrators=(), mutation="none")
+        if row.number == number
+        else row
+        for row in rows
+    ]
+    assert (
+        validate(
+            copied,
+            expected=expected,
+            known_pytest_ids=known_pytest_ids,
+            known_ci_steps=known_ci_steps,
+        )
+        == []
+    )
+    errors = deferred_allowance_errors(path, copied)
+    assert errors == [f"{path.name}: deferred rows not allowed: [{number}]"], errors
 
 
 @pytest.mark.parametrize("path", [path for path, _ in MATRICES], ids=_MATRIX_IDS)
@@ -460,7 +535,8 @@ def test_a_drifted_build_plan_quote_is_rejected(tmp_path: Path) -> None:
 
 
 def test_every_state_is_one_of_the_three_the_grammar_defines() -> None:
-    """``complete | partial | deferred`` and nothing else, across both files.
+    """``complete | partial | deferred`` and nothing else, across every live matrix
+    (``phase-1-matrix.md``, ``phase-2-matrix.md`` and ``connector-matrix.md``).
 
     Written when phase two seeded its second ``partial`` row: the temptation at
     that point was a fourth token for "held pending a public amendment", and this
@@ -535,7 +611,7 @@ def test_a_deleted_row_fails_completeness(path: Path, expected: frozenset[int]) 
 def test_a_fabricated_extra_row_fails_completeness(
     path: Path, expected: frozenset[int]
 ) -> None:
-    """The number is outside **both** sets, which phase two made load-bearing.
+    """The number is outside **every** live set, which phase two made load-bearing.
 
     Phase one's own version of this fixture used 25, on the reasoning that a
     twenty-fifth row could only be a fabrication. 25 is now criterion 25's real
@@ -565,15 +641,18 @@ def test_no_criterion_number_appears_in_more_than_one_matrix() -> None:
 def test_a_number_written_into_both_matrices_is_reported_naming_both() -> None:
     """The cross-file check's positive control.
 
-    Neither file's own completeness check can see this: phase two's set holds 24,
-    so a 24 row there is expected, and a 24 row copied into phase one is
-    ``unexpected`` only there. Duplicating a number each file **does** claim — the
-    case a copy-paste actually produces — is invisible to both, which is why this
-    check exists and why its control duplicates a legitimately-owned number rather
-    than an invented one.
+    No file's own completeness check can see this: phase two's set holds 24, so a
+    24 row there is expected, and a 24 row copied into phase one is ``unexpected``
+    only there. Duplicating a number each file **does** claim — the case a
+    copy-paste actually produces — is invisible to every per-file check, which is
+    why this check exists and why its control duplicates a legitimately-owned
+    number rather than an invented one. The two matrices are picked by path, so
+    the control does not depend on how many live matrices there are or their order.
     """
     parsed, _, _ = _known()
-    (phase_one_path, phase_one_rows), (phase_two_path, phase_two_rows) = parsed
+    by_path = dict(parsed)
+    phase_one_path, phase_two_path = _PHASE_ONE, _PHASE_TWO
+    phase_one_rows, phase_two_rows = by_path[_PHASE_ONE], by_path[_PHASE_TWO]
     intruder = replace(phase_one_rows[0], number=24)
     errors = cross_file_errors(
         [

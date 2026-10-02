@@ -19,7 +19,9 @@ every other request on to FastAPI unchanged.
 - *Subdomain mode*: every request whose ``Host`` (port and trailing dots stripped,
   lowercased: ``auth_routes.normalize_host``) is the ``mcp`` host. ``/`` is the
   endpoint; any other path on that host is a plain 404 answered here. **The ``mcp``
-  host serves MCP and nothing else**: not ``/auth/*`` (the ``mcp`` host is not an
+  host serves MCP and, when the OAuth connector surface is configured, exactly three
+  ``GET`` documents, and nothing else** (issue #287; see "The OAuth metadata
+  documents" below): not ``/auth/*`` (the ``mcp`` host is not an
   application host, ``routing.url_for.application_hosts``, so no session cookie or
   grant belongs on it), not ``/api/*``, not ``/healthz``. A proxy that routed
   ``mcp.<base>`` to this process before this change would have reached all of those;
@@ -35,6 +37,23 @@ every other request on to FastAPI unchanged.
 method, ``405`` with ``Allow: POST``, which the streamable-HTTP specification names
 as the answer for a server that offers no ``GET`` stream. The SDK client opens no
 ``GET`` stream when it was issued no session id, so nothing a client needs is lost.
+
+**The OAuth metadata documents (issue #287).** When ``rheo_core.oauth.oauth_surface``
+returns a configured surface at lifespan start, the router answers three paths ahead
+of the endpoint match, all derived from the surface's own metadata URLs (so from
+``url_for``): the RFC 9728 protected-resource document at its path and that path
+with a trailing ``/`` (``/.well-known/oauth-protected-resource`` and
+``/.well-known/oauth-protected-resource/`` in subdomain mode;
+``/.well-known/oauth-protected-resource/mcp`` and ``.../mcp/`` in path mode), and the
+RFC 8414 authorization-server document at its path
+(``/.well-known/oauth-authorization-server``, path mode
+``/.well-known/oauth-authorization-server/mcp``). ``GET`` answers the JSON document
+with ``Cache-Control: no-store``; any other method answers ``405`` with ``Allow:
+GET``. Subdomain mode serves them on the ``mcp`` host only; path mode on any host,
+as it serves the endpoint. With no configured surface these paths are what they were
+before: a 404 on the ``mcp`` host, FastAPI's 404 in path mode. The bearer gate then
+also carries the ``resource_metadata`` pointer on every refusal
+(``rheo_app_mcp.transport.challenge_for``); unconfigured, it stays a bare ``Bearer``.
 
 **Why a router in front, and not ``app.mount``.** A Starlette ``Mount`` matches a
 path prefix only, so it cannot express the subdomain rule, and it hands the child a
@@ -78,11 +97,14 @@ import contextlib
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from typing import Final
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from rheo_app_mcp.transport import MCP_PATH, build_mcp_app, transport_security_for
+from rheo_core.oauth import OAuthSurface, oauth_surface
 from rheo_core.routing import RoutingConfig, RoutingMode
 from rheo_core.routing.url_for import ROOT_PREFIXES, application_hosts
+from rheo_core.settings import resolve
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -107,6 +129,9 @@ LOOPBACK_WILDCARD_HOSTS: Final[tuple[str, ...]] = (
 """Verbatim the SDK's own loopback default (``streamable_http_app``)."""
 
 ALLOWED_METHOD: Final = "POST"
+
+METADATA_METHOD: Final = "GET"
+"""The one method the OAuth metadata documents answer."""
 
 _HOST_HEADER: Final = b"host"
 
@@ -148,7 +173,9 @@ def mcp_origins(config: RoutingConfig) -> tuple[str, ...]:
     )
 
 
-def build_mcp_surface(config: RoutingConfig) -> Starlette:
+def build_mcp_surface(
+    config: RoutingConfig, *, resource_metadata_url: str | None = None
+) -> Starlette:
     """The MCP façade, wired to **this** process's one ``ConsumerRegistry``.
 
     ``build_mcp_app`` takes ``consumers`` as a keyword with no default, so a caller
@@ -160,6 +187,9 @@ def build_mcp_surface(config: RoutingConfig) -> Starlette:
     ``json_response=True``: each ``POST`` is answered with one JSON body rather than
     a one-message event stream. Stateless, there is nothing a stream could carry
     after the reply, and a plain body is the smallest thing a proxy can mishandle.
+
+    ``resource_metadata_url`` is the configured OAuth surface's protected-resource
+    URL, or ``None``; it reaches the bearer gate's refusal header and nothing else.
     """
     return build_mcp_app(
         consumers=CONSUMERS,
@@ -168,6 +198,7 @@ def build_mcp_surface(config: RoutingConfig) -> Starlette:
         transport_security=transport_security_for(
             mcp_hosts(config), origins=mcp_origins(config)
         ),
+        resource_metadata_url=resource_metadata_url,
     )
 
 
@@ -187,14 +218,42 @@ class McpMount:
 
     ``host`` is the port-free ``mcp`` host in subdomain mode and ``None`` in path
     mode; ``path`` is the surface path in path mode and ``/`` in subdomain mode.
+    ``oauth`` is the OAuth connector surface resolved at lifespan start, or ``None``
+    when it is unconfigured, in which case no metadata path is served.
+    ``resource_metadata_paths`` and ``authorization_server_metadata_path`` are that
+    surface's metadata URL paths, parsed once here rather than per request (empty
+    and ``None`` with no surface).
     """
 
     app: ASGIApp
     host: str | None
     path: str
+    oauth: OAuthSurface | None = None
+    resource_metadata_paths: tuple[str, ...] = ()
+    authorization_server_metadata_path: str | None = None
 
     @classmethod
-    def for_config(cls, config: RoutingConfig, app: ASGIApp) -> "McpMount":
+    def _with_oauth(
+        cls, app: ASGIApp, host: str | None, path: str, oauth: OAuthSurface | None
+    ) -> "McpMount":
+        if oauth is None:
+            return cls(app=app, host=host, path=path)
+        resource_path = urlsplit(oauth.protected_resource_metadata_url).path
+        return cls(
+            app=app,
+            host=host,
+            path=path,
+            oauth=oauth,
+            resource_metadata_paths=(resource_path, f"{resource_path}/"),
+            authorization_server_metadata_path=urlsplit(
+                oauth.authorization_server_metadata_url
+            ).path,
+        )
+
+    @classmethod
+    def for_config(
+        cls, config: RoutingConfig, app: ASGIApp, *, oauth: OAuthSurface | None = None
+    ) -> "McpMount":
         if config.mode is RoutingMode.PATH:
             path = config.surfaces.mcp.path
             if path in ROOT_PREFIXES or not path.startswith("/") or path.endswith("/"):
@@ -206,7 +265,7 @@ class McpMount:
                     f"routing.mcp.path must be a non-root absolute path without a "
                     f"trailing slash in path mode, not {path!r}"
                 )
-            return cls(app=app, host=None, path=path)
+            return cls._with_oauth(app, None, path, oauth)
         label = config.surfaces.mcp.host.strip()
         if not label:
             raise ValueError("routing.mcp.host must name a label in subdomain mode")
@@ -221,7 +280,7 @@ class McpMount:
                 f"routing.mcp.host {label!r} makes the mcp host {host!r}, which is "
                 "already an application host or the api host"
             )
-        return cls(app=app, host=host, path="/")
+        return cls._with_oauth(app, host, "/", oauth)
 
     def claims(self, scope: Scope) -> bool | None:
         """``True`` for the endpoint, ``False`` for another path on the ``mcp``
@@ -232,6 +291,26 @@ class McpMount:
         if _request_host(scope) != self.host:
             return None
         return request_path in ("", "/")
+
+    def metadata_document(self, scope: Scope) -> dict[str, object] | None:
+        """The OAuth metadata document this request's path names, or ``None``.
+
+        ``None`` with no configured surface, for a request on another host in
+        subdomain mode, and for every path but the three the module docstring names.
+        The paths come from the surface's own metadata URLs (precomputed in
+        :meth:`for_config`), so they follow ``url_for`` in both modes.
+        """
+        surface = self.oauth
+        if surface is None:
+            return None
+        if self.host is not None and _request_host(scope) != self.host:
+            return None
+        request_path: str = scope.get("path", "")
+        if request_path in self.resource_metadata_paths:
+            return surface.protected_resource_metadata()
+        if request_path == self.authorization_server_metadata_path:
+            return surface.authorization_server_metadata()
+        return None
 
 
 def _request_host(scope: Scope) -> str:
@@ -250,6 +329,22 @@ def current_mount(scope: Scope) -> McpMount | None:
     return mount if isinstance(mount, McpMount) else None
 
 
+async def _answer_metadata(
+    document: dict[str, object], scope: Scope, receive: Receive, send: Send
+) -> None:
+    """``GET``: the document, uncached. Anything else: ``405`` with ``Allow: GET``."""
+    if scope.get("method") != METADATA_METHOD:
+        await JSONResponse(
+            {"detail": "Method Not Allowed"},
+            status_code=405,
+            headers={"Allow": METADATA_METHOD},
+        )(scope, receive, send)
+        return
+    await JSONResponse(document, headers={"Cache-Control": "no-store"})(
+        scope, receive, send
+    )
+
+
 class McpSurfaceRouter:
     """Pure ASGI middleware: the ``mcp`` surface to MCP, everything else onward.
 
@@ -262,6 +357,10 @@ class McpSurfaceRouter:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         mount = current_mount(scope) if scope["type"] == "http" else None
+        document = None if mount is None else mount.metadata_document(scope)
+        if document is not None:
+            await _answer_metadata(document, scope, receive, send)
+            return
         claimed = None if mount is None else mount.claims(scope)
         if mount is None or claimed is None:
             await self.app(scope, receive, send)
@@ -291,10 +390,21 @@ async def mounted_mcp(app: FastAPI) -> AsyncIterator[McpMount]:
     Entered by ``main.lifespan`` after ``run_startup`` and exited before the storage
     engines are disposed, so no MCP request is still dispatching when its database
     connections go.
+
+    The OAuth connector surface is resolved here, once, from the same resolved
+    settings: a settings change takes effect at restart, as every ``RHEO__*`` change
+    does.
     """
     config = routing_config()
-    surface = build_mcp_surface(config)
-    mount = McpMount.for_config(config, surface)
+    resolved_oauth = oauth_surface(resolve(), config)
+    oauth = resolved_oauth if isinstance(resolved_oauth, OAuthSurface) else None
+    surface = build_mcp_surface(
+        config,
+        resource_metadata_url=(
+            None if oauth is None else oauth.protected_resource_metadata_url
+        ),
+    )
+    mount = McpMount.for_config(config, surface, oauth=oauth)
     async with surface.router.lifespan_context(surface):
         setattr(app.state, STATE_ATTRIBUTE, mount)
         try:
@@ -306,6 +416,7 @@ async def mounted_mcp(app: FastAPI) -> AsyncIterator[McpMount]:
 __all__ = [
     "ALLOWED_METHOD",
     "LOOPBACK_WILDCARD_HOSTS",
+    "METADATA_METHOD",
     "STATE_ATTRIBUTE",
     "McpMount",
     "McpSurfaceRouter",

@@ -68,6 +68,13 @@ CONTROL_TABLES = {
     "identity_provider",
     # 0002_work_index
     "workspace_work_due",
+    # 0003_oauth
+    "oauth_client",
+    "oauth_client_redirect_uri",
+    "oauth_authorization",
+    "oauth_grant",
+    "oauth_refresh_token",
+    "oauth_event",
 }
 CORE_TABLES = {
     # 0001_core_schema
@@ -186,9 +193,13 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
     # Every revision the script directory holds, not the one the database records:
-    # the control chain ships two files and the core chain twelve, so these are all
+    # the control chain ships three files and the core chain twelve, so these are all
     # the ids each carries.
-    assert known_revisions(CONTROL_CHAIN) == {"0001_control_plane", "0002_work_index"}
+    assert known_revisions(CONTROL_CHAIN) == {
+        "0001_control_plane",
+        "0002_work_index",
+        "0003_oauth",
+    }
     assert known_revisions(CORE_CHAIN) == {
         "0001_core_schema",
         "0002_durable_work",
@@ -208,7 +219,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
 # --- the two chains, exactly ----------------------------------------------------------
 
 
-def test_control_chain_creates_exactly_the_eleven_tables(
+def test_control_chain_creates_exactly_the_seventeen_tables(
     cluster: ClusterSession,
 ) -> None:
     engine = cluster.backend.control_engine
@@ -216,7 +227,7 @@ def test_control_chain_creates_exactly_the_eleven_tables(
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CONTROL_CHAIN) == {"0002_work_index"}
+        assert recorded_revisions(connection, CONTROL_CHAIN) == {"0003_oauth"}
 
 
 def test_core_chain_creates_exactly_the_twenty_seven_tables(

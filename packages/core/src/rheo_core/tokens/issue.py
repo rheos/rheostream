@@ -47,12 +47,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 from rheo_contracts import ActorKind, Role, WorkspaceContext
+from sqlalchemy import Connection
 
 from rheo_core.boundary.context import MEMBERSHIP_MISSING
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import NOT_FOUND
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import PostgresOverrideSource
+from rheo_core.storage import oauth_store
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import (
     AccessTokenRow,
@@ -61,6 +63,7 @@ from rheo_core.storage.control_plane import (
     insert_access_token,
     insert_access_token_operations,
     revoke_access_token,
+    revoke_access_token_if_live,
 )
 from rheo_core.storage.postgres import get_backend
 from rheo_core.tokens.format import mint
@@ -95,6 +98,10 @@ ACCOUNT_REQUIRED: Final = "account_required"
 """An operator issuance named no ``account_id``, or ``ctx``'s actor is neither an
 account nor an operator (should not be reachable given this operation's
 declared roles, checked anyway)."""
+
+CONNECTOR_ISSUED_FROM: Final = "connector"
+"""The ``issued_from`` value of a token minted by the OAuth connector flow (issue
+#287); ``oauth_tables.TOKEN_ISSUERS_0003`` widens the CHECK by exactly this value."""
 
 _IGNORE_EXTRA: Final = ConfigDict(extra="ignore")
 
@@ -356,7 +363,25 @@ def revoke_handler(
             raise OperationRefused(
                 NOT_FOUND, f"no access token {model_input.token_id} in this workspace"
             )
-        revoke_access_token(connection, model_input.token_id)
+        if row.issued_from != CONNECTOR_ISSUED_FROM:
+            revoke_access_token(connection, model_input.token_id)
+            return TokenRevoked(token_id=model_input.token_id)
+        # Only the revoke that ended the grant writes the event. The conditional
+        # UPDATE decides it, not the unlocked read above, so of two concurrent
+        # revocations exactly one writes grant_revoked; a re-revoke changes nothing.
+        now = datetime.now(UTC)
+        if revoke_access_token_if_live(connection, row.id, now=now):
+            grant = oauth_store.get_grant(connection, row.id)
+            oauth_store.insert_event(
+                connection,
+                event="grant_revoked",
+                outcome="succeeded",
+                occurred_at=now,
+                client_id=None if grant is None else grant.client_id,
+                account_id=row.account_id,
+                workspace_id=row.workspace_id,
+                token_id=row.id,
+            )
     return TokenRevoked(token_id=model_input.token_id)
 
 
@@ -441,3 +466,74 @@ def issue_bridge_token(
             connection, token_id=row.id, operation_names=list(BRIDGE_TOKEN_OPERATIONS)
         )
     return row.id, value
+
+
+def connector_operations(role: Role) -> frozenset[str]:
+    """The operations a connector token for a member of ``role`` holds:
+    ``(agent_default() & _role_permitted_set(role)) - NON_TOKEN_ISSUABLE -
+    {core.tool.call}``. The consent page lists this same set, so what the user is
+    shown is what :func:`issue_connector_token` grants."""
+    return (
+        (agent_default() & _role_permitted_set(role))
+        - NON_TOKEN_ISSUABLE
+        - {DISCOVER_THEN_CALL_OPERATION}
+    )
+
+
+def issue_connector_token(
+    conn: Connection,
+    *,
+    account_id: UUID,
+    workspace_id: UUID,
+    expires_at: datetime,
+    now: datetime | None = None,
+) -> tuple[UUID, str, list[str]]:
+    """Mint the ``kind='mcp'`` access token an OAuth connector grant is (issue #287).
+
+    The snapshot is the bound an operator issuance of ``agent_default`` gets for the
+    member's role, minus the discover grant: ``(agent_default() &
+    _role_permitted_set(role)) - NON_TOKEN_ISSUABLE - {core.tool.call}``. A missing
+    membership refuses ``membership_missing``; an empty snapshot refuses
+    ``set_empty``, as :func:`issue_handler` does. Writes through
+    ``insert_access_token``/``insert_access_token_operations`` on the **caller's**
+    connection, because a code redemption is one transaction. ``expires_at`` is the
+    caller's (the access-token lifetime, already capped by the grant's end), clamped
+    here to ``now + identity.token_max_days.mcp`` as a backstop. ``now`` is the
+    caller's instant (the code exchange's), so the clamp and the caller's
+    ``expires_in`` agree; it defaults to the wall clock.
+
+    Returns ``(token_id, raw_value, operations)``.
+    """
+    membership = get_membership(conn, account_id=account_id, workspace_id=workspace_id)
+    if membership is None:
+        raise OperationRefused(
+            MEMBERSHIP_MISSING,
+            f"account {account_id} has no membership in workspace {workspace_id}",
+        )
+    snapshot = connector_operations(membership.role)
+    if not snapshot:
+        raise OperationRefused(
+            SET_EMPTY, "no agent_default operation survives the member's role"
+        )
+    # Backstop: whatever the caller computed, a connector token never outlives what
+    # an operator-minted ``mcp`` token may (resolved under its floor, as
+    # ``issue_handler`` reads it).
+    settings = resolve(workspace_id=workspace_id, source=PostgresOverrideSource())
+    max_days = settings.get_int("identity.token_max_days.mcp")
+    clock = datetime.now(UTC) if now is None else now
+    expires_at = min(expires_at, clock + timedelta(days=max_days))
+    value, raw = mint("mcp")
+    operations = sorted(snapshot)
+    row = insert_access_token(
+        conn,
+        account_id=account_id,
+        workspace_id=workspace_id,
+        kind="mcp",
+        issued_from=CONNECTOR_ISSUED_FROM,
+        token_hash=hashlib.sha256(raw).digest(),
+        set_name="agent_default",
+        purpose=None,
+        expires_at=expires_at,
+    )
+    insert_access_token_operations(conn, token_id=row.id, operation_names=operations)
+    return row.id, value, operations

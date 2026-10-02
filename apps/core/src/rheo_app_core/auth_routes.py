@@ -106,8 +106,9 @@ def _current_host(request: Request) -> str:
     return normalize_host(host)
 
 
-def _identity_host(config: RoutingConfig) -> str:
-    """The identity host for ``config``, in either mode.
+def identity_host(config: RoutingConfig) -> str:
+    """The identity host for ``config``, in either mode (``oauth_routes`` gates its
+    routes on it too).
 
     Path mode has one host total, so it *is* the identity host trivially; the
     ``/auth/continue`` handler branches only on comparing the current request's
@@ -387,9 +388,7 @@ def continue_flow(
         return _refused(INVALID_RETURN, status_code=400)
 
     current_host = _current_host(request)
-    identity_host = _identity_host(config)
-
-    if current_host == identity_host:
+    if current_host == identity_host(config):
         row = _session_row_from_cookie(request, current_host)
         if row is None:
             login_target = (

@@ -1,0 +1,922 @@
+{
+  "exchanges": [
+    {
+      "label": "tools/list",
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "content-length",
+          "<normalized>"
+        ]
+      ],
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "<normalized>",
+        "result": {
+          "tools": [
+            {
+              "description": "Lists this workspace's most recent audit records, newest first (limit 1 to 500, default 50). Owner and operator only. Records are metadata: who acted, which operation, on which record, and the outcome; never a payload.",
+              "inputSchema": {
+                "properties": {
+                  "limit": {
+                    "default": 50,
+                    "maximum": 500,
+                    "minimum": 1,
+                    "title": "Limit",
+                    "type": "integer"
+                  }
+                },
+                "type": "object",
+                "description": "``audit/operations.py``'s ``AuditListInput`` **narrowed to ``limit``**.\n\nThe operation's two opt-ins, ``include_tool_telemetry`` and\n``include_deletions``, are deliberately not declared, so the façade refuses\nthem as unknown arguments (``tool_facade._validated``) and the operation runs\nwith both at their ``False`` defaults. Each opens an owner/operator-only\ncollection (§ A11's tool telemetry, § A8's deletion ledger with the exact\nclosure counters every other surface withholds). The operation refuses both to\nevery token kind but ``cli`` on every surface as well\n(``tokens.policy.PERSON_HELD_TOKEN_KINDS``), because this narrowing\nbinds only the tool call; since issue #130 the ``api`` surface also refuses\n``mcp`` tokens outright, and the operation's rule stays as the second layer. A\nperson with the role still reaches both through a session or a ``cli`` token; a\nmodel reads the audit records alone, which are metadata (actor, operation name,\nsubject reference, request digest, outcome) and carry no payload.",
+                "title": "_AuditListToolInput"
+              },
+              "name": "audit_list"
+            },
+            {
+              "description": "Reads one operation record of this workspace by its operation_id: its state, outcome and terminal check. Use it to poll a long-running call or a call held at approval_required. An id from another workspace, or one that does not exist, is not_found.",
+              "inputSchema": {
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "title": "Operation Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "operation_id"
+                ],
+                "type": "object",
+                "description": "Mirrors ``operations/operation_ops.py``'s ``OperationRef``: which record.",
+                "title": "_OperationRefToolInput"
+              },
+              "name": "operations_get"
+            },
+            {
+              "description": "Lists this workspace's most recently created operation records, newest first (limit 1 to 500, default 50).",
+              "inputSchema": {
+                "properties": {
+                  "limit": {
+                    "default": 50,
+                    "maximum": 500,
+                    "minimum": 1,
+                    "title": "Limit",
+                    "type": "integer"
+                  }
+                },
+                "type": "object",
+                "description": "Mirrors ``operations/operation_ops.py``'s ``OperationListInput``, bound and\nall: the ``ge``/``le`` pair is what keeps a model's ``-1`` an ``input_invalid``\nrefusal at the tool rather than a driver error at the query.",
+                "title": "_OperationListToolInput"
+              },
+              "name": "operations_list"
+            },
+            {
+              "description": "Fix what one memory says, and invalidate everything derived from what it said. Requires the revision you hold. Refuses input_invalid for a malformed argument, not_found when the memory is missing, not yours, or no longer current, record_stale when it has moved since the revision you hold — reread and retry — and reference_scan_limit when the request exhausts its shared reference budget.",
+              "inputSchema": {
+                "properties": {
+                  "ref": {
+                    "$ref": "#/$defs/RecordRef"
+                  },
+                  "expected_revision": {
+                    "minimum": 1,
+                    "title": "Expected Revision",
+                    "type": "integer"
+                  },
+                  "title": {
+                    "minLength": 1,
+                    "title": "Title",
+                    "type": "string"
+                  },
+                  "body": {
+                    "minLength": 1,
+                    "title": "Body",
+                    "type": "string"
+                  },
+                  "confidence": {
+                    "anyOf": [
+                      {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Confidence"
+                  }
+                },
+                "required": [
+                  "ref",
+                  "expected_revision",
+                  "title",
+                  "body"
+                ],
+                "type": "object",
+                "$defs": {
+                  "RecordRef": {
+                    "description": "A reference to a record owned by ``module``, of type ``record_type``.",
+                    "properties": {
+                      "module": {
+                        "pattern": "^[a-z][a-z0-9_]*$",
+                        "title": "Module",
+                        "type": "string"
+                      },
+                      "record_type": {
+                        "pattern": "^[a-z][a-z0-9_]*$",
+                        "title": "Record Type",
+                        "type": "string"
+                      },
+                      "id": {
+                        "format": "uuid",
+                        "title": "Id",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "module",
+                      "record_type",
+                      "id"
+                    ],
+                    "title": "RecordRef",
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "``correct(ref, expected_revision, title, body, confidence?)``.\n\nA correction **restates** the record rather than patching it: ``title`` and\n``body`` are required and ``confidence`` defaults to null, so the three columns\n§ A7 lets a correction touch are written from what the caller sent and from\nnothing else. There is no partial form, because a patch whose omitted field means\n\"leave it\" and whose null means \"clear it\" cannot express both over a nullable\ncolumn without a third sentinel nobody would remember.\n\nNo audience, purposes, references or mentions: a correction fixes what a memory\nsays, and changing who may read it or what it was derived from is a different\nact with a different closure.",
+                "title": "CorrectInput"
+              },
+              "name": "recallatron_correct"
+            },
+            {
+              "description": "Record a memory computed from one to sixty-four sources you may read now; the sources decide the audience and the purposes, and neither can be widened. Refuses input_invalid for a malformed argument, audience_unavailable when the requested audience is wider than the sources or this caller allow, audience_empty when the sources meet nowhere, purposes_empty when they share no purpose, purpose_mismatch when a bound caller states another purpose, use_derive when an about reference names a memory that belongs in sources, not_found when a source is missing or not yours, and reference_scan_limit when the proposed graph exhausts its shared reference budget.",
+              "inputSchema": {
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "note",
+                      "fact",
+                      "decision",
+                      "summary"
+                    ],
+                    "title": "Kind",
+                    "type": "string"
+                  },
+                  "title": {
+                    "minLength": 1,
+                    "title": "Title",
+                    "type": "string"
+                  },
+                  "body": {
+                    "minLength": 1,
+                    "title": "Body",
+                    "type": "string"
+                  },
+                  "audience": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "workspace",
+                          "member"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Audience"
+                  },
+                  "purposes": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "$ref": "#/$defs/ContextPurpose"
+                        },
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Purposes"
+                  },
+                  "confidence": {
+                    "anyOf": [
+                      {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Confidence"
+                  },
+                  "occurred_at": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Occurred At"
+                  },
+                  "about_refs": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "title": "About Refs",
+                    "type": "array"
+                  },
+                  "mentions": {
+                    "default": [],
+                    "items": {
+                      "discriminator": {
+                        "mapping": {
+                          "create": "#/$defs/MentionCreate",
+                          "select": "#/$defs/MentionSelect"
+                        },
+                        "propertyName": "variant"
+                      },
+                      "oneOf": [
+                        {
+                          "$ref": "#/$defs/MentionCreate"
+                        },
+                        {
+                          "$ref": "#/$defs/MentionSelect"
+                        }
+                      ]
+                    },
+                    "maxItems": 64,
+                    "title": "Mentions",
+                    "type": "array"
+                  },
+                  "sources": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "minItems": 1,
+                    "title": "Sources",
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "title",
+                  "body",
+                  "sources"
+                ],
+                "type": "object",
+                "$defs": {
+                  "ContextPurpose": {
+                    "description": "Why context is assembled for a run (intake vocabulary, not a directory kind).",
+                    "enum": [
+                      "respond",
+                      "follow_up",
+                      "share_with_referral",
+                      "internal_analysis"
+                    ],
+                    "title": "ContextPurpose",
+                    "type": "string"
+                  },
+                  "MentionCreate": {
+                    "additionalProperties": false,
+                    "description": "``create(kind, name, backing_ref?)``: always a fresh entity UUID.\n\nNever a name-based upsert, including for a name that already exists in this\nworkspace. Two entities with the same normalized name are two entities, because\nthe alternative — matching on name — would answer \"does this name exist here\"\nacross an audience boundary the caller may not cross.",
+                    "properties": {
+                      "variant": {
+                        "const": "create",
+                        "title": "Variant",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "person",
+                          "organization",
+                          "project",
+                          "topic",
+                          "place",
+                          "thing"
+                        ],
+                        "title": "Kind",
+                        "type": "string"
+                      },
+                      "name": {
+                        "maxLength": 200,
+                        "minLength": 1,
+                        "title": "Name",
+                        "type": "string"
+                      },
+                      "backing_ref": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Backing Ref"
+                      },
+                      "role": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Role"
+                      }
+                    },
+                    "required": [
+                      "variant",
+                      "kind",
+                      "name"
+                    ],
+                    "title": "MentionCreate",
+                    "type": "object"
+                  },
+                  "MentionSelect": {
+                    "additionalProperties": false,
+                    "description": "``select(entity_ref)``: an entity this caller can already reach.\n\nReachable means an eligible mention on a memory this caller may read, or an\nindependently readable backing ref. No route is the same ``not_found`` as an\nunknown id — no hidden label, ref, collision or count comes back.",
+                    "properties": {
+                      "variant": {
+                        "const": "select",
+                        "title": "Variant",
+                        "type": "string"
+                      },
+                      "entity_ref": {
+                        "title": "Entity Ref",
+                        "type": "string"
+                      },
+                      "role": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Role"
+                      }
+                    },
+                    "required": [
+                      "variant",
+                      "entity_ref"
+                    ],
+                    "title": "MentionSelect",
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A memory computed from 1-64 distinct, currently authorized sources.\n\n``sources`` is bounded at both ends: zero sources is not a derivation, and the\nupper bound is § A13's. Distinctness is checked in the handler against the\n*canonical* form, so two spellings of one reference are one source rather than a\nduplicate that inflates the count.",
+                "title": "DeriveInput"
+              },
+              "name": "recallatron_derive"
+            },
+            {
+              "description": "Erase one of this workspace's memories and everything the workspace owns because of it. Always answers approval_required first: the erasure happens only once a person confirms the approval this call creates. Refuses input_invalid when the reference does not parse or names anything other than one of this module's memories — before any approval exists — and not_found when the memory is missing or not yours to erase.",
+              "inputSchema": {
+                "properties": {
+                  "ref": {
+                    "title": "Ref",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ref"
+                ],
+                "type": "object",
+                "additionalProperties": false,
+                "description": "``forget(ref)``, where ``ref`` may only name one of this module's memories.\n\n``extra = \"forbid\"`` comes from :class:`~rheo_recallatron.contracts.Strict`, and\nthe single field is a ``str`` rather than a ``RecordRef`` on purpose: the\nvalidated dump is what the façade hands ``dispatch``, and the wire form the\ndeletion operation's own model accepts is the canonical string. Validating to a\nstring here and back to a reference there keeps one wire shape across both\nmodels instead of a nested object only this path would produce.\n\nThe validator raises ``ValueError`` rather than calling\n:func:`~rheo_recallatron.references.memory_target`, which raises\n``OperationRefused``: a refusal raised inside a pydantic validator is not a\n``ValidationError`` and would travel out of ``model_validate`` uncaught, past\nthe façade's own ``input_invalid`` branch. Same reasoning, and the same two\nsentences, as :class:`~rheo_recallatron.contracts._Lifecycle`'s own reference\nvalidator. A reference that does not parse and a well-formed one naming another\nmodule's record are both refused, and both before any approval exists — that is\n§ A8's \"a foreign or malformed ref returns ``input_invalid`` before approval\nwork is created\", enforced by the shape of the model rather than by a check\nsomebody has to remember to call.",
+                "title": "ForgetInput"
+              },
+              "name": "recallatron_forget"
+            },
+            {
+              "description": "Read a bounded window of memories centred on one target inside one container. The container is either a record reference a memory links to, or an entity reference whose mentions define its members; the target is required through this tool. Refuses input_invalid for an unparseable reference or a missing target, purpose_mismatch when the stated purpose is not this context's binding, not_found when the target is missing or not yours to read, or when the container is missing or not yours to see, container_membership_required when the target is not a member of that container, window_scan_limit when the container holds more members than a read scans, and reference_scan_limit when the window exhausts its shared reference budget.",
+              "inputSchema": {
+                "properties": {
+                  "container_ref": {
+                    "title": "Container Ref",
+                    "type": "string"
+                  },
+                  "target_ref": {
+                    "title": "Target Ref",
+                    "type": "string"
+                  },
+                  "context": {
+                    "default": 2,
+                    "maximum": 10,
+                    "minimum": 0,
+                    "title": "Context",
+                    "type": "integer"
+                  },
+                  "include_invalidated": {
+                    "default": false,
+                    "title": "Include Invalidated",
+                    "type": "boolean"
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Purpose"
+                  }
+                },
+                "required": [
+                  "container_ref",
+                  "target_ref"
+                ],
+                "type": "object",
+                "additionalProperties": false,
+                "description": "``recallatron_read``'s input: the same fields, with the target required.\n\nThe tool keeps requiring a target even though the operation admits none for an\nentity container, so an agent's reach through the tool surface is unchanged.",
+                "title": "ReadToolInput"
+              },
+              "name": "recallatron_read"
+            },
+            {
+              "description": "Search this workspace's memories by text and return the ones you may read, most relevant first. Refuses input_invalid for a blank or unparseable argument, purpose_mismatch when the stated purpose is not the one this context is bound to, and reference_scan_limit when the search exhausts its shared reference budget. A search that matches nothing you may read returns no items; it is not a refusal. Dense retrieval returns its nearest rows, not its relevant ones, so judge relevance yourself. A memory is a dated claim, not current truth: supersession corrects it, so prefer the most recent and check live state. Read `provenance` before `items` — it says how many of the returned items each arm found and whether dense was available at all.",
+              "inputSchema": {
+                "properties": {
+                  "query": {
+                    "maxLength": 1000,
+                    "minLength": 1,
+                    "title": "Query",
+                    "type": "string"
+                  },
+                  "k": {
+                    "default": 10,
+                    "maximum": 50,
+                    "minimum": 1,
+                    "title": "K",
+                    "type": "integer"
+                  },
+                  "include_invalidated": {
+                    "default": false,
+                    "title": "Include Invalidated",
+                    "type": "boolean"
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Purpose"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object",
+                "additionalProperties": false,
+                "title": "RecallInput"
+              },
+              "name": "recallatron_recall"
+            },
+            {
+              "description": "Record a memory somebody stated, with its own non-memory provenance. Refuses input_invalid for a malformed argument, audience_unavailable when the requested audience is wider than this caller may write, purposes_empty when no purpose survives, purpose_mismatch when a bound caller states a purpose other than its binding, use_derive when a provenance or about reference names another memory, not_found when a reference names nothing you may read, and reference_scan_limit when the write exhausts its shared reference budget. Every refusal lands before anything is written.",
+              "inputSchema": {
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "note",
+                      "fact",
+                      "decision",
+                      "summary"
+                    ],
+                    "title": "Kind",
+                    "type": "string"
+                  },
+                  "title": {
+                    "minLength": 1,
+                    "title": "Title",
+                    "type": "string"
+                  },
+                  "body": {
+                    "minLength": 1,
+                    "title": "Body",
+                    "type": "string"
+                  },
+                  "audience": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "workspace",
+                          "member"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Audience"
+                  },
+                  "purposes": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "$ref": "#/$defs/ContextPurpose"
+                        },
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Purposes"
+                  },
+                  "confidence": {
+                    "anyOf": [
+                      {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Confidence"
+                  },
+                  "occurred_at": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Occurred At"
+                  },
+                  "about_refs": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "title": "About Refs",
+                    "type": "array"
+                  },
+                  "mentions": {
+                    "default": [],
+                    "items": {
+                      "discriminator": {
+                        "mapping": {
+                          "create": "#/$defs/MentionCreate",
+                          "select": "#/$defs/MentionSelect"
+                        },
+                        "propertyName": "variant"
+                      },
+                      "oneOf": [
+                        {
+                          "$ref": "#/$defs/MentionCreate"
+                        },
+                        {
+                          "$ref": "#/$defs/MentionSelect"
+                        }
+                      ]
+                    },
+                    "maxItems": 64,
+                    "title": "Mentions",
+                    "type": "array"
+                  },
+                  "provenance_refs": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "title": "Provenance Refs",
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "title",
+                  "body"
+                ],
+                "type": "object",
+                "$defs": {
+                  "ContextPurpose": {
+                    "description": "Why context is assembled for a run (intake vocabulary, not a directory kind).",
+                    "enum": [
+                      "respond",
+                      "follow_up",
+                      "share_with_referral",
+                      "internal_analysis"
+                    ],
+                    "title": "ContextPurpose",
+                    "type": "string"
+                  },
+                  "MentionCreate": {
+                    "additionalProperties": false,
+                    "description": "``create(kind, name, backing_ref?)``: always a fresh entity UUID.\n\nNever a name-based upsert, including for a name that already exists in this\nworkspace. Two entities with the same normalized name are two entities, because\nthe alternative — matching on name — would answer \"does this name exist here\"\nacross an audience boundary the caller may not cross.",
+                    "properties": {
+                      "variant": {
+                        "const": "create",
+                        "title": "Variant",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "person",
+                          "organization",
+                          "project",
+                          "topic",
+                          "place",
+                          "thing"
+                        ],
+                        "title": "Kind",
+                        "type": "string"
+                      },
+                      "name": {
+                        "maxLength": 200,
+                        "minLength": 1,
+                        "title": "Name",
+                        "type": "string"
+                      },
+                      "backing_ref": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Backing Ref"
+                      },
+                      "role": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Role"
+                      }
+                    },
+                    "required": [
+                      "variant",
+                      "kind",
+                      "name"
+                    ],
+                    "title": "MentionCreate",
+                    "type": "object"
+                  },
+                  "MentionSelect": {
+                    "additionalProperties": false,
+                    "description": "``select(entity_ref)``: an entity this caller can already reach.\n\nReachable means an eligible mention on a memory this caller may read, or an\nindependently readable backing ref. No route is the same ``not_found`` as an\nunknown id — no hidden label, ref, collision or count comes back.",
+                    "properties": {
+                      "variant": {
+                        "const": "select",
+                        "title": "Variant",
+                        "type": "string"
+                      },
+                      "entity_ref": {
+                        "title": "Entity Ref",
+                        "type": "string"
+                      },
+                      "role": {
+                        "anyOf": [
+                          {
+                            "maxLength": 100,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Role"
+                      }
+                    },
+                    "required": [
+                      "variant",
+                      "entity_ref"
+                    ],
+                    "title": "MentionSelect",
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A memory somebody stated, with its own provenance.\n\n``provenance_refs`` are ``derived_from`` relations to **non-memory** records: a\nmemory reference in either relation is ``use_derive``.",
+                "title": "RememberInput"
+              },
+              "name": "recallatron_remember"
+            },
+            {
+              "description": "Replace one memory with a fresh one and keep the old one as retained history; the replacement inherits the predecessor's audience, purposes and restrictions. Requires the revision you hold. Refuses input_invalid for a malformed argument, not_found when the predecessor is missing, not yours, or no longer current, record_stale when it has moved since the revision you hold — reread and retry — and reference_scan_limit when the request exhausts its shared reference budget.",
+              "inputSchema": {
+                "properties": {
+                  "ref": {
+                    "$ref": "#/$defs/RecordRef"
+                  },
+                  "expected_revision": {
+                    "minimum": 1,
+                    "title": "Expected Revision",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "enum": [
+                      "note",
+                      "fact",
+                      "decision",
+                      "summary"
+                    ],
+                    "title": "Kind",
+                    "type": "string"
+                  },
+                  "title": {
+                    "minLength": 1,
+                    "title": "Title",
+                    "type": "string"
+                  },
+                  "body": {
+                    "minLength": 1,
+                    "title": "Body",
+                    "type": "string"
+                  },
+                  "confidence": {
+                    "anyOf": [
+                      {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Confidence"
+                  },
+                  "occurred_at": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Occurred At"
+                  }
+                },
+                "required": [
+                  "ref",
+                  "expected_revision",
+                  "kind",
+                  "title",
+                  "body"
+                ],
+                "type": "object",
+                "$defs": {
+                  "RecordRef": {
+                    "description": "A reference to a record owned by ``module``, of type ``record_type``.",
+                    "properties": {
+                      "module": {
+                        "pattern": "^[a-z][a-z0-9_]*$",
+                        "title": "Module",
+                        "type": "string"
+                      },
+                      "record_type": {
+                        "pattern": "^[a-z][a-z0-9_]*$",
+                        "title": "Record Type",
+                        "type": "string"
+                      },
+                      "id": {
+                        "format": "uuid",
+                        "title": "Id",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "module",
+                      "record_type",
+                      "id"
+                    ],
+                    "title": "RecordRef",
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "``supersede(ref, expected_revision, kind, title, body, confidence?,\noccurred_at?)``.\n\nThe replacement's *content* is the caller's; its **audience, purposes and\nrestrictions are not**. § A5 gives the replacement source-meet purposes and\naudience and the predecessor's copied restrictions, so there is no audience,\npurposes, ``about_refs`` or ``provenance_refs`` field here — and no field for\nthe marked ancestry link either, which is § A5's \"the marker is not accepted in\ncaller input\" expressed as an absence rather than as a refusal.",
+                "title": "SupersedeInput"
+              },
+              "name": "recallatron_supersede"
+            },
+            {
+              "description": "Calls the core.workspace.status operation.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object",
+                "description": "Mirrors ``operations/core_ops.py``'s ``WorkspaceStatusInput``: no fields,\nthe workspace comes from the context. Declared locally -- see module\ndocstring's cycle note.",
+                "title": "_WorkspaceStatusToolInput"
+              },
+              "name": "workspace_status"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "label": "tools/call recallatron_recall",
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "content-length",
+          "<normalized>"
+        ]
+      ],
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "<normalized>",
+        "result": {
+          "content": [
+            {
+              "text": "{\"state\": \"succeeded\", \"result\": {\"items\": [], \"provenance\": {\"strategy\": \"hybrid\", \"arms\": {\"lexical\": 0, \"dense\": 0}, \"dense_available\": false, \"reranker\": null, \"rerank_degraded\": false}}}",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "state": "succeeded",
+            "result": {
+              "items": [],
+              "provenance": {
+                "strategy": "hybrid",
+                "arms": {
+                  "lexical": 0,
+                  "dense": 0
+                },
+                "dense_available": false,
+                "reranker": null,
+                "rerank_degraded": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

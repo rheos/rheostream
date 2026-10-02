@@ -778,6 +778,12 @@ def register_core_operations(
         module_enable_handler,
         module_install_handler,
     )
+    from rheo_core.oauth.operations import (
+        OAUTH_EVENT_LIST,
+        OAuthEventList,
+        OAuthEventListInput,
+        oauth_event_list_handler,
+    )
     from rheo_core.tokens.issue import (
         TokenIssued,
         TokenIssueInput,
@@ -957,6 +963,28 @@ def register_core_operations(
             delete_owned,
         ),
     )
+    # Issue #287's reader of the control-plane ``oauth_event`` trail. ``READ``, so
+    # ``audit=None``; roles ``owner, operator``, the pair ``core.audit.list`` holds.
+    # Built here, at call time, because ``rheo_core.oauth.service`` imports this
+    # package's refusals and ``rheo_core.tokens.issue``, so a module-level import of
+    # ``rheo_core.oauth`` from this file would run against the import direction the
+    # token pair's deferral already keeps. Deliberately not in
+    # ``NON_TOKEN_ISSUABLE``: it discloses nothing an owner's ``cli`` token cannot
+    # read through ``core.audit.list``, and the role gate holds for any token.
+    oauth_operations: tuple[tuple[OperationDeclaration, Handler], ...] = (
+        (
+            OperationDeclaration(
+                name=OAUTH_EVENT_LIST,
+                safety_class=SafetyClass.READ,
+                roles=frozenset({Role.OWNER, Role.OPERATOR}),
+                input_model=OAuthEventListInput,
+                output=OAuthEventList,
+                idempotency=Idempotency.NONE,
+                audit=None,
+            ),
+            oauth_event_list_handler,
+        ),
+    )
     return tuple(
         registry.register(declaration, handler, origin=CORE_ORIGIN)
         for declaration, handler in CORE_OPERATIONS
@@ -966,4 +994,5 @@ def register_core_operations(
         + GRANT_OPERATIONS
         + module_operations
         + deletion_operations
+        + oauth_operations
     )

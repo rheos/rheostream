@@ -24,7 +24,9 @@ resolved by :class:`_BearerGate`.
    application in the core process's lifespan and forwards those requests to it.
    What crosses the boundary is plain data: the host names the surface answers on
    and the scheme, which :func:`transport_security_for` turns into the SDK's
-   DNS-rebinding allow-list. This package cannot read the routing configuration
+   DNS-rebinding allow-list, and, when the OAuth connector surface is configured,
+   the protected-resource metadata URL a refusal points at (:func:`challenge_for`).
+   This package cannot read the routing configuration
    itself, because ``rheo_core.routing`` is outside what criterion 20's import scan
    lets it import. ``tests/postgres/test_mcp_transport.py`` still drives
    :func:`build_mcp_app`'s return value directly, with no core app in front.
@@ -130,7 +132,30 @@ def _bearer_from(scope: Scope) -> str | None:
     return None
 
 
-async def _refuse(send: Send, state: str, detail: str | None) -> None:
+BARE_CHALLENGE: Final = b"Bearer"
+"""The ``WWW-Authenticate`` value when no OAuth surface is configured: exactly the
+header this gate answered with before issue #287."""
+
+
+def challenge_for(resource_metadata_url: str | None) -> bytes:
+    """The ``WWW-Authenticate`` value for a refusal.
+
+    :data:`BARE_CHALLENGE` when ``resource_metadata_url`` is ``None``; otherwise
+    ``Bearer resource_metadata="<url>"`` (RFC 9728 s5.1), so a client holding no
+    token, or a dead one, finds the protected-resource document. The URL arrives as
+    a plain string from the composition root, which builds it through ``url_for``;
+    this package never reads the routing configuration itself.
+    """
+    if resource_metadata_url is None:
+        return BARE_CHALLENGE
+    if not resource_metadata_url.isascii() or '"' in resource_metadata_url:
+        raise ValueError("resource_metadata_url must be ASCII with no '\"'")
+    return f'Bearer resource_metadata="{resource_metadata_url}"'.encode("ascii")
+
+
+async def _refuse(
+    send: Send, state: str, detail: str | None, *, challenge: bytes = BARE_CHALLENGE
+) -> None:
     """Answer :data:`REFUSAL_STATUS` with the refusal's own state, and stop.
 
     **The state vocabulary is the shipped one; the body shape is not, and the
@@ -152,7 +177,8 @@ async def _refuse(send: Send, state: str, detail: str | None) -> None:
     of state names stays closed.
 
     ``detail`` is the boundary's own, already documented as safe to show and never
-    carrying a secret.
+    carrying a secret. ``challenge`` is :func:`challenge_for`'s value; every refusal
+    state carries the same one, so only the header changes when OAuth is configured.
     """
     payload: dict[str, str] = {"state": state}
     if detail is not None:
@@ -165,7 +191,7 @@ async def _refuse(send: Send, state: str, detail: str | None) -> None:
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
-                (b"www-authenticate", b"Bearer"),
+                (b"www-authenticate", challenge),
             ],
         }
     )
@@ -173,10 +199,17 @@ async def _refuse(send: Send, state: str, detail: str | None) -> None:
 
 
 class _BearerGate:
-    """Resolve the bearer, or refuse before the request reaches the MCP server."""
+    """Resolve the bearer, or refuse before the request reaches the MCP server.
 
-    def __init__(self, app: ASGIApp) -> None:
+    ``challenge`` changes only the refusal's ``WWW-Authenticate`` header; a request
+    whose bearer resolves takes the same path either way. It arrives as bytes
+    :func:`build_mcp_app` already computed, so a URL that cannot be encoded fails at
+    build time, never on a request.
+    """
+
+    def __init__(self, app: ASGIApp, challenge: bytes = BARE_CHALLENGE) -> None:
         self.app = app
+        self.challenge = challenge
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -185,11 +218,15 @@ class _BearerGate:
             return
         bearer = _bearer_from(scope)
         if bearer is None or not bearer:
-            await _refuse(send, TOKEN_MALFORMED, NO_BEARER_DETAIL)
+            await _refuse(
+                send, TOKEN_MALFORMED, NO_BEARER_DETAIL, challenge=self.challenge
+            )
             return
         resolved = resolve_context(bearer)
         if isinstance(resolved, Refusal):
-            await _refuse(send, resolved.state, resolved.detail)
+            await _refuse(
+                send, resolved.state, resolved.detail, challenge=self.challenge
+            )
             return
         state = scope.setdefault("state", {})
         state[CONTEXT_STATE_KEY] = resolved
@@ -359,6 +396,7 @@ def build_mcp_app(
     json_response: bool = False,
     host: str = "127.0.0.1",
     transport_security: TransportSecuritySettings | None = None,
+    resource_metadata_url: str | None = None,
 ) -> Starlette:
     """The gated streamable-HTTP application, ready to mount or to drive in-process.
 
@@ -392,6 +430,10 @@ def build_mcp_app(
     :func:`transport_security_for` from the routing configuration instead. A
     settings object with protection switched off is refused here, because the SDK
     would otherwise accept any ``Host`` a DNS-rebinding page chose to send.
+
+    ``resource_metadata_url`` is the OAuth protected-resource document's URL when the
+    composition root has a configured OAuth surface (issue #287), else ``None``. It
+    only adds the RFC 9728 pointer to the refusal header (:func:`challenge_for`).
     """
     if (
         transport_security is not None
@@ -401,6 +443,7 @@ def build_mcp_app(
             "the mcp surface keeps DNS-rebinding protection on; pass the hosts "
             "it should admit instead of switching it off"
         )
+    challenge = challenge_for(resource_metadata_url)
     server = build_server(consumers=consumers)
     app = server.streamable_http_app(
         streamable_http_path=path,
@@ -409,11 +452,12 @@ def build_mcp_app(
         host=host,
         transport_security=transport_security,
     )
-    app.add_middleware(_BearerGate)
+    app.add_middleware(_BearerGate, challenge=challenge)
     return app
 
 
 __all__ = [
+    "BARE_CHALLENGE",
     "CONTEXT_MISSING",
     "NO_BEARER_DETAIL",
     "CONTEXT_STATE_KEY",
@@ -422,5 +466,6 @@ __all__ = [
     "SERVER_NAME",
     "build_mcp_app",
     "build_server",
+    "challenge_for",
     "transport_security_for",
 ]

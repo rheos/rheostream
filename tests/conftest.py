@@ -294,6 +294,27 @@ def _drop_own(maintenance: Engine, names: Collection[str]) -> None:
             connection.execute(text(f"DROP DATABASE IF EXISTS {quoted} WITH (FORCE)"))
 
 
+def _oauth_client_ids(connection: Connection) -> set[str]:
+    return set(
+        connection.execute(text("SELECT client_id FROM control.oauth_client")).scalars()
+    )
+
+
+def _delete_grantless_clients(connection: Connection, client_ids: set[str]) -> None:
+    """Delete those of ``client_ids`` that hold no ``oauth_grant`` row (a client with
+    one is never deleted, the house rule the RESTRICT key backs)."""
+    if not client_ids:
+        return
+    connection.execute(
+        text(
+            "DELETE FROM control.oauth_client c WHERE c.client_id = ANY(:ids) "
+            "AND NOT EXISTS (SELECT 1 FROM control.oauth_grant g "
+            "WHERE g.client_id = c.client_id)"
+        ),
+        {"ids": sorted(client_ids)},
+    )
+
+
 def _forget_workspaces(control: Engine, workspace_ids: Collection[UUID]) -> None:
     """Delete the session control database's registry rows for ``workspace_ids``.
 
@@ -313,6 +334,37 @@ def _forget_workspaces(control: Engine, workspace_ids: Collection[UUID]) -> None
         raise RuntimeError(f"refusing to edit registry rows in {database!r}")
     ids = list(workspace_ids)
     with control.begin() as connection:
+        # Connector grants hold their access_token row with RESTRICT (a deliberate
+        # backstop against erasing a grant), so the access_token delete below would
+        # fail. Clear the OAuth rows keyed on these workspaces' tokens first.
+        tokens = "SELECT id FROM control.access_token WHERE workspace_id = ANY(:ids)"
+        connection.execute(
+            text(
+                f"DELETE FROM control.oauth_refresh_token WHERE token_id IN ({tokens})"
+            ),
+            {"ids": ids},
+        )
+        orphaned = set(
+            connection.execute(
+                text(
+                    f"DELETE FROM control.oauth_grant WHERE token_id IN ({tokens}) "
+                    "RETURNING client_id"
+                ),
+                {"ids": ids},
+            ).scalars()
+        )
+        connection.execute(
+            text(
+                "UPDATE control.oauth_authorization SET token_id = NULL "
+                f"WHERE token_id IN ({tokens})"
+            ),
+            {"ids": ids},
+        )
+        # A client whose every grant went with these workspaces is grant-less now,
+        # and a recent grant-less client counts toward identity.oauth.max_clients
+        # as pending, so a session's dropped grants would fill doctor's cap. Its
+        # redirect URIs and authorization rows cascade.
+        _delete_grantless_clients(connection, orphaned)
         preparer = connection.dialect.identifier_preparer
         references = connection.execute(
             text(
@@ -457,6 +509,25 @@ def drop_test_databases(cluster: ClusterSession) -> Iterator[None]:
                 ],
             )
             _drop_own(cluster.maintenance, list(reversed(names)))
+
+
+@pytest.fixture(autouse=True)
+def forget_oauth_clients(cluster: ClusterSession) -> Iterator[None]:
+    """Delete the grant-less ``oauth_client`` rows a test created, when it finishes.
+
+    A registered client with no grant counts toward ``identity.oauth.max_clients``
+    as pending for ``abandoned_client_minutes`` (60 by default), so without this a
+    session's registrations add up and doctor's ``connector grants`` line goes
+    ``FAIL`` at the cap for whichever test runs doctor afterwards (Prompt 10 rework).
+    The set of client ids is read before the test and only new grant-less ones are
+    deleted; a client holding a grant is never touched here (``_forget_workspaces``
+    removes those with their workspace).
+    """
+    with cluster.backend.control_engine.connect() as connection:
+        before = _oauth_client_ids(connection)
+    yield
+    with cluster.backend.control_engine.begin() as connection:
+        _delete_grantless_clients(connection, _oauth_client_ids(connection) - before)
 
 
 @pytest.fixture(autouse=True)

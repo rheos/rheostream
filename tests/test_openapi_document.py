@@ -189,6 +189,7 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             # Run 1a4b's ingest, the bridge token's one operation, registered beside
             # the enrollment operations.
             EVIDENCE_INGEST,
+            "core.oauth_event.list",
         )
     )
 

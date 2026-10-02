@@ -1,0 +1,26 @@
+{
+  "exchanges": [
+    {
+      "label": "tools/list",
+      "status": 401,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "content-length",
+          "<normalized>"
+        ],
+        [
+          "www-authenticate",
+          "Bearer"
+        ]
+      ],
+      "body": {
+        "state": "token_malformed",
+        "detail": "no bearer token was presented"
+      }
+    }
+  ]
+}

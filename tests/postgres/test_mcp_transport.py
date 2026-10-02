@@ -503,3 +503,47 @@ async def test_handlers_refuse_a_request_that_bypassed_the_gate() -> None:
     with pytest.raises(RuntimeError) as raised_none:
         await transport._on_list_tools(SimpleNamespace(request=None), None)  # type: ignore[arg-type]
     assert CONTEXT_MISSING in str(raised_none.value)
+
+
+# --- issue #287: the refusal header, with and without a metadata pointer ------
+
+_POINTED_URL = "https://mcp.example.test/.well-known/oauth-protected-resource"
+"""A fictional pointer. The transport passes the composition root's string through
+verbatim; ``test_oauth_mount.py`` checks the mounted value against ``url_for``."""
+
+
+async def test_unpointed_refusal_header_is_exactly_bearer(app: Any) -> None:
+    """With no ``resource_metadata_url`` the header is byte-for-byte today's."""
+    response = await _post_raw(app, None)
+    assert response.status_code == 401
+    assert response.headers.get_list("www-authenticate") == ["Bearer"]
+
+
+@pytest.mark.parametrize("bad_token", [None, "not-a-real-token"])
+async def test_pointed_refusal_header_carries_the_resource_metadata_url(
+    seam: _SeamCounter, bad_token: str | None
+) -> None:
+    """The pointer changes the header only: same status, same state and detail,
+    and still no tool run."""
+    pointed = build_mcp_app(consumers=None, resource_metadata_url=_POINTED_URL)
+    plain = build_mcp_app(consumers=None)
+    with_pointer = await _post_raw(pointed, bad_token)
+    without = await _post_raw(plain, bad_token)
+    assert with_pointer.status_code == without.status_code == 401
+    assert with_pointer.json() == without.json()
+    assert with_pointer.headers.get_list("www-authenticate") == [
+        f'Bearer resource_metadata="{_POINTED_URL}"'
+    ]
+    assert seam.total == 0
+
+
+async def test_pointed_gate_serves_a_valid_bearer_unchallenged(
+    operator_ctx: WorkspaceContext, owner_account_id: UUID
+) -> None:
+    """Edge case 12 at the transport: a valid ``mcp`` token is served, with no
+    challenge header, when a pointer is configured."""
+    value, _, _ = _issue(operator_ctx, kind="mcp", account_id=owner_account_id)
+    pointed = build_mcp_app(consumers=None, resource_metadata_url=_POINTED_URL)
+    response = await _post_raw(pointed, value)
+    assert response.status_code == 200, response.text
+    assert "www-authenticate" not in response.headers

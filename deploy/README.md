@@ -260,9 +260,110 @@ then re-run `rheo doctor` (issue #162).
 4. **Limit:** migrations are forward-only. Rolling back across a migration
    boundary means restoring a verified backup taken before the incompatible
    migration, not reverting code, and not simply the most recent backup, which may
-   postdate it. Any write made after that backup's point is lost on restore.
+   postdate it. Any write made after that backup's point is lost on restore. Startup
+   refuses a database that records a revision the image does not know
+   (`schema_ahead`), so an older image does not start against a newer schema. The
+   control chain's `0003_oauth` is such a boundary
+   ([below](#mcp-connector-sign-in)): pin only to a commit that has it.
 5. **Proxy change:** the shared-proxy resolver has its own rollback; rolling back
    the app never needs it, since an unused resolver is inert.
+
+### MCP connector sign-in
+
+`core` can let an MCP client that cannot send an `Authorization` header (a
+claude.ai custom connector) sign in through an OAuth flow on the identity host and
+receive an ordinary `mcp` token (issue #287;
+`docs/architecture/identity-and-topology.md` § Connector sign-in has the design).
+It ships off: with `identity.oauth.enabled` false the `mcp` host answers exactly as
+before, a bare `Bearer` 401, and the metadata paths and `/auth/oauth/*` are 404.
+
+**The migration comes first, and it is forward-only.** Any image with this feature
+applies the control chain's `0003_oauth` at core startup, whether or not the feature
+is on: six new `control.oauth_*` tables, and the `access_token_issued_from` CHECK
+dropped and recreated with a fourth value, `connector`. No column changes, and every
+existing token satisfies the wider CHECK. Its downgrade raises. A pre-`0003` image
+then refuses to start against the migrated control plane (`schema_ahead`), so a code
+rollback to it is not supported. Recover from a bad deploy by rolling forward: a fix
+on `main`, or a pin to an earlier commit that already has `0003_oauth`. The only way
+back past it is restoring a control-plane backup taken before it (Rollback item 4).
+
+**Before turning it on:**
+
+1. GitHub sign-in is enabled with a client id, and `routing.identity.path` is the
+   default `/auth`. The OAuth routes are served under `/auth`; with any other prefix
+   the surface stays unconfigured.
+2. Check the reverse proxy's access log. `core` drops the query string from its own
+   uvicorn access log (`rheo_core.log_config.RedactQueryFilter`), which also stops the
+   GitHub `GET /auth/callback?code=...` line it used to write. A proxy in front logs
+   request lines itself: the first `/auth/oauth/authorize` line carries the PKCE
+   challenge and `state` in its query. Confirm the proxy's access log is off or strips
+   query strings. On a shared proxy this is the proxy's configuration, not the
+   application's; the repository ships no proxy log configuration.
+3. Decide on `FORWARDED_ALLOW_IPS`. Registration is limited per source address
+   (`identity.oauth.registrations_per_source_per_hour`, default 30), and the source is
+   the ASGI client address. uvicorn trusts `X-Forwarded-For` only from `127.0.0.1`
+   unless `FORWARDED_ALLOW_IPS` names the proxy, so behind a proxy in another container
+   every registration comes from the proxy and the limit acts as one global limit of
+   30 an hour. That still bounds a flood; `identity.oauth.max_clients` (default 100
+   counted clients) is the real bound. Setting `FORWARDED_ALLOW_IPS` in core's
+   environment to the proxy's address makes it per client. Either is a valid choice.
+   This limit is core's own; the general `/auth/*` rate limiting above stays the
+   proxy's.
+
+**Turning it on.** Set `RHEO__identity__oauth__enabled=true` in core's environment
+and restart core. The surface is resolved when core starts, so every
+`identity.oauth.*` change takes effect at restart. Then run `rheo doctor`:
+
+- `oauth surface ok configured: issuer <issuer>; <n> allowed redirect URIs` is ready.
+- `oauth surface FAIL enabled but unconfigured: <reason>` means enabled but
+  incomplete, and nothing is advertised: `identity_provider_disabled` (GitHub sign-in
+  off or no client id), `allowlist_empty`, or `setting_invalid` (an allowlist entry
+  that is neither `https` with a host nor `http` on `localhost` or `127.0.0.1`, or
+  that carries userinfo, a fragment or an unparseable port; an identity path other than `/auth`, or a routing host that
+  cannot sit in a `WWW-Authenticate` header).
+- An `identity.oauth.*` integer below its minimum (for example
+  `access_token_minutes` under 5) refuses the settings load, so core does not start
+  at all, and doctor's `settings` line fails with the key.
+
+`connector grants` reports the counted clients against the cap and the grants; it is
+`FAIL` at the cap or when a live grant has no live refresh token.
+
+**The connector URL** is `url_for(mcp, "/")`, trailing slash included, and that exact
+string is the OAuth resource identifier the metadata names. On a subdomain deployment
+it is `https://mcp.<base host>/`; the reference instance's is
+`https://mcp.rheo.stream/`. In path mode it is `https://<host>/mcp/`. Add the
+connector with that URL and choose automatic client registration; the client then
+registers, signs in through GitHub on the identity host and shows the consent page.
+
+**The redirect allowlist** (`identity.oauth.redirect_uris`) ships as one entry, the
+callback Claude's connector documentation names:
+`https://claude.ai/api/mcp/auth_callback`. A second callback,
+`https://claude.com/api/mcp/auth_callback`, is mentioned elsewhere but not confirmed.
+If a surface turns out to use it (registration refused `invalid_redirect_uri`, with a
+`client_registered` `refused` row in `rheo token events`), add it as one line of
+configuration. A list setting is comma-separated in the environment and replaces the
+default, so name both:
+
+```
+RHEO__identity__oauth__redirect_uris=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback
+```
+
+**Operating it.** `rheo token list` shows each grant as one `connector` row with its
+client name and grant end; `rheo token revoke <id>` ends it. `rheo token events
+--workspace <id>` prints the content-free sign-in trail, newest first. The grant id is
+the token id those commands print. The token endpoint's `invalid_client` 401 carries
+no `WWW-Authenticate` header: the client is public and sends no `Authorization`
+header, so there is no scheme to challenge.
+
+**The path-mode limit.** In single-host path mode `core` serves the two metadata
+documents only at the path-inserted root paths
+`/.well-known/oauth-protected-resource/mcp` (and `.../mcp/`) and
+`/.well-known/oauth-authorization-server/mcp`; there is no root `/.well-known`
+fallback. Under the routing table above those paths would reach `web`, so a real
+single-host front must route those two `/.well-known/.../mcp` paths to `core`. This
+directory ships no such front configuration, and the tests prove path mode against
+the core application only. The subdomain flagship needs no proxy change: the whole
+`mcp` host and `/auth/*` already reach `core`.
 
 ### Backups
 

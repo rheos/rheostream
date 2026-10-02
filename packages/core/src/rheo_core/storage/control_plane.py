@@ -788,6 +788,10 @@ in the same transaction, so a miss here means an internal invariant broke, not a
 reachable API state -- the same reasoning ``session``'s ``SESSION_ROW_MISSING``
 documents for itself above."""
 
+ACCESS_TOKEN_REVOKED: Final = "access_token_revoked"
+"""``rotate_access_token`` on a row whose ``revoked_at`` is set: a revoked grant is
+never given a fresh value, and the row is left exactly as it was."""
+
 
 @dataclass(frozen=True, slots=True)
 class AccessTokenRow:
@@ -919,6 +923,64 @@ def revoke_access_token(conn: Connection, token_id: UUID) -> None:
         raise StorageRefusal(
             ACCESS_TOKEN_MISSING, f"access token {token_id} has no row"
         )
+
+
+def revoke_access_token_if_live(
+    conn: Connection, token_id: UUID, *, now: datetime
+) -> bool:
+    """Set ``revoked_at = now`` only on a row that is not yet revoked; True when
+    this call changed the row. The condition is in the ``UPDATE`` itself, so of two
+    concurrent revocations the second waits on the first's row lock, re-checks
+    ``revoked_at`` after it commits and changes nothing: exactly one caller ends a
+    connector grant (and writes its ``grant_revoked``). A missing row is False."""
+    result = conn.execute(
+        update(t.access_token)
+        .where(t.access_token.c.id == token_id, t.access_token.c.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    return result.rowcount == 1
+
+
+def rotate_access_token(
+    conn: Connection, token_id: UUID, *, token_hash: bytes, expires_at: datetime
+) -> None:
+    """Replace the row's ``token_hash`` and ``expires_at`` in place. A connector
+    grant is one ``access_token`` row whose value is rotated on every refresh, so
+    the grant's id, its snapshot rows and its audit actor id never change; the
+    superseded value then matches no row. Expiry policy is the caller's, as for
+    ``insert_access_token``. ``access_token_revoked`` on a revoked row, which is
+    left unchanged; ``access_token_missing`` when there is no row."""
+    result = conn.execute(
+        update(t.access_token)
+        .where(t.access_token.c.id == token_id, t.access_token.c.revoked_at.is_(None))
+        .values(token_hash=token_hash, expires_at=expires_at)
+    )
+    if result.rowcount == 1:
+        return
+    if get_access_token(conn, token_id) is None:
+        raise StorageRefusal(
+            ACCESS_TOKEN_MISSING, f"access token {token_id} has no row"
+        )
+    raise StorageRefusal(ACCESS_TOKEN_REVOKED, f"access token {token_id} is revoked")
+
+
+def list_access_tokens(
+    conn: Connection,
+    *,
+    workspace_id: UUID | None = None,
+    account_id: UUID | None = None,
+) -> tuple[AccessTokenRow, ...]:
+    """Every token row, oldest first (``created_at``, then ``id``), optionally
+    narrowed to one workspace and/or one account. Revoked and expired rows are
+    included; the caller decides what to show for them."""
+    statement = select(t.access_token).order_by(
+        t.access_token.c.created_at, t.access_token.c.id
+    )
+    if workspace_id is not None:
+        statement = statement.where(t.access_token.c.workspace_id == workspace_id)
+    if account_id is not None:
+        statement = statement.where(t.access_token.c.account_id == account_id)
+    return tuple(_access_token(row) for row in conn.execute(statement).mappings())
 
 
 def delete_access_token(conn: Connection, token_id: UUID) -> None:

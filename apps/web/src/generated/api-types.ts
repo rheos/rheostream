@@ -157,6 +157,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.oauth_event.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.oauth_event.list (read) */
+        post: operations["core.oauth_event.list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.operation.get": {
         parameters: {
             query?: never;
@@ -1121,6 +1138,67 @@ export interface components {
             state: string;
         };
         /**
+         * OAuthEventList
+         * @description The most recent events, newest first (``occurred_at`` then ``event_id``,
+         *     both descending). A named collection field, like ``AuditList.records``, so a
+         *     later collection beside it is an additive change.
+         */
+        OAuthEventList: {
+            /** Events */
+            events: components["schemas"]["OAuthEventRecord"][];
+        };
+        /**
+         * OAuthEventListInput
+         * @description How many of the most recent events to return.
+         *
+         *     Bounded like ``AuditListInput.limit`` and for its reason: a negative ``limit``
+         *     would reach the ``SELECT`` and come back ``handler_failed`` instead of
+         *     ``input_invalid``, and nothing prunes ``oauth_event``, so an unbounded read
+         *     grows for the life of the deployment. Extra fields are ignored, as every other
+         *     core input does; the workspace is the context's and no field can name one.
+         */
+        OAuthEventListInput: {
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /**
+         * OAuthEventRecord
+         * @description One ``oauth_event`` row as this operation publishes it.
+         *
+         *     Every column of the table, with ``id`` published as ``event_id`` (the renaming
+         *     ``AuditRecord`` makes for ``audit_id``). The table holds no secret, no
+         *     client-supplied text and no URL, so there is nothing further to withhold: no
+         *     client name, redirect URI, registration source address or hash is reachable
+         *     from here. ``token_id`` is the grant's id (a grant is one access-token row).
+         */
+        OAuthEventRecord: {
+            /** Account Id */
+            account_id: string | null;
+            /** Client Id */
+            client_id: string | null;
+            /** Event */
+            event: string;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Outcome */
+            outcome: string;
+            /** Token Id */
+            token_id: string | null;
+            /** Workspace Id */
+            workspace_id: string | null;
+        };
+        /**
          * OperationList
          * @description The workspace's most recently created operation records, newest first.
          *
@@ -2000,6 +2078,41 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["ModuleInstallScheduled"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.oauth_event.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OAuthEventListInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["OAuthEventList"];
                         state: string;
                     };
                 };

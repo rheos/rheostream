@@ -1,7 +1,8 @@
 """``rheo doctor``: the allowed modules' settings registration, data-root validity,
 cluster reachability, the control-plane head,
 the connection budget, the reconcile interval, per-workspace state, per-workspace
-evidence acceptance failures, per-workspace bridge enrollment token expiry, and the
+evidence acceptance failures, per-workspace bridge enrollment token expiry, the
+MCP OAuth connector's surface and its grant counts (issue #287), and the
 ``CREATE EXTENSION`` privilege report for ``vector`` and ``pg_trgm``.
 
 The privilege report is kept in this run per the run spec (Technical Risks item 11):
@@ -34,12 +35,16 @@ from rheo_core.migrations.orchestrator import (
     recorded_revisions,
 )
 from rheo_core.modules import ManifestInvalid, register_module_settings
+from rheo_core.oauth import OAuthUnconfigured, oauth_surface
+from rheo_core.oauth.surface import ABANDONED_CLIENT_MINUTES_KEY, MAX_CLIENTS_KEY
+from rheo_core.routing import RoutingConfig
 from rheo_core.secrets import SecretRefusal, check_env_references
 from rheo_core.settings import PROFILE_KEY, SettingsError, resolve
 from rheo_core.storage.backend import StorageRefusal
 from rheo_core.storage.control_plane import WorkspaceRow, list_workspaces
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.data_root import DataRootRefusal, resolve_data_root
+from rheo_core.storage.oauth_store import ConnectorGrantCounts, connector_grant_counts
 from rheo_core.storage.postgres import PostgresBackend, get_backend
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -58,6 +63,9 @@ The rest is for connections the two-process figure does not count: an operator's
 process with its own engines, ``psql`` sessions, and the superuser-reserved slots."""
 ACCEPTANCE_WINDOW: Final = timedelta(hours=24)
 """How far back the evidence-acceptance check counts settlements (#221)."""
+CONNECTOR_ENDING_WINDOW: Final = timedelta(days=7)
+"""A live connector grant ending this soon is counted as ending; the bridge
+enrollment check's 7-day window. Reported, not a ``FAIL``: the user reconnects."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +382,81 @@ def _check_bridge_enrollments(
         yield _check_workspace_enrollments(backend, row, now=at)
 
 
+def _check_oauth_surface() -> Check:
+    """What the MCP OAuth connector advertises (issue #287): ``ok disabled``, ``ok
+    configured`` with the issuer and the allowlist's size, or ``FAIL`` with
+    ``oauth_surface``'s reason when the feature is on but cannot advertise. A
+    below-minimum ``identity.oauth.*`` value never reaches here: it refuses the
+    settings load itself, which is this check's ``FAIL`` line too."""
+    name = "oauth surface"
+    try:
+        settings = resolve()
+        surface = oauth_surface(settings, RoutingConfig.from_settings(settings))
+    except (SettingsError, ValueError) as refusal:
+        detail = (
+            f"{refusal.state}: {refusal.detail}"
+            if isinstance(refusal, SettingsError)
+            else f"routing invalid: {refusal}"
+        )
+        return Check(name, "FAIL", detail)
+    if isinstance(surface, OAuthUnconfigured):
+        if surface.reason == "disabled":
+            return Check(name, "ok", "disabled")
+        return Check(name, "FAIL", f"enabled but unconfigured: {surface.reason}")
+    return Check(
+        name,
+        "ok",
+        f"configured: issuer {surface.issuer}; "
+        f"{len(surface.redirect_uris)} allowed redirect URIs",
+    )
+
+
+def _connector_grants_check(counts: ConnectorGrantCounts, max_clients: int) -> Check:
+    """The level for the connector-grant counts. ``FAIL`` when the counted clients
+    reach ``identity.oauth.max_clients`` (new registrations are refused) or a live
+    grant has no live refresh row (it cannot refresh); ``ok`` otherwise. Counts and
+    fixed words only: no token, client id, client name or other client text."""
+    days = CONNECTOR_ENDING_WINDOW.days
+    detail = (
+        f"clients {counts.counted_clients}/{max_clients}; grants active "
+        f"{counts.active}, expired {counts.expired}, revoked {counts.revoked}, "
+        f"ending within {days} days {counts.ending_soon}; live grants with no live "
+        f"refresh row {counts.missing_refresh}"
+    )
+    problems = []
+    if counts.counted_clients >= max_clients:
+        problems.append("client cap reached, new registrations are refused")
+    if counts.missing_refresh:
+        problems.append("a live grant cannot refresh")
+    if problems:
+        return Check("connector grants", "FAIL", f"{detail}; {'; '.join(problems)}")
+    return Check("connector grants", "ok", detail)
+
+
+def _check_connector_grants(
+    backend: PostgresBackend, *, now: datetime | None = None
+) -> Check:
+    """Connector grants and counted clients, read from the control plane."""
+    at = datetime.now(UTC) if now is None else now
+    try:
+        settings = resolve()
+        max_clients = settings.get_int(MAX_CLIENTS_KEY)
+        abandoned_minutes = settings.get_int(ABANDONED_CLIENT_MINUTES_KEY)
+    except SettingsError as refusal:
+        return Check("connector grants", "FAIL", f"{refusal.state}: {refusal.detail}")
+    try:
+        with backend.control_engine.connect() as connection:
+            counts = connector_grant_counts(
+                connection,
+                now=at,
+                abandoned_before=at - timedelta(minutes=abandoned_minutes),
+                ending_before=at + CONNECTOR_ENDING_WINDOW,
+            )
+    except SQLAlchemyError as exc:
+        return Check("connector grants", "FAIL", f"cannot read: {type(exc).__name__}")
+    return _connector_grants_check(counts, max_clients)
+
+
 def _check_extensions(backend: PostgresBackend) -> Iterator[Check]:
     try:
         report = backend.extension_report(EXTENSIONS)
@@ -425,6 +508,8 @@ def doctor(args: argparse.Namespace) -> int:
         checks.extend(_check_workspaces(backend))
         checks.extend(_check_evidence_acceptance(backend))
         checks.extend(_check_bridge_enrollments(backend))
+        checks.append(_check_oauth_surface())
+        checks.append(_check_connector_grants(backend))
         checks.extend(_check_extensions(backend))
     for check in checks:
         print(check.line())
