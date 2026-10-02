@@ -375,6 +375,161 @@ until a separately ratified append-only criterion amendment says otherwise.
     existing criterion-22 and criterion-23 gates scan. See
     [theme contract](../architecture/theme-contract.md).)*
 
+**Connector sign-in (issue #287)**
+
+These criteria come from the connector sign-in change (issue #287), which lets a hosted MCP
+client such as claude.ai connect to the `mcp` surface through an OAuth sign-in instead of a
+pasted token. Criteria 70-90 restate that change's acceptance criteria AC-1 to AC-21 in order,
+91 restates AC-24 (the one manual check), 92 restates AC-25 and 93 restates AC-26. The FR and
+edge-case numbers in parentheses are the issue's own specification numbers, not this
+document's. The evidence for each is in the
+[connector matrix](../acceptance/connector-matrix.md).
+
+70. With the feature configured, an unauthenticated `POST` to the `mcp` surface answers `401`
+    whose `WWW-Authenticate` header is `Bearer` with a `resource_metadata` parameter equal to
+    `url_for` of the metadata document, in both subdomain and path mode; a test asserts the
+    header string. (FR 1, 21)
+71. With the feature configured, `GET /.well-known/oauth-protected-resource` on the `mcp` host
+    answers 200 JSON whose `resource` equals the canonical connector identifier and whose
+    `authorization_servers` has length 1 and equals the issuer;
+    `GET /.well-known/oauth-authorization-server` answers 200 with the FR 4 document; a non-`GET`
+    on either answers 405; `GET /` on the same host still answers 405 with `Allow: POST`; and any
+    other path on the `mcp` host still answers 404. With the feature unconfigured both well-known
+    paths answer 404. (FR 2, 21)
+72. With the feature configured, a presented token that is malformed, expired or revoked still
+    answers `401` with the same distinct `state` values as before this change, now also carrying
+    `resource_metadata`; a valid token that lacks the operation answers the unchanged refusal.
+    (FR 3)
+73. The authorization-server metadata document contains every field FR 4 lists with those
+    values, and contains neither `client_id_metadata_document_supported: true` nor
+    `scopes_supported`. A schema test compares the field set. (FR 4, 5)
+74. DCR succeeds for the allowlisted callback and returns a public client with no secret; it is
+    refused `invalid_redirect_uri` for each of: a different host, a trailing-slash or path-suffix
+    variant, a changed scheme, a port, a userinfo, a fragment, and an empty list; a non-object
+    body is refused `invalid_client_metadata`. A registration with an allowlisted URI that
+    requests an unsupported `token_endpoint_auth_method`, `grant_types` or `response_types`
+    succeeds and returns the overridden values (`none`; `authorization_code` and
+    `refresh_token`; `code`). (FR 6, edge case 5)
+75. Registration beyond the per-source rate limit, and beyond the counted-client cap, is refused;
+    a client with no grant, older than the configured age and with no sign-in in flight is
+    removed by cleanup. Three cases survive cleanup: (a) a client whose grant's access token
+    expired hours ago survives and its refresh still succeeds; (b) a client whose only grant is
+    revoked or past its absolute end survives, is not counted toward the cap, and still lists
+    with its client name; (c) a client with an authorization in flight survives. (FR 7, edge
+    case 6)
+76. An authorization request is refused (page, no redirect to the client) for each of: unknown
+    `client_id`, `redirect_uri` not exactly equal to a registered one; and refused with a
+    redirected error for: `code_challenge_method` absent or `plain`, missing `code_challenge`,
+    and missing or wrong `resource` (`invalid_target`). (FR 8)
+77. With no session cookie, an authorization request sends the browser through `/auth/login`
+    and, after the test identity provider completes, lands on the consent screen; the GitHub
+    OAuth callback URL used is the unchanged `url_for(IDENTITY, "/callback")`; a closed-signup
+    unknown identity gets the existing refusal and no code is issued. (FR 9, edge case 7)
+78. The consent screen shows the client name, the redirect URI's hostname, the account, the
+    workspace and the operation set; it appears on a second authorization by the same client;
+    Deny redirects with `access_denied` and issues nothing; an Allow `POST` with a bad `Origin`
+    is refused `origin_not_allowed`. (FR 10)
+79. For an account with one active workspace the grant binds to it; for an account with two the
+    screen offers exactly those two and binds the chosen one; an account with none issues
+    nothing and answers `workspace_unselected`; a workspace id the account is not a member of,
+    submitted in the Allow `POST`, is refused. (FR 11, edge case 9)
+80. The token exchange returns an access token with prefix `rheo_mcp_`, whose `access_token` row
+    has kind `mcp`, one account, one workspace, a non-null `expires_at`, an issuing-authority
+    value distinct from `session`, `operator` and `runtime`, and snapshot rows equal to the
+    `agent_default` expansion intersected with the member role's permitted set, minus the
+    non-token-issuable set (for an owner, the full expansion minus that set); a test asserts
+    none of the eight non-token-issuable operations is in the snapshot. (FR 12)
+81. The access token's lifetime equals the configured value and never exceeds
+    `identity.token_max_days.mcp`; the refresh grant's absolute end never exceeds it either; a
+    refresh at the cap answers `invalid_grant`. (FR 13, edge case 14)
+82. Using a refresh token returns a new access token and a new refresh token and the old refresh
+    token then answers `invalid_grant`; presenting the old one a second time (outside any
+    recorded grace) revokes the grant so that the newest access token is refused
+    `token_revoked`; presenting it inside the grace answers `invalid_grant` and changes nothing.
+    The test re-reads the database after each refusal and asserts the written state (the
+    revocation and the `refresh_reuse_revoked` row exist after the reuse; nothing changed after
+    the grace-window refusal). (FR 13, edge case 4)
+83. An authorization code redeems once; a second redemption answers `invalid_grant` and revokes
+    what the first issued; redemption with a wrong or missing `code_verifier`, a different
+    `client_id`, a different `redirect_uri`, or after 60 s answers
+    `invalid_grant`/`invalid_client`, and with a present `resource` that is not the canonical
+    identifier answers `invalid_target`, in each case issuing nothing; an absent `resource`
+    redeems successfully; failed redemptions leave the code burned (a later correct redemption
+    of the same code answers `invalid_grant`); the token endpoint accepts
+    `application/x-www-form-urlencoded`. The test re-reads the database after each
+    state-changing refusal and asserts the burn, and for a replay the revocation and its event
+    row. (FR 14, edge case 3)
+84. A connector access token presented to the `api` surface answers `token_wrong_kind`;
+    presented to the `mcp` surface it lists the `agent_default` tools and a call to a tool
+    outside its snapshot answers `operation_not_permitted`; a call is dispatched through the
+    same boundary function as a token minted by `rheo token issue` (a test patches the boundary
+    and sees the one call). (FR 15)
+85. Three regression tests, one per existing caller, pass without edits to the existing tests:
+    (a) a Claude-Code-style `mcp` token lists and calls Recallatron tools; (b) the bridge's
+    `cli` token calls `core.evidence.ingest` on the `api` surface; (c) a dedicated
+    `agent_default` `mcp` token lists and calls tools. Each compares the response to the
+    pre-change golden response, normalizing only a named, closed list: the `date` and
+    `content-length` headers, any MCP session-id header, and body values at keys `id`, `*_id`
+    and `*_at`; everything else is compared exactly. The existing `mcp` transport and token test
+    files are unmodified by the change except for added cases. (FR 16, edge case 12)
+86. A full registration, authorization, exchange, call and refresh flow is run against a test
+    log sink, and a scan of every captured log line, every audit row, every `operation` row and
+    every error body finds none of: the access token, the refresh token, the code, the verifier,
+    the challenge. A test also asserts that presenting a bearer in a query string on the `mcp`
+    and `api` surfaces is not accepted. (FR 17, edge case 13)
+87. `rheo token list` shows every connector grant with the fields FR 18 names;
+    `rheo token revoke <id>` makes the grant's next `mcp` call answer 401 with the pointer and
+    makes its refresh answer `invalid_grant`; revoking one of two grants for one account leaves
+    the other working. (FR 18, edge cases 10, 11)
+88. `rheo doctor` output includes connector-grant counts and the OAuth-configured line, contains
+    no token, client name or other client-supplied text, and goes `FAIL` for the counted-client
+    cap and missing-refresh-row cases. (FR 19)
+89. Each audit event FR 20 lists is written exactly once for a scripted flow, each row carries
+    account, workspace, client id, grant id and an outcome word, and a deny and a refresh-reuse
+    each produce their own row. The test re-reads the database after each refusal (deny,
+    replay, refresh-reuse, refused registration) and asserts the row exists, so a refused
+    request still leaves its event. (FR 20)
+90. With the feature unconfigured (off, or enabled but incomplete) the `mcp` surface answers
+    today's bare `Bearer` 401, the well-known paths and `/auth/oauth/*` answer 404, and doctor
+    shows `FAIL` for the enabled-but-incomplete case; with it configured no advertised endpoint
+    answers 404 or 500; the same suite passes in path mode with the endpoints built through
+    `url_for`, and a route string naming a host or prefix outside `url_for` fails the existing
+    lint. (FR 21)
+91. **Manual, once, by the maintainer after deploy and on his go:** adding the connector
+    `https://mcp.rheo.stream/` in claude.ai (desktop chat), then using it from claude.ai on the
+    web and on the phone, each completes sign-in through GitHub on `auth.rheo.stream` (or reuses
+    the account's connection, per S5), lists the Recallatron tools, and one `recallatron_recall`
+    call returns a result from his own workspace. The result is recorded in the run's closeout
+    and the matrix's manual row; it is not claimed by any CI test. (Outcome metric)
+92. The `oauth_event` reader (e.g. `rheo token events`), run after a scripted flow that includes
+    a registration, a grant, a deny, a code redemption, a refresh and a refresh-reuse
+    revocation, lists those events newest first; every row shows only the content-free fields
+    (event, outcome word, time, account, workspace, client id, grant id); a scan of its output
+    finds none of the access token, refresh token, code, verifier, challenge or any
+    client-supplied free text (including the client name); and a caller who is not the
+    operator/owner is refused. (FR 20)
+93. A pending authorization cannot be completed late, from another browser, or twice (edge case
+    8; FR 9, 10). A test drives each case and, after every refusal, re-reads the database and
+    asserts that no code was issued (`code_hash` and `code_expires_at` null on the row), no
+    `access_token` or `oauth_grant` row was created, and the row is unchanged. (a)
+    **Expired:** with the clock at or after the `oauth_authorization` row's `expires_at`
+    (created plus 10 minutes), `GET /auth/oauth/consent` with the correct `rheo_oauth_request`
+    cookie answers the `authorization_expired` page (`data-state="authorization_expired"`), and
+    an Allow `POST` answers the same page; nothing is issued. (b) **Another browser:** with a
+    live row, `GET /auth/oauth/consent` with no `rheo_oauth_request` cookie, and with a cookie
+    whose nonce hashes to no row, answers `authorization_expired` and issues nothing; a session
+    that holds a different, live pending row of its own and posts the first row's `request_id`
+    is refused `authorization_expired` (the cookie's row id must equal `request_id`); an Allow
+    `POST` whose `request_id` is not the id of the row named by the cookie is refused
+    `authorization_expired`. (c) **Already decided:** after Deny, and after an Allow that issued
+    a code, replaying the same cookie value against `GET` and `POST /auth/oauth/consent` answers
+    `authorization_expired` and issues no second code and no second approval or denial event;
+    the replayed Allow does not change the code the first Allow issued. Boundary cases: at 1
+    second before `expires_at` the row is still live and consent succeeds; at `expires_at`
+    exactly it is refused; the `Set-Cookie` for `rheo_oauth_request` carries `Max-Age=600` (the
+    same 10 minutes), so a browser that has dropped the cookie at Max-Age is the absent-cookie
+    case in (b). (FR 9, 10; edge case 8)
+
 ---
 
 ## Phase 3 — The opportunity core
