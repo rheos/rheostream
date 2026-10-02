@@ -455,9 +455,29 @@ pure ASGI router in front of the FastAPI routes decides which requests are the s
   never reaches MCP. Startup refuses an empty `routing.mcp.host`, or one whose host is also the
   shell, identity, `api` or a module host.
 
+**The OAuth metadata exception (issue #287).** When [connector
+sign-in](identity-and-topology.md#connector-sign-in-oauth-for-mcp-clients) is configured, the
+router answers exactly two more documents ahead of the endpoint match, and nothing else: the
+RFC 9728 protected-resource document and the RFC 8414 authorization-server document. Subdomain
+mode serves them on the `mcp` host only, at `/.well-known/oauth-protected-resource` (with or
+without a trailing `/`) and `/.well-known/oauth-authorization-server`; path mode serves them on
+any host at `/.well-known/oauth-protected-resource/mcp` (and `.../mcp/`) and
+`/.well-known/oauth-authorization-server/mcp`. Only `GET` is answered (JSON,
+`Cache-Control: no-store`); any other method is `405` with `Allow: GET`. They need no bearer. The
+surface is resolved once in the core lifespan, so a settings change takes effect at restart;
+unconfigured, these paths behave exactly as before (404). `GET /` on the `mcp` host is still
+`405` with `Allow: POST`.
+
 The runtime's `url_for(config, "mcp", "/")` (`https://<public_host>/mcp/` or
-`https://mcp.<public_host>/`) is therefore served in both modes. The bearer gate still answers
-first: no bearer, or a refused one, is a 401 with the refusal state and no tool runs.
+`https://mcp.<public_host>/`) is therefore served in both modes. It is also the OAuth resource
+identifier and the URL a connector is added by, trailing slash included. The bearer gate still
+answers first: no bearer, or a refused one, is a 401 with the refusal state and no tool runs.
+Unconfigured, the 401's `WWW-Authenticate` is the bare `Bearer` it has always been. Configured,
+`build_mcp_app(..., resource_metadata_url=...)` makes every refusal from the gate send
+`Bearer resource_metadata="<protected-resource URL>"` instead, the URL built through `url_for` by
+the composition root and passed in as a string, so `apps/mcp` still imports nothing from routing.
+The states, bodies and status are unchanged, and the bearer is read from the `Authorization`
+header only, never from a query string.
 
 **DNS-rebinding protection** is the SDK's, kept on and configured from the routing settings
 rather than from its loopback default. The allowed `Host` values are exactly the surface's hosts:
@@ -477,6 +497,14 @@ runs.
 `operation_set` from the token's snapshot rows, `audience = token`. A malformed, wrong-kind,
 expired, revoked, or scope-invalid token is refused at the transport with a distinct state and
 no tool runs (criterion 9).
+
+**Connector tokens are ordinary `mcp` tokens.** A grant from connector sign-in is one
+`access_token` row of kind `mcp` with `issued_from = connector` and `set_name = agent_default`, its
+operation set snapshotted at issuance like any other. `resolve_token` does not know it came from
+OAuth: the session resolution, the listing, the redaction and the audit (every call under one grant carries
+the grant's token id) are the ones above. A refresh rotates the value in place on the same
+row, so a superseded value matches no row and is `token_malformed`, which with the pointer in the
+`401` is what sends the client to refresh. A tool outside the snapshot answers as for any token.
 
 **Listing.** `tools/list` returns the registered tools whose operation is in the token's operation
 set and whose module is enabled in the workspace, filtered again on every `tools/call`, so a tool

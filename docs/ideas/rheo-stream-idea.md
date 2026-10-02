@@ -1880,6 +1880,30 @@ The following changes are recorded here.
     still binds: the same sanitation, extraction, receipts and recording gate apply to
     every session. A headless CLI run fires the hooks too, but its prompt carries no human
     origin, so nothing from it is sent.
+18. **MCP connectors sign in through OAuth.** Directed by the maintainer on 2026-10-01,
+    recorded against issue #287. Requirements decision D6 says "CLI and MCP access uses
+    local tokens, not browser OAuth." That sentence is superseded for MCP connectors
+    only. Reason: a claude.ai custom connector is added by its URL and cannot send a
+    custom `Authorization` header. Claude's connector documentation has it start
+    sign-in from a `401` and discover the authorization server through OAuth metadata,
+    and a static-header credential is a limited beta, not a general option. So desktop
+    chat, the web app and the phone could not reach the `mcp` surface at all. The `mcp`
+    host now answers a `401` that points at its protected-resource metadata, and the
+    identity host runs an OAuth 2.1 authorization-code flow with PKCE and dynamic client
+    registration that ends in a consent page
+    ([connector sign-in](../architecture/identity-and-topology.md#connector-sign-in-oauth-for-mcp-clients)).
+    The constraints bind. Local tokens stay valid and remain the credential for the
+    CLI, the local bridge, Claude Code and bots; nothing about issuing or presenting
+    them changes. GitHub stays the only login: the flow signs the person in through the
+    existing `/auth/login`, and adds no password and no second provider. A grant is an
+    ordinary `mcp` token row with issuing authority `connector`, its operation set
+    snapshotted once at issuance like any other, so the bearer gate and token
+    resolution are untouched. No access or refresh token ever travels in a URL query
+    parameter: the bearer is read from the `Authorization` header only, on every host,
+    and the token endpoint reads only its form body. The one value OAuth itself puts in
+    a URL is the authorization code on the redirect back to the client, and it is
+    single-use, lives 60 seconds and is useless without the client's PKCE verifier.
+    The feature ships off (`identity.oauth.enabled` false).
 
 ### Preferred but still to validate
 

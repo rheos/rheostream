@@ -2,7 +2,8 @@
 
 **Part of:** the [architecture specification](README.md). Designs against D6, D7, D10, R1, FR 1,
 FR 3 to FR 6, FR 47, FR 48, and criteria 8, 9, 19, 22, 23. Records the ratified host assignments
-and fixes what a token can and cannot carry.
+and fixes what a token can and cannot carry. Issue #287 adds connector sign-in, the OAuth front
+door for MCP clients that cannot send a header (recorded change of direction 18).
 **Decision:** A11 (host-only session cookies with an identity-host session grant; identity
 endpoints on every application host). See the [decision list](README.md#architecture-decisions).
 
@@ -92,12 +93,12 @@ host's cookie at once because every host's secret resolves to the one revoked se
 | --- | --- |
 | Format | `rheo_<kind>_<43 base64url chars>`: 256 random bits from a CSPRNG. Only the SHA-256 is stored (`access_token.token_hash`). |
 | Scope | Exactly one account, one workspace, one operation set. The operation set is **snapshotted at issuance** into `control.access_token_operation`, one row per permitted operation name, and nothing widens it later; a new scope is a new token. The snapshot is expanded from a named package set ([below](#the-named-package-operation-sets)) or, for a run-scoped token, from an explicit list. |
-| Kinds | `cli` (a person's command-line token), `mcp` (a person's token for an MCP client), `runtime` (the run-scoped token the core issues for one model run, [runtime](runtime-and-mcp.md#the-run-scoped-token)). `access_token.kind` holds the value; `issued_from` records the issuing authority (`session`, `operator`, `runtime`). |
-| Issuance | Through `core.token.issue` only, from one of three issuing authorities: an authenticated web session (the account issuing for itself in a workspace it belongs to); the operator command on a headless install (`rheo token issue --account <id> --workspace <id> --set <name> --kind <cli\|mcp>`, against the control plane); or the core's `runtime` package, on behalf of the actor that started a run. The value is shown once, or handed to the adapter once. No token can issue a token: `core.token.issue` is itself non-token-issuable (below). |
-| Lifetime | `cli` default 90 days, `mcp` default 30 days (`identity.token_max_days.cli` and `identity.token_max_days.mcp`, floor `min`), `runtime` the run's deadline. |
+| Kinds | `cli` (a person's command-line token), `mcp` (a person's token for an MCP client), `runtime` (the run-scoped token the core issues for one model run, [runtime](runtime-and-mcp.md#the-run-scoped-token)). `access_token.kind` holds the value; `issued_from` records the issuing authority (`session`, `operator`, `runtime`, `connector`). |
+| Issuance | From one of four issuing authorities. Three go through `core.token.issue`: an authenticated web session (the account issuing for itself in a workspace it belongs to); the operator command on a headless install (`rheo token issue --account <id> --workspace <id> --set <name> --kind <cli\|mcp>`, against the control plane); or the core's `runtime` package, on behalf of the actor that started a run. The fourth, `connector`, is the OAuth code exchange of [connector sign-in](#connector-sign-in-oauth-for-mcp-clients): it mints an `mcp` token through `issue_connector_token` inside the exchange's own transaction, never through an operation, and only after the account approved it on the consent page. The value is shown once, or handed to the adapter or the connector once. No token can issue a token: `core.token.issue` is itself non-token-issuable (below), and the connector exchange takes no bearer. |
+| Lifetime | `cli` default 90 days, `mcp` default 30 days (`identity.token_max_days.cli` and `identity.token_max_days.mcp`, floor `min`), `runtime` the run's deadline. A `connector` token's value lives `identity.oauth.access_token_minutes` (default 60) and is rotated in place on the same row at every refresh, so its id never changes; the grant behind it ends at `min(identity.oauth.grant_days, identity.token_max_days.mcp)` days (default 30) after issuance, and no refresh outlives that end. |
 | Presentation | `Authorization: Bearer` on the `api` and `mcp` surfaces, each accepting the kinds made for it: the `api` surface accepts `cli` only; the `mcp` surface accepts `mcp` and `runtime`. An `mcp` token on the `api` surface is `token_wrong_kind` (issue #130): it is a model's credential, and over HTTP it would receive an operation's raw output past the tool facade's redaction, so a `cli` token is the HTTP credential. Neither surface reads a cookie, and a session secret presented as a bearer value is `token_malformed` because it matches no token row. A person's `cli` token is refused on the `mcp` surface as `token_wrong_kind`, so a person's command-line credential handed to an MCP client is refused by kind before its scope is even read. No browser flow is ever involved after issuance. |
 | Refusal | Malformed, wrong kind for the surface, expired, revoked, scope-invalid, carrying an unusable stored purpose, and out-of-scope each return a distinct state (`token_malformed`, `token_wrong_kind`, `token_expired`, `token_revoked`, `token_scope_invalid`, `token_purpose_invalid`, `operation_not_permitted`) at the boundary, before any service runs, with no partial effect (criterion 9). `token_scope_invalid` is returned when a presented token's snapshot contains a non-token-issuable operation; it can only arise from a row written outside `core.token.issue`, and the boundary checks it anyway so that the rule below is enforced at both ends. |
-| Revocation | `core.token.revoke`; membership removal revokes the account's tokens for that workspace (no membership-removal path is built yet; presentation refuses `membership_missing` regardless). A run-scoped token is deleted with its snapshot rows when its run ends; the run's `runtime_request` row keeps what the run was permitted. |
+| Revocation | `core.token.revoke`; membership removal revokes the account's tokens for that workspace (no membership-removal path is built yet; presentation refuses `membership_missing` regardless). A run-scoped token is deleted with its snapshot rows when its run ends; the run's `runtime_request` row keeps what the run was permitted. A `connector` token is revoked like any other (`rheo token revoke <id>`, which also writes a `grant_revoked` event); its row is never deleted. |
 
 ### What a token can never carry, and what it holds for a gated operation
 
@@ -134,6 +135,7 @@ rechecked from `control.membership` at every presentation):
 | A web session | Every operation whose declared roles include the account's role in the target workspace. | Expands the named package set against the registry, intersects with that set, strips the non-token-issuable set, refuses `set_empty` if nothing remains, and snapshots the rest. A member's `cli_full` is therefore the member's full set, not the owner's. |
 | The operator command | The package sets, for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. `--discover` adds `core.tool.call` to the expansion ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
 | The core's `runtime` package, for a run | The permitted set of the actor that started the run: that actor's own token snapshot when it is a token, or the role-permitted set when it is an account. | Takes the explicit list of operations the run's permitted tools name, intersects with that set, strips the non-token-issuable set, and snapshots; a run can therefore never reach past the person or token that started it, however the operation's tool needs are declared. |
+| A connector grant (`connector`) | The `agent_default` set, for the approving account's role in the workspace chosen on the consent page. | Not `core.token.issue`: `issue_connector_token` computes `(agent_default & role-permitted) - non-token-issuable - {core.tool.call}`, the bound an operator issuance of `agent_default` gets minus the discover grant, refuses `set_empty` if nothing remains, and snapshots it once with `set_name = agent_default`. A refresh never re-snapshots, so a later role change narrows it only through the role recheck at presentation. |
 
 ### The named package operation sets
 
@@ -162,6 +164,173 @@ additive later feature: a fourth rule source, the same snapshot.
 The operator command that adds a second member (`rheo member add --workspace <id> --account
 <id> --role member`) is the only way a second membership exists in release one (R1); criterion 8's
 member session comes from that member signing in through the provider.
+
+## Connector sign-in (OAuth for MCP clients)
+
+A client that can set an `Authorization` header (Claude Code, the local bridge, a bot) uses a
+token issued as above. A claude.ai custom connector cannot: it is added by URL, starts sign-in
+from a `401`, and discovers everything else from OAuth metadata. Issue #287 adds that front door
+for MCP only ([recorded change of direction 18](../ideas/rheo-stream-idea.md#recorded-changes-of-direction)).
+It ends in an ordinary `mcp` token row with `issued_from = connector`, so the `mcp` surface's
+bearer gate and `resolve_token` are unchanged. GitHub stays the only login; the flow reuses
+`/auth/login`. The code is `rheo_core.oauth` (`surface`, `service`, `operations`),
+`rheo_core.storage.oauth_store`, and `apps/core`'s `oauth_routes.py` and `mcp_mount.py`.
+
+**Off unless configured.** `rheo_core.oauth.oauth_surface(settings, routing)` returns either the
+surface (every URL it advertises, the redirect allowlist and the lifetimes) or `OAuthUnconfigured`
+with a reason. With the surface unconfigured the `mcp` gate's `401` is the bare `Bearer` it always
+was, the metadata paths are 404 and `/auth/oauth/*` answer 404, so nothing is advertised that does
+not work. Its reasons are `disabled` (`identity.oauth.enabled` false, the default),
+`identity_provider_disabled` (GitHub sign-in off or without a client id), `allowlist_empty`, and
+`setting_invalid` (an allowlist entry that is not `https`, or `http` on `localhost`/`127.0.0.1`;
+`routing.identity.path` other than the served `/auth`; or a routing host that makes the metadata
+pointer unfit for a `WWW-Authenticate` header: not ASCII, or carrying a `"`). Every reason except
+`disabled` is `rheo doctor`'s `oauth surface` line as `FAIL enabled but unconfigured: <reason>`.
+An `identity.oauth.*` integer below its minimum does not get that far: the house `KeySpec.minimum`
+rule refuses the settings load, so the process does not start.
+
+| Setting (`identity.oauth.*`, deployment scope) | Default | Minimum |
+| --- | --- | --- |
+| `enabled` | `false` | |
+| `redirect_uris` | `https://claude.ai/api/mcp/auth_callback` only | non-empty, each valid as above |
+| `access_token_minutes` | 60 | 5 |
+| `grant_days` | 30 | 1 |
+| `refresh_grace_seconds` | 10 | 0 |
+| `max_clients` | 100 | 1 |
+| `registrations_per_source_per_hour` | 30 | 1 |
+| `abandoned_client_minutes` | 60 | 15 |
+
+**What is advertised.** Every URL comes from `url_for`. The canonical resource is
+`url_for(MCP, "/")`, `https://mcp.example.test/` in subdomain mode and
+`https://example.test/mcp/` in path mode, and is what the person types as the connector URL. The
+issuer is that string without its trailing slash. Its two documents sit at the RFC 9728 / RFC 8414
+insertion paths, on the `mcp` surface:
+
+| Document | Subdomain mode (`mcp` host) | Path mode (the single host) |
+| --- | --- | --- |
+| Protected resource (RFC 9728): `resource`, `authorization_servers` (the issuer), `bearer_methods_supported: ["header"]` | `/.well-known/oauth-protected-resource` and the same with a trailing `/` | `/.well-known/oauth-protected-resource/mcp` and `.../mcp/` |
+| Authorization server (RFC 8414): the issuer, the three endpoints, `code` only, `authorization_code` and `refresh_token`, `S256` only, auth method `none`, `authorization_response_iss_parameter_supported` | `/.well-known/oauth-authorization-server` | `/.well-known/oauth-authorization-server/mcp` |
+
+Path mode serves only these path-inserted documents: nothing answers at the root
+`/.well-known/oauth-authorization-server`. The endpoints live on the identity host:
+`url_for(IDENTITY, "/oauth/register" | "/oauth/authorize" | "/oauth/token")`, plus the consent page
+at `/auth/oauth/consent`. They answer 404 on any other host in subdomain mode. There is no
+`scopes_supported` (any `scope` parameter is ignored), no client-ID metadata documents and no
+revocation endpoint.
+
+**The flow.**
+
+1. The connector `POST`s to the resource with no token and gets `401` with
+   `WWW-Authenticate: Bearer resource_metadata="<protected-resource URL>"`. Every refusal from the
+   gate carries the pointer once the surface is configured, so a dead or superseded value also
+   sends the client back to refresh.
+2. It fetches the two documents and registers at `POST /auth/oauth/register` (RFC 7591, JSON, body
+   at most 16 KiB). Each `redirect_uris` entry must be an exact member of the allowlist (else
+   `invalid_redirect_uri`); everything else is overridden, not refused: the auth method is set to
+   `none`, the grant and response types to the two above, the client name is stripped of control
+   characters and cut to 100 characters, and unknown fields are dropped. The answer is `201` with
+   the effective metadata and a 128-bit `client_id`; a public client has no secret.
+3. The browser opens `GET /auth/oauth/authorize`. A duplicated parameter, a bad `client_id` or an
+   unregistered `redirect_uri` is an error page; every later error redirects to the client with
+   `state` and `iss` (`unsupported_response_type`; `invalid_request` for a missing or malformed
+   `S256` challenge or a `state` over 1024 characters; `invalid_target` for a
+   `resource` that is not the canonical one, where subdomain mode also accepts the empty-path
+   spelling `https://mcp.example.test`). On success the request is held server-side in an
+   `oauth_authorization` row and the browser gets `303` to `/auth/oauth/consent` with a host-only
+   `rheo_oauth_request` cookie (a 256-bit nonce, `Max-Age` 600, the attributes of the other auth
+   cookies). The cookie is the only handle: no request id is ever in a URL.
+4. `GET /auth/oauth/consent` with no live request (no cookie, an unknown, decided or expired one)
+   is the `authorization_expired` page. With no session it redirects to
+   `/auth/login?return=<consent URL>`, so GitHub's callback is the existing one. An account with no
+   active workspace gets `workspace_unselected` and the request is decided, so it cannot be
+   completed later. Otherwise the page shows the client name (marked as chosen by the app), the
+   redirect URI's host, the signed-in account, the workspace (a choice when there are several),
+   the operations the grant will hold, and its lifetime in days. It is server-rendered by core,
+   every value escaped, and sent with
+   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'`,
+   `X-Frame-Options: DENY` and `Cache-Control: no-store`.
+5. `POST /auth/oauth/consent` checks `Origin` first (`origin_not_allowed`), then that the cookie's
+   pending row is the `request_id` the page showed and that the form's `account_id` is the
+   session's (else `authorization_expired`, nothing written), then a live session. Allow writes a
+   60-second single-use code and redirects to the client with `code`, `state` and `iss`; Deny
+   redirects with `error=access_denied`. A workspace that is not one of the account's active
+   memberships is `not_a_member`. Either way the cookie is cleared.
+6. The client redeems the code at `POST /auth/oauth/token` (form-encoded only, body only,
+   duplicated parameters refused, `Cache-Control: no-store`). The code is burned first, whatever
+   follows. A different `client_id` is `invalid_client` (401); a different `redirect_uri`, an
+   expired code or a PKCE mismatch is `invalid_grant`; a `resource` that is present and not the
+   canonical one is `invalid_target` (absent means the value bound at `/authorize`). Success
+   writes, in one transaction, the `connector` token, its `oauth_grant` row and its first refresh
+   token, and answers `{access_token, token_type: "Bearer", expires_in, refresh_token}`. A replayed
+   code revokes whatever it issued. The `invalid_client` 401 carries no `WWW-Authenticate`: a
+   public client sends no `Authorization` header, so there is no scheme to challenge.
+
+The access value is `rheo_mcp_...`; it reaches the facade through the unchanged gate. Every token
+and registration error is RFC 6749 §5.2 JSON (RFC 7591 §3.2.2 for registration) with a fixed
+description per error word, so no request value is echoed back. Every refusal that changes state (a burned
+code, a revocation, a refused event row) is a returned value, not an exception, so it commits.
+
+**Refresh and reuse.** A grant is one `access_token` row. A refresh (`grant_type=refresh_token`)
+reads the presented refresh token's row `FOR UPDATE`, so two concurrent refreshes of one value
+serialize. A live refresh token passes, in order: its client equals the request's `client_id`
+(else `invalid_client`), the access token is not revoked, the grant has not reached
+`grant_expires_at`, the membership still holds, and the workspace is `active` (each else
+`invalid_grant`); then `resource` as above. Success writes a new access value and `expires_at`
+onto the same row (`rotate_access_token`), so the old value matches no row and answers
+`token_malformed`, marks the old refresh row rotated, and issues a new refresh token. Rotation is
+strict: a rotated refresh token presented within `refresh_grace_seconds` (default 10 s) of its
+rotation is `invalid_grant` and changes nothing, which absorbs a benign client retry; presented
+after that window it revokes the grant and writes `refresh_reuse_revoked`. Nothing is ever
+re-issued from the grace, so no refresh token is kept in the clear. The access value's
+`expires_at` is `min(now + access_token_minutes, grant_expires_at)`.
+
+**The six tables** (schema `control`, revision `0003_oauth`; secrets stored as SHA-256 only):
+
+| Table | Holds |
+| --- | --- |
+| `oauth_client` | One per registration: `client_id`, the sanitized `client_name`, `registered_from` (the request's client address), `created_at`. No secret column. |
+| `oauth_client_redirect_uri` | Each registered redirect URI, every one an allowlist member. Cascades with its client. |
+| `oauth_authorization` | One request from `/authorize` to redemption: the request nonce's hash, client, redirect URI, PKCE challenge, `state`, its 10-minute expiry, then the decision (account, workspace, `decided_at`), the code's hash, its 60-second expiry and use, and the `token_id` it issued. Cascades with its client. |
+| `oauth_grant` | Keyed by the access token's id: the client and `grant_expires_at`. Never deleted; `RESTRICT` to both the token and the client, so a wrong cleanup fails loudly instead of erasing a grant. |
+| `oauth_refresh_token` | Every refresh token a grant has held, by hash, with `rotated_at`. A live grant has exactly one unrotated row; rotated rows are kept, which is how reuse is detected. |
+| `oauth_event` | The content-free audit trail: `occurred_at`, `event` (`client_registered`, `authorization_granted`, `authorization_denied`, `code_redeemed`, `refresh_used`, `refresh_reuse_revoked`, `grant_revoked`), `outcome` (`succeeded`, `refused`), and the client, account, workspace and token ids where known. No foreign keys, so it outlives client cleanup. |
+
+The grant's id is the token's id (`token_id`): it is the id `rheo token list` prints, the id
+`rheo token revoke` takes and the `token_id` column of `rheo token events`. There is no separate
+grant id.
+
+**Clients: cleanup and the cap.** A client is **abandoned** when no `oauth_grant` row has ever
+existed for it, it is older than `abandoned_client_minutes`, and none of its authorization requests
+or codes is still live. Registration deletes abandoned clients first (never inside the hour the
+per-source count looks at), and authorization rows that ended more than a day ago and issued
+nothing; there is no background job. A client with any grant, live, expired or revoked, is never
+deleted. A **counted** client is one that is not abandoned and either has no grant yet or holds a
+live grant (not revoked, before `grant_expires_at`); a client whose grants are all dead is kept
+for the listing but not counted. Registration is refused `429 temporarily_unavailable` when the
+counted total is at `max_clients`, or when the request's source registered
+`registrations_per_source_per_hour` clients in the last hour; both refusals are recorded. Refresh
+and existing grants are never affected by the cap. The source is the ASGI client address, which
+behind a reverse proxy is the proxy's unless the server trusts its forwarded headers
+(`FORWARDED_ALLOW_IPS`), so behind a proxy the per-source limit acts as one global limit
+([deploy](../../deploy/README.md#mcp-connector-sign-in)).
+
+**Reading the trail.** `oauth_event` is read only through the operation `core.oauth_event.list`
+(class `read`, roles owner and operator; `limit` 1 to 500, default 50), newest first. It returns
+exactly the table's columns. An owner sees their workspace's rows; the operator also sees rows
+bound to no workspace (registrations and refusals before a workspace was chosen). The operator
+command is `rheo token events --workspace <id> [--limit N]`, one tab-separated line per event:
+time, event, outcome, account, workspace, client id, token id. `rheo token list [--workspace]
+[--account]` lists every token row with its issuing authority, and for a connector grant the
+client name and grant end; it never prints a value or hash. `rheo doctor` adds `oauth surface`
+and `connector grants` (counted clients against the cap, grants active, expired, revoked and
+ending within 7 days, and live grants with no live refresh row); the second is `FAIL` at the cap
+or when a live grant cannot refresh.
+
+**Access logs.** uvicorn logs every request line with its query string, and `/auth/oauth/authorize`
+carries the PKCE challenge and `state` there. `rheo_core.log_config.RedactQueryFilter`, attached
+to `uvicorn.access` after both listeners' configs are built, drops the query string from every
+access line. It also stops the pre-existing logging of GitHub's `GET /auth/callback?code=...`. A
+reverse proxy's own access log is outside the process and is the operator's to check.
 
 ## Sessions and cookies
 
@@ -296,7 +465,8 @@ The reverse proxy's rules are the same in both modes; only the host matching cha
 | --- | --- |
 | Any application host, `/auth/*` | `core` (identity endpoints) |
 | `api` surface | `core` (HTTP API, intake receiver); token auth |
-| `mcp` surface | `core` (MCP facade); token auth |
+| `mcp` surface | `core` (MCP facade); token auth. In subdomain mode the whole `mcp` host, which includes its OAuth metadata documents |
+| Path mode only: `/.well-known/oauth-protected-resource/mcp` (and `.../mcp/`) and `/.well-known/oauth-authorization-server/mcp` | `core` (the OAuth metadata documents, [connector sign-in](#connector-sign-in-oauth-for-mcp-clients)) |
 | Any application host, everything else | `web` |
 | apex, `docs`, `tuttle` | not this application |
 
@@ -306,10 +476,23 @@ mode, and the single host in path mode. Inside `web`, the module's route tree is
 
 The `mcp` surface is matched inside `core` as well as at the proxy. In path mode `core` serves
 MCP at the surface path (`/mcp` and `/mcp/`). In subdomain mode it serves MCP at `/` on the `mcp`
-host and nothing else there: the `mcp` host is not an application host, so `/auth/*`, the HTTP
-API and `/healthz` answer 404 on it, and no other host reaches MCP. The SDK's DNS-rebinding
+host, and when [connector sign-in](#connector-sign-in-oauth-for-mcp-clients) is configured, the
+two OAuth metadata documents at three `GET` paths: `/.well-known/oauth-protected-resource`, the
+same with a trailing `/`, and `/.well-known/oauth-authorization-server`. Nothing else is served
+there: the `mcp` host is not an application host, so `/auth/*`, the HTTP API and `/healthz`
+answer 404 on it, a metadata path answers `405` with `Allow: GET` to any other method and 404
+when the feature is unconfigured, and no other host reaches MCP. The SDK's DNS-rebinding
 protection admits only the surface's own `Host` values
 ([the MCP facade](runtime-and-mcp.md#the-mcp-facade)).
+
+**The path-mode limit.** In path mode `core` serves the documents at the path-inserted root paths
+`/.well-known/oauth-protected-resource/mcp` (and `.../mcp/`) and
+`/.well-known/oauth-authorization-server/mcp`, on any host, as it serves MCP itself; there is no
+fallback at the bare `/.well-known/oauth-authorization-server`. Under the proxy rules above those
+root paths would otherwise fall to `web`, so a real single-host front must route the two
+`/.well-known/.../mcp` paths to `core`. The repository ships no such front configuration (the
+flagship overlay is subdomain mode), and the tests prove path mode against the core ASGI
+application only.
 
 ### The reference deployment's hosts
 
@@ -319,10 +502,10 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 | --- | --- | --- |
 | apex `rheo.stream` | Project and marketing page | Not the application. Never receives the session cookie. |
 | `circuit.rheo.stream` | The application shell and the workspace switcher | `web` |
-| `auth.rheo.stream` | Login, the OAuth callback, the session grant | `core` |
+| `auth.rheo.stream` | Login, the OAuth callback, the session grant, and connector sign-in's `/auth/oauth/*` (register, authorize, consent, token) | `core` |
 | `leads.`, `current.`, `recall.`, `relationships.` | Module surfaces | `web` |
 | `api.rheo.stream` | HTTP API and intake | `core`, token auth |
-| `mcp.rheo.stream` | MCP facade | `core`, token auth |
+| `mcp.rheo.stream` | MCP facade, and connector sign-in's two OAuth metadata documents when it is configured | `core`, token auth; the metadata is public `GET` |
 | `docs.rheo.stream` | Documentation | Not the application. |
 | `tuttle.rheo.stream` | Reserved for the back-office integration surface | Not the application; nothing in release one. |
 | `app.rheo.stream` | Kept in reserve as a permanent redirect to the same path and query on `circuit.` | Reverse-proxy configuration in `deploy/compose.flagship.yaml`, not part of this specification's application routing. Not an application host (issue #174). |
