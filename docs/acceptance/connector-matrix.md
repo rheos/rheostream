@@ -494,21 +494,21 @@ and this mutation moves the end.
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/oauth/service.py b/packages/core/src/rheo_core/oauth/service.py
-index e09111f..2e7e275 100644
+index d9fd1e0..b6430dd 100644
 --- a/packages/core/src/rheo_core/oauth/service.py
 +++ b/packages/core/src/rheo_core/oauth/service.py
-@@ -746,7 +746,7 @@ def refresh(
+@@ -743,7 +743,7 @@ def refresh(
              grace = timedelta(seconds=surface.lifetimes.refresh_grace_seconds)
              if now - row.rotated_at < grace:
                  return _token_error(INVALID_GRANT)
--            ended = _revoke_if_live(conn, row.token_id)
+-            ended = _revoke_if_live(conn, row.token_id, now)
 +            ended = False
              token = get_access_token(conn, row.token_id)
              # grant_revoked only when this reuse ended a live grant, the rule the
              # code replay and ``revoke_handler`` follow.
 ```
 
-**Cost:** `pytest:tests/postgres/test_oauth_exchange.py::test_reuse_after_the_grace_revokes_the_grant` — first observed failure line: `E       AssertionError: assert None is not None`, the grant's access token still carrying a null `revoked_at` after the old refresh value was presented past the grace, 1 failed of 3
+**Cost:** `pytest:tests/postgres/test_oauth_exchange.py::test_reuse_after_the_grace_revokes_the_grant` — first observed failure line: `E       AssertionError: assert None is not None`, the grant's access token still carrying a null `revoked_at` after the old refresh value was presented past the grace, 1 failed of 3 (re-captured and re-run against `f67cee4`, where the revocation moved behind `revoke_access_token_if_live`)
 
 **Performed by:** mcpoauth-P14 (2026-10-02)
 
@@ -536,21 +536,21 @@ inside-the-grace refusal have their own demonstrators, and both stayed green.
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/oauth/service.py b/packages/core/src/rheo_core/oauth/service.py
-index e09111f..f080a98 100644
+index d9fd1e0..dd98ebc 100644
 --- a/packages/core/src/rheo_core/oauth/service.py
 +++ b/packages/core/src/rheo_core/oauth/service.py
-@@ -604,7 +604,7 @@ def _refuse_code_replay(
+@@ -601,7 +601,7 @@ def _refuse_code_replay(
  ) -> OAuthError:
      """A second redemption: revoke what the first issued, record the refusal and
      (when this ended the grant) ``grant_revoked``, all committed with the error."""
--    ended = row.token_id is not None and _revoke_if_live(conn, row.token_id)
+-    ended = row.token_id is not None and _revoke_if_live(conn, row.token_id, now)
 +    ended = False
      events = [(CODE_REDEEMED, REFUSED)]
      if ended:
          events.append((GRANT_REVOKED, SUCCEEDED))
 ```
 
-**Cost:** `pytest:tests/postgres/test_oauth_exchange.py::test_replay_revokes_what_the_first_redemption_issued` — first observed failure line: `E       AssertionError: assert None is not None`, the first redemption's access token left unrevoked by the replay, 1 failed of 22
+**Cost:** `pytest:tests/postgres/test_oauth_exchange.py::test_replay_revokes_what_the_first_redemption_issued` — first observed failure line: `E       AssertionError: assert None is not None`, the first redemption's access token left unrevoked by the replay, 1 failed of 22 (re-captured and re-run against `f67cee4`, where the revocation moved behind `revoke_access_token_if_live`)
 
 **Performed by:** mcpoauth-P14 (2026-10-02)
 
