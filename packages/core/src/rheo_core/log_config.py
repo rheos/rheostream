@@ -38,8 +38,12 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 __all__ = [
+    "ACCESS_LOGGER",
     "ALLOWED_EXTRA_FIELDS",
     "JsonLogFormatter",
+    "REDACTED_TARGET",
+    "RedactQueryFilter",
+    "attach_access_redaction",
     "configure_logging",
     "content_free_extra",
 ]
@@ -97,6 +101,71 @@ def configure_logging(level: int | str = logging.INFO) -> None:
     handler.setFormatter(JsonLogFormatter())
     root.addHandler(handler)
     setattr(root, _CONFIGURED, True)
+
+
+ACCESS_LOGGER: Final = "uvicorn.access"
+"""The logger uvicorn writes one line per request to."""
+
+REDACTED_TARGET: Final = "[redacted]"
+"""What an access record's request target becomes when its shape is not the one
+:class:`RedactQueryFilter` knows."""
+
+_ACCESS_FORMAT: Final = '%s - "%s %s HTTP/%s" %d'
+"""uvicorn's own access-log format string. Its args are ``(client_addr, method,
+path_with_query, http_version, status_code)``, and uvicorn's ``AccessFormatter``
+unpacks exactly those five, so a rewritten record keeps that shape."""
+
+_ACCESS_ARG_COUNT: Final = 5
+_TARGET_INDEX: Final = 2
+
+
+class RedactQueryFilter(logging.Filter):
+    """Strip the query string from every ``uvicorn.access`` request line (issue #287).
+
+    uvicorn logs ``path?query`` for every request, so ``GET
+    /auth/oauth/authorize?...code_challenge=...`` and GitHub's ``GET
+    /auth/callback?code=...`` would land in the access log. The query is dropped from
+    the third argument; the path stays (it carries no secret: the path is
+    percent-quoted by uvicorn, so a ``?`` inside it never reaches here unquoted).
+
+    **Fails closed.** A record whose args are not uvicorn's five-tuple with a string
+    target (a different uvicorn version, another caller on this logger, a
+    pre-formatted message) has its whole target replaced by :data:`REDACTED_TARGET`,
+    keeping uvicorn's format so its ``AccessFormatter`` still renders the line. The
+    record is never dropped: losing an access line would hide traffic, which is worse
+    than a line with less in it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if (
+            isinstance(args, tuple)
+            and len(args) == _ACCESS_ARG_COUNT
+            and isinstance(args[_TARGET_INDEX], str)
+        ):
+            target = args[_TARGET_INDEX]
+            if "?" in target:
+                record.args = (
+                    *args[:_TARGET_INDEX],
+                    target.split("?", 1)[0],
+                    *args[_TARGET_INDEX + 1 :],
+                )
+            return True
+        record.msg = _ACCESS_FORMAT
+        record.args = ("-", "-", REDACTED_TARGET, "-", 0)
+        return True
+
+
+def attach_access_redaction() -> None:
+    """Put one :class:`RedactQueryFilter` on the ``uvicorn.access`` logger.
+
+    Call it **after** every ``uvicorn.Config`` the process builds: each one runs
+    ``logging.config.dictConfig``, and the filter has to sit on the logger as it is
+    after the last of them. Idempotent, so a second call adds no second filter.
+    """
+    logger = logging.getLogger(ACCESS_LOGGER)
+    if not any(isinstance(f, RedactQueryFilter) for f in logger.filters):
+        logger.addFilter(RedactQueryFilter())
 
 
 ALLOWED_EXTRA_FIELDS: Final = frozenset(

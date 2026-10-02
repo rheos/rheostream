@@ -19,6 +19,7 @@ import asyncio
 from typing import Final
 
 import uvicorn
+from rheo_core.log_config import attach_access_redaction
 
 from rheo_app_core.internal_app import internal_app
 from rheo_app_core.main import public_app
@@ -32,24 +33,35 @@ lifespan's shutdown half from running at all. Ten seconds covers any ordinary
 request and is well inside a container runtime's default stop grace period."""
 
 
+def server_configs() -> tuple[uvicorn.Config, uvicorn.Config]:
+    """The public (8000) and internal (8100) ``uvicorn.Config``, with the access-log
+    query redaction attached.
+
+    Both write to the one ``uvicorn.access`` logger, and each ``uvicorn.Config``
+    runs ``dictConfig`` as it is built, so the filter goes on after both exist
+    (issue #287, FR 17). It covers the internal app too: nothing there needs a
+    query string in a log."""
+    public = uvicorn.Config(
+        public_app,
+        host="0.0.0.0",
+        port=8000,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
+    )
+    internal = uvicorn.Config(
+        internal_app,
+        host="0.0.0.0",
+        port=8100,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
+    )
+    attach_access_redaction()
+    return public, internal
+
+
 async def serve() -> None:
-    public = uvicorn.Server(
-        uvicorn.Config(
-            public_app,
-            host="0.0.0.0",
-            port=8000,
-            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
-        )
+    public, internal = server_configs()
+    await asyncio.gather(
+        uvicorn.Server(public).serve(), uvicorn.Server(internal).serve()
     )
-    internal = uvicorn.Server(
-        uvicorn.Config(
-            internal_app,
-            host="0.0.0.0",
-            port=8100,
-            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
-        )
-    )
-    await asyncio.gather(public.serve(), internal.serve())
 
 
 def main() -> None:
