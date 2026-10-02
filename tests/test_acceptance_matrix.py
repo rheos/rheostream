@@ -427,8 +427,22 @@ def _rows_of(path: Path) -> list[Row]:
     return next(rows for candidate, rows in parsed if candidate == path)
 
 
-def _deferred_numbers(rows: Sequence[Row]) -> frozenset[int]:
-    return frozenset(row.number for row in rows if row.state == "deferred")
+def deferred_allowance_errors(path: Path, rows: Sequence[Row]) -> list[str]:
+    """The file's ``deferred`` rows must be exactly its :data:`DEFERRED_CRITERIA`
+    entry (empty for a file with none). Errors name the file and the numbers."""
+    deferred = frozenset(row.number for row in rows if row.state == "deferred")
+    allowed = DEFERRED_CRITERIA.get(path, frozenset())
+    errors: list[str] = []
+    if deferred - allowed:
+        errors.append(
+            f"{path.name}: deferred rows not allowed: {sorted(deferred - allowed)}"
+        )
+    if allowed - deferred:
+        errors.append(
+            f"{path.name}: allowed deferred rows are not deferred: "
+            f"{sorted(allowed - deferred)}"
+        )
+    return errors
 
 
 @pytest.mark.parametrize(("path", "expected"), MATRICES, ids=_MATRIX_IDS)
@@ -440,7 +454,7 @@ def test_each_live_matrix_is_clean(path: Path, expected: frozenset[int]) -> None
         demo.startswith("vitest:") for row in rows for demo in row.demonstrators
     )
     deferred = {row.number: row for row in rows if row.state == "deferred"}
-    assert _deferred_numbers(rows) == DEFERRED_CRITERIA.get(path, frozenset())
+    assert deferred_allowance_errors(path, rows) == []
     assert all(
         row.demonstrators == () and row.mutation == "none" for row in deferred.values()
     )
@@ -466,9 +480,10 @@ def test_a_deferred_row_outside_the_allowance_is_rejected(
     """The allowance is one criterion in one file, not a loophole.
 
     ``validate`` routes a ``deferred`` row past its demonstrator, mutation and
-    performer checks, so a row quietly switched to ``deferred`` would pass it. The
-    clean-matrix test's comparison against :data:`DEFERRED_CRITERIA` is what stops
-    that, in a matrix with no allowance and in the one with an allowance for 91.
+    performer checks, so a row quietly switched to ``deferred`` would pass it.
+    :func:`deferred_allowance_errors`, the check the clean-matrix test runs, is
+    what stops that, in a matrix with no allowance and in the one with an
+    allowance for 91.
     """
     _, known_pytest_ids, known_ci_steps = _known()
     rows = _rows_of(path)
@@ -488,8 +503,8 @@ def test_a_deferred_row_outside_the_allowance_is_rejected(
         )
         == []
     )
-    assert number in _deferred_numbers(copied)
-    assert _deferred_numbers(copied) != DEFERRED_CRITERIA.get(path, frozenset())
+    errors = deferred_allowance_errors(path, copied)
+    assert errors == [f"{path.name}: deferred rows not allowed: [{number}]"], errors
 
 
 @pytest.mark.parametrize("path", [path for path, _ in MATRICES], ids=_MATRIX_IDS)

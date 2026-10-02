@@ -19,8 +19,8 @@ deliberate exception: a manual row, `deferred`, which the guard in
 `tests/test_acceptance_matrix.py` allows by number and for no other criterion. AC-16 asks
 that the existing `mcp` transport and token tests pass without edits. That was met with one
 sanctioned additive line: `tests/postgres/test_tokens.py`'s `READ_ONLY_OPERATIONS` set gains
-`core.oauth_event.list`, the read operation this change registers. Nothing in either file
-was edited or removed.
+`core.oauth_event.list`, the read operation this change registers. In either file, no
+existing case was edited or removed.
 
 This file is registered in `tests/test_acceptance_matrix.py` with its expected set
 `{70..93}`, so a missing, extra or duplicated row, a demonstrator that no longer resolves and
@@ -45,6 +45,7 @@ allows that, and the row's `Note:` says why it matters when it does.
 
 **Demonstrator:**
 - `pytest:tests/postgres/test_oauth_mount.py::test_unauthenticated_post_carries_the_resource_metadata_pointer`
+- `pytest:tests/postgres/test_oauth_boundary.py::test_every_advertised_url_answers_and_follows_url_for`
 
 **Mutation:**
 ```diff
@@ -65,13 +66,16 @@ index 94489b1..eb4c547 100644
          if isinstance(resolved, Refusal):
 ```
 
-**Cost:** `pytest:tests/postgres/test_oauth_mount.py::test_unauthenticated_post_carries_the_resource_metadata_pointer[subdomain]` — first observed failure line: `E       assert 'Bearer' == 'Bearer resou...ted-resource"'`; the `[path]` case failed the same way against its own pointer, 2 failed
+**Cost:** `pytest:tests/postgres/test_oauth_mount.py::test_unauthenticated_post_carries_the_resource_metadata_pointer[subdomain]` — first observed failure line: `E       assert 'Bearer' == 'Bearer resou...ted-resource"'`; the `[path]` case failed the same way against its own pointer, 2 failed. Re-run under the same mutation on adding the second demonstrator: `pytest:tests/postgres/test_oauth_boundary.py::test_every_advertised_url_answers_and_follows_url_for[subdomain]` — first observed failure line: `    | AssertionError: Headers({'content-type': 'application/json', 'content-length': '71', 'www-authenticate': 'Bearer'})` (the async exception group's `|` gutter), the pointer missing from the 401; the `[path]` case failed the same way, 2 failed
 
-**Performed by:** mcpoauth-P13 (2026-10-02)
+**Performed by:** mcpoauth-P13 (2026-10-02), mcpoauth-P14 (2026-10-02)
 
 **Note:** the mutation drops the pointer from the no-bearer refusal only. The refusal for a
 presented-but-bad bearer keeps it, so this row and criterion 72's are reddened by different
-lines of the same gate.
+lines of the same gate. The first demonstrator compares the header with the surface's own
+computed URL; the second derives the expected pointer from `url_for` itself (RFC 8414
+insertion) and walks discovery from it, so the `url_for` clause does not rest on the
+surface agreeing with itself.
 
 ### Criterion 71
 
@@ -674,7 +678,7 @@ index 07cd0ff..d6058b8 100644
                      target.split("?", 1)[0],
 ```
 
-**Cost:** `pytest:tests/postgres/test_oauth_boundary.py::test_a_full_flow_leaves_no_secret_in_logs_rows_or_error_bodies[subdomain]` — first observed failure line: `E           AssertionError: /auth/oauth/authorize`, the message of `assert lines, path`: no access line for the authorize request was left without its query; the `[path]` case failed the same way, and `test_the_query_is_stripped_and_the_path_kept`, `test_serve_configs_leave_the_filter_on_the_access_logger` and `test_a_real_server_logs_the_request_without_its_query` failed in every case, 9 failed of 18
+**Cost:** `pytest:tests/postgres/test_oauth_boundary.py::test_a_full_flow_leaves_no_secret_in_logs_rows_or_error_bodies[subdomain]` — first observed failure line: `E           AssertionError: /auth/oauth/authorize`, the message of `assert lines, path`: no access line for the authorize request was left without its query; the `[path]` case failed the same way, and `test_the_query_is_stripped_and_the_path_kept`, `test_serve_configs_leave_the_filter_on_the_access_logger` and `test_a_real_server_logs_the_request_without_its_query` failed in every case, 9 failed of 18. That mutation first trips the full-flow test's structural check on the access lines, not its secret scan, so a second mutation was performed and reverted that leaks the authorization code into an application log line during redemption (the hunk is in the Note): `pytest:tests/postgres/test_oauth_boundary.py::test_a_full_flow_leaves_no_secret_in_logs_rows_or_error_bodies[subdomain]` — first observed failure line: `E               AssertionError: a secret appears in a log line: {"timestamp": "2026-10-02 03:58:12,953", "level": "WARNING", "logger": "rheo_core.oauth.service", "message": "redeeming code UueaLbDQ-Z0uILKoBdQljZQpJpqOtr7uZgjAeM6S40M"}`, raised by the scan at `tests/postgres/test_oauth_boundary.py:532`; the `[path]` case failed the same way, 2 failed
 
 **Performed by:** mcpoauth-P14 (2026-10-02)
 
@@ -682,7 +686,24 @@ index 07cd0ff..d6058b8 100644
 token sent as `access_token` or `token` in the query, on the `mcp` and on the `api` surface,
 answers `401` with `token_malformed`, while the same value in the header is served. The
 mutation leaves that path alone; it removes the access-log redaction, which is the place a
-code, challenge or GitHub code would otherwise reach a log line.
+code, challenge or GitHub code would otherwise reach a log line. The second mutation,
+captured the same way and checked with `git apply --check`, shows the secret scan itself
+bites on a captured log line:
+
+```diff
+diff --git a/packages/core/src/rheo_core/oauth/service.py b/packages/core/src/rheo_core/oauth/service.py
+index e09111f..4ad3926 100644
+--- a/packages/core/src/rheo_core/oauth/service.py
++++ b/packages/core/src/rheo_core/oauth/service.py
+@@ -643,6 +643,7 @@ def exchange_code(
+     ``token_id`` and ``code_redeemed``. The access value expires at ``min(now +
+     access_token_minutes, grant_expires_at)``."""
+     code = form.get("code")
++    __import__("logging").getLogger(__name__).warning("redeeming code %s", code)
+     with get_backend().control_engine.begin() as conn:
+         row = (
+             oauth_store.get_authorization_by_code_hash(
+```
 
 ### Criterion 87
 
@@ -923,6 +944,7 @@ criterion.
 - `pytest:tests/postgres/test_oauth_service.py::test_denied_request_cannot_be_replayed`
 - `pytest:tests/postgres/test_oauth_service.py::test_approved_request_cannot_be_replayed`
 - `pytest:tests/postgres/test_oauth_migration.py::test_the_oauth_request_cookie_lives_ten_minutes`
+- `pytest:tests/postgres/test_oauth_http.py::test_no_session_goes_through_login_and_lands_on_consent`
 
 **Mutation:**
 ```diff
@@ -941,7 +963,7 @@ index e09111f..7cce1f1 100644
  
 ```
 
-**Cost:** `pytest:tests/postgres/test_oauth_http.py::test_at_expires_at_the_consent_is_authorization_expired[subdomain-GET]` — first observed failure line: `E       AssertionError: <!doctype html>`, the message of `assert 200 == 400`: the consent page was served at `expires_at` exactly; the other three cases of that test, `test_pending_boundaries` and `test_expired_request_is_refused_at_expiry_and_live_one_second_before` also failed, 6 failed of 23. Additional mutation, performed and reverted: dropping the `request_id` == cookie-row-id check in the Allow and Deny `POST` (the hunk is in the Note) reddened `pytest:tests/postgres/test_oauth_http.py::test_a_session_holding_its_own_row_cannot_approve_another_rows_id[subdomain]` — first observed failure line: `E       assert 302 == 400`, the other row's id approved with a code; the `[path]` case failed the same way, 2 failed of 23
+**Cost:** `pytest:tests/postgres/test_oauth_http.py::test_at_expires_at_the_consent_is_authorization_expired[subdomain-GET]` — first observed failure line: `E       AssertionError: <!doctype html>`, the message of `assert 200 == 400`: the consent page was served at `expires_at` exactly; the other three cases of that test, `test_pending_boundaries` and `test_expired_request_is_refused_at_expiry_and_live_one_second_before` also failed, 6 failed of 23. Additional mutation, performed and reverted: dropping the `request_id` == cookie-row-id check in the Allow and Deny `POST` (the hunk is in the Note) reddened `pytest:tests/postgres/test_oauth_http.py::test_a_session_holding_its_own_row_cannot_approve_another_rows_id[subdomain]` — first observed failure line: `E       assert 302 == 400`: a `POST` naming the first row's id approved the cookie's own row, because the mutated `_decide` passes `row.id` to `approve`; the `[path]` case failed the same way, 2 failed of 23
 
 **Performed by:** mcpoauth-P14 (2026-10-02)
 
@@ -969,3 +991,6 @@ index 2740b80..7f9f978 100644
 The service-level `test_another_rows_id_is_refused` stayed green under it, because
 `approve` keeps its own `row.id != row_id` check; the route's check is what stops a browser
 holding its own pending row from posting another row's id.
+`test_no_session_goes_through_login_and_lands_on_consent` is listed for the `Max-Age=600`
+clause: it asserts the real `Set-Cookie` the authorize route sends, where the migration test
+reads the constant. It was run under both mutations and stayed green, as it should.
