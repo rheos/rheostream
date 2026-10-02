@@ -30,12 +30,14 @@ or enabled but incomplete, in both routing modes.
   and is untouched by a refused presentation, through the same unchanged
   ``resolve_token``.
 
-Log capture runs at INFO, the level ``configure_logging`` gives production. The test
-client's own library loggers (``httpx2``, ``httpcore``) are not the server's and are
-left out of the scan: they log the URLs the client requested, which is the client's
-business. ``oauth_authorization`` is not scanned: it holds the PKCE challenge by
-design (the server must compare against it), and FR 17 names audit, operation and
-runtime records, not that table.
+Log capture runs at INFO, the level ``configure_logging`` gives production, on the
+root logger and on ``uvicorn.access`` and ``uvicorn.error`` (neither propagates).
+Only the test double's own client library is left out of the scan: ``httpx2`` and
+its transport ``httpcore2``, which log the URLs the test client requested. Plain
+``httpx``/``httpcore`` records are the server's (its GitHub provider uses that
+library) and are scanned. ``oauth_authorization`` rows are scanned for every secret
+except the S256 challenge, which that table holds by design (the server compares the
+verifier against it); the browser's ``rheo_oauth_request`` nonce is scanned too.
 """
 
 import hashlib
@@ -85,6 +87,7 @@ from rheo_core.operations.core_ops import TOKEN_ISSUE, TOOL_CALL, WORKSPACE_STAT
 from rheo_core.operations.tool_facade import TOOL_NOT_FOUND
 from rheo_core.refs import uuid7
 from rheo_core.routing import API, IDENTITY, MCP, RoutingConfig, url_for
+from rheo_core.sessions.cookies import OAUTH_REQUEST_COOKIE
 from rheo_core.settings import resolve
 from rheo_core.storage import control_tables, work_tables
 from rheo_core.storage import oauth_tables as o
@@ -105,7 +108,8 @@ pytestmark = pytest.mark.postgres
 
 BASE_HOST: Final = "example.test"
 MODES: Final = ("subdomain", "path")
-CLIENT_LIBRARY_LOGGERS: Final = frozenset({"httpx2", "httpx", "httpcore"})
+CLIENT_LIBRARY_LOGGERS: Final = frozenset({"httpx2", "httpcore2"})
+"""The test double's HTTP client and its transport, nothing the server uses."""
 UVICORN_ACCESS_FORMAT: Final = '%s - "%s %s HTTP/%s" %d'
 """The format string uvicorn's HTTP protocols pass to ``access_logger.info``."""
 _UVICORN_LOGGERS: Final = ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.asgi")
@@ -477,18 +481,24 @@ def uvicorn_loggers() -> Iterator[None]:
 @pytest.fixture
 def server_log(uvicorn_loggers: None) -> Iterator[_Capture]:
     """A capturing handler on the root logger at production's INFO, and on
-    ``uvicorn.access`` as ``serve.server_configs`` leaves it."""
+    ``uvicorn.access`` and ``uvicorn.error`` as ``serve.server_configs`` leaves them
+    (both ``propagate=False``, so the root handler never sees them)."""
     serve.server_configs()
     capture = _Capture()
     root = logging.getLogger()
-    access = logging.getLogger(ACCESS_LOGGER)
+    uvicorn_side = [
+        logging.getLogger(ACCESS_LOGGER),
+        logging.getLogger("uvicorn.error"),
+    ]
     level = root.level
     root.setLevel(logging.INFO)
     root.addHandler(capture)
-    access.addHandler(capture)
+    for logger in uvicorn_side:
+        logger.addHandler(capture)
     yield capture
     root.removeHandler(capture)
-    access.removeHandler(capture)
+    for logger in uvicorn_side:
+        logger.removeHandler(capture)
     root.setLevel(level)
 
 
@@ -583,7 +593,15 @@ async def test_a_full_flow_leaves_no_secret_in_logs_rows_or_error_bodies(
         assert response.json()["state"] == TOKEN_MALFORMED
     assert still_valid.status_code == 200, still_valid.text
 
-    secrets = client.issued.all()
+    nonces = [
+        cookie.split(";", 1)[0].partition("=")[2]
+        for response in responses
+        for cookie in response.headers.get_list("set-cookie")
+        if cookie.startswith(f"{OAUTH_REQUEST_COOKIE}=")
+    ]
+    nonces = [nonce for nonce in nonces if nonce]
+    assert nonces, "the authorize redirect set the request cookie"
+    secrets = client.issued.all() + nonces
     assert len(client.issued.access) == 2 and len(client.issued.refresh) == 2
     assert client.issued.code and client.issued.verifier and client.issued.challenge
 
@@ -603,7 +621,8 @@ async def test_a_full_flow_leaves_no_secret_in_logs_rows_or_error_bodies(
             assert f"{path}?" not in line
     _assert_none_in(server_log.lines, secrets, "a log line")
 
-    # Error bodies (and their headers).
+    # Error bodies (and their headers). The request cookie's nonce is in the
+    # authorize redirect's Set-Cookie by design, never in an error response.
     errors = [response for response in responses if response.status_code >= 400]
     assert len(errors) >= 7
     _assert_none_in(
@@ -635,7 +654,19 @@ async def test_a_full_flow_leaves_no_secret_in_logs_rows_or_error_bodies(
                 control_tables.access_token.c.id == grant["token_id"],
             )
         )
+        authorizations = _rows(
+            connection,
+            o.oauth_authorization,
+            o.oauth_authorization.c.client_id == client_id,
+        )
     assert any("code_redeemed" in row for row in rows)
+    assert authorizations
+    challenges = set(client.issued.challenge)
+    _assert_none_in(
+        authorizations,
+        [secret for secret in secrets if secret not in challenges],
+        "an oauth_authorization row",
+    )
     database = cluster.registry_row(member.workspace_id).database_name
     engine = cluster.backend.pools.engine_for(database)
     with UnitOfWork(engine, database) as uow:

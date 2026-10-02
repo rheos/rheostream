@@ -13,9 +13,11 @@ after both Configs exist; the production-path test builds them through
 the assertion is on the bytes the production handler and formatter emit.
 """
 
+import asyncio
 import logging
 from collections.abc import Iterator
 
+import httpx2
 import pytest
 import uvicorn
 from rheo_app_core import serve
@@ -185,3 +187,34 @@ def test_serve_configs_leave_the_filter_on_the_access_logger(
     assert f'"GET {path} HTTP/1.1" 200' in written, written
     for secret in (CHALLENGE, GITHUB_CODE):
         assert secret not in written
+
+
+async def test_a_real_server_logs_the_request_without_its_query(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The installed uvicorn, end to end: serve's public Config, rebound to an
+    ephemeral loopback port with the lifespan off (only the access line matters,
+    not what the app answers), serves one real TCP request carrying a query; the
+    line the ``access`` handler ``dictConfig`` installed writes has the path and no
+    query. This ties the filter's five-tuple shape to the uvicorn actually
+    installed, not to a record built by hand."""
+    public, _ = serve.server_configs()
+    public.host, public.port, public.lifespan = "127.0.0.1", 0, "off"
+    server = uvicorn.Server(public)
+    running = asyncio.create_task(server.serve())
+    try:
+        async with asyncio.timeout(10):
+            while not server.started:
+                await asyncio.sleep(0.01)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        capsys.readouterr()
+        async with httpx2.AsyncClient() as client:
+            response = await client.get(f"http://127.0.0.1:{port}{AUTHORIZE}")
+        await asyncio.sleep(0.05)
+        written = capsys.readouterr().out
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(running, timeout=10)
+    path = AUTHORIZE.split("?", 1)[0]
+    assert f'"GET {path} HTTP/1.1" {response.status_code}' in written, written
+    assert CHALLENGE not in written and "?" not in written, written
