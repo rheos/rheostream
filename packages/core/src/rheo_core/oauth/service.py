@@ -140,13 +140,28 @@ def _sha256(value: str) -> bytes:
 # --- registration (RFC 7591) ---------------------------------------------------------
 
 
-def _sanitize_client_name(value: object) -> str:
-    """Control and other non-printing characters stripped, cut to 100, a default when
-    nothing is left. Applied here because the table has no length CHECK."""
+def _kept(ch: str) -> bool:
+    category = unicodedata.category(ch)
+    if category.startswith("C"):
+        return False
+    return ch == " " or not category.startswith("Z")
+
+
+def sanitize_client_name(
+    value: object, *, max_length: int = CLIENT_NAME_MAX_LENGTH
+) -> str:
+    """A client-supplied name made safe to store and to print on one line.
+
+    Drops every Unicode ``C*`` character (control, format, private use, unassigned)
+    and every ``Z*`` separator except a plain space (so U+2028/U+2029 and no-break
+    spaces go), trims, cuts to ``max_length``, and falls back to
+    :data:`DEFAULT_CLIENT_NAME` when nothing is left. Registration applies it at 100
+    (the table has no length CHECK); ``rheo token list`` applies it again at 60 to
+    the stored name, so a row written before a tightening still prints safely."""
     if not isinstance(value, str):
         return DEFAULT_CLIENT_NAME
-    kept = "".join(ch for ch in value if not unicodedata.category(ch).startswith("C"))
-    kept = kept.strip()[:CLIENT_NAME_MAX_LENGTH].strip()
+    kept = "".join(ch for ch in value if _kept(ch))
+    kept = kept.strip()[:max_length].strip()
     return kept or DEFAULT_CLIENT_NAME
 
 
@@ -208,7 +223,7 @@ def register_client(
         client = oauth_store.insert_client(
             conn,
             client_id=secrets.token_urlsafe(16),
-            client_name=_sanitize_client_name(metadata.get("client_name")),
+            client_name=sanitize_client_name(metadata.get("client_name")),
             registered_from=source,
             created_at=now,
             redirect_uris=requested,

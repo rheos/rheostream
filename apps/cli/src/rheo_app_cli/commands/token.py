@@ -37,7 +37,6 @@ stays silent on stdout.
 
 import argparse
 import sys
-import unicodedata
 from datetime import datetime
 from typing import Final
 from uuid import UUID
@@ -45,6 +44,7 @@ from uuid import UUID
 from rheo_core.boundary import Refusal, context_for_operator
 from rheo_core.modules import ManifestInvalid, load_modules
 from rheo_core.oauth.operations import OAUTH_EVENT_LIST, OAuthEventList
+from rheo_core.oauth.service import sanitize_client_name
 from rheo_core.operations import dispatch
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
 from rheo_core.operations.refusals import RegistrationRefused
@@ -191,13 +191,6 @@ def _field(value: object) -> str:
     return str(value)
 
 
-def _listed_client_name(name: str) -> str:
-    """Registration already sanitized it; strip again (control and format
-    characters, so a name can never break a line or a column) and cut to 60."""
-    kept = "".join(ch for ch in name if not unicodedata.category(ch).startswith("C"))
-    return kept.strip()[:LISTED_CLIENT_NAME_LENGTH].strip() or NULL_FIELD
-
-
 def list_tokens(args: argparse.Namespace) -> int:
     """One tab-separated line per ``access_token`` row, oldest first: id, kind,
     issued_from, set, account, workspace, created, expires, last used, revoked,
@@ -211,7 +204,9 @@ def list_tokens(args: argparse.Namespace) -> int:
         rows = list_access_tokens(
             connection, workspace_id=args.workspace, account_id=args.account
         )
-        grants = list_connector_grants(connection)
+        grants = list_connector_grants(
+            connection, workspace_id=args.workspace, account_id=args.account
+        )
     for row in rows:
         grant = grants.get(row.id)
         columns = (
@@ -225,7 +220,11 @@ def list_tokens(args: argparse.Namespace) -> int:
             row.expires_at,
             row.last_used_at,
             row.revoked_at,
-            None if grant is None else _listed_client_name(grant.client_name),
+            None
+            if grant is None
+            else sanitize_client_name(
+                grant.client_name, max_length=LISTED_CLIENT_NAME_LENGTH
+            ),
             None if grant is None else grant.grant_expires_at,
         )
         print("\t".join(_field(column) for column in columns))

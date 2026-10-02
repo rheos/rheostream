@@ -260,7 +260,21 @@ def test_unsupported_metadata_is_overridden_not_refused(
     assert all(ch.isprintable() for ch in name)
 
 
-@pytest.mark.parametrize("name", [None, "", "  ", "\x00\x01", 42])
+def test_a_client_name_loses_line_and_paragraph_separators_but_keeps_spaces(
+    source: str,
+) -> None:
+    body = _register(
+        source,
+        {
+            "redirect_uris": [CALLBACK],
+            "client_name": "Example phone  connector two　x",
+        },
+    )
+    assert isinstance(body, dict), body
+    assert body["client_name"] == "Examplephone connectortwox"
+
+
+@pytest.mark.parametrize("name", [None, "", "  ", "\x00\x01", "  ", 42])
 def test_absent_or_empty_client_name_defaults(source: str, name: object) -> None:
     metadata: dict[str, object] = {"redirect_uris": [CALLBACK]}
     if name is not None:

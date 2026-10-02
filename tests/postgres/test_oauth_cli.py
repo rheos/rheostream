@@ -28,7 +28,13 @@ from uuid import UUID
 import pytest
 from conftest import ClusterSession, MakeWorkspace
 from harness.identity import FIXED_PROVIDER_ID, FixedIdentityProvider
-from harness.oauth_client import CLAUDE_CALLBACK, OAuthTestClient, oauth_client
+from harness.oauth_client import (
+    CLAUDE_CALLBACK,
+    OAuthTestClient,
+    consent_fields,
+    oauth_client,
+    redirect_query,
+)
 from harness.registry import register_harness
 from rheo_app_cli.commands.doctor import (
     _check_connector_grants,
@@ -54,6 +60,7 @@ from rheo_core.storage.oauth_store import (
     insert_client,
     insert_grant,
     insert_refresh_token,
+    list_connector_grants,
 )
 from rheo_core.tokens.issue import issue_connector_token
 from rheo_core.tokens.sets import register_core_tools
@@ -228,14 +235,37 @@ async def test_list_shows_each_connector_grant_with_its_fields_and_no_secret(
         phone = await _connect(client, cluster, noisy_name)
         desktop = await _connect(client, cluster, "Example desktop connector")
         secrets_seen = client.issued.all()
+    # A stored name registration never wrote (a row from before a tightening): the
+    # listing sanitizes it again, so U+2028/U+2029 cannot split its line.
+    stored = _grant_row(
+        cluster,
+        member,
+        grant_expires_at=datetime.now(UTC) + timedelta(days=20),
+        revoked=False,
+        client_name="Example\u2028stored\u2029 connector",
+    )
 
     code, out, err = _run(capsys, "token", "list", "--account", str(member.account_id))
     assert code == 0, err
     listed = _listed(out)
-    assert set(listed) == {str(phone.token_id), str(desktop.token_id)}
+    assert set(listed) == {str(phone.token_id), str(desktop.token_id), str(stored)}
+    assert listed[str(stored)][10] == "Examplestored connector"
+    assert "\u2028" not in out and "\u2029" not in out
 
-    for grant in (phone, desktop):
-        row = listed[str(grant.token_id)]
+    # The grant lookup narrows by the listing's own filters.
+    with cluster.backend.control_engine.connect() as connection:
+        assert set(list_connector_grants(connection, account_id=member.account_id)) == {
+            phone.token_id,
+            desktop.token_id,
+            stored,
+        }
+        assert set(
+            list_connector_grants(connection, workspace_id=member.workspace_id)
+        ) == {phone.token_id, desktop.token_id, stored}
+        assert not list_connector_grants(connection, account_id=uuid7())
+
+    for grant_id in (phone.token_id, desktop.token_id, stored):
+        row = listed[str(grant_id)]
         (
             _id,
             kind,
@@ -389,14 +419,30 @@ async def test_events_prints_seven_columns_newest_first_and_no_secret(
     member: Member,
     cluster: ClusterSession,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The scripted flow: connect, call, a denied second authorization, a refresh,
+    then a reuse of the rotated refresh token past the grace (grace 0 here), which
+    revokes the grant. The routes resolve settings per request."""
+    monkeypatch.setenv("RHEO__identity__oauth__refresh_grace_seconds", "0")
     _sign_in_as(member)
     client_name = f"Example events connector {uuid7().hex[:8]}"
     async with oauth_client(surface, client_address=address) as client:
         grant = await _connect(client, cluster, client_name)
         assert (await client.mcp_call(grant.access)).status_code == 200
+        page = await client.to_consent(client.authorize_params(grant.client_id))
+        assert page.status_code == 200, page.text
+        fields = consent_fields(page.text)
+        denied = await client.decide(
+            "deny", request_id=fields["request_id"], account_id=fields["account_id"]
+        )
+        assert denied.status_code == 302, denied.text
+        assert redirect_query(denied)["error"] == "access_denied"
         refreshed = await client.refresh(grant.refresh, grant.client_id)
         assert refreshed.status_code == 200, refreshed.text
+        replayed = await client.refresh(grant.refresh, grant.client_id)
+        assert replayed.status_code == 400, replayed.text
+        assert replayed.json()["error"] == "invalid_grant"
         secrets_seen = client.issued.all()
 
     code, out, err = _run(
@@ -414,21 +460,35 @@ async def test_events_prints_seven_columns_newest_first_and_no_secret(
     stamps = [datetime.fromisoformat(row[0]) for row in rows]
     assert stamps == sorted(stamps, reverse=True)
 
-    ours = [row for row in rows if row[5] == grant.client_id]
-    assert [row[1] for row in ours] == [
-        "refresh_used",
-        "code_redeemed",
-        "authorization_granted",
-        "client_registered",
+    account, workspace, token = (
+        str(member.account_id),
+        str(member.workspace_id),
+        str(grant.token_id),
+    )
+    ours = [row[1:] for row in rows if row[5] == grant.client_id]
+    assert ours == [
+        ["grant_revoked", "succeeded", account, workspace, grant.client_id, token],
+        [
+            "refresh_reuse_revoked",
+            "refused",
+            account,
+            workspace,
+            grant.client_id,
+            token,
+        ],
+        ["refresh_used", "succeeded", account, workspace, grant.client_id, token],
+        ["authorization_denied", "refused", account, "-", grant.client_id, "-"],
+        ["code_redeemed", "succeeded", account, workspace, grant.client_id, token],
+        [
+            "authorization_granted",
+            "succeeded",
+            account,
+            workspace,
+            grant.client_id,
+            "-",
+        ],
+        ["client_registered", "succeeded", "-", "-", grant.client_id, "-"],
     ]
-    for row in ours:
-        assert row[2] == "succeeded"
-    for row in ours[:3]:
-        assert row[3:5] == [str(member.account_id), str(member.workspace_id)]
-    for row in ours[:2]:
-        assert row[6] == str(grant.token_id)
-    registered = ours[3]
-    assert registered[3] == registered[4] == registered[6] == "-"
 
     # The listing's rows are the operation's, in its order.
     ctx = context_for_operator(member.workspace_id)
@@ -517,6 +577,7 @@ def _grant_row(
     grant_expires_at: datetime,
     revoked: bool,
     refresh: bool = True,
+    client_name: str = "Example direct connector",
 ) -> UUID:
     """A client and a grant written straight into the control plane."""
     now = datetime.now(UTC)
@@ -525,7 +586,7 @@ def _grant_row(
         insert_client(
             connection,
             client_id=client_id,
-            client_name="Example direct connector",
+            client_name=client_name,
             registered_from="192.0.2.9",
             created_at=now - timedelta(days=2),
             redirect_uris=[CLAUDE_CALLBACK],

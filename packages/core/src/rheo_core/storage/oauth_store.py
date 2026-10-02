@@ -145,12 +145,21 @@ def _abandoned(*, now: datetime, abandoned_before: datetime) -> ColumnElement[bo
     )
 
 
+def _live_grant(*, now: datetime) -> ColumnElement[bool]:
+    """The one *live grant* condition (module docstring) over a row that joins
+    ``oauth_grant`` to its ``access_token``: not revoked and before the grant's
+    absolute end. The access token's own ``expires_at`` never enters it."""
+    return and_(
+        t.access_token.c.revoked_at.is_(None),
+        o.oauth_grant.c.grant_expires_at > now,
+    )
+
+
 def _holds_live_grant(*, now: datetime) -> ColumnElement[bool]:
     return exists().where(
         o.oauth_grant.c.client_id == o.oauth_client.c.client_id,
         t.access_token.c.id == o.oauth_grant.c.token_id,
-        t.access_token.c.revoked_at.is_(None),
-        o.oauth_grant.c.grant_expires_at > now,
+        _live_grant(now=now),
     )
 
 
@@ -595,14 +604,28 @@ class ConnectorGrantListing:
     grant_expires_at: datetime
 
 
-def list_connector_grants(conn: Connection) -> dict[UUID, ConnectorGrantListing]:
+def list_connector_grants(
+    conn: Connection,
+    *,
+    workspace_id: UUID | None = None,
+    account_id: UUID | None = None,
+) -> dict[UUID, ConnectorGrantListing]:
     """Every grant's client name and absolute end, by token id, in one read (the
-    listing joins it onto ``list_access_tokens`` rather than reading per row)."""
-    statement = select(
-        o.oauth_grant.c.token_id,
-        o.oauth_grant.c.grant_expires_at,
-        o.oauth_client.c.client_name,
-    ).join(o.oauth_client, o.oauth_client.c.client_id == o.oauth_grant.c.client_id)
+    listing joins it onto ``list_access_tokens`` rather than reading per row),
+    narrowed by the same workspace/account filters that listing takes."""
+    statement = (
+        select(
+            o.oauth_grant.c.token_id,
+            o.oauth_grant.c.grant_expires_at,
+            o.oauth_client.c.client_name,
+        )
+        .join(o.oauth_client, o.oauth_client.c.client_id == o.oauth_grant.c.client_id)
+        .join(t.access_token, t.access_token.c.id == o.oauth_grant.c.token_id)
+    )
+    if workspace_id is not None:
+        statement = statement.where(t.access_token.c.workspace_id == workspace_id)
+    if account_id is not None:
+        statement = statement.where(t.access_token.c.account_id == account_id)
     return {
         row["token_id"]: ConnectorGrantListing(
             token_id=row["token_id"],
@@ -642,7 +665,7 @@ def connector_grant_counts(
     invariant and is ``missing_refresh``."""
     grant, token = o.oauth_grant, t.access_token
     revoked = token.c.revoked_at.is_not(None)
-    live = and_(token.c.revoked_at.is_(None), grant.c.grant_expires_at > now)
+    live = _live_grant(now=now)
     has_live_refresh = exists().where(
         o.oauth_refresh_token.c.token_id == grant.c.token_id,
         o.oauth_refresh_token.c.rotated_at.is_(None),
