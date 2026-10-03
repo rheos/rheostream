@@ -391,11 +391,12 @@ total, bounds, `has_more` flag or partial item.
 > own allowance (#182, #112), but its candidate scan (`evaluate_all`) still shares the request's
 > reference budget with the target. A caller who can already see the entity, and holds one
 > readable member as the target, can pick a target whose link graph spends that budget to the
-> edge. Any other current mention that survives the row-local prefilter then charges the budget,
-> including one the caller cannot read, and if its walk overflows the read answers
-> `reference_scan_limit` instead of the window. What leaks is only that at least one more
-> mention with a costly walk exists, about an entity the caller already sees. The refusal keeps
-> the same fixed, content-free shape as bits 1 and 2.
+> edge. Any other mention that survives the row-local prefilter is then evaluated against that
+> shared budget, including retained mentions when the read asks for history and mentions the
+> caller cannot read. If charging that candidate's own reference fails, or its later link walk
+> exceeds the budget or the depth bound, the read answers `reference_scan_limit` instead of the
+> window. What leaks is only that at least one more mention caused that refusal, about an entity
+> the caller already sees. The refusal keeps the same fixed, content-free shape as bits 1 and 2.
 >
 > This bit was reviewed and accepted as a maintainer decision on 2026-10-03 (#272). It was found
 > while fixing #182, and link containers have had the same property since #112. It is not an
