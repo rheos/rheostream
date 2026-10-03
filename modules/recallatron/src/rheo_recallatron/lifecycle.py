@@ -74,7 +74,7 @@ emit a second event for a state that did not change.
 """
 
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Final
 from uuid import UUID
@@ -620,7 +620,12 @@ def authorize_memory_delete(
     return DeleteAuthorization(ref=ref, revision=row.revision)
 
 
-def _erase(conn: Connection, memory_ids: Iterable[UUID]) -> frozenset[UUID]:
+def _erase(
+    conn: Connection,
+    memory_ids: Iterable[UUID],
+    *,
+    expected_revisions: Mapping[UUID, int] | None = None,
+) -> frozenset[UUID]:
     """Physically remove each memory, and everything the workspace holds because of it.
 
     Three things happen per row and the order is forced. The mentions go **first**,
@@ -635,11 +640,21 @@ def _erase(conn: Connection, memory_ids: Iterable[UUID]) -> frozenset[UUID]:
     Only rows that were actually there are returned. The coordinator counts the union
     of these sets into the ledger, and a row already absent must not be counted as one
     this deletion removed.
+
+    ``expected_revisions`` binds a row's delete to the revision an authorization
+    checked (issue #275): the owner passes its target's, and the closure passes none.
+    A bound row that is gone, or no longer at that revision, raises
+    :class:`~rheo_contracts.StaleRecord` and the whole deletion rolls back, including
+    the mentions and receipt this loop has already touched.
     """
+    bound = {} if expected_revisions is None else expected_revisions
     removed: set[UUID] = set()
     for memory_id in sorted(memory_ids):
+        expected = bound.get(memory_id)
         row = get_memory(conn, memory_id)
         if row is None:
+            if expected is not None:
+                raise StaleRecord("that memory has moved since the revision you hold")
             continue
         for entity_id in list_memory_mentions(conn, memory_id):
             remove_mention(conn, memory_id, entity_id)
@@ -651,7 +666,7 @@ def _erase(conn: Connection, memory_ids: Iterable[UUID]) -> frozenset[UUID]:
                 row.external_source_key,
                 state=STATE_ERASED,
             )
-        if delete_memory(conn, memory_id):
+        if delete_memory(conn, memory_id, expected_revision=expected):
             removed.add(memory_id)
     return frozenset(removed)
 
@@ -674,8 +689,26 @@ def delete_owned_memory(
     authorization names, and the children that hang off it by cascade — so there are
     no edges for a disposition to choose between, and "physically remove the target"
     is the same instruction whether a person asked or a timer did.
+
+    **The delete is bound to the authorized revision** (issue #275), the same rule
+    #12 gave correct and supersede: the lock orders the writers that take it, and
+    ``AND revision = $authorized`` is what refuses when one that skipped it moved the
+    row between the third authorization and this statement. A miss raises
+    ``StaleRecord``. On the approved path the dispatcher answers ``record_stale`` and
+    rolls back, leaving the approval pending; approving it again is refused by the
+    record-state guard, because the row no longer holds the approved revision. On the
+    expiry path the sweep job fails its attempt,
+    rolls back whole, and is retried, so the next pass re-asks whether the moved row
+    is still expired.
     """
-    return RemovedMemories(_erase(uow.connection, (authorization.ref.id,)))
+    target = authorization.ref.id
+    return RemovedMemories(
+        _erase(
+            uow.connection,
+            (target,),
+            expected_revisions={target: authorization.revision},
+        )
+    )
 
 
 def on_record_deleted(

@@ -231,7 +231,9 @@ def _compare_and_set(
     return revision
 
 
-def delete_memory(conn: Connection, memory_id: UUID) -> bool:
+def delete_memory(
+    conn: Connection, memory_id: UUID, *, expected_revision: int | None = None
+) -> bool:
     """Physically remove one memory; answer whether a row was there to remove.
 
     Its purposes, mentions, links and embeddings go with it through their own
@@ -240,8 +242,22 @@ def delete_memory(conn: Connection, memory_id: UUID) -> bool:
     boolean is what lets the caller count **distinct physically removed rows** rather
     than rows it asked about — a row already absent must not reach the ledger's
     counter.
+
+    **With ``expected_revision``, the delete is bound to that revision** (issue #275):
+    ``DELETE ... WHERE id = $id AND revision = $expected``, and zero rows affected
+    raises :class:`~rheo_contracts.StaleRecord`. That is the owner's delete of an
+    authorized target, whose revision was checked under the lifecycle lock; the
+    predicate is what still refuses when a writer that skipped the lock moved the row
+    between that check and this statement, so content approved at revision *n* is
+    never erased at *n+1*. Without it, the delete is the closure's, which removes rows
+    by dependency rather than by an approved revision.
     """
-    result = conn.execute(delete(t.memory).where(t.memory.c.id == memory_id))
+    statement = delete(t.memory).where(t.memory.c.id == memory_id)
+    if expected_revision is not None:
+        statement = statement.where(t.memory.c.revision == expected_revision)
+    result = conn.execute(statement)
+    if expected_revision is not None and result.rowcount == 0:
+        raise StaleRecord("that memory has moved since the revision you hold")
     return result.rowcount == 1
 
 
