@@ -11,7 +11,7 @@ quoted build-plan citation still contains its text.
 **Three files, validated independently, plus one check across them.**
 :data:`MATRICES` is an ordered list of ``(path, expected_criteria)`` pairs —
 ``phase-1-matrix.md`` over ``{1..23} ∪ {69}``, ``phase-2-matrix.md`` over
-``{24, 25, 26, 27, 28, 29, 30, 31, 33, 36}`` and ``connector-matrix.md`` over
+``{24..37}`` and ``connector-matrix.md`` over
 ``{70..93}``. Each is parsed and validated on its own, so a stale row in one cannot
 be masked by another, and :func:`cross_file_errors` then asserts that **no criterion
 number appears in more than one matrix**. That last check is the only thing the
@@ -64,14 +64,14 @@ _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "repository-checks.yml"
 EXPECTED_CRITERIA = frozenset(range(1, 24)) | {69}
 """Phase one's set, unchanged: criteria 1-23 and criterion 69."""
 
-PHASE_TWO_CRITERIA = frozenset({24, 25, 26, 27, 28, 29, 30, 31, 33, 36})
-"""Phase two's seeded set.
+PHASE_TWO_CRITERIA = frozenset(range(24, 38))
+"""Phase two's set: all fourteen of criteria 24-37.
 
-Ten of phase two's fourteen criteria. 31 joined at run 1a2's close-out, in the same
-change as its row. 32, 34, 35 and 37 have no row: 32's run has not happened, and
-34, 35 and 37 have gates in CI but no matrix row yet (``phase-2-matrix.md`` says
-why). The completeness check is what keeps them absent: a row for one of them fails
-here as ``unexpected`` rather than quietly widening what the repository claims.
+31 joined at run 1a2's close-out, in the same change as its row. 32 (#281) and 34,
+35 and 37 (#120) joined together once each had a row with a captured mutation; 34's
+was captured on a throwaway branch by the maintainer's 2026-09-29 decision. The
+completeness check now requires all fourteen, so dropping any of them fails here as
+``missing``.
 """
 
 CONNECTOR_CRITERIA = frozenset(range(70, 94))
