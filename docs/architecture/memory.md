@@ -386,11 +386,23 @@ total, bounds, `has_more` flag or partial item.
 > visibility in history mode, which the `current`-mode rule above deliberately does not do, or
 > lifting the reference budget that keeps the scan bounded.
 
-A targeted read is not covered by these residuals, and one related bit is still open. Its
-entity and link-container checks run on their own allowance (#182, #112), but its candidate scan
-still shares the request budget with the target. A caller who spends that budget to the edge can
-get `reference_scan_limit` from a mention it cannot read, which reveals that such a mention
-exists. That is not an accepted residual; #272 holds the decision.
+> **Accepted residual: the targeted entity read.** A targeted read is not covered by the two
+> bits above, and it has one bit of its own. Its entity and link-container checks run on their
+> own allowance (#182, #112), but its candidate scan (`evaluate_all`) still shares the request's
+> reference budget with the target. A caller who can already see the entity, and holds one
+> readable member as the target, can pick a target whose link graph spends that budget to the
+> edge. Any other current mention that survives the row-local prefilter then charges the budget,
+> including one the caller cannot read, and if its walk overflows the read answers
+> `reference_scan_limit` instead of the window. What leaks is only that at least one more
+> mention with a costly walk exists, about an entity the caller already sees. The refusal keeps
+> the same fixed, content-free shape as bits 1 and 2.
+>
+> This bit was reviewed and accepted as a maintainer decision on 2026-10-03 (#272). It was found
+> while fixing #182, and link containers have had the same property since #112. It is not an
+> open bug and no fix is deferred. Closing it would mean giving hidden-candidate evaluation its
+> own allowance as well, the way the entity and link-container checks now work. That is
+> worth revisiting before workspaces with several members whose read access differs; the
+> flagship has one owner today.
 
 **The tool requires a target; the operation does not.** The MCP tool `recallatron_read`
 validates against an input that always requires `target_ref`, so an agent's reach through the
