@@ -1081,6 +1081,9 @@ def test_status_prints_counts_and_the_enrollment_only(
     assert lines["token_days_remaining"] == "20"
     assert lines["bridge_home_private"] == "yes"
     assert lines["hook_runnable"] == "no"  # no hook installed in this fixture
+    assert lines.pop("recall") == "off"
+    assert lines.pop("recall_token") == "none"
+    assert lines.pop("recall_hook_installed") == "no"
     value = re.compile(r"-?\d+|none|unknown|yes|no|\d{4}-\d{2}-\d{2}T[\d:]+\+00:00")
     assert all(value.fullmatch(v) for v in lines.values()), lines
     for session_hash in HASHES.values():
@@ -1998,3 +2001,160 @@ def test_machine_uninstall_removes_the_user_hooks_and_the_credentials(
     assert machine.user_settings.read_text() == USER_SETTINGS_TEXT
     assert not paths.token_path(machine.bridge_home).exists()
     assert not paths.machine_key_path(machine.bridge_home).exists()
+
+
+# --- the first-message recall hook (issue #292) ------------------------------------
+
+
+def store_recall_token(d: Dirs, token: str | None = None) -> str:
+    value = token or new_token()
+    assert cli.set_recall_token(d.bridge_home, stdin=io.StringIO(value + "\n")) == 0
+    return value
+
+
+def recall_entries(document: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        entry
+        for group in document.get("hooks", {}).get("UserPromptSubmit", [])
+        for entry in group.get("hooks", [])
+        if "recall_hook.py" in entry.get("command", "")
+    ]
+
+
+def test_set_recall_token_stores_it_privately_and_never_prints_it(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    token = store_recall_token(initialised)
+    out = capsys.readouterr()
+    path = paths.recall_token_path(initialised.bridge_home)
+    assert path.read_text() == token
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert token not in out.out + out.err
+    assert not paths.token_path(initialised.bridge_home).exists()
+
+
+def test_set_recall_token_refuses_a_terminal_and_bad_input(initialised: Dirs) -> None:
+    with pytest.raises(cli.CliError, match="terminal"):
+        cli.set_recall_token(initialised.bridge_home, stdin=TtyInput(new_token()))
+    for bad in ("", "\n\n", f"{new_token()}\n{new_token()}\n"):
+        with pytest.raises(cli.CliError):
+            cli.set_recall_token(initialised.bridge_home, stdin=io.StringIO(bad))
+    assert not paths.recall_token_path(initialised.bridge_home).exists()
+
+
+def test_recall_on_needs_a_stored_token(initialised: Dirs) -> None:
+    with pytest.raises(cli.CliError, match="no recall token"):
+        cli.recall(initialised.bridge_home, enable=True)
+    assert config_of(initialised).recall_enabled is False
+
+
+def test_recall_on_before_install_only_saves_the_setting(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_recall_token(initialised)
+    assert cli.recall(initialised.bridge_home, enable=True) == 0
+    assert config_of(initialised).recall_enabled is True
+    assert "install-hook" in capsys.readouterr().out
+    assert not initialised.settings.exists()
+    assert install(initialised) == 0
+    document = load_json(initialised.settings)
+    (entry,) = recall_entries(document)
+    assert entry["timeout"] == settings_file.RECALL_TIMEOUT_SECONDS
+    assert paths.recall_hook_path(initialised.bridge_home).exists()
+
+
+def test_recall_on_and_off_edit_an_installed_settings_file(initialised: Dirs) -> None:
+    initialised.settings.parent.mkdir(parents=True, exist_ok=True)
+    original = json.dumps({"permissions": {"allow": ["Read"]}}, indent=2) + "\n"
+    initialised.settings.write_text(original)
+    assert install(initialised) == 0
+    before_recall = initialised.settings.read_text()
+    store_recall_token(initialised)
+
+    assert (
+        cli.recall(initialised.bridge_home, enable=True, interpreter=INTERPRETER) == 0
+    )
+    document = load_json(initialised.settings)
+    (entry,) = recall_entries(document)
+    expected = settings_file.hook_command(
+        INTERPRETER,
+        paths.recall_hook_path(initialised.bridge_home).absolute(),
+        "UserPromptSubmit",
+    )
+    assert entry["command"] == expected
+    assert len(our_commands(document)) == 3
+    script = paths.recall_hook_path(initialised.bridge_home)
+    assert stat.S_IMODE(script.stat().st_mode) == 0o600
+    assert (
+        cli.recall(initialised.bridge_home, enable=True, interpreter=INTERPRETER) == 0
+    )
+    assert load_json(initialised.settings) == document  # a second "on" is a no-op
+
+    assert (
+        cli.recall(initialised.bridge_home, enable=False, interpreter=INTERPRETER) == 0
+    )
+    assert initialised.settings.read_text() == before_recall
+    assert config_of(initialised).recall_enabled is False
+
+    assert (
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled) == 0
+    )
+    assert initialised.settings.read_text() == original
+
+
+def test_remove_hook_removes_the_recall_entry_too(initialised: Dirs) -> None:
+    store_recall_token(initialised)
+    assert cli.recall(initialised.bridge_home, enable=True) == 0
+    assert install(initialised) == 0
+    assert recall_entries(load_json(initialised.settings))
+    assert (
+        cli.remove_hook(initialised.bridge_home, enrolled_dir=initialised.enrolled) == 0
+    )
+    assert not initialised.settings.exists()
+
+
+def test_machine_scope_recall_lives_in_the_user_settings(machine: Dirs) -> None:
+    machine.user_settings.parent.mkdir(parents=True, exist_ok=True)
+    machine.user_settings.write_text(USER_SETTINGS_TEXT)
+    assert install_machine(machine) == 0
+    store_recall_token(machine)
+    assert (
+        cli.recall(
+            machine.bridge_home,
+            enable=True,
+            claude_home=machine.claude_home,
+            interpreter=INTERPRETER,
+        )
+        == 0
+    )
+    assert recall_entries(load_json(machine.user_settings))
+    assert (
+        cli.uninstall(
+            machine.bridge_home, enrolled_dir=None, claude_home=machine.claude_home
+        )
+        == 0
+    )
+    assert machine.user_settings.read_text() == USER_SETTINGS_TEXT
+    assert not paths.recall_token_path(machine.bridge_home).exists()
+
+
+def test_status_reports_recall(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_recall_token(initialised)
+    assert cli.recall(initialised.bridge_home, enable=True) == 0
+    assert (
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            interpreter=_real_interpreter(),
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert cli.status(initialised.bridge_home, now=NOW) == 0
+    lines = dict(line.split(": ", 1) for line in capsys.readouterr().out.splitlines())
+    assert lines["recall"] == "on"
+    assert lines["recall_token"] == "present"
+    assert lines["recall_hook_installed"] == "yes"
+    assert lines["hook_runnable"] == "yes"

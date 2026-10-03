@@ -158,6 +158,11 @@ def test_the_hook_reads_the_keys_config_save_writes(bridge_home: Path) -> None:
         "settle_seconds",
         "install_salt",
         "scope",
+        "recall_enabled",
+        "recall_k",
+        "recall_max_chars",
+        "recall_timeout_seconds",
+        "recall_min_score",
     }
     loaded = bridge_config.load(bridge_home)
     assert loaded is not None

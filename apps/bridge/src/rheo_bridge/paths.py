@@ -49,6 +49,16 @@ def hook_path(bridge_home: Path) -> Path:
     return bridge_home / "hook.py"
 
 
+def recall_token_path(bridge_home: Path) -> Path:
+    """The read token the recall hook presents; never the capture token."""
+    return bridge_home / "recall-token"
+
+
+def recall_hook_path(bridge_home: Path) -> Path:
+    """The installed copy of the recall hook script."""
+    return bridge_home / "recall_hook.py"
+
+
 def worker_lock_path(bridge_home: Path) -> Path:
     return bridge_home / "worker.lock"
 

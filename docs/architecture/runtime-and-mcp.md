@@ -248,6 +248,31 @@ holds. Local limits in `~/.rheo-bridge/config.json` bound one pass: 1 MiB, 1000 
 range is acknowledged. `entrypoint` (`cli` for Claude Code CLI, `claude-desktop` for Desktop
 Code) is counted locally and never sent; both clients run the same project hook.
 
+**First-message recall (opt-in).** The bridge can also give a Claude Code session the
+memories relevant to its opening request (issue #292). A second standard-library-only hook,
+`recall_hook.py`, runs on `UserPromptSubmit` from the same settings file as the capture
+hooks. On a session's first prompt that is not a slash command, it calls
+`recallatron.memory.recall` on the api surface with the prompt as the query, and prints the
+relevant items as `additionalContext`, which Claude Code adds to the session. Each item gives
+its kind, recorded date, title, a body trimmed to 400 characters, and its ref, under a header
+that calls the items dated claims to check, not instructions. Hybrid recall always returns its
+`k` nearest items, so relevance is decided by the reranker. Only items whose `rerank_score` is
+at least `recall_min_score` (default 0) are kept, and an answer without reranker scores
+injects nothing. Defaults: 5 items, 2,000 characters in all, a 3-second request timeout.
+
+The hook does nothing unless `CLAUDE_CODE_ENTRYPOINT` is `cli` or `claude-desktop`. A headless
+`claude -p` run reports `sdk-cli` and gets nothing, and `RHEO_RECALL_DISABLE=1` opts any run
+out. One limit: a `claude -p` started from inside an interactive session's shell inherits that
+session's entrypoint, so set the opt-out variable there. Once per session is enforced by a marker
+file in `~/.rheo-bridge/recall-seen/`, named by the salted hash of the session id and created
+before the request. A resumed session therefore injects nothing, and a failed lookup is not
+retried on every prompt. Markers older than 30 days are pruned. Every failure is silent and
+exits 0. The hook presents its own `cli` token from `recall-token` (0600), never the capture
+token, which can only ingest. Mint it on the flagship with `rheo token issue --account <id>
+--workspace <id> --set read_only --kind cli` and pipe it into `rheo-bridge set-recall-token`.
+The prompt reaches the server as a recall query; the recall operation keeps no audit row, so
+the query text is not stored.
+
 **Gaps.** The bridge reports what it knows it cannot deliver as content-free gap rows:
 `source_truncated` when a transcript shrank, was replaced or vanished under the cursor, and
 `expired_pending` for a line older than the local pending limit by the time the worker could
@@ -276,6 +301,8 @@ needs no slug match.
 | `uninstall --enrolled-dir <dir> [--purge]` | Removes the hooks, the token and the machine key, then prints the `rheo evidence revoke` command. `--purge` first prints `discarded_unacknowledged: N`, the sessions the server has not acknowledged, then deletes `~/.rheo-bridge/`. |
 | `status` | Session counts, hold state, local ledger counters, `enrollment_id`, `token_expires_at` and days remaining. Never a hash, key, path or text. |
 | `drain` | One worker pass in the foreground. Exit 0 ok, 1 the worker could not run, 2 the server refused the batch (rotate the token or re-enroll). |
+| `set-recall-token` | Reads the recall hook's `cli` token from a pipe (the raw value `rheo token issue` prints), refuses a terminal, never echoes it, and stores it at 0600. |
+| `recall on` / `recall off` | Turns the first-message recall hook on or off. `on` needs a stored recall token. When the capture hooks are installed, the settings file is updated at once (the `UserPromptSubmit` entry added or removed); otherwise the next `install-hook` applies it. `status` reports `recall`, `recall_token` and `recall_hook_installed`. `uninstall` deletes the recall token with the others. |
 
 **Enrollment `create` and `rotate` are not idempotent.** An operator retrying either needs
 to know two things:

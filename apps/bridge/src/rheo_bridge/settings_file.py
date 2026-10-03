@@ -49,6 +49,12 @@ HOOK_MARKER: Final = ".rheo-bridge/hook.py"
 HOOK_EVENTS: Final = ("Stop", "SessionEnd")
 # [capture 6] — may be revised at reconciliation.
 HOOK_TIMEOUT_SECONDS: Final = 5
+# The opt-in recall hook (``recall_hook.py``) runs on the user's prompt. Its own
+# network timeout is ``recall_timeout_seconds`` (3 s by default); Claude Code's
+# limit on the whole command leaves room for the interpreter to start.
+RECALL_MARKER: Final = ".rheo-bridge/recall_hook.py"
+RECALL_EVENT: Final = "UserPromptSubmit"
+RECALL_TIMEOUT_SECONDS: Final = 10
 NEW_FILE_MODE: Final = 0o600
 # A settings file larger than this is not one a person wrote by hand.
 MAX_SETTINGS_BYTES: Final = 4 * 1024 * 1024
@@ -76,9 +82,10 @@ def hook_command(interpreter: str, hook_script: Path, event: str) -> str:
     outlived ``bridge_home`` or a pruned interpreter would loop every turn.
     The two paths arrive as ``$0`` and ``$1``, never inside the guard's text,
     so a path with spaces needs no quoting there; the outer command is
-    shell-quoted part by part. ``event`` is one of :data:`HOOK_EVENTS`.
+    shell-quoted part by part. ``event`` is one of :data:`HOOK_EVENTS` or
+    :data:`RECALL_EVENT`.
     """
-    if event not in HOOK_EVENTS:
+    if event not in (*HOOK_EVENTS, RECALL_EVENT):
         raise ValueError(f"not a hook event: {event!r}")
     guard = (
         f'[ -x "$0" ] && [ -f "$1" ] && [ -r "$1" ] && exec "$0" "$1" {event}; exit 0'
@@ -156,7 +163,12 @@ def _commands(groups: list[object]) -> list[str]:
 
 
 def names_bridge_hook(command: str) -> bool:
-    return HOOK_MARKER in command
+    """Whether ``command`` runs one of this bridge's hooks (capture or recall)."""
+    return HOOK_MARKER in command or RECALL_MARKER in command
+
+
+def names_recall_hook(command: str) -> bool:
+    return RECALL_MARKER in command
 
 
 def bridge_commands(document: Document) -> list[str]:
@@ -222,9 +234,10 @@ def merge(
     """Make each event carry exactly one bridge hook: ``commands[event]``.
 
     An event whose only bridge entry is already that exact command is left as
-    it is, so a second install is a no-op. Otherwise every entry naming
-    :data:`HOOK_MARKER` (say, one written with an interpreter that has since
-    moved) is removed and one new matcher group is appended.
+    it is, so a second install is a no-op. Otherwise every bridge entry under
+    that event (say, one written with an interpreter that has since moved) is
+    removed and one new matcher group is appended. The recall event's group gets
+    :data:`RECALL_TIMEOUT_SECONDS`; every other event gets ``timeout``.
     """
     merged = copy.deepcopy(document)
     hooks = _hooks_table(merged)
@@ -247,8 +260,9 @@ def merge(
             groups = []
             hooks[event] = groups
             created.add(f"hooks.{event}")
+        seconds = RECALL_TIMEOUT_SECONDS if event == RECALL_EVENT else timeout
         groups.append(
-            {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+            {"hooks": [{"type": "command", "command": command, "timeout": seconds}]}
         )
     return Merged(merged, frozenset(created))
 
