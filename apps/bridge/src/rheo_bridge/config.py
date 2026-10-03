@@ -25,6 +25,11 @@ DEFAULT_MAX_BYTES = 1_048_576
 DEFAULT_MAX_RECORDS = 1000
 DEFAULT_MAX_PENDING_HOURS = 24
 DEFAULT_SETTLE_SECONDS = 5
+# The recall hook's limits (``recall_hook.py`` reads them raw, with these defaults).
+DEFAULT_RECALL_K = 5
+DEFAULT_RECALL_MAX_CHARS = 2000
+DEFAULT_RECALL_TIMEOUT_SECONDS = 3
+DEFAULT_RECALL_MIN_SCORE = 0.0
 
 # ``directory`` captures the sessions started in ``enrolled_dir``; ``machine``
 # captures every Claude Code session on the machine and has no ``enrolled_dir``.
@@ -62,12 +67,26 @@ class Config:
     max_pending_hours: int = DEFAULT_MAX_PENDING_HOURS
     settle_seconds: int = DEFAULT_SETTLE_SECONDS
     scope: str = SCOPE_DIRECTORY
+    # The first-message recall hook (``recall_hook.py``); off until ``recall on``.
+    recall_enabled: bool = False
+    recall_k: int = DEFAULT_RECALL_K
+    recall_max_chars: int = DEFAULT_RECALL_MAX_CHARS
+    recall_timeout_seconds: int = DEFAULT_RECALL_TIMEOUT_SECONDS
+    recall_min_score: float = DEFAULT_RECALL_MIN_SCORE
 
 
 _STRING_KEYS = ("api_url", "install_salt")
 # Absent or null until ``set-token`` stores them.
 _OPTIONAL_STRING_KEYS = ("enrollment_id", "token_expires_at")
-_INT_KEYS = ("max_bytes", "max_records", "max_pending_hours", "settle_seconds")
+_INT_KEYS = (
+    "max_bytes",
+    "max_records",
+    "max_pending_hours",
+    "settle_seconds",
+    "recall_k",
+    "recall_max_chars",
+    "recall_timeout_seconds",
+)
 
 
 def _from_mapping(raw: object) -> Config:
@@ -98,6 +117,15 @@ def _from_mapping(raw: object) -> Config:
         if not isinstance(value, str) or not value:
             raise ConfigError(f"config.json: {key} must be a non-empty string")
         values[key] = value
+    recall_enabled = raw.get("recall_enabled", False)
+    if not isinstance(recall_enabled, bool):
+        raise ConfigError("config.json: recall_enabled must be a boolean")
+    values["recall_enabled"] = recall_enabled
+    if "recall_min_score" in raw:
+        score = raw["recall_min_score"]
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            raise ConfigError("config.json: recall_min_score must be a number")
+        values["recall_min_score"] = float(score)
     created = raw.get("hook_created_settings", False)
     if not isinstance(created, bool):
         raise ConfigError("config.json: hook_created_settings must be a boolean")

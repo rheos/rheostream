@@ -45,7 +45,7 @@ from typing import Final, TextIO
 from uuid import UUID
 
 from rheo_bridge import config as bridge_config
-from rheo_bridge import hook, keys, paths, settings_file, state, worker
+from rheo_bridge import hook, keys, paths, recall_hook, settings_file, state, worker
 from rheo_bridge.client import (
     HttpIngestClient,
     IngestClient,
@@ -442,6 +442,83 @@ def set_token(bridge_home: Path, *, stdin: TextIO) -> int:
     return EXIT_OK
 
 
+# --- recall -------------------------------------------------------------------
+
+
+def set_recall_token(bridge_home: Path, *, stdin: TextIO) -> int:
+    """Store the recall hook's read token from a pipe; never print it.
+
+    The token is a separate ``cli`` token that can call
+    ``recallatron.memory.recall`` (``rheo token issue --kind cli --set
+    read_only``, whose stdout is the raw value alone). The capture token can
+    only ingest, so it is never reused here.
+    """
+    if stdin.isatty():
+        raise CliError(
+            "set-recall-token refuses a terminal: pipe `rheo token issue ... "
+            "--kind cli --set read_only` into it"
+        )
+    _load_config(bridge_home)
+    raw = stdin.read(SET_TOKEN_MAX_BYTES + 1)
+    if len(raw) > SET_TOKEN_MAX_BYTES:
+        raise CliError("set-recall-token: stdin is longer than one token")
+    lines = [line for line in raw.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise CliError("set-recall-token reads exactly one token line from stdin")
+    token = lines[0].strip()
+    try:
+        check_token(token)
+    except ValueError:
+        raise CliError("set-recall-token: the token is empty or malformed") from None
+    _write_private(paths.recall_token_path(bridge_home), token.encode("ascii"))
+    print("recall token stored")
+    return EXIT_OK
+
+
+def recall(
+    bridge_home: Path,
+    *,
+    enable: bool,
+    claude_home: Path | None = None,
+    interpreter: str | None = None,
+) -> int:
+    """Turn the first-message recall hook on or off.
+
+    ``on`` needs a stored recall token. The setting is saved, and when the
+    bridge's capture hooks are installed the settings file is brought in line
+    at once (the recall entry added or removed); otherwise the next
+    ``install-hook`` applies it.
+    """
+    config = _load_config(bridge_home)
+    if enable and not os.path.isfile(paths.recall_token_path(bridge_home)):
+        raise CliError("no recall token stored; run `rheo-bridge set-recall-token`")
+    if config.recall_enabled != enable:
+        config = replace(config, recall_enabled=enable)
+        bridge_config.save(bridge_home, config)
+    print(f"recall: {'on' if enable else 'off'}")
+    enrolled = None if config.enrolled_dir is None else Path(config.enrolled_dir)
+    path = _settings_for(config, enrolled, claude_home, mismatch="nothing changed")
+    try:
+        document, _ = settings_file.read(path)
+    except settings_file.SettingsError as exc:
+        raise CliError(str(exc)) from exc
+    capture_installed = any(
+        settings_file.HOOK_MARKER in command
+        for command in settings_file.bridge_commands(document)
+    )
+    if not capture_installed:
+        print(
+            "the bridge hooks are not installed; `rheo-bridge install-hook` applies it"
+        )
+        return EXIT_OK
+    return install_hook(
+        bridge_home,
+        enrolled_dir=enrolled,
+        claude_home=claude_home,
+        interpreter=interpreter,
+    )
+
+
 # --- install-hook / remove-hook -----------------------------------------------
 
 
@@ -488,12 +565,34 @@ def git_refusal(
     return "git check-ignore failed"
 
 
-def _hook_commands(bridge_home: Path, interpreter: str) -> dict[str, str]:
+def _hook_commands(
+    bridge_home: Path, interpreter: str, *, recall: bool = False
+) -> dict[str, str]:
     script = paths.hook_path(bridge_home).absolute()
-    return {
+    commands = {
         event: settings_file.hook_command(interpreter, script, event)
         for event in settings_file.HOOK_EVENTS
     }
+    if recall:
+        commands[settings_file.RECALL_EVENT] = settings_file.hook_command(
+            interpreter,
+            paths.recall_hook_path(bridge_home).absolute(),
+            settings_file.RECALL_EVENT,
+        )
+    return commands
+
+
+def _present_containers(document: settings_file.Document, names: set[str]) -> set[str]:
+    """``names`` (``"hooks"``, ``"hooks.<Event>"``) that still exist in ``document``."""
+    hooks = document.get("hooks")
+    kept: set[str] = set()
+    for name in names:
+        if name == "hooks":
+            if isinstance(hooks, dict):
+                kept.add(name)
+        elif isinstance(hooks, dict) and name.removeprefix("hooks.") in hooks:
+            kept.add(name)
+    return kept
 
 
 def install_hook(
@@ -507,8 +606,10 @@ def install_hook(
     """Add the ``Stop`` and ``SessionEnd`` hooks to the bridge's settings file.
 
     That is the enrolled directory's project file, or the user settings file
-    under ``claude_home`` in machine scope. Every check runs before any write.
-    ``dry_run`` prints the unified diff of the settings file and writes
+    under ``claude_home`` in machine scope. With recall on (``recall on``) it
+    also adds the ``UserPromptSubmit`` recall hook; with recall off it removes
+    that entry if an earlier install wrote it. Every check runs before any
+    write. ``dry_run`` prints the unified diff of the settings file and writes
     nothing at all.
     """
     config = _load_config(bridge_home)
@@ -529,12 +630,20 @@ def install_hook(
         # [capture 10] — may be revised at reconciliation: an absolute,
         # resolved interpreter, so the command runs under CLI and Desktop.
         commands = _hook_commands(
-            bridge_home, interpreter or os.path.realpath(sys.executable)
+            bridge_home,
+            interpreter or os.path.realpath(sys.executable),
+            recall=config.recall_enabled,
         )
         result = settings_file.merge(document, commands)
     except settings_file.SettingsError as exc:
         raise CliError(str(exc)) from exc
+    created = set(config.hook_created_containers) | result.created
     merged = result.document
+    if not config.recall_enabled:
+        merged = settings_file.remove(
+            merged, settings_file.names_recall_hook, created=created
+        )
+        created = _present_containers(merged, created)
     after = settings_file.render(merged, before=before)
     changed = merged != document
     if dry_run:
@@ -544,6 +653,10 @@ def install_hook(
             print(f"{path.absolute()}: the hooks are already installed; no change")
         return EXIT_OK
     _write_private(paths.hook_path(bridge_home), Path(hook.__file__).read_bytes())
+    if config.recall_enabled:
+        _write_private(
+            paths.recall_hook_path(bridge_home), Path(recall_hook.__file__).read_bytes()
+        )
     if not changed:
         print(f"{path.absolute()}: the hooks are already installed; no change")
         return EXIT_OK
@@ -560,12 +673,15 @@ def install_hook(
         replace(
             config,
             hook_created_settings=config.hook_created_settings or before is None,
-            hook_created_containers=sorted(
-                set(config.hook_created_containers) | result.created
-            ),
+            hook_created_containers=sorted(created),
         ),
     )
-    print(f"{path.absolute()}: installed the Stop and SessionEnd hooks")
+    events = (
+        "Stop, SessionEnd and UserPromptSubmit"
+        if config.recall_enabled
+        else ("Stop and SessionEnd")
+    )
+    print(f"{path.absolute()}: installed the {events} hooks")
     return EXIT_OK
 
 
@@ -707,7 +823,16 @@ def uninstall(
 
 def _delete_credentials(bridge_home: Path) -> None:
     paths.token_path(bridge_home).unlink(missing_ok=True)
+    paths.recall_token_path(bridge_home).unlink(missing_ok=True)
     paths.machine_key_path(bridge_home).unlink(missing_ok=True)
+    # With its token gone, recall stays off: a later install-hook must not put
+    # back a recall entry that has nothing to present.
+    try:
+        config = bridge_config.load(bridge_home)
+    except bridge_config.ConfigError:
+        return
+    if config is not None and config.recall_enabled:
+        bridge_config.save(bridge_home, replace(config, recall_enabled=False))
 
 
 # --- status -------------------------------------------------------------------
@@ -782,6 +907,11 @@ def status(bridge_home: Path, *, now: datetime, claude_home: Path | None = None)
     # pruned interpreter or a lost script would otherwise stop capture unseen.
     runnable = _hook_runnable(config, claude_home)
     print(f"hook_runnable: {'yes' if runnable else 'no'}")
+    recall_token = os.path.isfile(paths.recall_token_path(bridge_home))
+    print(f"recall: {'on' if config.recall_enabled else 'off'}")
+    print(f"recall_token: {'present' if recall_token else 'none'}")
+    installed = _recall_installed(config, claude_home)
+    print(f"recall_hook_installed: {'yes' if installed else 'no'}")
     return EXIT_OK
 
 
@@ -802,12 +932,32 @@ def _command_paths(command: str) -> tuple[str, str] | None:
     return None
 
 
-def _hook_runnable(config: bridge_config.Config, claude_home: Path | None) -> bool:
-    """Whether every installed bridge command would actually run the hook.
+def _recall_installed(config: bridge_config.Config, claude_home: Path | None) -> bool:
+    """Whether the settings file carries the recall hook's entry."""
+    if config.scope == bridge_config.SCOPE_MACHINE:
+        if claude_home is None:
+            return False
+        path = _user_settings(claude_home)
+    else:
+        assert config.enrolled_dir is not None
+        path = settings_file.settings_path(Path(config.enrolled_dir))
+    try:
+        document, _ = settings_file.read(path)
+    except settings_file.SettingsError:
+        return False
+    return any(
+        settings_file.names_recall_hook(command)
+        for command in settings_file.bridge_commands(document)
+    )
 
-    ``False`` when no bridge hook is installed in the bridge's settings file,
-    or when any installed command's interpreter is not an executable file or
-    its script is not a readable file.
+
+def _hook_runnable(config: bridge_config.Config, claude_home: Path | None) -> bool:
+    """Whether every installed capture command would actually run the hook.
+
+    ``False`` when no capture hook is installed in the bridge's settings file,
+    or when any installed capture command's interpreter is not an executable
+    file or its script is not a readable file. The recall hook is reported on
+    its own line and does not count here.
     """
     if config.scope == bridge_config.SCOPE_MACHINE:
         if claude_home is None:
@@ -823,7 +973,7 @@ def _hook_runnable(config: bridge_config.Config, claude_home: Path | None) -> bo
     commands = [
         command
         for command in settings_file.bridge_commands(document)
-        if settings_file.names_bridge_hook(command)
+        if settings_file.HOOK_MARKER in command
     ]
     if not commands:
         return False
@@ -925,6 +1075,13 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "set-token", help="store the token piped from `rheo evidence enroll --json`"
     )
+    commands.add_parser(
+        "set-recall-token", help="store the recall hook's read token from a pipe"
+    )
+    recall_parser = commands.add_parser(
+        "recall", help="turn the first-message recall hook on or off"
+    )
+    recall_parser.add_argument("state", choices=["on", "off"])
 
     install = commands.add_parser("install-hook", help="add the Claude Code hooks")
     install.add_argument("--enrolled-dir", type=Path)
@@ -968,6 +1125,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return set_scope(bridge_home, scope=args.scope)
             case "set-token":
                 return set_token(bridge_home, stdin=sys.stdin)
+            case "set-recall-token":
+                return set_recall_token(bridge_home, stdin=sys.stdin)
+            case "recall":
+                return recall(
+                    bridge_home, enable=args.state == "on", claude_home=claude_home
+                )
             case "install-hook":
                 return install_hook(
                     bridge_home,
