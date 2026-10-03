@@ -7,8 +7,8 @@ and criterion 69 it records the test or CI step that demonstrates the criterion,
 mutation that proves that demonstrator bites: a real edit that was applied to a real
 working tree, watched go red, and reverted.
 
-`phase-2-matrix.md` does the same for phase two, over criteria 24-31, 33 and 36 so far, under
-the same grammar.
+`phase-2-matrix.md` does the same for phase two, over criteria 24 to 37, under the same
+grammar.
 
 `connector-matrix.md` is the record for the connector sign-in change (issue #287), over
 criteria 70-93 under the same grammar. The three files are validated independently and no

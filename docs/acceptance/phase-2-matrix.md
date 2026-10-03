@@ -1,31 +1,26 @@
 # Phase two acceptance matrix
 
-This is phase two's acceptance record so far: one row for each of criteria 24-31, 33 and
-36. Read [README.md](README.md) first. Its per-row grammar, its three parser rules, and
+This is phase two's acceptance record: one row for each of criteria 24 to 37. Read [README.md](README.md) first. Its per-row grammar, its three parser rules, and
 above all its "what this is not" section govern every row here: the matrix records which
 test demonstrates a criterion and which mutation proves that test bites, and it never
 claims a criterion is demonstrated merely because a row exists.
 
-**Ten rows, not fourteen.** Phase two's criteria run 24 to 37, and criteria 32, 34, 35 and
-37 have no row. Retrieval-strategy selection (31) was run 1a2's and its row was added at
-that run's close-out. The predecessor migration (32) is run 1b's: the one-time transfer and the
-cutover to one writer finished on the reference instance on 2026-09-30 (#193), but the
-criterion-32 row and its captured mutation are not added yet (#281).
-The naming gate, fixture-provenance gate and re-asserted CI
-gates (34, 35, 37) are run 1a3's. That run built the ported interface surface they name,
-and their gates run in continuous integration over it: the `repository-checks` job's
-legacy-name and fixture-provenance steps, and the `web` job's criterion-22 routing-literal
-and criterion-23 platform-only steps, whose scans now cover every module's web package. Each
-gate plants violations in a self-test on every run, so it cannot pass by scanning nothing.
-None of the three has a row yet, because adding one widens the guard's expected set and each
-row needs a captured mutation. Criterion 34's also has a constraint of its own: this file is
-inside the legacy-name scan, so a fenced hunk that plants a legacy name would itself fail the
-gate. The other route is to mutate the scanner itself so its self-test goes red. The
-maintainer chose that route on 2026-09-29: the mutation is captured on a throwaway branch
-that is never merged, so the scanner on `main` and this file stay untouched. The rows are
-tracked as #120. Do not add a row for one of those on the strength of a test that happens to pass; the
-guard's per-file completeness check is what keeps the set exact, and widening the set is a
-decision, not a fix.
+**All fourteen rows.** Retrieval-strategy selection (31) was run 1a2's and its row was added
+at that run's close-out. The predecessor migration (32) is run 1b's: the one-time transfer and
+the cutover to one writer finished on the reference instance on 2026-09-30 (#193), and its row
+cites only the public importer tests and the tracked-output gate, never the private run data
+(#281). The naming gate, fixture-provenance gate and re-asserted CI gates (34, 35, 37) are run
+1a3's. That run built the ported interface surface they name, and their gates run in
+continuous integration over it: the `repository-checks` job's legacy-name and
+fixture-provenance steps, and the `web` job's criterion-22 routing-literal and criterion-23
+platform-only steps, whose scans cover every module's web package. Each gate plants violations
+in a self-test on every run, so it cannot pass by scanning nothing. Their rows were added
+together under #120. Criterion 34's mutation had a constraint of its own: this file is inside
+the legacy-name scan, so a fenced hunk that plants a legacy name would itself fail the gate.
+The maintainer chose on 2026-09-29 to break the scanner instead, on a throwaway branch that is
+never merged, so the scanner in this tree is unchanged and this file gets no exception. Do not
+add or drop a row on the strength of a test that happens to pass; the guard's per-file
+completeness check is what keeps the set exact, and widening the set is a decision, not a fix.
 
 **Migration acceptance does not score legacy recall.** The maintainer's
 2026-09-28 amendment to FR 53 and criterion 32 requires count/identity accounting,
@@ -38,8 +33,8 @@ The forward-function gate is new eligible memories automatically saved and recal
 through the intended client with correct access; benign operator-chosen examples
 suffice, not an owner-authored benchmark. Legacy overlap and ranking improvements
 are not migration prerequisites.
-This clarification adds no criterion-32 row and claims no mutation demonstration;
-the row is #281. Source preservation/loss,
+This clarification is not itself the criterion-32 row; that row is below (#281).
+Source preservation/loss,
 privacy, ambient producer/drain, backup/rollback and deliberate cutover gates
 remain; see [decision-ledger entry 16](../ideas/rheo-stream-idea.md#recorded-changes-of-direction).
 
@@ -54,7 +49,8 @@ clause of it, and it is `complete`. Its second `Note:` records the promotion.
 Every mutation below was applied to this working tree on 2026-09-21, run, watched go red,
 and reverted, except criterion 31's, which run 1a2 captured the same way on 2026-09-23,
 criterion 25's, which run 1a3 re-captured on 2026-09-23 when its context moved, and
-criterion 24's, which run 1a3 captured on 2026-09-24 when it promoted that row;
+criterion 24's, which run 1a3 captured on 2026-09-24 when it promoted that row, and
+criteria 32, 34, 35 and 37's, which were captured on 2026-10-02 (34's on a throwaway branch);
 each fenced block is the `git diff` that was captured while it was applied, never a
 hand-typed hunk. Criteria 25, 26 and 33 take their demonstrators from run 1a0b's
 close-out evidence, but 1a0b recorded test paths rather than node ids and captured no
@@ -529,6 +525,70 @@ first dense pass (Prompt 6) reported no red among the other measured sites, and 
 
 ---
 
+### Criterion 32
+
+**Text:** "The migration from the predecessor's memory store is verified before switchover by a count, identity, index and access check: every source record has a valid destination under the approved mapping; original identity, timestamps, lifecycle/status and available provenance are retained; a second import creates no duplicates and does not resurrect erased content; and searchable destinations are populated/indexed with intended access restrictions intact. Historical evidence remains distinguishable from curated memory. Planned legacy-memory queries, labelled expected records, old-memory relevance scores and legacy ranking agreement are not cutover gates. Random spot checks are optional/informal; partial or missing recall of preserved legacy material may be improved later. Before cutover, separately prove that new eligible memories are automatically saved and recalled through the intended client with correct access, using benign operator-chosen examples rather than an owner-authored benchmark. The verification result is written to private workspace storage next to the migrated data, and a check asserts no migration report is tracked in this repository." (`build-plan.md:327-339`)
+
+**State:** complete
+
+**Demonstrator:**
+- `pytest:tests/test_migration_extract.py::test_a_header_that_disagrees_with_its_units_is_refused`
+- `pytest:tests/test_history_extract.py::test_round_trip_preserves_history_metadata`
+- `pytest:tests/test_history_extract.py::test_duplicate_source_key_is_refused`
+- `pytest:tests/postgres/test_history_records.py::test_history_search_get_and_erasure_visibility`
+- `pytest:tests/postgres/test_history_records.py::test_curated_import_uses_migrated_origin_and_stable_receipt`
+- `pytest:tests/postgres/test_history_records.py::test_history_import_replay_does_not_duplicate_or_resurrect`
+- `pytest:tests/postgres/test_history_records.py::test_synthesized_profile_is_searchable_history_only`
+- `ci:repository-checks / Check migration-output isolation path gate (FR 18)`
+
+**Mutation:**
+```diff
+diff --git a/modules/recallatron/src/rheo_recallatron/migration/history_import.py b/modules/recallatron/src/rheo_recallatron/migration/history_import.py
+index 49353cb..5507e2f 100644
+--- a/modules/recallatron/src/rheo_recallatron/migration/history_import.py
++++ b/modules/recallatron/src/rheo_recallatron/migration/history_import.py
+@@ -105,7 +105,7 @@ def import_history(
+             continue
+         if any(getattr(existing, name) != value for name, value in values.items()):
+             # No private field or value is included in the refusal.
+-            raise HistoryImportRefusal("source key already has different content")
++            pass
+         identical += 1
+     return HistoryImportReport(
+         source_units=len(extract.units),
+```
+
+**Cost:** `pytest:tests/postgres/test_history_records.py::test_history_import_replay_does_not_duplicate_or_resurrect` — first observed failure line: `E           Failed: DID NOT RAISE HistoryImportRefusal`, the only red among the nine tests run (every test in `test_history_records.py` and `test_history_extract.py`, plus the header-count test)
+
+**Performed by:** issues #120 and #281 matrix pass (2026-10-02)
+
+**Note:** the demonstrators are the public importer tests from #194, grouped by the clause
+each one answers. Source accounting: an extract whose header count disagrees with its units
+is refused, the history extract round-trips its identity, timestamps, status and provenance
+fields, and a repeated source key is refused before anything is written. Owner-only
+destinations: imported history is searchable and readable by the owner, a member is denied
+search, read and erase, and a curated import lands as `migrated` memory addressed to the
+owner alone. Refusal of a second application: re-running an import with changed content for
+an existing source key raises `HistoryImportRefusal`, and the refusal does not echo the
+changed value. Replay and no resurrection: an identical second run inserts nothing, and a
+run after erasure counts the record as erased and leaves the tombstone empty. History stays
+distinguishable from curated memory: a synthesized profile item is searchable as history and
+creates no memory row. The workflow step answers the clause about tracked reports: it fails
+when a tracked path takes the shape of a migration output.
+
+The mutation deletes the content-comparison refusal, so a second application with different
+content is silently counted as identical. Only the replay test notices, which is why it is
+named in `Cost`: every other importer test still passes against the broken importer.
+
+**Note:** the one-time transfer and cutover on the reference instance (#193) are not public
+evidence and this row does not cite them. Their verification result lives in private storage
+next to the migrated data, as the criterion requires. The forward-function clause, new
+eligible memories saved and recalled automatically through the intended client, is the
+automatic-memory work recorded in [the ambient capability manifest](ambient-capability-manifest.md);
+it is not re-claimed here.
+
+---
+
 ### Criterion 33
 
 **Text:** "Every phase-one path completes correctly in a workspace where the memory module was never installed and never enabled, verified by running the phase-one acceptance suite in such a workspace. Workspace-level disable is phase-seven work under D5, so release one proves the module boundary by absence rather than by disable." (`build-plan.md:342-347`)
@@ -585,6 +645,92 @@ runs agreed" from quietly meaning "both runs ran nothing".
 
 ---
 
+### Criterion 34
+
+**Text:** "No route, package, table, MCP tool, service name, environment variable, configuration key, or user-facing string in the repository matches a legacy product name or a generalized source-product prefix. The check runs in continuous integration on every branch from this phase onward, and its scope includes this phase's ported surface: the navigation, the theme, and the memory browse, search, and entity screens. Documentation files recording historical migration notes are the single allowed exception, listed explicitly." (`build-plan.md:348-353`)
+
+**State:** complete
+
+**Demonstrator:**
+- `ci:repository-checks / Check for legacy product names (criterion 34)`
+
+**Mutation:**
+```diff
+diff --git a/scripts/check_legacy_names.py b/scripts/check_legacy_names.py
+index 652b3ae..9d8d4b7 100644
+--- a/scripts/check_legacy_names.py
++++ b/scripts/check_legacy_names.py
+@@ -150,7 +150,7 @@ def _legacy_words(text: str) -> set[str]:
+             continue
+         for match in _LEGACY_IN_RUN.finditer(run):
+             words.add(match.group(0).lower())
+-    return words
++    return set()
+ 
+ 
+ def _segments(run: str) -> list[str]:
+```
+
+**Cost:** `ci:repository-checks / Check for legacy product names (criterion 34)` — first observed failure line: `self-test FAILED: planted positive forms went uncaught: [...]`, after which `make legacy-names` exited non-zero
+
+**Performed by:** issues #120 and #281 matrix pass (2026-10-02)
+
+**Note:** the capture route is the maintainer's 2026-09-29 decision on #120. Planting a
+denylisted name in interface code would have put that name into this file, which the same
+gate scans, so the mutation breaks the scanner instead. It was committed on a throwaway local
+branch that was never pushed or merged, run there, and the branch was then deleted. The
+scanner in this tree is untouched, and this file has no entry in the scanner's exception
+list.
+
+The mutation makes the word scan return nothing while the dotted-form and compound-prefix
+checks keep working. The self-test, which plants every positive form on each run, reports the
+planted cases that went uncaught before the real tree is scanned at all. The list in the
+observed line is elided here because its entries are the self-test's planted file names, and
+each of them spells a denylisted form. Printing them in this file would fail the gate this
+row is about.
+
+---
+
+### Criterion 35
+
+**Text:** "Ported interface code contains no personal data, rate, client name, or private deployment detail, and every fixture in the repository is synthetic, asserted by a fixture provenance check that runs in continuous integration from this phase onward." (`build-plan.md:358-360`)
+
+**State:** complete
+
+**Demonstrator:**
+- `ci:repository-checks / Check fixture provenance and synthetic content (criterion 35)`
+
+**Mutation:**
+```diff
+diff --git a/modules/recallatron/web/src/format.ts b/modules/recallatron/web/src/format.ts
+index 33aaca7..5776a28 100644
+--- a/modules/recallatron/web/src/format.ts
++++ b/modules/recallatron/web/src/format.ts
+@@ -24,3 +24,4 @@ export function excerpt(body: string, limit: number): string {
+ export function characterCount(text: string): number {
+   return Array.from(text).length;
+ }
++export const SUPPORT_LINE = "250-555-0142";
+```
+
+**Cost:** `ci:repository-checks / Check fixture provenance and synthetic content (criterion 35)` — first observed failure line: `modules/recallatron/web/src/format.ts: phone-number-shaped string found`, after which `make fixture-provenance` exited non-zero
+
+**Performed by:** issues #120 and #281 matrix pass (2026-10-02)
+
+**Note:** the mutation plants a phone-shaped string, in the reserved fictional 555-01xx range,
+into the memory module's ported web package. The gate flags any phone shape outright, so the
+red shows that its content scan reaches module interface code and not only fixtures. Its other
+halves are the fixture manifest check (every tracked file under a `fixtures/` segment needs a
+`synthetic` entry in `tests/fixtures/provenance.json`) and the email, IP and rate heuristics.
+
+**Note:** in CI, the criterion's "no client name, no private deployment detail" clause is a
+maintainer attestation, not an automated gate. The scan cannot recognise a real client name or
+a private host from public data alone, and that clause is enforced only when
+`RHEO_PRIVATE_DENYLIST` names a private denylist file, which CI never sets. CI enforces the
+manifest check and the heuristics above; the rest is signed by the maintainer (#120).
+
+---
+
 ### Criterion 36
 
 **Text:** "Criterion 21 is re-asserted at the end of this phase against a workspace that has the memory module installed, enabled, and populated. The export carries the module's records through the export format its manifest declares (criterion 25), and after a restore into an empty deployment the restored workspace's composition, configuration versions, module schema versions, and memory records match the original by comparison." (`build-plan.md:362-367`)
@@ -636,3 +782,43 @@ refusal. That is a sharper red than a digest diff and it exercises the same seam
 [phase-1-matrix.md](phase-1-matrix.md). This row is about that re-assertion with the memory
 module installed, enabled and populated; it does not restate or replace criterion 21's
 evidence, and the two matrices deliberately share no criterion number.
+
+---
+
+### Criterion 37
+
+**Text:** "Criteria 22 and 23 still pass with this phase's interface surface included: the unified navigation and theme, and the memory browse, search, and entity screens. This criterion adds no new check; it asserts that the two gates established in phase one run unchanged in continuous integration over the larger surface." (`build-plan.md:368-371`)
+
+**State:** complete
+
+**Demonstrator:**
+- `ci:web / Routing-literal gate (criterion 22)`
+- `ci:web / Web platform-only gate (criterion 23)`
+
+**Mutation:**
+```diff
+diff --git a/modules/recallatron/web/src/format.ts b/modules/recallatron/web/src/format.ts
+index 33aaca7..199bda1 100644
+--- a/modules/recallatron/web/src/format.ts
++++ b/modules/recallatron/web/src/format.ts
+@@ -24,3 +24,4 @@ export function excerpt(body: string, limit: number): string {
+ export function characterCount(text: string): number {
+   return Array.from(text).length;
+ }
++export const HELP_URL = "/api/v1/help";
+```
+
+**Cost:** `ci:web / Routing-literal gate (criterion 22)` — first observed failure line: `Hard-coded route literal: modules/recallatron/web/src/format.ts`
+
+**Performed by:** issues #120 and #281 matrix pass (2026-10-02)
+
+**Note:** the mutation plants a hard-coded `/api/` route string in the memory module's own web
+package, outside `apps/web`, which is the larger surface this criterion is about. The
+criterion-22 gate names the file. The same file was also run against the criterion-23 gate
+with `export const runtime = "edge";` appended instead, and that gate printed
+`Edge runtime export declared: modules/recallatron/web/src/format.ts`. That second plant is
+recorded in prose, not as a hunk, because a row holds one mutation. Both gates also plant a
+violation inside a widened module root in their own self-tests on every run.
+
+**Note:** criteria 22 and 23 keep their own rows in [phase-1-matrix.md](phase-1-matrix.md).
+This row records only that the same two gates cover the module web packages.
