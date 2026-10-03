@@ -390,3 +390,31 @@ def test_the_hook_imports_only_the_standard_library() -> None:
     assert roots <= set(sys.stdlib_module_names) | {"__future__"}, roots - set(
         sys.stdlib_module_names
     )
+
+
+# --- the total deadline --------------------------------------------------------------
+
+
+def test_a_slow_lookup_is_abandoned_at_the_deadline(home: Path) -> None:
+    import time as _time
+
+    write_config(home, recall_timeout_seconds=1)
+
+    class Slow(FakeFetch):
+        def __call__(
+            self, url: str, body: bytes, headers: Mapping[str, str], timeout: float
+        ) -> bytes:
+            _time.sleep(5)
+            return answer(item(1, 1.0))
+
+    started = _time.monotonic()
+    assert run(home, Slow(b"")) == ""
+    assert _time.monotonic() - started < 3
+
+
+def test_the_configured_timeout_is_capped(home: Path) -> None:
+    write_config(home, recall_timeout_seconds=60)
+    fetch = FakeFetch(answer(item(1, 1.0)))
+    run(home, fetch)
+    ((_, _, _, timeout),) = fetch.calls
+    assert timeout == recall_hook.MAX_TIMEOUT_SECONDS

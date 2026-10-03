@@ -2158,3 +2158,35 @@ def test_status_reports_recall(
     assert lines["recall_token"] == "present"
     assert lines["recall_hook_installed"] == "yes"
     assert lines["hook_runnable"] == "yes"
+
+
+def test_uninstall_turns_recall_off_with_its_token(initialised: Dirs) -> None:
+    store_recall_token(initialised)
+    assert cli.recall(initialised.bridge_home, enable=True) == 0
+    assert install(initialised) == 0
+    assert (
+        cli.uninstall(initialised.bridge_home, enrolled_dir=initialised.enrolled) == 0
+    )
+    assert config_of(initialised).recall_enabled is False
+    assert not paths.recall_token_path(initialised.bridge_home).exists()
+
+
+def test_a_missing_recall_script_does_not_mark_capture_unrunnable(
+    initialised: Dirs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_recall_token(initialised)
+    assert cli.recall(initialised.bridge_home, enable=True) == 0
+    assert (
+        cli.install_hook(
+            initialised.bridge_home,
+            enrolled_dir=initialised.enrolled,
+            interpreter=_real_interpreter(),
+        )
+        == 0
+    )
+    paths.recall_hook_path(initialised.bridge_home).unlink()
+    capsys.readouterr()
+    assert cli.status(initialised.bridge_home, now=NOW) == 0
+    lines = dict(line.split(": ", 1) for line in capsys.readouterr().out.splitlines())
+    assert lines["hook_runnable"] == "yes"
+    assert lines["recall_hook_installed"] == "yes"

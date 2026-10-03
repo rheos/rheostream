@@ -265,8 +265,11 @@ The hook does nothing unless `CLAUDE_CODE_ENTRYPOINT` is `cli` or `claude-deskto
 out. One limit: a `claude -p` started from inside an interactive session's shell inherits that
 session's entrypoint, so set the opt-out variable there. Once per session is enforced by a marker
 file in `~/.rheo-bridge/recall-seen/`, named by the salted hash of the session id and created
-before the request. A resumed session therefore injects nothing, and a failed lookup is not
-retried on every prompt. Markers older than 30 days are pruned. Every failure is silent and
+before the request. A resumed session that keeps its session id injects nothing (a forked
+session has a new id and injects once), and a failed lookup is not retried on every prompt.
+The whole lookup runs under one deadline, `recall_timeout_seconds` capped at 5, so a slow name
+lookup or a dripping response cannot hold the prompt longer. The first prompt after a server
+restart may miss that deadline while the reranker loads, and its session then gets nothing. Markers older than 30 days are pruned. Every failure is silent and
 exits 0. The hook presents its own `cli` token from `recall-token` (0600), never the capture
 token, which can only ingest. Mint it on the flagship with `rheo token issue --account <id>
 --workspace <id> --set read_only --kind cli` and pipe it into `rheo-bridge set-recall-token`.

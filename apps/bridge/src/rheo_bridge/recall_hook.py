@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -53,6 +54,9 @@ BODY_MAX_CHARS = 400
 DEFAULT_K = 5
 DEFAULT_MAX_CHARS = 2000
 DEFAULT_TIMEOUT_SECONDS = 3
+# The whole lookup (DNS, connect, request, response) must end well inside the
+# 10 s Claude Code allows the hook command, whatever the config says.
+MAX_TIMEOUT_SECONDS = 5
 DEFAULT_MIN_SCORE = 0.0
 
 HEADER = (
@@ -82,6 +86,33 @@ def fetch(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> 
     if len(data) > RESPONSE_CAP:
         raise OSError("response too large")
     return data
+
+
+def within_deadline(
+    fetch_fn: Fetch,
+    url: str,
+    body: bytes,
+    headers: Mapping[str, str],
+    seconds: float,
+) -> bytes | None:
+    """Run ``fetch_fn`` with a total deadline; ``None`` if it has not finished.
+
+    urllib's ``timeout`` bounds each socket operation, not the request, and name
+    resolution not at all. The fetch runs on a daemon thread that the process
+    abandons on exit, so a slow lookup costs at most ``seconds``.
+    """
+    outcome: list[bytes] = []
+
+    def target() -> None:
+        try:
+            outcome.append(fetch_fn(url, body, headers, seconds))
+        except BaseException:  # noqa: BLE001 - reported as no answer
+            pass
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    return outcome[0] if outcome else None
 
 
 def _read_json(path: Path) -> object:
@@ -118,8 +149,9 @@ def _settings(bridge_home: Path) -> dict[str, object] | None:
         "salt": salt,
         "k": min(_positive_int(raw, "recall_k", DEFAULT_K), 50),
         "max_chars": _positive_int(raw, "recall_max_chars", DEFAULT_MAX_CHARS),
-        "timeout": _positive_int(
-            raw, "recall_timeout_seconds", DEFAULT_TIMEOUT_SECONDS
+        "timeout": min(
+            _positive_int(raw, "recall_timeout_seconds", DEFAULT_TIMEOUT_SECONDS),
+            MAX_TIMEOUT_SECONDS,
         ),
         "min_score": float(min_score),
     }
@@ -280,18 +312,20 @@ def _run(
     body = json.dumps({"query": query[:QUERY_MAX_CHARS], "k": settings["k"]}).encode(
         "utf-8"
     )
-    answer = json.loads(
-        fetch_fn(
-            str(settings["url"]),
-            body,
-            {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            float(settings["timeout"]),  # type: ignore[arg-type]
-        ).decode("utf-8")
+    raw_answer = within_deadline(
+        fetch_fn,
+        str(settings["url"]),
+        body,
+        {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        float(settings["timeout"]),  # type: ignore[arg-type]
     )
+    if raw_answer is None:
+        return None
+    answer = json.loads(raw_answer.decode("utf-8"))
     items = relevant_items(answer, float(settings["min_score"]))  # type: ignore[arg-type]
     context = render(items, int(settings["max_chars"]))  # type: ignore[call-overload]
     if context is None:

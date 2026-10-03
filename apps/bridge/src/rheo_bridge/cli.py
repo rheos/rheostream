@@ -825,6 +825,14 @@ def _delete_credentials(bridge_home: Path) -> None:
     paths.token_path(bridge_home).unlink(missing_ok=True)
     paths.recall_token_path(bridge_home).unlink(missing_ok=True)
     paths.machine_key_path(bridge_home).unlink(missing_ok=True)
+    # With its token gone, recall stays off: a later install-hook must not put
+    # back a recall entry that has nothing to present.
+    try:
+        config = bridge_config.load(bridge_home)
+    except bridge_config.ConfigError:
+        return
+    if config is not None and config.recall_enabled:
+        bridge_config.save(bridge_home, replace(config, recall_enabled=False))
 
 
 # --- status -------------------------------------------------------------------
@@ -944,11 +952,12 @@ def _recall_installed(config: bridge_config.Config, claude_home: Path | None) ->
 
 
 def _hook_runnable(config: bridge_config.Config, claude_home: Path | None) -> bool:
-    """Whether every installed bridge command would actually run the hook.
+    """Whether every installed capture command would actually run the hook.
 
-    ``False`` when no bridge hook is installed in the bridge's settings file,
-    or when any installed command's interpreter is not an executable file or
-    its script is not a readable file.
+    ``False`` when no capture hook is installed in the bridge's settings file,
+    or when any installed capture command's interpreter is not an executable
+    file or its script is not a readable file. The recall hook is reported on
+    its own line and does not count here.
     """
     if config.scope == bridge_config.SCOPE_MACHINE:
         if claude_home is None:
@@ -964,7 +973,7 @@ def _hook_runnable(config: bridge_config.Config, claude_home: Path | None) -> bo
     commands = [
         command
         for command in settings_file.bridge_commands(document)
-        if settings_file.names_bridge_hook(command)
+        if settings_file.HOOK_MARKER in command
     ]
     if not commands:
         return False
