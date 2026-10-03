@@ -41,7 +41,12 @@ from datetime import UTC, datetime
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, field_validator
-from rheo_contracts import OperationDeclaration, RecordRef, WorkspaceContext
+from rheo_contracts import (
+    OperationDeclaration,
+    RecordRef,
+    StaleRecord,
+    WorkspaceContext,
+)
 
 from rheo_core.approvals.records import get_for_operation
 from rheo_core.boundary.context import Refusal
@@ -240,6 +245,17 @@ def delete_owned(
             RECORD_MOVED,
             f"{ref.format()} is at revision {authorization.revision}, not the "
             f"revision {approved.revision} this execution authorised",
+        )
+    # The approval's own revision, not just the two checkpoints' agreement (issue
+    # #275). ``RecordStateGuard`` compared ``subject_revision`` earlier, unlocked, so a
+    # writer that skipped the lock can commit after the guard and before the second
+    # checkpoint; both checkpoints then read the new revision and agree. Comparing
+    # here, under the lock, closes that window, and the owner's delete carries the
+    # same value as ``AND revision = $approved``, which closes the one after it.
+    if authorization.revision != approval.subject_revision:
+        raise StaleRecord(
+            f"{ref.format()} is at revision {authorization.revision}, not the "
+            f"revision {approval.subject_revision} that was approved"
         )
     removed: RemovedMemories = owner.delete_owned(ctx, uow, authorization)
     participants: list[str] = []
