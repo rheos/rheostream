@@ -62,6 +62,7 @@ from rheo_core.deletion import (
     get_deletion_record,
     lock_workspace_lifecycle,
 )
+from rheo_core.deletion import operations as deletion_operations
 from rheo_core.deletion.operations import (
     RECORD_DELETE,
     RECORD_DELETED,
@@ -1847,3 +1848,51 @@ def test_an_approved_delete_that_loses_to_a_lock_skipping_correct_is_record_stal
     assert (replay.result.state, replay.result.executed_at) == ("refused", None)
     assert lifecycle.stored(target.id) is not None
     assert lifecycle.events(RECORD_DELETED) == []
+
+
+def test_an_approved_delete_whose_target_moved_after_the_guard_is_record_stale(
+    lifecycle: LifecycleWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #275, the early window: the move lands before the coordinator's
+    checkpoints rather than between them and the delete.
+
+    ``RecordStateGuard`` compares the approval's ``subject_revision`` without the
+    lock. A writer that skips the lock commits revision 2 after the guard has read
+    revision 1 and before the handler's second checkpoint, so the second and third
+    checkpoints both read 2 and agree with each other. Only a comparison against the
+    approval's own revision sees that revision 2 is not what was approved. The skip
+    is made deterministic by committing it on another connection from inside the
+    first call to the checkpoint helper, which the handler reaches after the guards.
+    """
+    target = _seed(lifecycle, _row(title="the approved content"))
+    ctx = lifecycle.context()
+    approval_id = _held(lifecycle, ctx, target.id)
+    checkpoint = deletion_operations._authorized_or_refused  # noqa: SLF001
+    skipped: list[int] = []
+
+    def skip_then_check(*args: Any, **kwargs: Any) -> Any:
+        if not skipped:
+            with lifecycle.engine.connect() as skipper, skipper.begin():
+                skipped.append(
+                    _cas_write(skipper, target.id, title="the skipper", take_lock=False)
+                )
+        return checkpoint(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(deletion_operations, "_authorized_or_refused", skip_then_check)
+        outcome = _approve(lifecycle, ctx, approval_id)
+
+    assert skipped == [2], "the skipper never committed inside the approve"
+    _refused(outcome, "record_stale")
+    stored = lifecycle.stored(target.id)
+    assert stored is not None, "content approved at revision 1 was erased at 2"
+    assert (stored.title, stored.revision) == ("the skipper", 2)
+    assert lifecycle.events(RECORD_DELETED) == []
+
+    # The rollback left the approval pending rather than executed, and approving it
+    # again is refused by the guard, which now sees revision 2 itself.
+    replay = _approve(lifecycle, ctx, approval_id)
+    assert replay.ok, replay
+    assert isinstance(replay.result, ApprovalRecord), replay
+    assert (replay.result.state, replay.result.executed_at) == ("refused", None)
+    assert lifecycle.stored(target.id) is not None
