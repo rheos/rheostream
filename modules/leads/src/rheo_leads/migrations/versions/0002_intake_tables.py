@@ -88,6 +88,8 @@ STATEMENTS = (
         ('webhook','import','manual')),
     CONSTRAINT connection_state CHECK (state IN
         ('active','needs_credential','revoked')),
+    CONSTRAINT campaign_needs_funnel CHECK
+        (campaign_id IS NULL OR funnel_id IS NOT NULL),
     CONSTRAINT connection_funnel CHECK (transport = 'manual' OR funnel_id IS
         NOT NULL),
     UNIQUE (source_namespace),

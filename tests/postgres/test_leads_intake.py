@@ -669,6 +669,10 @@ def test_campaign_pairing_is_enforced_by_service_and_database(intake: Intake) ->
                 funnel_id=intake.funnel_id, campaign_id=campaign
             )
         )
+    with pytest.raises(IntegrityError), open_unit_of_work(intake.ctx) as uow:
+        uow.connection.execute(
+            update(t.intake_connection).values(funnel_id=None, campaign_id=campaign)
+        )
     accepted = intake.call(
         "leads.intake.capture",
         body={},

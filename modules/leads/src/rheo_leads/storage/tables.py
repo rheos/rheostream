@@ -121,6 +121,9 @@ intake_connection = Table(
     CheckConstraint(
         "transport = 'manual' OR funnel_id IS NOT NULL", name="connection_funnel"
     ),
+    CheckConstraint(
+        "campaign_id IS NULL OR funnel_id IS NOT NULL", name="campaign_needs_funnel"
+    ),
 )
 Index(
     "one_manual_connection",
