@@ -2,7 +2,14 @@
 name = "rheo-leads"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = ["rheo-core", "rheo-contracts", "psycopg[binary]>=3.3.6,<4"]
+
+[project.entry-points."rheo.modules"]
+leads = "rheo_leads:MANIFEST"
+
+[tool.uv.sources]
+rheo-core = { workspace = true }
+rheo-contracts = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
