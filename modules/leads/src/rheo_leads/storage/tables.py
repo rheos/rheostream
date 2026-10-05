@@ -228,6 +228,7 @@ observation = Table(
     Column("completeness", Integer, nullable=False),
     Column("party_ref", Text),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("id = receipt_id", name="observation_receipt_identity"),
 )
 Index("observation_connection", observation.c.connection_id)
 observation_field = Table(

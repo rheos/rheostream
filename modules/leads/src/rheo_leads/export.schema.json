@@ -1,0 +1,794 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.field_mapping"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source_kind": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "version",
+        "name",
+        "source_kind",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.funnel"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "archived_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "name",
+        "description",
+        "created_at",
+        "archived_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.campaign"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "funnel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "archived_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "funnel_id",
+        "name",
+        "created_at",
+        "archived_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.field_mapping_identity"
+        },
+        "mapping_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "event_id_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occurred_at_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject_id_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verified_email_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "mapping_id",
+        "version",
+        "event_id_path",
+        "occurred_at_path",
+        "subject_id_path",
+        "verified_email_path"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.field_mapping_rule"
+        },
+        "mapping_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "target": {
+          "type": "string"
+        },
+        "source_path": {
+          "type": "string"
+        },
+        "transform": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transform_arg": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "clear_on_null": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "record_type",
+        "mapping_id",
+        "version",
+        "target",
+        "source_path",
+        "transform",
+        "transform_arg",
+        "required",
+        "clear_on_null"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.intake_connection"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "source_namespace": {
+          "type": "string"
+        },
+        "mapping_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mapping_version": {
+          "type": "integer"
+        },
+        "funnel_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "campaign_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "subject_authenticated": {
+          "type": "boolean"
+        },
+        "email_verified": {
+          "type": "boolean"
+        },
+        "signing_secret_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signing_key_generation": {
+          "type": "integer"
+        },
+        "previous_secret_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "previous_valid_until": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "state": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "revoked_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "name",
+        "transport",
+        "source_namespace",
+        "mapping_id",
+        "mapping_version",
+        "funnel_id",
+        "campaign_id",
+        "priority",
+        "subject_authenticated",
+        "email_verified",
+        "signing_secret_ref",
+        "signing_key_generation",
+        "previous_secret_ref",
+        "previous_valid_until",
+        "state",
+        "created_at",
+        "revoked_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.connection_health"
+        },
+        "connection_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "last_accepted_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_processed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "pending_count": {
+          "type": "integer"
+        },
+        "unresolved_failures": {
+          "type": "integer"
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_error_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_unauthenticated_write_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "lag_seconds": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "record_type",
+        "connection_id",
+        "last_accepted_at",
+        "last_processed_at",
+        "pending_count",
+        "unresolved_failures",
+        "last_error",
+        "last_error_at",
+        "last_unauthenticated_write_at",
+        "lag_seconds"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.delivery_receipt"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "connection_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_event_id": {
+          "type": "string"
+        },
+        "content_digest": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})*$"
+        },
+        "byte_length": {
+          "type": "integer"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "received_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source_occurred_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "mapping_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mapping_version": {
+          "type": "integer"
+        },
+        "funnel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "campaign_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "signing_key_generation": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string"
+        },
+        "state_detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "processed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "connection_id",
+        "source_event_id",
+        "content_digest",
+        "byte_length",
+        "transport",
+        "received_at",
+        "source_occurred_at",
+        "mapping_id",
+        "mapping_version",
+        "funnel_id",
+        "campaign_id",
+        "signing_key_generation",
+        "state",
+        "state_detail",
+        "processed_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.import_batch"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "connection_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "file_ref": {
+          "type": "string"
+        },
+        "row_count": {
+          "type": "integer"
+        },
+        "accepted": {
+          "type": "integer"
+        },
+        "refused": {
+          "type": "integer"
+        },
+        "state": {
+          "type": "string"
+        },
+        "state_detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "connection_id",
+        "file_ref",
+        "row_count",
+        "accepted",
+        "refused",
+        "state",
+        "state_detail",
+        "created_at",
+        "finished_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.delivery_conflict"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "receipt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "content_digest": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})*$"
+        },
+        "byte_length": {
+          "type": "integer"
+        },
+        "received_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^([0-9a-f]{2})*$"
+        },
+        "resolved_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "resolved_by_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "resolution_note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "receipt_id",
+        "kind",
+        "content_digest",
+        "byte_length",
+        "received_at",
+        "body",
+        "resolved_at",
+        "resolved_by_id",
+        "resolution_note"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.delivery_payload"
+        },
+        "receipt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "body": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})*$"
+        },
+        "content_type": {
+          "type": "string"
+        },
+        "byte_length": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "record_type",
+        "receipt_id",
+        "body",
+        "content_type",
+        "byte_length"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.observation"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "receipt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "connection_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "funnel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "campaign_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "source_event_id": {
+          "type": "string"
+        },
+        "external_subject_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verified_email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "received_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "mapping_version": {
+          "type": "integer"
+        },
+        "completeness": {
+          "type": "integer"
+        },
+        "party_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "receipt_id",
+        "connection_id",
+        "funnel_id",
+        "campaign_id",
+        "transport",
+        "source_event_id",
+        "external_subject_id",
+        "verified_email",
+        "source_occurred_at",
+        "received_at",
+        "mapping_version",
+        "completeness",
+        "party_ref",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.observation_field"
+        },
+        "observation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "target": {
+          "type": "string"
+        },
+        "value_kind": {
+          "type": "string"
+        },
+        "value_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_path": {
+          "type": "string"
+        },
+        "transform": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mapping_version": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "record_type",
+        "observation_id",
+        "target",
+        "value_kind",
+        "value_text",
+        "source_path",
+        "transform",
+        "mapping_version"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
