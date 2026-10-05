@@ -38,6 +38,9 @@ campaign = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("archived_at", DateTime(timezone=True)),
 )
+# A composite reference makes campaign/funnel consistency a database invariant.
+UniqueConstraint(campaign.c.id, campaign.c.funnel_id, name="campaign_funnel_identity")
+
 field_mapping = Table(
     "field_mapping",
     metadata,
@@ -94,7 +97,7 @@ intake_connection = Table(
     Column("mapping_id", Uuid, nullable=False),
     Column("mapping_version", Integer, nullable=False),
     Column("funnel_id", Uuid, ForeignKey("leads.funnel.id")),
-    Column("campaign_id", Uuid, ForeignKey("leads.campaign.id")),
+    Column("campaign_id", Uuid),
     Column("priority", Integer, nullable=False),
     Column("subject_authenticated", Boolean, nullable=False),
     Column("email_verified", Boolean, nullable=False),
@@ -159,7 +162,7 @@ delivery_receipt = Table(
     Column("mapping_id", Uuid, nullable=False),
     Column("mapping_version", Integer, nullable=False),
     Column("funnel_id", Uuid, ForeignKey("leads.funnel.id"), nullable=False),
-    Column("campaign_id", Uuid, ForeignKey("leads.campaign.id")),
+    Column("campaign_id", Uuid),
     Column("signing_key_generation", Integer),
     Column("state", Text, nullable=False),
     Column("state_detail", Text),
@@ -217,7 +220,7 @@ observation = Table(
         "connection_id", Uuid, ForeignKey("leads.intake_connection.id"), nullable=False
     ),
     Column("funnel_id", Uuid, ForeignKey("leads.funnel.id"), nullable=False),
-    Column("campaign_id", Uuid, ForeignKey("leads.campaign.id")),
+    Column("campaign_id", Uuid),
     Column("transport", Text, nullable=False),
     Column("source_event_id", Text, nullable=False),
     Column("external_subject_id", Text),
@@ -265,6 +268,15 @@ import_batch = Table(
         name="import_state",
     ),
 )
+for attributed in (intake_connection, delivery_receipt, observation):
+    attributed.append_constraint(
+        ForeignKeyConstraint(
+            ["campaign_id", "funnel_id"],
+            ["leads.campaign.id", "leads.campaign.funnel_id"],
+            name=f"{attributed.name}_campaign_funnel",
+        )
+    )
+
 Index(
     "import_connection_created",
     import_batch.c.connection_id,

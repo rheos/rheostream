@@ -20,7 +20,7 @@ from rheo_leads.intake.mapping import (
     Fact,
     MappingRefused,
     apply_mapping,
-    value_at,
+    resolve_identity,
 )
 from rheo_leads.references import identifier, ref
 from rheo_leads.storage import tables as t
@@ -107,7 +107,7 @@ def apply_pinned_mapping(
     except MappingRefused as exc:
         # Only the configured target is allowed into persisted diagnostics.
         raise DeliveryRefused("mapping_failed:" + str(exc)) from None
-    state.identity = (
+    identity_paths = (
         uow.connection.execute(
             select(t.field_mapping_identity).where(
                 t.field_mapping_identity.c.mapping_id == receipt["mapping_id"],
@@ -117,16 +117,16 @@ def apply_pinned_mapping(
         .mappings()
         .one()
     )
+    try:
+        state.identity = resolve_identity(
+            dict(identity_paths), state.payload, source_kind=state.source_kind
+        )
+    except MappingRefused:
+        raise DeliveryRefused("identity_invalid") from None
 
 
 def _identity_text(state: DeliveryState, key: str) -> str | None:
-    path = state.identity.get(key)
-    try:
-        value = value_at(
-            state.payload, str(path) if path is not None else None, state.source_kind
-        )
-    except MappingRefused:
-        raise DeliveryRefused("identity_invalid:" + key) from None
+    value = state.identity.get(key, MISSING)
     if value is MISSING or value is None:
         return None
     if not isinstance(value, str | int):

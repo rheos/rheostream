@@ -630,3 +630,53 @@ def test_signing_generation_is_rechecked(
             == expected
         )
     assert intake.count(t.observation) == (1 if expected == "processed" else 0)
+
+
+def test_campaign_pairing_is_enforced_by_service_and_database(intake: Intake) -> None:
+    from rheo_core.refs import uuid7
+    from sqlalchemy import insert
+    from sqlalchemy.exc import IntegrityError
+
+    other_funnel, campaign = uuid7(), uuid7()
+    with open_unit_of_work(intake.ctx) as uow:
+        uow.connection.execute(
+            insert(t.funnel).values(
+                id=other_funnel,
+                name="Sample funnel",
+                description="Synthetic attribution fixture",
+                created_at=datetime.now(UTC),
+            )
+        )
+        uow.connection.execute(
+            insert(t.campaign).values(
+                id=campaign,
+                funnel_id=other_funnel,
+                name="Sample campaign",
+                created_at=datetime.now(UTC),
+            )
+        )
+        uow.commit()
+    refused = intake.call(
+        "leads.intake.capture",
+        body={},
+        funnel_ref=ref("funnel", intake.funnel_id),
+        campaign_ref=ref("campaign", campaign),
+    )
+    assert refused.state == "not_found" and intake.count(t.delivery_receipt) == 0
+    with pytest.raises(IntegrityError), open_unit_of_work(intake.ctx) as uow:
+        uow.connection.execute(
+            update(t.intake_connection).values(
+                funnel_id=intake.funnel_id, campaign_id=campaign
+            )
+        )
+    accepted = intake.call(
+        "leads.intake.capture",
+        body={},
+        funnel_ref=ref("funnel", other_funnel),
+        campaign_ref=ref("campaign", campaign),
+    )
+    assert accepted.ok
+    intake.visit()
+    with open_unit_of_work(intake.ctx) as uow:
+        row = uow.connection.execute(select(t.observation)).mappings().one()
+        assert row["funnel_id"] == other_funnel and row["campaign_id"] == campaign

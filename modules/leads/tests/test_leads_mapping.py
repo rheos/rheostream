@@ -5,6 +5,7 @@ from rheo_leads.intake.mapping import (
     MISSING,
     MappingRefused,
     apply_mapping,
+    resolve_identity,
     transform_value,
     value_at,
 )
@@ -93,6 +94,23 @@ def test_json_pointer_escapes_and_arrays() -> None:
     assert value_at(payload, "/a~1b/~0key/01", "json") is MISSING
     with pytest.raises(MappingRefused):
         value_at(payload, "/a~2b", "json")
+
+
+def test_identity_paths_share_addressing_and_preserve_missing() -> None:
+    fields = resolve_identity(
+        {"event_id_path": "/meta/id", "subject_id_path": "/subject"},
+        {"meta": {"id": "sample-event"}, "subject": None},
+        source_kind="json",
+    )
+    assert fields["event_id_path"] == "sample-event"
+    assert fields["subject_id_path"] is None
+    assert fields["occurred_at_path"] is MISSING
+    assert (
+        resolve_identity(
+            {"event_id_path": "Event ID"}, {"Event ID": "row-1"}, source_kind="csv"
+        )["event_id_path"]
+        == "row-1"
+    )
 
 
 def test_unknown_transform_and_non_scalar_values_refuse() -> None:

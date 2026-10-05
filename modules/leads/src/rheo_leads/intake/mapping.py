@@ -72,6 +72,26 @@ def transform_value(value: object, transform: str | None, arg: str | None) -> st
     raise ValueError("unknown_transform")
 
 
+def resolve_identity(
+    identity: Mapping[str, object], payload: object, *, source_kind: str
+) -> dict[str, object]:
+    """Address identity fields without promoting them to trusted routing claims.
+
+    Missing stays distinct from null. Transport callers choose their own event-id
+    policy (manual always mints a new one) and validate the scalars they consume.
+    """
+    return {
+        key: value_at(payload, str(path) if path is not None else None, source_kind)
+        for key in (
+            "event_id_path",
+            "occurred_at_path",
+            "subject_id_path",
+            "verified_email_path",
+        )
+        for path in (identity.get(key),)
+    }
+
+
 def apply_mapping(
     rules: Sequence[Mapping[str, object]],
     payload: object,
