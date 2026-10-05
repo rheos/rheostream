@@ -11,12 +11,13 @@ from rheo_core.boundary import Refusal, context_for_operator
 from rheo_core.boundary.factories import context_for_event_consumer
 from rheo_core.events import ConsumerRegistry, ConsumerSubscription, NewEvent, publish
 from rheo_core.events.consumers import HandlerUnitOfWork
+from rheo_core.events.deliveries import failed_delivery_count_for_subjects
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.storage.work_tables import event_delivery, outbox_event
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 pytestmark = pytest.mark.postgres
 
@@ -123,6 +124,42 @@ def test_followup_event_and_fanout_share_worker_transaction(
         assert followup["actor_kind"] == "system"
         assert followup["actor_id"] is None
         assert followup["correlation_id"] == context.request_id
+    else:
+        with open_unit_of_work(context) as uow:
+            # Terminal failure is an operator-visible state, distinct from retry.
+            uow.connection.execute(update(event_delivery).values(state="failed"))
+            assert (
+                failed_delivery_count_for_subjects(
+                    uow.connection,
+                    consumer_id="core.first",
+                    subject_refs=["core.fixture:example", "core.fixture:example"],
+                )
+                == 1
+            )
+            assert (
+                failed_delivery_count_for_subjects(
+                    uow.connection,
+                    consumer_id="core.other",
+                    subject_refs=["core.fixture:example"],
+                )
+                == 0
+            )
+            assert (
+                failed_delivery_count_for_subjects(
+                    uow.connection,
+                    consumer_id="core.first",
+                    subject_refs=[],
+                )
+                == 0
+            )
+            assert (
+                failed_delivery_count_for_subjects(
+                    uow.connection,
+                    consumer_id="core.first",
+                    subject_refs=["unrelated"],
+                )
+                == 0
+            )
 
 
 def test_consumer_context_refuses_a_transaction_for_another_workspace(
