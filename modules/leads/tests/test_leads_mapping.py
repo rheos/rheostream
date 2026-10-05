@@ -96,6 +96,8 @@ def test_json_pointer_escapes_and_arrays() -> None:
 
 
 def test_unknown_transform_and_non_scalar_values_refuse() -> None:
+    with pytest.raises(MappingRefused, match="^unknown_target$"):
+        apply_mapping([rule(target="unconfigured.fact")], {}, source_kind="json")
     with pytest.raises(ValueError, match="unknown_transform"):
         transform_value("a", "execute", None)
     with pytest.raises(ValueError, match="scalar_required"):

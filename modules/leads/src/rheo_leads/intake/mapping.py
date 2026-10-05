@@ -5,6 +5,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from rheo_leads.configuration import FACTS
+
 MISSING = object()
 
 
@@ -79,6 +81,8 @@ def apply_mapping(
     facts = []
     for rule in rules:
         target, path = str(rule["target"]), str(rule["source_path"])
+        if target not in FACTS:
+            raise MappingRefused("unknown_target")
         transform = str(rule["transform"]) if rule["transform"] is not None else None
         arg = str(rule["transform_arg"]) if rule["transform_arg"] is not None else None
         value = value_at(payload, path, source_kind)

@@ -13,7 +13,7 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
-from rheo_core.events.deliveries import failed_delivery_count_for_subjects
+from rheo_core.events import failed_delivery_count_for_subjects
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.refs import uuid7
