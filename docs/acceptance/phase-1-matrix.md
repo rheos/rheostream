@@ -737,15 +737,15 @@ diff --git a/packages/core/src/rheo_core/work/loop.py b/packages/core/src/rheo_c
 index feeba15..1da746d 100644
 --- a/packages/core/src/rheo_core/work/loop.py
 +++ b/packages/core/src/rheo_core/work/loop.py
-@@ -893,7 +893,7 @@ def _run_consumer(
+@@ -933,7 +933,7 @@ def _run_consumer(
          connection = uow.connection
          try:
              if not already_processed(
 -                connection, consumer_id=leased.consumer_id, event_id=leased.event_id
 +                connection, consumer_id=owner, event_id=leased.event_id
              ):
-                 handler(HandlerUnitOfWork(uow), _envelope_for(connection, leased))
-                 record_processed(
+                 # A local import avoids the boundary/operations/work import cycle.
+                 from rheo_core.boundary.context import Refusal
 ```
 
 **Cost:** `pytest:tests/postgres/test_event_delivery.py::test_a_redelivery_of_a_processed_event_never_runs_the_handler_again` — first observed failure line: `E       AssertionError: the consumer's handler body started twice: a redelivery of an event already in core.consumer_processed must be marked delivered without running it`, then `E       assert 2 == 1`. 1 failed, 20 passed across `test_outbox.py` and `test_event_delivery.py` together.
