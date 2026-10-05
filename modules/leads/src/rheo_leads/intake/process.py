@@ -160,8 +160,12 @@ def create_observation(
             campaign_id=receipt["campaign_id"],
             transport=receipt["transport"],
             source_event_id=receipt["source_event_id"],
-            external_subject_id=_identity_text(state, "subject_id_path"),
-            verified_email=_identity_text(state, "verified_email_path"),
+            external_subject_id=_identity_text(state, "subject_id_path")
+            if state.connection["subject_authenticated"]
+            else None,
+            verified_email=_identity_text(state, "verified_email_path")
+            if state.connection["email_verified"]
+            else None,
             source_occurred_at=occurred or receipt["received_at"],
             received_at=receipt["received_at"],
             mapping_version=receipt["mapping_version"],

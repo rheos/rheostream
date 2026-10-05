@@ -15,8 +15,10 @@ from harness.modules import (
 )
 from rheo_contracts import RecordRef, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
+from rheo_core.boundary.factories import context_for_event_consumer
 from rheo_core.deletion import Disposition
 from rheo_core.events import ConsumerRegistry
+from rheo_core.events.consumers import HandlerUnitOfWork
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.settings import resolver as settings_resolver
@@ -28,7 +30,8 @@ from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
 from rheo_leads import MANIFEST
 from rheo_leads.configuration import SETTINGS
-from rheo_leads.contracts import AcceptedDelivery, ConnectionHealth
+from rheo_leads.contracts import AcceptDeliveryInput, AcceptedDelivery, ConnectionHealth
+from rheo_leads.intake.accept import accept_delivery
 from rheo_leads.lifecycle import on_observation_deleted
 from rheo_leads.references import ref
 from rheo_leads.storage import tables as t
@@ -72,6 +75,26 @@ class Intake:
         assert outcome.ok, outcome
         assert isinstance(outcome.result, AcceptedDelivery)
         return outcome.result
+
+    def service_accept(self, **payload: Any) -> AcceptedDelivery:
+        """The internal system-service seam; no connector authentication is simulated.
+
+        The existing boundary binds this synthetic system actor to the actual
+        workspace transaction. It grants no operations; call the internal service
+        in that transaction, as the later import connector will do.
+        """
+        with open_unit_of_work(self.ctx) as uow:
+            ctx = context_for_event_consumer(
+                self.workspace, uow, request_id=self.ctx.request_id
+            )
+            assert isinstance(ctx, WorkspaceContext) and ctx.role is Role.SERVICE
+            result = accept_delivery(
+                ctx,
+                HandlerUnitOfWork(uow, consumers=self.consumers),
+                AcceptDeliveryInput(**payload),
+            )
+            uow.commit()
+            return result
 
     def visit(self) -> None:
         at = datetime.now(UTC) + timedelta(seconds=2)
@@ -615,14 +638,13 @@ def test_signing_generation_is_rechecked(
         )
         uow.connection.execute(insert(t.intake_connection).values(**connection))
         uow.commit()
-    outcome = intake.call(
-        "leads.intake.accept_delivery",
+    outcome = intake.service_accept(
         connection_ref=ref("intake_connection", connection["id"]),
         source_event_id="signed-fixture",
         body="{}",
         signing_key_generation=generation,
     )
-    assert outcome.ok
+    assert outcome.outcome == "accepted"
     intake.visit()
     with open_unit_of_work(intake.ctx) as uow:
         assert (
@@ -684,3 +706,89 @@ def test_campaign_pairing_is_enforced_by_service_and_database(intake: Intake) ->
     with open_unit_of_work(intake.ctx) as uow:
         row = uow.connection.execute(select(t.observation)).mappings().one()
         assert row["funnel_id"] == other_funnel and row["campaign_id"] == campaign
+
+
+@pytest.mark.parametrize("transport", ["webhook", "import"])
+def test_accounts_cannot_inject_connector_delivery_identity(
+    intake: Intake, transport: str
+) -> None:
+    from harness.registry import add_member
+    from rheo_core.refs import uuid7
+    from sqlalchemy import insert
+
+    with open_unit_of_work(intake.ctx) as uow:
+        connection = dict(
+            uow.connection.execute(select(t.intake_connection)).mappings().one()
+        )
+        connection.update(
+            id=uuid7(),
+            transport=transport,
+            source_namespace="fixture-connector",
+            funnel_id=intake.funnel_id,
+        )
+        uow.connection.execute(insert(t.intake_connection).values(**connection))
+        uow.commit()
+    member = add_member(
+        intake.cluster.backend,
+        intake.workspace,
+        Role.MEMBER,
+        display_name="Sample member",
+    )
+    member_ctx = context_for_harness(intake.workspace, member, Role.MEMBER)
+    assert isinstance(member_ctx, WorkspaceContext)
+    payload = {
+        "connection_ref": ref("intake_connection", connection["id"]),
+        "source_event_id": "claimed-source-event",
+        "body": "{}",
+        "signing_key_generation": 1,
+    }
+    for ctx in (intake.ctx, member_ctx):
+        outcome = dispatch(
+            ctx,
+            "leads.intake.accept_delivery",
+            payload,
+            registry=intake.surfaces.operations,
+            consumers=intake.consumers,
+        )
+        assert outcome.state == "role_not_permitted"
+    assert (
+        intake.count(t.delivery_receipt)
+        == intake.count(t.delivery_payload)
+        == intake.count(event_delivery)
+        == 0
+    )
+    assert intake.service_accept(**payload).outcome == "accepted"
+
+
+@pytest.mark.parametrize(
+    "subject_trusted,email_trusted",
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_identity_evidence_requires_independent_connection_declarations(
+    intake: Intake,
+    subject_trusted: bool,
+    email_trusted: bool,
+) -> None:
+    with open_unit_of_work(intake.ctx) as uow:
+        uow.connection.execute(
+            update(t.field_mapping_identity).values(
+                subject_id_path="/subject_id", verified_email_path="/email"
+            )
+        )
+        uow.connection.execute(
+            update(t.intake_connection).values(
+                subject_authenticated=subject_trusted, email_verified=email_trusted
+            )
+        )
+        uow.commit()
+    intake.accept(body='{"subject_id":"sample-subject","email":"sample@example.com"}')
+    intake.visit()
+    with open_unit_of_work(intake.ctx) as uow:
+        row = uow.connection.execute(select(t.observation)).mappings().one()
+        assert row["external_subject_id"] == (
+            "sample-subject" if subject_trusted else None
+        )
+        assert row["verified_email"] == (
+            "sample@example.com" if email_trusted else None
+        )
+        assert row["party_ref"] is None

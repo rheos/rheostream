@@ -43,3 +43,10 @@ replaces that seed with the source identities, and strips deployment-local signi
 handles; active webhook connections restore as needing credentials. Full operational
 export/restore acceptance, including resuming pending deliveries, belongs to the later
 platform restore work.
+
+Non-manual acceptance requires a service context; owner/member sessions cannot claim
+a webhook/import source event or signing generation. The later connectors must build
+that context only after their transport authentication. Observation identity evidence
+is populated only under the connection's independent `subject_authenticated` and
+`email_verified` declarations. Unvouched values remain in the source payload and are
+not promoted into those identity columns.

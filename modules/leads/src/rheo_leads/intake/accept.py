@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from rheo_contracts import WorkspaceContext
+from rheo_contracts import Role, WorkspaceContext
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import UnitOfWork
@@ -113,6 +113,8 @@ def accept_delivery(
             else None
         )
     else:
+        if ctx.role is not Role.SERVICE:
+            raise OperationRefused("role_not_permitted", "connector transport only")
         if model_input.funnel_ref is not None or model_input.campaign_ref is not None:
             raise OperationRefused("input_invalid", "connection owns attribution")
         funnel_id, campaign_id = connection["funnel_id"], connection["campaign_id"]
