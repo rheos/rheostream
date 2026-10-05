@@ -9,9 +9,14 @@ from harness.registry import enable_harness_module
 from rheo_contracts import ActorKind, Entry, EventEnvelope, Role, WorkspaceContext
 from rheo_core.boundary import Refusal, context_for_operator
 from rheo_core.boundary.factories import context_for_event_consumer
-from rheo_core.events import ConsumerRegistry, ConsumerSubscription, NewEvent, publish
+from rheo_core.events import (
+    ConsumerRegistry,
+    ConsumerSubscription,
+    NewEvent,
+    failed_delivery_count_for_subjects,
+    publish,
+)
 from rheo_core.events.consumers import HandlerUnitOfWork
-from rheo_core.events.deliveries import failed_delivery_count_for_subjects
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.storage.work_tables import event_delivery, outbox_event
@@ -28,6 +33,7 @@ def test_followup_event_and_fanout_share_worker_transaction(
     workspace: UUID,
     fail: bool,
 ) -> None:
+    """Both publication and fan-out disappear if their consumer transaction fails."""
     registry = ConsumerRegistry()
     observed: list[WorkspaceContext] = []
     delivered: list[UUID] = []
@@ -166,6 +172,7 @@ def test_consumer_context_refuses_a_transaction_for_another_workspace(
     workspace: UUID,
     make_workspace: MakeWorkspace,
 ) -> None:
+    """A valid workspace id cannot bless a different workspace transaction."""
     other = make_workspace()
     context = context_for_operator(workspace)
     assert isinstance(context, WorkspaceContext)
