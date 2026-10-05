@@ -38,6 +38,7 @@ from rheo_contracts import (
     Role,
     WorkspaceContext,
 )
+from sqlalchemy import text
 
 from rheo_core.boundary.context import (
     MEMBERSHIP_MISSING,
@@ -53,7 +54,7 @@ from rheo_core.boundary.context import (
 )
 from rheo_core.refs import uuid7
 from rheo_core.settings import current_profile
-from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.backend import DATABASE_MISMATCH, UnitOfWork
 from rheo_core.storage.control_plane import (
     get_access_token,
     get_membership,
@@ -178,6 +179,47 @@ def context_for_operator(
         request_id=uuid7(),
         # An operator is not an account and carries no bound purpose: the `rheo`
         # command authenticates against the host, not against `control.account`.
+        principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),
+    )
+
+
+def context_for_event_consumer(
+    workspace_id: UUID, uow: UnitOfWork, *, request_id: UUID
+) -> WorkspaceContext | Refusal:
+    """Publication context for a worker's already-routed delivery transaction.
+
+    The workspace comes from the worker visit, never event data. Recheck the
+    registry and actual database before reading enabled modules in this transaction.
+    A system consumer inherits no source actor, account, purpose or operation grant.
+    This context lets it publish facts; it cannot dispatch privileged operations.
+    """
+    with get_backend().control_engine.connect() as connection:
+        row = get_workspace(connection, workspace_id)
+    if row is None:
+        return Refusal(WORKSPACE_UNAVAILABLE, WORKSPACE_MISSING_DETAIL)
+    if row.state is not WorkspaceState.ACTIVE:
+        return Refusal(WORKSPACE_UNAVAILABLE, row.state.value)
+    if (
+        uow.connection.execute(text("SELECT current_database()")).scalar_one()
+        != row.database_name
+    ):
+        return Refusal(
+            DATABASE_MISMATCH, "consumer transaction is not the routed workspace"
+        )
+    enabled = frozenset(
+        state.module_id
+        for state in list_module_states(uow.connection)
+        if state.state == _MODULE_ENABLED
+    )
+    return WorkspaceContext(
+        workspace_id=workspace_id,
+        actor=Actor(kind=ActorKind.SYSTEM, id=None),
+        role=Role.SERVICE,
+        entry=Entry.JOB,
+        audience=None,
+        operation_set=frozenset(),
+        enabled_modules=enabled,
+        request_id=request_id,
         principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),
     )
 
