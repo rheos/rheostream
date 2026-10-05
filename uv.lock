@@ -1190,6 +1190,18 @@ source = { editable = "modules/current" }
 name = "rheo-leads"
 version = "0.1.0"
 source = { editable = "modules/leads" }
+dependencies = [
+    { name = "psycopg", extra = ["binary"] },
+    { name = "rheo-contracts" },
+    { name = "rheo-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6,<4" },
+    { name = "rheo-contracts", editable = "packages/contracts" },
+    { name = "rheo-core", editable = "packages/core" },
+]
 
 [[package]]
 name = "rheo-recallatron"
