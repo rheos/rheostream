@@ -349,6 +349,9 @@ def dispatch_spy(monkeypatch: pytest.MonkeyPatch) -> DispatchSpy:
     return spy
 
 
+@pytest.mark.parametrize(
+    "protocol_version", ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
+)
 async def test_a_connector_token_is_mcp_only_and_dispatches_like_an_issued_one(
     surface: OAuthSurface,
     address: str,
@@ -356,6 +359,7 @@ async def test_a_connector_token_is_mcp_only_and_dispatches_like_an_issued_one(
     cluster: ClusterSession,
     capsys: pytest.CaptureFixture[str],
     dispatch_spy: DispatchSpy,
+    protocol_version: str,
 ) -> None:
     issued = _cli_issue(capsys, member)
     _sign_in_as(member)
@@ -370,6 +374,30 @@ async def test_a_connector_token_is_mcp_only_and_dispatches_like_an_issued_one(
         issued_on_api = await client.http.post(
             _api_url(WORKSPACE_STATUS), headers=_bearer(issued), json={}
         )
+        # A connector must finish the protocol handshake before it will ask for
+        # tools. HTTP 200 alone can also carry a JSON-RPC error (#298).
+        initialized = await client.mcp_call(
+            connector,
+            "initialize",
+            {
+                "protocolVersion": protocol_version,
+                "capabilities": {},
+                "clientInfo": {"name": "Example connector", "version": "1.0.0"},
+            },
+        )
+        assert initialized.status_code == 200, initialized.text
+        assert "error" not in initialized.json(), initialized.text
+        negotiated = initialized.json()["result"]
+        assert negotiated["protocolVersion"] == protocol_version
+        assert "tools" in negotiated["capabilities"]
+        assert "mcp-session-id" not in initialized.headers
+        client.http.headers["MCP-Protocol-Version"] = protocol_version
+        acknowledged = await client.http.post(
+            surface.resource,
+            headers={**MCP_HEADERS, **_bearer(connector)},
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        assert acknowledged.status_code == 202, acknowledged.text
         listed = await client.mcp_call(connector)
         issued_listed = await client.mcp_call(issued)
         outside = await client.mcp_call(
