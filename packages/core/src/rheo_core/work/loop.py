@@ -821,6 +821,7 @@ def _run_leased_delivery(
     database: str,
     *,
     leased: LeasedDelivery,
+    workspace_id: UUID,
     consumers: ConsumerRegistry,
     owner: str,
     clock: Callable[[], datetime],
@@ -875,6 +876,8 @@ def _run_leased_delivery(
         engine,
         database,
         leased=leased,
+        workspace_id=workspace_id,
+        consumers=consumers,
         handler=subscription.handler,
         owner=owner,
         clock=clock,
@@ -887,6 +890,8 @@ def _run_consumer(
     database: str,
     *,
     leased: LeasedDelivery,
+    workspace_id: UUID,
+    consumers: ConsumerRegistry,
     handler: ConsumerHandler,
     owner: str,
     clock: Callable[[], datetime],
@@ -929,7 +934,22 @@ def _run_consumer(
             if not already_processed(
                 connection, consumer_id=leased.consumer_id, event_id=leased.event_id
             ):
-                handler(HandlerUnitOfWork(uow), _envelope_for(connection, leased))
+                # A local import avoids the boundary/operations/work import cycle.
+                from rheo_core.boundary.context import Refusal
+                from rheo_core.boundary.factories import context_for_event_consumer
+
+                envelope = _envelope_for(connection, leased)
+                context = context_for_event_consumer(
+                    workspace_id, uow, request_id=envelope.correlation_id
+                )
+                if isinstance(context, Refusal):
+                    raise RuntimeError(f"consumer context refused: {context.state}")
+                handler(
+                    HandlerUnitOfWork(
+                        uow, consumers=consumers, consumer_context=context
+                    ),
+                    envelope,
+                )
                 record_processed(
                     connection,
                     consumer_id=leased.consumer_id,
@@ -1195,6 +1215,7 @@ def visit_workspace(
                 engine,
                 database,
                 leased=leased_delivery,
+                workspace_id=workspace.workspace_id,
                 consumers=consumers,
                 owner=owner,
                 clock=clock,

@@ -271,7 +271,12 @@ class HandlerUnitOfWork(UnitOfWork):
     ``approvals/gate.py`` carries through whatever the view it was given holds rather
     than producing one, exactly as it does for ``consumers``.
 
-    **The seal is over those three names and claims no more.** ``connection`` is
+    **Consumer publication context.** The event worker additionally supplies
+    ``consumer_context``: a system/service context bound to its routed workspace,
+    with no operation grants or source-caller authority. Ordinary dispatch and job
+    views leave it absent. It is read-only like the other supplied context.
+
+    **The seal covers the view's methods and supplied context.** ``connection`` is
     inherited and still returns a live SQLAlchemy ``Connection``, so
     ``view.connection.commit()`` still ends the transaction. Closing that would mean
     narrowing the *handler protocol* — handing handlers something that is not a
@@ -298,6 +303,7 @@ class HandlerUnitOfWork(UnitOfWork):
         "_consumers",
         "_scheduled_execution",
         "_due_mark_requested",
+        "_consumer_context",
     )
 
     def __init__(
@@ -307,6 +313,7 @@ class HandlerUnitOfWork(UnitOfWork):
         operation_id: UUID | None = None,
         consumers: "ConsumerRegistry | None" = None,
         scheduled_execution: "VerifiedScheduledExecution | None" = None,
+        consumer_context: WorkspaceContext | None = None,
     ) -> None:
         """Share an already-entered unit of work's connection and transaction.
 
@@ -318,9 +325,8 @@ class HandlerUnitOfWork(UnitOfWork):
         ``None``, and the worker's verified scheduled-execution capability or
         ``None``.
 
-        All three are keyword-only with a ``None`` default, so every construction
-        site that has none — the delivery drain, and every test that builds a view
-        directly — needs no edit.
+        All supplied context is keyword-only with a ``None`` default, so existing
+        callers that do not need it keep the same constructor.
         """
         if not isinstance(uow, UnitOfWork):
             raise TypeError("HandlerUnitOfWork wraps a UnitOfWork")
@@ -333,6 +339,16 @@ class HandlerUnitOfWork(UnitOfWork):
         self._consumers = consumers
         self._scheduled_execution = scheduled_execution
         self._due_mark_requested = False
+        self._consumer_context = consumer_context
+
+    @property
+    def consumer_context(self) -> WorkspaceContext | None:
+        """Worker-bound publication context; absent on ordinary operation/job views.
+
+        System/service with no operation grants. It is not the source event's
+        caller, and source payload fields cannot widen its authority.
+        """
+        return self._consumer_context
 
     @property
     def operation_id(self) -> UUID | None:

@@ -48,6 +48,7 @@ worker that is running it.
 """
 
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Final
@@ -781,6 +782,32 @@ def delivery_failure_counts(conn: Connection) -> DeliveryFailureCounts:
         failed_count=int(failed[0]),
         blocked_count=int(blocked),
         oldest_failed_at=failed[1],
+    )
+
+
+def failed_delivery_count_for_subjects(
+    conn: Connection, *, consumer_id: str, subject_refs: Sequence[str]
+) -> int:
+    """Count current failures for a consumer and the caller's authorized subjects.
+
+    Reads only this transaction's workspace. Callers authorize their own records
+    before supplying references. Batches bound SQL parameters; duplicate references
+    cannot inflate the count. No error contents or other consumers' state escape.
+    """
+    refs = sorted(set(subject_refs))
+    return sum(
+        int(
+            conn.execute(
+                select(func.count())
+                .select_from(t.event_delivery)
+                .where(
+                    t.event_delivery.c.state == FAILED,
+                    t.event_delivery.c.consumer_id == consumer_id,
+                    t.event_delivery.c.subject_ref.in_(refs[start : start + 1000]),
+                )
+            ).scalar_one()
+        )
+        for start in range(0, len(refs), 1000)
     )
 
 
