@@ -500,8 +500,68 @@ def _raw_database_violations(root: Path) -> tuple[int, dict[str, list[str]]]:
     return scanned, remaining
 
 
+def _foreign_storage_violations(root: Path) -> tuple[int, dict[str, list[str]]]:
+    scanned, violations = _scan_sources(root, _foreign_storage_sites)
+    relative = "rheo_recallatron/lifecycle.py"
+    if relative not in violations:
+        return scanned, violations
+    # Canonical deletion subscription names are reference values, not table access.
+    # Exempt only these exact literals in the one declared tuple in this file.
+    # Imports, SQL strings and all other occurrences still go through the scanner.
+    tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+    allowed = {"leads.observation", "leads.opportunity", "relationships.party"}
+    exempt: Counter[str] = Counter()
+    for node in tree.body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "DELETION_PARTICIPANT_TYPES"
+            and isinstance(node.value, ast.Tuple)
+        ):
+            for element in node.value.elts:
+                if (
+                    isinstance(element, ast.Constant)
+                    and isinstance(element.value, str)
+                    and element.value in allowed
+                ):
+                    exempt[f"qualified name {element.value}@{element.lineno}"] += 1
+    kept = sorted((Counter(violations[relative]) - exempt).elements())
+    if kept:
+        violations[relative] = kept
+    else:
+        del violations[relative]
+    return scanned, violations
+
+
+def test_record_subscription_exception_still_catches_storage_access(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "rheo_recallatron" / "lifecycle.py"
+    source.parent.mkdir()
+    source.write_text(
+        'DELETION_PARTICIPANT_TYPES: Final = ("leads.observation",)\n',
+        encoding="utf-8",
+    )
+    assert _foreign_storage_violations(tmp_path) == (1, {})
+    source.write_text(
+        source.read_text() + 'sql = "SELECT * FROM leads.observation"\n'
+        'table = "relationships.party"\n'
+        "from rheo_leads.storage import tables\n",
+        encoding="utf-8",
+    )
+    _, violations = _foreign_storage_violations(tmp_path)
+    sites = violations["rheo_recallatron/lifecycle.py"]
+    assert "qualified name leads.observation@2" in sites
+    assert "qualified name relationships.party@3" in sites
+    assert any(site.startswith("storage import rheo_leads.storage") for site in sites)
+    # The same declaration in another file does not get the exception.
+    other = source.with_name("other.py")
+    other.write_text('DELETION_PARTICIPANT_TYPES: Final = ("leads.observation",)\n')
+    assert "rheo_recallatron/other.py" in _foreign_storage_violations(tmp_path)[1]
+
+
 def test_recallatron_names_no_foreign_storage(tmp_path: Path) -> None:
-    scanned, violations = _scan_sources(_MODULE_SRC, _foreign_storage_sites)
+    scanned, violations = _foreign_storage_violations(_MODULE_SRC)
     assert scanned, "no Recallatron Python files scanned"
     assert not violations, f"Recallatron names foreign storage: {violations}"
 
