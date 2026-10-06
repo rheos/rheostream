@@ -22,6 +22,8 @@ from rheo_leads.intake.mapping import (
     apply_mapping,
     resolve_identity,
 )
+from rheo_leads.pipeline_common import lock
+from rheo_leads.pipeline_intake import resolve_party, route
 from rheo_leads.references import identifier, ref
 from rheo_leads.storage import tables as t
 
@@ -199,6 +201,8 @@ STEPS: tuple[tuple[int, Step], ...] = (
     (1, recheck_connection),
     (2, apply_pinned_mapping),
     (3, create_observation),
+    (4, resolve_party),
+    (5, route),
 )
 
 
@@ -206,6 +210,7 @@ def _process(uow: HandlerUnitOfWork, envelope: EventEnvelope) -> None:
     ctx = uow.consumer_context
     if ctx is None or uow.consumers is None:
         raise RuntimeError("consumer publication context unavailable")
+    lock(uow)
     receipt_id = identifier(envelope.subject_ref, "delivery_receipt")
     receipt = (
         uow.connection.execute(
@@ -279,7 +284,11 @@ def _process(uow: HandlerUnitOfWork, envelope: EventEnvelope) -> None:
             campaign_ref=ref("campaign", receipt["campaign_id"])
             if receipt["campaign_id"]
             else None,
-            party_ref=None,
+            party_ref=uow.connection.execute(
+                select(t.observation.c.party_ref).where(
+                    t.observation.c.id == state.observation_id
+                )
+            ).scalar_one(),
             completeness=sum(f.value_kind == "value" for f in state.facts),
         ),
         causation_id=envelope.id,

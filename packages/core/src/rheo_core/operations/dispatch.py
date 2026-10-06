@@ -1286,6 +1286,10 @@ def dispatch(
                 error=OperationError(HANDLER_FAILED, type(exc).__name__),
                 operation_id=operation_id,
             )
+    if name == "core.approval.approve":
+        from rheo_core.exports.erasure import sweep_after_commit
+
+        sweep_after_commit(ctx)
     # A handler that is not ``long_running`` but still made work due
     # (``core.work.retry`` and ``.replay`` put deliveries back ``pending``) asked for
     # the due mark through ``view.request_due_mark()``. It is written here, past the

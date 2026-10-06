@@ -31,11 +31,10 @@ owner who could read it off their own deletion would learn how much memory someb
 else's module held about their record. The exact counters live on the ledger row, which
 release one exposes only to an owner or operator through a later opt-in collection.
 
-**Three of the four counters are structurally zero here.** Cancelling queued jobs and
-pending external actions and marking held exports is criterion 65's work and is not
-built; ``records.py``'s writer holds them at zero and takes no parameter for them, so
-nothing in this file can claim a cascade that did not run. This is not complete R5
-coverage and does not claim to be.
+Core cancels reference-bound queued work and held approvals, clears associated
+runtime transcripts, and invalidates indexed held exports in the erasure transaction.
+Artifact bytes are removed after commit with a durable retry. Domain-derived memory
+still depends on its owning module's registered deletion participants.
 """
 
 from datetime import UTC, datetime
@@ -303,6 +302,28 @@ def delete_owned(
             cause=USER_ERASURE,
             retained_successor_ref=None,
             now=now,
+        )
+        from sqlalchemy import update
+
+        from rheo_core.deletion.dependents import erase_dependents
+        from rheo_core.deletion.tables import deletion_record
+
+        jobs, actions, exports = erase_dependents(
+            ctx,
+            uow,
+            item.ref,
+            deletion_id=deletion_id,
+            approval_id=approval.id,
+            now=now,
+        )
+        uow.connection.execute(
+            update(deletion_record)
+            .where(deletion_record.c.id == deletion_id)
+            .values(
+                cancelled_job_count=jobs,
+                cancelled_action_count=actions,
+                removed_export_count=exports,
+            )
         )
         current = deletion_ref(deletion_id)
         if item.ref == ref:

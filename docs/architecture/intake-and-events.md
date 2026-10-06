@@ -149,6 +149,16 @@ in one transaction per receipt:
 
 No model is involved anywhere in this path (FR 35, criterion 38).
 
+The worker constructs a verified service context from its routed workspace. The
+subscription explicitly grants only Relationships' identity resolution and Leads'
+create/attach operations. `call_in_transaction` authorizes the registered declaration,
+checks the enabled module and role, validates input/output, and writes the operation's
+audit in the same transaction. Approval-gated and deferred operations are refused on
+this path. Source payloads cannot choose grants. Installation seeds the preset but
+requires an owner-created pipeline and explicit routing rules before opportunities
+are created automatically.
+
+
 ### Field derivation (FR 37)
 
 `leads.opportunity_field_state` holds the current value of each opportunity field with why it is
@@ -162,16 +172,21 @@ the current value:
 | `observation_id`, `occurred_at`, `completeness`, `priority` | The evidence that set it. |
 | `orphaned` | `false` by default; `true` for an `ext.*` target the opportunity's current preset version no longer declares after a [version migration](confirmation-and-safety.md#the-migration-operation). Readable, exportable, not writable. |
 
-A new observation may write a field only when all hold: `owner = source`; the observation's
-`occurred_at` is not older than the current one; and, when `occurred_at` is equal, the
-observation's `completeness` is not lower and its connection `priority` is not lower. A thinner
-or older observation therefore never overwrites (criterion 47); a user-set field is `owner =
-user` and survives everything, and a user-set stage and a note live in columns intake never
-writes (`opportunity.stage_id` and
-[`opportunity_note`](confirmation-and-safety.md#opportunities-parties-qualifications-and-handoffs)),
-which is criterion 49; a `cleared` fact overwrites under the same rule and is distinguishable
-from absence (criterion 48). The observation itself is stored regardless, so nothing is lost,
-only not applied.
+Derivation replays the complete linked evidence set in occurrence-time order, so
+arrival order does not affect the result. A candidate replaces a source-owned field
+only if its completeness and connection priority are both at least the current
+winner's. Equal-time ties use priority, completeness, namespace and source event ID
+in that order. This resolves the former ambiguity between freshness and the promise
+that a newer but thinner observation does not overwrite richer evidence (criterion
+47). Missing fields do not clear earlier facts. An explicit `cleared` correction
+invalidates older evidence for that target even when the correction is thin; later
+surviving evidence is evaluated with the same rule. Original observations and their
+field values remain available through the linked observation read, including
+conflicting evidence that did not become current.
+
+User-set fields are `owner = user` and survive intake. A user-set stage and notes live
+in columns intake never writes, satisfying criterion 49. Field state names its source
+observation, occurrence time, completeness and priority so the winner is explainable.
 
 **After an observation is deleted.** The Leads owning delete removes the field-state rows whose
 `observation_id` is the erased observation, then re-derives each affected `(opportunity_id,

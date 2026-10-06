@@ -95,12 +95,19 @@ in criterion 65 asserts no field value from the deleted record appears anywhere 
 record resolver is to return `state = deleted` for the reference from this table; that lookup is
 not built yet, so today a deleted reference resolves to `Unavailable` like any absent row.
 
-The persisted outcome still has exactly four counters. 1a1 implements the owning memory delete,
-Recallatron invalidation, deletion evidence and transactional audit only; its first three
-counters are zero. The caller receives deletion_ref only. Exact counts are restricted
-owner/operator audit data. Phase-three 2c owns the remaining job/action/transcript/held-export
-cascade and criterion 65. Deletion cause/successor metadata is exported and validated with the
-ledger; it is not an erasure bypass for restoration.
+The persisted outcome has exactly four counters, restricted to owner/operator audit
+data; the caller receives `deletion_ref` only. Core now records cancellation of
+reference-bound queued/leased jobs and held approvals, removes matching runtime
+transcripts, and marks held exports for deletion in the same transaction. Newly
+published exports index owned record references and canonical provenance references
+from the exact archived snapshot. Legacy artifacts without an index are invalidated
+conservatively. Local artifact bytes are removed after commit, with a durable worker
+retry for failed cleanup. A lifecycle lock serializes export publication with erasure.
+
+**Current draft gap:** Recallatron's participant is not yet extended to derived memory
+from erased Leads observations/opportunities or Relationships parties. Criterion 65
+therefore remains incomplete. Deletion cause/successor metadata is exported and
+validated with the ledger; it is not an erasure bypass for restoration.
 
 ### Deletion is not withdrawal
 

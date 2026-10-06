@@ -184,14 +184,19 @@ def context_for_operator(
 
 
 def context_for_event_consumer(
-    workspace_id: UUID, uow: UnitOfWork, *, request_id: UUID
+    workspace_id: UUID,
+    uow: UnitOfWork,
+    *,
+    request_id: UUID,
+    operation_names: frozenset[str] = frozenset(),
 ) -> WorkspaceContext | Refusal:
     """Publication context for a worker's already-routed delivery transaction.
 
     The workspace comes from the worker visit, never event data. Recheck the
     registry and actual database before reading enabled modules in this transaction.
     A system consumer inherits no source actor, account, purpose or operation grant.
-    This context lets it publish facts; it cannot dispatch privileged operations.
+    This context lets it publish facts and call only the subscription's declared
+    synchronous operations. No grants are inferred from event data.
     """
     with get_backend().control_engine.connect() as connection:
         row = get_workspace(connection, workspace_id)
@@ -217,7 +222,7 @@ def context_for_event_consumer(
         role=Role.SERVICE,
         entry=Entry.JOB,
         audience=None,
-        operation_set=frozenset(),
+        operation_set=operation_names,
         enabled_modules=enabled,
         request_id=request_id,
         principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),

@@ -239,11 +239,14 @@ display text.
 
 ### The migration operation
 
-`leads.pipeline.migrate_version(pipeline_id, opportunity_ids, to_version, stage_map)`, mutate
-class, owner only, audited per opportunity:
+The initial implementation exposes
+`leads.pipeline.migrate_version(ref, revision, to_version, stage_map)`, mutate class,
+owner only, audited and revision-checked for one opportunity. The proposed batch
+`pipeline_id`/`opportunity_ids` form remains future work:
 
-- `stage_map` maps every `stage_id` in use among the selected opportunities to a `stage_id` in
-  `to_version`; a missing entry refuses the whole call naming the stage.
+
+- `stage_map` must map the selected opportunity's current stage to a stage in
+  `to_version`; a missing entry refuses the call.
 - Extension fields present in the old version and absent in the new are kept in
   `opportunity_field_state` with `orphaned = true`, readable and exportable, not writable.
 - A field required in the new version and empty on an opportunity does not block the migration;
