@@ -666,3 +666,27 @@ def test_relationships_name_candidates_are_capped_and_no_self_match(
     assert again.party_ref == person.party_ref
     assert set(again.review_candidate_refs) == set(person.review_candidate_refs)
     assert relationships.count(t.review_candidate) == 10
+
+
+def test_relationships_find_by_normalized_domain_and_bad_domain_refusal(
+    relationships: Relationships,
+) -> None:
+    organization = relationships.create("Example Company", "organization")
+    relationships.ok(
+        "contact_point.add",
+        party_ref=organization.ref,
+        revision=organization.revision,
+        kind="url",
+        value="https://example.org/about",
+    )
+    found = relationships.ok("party.find", query="https://EXAMPLE.ORG/contact")
+    assert [row["ref"] for row in found.items] == [organization.ref]
+    result = relationships.call(
+        "contact_point.add",
+        party_ref=organization.ref,
+        revision=relationships.get(organization.ref).revision,
+        kind="url",
+        value="http://[",
+    )
+    assert result.state == "input_invalid"
+    assert relationships.count(t.contact_point) == 1

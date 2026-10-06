@@ -132,6 +132,11 @@ def party_find(
     keys = {
         normalize(kind, data.query) for kind in ("email", "phone", "external_subject")
     }
+    try:
+        keys.add(normalize("url", data.query))
+    except OperationRefused:
+        # A free-form party name need not be a syntactically valid URL.
+        pass
     contacts = select(t.contact_point.c.party_id).where(
         t.contact_point.c.retired_at.is_(None),
         t.contact_point.c.normalized_value.in_(keys),
