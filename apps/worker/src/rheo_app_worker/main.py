@@ -33,6 +33,7 @@ from rheo_core.exports import (
     run_export_job,
     run_restore_job,
 )
+from rheo_core.exports.erasure import SWEEP_JOB_KIND, SweepPayload, run_sweep_job
 from rheo_core.log_config import configure_logging
 from rheo_core.modules import load_modules, register_module_settings
 from rheo_core.modules.operations import (
@@ -70,6 +71,7 @@ Export, restore, ``core.runtime.run``, ``core.retention_sweep`` and
 build its own. ``claude_cli`` is registered on the process ``ADAPTERS`` instance in
 this same module.
 """
+JOB_KINDS.register(SWEEP_JOB_KIND, SweepPayload, run_sweep_job)
 JOB_KINDS.register(EXPORT_JOB_KIND, ExportJobPayload, run_export_job)
 JOB_KINDS.register(RESTORE_JOB_KIND, RestoreJobPayload, run_restore_job)
 JOB_KINDS.register(RETENTION_SWEEP, RetentionSweepPayload, run_retention_sweep)

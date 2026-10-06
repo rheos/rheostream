@@ -35,6 +35,7 @@ _DECLARED_TEST_DEPENDENCIES = {
     "tests/postgres/test_memory_mcp.py",
     "tests/postgres/test_memory_redaction_mcp.py",
     "tests/postgres/test_memory_records.py",
+    "tests/postgres/test_leads_pipeline.py",
     "tests/postgres/test_memory_retention.py",
     "tests/postgres/test_memory_retrieval.py",
     "tests/postgres/test_search_quality.py",
@@ -332,6 +333,8 @@ def test_core_contracts_and_apps_do_not_depend_on_relationships() -> None:
     }
     assert actual == {
         "tests/postgres/test_relationships_module.py",
+        "tests/postgres/test_leads_intake.py",
+        "tests/postgres/test_leads_pipeline.py",
         # Planted foreign-storage imports exercise the existing module guard.
         "tests/postgres/test_module_storage_ownership.py",
         "tests/test_module_import_graph.py",

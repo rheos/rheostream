@@ -16,11 +16,12 @@ from harness.modules import (
 from rheo_contracts import RecordRef, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.boundary.factories import context_for_event_consumer
-from rheo_core.deletion import Disposition
+from rheo_core.deletion import OWNED_DELETIONS, Disposition
 from rheo_core.events import ConsumerRegistry
 from rheo_core.events.consumers import HandlerUnitOfWork
-from rheo_core.operations import dispatch, register_core_operations
+from rheo_core.operations import dispatch, register_core_operations, transaction
 from rheo_core.operations.dispatch import OperationOutcome
+from rheo_core.refs.resolver import register_resolver
 from rheo_core.settings import resolver as settings_resolver
 from rheo_core.settings.schema import REGISTRY, SettingsRegistry
 from rheo_core.storage.routing import open_unit_of_work
@@ -28,13 +29,13 @@ from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.storage.work_tables import event_delivery, outbox_event
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
-from rheo_leads import MANIFEST
-from rheo_leads.configuration import SETTINGS
+from rheo_leads import MANIFEST, pipeline_common
 from rheo_leads.contracts import AcceptDeliveryInput, AcceptedDelivery, ConnectionHealth
 from rheo_leads.intake.accept import accept_delivery
 from rheo_leads.lifecycle import on_observation_deleted
 from rheo_leads.references import ref
 from rheo_leads.storage import tables as t
+from rheo_relationships import MANIFEST as RELATIONSHIPS
 from sqlalchemy import delete, func, inspect, select, update
 
 pytestmark = pytest.mark.postgres
@@ -50,7 +51,7 @@ class Intake:
     connection_id: UUID
     funnel_id: UUID
 
-    def call(self, name: str, **payload: Any) -> OperationOutcome:
+    def call(self, name: str, /, **payload: Any) -> OperationOutcome:
         return dispatch(
             self.ctx,
             name,
@@ -123,20 +124,48 @@ def intake(
     workspace: UUID,
     owner_account_id: UUID,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> Iterator[Intake]:
-    with loaded_probe_modules(monkeypatch, "leads") as surfaces:
+    names = (
+        ("leads", "relationships", "recallatron")
+        if getattr(request, "param", False)
+        else ("leads", "relationships")
+    )
+    monkeypatch.setattr(
+        OWNED_DELETIONS, "_participants", list(OWNED_DELETIONS._participants)
+    )
+    with loaded_probe_modules(
+        monkeypatch, *names, deletions=OWNED_DELETIONS
+    ) as surfaces:
         # The shared loader harness deliberately isolates its registration registry.
         # Resolve against an equally isolated copy of core + the loaded module keys.
         settings = SettingsRegistry()
         for spec in REGISTRY.specs():
             settings.register(spec, origin=REGISTRY.origin_of(spec.key))
-        for spec in SETTINGS:
-            settings.register(spec, origin="leads")
+        from rheo_core.modules.loader import loaded_manifests
+
+        for manifest in loaded_manifests().values():
+            for spec in manifest.configuration_schema:
+                if spec.key not in {v.key for v in settings.specs()}:
+                    settings.register(spec, origin=manifest.module_id)
         monkeypatch.setattr(settings_resolver, "REGISTRY", settings)
+        monkeypatch.setattr(pipeline_common, "REGISTRY", surfaces.operations)
+        monkeypatch.setattr(transaction, "REGISTRY", surfaces.operations)
         register_core_operations()
+        register_core_operations(registry=surfaces.operations)
         operator = context_for_operator(workspace)
         assert isinstance(operator, WorkspaceContext)
+        install_and_enable_module(cluster.backend, operator, workspace, "relationships")
         install_and_enable_module(cluster.backend, operator, workspace, "leads")
+        for manifest in (RELATIONSHIPS, MANIFEST):
+            for name, resolver in manifest.resolvers:
+                register_resolver(
+                    manifest.module_id, name, resolver, origin=manifest.module_id
+                )
+        if "recallatron" in names:
+            install_and_enable_module(
+                cluster.backend, operator, workspace, "recallatron"
+            )
         ctx = context_for_harness(workspace, owner_account_id, Role.OWNER)
         assert isinstance(ctx, WorkspaceContext)
         consumers = ConsumerRegistry()
@@ -156,20 +185,9 @@ def test_install_manual_capture_worker_and_health(intake: Intake) -> None:
     with open_unit_of_work(intake.ctx) as uow:
         assert set(inspect(uow.connection).get_table_names(schema="leads")) == {
             "alembic_version_leads",
-            "funnel",
-            "campaign",
-            "field_mapping",
-            "field_mapping_identity",
-            "field_mapping_rule",
-            "intake_connection",
-            "connection_health",
-            "delivery_receipt",
-            "delivery_payload",
-            "delivery_conflict",
-            "observation",
-            "observation_field",
-            "import_batch",
+            *(table.name for table in t.metadata.sorted_tables),
         }
+
     for _ in range(2):
         accepted = intake.call(
             "leads.intake.capture",
@@ -184,7 +202,7 @@ def test_install_manual_capture_worker_and_health(intake: Intake) -> None:
     with open_unit_of_work(intake.ctx) as uow:
         observations = uow.connection.execute(select(t.observation)).mappings().all()
         assert all(
-            row["party_ref"] is None and row["funnel_id"] == intake.funnel_id
+            row["party_ref"] is not None and row["funnel_id"] == intake.funnel_id
             for row in observations
         )
         assert len({row["source_event_id"] for row in observations}) == 2
@@ -208,7 +226,7 @@ def test_install_manual_capture_worker_and_health(intake: Intake) -> None:
             .all()
         )
         assert len(events) == 2 and all(
-            "party_ref" in e and e["party_ref"] is None for e in events
+            "party_ref" in e and e["party_ref"] is not None for e in events
         )
         assert all("Example inquiry" not in str(e) for e in events)
     health = intake.call(
@@ -586,6 +604,7 @@ def test_export_seed_reconciliation_preserves_erasure_identity(
     other = make_workspace()
     operator = context_for_operator(other)
     assert isinstance(operator, WorkspaceContext)
+    install_and_enable_module(intake.cluster.backend, operator, other, "relationships")
     install_and_enable_module(intake.cluster.backend, operator, other, "leads")
     with open_unit_of_work(operator) as uow:
         finish = import_records(uow, serialized)
@@ -791,4 +810,4 @@ def test_identity_evidence_requires_independent_connection_declarations(
         assert row["verified_email"] == (
             "sample@example.com" if email_trusted else None
         )
-        assert row["party_ref"] is None
+        assert (row["party_ref"] is not None) == (subject_trusted or email_trusted)

@@ -97,11 +97,12 @@ def apply_mapping(
     payload: object,
     *,
     source_kind: str,
+    extension_targets: frozenset[str] = frozenset(),
 ) -> list[Fact]:
     facts = []
     for rule in rules:
         target, path = str(rule["target"]), str(rule["source_path"])
-        if target not in FACTS:
+        if target not in FACTS and target not in extension_targets:
             raise MappingRefused("unknown_target")
         transform = str(rule["transform"]) if rule["transform"] is not None else None
         arg = str(rule["transform_arg"]) if rule["transform_arg"] is not None else None

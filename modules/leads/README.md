@@ -1,52 +1,63 @@
 # Leads
 
-Reserved for signals, source observations, opportunity development, qualification,
-configurable pipelines, and tracked handoffs. Job search is optional.
+Signals, source observations, opportunities, configurable pipelines, qualification,
+contact-purpose permissions and tracked handoffs. Job search is optional and is not
+part of this module's core workflow. Leads requires Relationships; Recallatron is
+optional.
 
-Delivery deduplication, party matching, and opportunity matching are separate
-decisions. Sources and professional workflows vary independently. No opportunity
-must become a project merely because it was ingested or qualified.
+Installation seeds a manual connection, mapping, “General inquiries” funnel and
+version one of the inbound-services preset. An owner explicitly creates a pipeline
+and configures its connection's ordered routing rules. With no matching rule, intake
+records the observation without creating an opportunity. Rules can create a new
+opportunity or attach to the newest open opportunity for the same canonical party
+in a selected pipeline. Delivery deduplication, party matching and opportunity
+matching remain separate decisions.
 
-The first delivery slice supplies receipt acceptance, manual capture, deterministic
-field mapping, the processing consumer, connection health, and an intake erasure
-participant. Installation seeds one manual connection, its mapping, and a “General
-inquiries” funnel. `leads_capture` requires an explicit funnel reference. Acceptance
-queues processing; it does not create a party or opportunity.
+Acceptance queues processing; it does not synchronously create a party or opportunity.
+The worker rechecks the connection, applies its pinned mapping, creates an observation,
+resolves identity through Relationships' registered service operation, applies routing,
+and publishes the result in one transaction. Its operation grants come only from the
+registered subscription. Trusted subject/email declarations control automatic identity;
+ordinary source text is evidence and never an instruction or permission grant.
 
-A receipt pins mapping version and acquisition attribution. A duplicate event with
-the same digest adds no work; a different digest records a conflict. The receipt,
-payload, received event, fan-out, and acceptance health update commit together. The
-caller acknowledges only after dispatch commits. A best-effort post-commit due mark
-wakes the worker; if that mark is lost, the configured reconciliation interval
-(default 900 seconds) bounds discovery delay.
+The opportunity pins its preset version and stable stage ID. Display labels can change
+without changing that version's transition rules or terminal outcome. Preset edits
+publish a new immutable version; migration is an explicit revision-checked operation
+on one opportunity with a stage map. Removed extension fields remain readable and
+exportable as orphaned fields. User edits, stages and notes survive new intake. Source
+fields retain their winning observation and are deterministically re-derived from the
+linked set; see [field derivation](../../docs/architecture/intake-and-events.md#field-derivation-fr-37).
 
-The numbered processing steps are connection recheck, pinned mapping, and observation
-creation. Future party resolution and routing fit before finalization. Finalization
-marks the receipt processed and publishes an event with explicit `party_ref: null`.
-Observation and receipt share a UUID under distinct record types, so the erasure
-participant can find the receipt even after the owner has deleted the observation.
-It removes payload and conflict bodies and retains the delivery identity tombstone.
-Neither observation nor receipt exposes an owned-delete operation in this slice.
+The `leads_*` MCP tools cover capture, ingest-link, get/list/search, evidence reads,
+updates, stage transitions, deterministic qualification, drafts and tracked handoffs.
+Qualification records the objective, evidence, input revision and rubric/preset version.
+No model participates in the shipped assessor. Drafts are internal records. A handoff
+stores a bounded snapshot and idempotency binding to its exact body, destination and
+purpose; without a destination it records `unavailable`, creates no external effect and
+does not change the opportunity's disposition.
 
-Health timestamps are null until an actual acceptance or processing occurs. Lag is
-the nonnegative whole-second difference between those timestamps, or zero while one
-is absent. Failed delivery counts are read from core for this connection's receipts;
-they are not a second stored counter. Generic record labels contain no captured facts.
+Permission records are explicit and scoped by party, purpose and channel. Withdrawal
+and suppression deny subsequent permission checks. Recallatron's existing eligibility
+check consumes the registered permission operation when installed. `ContactPermissionGuard`
+rechecks permission under the lifecycle lock at execution; a test-only recording sink
+proves a held action cannot execute after withdrawal. No production destination or
+external-action operation is registered in this slice.
 
-Webhook and file-import connector declarations reserve the service seam; receivers,
-signing-secret management, import jobs, configuration screens, relationship matching,
-and opportunity routing are later work. This release enables no module in an existing
-workspace automatically.
+Observation and opportunity erasure require owner approval through core. Deleting an
+observation clears its intake payload/conflict bodies, retains a delivery tombstone,
+removes affected derived assessments/drafts/handoffs and re-derives surviving source
+fields while preserving user edits. Deleting a party removes its links and permission
+content. Core cancels reference-bound queued work and held approvals and invalidates
+held exports; artifact deletion runs after commit with durable retry.
 
-The version-one export describes all thirteen tables. Restore requires a fresh seed,
-replaces that seed with the source identities, and strips deployment-local signing
-handles; active webhook connections restore as needing credentials. Full operational
-export/restore acceptance, including resuming pending deliveries, belongs to the later
-platform restore work.
+With Recallatron enabled, confirmed source erasure also removes directly linked
+memories and their derived descendants, embeddings and index entries. The cascade
+uses canonical references and Recallatron's own deletion rules; unrelated memories
+survive and any participant failure rolls back the transaction. Leads also works in
+workspaces where Recallatron was never installed.
 
-Non-manual acceptance requires a service context; owner/member sessions cannot claim
-a webhook/import source event or signing generation. The later connectors must build
-that context only after their transport authentication. Observation identity evidence
-is populated only under the connection's independent `subject_authenticated` and
-`email_verified` declarations. Unvouched values remain in the source payload and are
-not promoted into those identity columns.
+Export format two covers all 35 owned tables. Restore preserves source identities,
+replaces only a fresh seed and strips deployment-local signing handles. The populated
+round-trip test also exercises Relationships through the real archive format. Webhook
+receivers, import runners, authenticated transport work, UI, live module activation and
+the first external handoff destination remain separate slices.

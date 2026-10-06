@@ -7,8 +7,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 from rheo_contracts import ActorKind, WorkspaceContext
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
+from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.exports import tables
 from rheo_core.exports.artifact import (
     ArtifactIdentity,
@@ -154,6 +155,11 @@ def export_handler(
         / f"{export_id}.tar.zst"
     )
     _insert_record(uow, record_id=export_id, kind="export", created_by_id=ctx.actor.id)
+    uow.connection.execute(
+        update(tables.export_record)
+        .where(tables.export_record.c.id == export_id)
+        .values(artifact_path=str(destination))
+    )
     enqueue_job(
         uow.connection,
         kind=EXPORT_JOB_KIND,
@@ -264,6 +270,16 @@ def run_export_job(
     assert isinstance(payload, ExportJobPayload)
     token.checkpoint()
     destination = Path(payload.artifact_path)
+    lock_workspace_lifecycle(uow.connection)
+    state: str = uow.connection.execute(
+        select(tables.export_record.c.state)
+        .where(tables.export_record.c.id == payload.export_id)
+        .with_for_update()
+    ).scalar_one()
+    if state == "removed_by_deletion":
+        return
+    references: set[str] = set()
+
     with collect_export_snapshot(
         payload.workspace_id, worker_connection=uow.connection
     ) as snapshot:
@@ -273,6 +289,20 @@ def run_export_job(
             owner_account_id=payload.owner_account_id,
             destination=destination,
             skip_operation_id=payload.operation_id,
+            record_refs=references,
+        )
+    uow.connection.execute(
+        delete(tables.export_record_ref).where(
+            tables.export_record_ref.c.export_id == payload.export_id
+        )
+    )
+    if references:
+        uow.connection.execute(
+            insert(tables.export_record_ref),
+            [
+                {"export_id": payload.export_id, "record_ref": reference}
+                for reference in sorted(references)
+            ],
         )
     uow.connection.execute(
         update(tables.export_record)

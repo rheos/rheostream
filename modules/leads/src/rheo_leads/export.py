@@ -1,4 +1,4 @@
-"""Version-one intake rows from one snapshot; restore preserves their identities.
+"""Version-two intake and pipeline snapshot; restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. Restore replaces only the fresh seed;
@@ -7,16 +7,20 @@ existing intake records cause a refusal, never a destructive merge.
 
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import (
+    ARRAY,
+    JSON,
     Boolean,
     DateTime,
     Integer,
     LargeBinary,
+    Numeric,
     Uuid,
     delete,
     func,
@@ -24,6 +28,7 @@ from sqlalchemy import (
     select,
 )
 
+from rheo_leads.storage import pipeline as _pipeline  # noqa: F401
 from rheo_leads.storage import tables as t
 
 if TYPE_CHECKING:
@@ -34,7 +39,7 @@ SECRET_COLUMNS = {"signing_secret_ref", "previous_secret_ref", "previous_valid_u
 
 
 def export_records(snapshot: "ExportSnapshot") -> Sequence[Mapping[str, object]]:
-    """Export all thirteen intake tables in foreign-key order."""
+    """Export all thirty-five owned tables in foreign-key order."""
     rows: list[Mapping[str, object]] = []
     for table in TABLES:
         for row in snapshot.connection.execute(
@@ -74,6 +79,18 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
                         raise ValueError
                 elif isinstance(column.type, LargeBinary):
                     value = bytes.fromhex(str(value))
+                elif isinstance(column.type, Numeric):
+                    value = Decimal(str(value))
+                    if not value.is_finite():
+                        raise ValueError
+                elif isinstance(column.type, ARRAY):
+                    if not isinstance(value, list) or any(
+                        not isinstance(v, str) for v in value
+                    ):
+                        raise ValueError
+                elif isinstance(column.type, JSON):
+                    if not isinstance(value, dict):
+                        raise ValueError
                 elif isinstance(column.type, Boolean):
                     if not isinstance(value, bool):
                         raise ValueError
@@ -93,7 +110,7 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
             ):
                 values["state"] = "needs_credential"
             grouped[table.name].append(values)
-    except (KeyError, ValueError, TypeError):
+    except (KeyError, ValueError, TypeError, InvalidOperation):
         raise OperationRefused("artifact_invalid", "invalid Leads intake row") from None
     connections = grouped["intake_connection"]
     if sum(row["transport"] == "manual" for row in connections) != 1:
@@ -137,6 +154,14 @@ def import_records(
         field_mapping_rule=13,
         intake_connection=1,
         connection_health=1,
+        pipeline_preset=1,
+        preset_version=1,
+        preset_stage=9,
+        preset_transition=23,
+        preset_requirement=0,
+        preset_field=0,
+        preset_rubric=1,
+        preset_template=1,
     )
     if counts != expected:
         raise OperationRefused(

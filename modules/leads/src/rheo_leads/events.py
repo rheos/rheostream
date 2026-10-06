@@ -13,11 +13,24 @@ from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
 
 from rheo_leads.contracts import DeliveryReceived, ObservationAccepted
+from rheo_leads.pipeline_contracts import ReferenceEvent
 
 DELIVERY_RECEIVED = "leads.delivery.received"
 OBSERVATION_ACCEPTED = "leads.observation.accepted"
 CONSUMER_ID = "leads.process_delivery"
 EVENTS = (
+    *(
+        EventDeclaration(type="leads." + name, schema_version=1, data=ReferenceEvent)
+        for name in (
+            "opportunity.created",
+            "opportunity.transitioned",
+            "opportunity.qualified",
+            "opportunity.migrated",
+            "handoff.requested",
+            "contact_permission.withdrawn",
+            "contact_permission.suppressed",
+        )
+    ),
     EventDeclaration(type=DELIVERY_RECEIVED, schema_version=1, data=DeliveryReceived),
     EventDeclaration(
         type=OBSERVATION_ACCEPTED, schema_version=1, data=ObservationAccepted
