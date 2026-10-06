@@ -129,6 +129,19 @@ class RemovedMemories:
         return RemovedMemories(self.memory_ids | other.memory_ids)
 
 
+@dataclass(frozen=True, slots=True)
+class RemovedOwnedRecords(RemovedMemories):
+    """An owner's complete erased identity set, including the approved target.
+
+    Used when one logical record has aliases. Each entry is content-free and carries
+    the revision immediately before erasure. Only same-type references are accepted
+    by the coordinator; participants still report memory removals only. Existing
+    single-record owners keep returning RemovedMemories unchanged.
+    """
+
+    records: tuple[DeleteAuthorization, ...] = ()
+
+
 NOTHING_REMOVED: Final = RemovedMemories()
 """What an owner or participant answers when it removed no memory row at all.
 

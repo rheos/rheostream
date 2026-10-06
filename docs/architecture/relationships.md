@@ -5,8 +5,9 @@ FR 40, FR 41, and criteria 50 to 54 and the party clauses of 65. Gives R4's "rev
 property of the representation" its representation.
 **Decision:** A16 (alias-based merge; references are never rewritten). See the
 [decision list](README.md#architecture-decisions).
-**Not built yet.** This is phase three's design: `modules/relationships` is still a placeholder
-package, so none of the tables, operations, tools or events below exist.
+**Implemented backend.** `modules/relationships` supplies the service, tools, persistence,
+merge history and approved deletion. No web UI or automatic workspace activation is included.
+See [implementation details](../../modules/relationships/README.md) for refusal states and limits.
 
 ## What the module owns
 
@@ -32,7 +33,7 @@ All in the `relationships` schema. Every table has `id uuid` (UUIDv7) unless not
 | `affiliation` | `person_id`, `organization_id`, `role_label text null`, `valid_from date null`, `valid_to date null`, `provenance_ref text null`, `created_at` | The validity period is the R4 requirement: a person representing two organizations in sequence is two rows with disjoint periods, and history is never rewritten. `valid_to` null means current. Unique on `(person_id, organization_id, valid_from)`. |
 | `merge_record` | `survivor_id`, `merged_id`, `evidence text null`, `evidence_refs text[]`, `actor_kind`, `actor_id`, `merged_at`, `unmerged_at null`, `unmerged_by_kind null`, `unmerged_by_id null`, `unmerge_note text null` | Names the evidence, the actor, and the time (R4). One row per merge; an unmerge fills the `unmerged_*` columns and never deletes the row. `evidence` is the reviewer's free text and is nulled when either party is deleted ([deletion](#deletion-r5)); `evidence_refs` is provenance only, never a query predicate, and stays an array. |
 | `merge_record_item` | `merge_record_id`, `kind text`, `item_id uuid`, `previous_owner_id uuid` | Primary key `(merge_record_id, kind, item_id)`. One row per row the merge moved, holding where it came from: `kind` in `contact_point` (the point's previous `party_id`), `affiliation_person`, `affiliation_organization` (the affiliation's previous person or organization), `alias` (a party whose `merged_into_id` was re-pointed; `previous_owner_id` is its previous target). This is the pre-merge state, in the record, which is what makes unmerge a restore rather than an undo. |
-| `review_candidate` | `kind text`, `party_id`, `candidate_party_id`, `hint_kind text`, `matched_contact_point_id uuid null`, `score numeric null`, `evidence_ref text null`, `state text`, `created_at`, `resolved_at null`, `resolved_by_kind null`, `resolved_by_id null`, `merge_record_id uuid null`, `affiliation_id uuid null` | `kind` in `same_party` (party and candidate may be one person or one organization) and `affiliation` (party, a person, may belong to candidate, an organization). `hint_kind` in `name`, `email_unverified`, `email_verified_other_source`, `phone`, `domain`, `organization_name`. `state` in `open`, `accepted`, `rejected`, `withdrawn` (closed by the system because a party involved was merged or deleted). Unique on `(party_id, candidate_party_id, kind)` while `open`. Holds no contact value; `matched_contact_point_id` points at the value that matched. |
+| `review_candidate` | `kind text`, `party_id`, `candidate_party_id`, `hint_kind text`, `matched_contact_point_id uuid null`, `score numeric null`, `evidence_ref text null`, `occurred_at timestamptz`, `state text`, `created_at`, `resolved_at null`, `resolved_by_kind null`, `resolved_by_id null`, `merge_record_id uuid null`, `affiliation_id uuid null` | `kind` in `same_party` (party and candidate may be one person or one organization) and `affiliation` (party, a person, may belong to candidate, an organization). `hint_kind` in `name`, `email_unverified`, `email_verified_other_source`, `phone`, `domain`, `organization_name`. `state` in `open`, `accepted`, `rejected`, `withdrawn` (closed by the system because a party involved was merged or deleted). Unique on `(party_id, candidate_party_id, hint_kind)` while `open`; same-party pairs use ascending UUID order. Holds no contact value; `matched_contact_point_id` points at the value that matched. |
 
 Nothing in this schema stores a reference to another module's record except `provenance_ref`,
 `evidence_ref`, and `evidence_refs`, which are reference strings resolved through the core, never
@@ -84,13 +85,13 @@ Output: `party_ref`, `outcome` in `linked_subject`, `linked_email`, `created`, a
    hint, else the phone hint, else the literal `unnamed`. Record the subject id and verified
    email in their classes when present, and the email and phone hints as `unverified` contact
    points, all with `provenance_ref = evidence_ref`.
-4. **Hints become candidates, never links** (criterion 51). For the new party, insert one open
+4. **Hints become candidates, never links** (criterion 51). For the resolved party (including linked outcomes), insert one open
    `review_candidate` per matching live party and hint:
    - `email_unverified`: any live party holding the same normalized email at any verification;
      `email_verified_other_source` when that holding is `source_verified` in another namespace.
    - `phone`: the same normalized phone.
    - `name`: person parties whose `display_name` trigram similarity (`pg_trgm`) is at least
-     `relationships.match.name_similarity` (package default 0.6, workspace scope), at most
+     `relationships.match.name_similarity_percent` / 100 (package default 60, workspace scope), at most
      `relationships.match.max_candidates` (default 10) by score.
    - `domain` and `organization_name`: an organization party whose `url` contact point's host
      equals the domain hint, or whose normalized display name equals the organization name hint,
@@ -151,11 +152,11 @@ reference resolves to the pre-merge party again by the same one-hop rule, which 
 `relationships.review_candidate.resolve(candidate_ref, decision, survivor, note)`, mutate class,
 roles `owner`, `member`. `decision` in `accept`, `reject`.
 
-- `accept` on `same_party`: run `merge` with the newer party as the source and the candidate as
+- `accept` on `same_party`: run `merge` with the newer party as the source and the older party as
   the target unless `survivor` names the other order; set `state = accepted` and
   `merge_record_id`.
-- `accept` on `affiliation`: create the affiliation from the candidate's `evidence_ref`
-  occurrence date; set `affiliation_id`.
+- `accept` on `affiliation`: create the affiliation from the candidate's stored `occurred_at`
+  date (captured when the hint was observed); set `affiliation_id`.
 - `reject`: `state = rejected`. The same pair is not proposed again for the same hint kind.
 
 **The link reaches Leads through the alias and through nothing else.** The observation already
@@ -244,3 +245,27 @@ party; it buys criterion 53 by construction.
 **Why not a chain.** Allowing `merged_into_id` to point at another alias would make resolution a
 walk and unmerge order-sensitive in ways a reviewer cannot see. Re-pointing aliases at merge time
 and recording the re-pointing keeps both operations one level deep.
+
+
+## Backend clarifications
+
+Candidate queries exclude aliases and retired contact points. Both candidate positions
+are checked when a merge withdraws candidates. Reject suppression uses the same ordered
+party pair and hint as open-candidate uniqueness. Existing current affiliations are not
+proposed again. Withdrawn review tasks remain history after unmerge; a later observation
+can propose fresh candidates.
+
+An affiliation collision on `(person_id, organization_id, valid_from)` (including a
+null start date) refuses the entire merge or unmerge as `affiliation_conflict`; no history
+row is silently discarded. Conflicting authenticated-subject and verified-email owners
+refuse as `identity_conflict`, requiring explicit review rather than an automatic merge.
+All ordinary identity writes share the coordinator's workspace lifecycle lock. The
+approved party revision changes for contact, affiliation and merge writes as well as
+name changes. Existing operation grants and actor roles remain core's responsibility.
+
+Core's owned-delete return supports `RemovedOwnedRecords`, a same-type set of erased
+references and their revisions. The coordinator validates the set, runs participants,
+and writes one deletion ledger row and event per reference in the original approved
+transaction. Existing single-record owners keep their previous return shape. A party
+owner reports its survivor and aliases; one failing alias participant rolls back all
+of them. The caller still receives only the original target's deletion reference.
