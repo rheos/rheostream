@@ -61,7 +61,7 @@ holds by construction and needs no filter.
 ## `relationships.party.resolve_or_create`
 
 Called by Leads' delivery processing ([intake](intake-and-events.md#processing)) once per
-receipt, and by nothing else in release one. Mutate class; roles `service`, `owner`, `member`.
+receipt, and by nothing else in release one. Mutate class; role `service` only. Ordinary accounts cannot attest a source identity.
 Idempotency is natural: the consumer that calls it is deduplicated per receipt, so no receipt
 reaches it twice.
 
@@ -221,7 +221,7 @@ restore.
 
 | Operation | Class | Roles | Tool |
 | --- | --- | --- | --- |
-| `relationships.party.resolve_or_create` | mutate | service, owner, member | none (Leads calls it) |
+| `relationships.party.resolve_or_create` | mutate | service | none (Leads calls it) |
 | `relationships.party.get`, `.find`, `.aliases` | read | owner, member, service | `relationships_get_party`, `relationships_find_party` |
 | `relationships.party.create`, `.update` | mutate | owner, member | none in release one |
 | `relationships.contact_point.add`, `.confirm`, `.retire` | mutate | owner, member | none in release one |
@@ -269,3 +269,12 @@ and writes one deletion ledger row and event per reference in the original appro
 transaction. Existing single-record owners keep their previous return shape. A party
 owner reports its survivor and aliases; one failing alias participant rolls back all
 of them. The caller still receives only the original target's deletion reference.
+
+
+Automatic resolution is service-only, including its internal handler, because a caller
+must not turn a claimed namespace and email into trusted source evidence. Owner/member
+accounts still create, edit, confirm and review parties through their ordinary operations.
+Malformed or empty weak hints are dropped; they cannot prevent a valid strong identity
+from linking. `relationships.party.unmerged` publishes the same reference-only data as
+`.merged`, atomically with ownership restoration. Review-list rows expose canonical
+candidate and party references plus party heads for direct use by the review tools.

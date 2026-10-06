@@ -21,9 +21,10 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = tuple(
         OperationDeclaration(
             name=f"relationships.{name}",
             safety_class=SafetyClass.READ if read else SafetyClass.MUTATE,
-            roles=READERS
-            if name
-            in ("party.get", "party.find", "party.aliases", "party.resolve_or_create")
+            roles=frozenset({Role.SERVICE})
+            if name == "party.resolve_or_create"
+            else READERS
+            if name in ("party.get", "party.find", "party.aliases")
             else MEMBERS,
             input_model=input_model,
             output=output,

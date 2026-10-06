@@ -134,10 +134,9 @@ MANIFEST = ModuleManifest(
     configuration_schema=SETTINGS,
     operations=OPERATIONS,
     tools=TOOLS,
-    events=(
-        EventDeclaration(
-            type="relationships.party.merged", schema_version=1, data=PartyMerged
-        ),
+    events=tuple(
+        EventDeclaration(type=event_type, schema_version=1, data=PartyMerged)
+        for event_type in ("relationships.party.merged", "relationships.party.unmerged")
     ),
     subscriptions=(),
     jobs=(),

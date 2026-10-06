@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from rheo_contracts import RecordRef, WorkspaceContext
+from rheo_contracts import RecordRef, Role, WorkspaceContext
 from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs import uuid7
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -234,9 +235,33 @@ def candidates(
     return sorted(result)
 
 
+def clean_hints(hints: c.Hints) -> c.Hints:
+    """Untrusted weak hints may be absent or malformed without losing identity."""
+    cleaned: dict[str, str | None] = {}
+    for name, kind in (
+        ("name", "name"),
+        ("email", "email"),
+        ("phone", "phone"),
+        ("organization_name", "name"),
+        ("organization_domain", "url"),
+    ):
+        value = getattr(hints, name)
+        try:
+            usable = value is not None and bool(normalize(kind, value))
+        except OperationRefused:
+            usable = False
+        cleaned[name] = value.strip() if usable else None
+    return c.Hints.model_validate(cleaned)
+
+
 def resolve_or_create(
     ctx: WorkspaceContext, uow: UnitOfWork, data: c.ResolveInput
 ) -> c.ResolveOutput:
+    # Only a trusted transport/service may attest source-bound identity. Account
+    # callers use ordinary create/contact/review operations instead.
+    if ctx.role is not Role.SERVICE:
+        refuse("role_not_permitted")
+    data = data.model_copy(update={"hints": clean_hints(data.hints)})
     # Evidence supplies provenance, never authority.
     try:
         RecordRef.parse(data.evidence_ref)

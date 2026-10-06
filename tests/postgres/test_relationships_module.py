@@ -16,18 +16,23 @@ from harness.modules import (
 )
 from rheo_contracts import RecordRef, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
+from rheo_core.boundary.factories import context_for_event_consumer
 from rheo_core.deletion.tables import deletion_record
 from rheo_core.events import ConsumerRegistry
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.dispatch import OperationOutcome
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import register_resolver
 from rheo_core.settings import resolver as settings_resolver
 from rheo_core.settings.schema import REGISTRY, SettingsRegistry
+from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import outbox_event
 from rheo_relationships import MANIFEST
 from rheo_relationships.configuration import SETTINGS
+from rheo_relationships.contracts import ResolveInput
+from rheo_relationships.matching import resolve_or_create
 from rheo_relationships.resolvers import resolve_party
 from rheo_relationships.storage import tables as t
 from sqlalchemy import func, inspect, select
@@ -70,7 +75,20 @@ class Relationships:
             "evidence_ref": f"fixture.observation:{uuid7()}",
             **kwargs,
         }
-        return self.ok("party.resolve_or_create", **payload)
+        # Use the trusted internal consumer boundary, not a fabricated service role.
+        # It grants no public operations and does not simulate transport authentication.
+        with open_unit_of_work(self.ctx) as uow:
+            ctx = context_for_event_consumer(
+                self.workspace, uow, request_id=self.ctx.request_id
+            )
+            assert isinstance(ctx, WorkspaceContext) and ctx.role is Role.SERVICE
+            result = resolve_or_create(
+                ctx,
+                HandlerUnitOfWork(uow, consumers=self.consumers),
+                ResolveInput.model_validate(payload),
+            )
+            uow.commit()
+            return result
 
     def merge(self, source: str, target: str) -> Any:
         return self.ok(
@@ -170,15 +188,10 @@ def test_relationships_subject_precedence_refuses_conflicting_identities(
 ) -> None:
     first = relationships.resolve(external_subject_id="person-1")
     second = relationships.resolve(verified_email="other@example.com")
-    outcome = relationships.call(
-        "party.resolve_or_create",
-        source_namespace="example-form",
-        external_subject_id="person-1",
-        verified_email="other@example.com",
-        occurred_at=datetime.now(UTC).isoformat(),
-        evidence_ref=f"fixture.observation:{uuid7()}",
-    )
-    assert outcome.state == "identity_conflict"
+    with pytest.raises(OperationRefused, match="identity_conflict"):
+        relationships.resolve(
+            external_subject_id="person-1", verified_email="other@example.com"
+        )
     assert (
         relationships.get(first.party_ref).canonical_ref
         != relationships.get(second.party_ref).canonical_ref
@@ -730,3 +743,165 @@ def test_relationships_tools_roundtrip_canonical_refs_and_hold_delete(
         declaration.input_model.model_json_schema()["properties"]["ref"]["type"]
         == "string"
     )
+
+
+def test_relationships_accounts_cannot_assert_verified_source_identity(
+    relationships: Relationships,
+) -> None:
+    from harness.registry import add_member
+
+    account = add_member(
+        relationships.cluster.backend,
+        relationships.workspace,
+        Role.MEMBER,
+        display_name="Example Member",
+    )
+    member = context_for_harness(relationships.workspace, account, Role.MEMBER)
+    assert isinstance(member, WorkspaceContext)
+    payload = {
+        "source_namespace": "example-form",
+        "verified_email": "claimed@example.com",
+        "external_subject_id": "claimed-subject",
+        "evidence_ref": f"fixture.observation:{uuid7()}",
+        "occurred_at": datetime.now(UTC).isoformat(),
+    }
+    for ctx in (relationships.ctx, member):
+        outcome = dispatch(
+            ctx,
+            "relationships.party.resolve_or_create",
+            payload,
+            registry=relationships.surfaces.operations,
+            consumers=relationships.consumers,
+        )
+        assert outcome.state == "role_not_permitted"
+        with (
+            open_unit_of_work(ctx) as uow,
+            pytest.raises(OperationRefused, match="role_not_permitted"),
+        ):
+            resolve_or_create(ctx, uow, ResolveInput.model_validate(payload))
+    assert relationships.count(t.party) == relationships.count(t.contact_point) == 0
+    assert (
+        relationships.resolve(verified_email="claimed@example.com").outcome == "created"
+    )
+
+
+@pytest.mark.parametrize(
+    "hints",
+    [
+        {"organization_domain": "http://["},
+        {"phone": "n/a"},
+        {"phone": "+---"},
+        {"email": "   "},
+        {
+            "name": "   ",
+            "organization_name": "  ",
+            "organization_domain": "http://[",
+            "phone": "n/a",
+            "email": "  ",
+        },
+    ],
+)
+def test_relationships_bad_weak_hints_do_not_block_verified_identity(
+    relationships: Relationships, hints: dict[str, str]
+) -> None:
+    first = relationships.resolve(verified_email="valid@example.com", hints=hints)
+    linked = relationships.resolve(verified_email="valid@example.com", hints=hints)
+    assert first.party_ref == linked.party_ref
+    assert linked.outcome == "linked_email"
+    assert relationships.count(t.party) == relationships.count(t.contact_point) == 1
+    assert linked.review_candidate_refs == []
+
+
+def test_relationships_unmerge_publishes_references_atomically(
+    relationships: Relationships, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rheo_relationships.merge as merge_module
+
+    a = relationships.create("First Example")
+    b = relationships.create("Second Example")
+    merged = relationships.merge(a.ref, b.ref)
+    original = merge_module.publish
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise OperationRefused("fixture_failure", "synthetic event failure")
+
+    monkeypatch.setattr(merge_module, "publish", fail)
+    assert (
+        relationships.call(
+            "party.unmerge", merge_record_ref=merged.merge_record_ref
+        ).state
+        == "fixture_failure"
+    )
+    assert relationships.get(a.ref).canonical_ref == b.ref
+    monkeypatch.setattr(merge_module, "publish", original)
+    relationships.ok("party.unmerge", merge_record_ref=merged.merge_record_ref)
+    with open_unit_of_work(relationships.ctx) as uow:
+        event = (
+            uow.connection.execute(
+                select(outbox_event).where(
+                    outbox_event.c.type == "relationships.party.unmerged"
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert event["data"] == {
+            "survivor_ref": b.ref,
+            "merged_ref": a.ref,
+            "merge_record_ref": merged.merge_record_ref,
+        }
+    assert relationships.get(a.ref).canonical_ref == a.ref
+
+
+def test_relationships_review_tool_returns_refs_usable_without_reconstruction(
+    relationships: Relationships,
+) -> None:
+    from rheo_core.operations.tool_facade import call_registered_tool
+
+    relationships.resolve(hints={"name": "Example Person"})
+    relationships.resolve(hints={"name": "Example Person"})
+    listed = call_registered_tool(
+        relationships.ctx,
+        "relationships_list_review",
+        {},
+        consumers=relationships.consumers,
+        tools=relationships.surfaces.tools,
+        registry=relationships.surfaces.operations,
+    )
+    assert listed.ok, listed
+    row = listed.result.items[0]
+    assert row["party"]["display_name"] == "Example Person"
+    assert RecordRef.parse(row["party_ref"]).record_type == "party"
+    accepted = call_registered_tool(
+        relationships.ctx,
+        "relationships_resolve_review",
+        {"candidate_ref": row["candidate_ref"], "decision": "accept"},
+        consumers=relationships.consumers,
+        tools=relationships.surfaces.tools,
+        registry=relationships.surfaces.operations,
+    )
+    assert accepted.ok, accepted
+
+
+def test_relationships_import_bad_score_is_artifact_invalid(
+    relationships: Relationships,
+) -> None:
+    from types import SimpleNamespace
+
+    from pydantic_core import to_jsonable_python
+    from rheo_relationships.export import export_records, import_records
+
+    relationships.resolve(hints={"name": "Example Person"})
+    relationships.resolve(hints={"name": "Example Person"})
+    with open_unit_of_work(relationships.ctx) as uow:
+        rows = to_jsonable_python(
+            export_records(SimpleNamespace(connection=uow.connection))
+        )
+        candidate = next(
+            row
+            for row in rows
+            if row["record_type"] == "relationships.review_candidate"
+        )
+        candidate["score"] = "not-a-number"
+        with pytest.raises(OperationRefused, match="artifact_invalid"):
+            import_records(uow, rows)

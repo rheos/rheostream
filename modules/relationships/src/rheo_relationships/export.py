@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -86,7 +86,7 @@ def import_records(
                 or parties[target]["kind"] != party["kind"]
             ):
                 raise ValueError
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, InvalidOperation):
         raise OperationRefused(
             "artifact_invalid", "invalid relationships export"
         ) from None

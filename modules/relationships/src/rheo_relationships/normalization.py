@@ -11,7 +11,8 @@ def normalize(kind: str, value: str) -> str:
     if kind == "email":
         return value.casefold()
     if kind == "phone":
-        return re.sub(r"[^0-9+]", "", value)
+        normalized = re.sub(r"[^0-9+]", "", value)
+        return normalized if any(char.isdigit() for char in normalized) else ""
     if kind == "url":
         try:
             parsed = urlsplit(value if "://" in value else "https://" + value)

@@ -1912,7 +1912,9 @@ The following changes are recorded here.
     clarification in #299: same-party review keys are an ordered party pair plus hint,
     allowing name and phone evidence to coexist without mirrored candidates. Linked
     identities also receive new hint candidates, and rejected hints stay suppressed.
-    Name similarity is an integer percentage to fit the configuration contract.
+    Only trusted service contexts may assert source-verified identity; ordinary account
+    roles use explicit create/edit/review operations. Name similarity is an integer
+    percentage to fit the configuration contract.
     Alias merges refuse affiliation collisions instead of discarding history. Approved
     deletion reports every erased alias to the core coordinator for atomic participant
     cleanup and per-reference deletion evidence; existing single-record owners keep

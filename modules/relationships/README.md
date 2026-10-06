@@ -10,7 +10,9 @@ review candidates. Source verification belongs to the calling service's authenti
 transport; arbitrary contact writes can record only unverified contacts, which a person
 can confirm. Confirmation never upgrades a contact into an automatic match key.
 
-`party.resolve_or_create` accepts `source_namespace`, optional `external_subject_id`
+`party.resolve_or_create` is service-only. Ordinary account roles cannot assert verified
+source identities, even through a token granted the operation. Its internal handler checks
+the same role. It accepts `source_namespace`, optional `external_subject_id`
 and `verified_email`, `hints`, canonical `evidence_ref`, and timezone-aware `occurred_at`.
 It returns `party_ref`, `outcome`, and `review_candidate_refs`. Supplying conflicting
 strong identities refuses `identity_conflict`. Namespace values and identity values are
@@ -20,7 +22,8 @@ comparison removes formatting without guessing a country; domain hints compare h
 Names use `relationships.match.name_similarity_percent` (60 by default) and
 `relationships.match.max_candidates` (10, at most 100). Candidates are per hint and use
 canonical same-party pair order. Linked calls also discover hints. Names, retired contact
-points and aliases never supply automatic identity evidence. A new unmatched organization
+points and aliases never supply automatic identity evidence. Malformed/empty weak hints are discarded
+without blocking a valid authenticated subject or verified email. A new unmatched organization
 hint creates an organization and dated affiliation; an existing match requires review.
 The candidate stores its occurrence timestamp so review needs no cross-module data read.
 Contact provenance records the observation that introduced the value; later observations
@@ -34,7 +37,8 @@ and modest-volume intake over concurrent identity-write throughput.
 
 Merge moves live contacts and affiliation ownership, records original ownership and
 repoints aliases to preserve one-hop resolution. Unmerge restores only those moved rows;
-new survivor contacts remain with the survivor. Undo nested merges in reverse order.
+new survivor contacts remain with the survivor. Both merge and unmerge publish their
+reference-only events in the same transaction. Undo nested merges in reverse order.
 Affiliation key collisions refuse `affiliation_conflict` without discarding either history.
 Withdrawn review tasks are not reopened by unmerge. Deleted children are not resurrected.
 

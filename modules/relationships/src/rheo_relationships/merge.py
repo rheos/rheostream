@@ -7,6 +7,7 @@ from uuid import UUID
 from rheo_contracts import WorkspaceContext
 from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.events import NewEvent, publish
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs import uuid7
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from sqlalchemy import or_, select, update
@@ -158,6 +159,9 @@ def merge(ctx: WorkspaceContext, uow: UnitOfWork, data: c.MergeInput) -> c.Merge
 def unmerge(
     ctx: WorkspaceContext, uow: UnitOfWork, data: c.UnmergeInput
 ) -> c.MergeOutput:
+    if not isinstance(uow, HandlerUnitOfWork) or uow.consumers is None:
+        refuse("consumers_missing")
+    assert isinstance(uow, HandlerUnitOfWork) and uow.consumers is not None
     lock_workspace_lifecycle(uow.connection)
     record = (
         uow.connection.execute(
@@ -228,6 +232,23 @@ def unmerge(
             unmerge_note=data.note,
         )
     )
+    publish(
+        ctx,
+        uow,
+        NewEvent(
+            type="relationships.party.unmerged",
+            schema_version=1,
+            subject_ref=ref("party", target["id"]),
+            subject_revision=target["revision"] + 1,
+            data={
+                "survivor_ref": ref("party", target["id"]),
+                "merged_ref": ref("party", source["id"]),
+                "merge_record_ref": data.merge_record_ref.format(),
+            },
+        ),
+        now=datetime.now(UTC),
+        consumers=uow.consumers,
+    )
     return c.MergeOutput(merge_record_ref=data.merge_record_ref.format())
 
 
@@ -240,7 +261,32 @@ def list_review(
         .order_by(t.review_candidate.c.created_at, t.review_candidate.c.id)
         .limit(data.limit)
     ).mappings()
-    return c.ItemsOutput(items=[dict(row) for row in rows])
+
+    def head(identifier: UUID) -> dict[str, Any] | None:
+        try:
+            party = get_row(uow, identifier)
+        except OperationRefused:
+            return None
+        return {
+            "ref": ref("party", identifier),
+            "display_name": party["display_name"],
+            "kind": party["kind"],
+            "revision": party["revision"],
+        }
+
+    return c.ItemsOutput(
+        items=[
+            {
+                **dict(row),
+                "candidate_ref": ref("review_candidate", row["id"]),
+                "party_ref": ref("party", row["party_id"]),
+                "candidate_party_ref": ref("party", row["candidate_party_id"]),
+                "party": head(row["party_id"]),
+                "candidate_party": head(row["candidate_party_id"]),
+            }
+            for row in rows
+        ]
+    )
 
 
 def resolve_review(
