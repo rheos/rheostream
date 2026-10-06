@@ -120,3 +120,15 @@ def test_unknown_transform_and_non_scalar_values_refuse() -> None:
         transform_value("a", "execute", None)
     with pytest.raises(ValueError, match="scalar_required"):
         transform_value({"nested": "value"}, "trim", None)
+
+
+def test_extension_targets_require_configuration_not_payload_claims() -> None:
+    target = "ext.services.count"
+    mapping = [rule(target=target, source_path="/count")]
+    payload = {"count": "7", "extension_targets": [target]}
+    with pytest.raises(MappingRefused, match="unknown_target"):
+        apply_mapping(mapping, payload, source_kind="json")
+    facts = apply_mapping(
+        mapping, payload, source_kind="json", extension_targets=frozenset({target})
+    )
+    assert [(fact.target, fact.value_text) for fact in facts] == [(target, "7")]

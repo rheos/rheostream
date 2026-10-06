@@ -113,12 +113,9 @@ def withdraw(
         p.contact_permission.c.withdrawn_at.is_(None),
     )
     if m.channel:
-        q = q.where(
-            or_(
-                p.contact_permission.c.channel == m.channel,
-                p.contact_permission.c.channel.is_(None),
-            )
-        )
+        # The channel-specific marker below narrows an all-channel grant without
+        # withdrawing permission for unrelated channels.
+        q = q.where(p.contact_permission.c.channel == m.channel)
     uow.connection.execute(
         q.values(**h.actor(ctx, "withdrawn"), withdrawn_reason=m.reason)
     )

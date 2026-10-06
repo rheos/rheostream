@@ -25,6 +25,7 @@ from rheo_leads.intake.mapping import (
 from rheo_leads.pipeline_common import lock
 from rheo_leads.pipeline_intake import resolve_party, route
 from rheo_leads.references import identifier, ref
+from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
 
@@ -104,8 +105,19 @@ def apply_pinned_mapping(
         .mappings()
         .all()
     )
+    # Configured preset declarations authorize extension names, never payload keys.
+    # Keep historical declarations so pinned mappings remain processable; derivation
+    # separately enforces the opportunity's pinned field types.
+    extension_targets = frozenset(
+        uow.connection.execute(select(p.preset_field.c.target).distinct()).scalars()
+    )
     try:
-        state.facts = apply_mapping(rules, state.payload, source_kind=state.source_kind)
+        state.facts = apply_mapping(
+            rules,
+            state.payload,
+            source_kind=state.source_kind,
+            extension_targets=extension_targets,
+        )
     except MappingRefused as exc:
         # Only the configured target is allowed into persisted diagnostics.
         raise DeliveryRefused("mapping_failed:" + str(exc)) from None

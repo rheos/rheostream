@@ -70,8 +70,9 @@ which the one-database-per-workspace layout makes possible without a distributed
    marked `state = removed_by_deletion` with `removed_at` and the deletion record id.
 6. **Deletion record.** `core.deletion_record` is written.
 7. **Commit.** After commit, the coordinator deletes the marked export artifacts from the data
-   root; a failure to remove a file leaves the export record marked and enqueues
-   `core.exports.sweep`, which retries until the path is gone. The record says why the artifact
+   root; the erasure transaction always enqueues
+   `core.exports.sweep` as a durable retry, so failure to remove a file leaves the
+   export record marked and cleanup queued. The record says why the artifact
    is gone before the artifact is gone, never the reverse.
 
 A participant that raises aborts the whole deletion; the record survives untouched and the
@@ -104,9 +105,10 @@ from the exact archived snapshot. Legacy artifacts without an index are invalida
 conservatively. Local artifact bytes are removed after commit, with a durable worker
 retry for failed cleanup. A lifecycle lock serializes export publication with erasure.
 
-**Current draft gap:** Recallatron's participant is not yet extended to derived memory
-from erased Leads observations/opportunities or Relationships parties. Criterion 65
-therefore remains incomplete. Deletion cause/successor metadata is exported and
+For confirmed user erasure, Recallatron removes memories linked to erased Leads
+observations/opportunities and Relationships parties, then their derived descendants,
+with embeddings and index entries. Unrelated memories survive. Scheduled memory expiry
+retains its separate supersession-lineage rule. Deletion cause/successor metadata is exported and
 validated with the ledger; it is not an erasure bypass for restoration.
 
 ### Deletion is not withdrawal
@@ -174,7 +176,7 @@ export rows.
 | Table | Columns |
 | --- | --- |
 | `core.export_record` | `id uuid`, `kind` (`export`, `restore`), `artifact_path null`, `source_digest bytea null`, `created_at`, `created_by_id`, `state` (`in_progress`, `complete`, `failed`, `removed_by_deletion`), `removed_at null`, `deletion_record_id null`, `byte_length null`. A `restore` row records the digest of the artifact restored from and holds no path; the reference index below is written only for `export` rows. |
-| `core.export_record_ref` | `export_id`, `record_ref` for every record of a deletable type in the artifact. The table exists but nothing writes it yet, including for exported `recallatron.memory` rows; it arrives with the held-export step of the cascade (2c). |
+| `core.export_record_ref` | `export_id`, `record_ref` for every record of a deletable type in the artifact. `run_export_job` populates this index from the exact archived module snapshot, including canonical provenance references. |
 
 The reference index exists for one reason: criterion 65's "the export artifact is gone from the
 data root and its export record says why" needs the coordinator to find which artifacts carry a

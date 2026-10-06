@@ -433,8 +433,17 @@ def test_tools_roundtrip_and_delete_requires_approval(intake: Intake) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "erased_kind,rollback",
+    [
+        ("observation", False),
+        ("opportunity", False),
+        ("party", False),
+        ("observation", True),
+    ],
+)
 def test_withdrawal_hides_memory_and_erasure_removes_embedding(
-    intake: Intake, monkeypatch: pytest.MonkeyPatch
+    intake: Intake, monkeypatch: pytest.MonkeyPatch, erased_kind: str, rollback: bool
 ) -> None:
     if "recallatron" not in intake.ctx.enabled_modules:
         pytest.skip(
@@ -490,28 +499,77 @@ def test_withdrawal_hides_memory_and_erasure_removes_embedding(
         body="Prefers a response by email",
         purposes=["follow_up"],
         about_refs=[party],
-        provenance_refs=[observation],
+        provenance_refs=[observation, one(intake).ref],
     )
     assert remembered.ok, remembered
     reference = remembered.result.ref
     assert memory("get", ref=reference).ok
-    with open_unit_of_work(intake.ctx) as uow:
-        insert_memory_embedding(
-            uow.connection,
-            MemoryEmbeddingRow(
-                RecordRef.parse(reference).id,
-                "synthetic",
-                384,
-                [1.0] + [0.0] * 383,
-                datetime.now(UTC),
-            ),
+    removed_refs = [reference]
+    for title in ("Derived summary", "Derived follow-up summary"):
+        derived = memory(
+            "derive",
+            kind="note",
+            title=title,
+            body="Synthetic derived content",
+            purposes=["follow_up"],
+            sources=[removed_refs[-1]],
         )
+        assert derived.ok, derived
+        removed_refs.append(derived.result.ref)
+    unrelated = memory(
+        "remember",
+        kind="note",
+        title="Separate note",
+        body="Unrelated synthetic content",
+        purposes=["follow_up"],
+    )
+    assert unrelated.ok, unrelated
+    with open_unit_of_work(intake.ctx) as uow:
+        for linked in [*removed_refs, unrelated.result.ref]:
+            insert_memory_embedding(
+                uow.connection,
+                MemoryEmbeddingRow(
+                    RecordRef.parse(linked).id,
+                    "synthetic",
+                    384,
+                    [1.0] + [0.0] * 383,
+                    datetime.now(UTC),
+                ),
+            )
         uow.commit()
     ok(intake, "contact_permission.withdraw", **args, reason="Synthetic withdrawal")
     assert memory("get", ref=reference).state == "not_found"
-    approve_delete(intake, observation)
-    assert intake.count(mt.memory) == 0
-    assert intake.count(mt.memory_embedding) == 0
+    erased = {
+        "observation": observation,
+        "opportunity": one(intake).ref,
+        "party": party,
+    }[erased_kind]
+    if rollback:
+        from rheo_core.operations.refusals import OperationRefused
+        from rheo_recallatron import lifecycle
+
+        original = lifecycle._erase
+
+        def fail_after_erasure(*args: Any, **kwargs: Any) -> Any:
+            original(*args, **kwargs)
+            raise OperationRefused("fixture_failure", "Synthetic participant failure")
+
+        held = intake.call("core.record.delete", ref=erased)
+        assert held.state == "approval_required"
+        with monkeypatch.context() as patch:
+            patch.setattr(lifecycle, "_erase", fail_after_erasure)
+            failed = intake.call(
+                "core.approval.approve", approval_id=str(held.approval_id)
+            )
+        assert failed.state == "fixture_failure", failed
+        assert intake.count(mt.memory) == intake.count(mt.memory_embedding) == 4
+        assert ok(intake, "observation.get", observation_ref=observation)
+    approve_delete(intake, erased)
+    assert intake.count(mt.memory) == intake.count(mt.memory_embedding) == 1
+    assert memory("get", ref=unrelated.result.ref).ok
+    with open_unit_of_work(intake.ctx) as uow:
+        remaining = uow.connection.execute(select(mt.memory.c.id)).scalars().all()
+        assert remaining == [RecordRef.parse(unrelated.result.ref).id]
 
 
 def test_contact_guard_blocks_held_sink_after_withdrawal(
@@ -796,4 +854,93 @@ def test_channel_grant_does_not_undo_other_channel_withdrawal(intake: Intake) ->
     assert (
         ok(intake, "contact_permission.check", **args, channel="phone").state
         == "permitted"
+    )
+
+
+def test_single_channel_withdrawal_preserves_other_channels(intake: Intake) -> None:
+    setup(intake)
+    observation = capture(intake, "permission", {"person.email": "a@example.com"})
+    party = ok(intake, "observation.get", observation_ref=observation).data["party_ref"]
+    args = dict(party_ref=party, purpose="follow_up")
+    ok(intake, "contact_permission.record", **args, disclosure_version="v1")
+    ok(intake, "contact_permission.withdraw", **args, channel="email")
+    assert (
+        ok(intake, "contact_permission.check", **args, channel="email").state
+        == "withdrawn"
+    )
+    assert (
+        ok(intake, "contact_permission.check", **args, channel="phone").state
+        == "permitted"
+    )
+    assert ok(intake, "contact_permission.check", **args).state == "withdrawn"
+
+
+def test_invalid_source_extension_does_not_poison_reconciliation(
+    intake: Intake,
+) -> None:
+    from sqlalchemy import insert
+
+    setup(intake)
+    capture(intake, "seed", {"person.email": "a@example.com"})
+    with open_unit_of_work(intake.ctx) as uow:
+        mapping = uow.connection.execute(select(t.field_mapping)).mappings().one()
+        uow.connection.execute(
+            insert(t.field_mapping_rule).values(
+                mapping_id=mapping["id"],
+                version=mapping["version"],
+                target="ext.services.count",
+                source_path="/count",
+                required=False,
+                clear_on_null=True,
+            )
+        )
+        stages = [
+            {k: r[k] for k in ("stage_id", "label", "kind", "outcome")}
+            for r in uow.connection.execute(
+                select(p.preset_stage).order_by(p.preset_stage.c.ordinal)
+            ).mappings()
+        ]
+        transitions = [
+            (r["from_stage_id"], r["to_stage_id"])
+            for r in uow.connection.execute(select(p.preset_transition)).mappings()
+        ]
+        preset = uow.connection.execute(select(p.pipeline_preset.c.id)).scalar_one()
+        uow.commit()
+    ok(
+        intake,
+        "preset.edit",
+        preset_id=str(preset),
+        from_version=1,
+        stages=stages,
+        transitions=transitions,
+        fields=[{"target": "ext.services.count", "type": "integer"}],
+    )
+    first = capture(
+        intake, "invalid", {"person.email": "a@example.com", "count": "abc"}
+    )
+    current = one(intake)
+    ok(
+        intake,
+        "pipeline.migrate_version",
+        ref=current.ref,
+        revision=current.revision,
+        to_version=2,
+        stage_map={"triage": "triage"},
+    )
+    valid = capture(intake, "valid", {"person.email": "a@example.com", "count": "7"})
+    current = one(intake)
+    field = next(
+        f
+        for f in current.data["opportunity_field_state"]
+        if f["target"] == "ext.services.count"
+    )
+    assert field["value_text"] == "7"
+    assert any(
+        f["value_text"] == "abc"
+        for f in ok(intake, "observation.get", observation_ref=first).data["fields"]
+    )
+    approve_delete(intake, valid)
+    assert not any(
+        f["target"] == "ext.services.count"
+        for f in one(intake).data["opportunity_field_state"]
     )

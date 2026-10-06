@@ -19,8 +19,11 @@ persistent memory through a self-hostable FastAPI core, MCP facade and Next.js s
 ## Current status and limits
 
 The core, worker, shell, Recallatron, module install/enable and Claude CLI adapter
-are implemented. Leads, Current and Relationships are stubs; connectors, channels,
-packs and module disable/remove/purge are unimplemented. Modules are trusted code,
+are implemented. Relationships owns shared party identity; Leads supports durable
+intake, configurable opportunity pipelines, permissions and tracked handoffs through
+operations and MCP. Their UI and authenticated intake transports remain separate
+work. Current, connectors, channels, packs and module disable/remove/purge are
+unimplemented. Modules are trusted code,
 not sandboxed plugins. Job enqueue spans two databases without a shared transaction:
 a crash between writes can delay discovery until reconciliation. The
 [architecture tour](docs/architecture/code-tour.md) documents recovery and its limits.

@@ -93,7 +93,12 @@ def derive(uow: UnitOfWork, record: dict[str, Any]) -> dict[str, Any]:
         if target.startswith("ext."):
             if target not in specs:
                 continue
-            validate_value(specs[target], r["value_text"])
+            try:
+                validate_value(specs[target], r["value_text"])
+            except OperationRefused:
+                # Preserve invalid source evidence for inspection, but do not let
+                # it poison later reconciliation or approved source erasure.
+                continue
         candidates.setdefault(target, []).append(r)
     for target in set(current) | set(candidates):
         old = current.get(target)

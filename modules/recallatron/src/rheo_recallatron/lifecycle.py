@@ -148,20 +148,16 @@ from rheo_recallatron.writes import (
     write_memory,
 )
 
-DELETION_PARTICIPANT_TYPES: Final = (f"{MODULE_ID}.{MEMORY_RECORD_TYPE}",)
-"""The qualified record types :func:`on_record_deleted` hooks.
+DELETION_PARTICIPANT_TYPES: Final = (
+    f"{MODULE_ID}.{MEMORY_RECORD_TYPE}",
+    "leads.observation",
+    "leads.opportunity",
+    "relationships.party",
+)
+"""Reference-only subscriptions; no import or storage access to those modules.
 
-Assembled from the module id and the record type rather than written out, which is
-the spelling every qualified name in this package uses.
-
-**One entry, and it is this module's own type**, which reads like a module hooking
-itself and is not. The ratified cascade splits a deletion into the owner's own rows
-(step 2) and the participants' (step 3), and ``recallatron.on_record_deleted``'s rule
-— remove every memory linked to the reference and every memory derived from those —
-is written for *any* deleted reference, not for a memory in particular. Release one
-ships no other owned record type for it to hook; the day one arrives, it is added
-here and the handler below needs no change, because it works from the reference and
-never from the row behind it.
+Confirmed user erasure removes directly linked memories and their derived closure.
+Scheduled memory expiry retains its existing, narrower supersession-lineage rule.
 """
 
 
@@ -195,12 +191,23 @@ def dependent_closure(
     The target is never in its own closure, cycles terminate on the seen set, and the
     walk is deterministic because :func:`list_memory_dependents` is ordered.
     """
-    seen: set[UUID] = {target_id}
+    return _reference_closure(
+        conn,
+        RecordRef.parse(memory_reference(target_id)),
+        include_marked=include_marked,
+    )
+
+
+def _reference_closure(
+    conn: Connection, target: RecordRef, *, include_marked: bool
+) -> tuple[UUID, ...]:
+    is_memory = target.module == MODULE_ID and target.record_type == MEMORY_RECORD_TYPE
+    seen: set[UUID] = {target.id} if is_memory else set()
     found: list[UUID] = []
-    frontier: deque[tuple[UUID, bool]] = deque([(target_id, True)])
+    frontier: deque[tuple[str, bool]] = deque([(target.format(), True)])
     while frontier:
         current, first_hop = frontier.popleft()
-        for link in list_memory_dependents(conn, memory_reference(current)):
+        for link in list_memory_dependents(conn, current):
             if link.supersession_lineage and not include_marked:
                 continue
             if not first_hop and link.relation != RELATION_DERIVED_FROM:
@@ -209,7 +216,7 @@ def dependent_closure(
                 continue
             seen.add(link.memory_id)
             found.append(link.memory_id)
-            frontier.append((link.memory_id, False))
+            frontier.append((memory_reference(link.memory_id), False))
     return tuple(found)
 
 
@@ -742,14 +749,17 @@ def on_record_deleted(
     the other half of the same table row and the reason this is a choice of edges
     rather than a choice of whether to cascade at all.
     """
-    if ref.module != MODULE_ID or ref.record_type != MEMORY_RECORD_TYPE:
+    if f"{ref.module}.{ref.record_type}" not in DELETION_PARTICIPANT_TYPES:
+        return NOTHING_REMOVED
+    is_memory = ref.module == MODULE_ID and ref.record_type == MEMORY_RECORD_TYPE
+    if not is_memory and disposition is not Disposition.USER_ERASURE:
         return NOTHING_REMOVED
     return RemovedMemories(
         _erase(
             uow.connection,
-            dependent_closure(
+            _reference_closure(
                 uow.connection,
-                ref.id,
+                ref,
                 include_marked=disposition is not Disposition.SCHEDULED_EXPIRY,
             ),
         )

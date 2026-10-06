@@ -50,10 +50,11 @@ fields while preserving user edits. Deleting a party removes its links and permi
 content. Core cancels reference-bound queued work and held approvals and invalidates
 held exports; artifact deletion runs after commit with durable retry.
 
-**Draft limitation:** derived Recallatron memories and embeddings are not yet erased
-when their Leads/Relationships source is erased. That cross-module deletion extension
-is blocked pending explicit approval; its integration test remains failing. This draft
-does not satisfy the complete erasure acceptance criterion and is not ready to merge.
+With Recallatron enabled, confirmed source erasure also removes directly linked
+memories and their derived descendants, embeddings and index entries. The cascade
+uses canonical references and Recallatron's own deletion rules; unrelated memories
+survive and any participant failure rolls back the transaction. Leads also works in
+workspaces where Recallatron was never installed.
 
 Export format two covers all 35 owned tables. Restore preserves source identities,
 replaces only a fresh seed and strips deployment-local signing handles. The populated
