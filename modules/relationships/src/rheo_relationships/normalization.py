@@ -3,6 +3,8 @@
 import re
 from urllib.parse import urlsplit
 
+from rheo_core.operations.refusals import OperationRefused
+
 
 def normalize(kind: str, value: str) -> str:
     value = value.strip()
@@ -11,8 +13,14 @@ def normalize(kind: str, value: str) -> str:
     if kind == "phone":
         return re.sub(r"[^0-9+]", "", value)
     if kind == "url":
-        parsed = urlsplit(value if "://" in value else "https://" + value)
-        return (parsed.hostname or "").casefold().rstrip(".")
+        try:
+            parsed = urlsplit(value if "://" in value else "https://" + value)
+            host = (parsed.hostname or "").casefold().rstrip(".")
+        except ValueError:
+            raise OperationRefused("input_invalid", "invalid domain") from None
+        if not host:
+            raise OperationRefused("input_invalid", "invalid domain")
+        return host
     if kind == "name":
         return " ".join(value.casefold().split())
     return value

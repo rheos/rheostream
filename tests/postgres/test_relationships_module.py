@@ -577,3 +577,92 @@ def test_relationships_export_restore_preserves_unmerge(
     assert (
         restored.resolve(verified_email="original@example.com").party_ref == a.party_ref
     )
+
+
+@pytest.mark.parametrize(
+    "invalid", ["missing_target", "foreign_type", "duplicate", "wrong_revision"]
+)
+def test_relationships_invalid_owned_deletion_set_rolls_back(
+    relationships: Relationships, monkeypatch: pytest.MonkeyPatch, invalid: str
+) -> None:
+    from rheo_core.deletion import (
+        OWNED_DELETIONS,
+        DeleteAuthorization,
+        OwnedDeletion,
+        RemovedOwnedRecords,
+    )
+    from rheo_core.storage.backend import UnitOfWork
+
+    party = relationships.create()
+    reference = RecordRef.parse(party.ref)
+    owner = OWNED_DELETIONS.owner_of(reference)
+    assert owner is not None
+
+    def invalid_delete(
+        ctx: WorkspaceContext, uow: UnitOfWork, authorization: DeleteAuthorization
+    ) -> RemovedOwnedRecords:
+        owner.delete_owned(ctx, uow, authorization)
+        records = (authorization,)
+        if invalid == "missing_target":
+            records = ()
+        elif invalid == "foreign_type":
+            records = (
+                authorization,
+                DeleteAuthorization(
+                    RecordRef(module="fixture", record_type="party", id=uuid7()), 1
+                ),
+            )
+        elif invalid == "duplicate":
+            records = (authorization, authorization)
+        else:
+            records = (DeleteAuthorization(reference, authorization.revision + 1),)
+        return RemovedOwnedRecords(records=records)
+
+    monkeypatch.setattr(OWNED_DELETIONS, "_owners", dict(OWNED_DELETIONS._owners))
+    OWNED_DELETIONS._owners[("relationships", "party")] = OwnedDeletion(
+        "relationships", "party", owner.authorize_delete, invalid_delete
+    )
+    held = relationships.call("core.record.delete", ref=party.ref)
+    outcome = relationships.call(
+        "core.approval.approve", approval_id=str(held.approval_id)
+    )
+    assert outcome.state == "deletion_result_invalid"
+    assert relationships.count(t.party) == 1
+    assert relationships.count(deletion_record) == 0
+
+
+def test_relationships_affiliation_review_uses_original_occurrence(
+    relationships: Relationships,
+) -> None:
+    organization = relationships.create("Example Company", "organization")
+    person = relationships.resolve(
+        occurred_at="2023-05-06T12:00:00Z",
+        hints={"organization_name": "Example Company"},
+    )
+    rows = relationships.ok("review_candidate.list").items
+    assert len(rows) == 1 and rows[0]["kind"] == "affiliation"
+    relationships.ok(
+        "review_candidate.resolve",
+        candidate_ref=person.review_candidate_refs[0],
+        decision="accept",
+    )
+    affiliation = relationships.get(person.party_ref).affiliations[0]
+    assert str(affiliation["valid_from"]) == "2023-05-06"
+    assert affiliation["organization_id"] == RecordRef.parse(organization.ref).id
+
+
+def test_relationships_name_candidates_are_capped_and_no_self_match(
+    relationships: Relationships,
+) -> None:
+    for _ in range(12):
+        relationships.create("Example Person")
+    person = relationships.resolve(
+        verified_email="unique@example.com", hints={"name": "Example Person"}
+    )
+    assert len(person.review_candidate_refs) == 10
+    again = relationships.resolve(
+        verified_email="unique@example.com", hints={"name": "Example Person"}
+    )
+    assert again.party_ref == person.party_ref
+    assert set(again.review_candidate_refs) == set(person.review_candidate_refs)
+    assert relationships.count(t.review_candidate) == 10

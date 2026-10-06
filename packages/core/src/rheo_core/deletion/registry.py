@@ -22,7 +22,8 @@ a reference and a revision or a refusal; it never returns the record and is neve
 required to have one that is current, so an authorised expired or superseded row can
 still be erased (``docs/architecture/deletion-export-migration.md`` § Record-level
 deletion). ``delete_owned`` and a participant's handler answer :class:`RemovedMemories`
-— identifiers of memory rows they physically removed, and nothing else.
+— identifiers of memory rows they physically removed. An owner can additionally
+return :class:`RemovedOwnedRecords` for its complete same-type alias set.
 
 **The registry is process-global, like ``RESOLVERS`` and ``TOOL_REGISTRY``.** The
 coordinator is a core operation handler, which receives ``(ctx, uow, input)`` and has

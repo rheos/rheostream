@@ -2,7 +2,8 @@
 
 The whole of R5's record-level deletion that this tree implements, and the shape of the
 rest. One destructive, per-action-approved operation; one owner's delete; every enabled
-participant; one content-free ledger row; one ``core.record.deleted`` event; and the
+participant; a content-free ledger row and ``core.record.deleted`` event per erased
+identity (including aliases); and the
 gated operation's own success audit row — **all in the transaction
 ``approvals/gate.py:execute_approved`` already holds**, so a participant that raises
 takes the effect, the ledger, the event and the audit row with it and the record

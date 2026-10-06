@@ -332,5 +332,7 @@ def test_core_contracts_and_apps_do_not_depend_on_relationships() -> None:
     }
     assert actual == {
         "tests/postgres/test_relationships_module.py",
+        # Planted foreign-storage imports exercise the existing module guard.
+        "tests/postgres/test_module_storage_ownership.py",
         "tests/test_module_import_graph.py",
     }

@@ -130,8 +130,7 @@ def party_find(
     ctx: WorkspaceContext, uow: UnitOfWork, data: c.FindInput
 ) -> c.ItemsOutput:
     keys = {
-        normalize(kind, data.query)
-        for kind in ("email", "phone", "url", "external_subject")
+        normalize(kind, data.query) for kind in ("email", "phone", "external_subject")
     }
     contacts = select(t.contact_point.c.party_id).where(
         t.contact_point.c.retired_at.is_(None),

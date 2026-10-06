@@ -4,12 +4,12 @@ from datetime import UTC, datetime
 
 from rheo_contracts import RecordRef, Role, StaleRecord, WorkspaceContext
 from rheo_core.boundary.context import Refusal
-from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
-from rheo_core.deletion.registry import (
+from rheo_core.deletion import (
     DeleteAuthorization,
     Disposition,
     RemovedOwnedRecords,
 )
+from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.storage.backend import UnitOfWork
 from sqlalchemy import delete, or_, select, update
 
