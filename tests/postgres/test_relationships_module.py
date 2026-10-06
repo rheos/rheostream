@@ -690,3 +690,43 @@ def test_relationships_find_by_normalized_domain_and_bad_domain_refusal(
     )
     assert result.state == "input_invalid"
     assert relationships.count(t.contact_point) == 1
+
+
+def test_relationships_tools_roundtrip_canonical_refs_and_hold_delete(
+    relationships: Relationships,
+) -> None:
+    from rheo_core.operations.tool_facade import call_registered_tool
+
+    a = relationships.create("First Example")
+    b = relationships.create("Second Example")
+
+    def tool(name: str, **payload: Any) -> Any:
+        return call_registered_tool(
+            relationships.ctx,
+            "relationships_" + name,
+            payload,
+            consumers=relationships.consumers,
+            tools=relationships.surfaces.tools,
+            registry=relationships.surfaces.operations,
+        )
+
+    read = tool("get_party", ref=a.ref)
+    assert read.ok, read
+    merged = tool(
+        "merge_parties",
+        source_ref=a.ref,
+        target_ref=b.ref,
+        source_revision=a.revision,
+        target_revision=b.revision,
+    )
+    assert merged.ok, merged
+    assert relationships.get(a.ref).canonical_ref == b.ref
+    held = tool("delete_party", ref=b.ref)
+    assert held.state == "approval_required", held
+    invalid = tool("delete_party", ref=f"fixture.party:{uuid7()}")
+    assert invalid.state == "input_invalid", invalid
+    declaration = next(x for x in MANIFEST.tools if x.name == "relationships_get_party")
+    assert (
+        declaration.input_model.model_json_schema()["properties"]["ref"]["type"]
+        == "string"
+    )
