@@ -1908,6 +1908,18 @@ The following changes are recorded here.
     single-use, lives 60 seconds and is useless without the client's PKCE verifier.
     The feature ships off (`identity.oauth.enabled` false).
 
+19. **Relationships backend keeps review evidence distinct from identity.** Implementation
+    clarification in #299: same-party review keys are an ordered party pair plus hint,
+    allowing name and phone evidence to coexist without mirrored candidates. Linked
+    identities also receive new hint candidates, and rejected hints stay suppressed.
+    Only trusted service contexts may assert source-verified identity; ordinary account
+    roles use explicit create/edit/review operations. Name similarity is an integer
+    percentage to fit the configuration contract.
+    Alias merges refuse affiliation collisions instead of discarding history. Approved
+    deletion reports every erased alias to the core coordinator for atomic participant
+    cleanup and per-reference deletion evidence; existing single-record owners keep
+    their return shape. These implement R4/A16 rather than rewriting outside references.
+
 ### Preferred but still to validate
 
 - One goal-oriented rheo MCP façade is the initial agent boundary.

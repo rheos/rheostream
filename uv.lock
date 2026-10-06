@@ -1231,6 +1231,16 @@ provides-extras = ["local-embeddings"]
 name = "rheo-relationships"
 version = "0.1.0"
 source = { editable = "modules/relationships" }
+dependencies = [
+    { name = "rheo-contracts" },
+    { name = "rheo-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "rheo-contracts", editable = "packages/contracts" },
+    { name = "rheo-core", editable = "packages/core" },
+]
 
 [[package]]
 name = "rheo-runtimes"

@@ -2,7 +2,8 @@
 
 The whole of R5's record-level deletion that this tree implements, and the shape of the
 rest. One destructive, per-action-approved operation; one owner's delete; every enabled
-participant; one content-free ledger row; one ``core.record.deleted`` event; and the
+participant; a content-free ledger row and ``core.record.deleted`` event per erased
+identity (including aliases); and the
 gated operation's own success audit row — **all in the transaction
 ``approvals/gate.py:execute_approved`` already holds**, so a participant that raises
 takes the effect, the ledger, the event and the audit row with it and the record
@@ -59,6 +60,7 @@ from rheo_core.deletion.registry import (
     OwnedDeletion,
     OwnedDeletionRegistry,
     RemovedMemories,
+    RemovedOwnedRecords,
     authorize_owned_delete,
 )
 from rheo_core.deletion.tables import USER_ERASURE
@@ -257,47 +259,69 @@ def delete_owned(
             f"{ref.format()} is at revision {authorization.revision}, not the "
             f"revision {approval.subject_revision} that was approved"
         )
-    removed: RemovedMemories = owner.delete_owned(ctx, uow, authorization)
-    participants: list[str] = []
-    for participant in registry.participants_for(
-        ref, enabled_modules=ctx.enabled_modules
-    ):
-        # A participant that raises aborts the whole deletion: it is not caught here,
-        # so the exception reaches ``dispatch()`` and everything above rolls back.
-        removed = removed.union(
-            participant.handler(ctx, uow, ref, disposition=Disposition.USER_ERASURE)
+    owned = owner.delete_owned(ctx, uow, authorization)
+    records = (
+        owned.records if isinstance(owned, RemovedOwnedRecords) else (authorization,)
+    )
+    # Owners may report aliases of the approved type, never expand into another
+    # module/type. Validate before any participant runs; failure rolls back erasure.
+    by_ref = {item.ref.format(): item for item in records}
+    if (
+        len(by_ref) != len(records)
+        or by_ref.get(ref.format()) != authorization
+        or any(
+            item.ref.module != ref.module
+            or item.ref.record_type != ref.record_type
+            or item.revision < 1
+            for item in records
         )
-        participants.append(participant.module_id)
-    deletion_id = insert_deletion_record(
-        uow.connection,
-        ref=ref,
-        actor_kind=ctx.actor.kind.value,
-        actor_id=ctx.actor.id,
-        approval_id=approval.id,
-        participants=tuple(participants),
-        # Distinct rows, unioned across the owner and every participant: two
-        # participants reporting the same removed memory count it once.
-        invalidated_memory_count=len(removed.memory_ids),
-        cause=USER_ERASURE,
-        # Never for an erasure. The table's own check constraint refuses a non-null
-        # here under this cause, so the rule is the database's and not this line's.
-        retained_successor_ref=None,
-        now=now,
-    )
-    reference = deletion_ref(deletion_id)
-    publish(
-        ctx,
-        uow,
-        NewEvent(
-            type=RECORD_DELETED,
-            schema_version=RECORD_DELETED_SCHEMA_VERSION,
-            subject_ref=ref.format(),
-            # The revision the record held when it was erased, which is the revision
-            # the owner authorised under the lock one statement earlier.
-            subject_revision=authorization.revision,
-            data={"ref": ref.format(), "deletion_record_ref": reference.format()},
-        ),
-        now=now,
-        consumers=consumers,
-    )
+    ):
+        raise OperationRefused("deletion_result_invalid", "invalid owned deletion set")
+    reference = None
+    for item in records:
+        removed = (
+            RemovedMemories(owned.memory_ids) if item.ref == ref else RemovedMemories()
+        )
+        participants: list[str] = []
+        for participant in registry.participants_for(
+            item.ref, enabled_modules=ctx.enabled_modules
+        ):
+            removed = removed.union(
+                participant.handler(
+                    ctx, uow, item.ref, disposition=Disposition.USER_ERASURE
+                )
+            )
+            participants.append(participant.module_id)
+        deletion_id = insert_deletion_record(
+            uow.connection,
+            ref=item.ref,
+            actor_kind=ctx.actor.kind.value,
+            actor_id=ctx.actor.id,
+            approval_id=approval.id,
+            participants=tuple(participants),
+            invalidated_memory_count=len(removed.memory_ids),
+            cause=USER_ERASURE,
+            retained_successor_ref=None,
+            now=now,
+        )
+        current = deletion_ref(deletion_id)
+        if item.ref == ref:
+            reference = current
+        publish(
+            ctx,
+            uow,
+            NewEvent(
+                type=RECORD_DELETED,
+                schema_version=RECORD_DELETED_SCHEMA_VERSION,
+                subject_ref=item.ref.format(),
+                subject_revision=item.revision,
+                data={
+                    "ref": item.ref.format(),
+                    "deletion_record_ref": current.format(),
+                },
+            ),
+            now=now,
+            consumers=consumers,
+        )
+    assert reference is not None
     return RecordDeleted(deletion_ref=reference.format())

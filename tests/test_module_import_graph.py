@@ -166,20 +166,22 @@ def _names_module(value: str) -> bool:
     return value == _MODULE_TOKEN or value.startswith(f"{_MODULE_TOKEN}.")
 
 
-def _mentions(path: Path) -> list[str]:
+def _mentions(
+    path: Path, module_token: str = _MODULE_TOKEN, path_token: str = _PATH_TOKEN
+) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     docstrings = _docstring_nodes(tree)
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == _MODULE_TOKEN or alias.name.startswith(
-                    f"{_MODULE_TOKEN}."
+                if alias.name == module_token or alias.name.startswith(
+                    f"{module_token}."
                 ):
                     found.append(f"import {alias.name}@{node.lineno}")
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            if node.module == _MODULE_TOKEN or node.module.startswith(
-                f"{_MODULE_TOKEN}."
+            if node.module == module_token or node.module.startswith(
+                f"{module_token}."
             ):
                 found.append(f"import {node.module}@{node.lineno}")
         elif (
@@ -187,10 +189,10 @@ def _mentions(path: Path) -> list[str]:
             and isinstance(node.value, str)
             and id(node) not in docstrings
         ):
-            if _names_module(node.value):
-                found.append(f"module {_MODULE_TOKEN}@{node.lineno}")
-            if _PATH_TOKEN in node.value:
-                found.append(f"path {_PATH_TOKEN}@{node.lineno}")
+            if node.value == module_token or node.value.startswith(f"{module_token}."):
+                found.append(f"module {module_token}@{node.lineno}")
+            if path_token in node.value:
+                found.append(f"path {path_token}@{node.lineno}")
     return sorted(found)
 
 
@@ -318,3 +320,19 @@ def test_string_dependency_routes_exclude_narrative_text(tmp_path: Path) -> None
         "module rheo_recallatron@4",
         "path modules/recallatron@5",
     ]
+
+
+def test_core_contracts_and_apps_do_not_depend_on_relationships() -> None:
+    # Each module owns its explicit test exclusions; production has none.
+    actual = {
+        str(path.relative_to(_REPO_ROOT))
+        for top in _SCAN_DIRS
+        for path in (_REPO_ROOT / top).rglob("*.py")
+        if _mentions(path, "rheo_relationships", "modules/relationships")
+    }
+    assert actual == {
+        "tests/postgres/test_relationships_module.py",
+        # Planted foreign-storage imports exercise the existing module guard.
+        "tests/postgres/test_module_storage_ownership.py",
+        "tests/test_module_import_graph.py",
+    }
