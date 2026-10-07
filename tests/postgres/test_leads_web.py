@@ -123,3 +123,45 @@ def test_detail_keeps_drafts_and_notes_separate_from_source(intake: Intake) -> N
             ).scalar_one()
             == "Original evidence"
         )
+
+
+def test_manual_form_payload_reaches_a_routed_opportunity(intake: Intake) -> None:
+    """The browser's flat capture fields work with the unmodified seeded mapping."""
+    pipeline = ok(intake, "pipeline.create", name="Browser inquiries")
+    catalog = ok(intake, "ui.catalog").items
+    manual = next(r for r in catalog if r.get("transport") == "manual")
+    funnel = next(r for r in catalog if r["kind"] == "funnel")
+    ok(
+        intake,
+        "connection.set_routing",
+        connection_id=str(manual["id"]),
+        expected_rule_ids=[str(r["id"]) for r in manual["rules"]],
+        rules=[
+            {
+                "action": "create_opportunity",
+                "pipeline_id": str(RecordRef.parse(pipeline.ref).id),
+            }
+        ],
+    )
+    accepted = ok(
+        intake,
+        "intake.capture",
+        funnel_ref=funnel["ref"],
+        body={
+            "subject": "Synthetic browser inquiry",
+            "person.name": "Example contact",
+            "person.email": "contact@example.test",
+            "message": "Please review our booking flow.",
+        },
+    )
+    assert (
+        ok(intake, "intake.receipt", receipt_ref=accepted.receipt_ref).data["state"]
+        == "pending"
+    )
+    intake.visit()
+    receipt = ok(intake, "intake.receipt", receipt_ref=accepted.receipt_ref)
+    assert receipt.data["state"] == "processed"
+    opportunity = one(intake)
+    assert receipt.data["opportunity_refs"] == [opportunity.ref]
+    assert opportunity.data["title"] == "Synthetic browser inquiry"
+    assert opportunity.data["pipeline_id"] == RecordRef.parse(pipeline.ref).id
