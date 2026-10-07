@@ -108,12 +108,24 @@ def render(manifests: Iterable[ModuleManifest]) -> str:
     manifests = tuple(manifests)
     composed: dict[str, WebContribution] = {}
     reads: dict[str, tuple[str, ...]] = {}
+    submissions: dict[str, tuple[str, ...]] = {}
     for manifest in manifests:
         if manifest.module_id in composed:
             raise ValueError(f"module {manifest.module_id!r} is composed twice")
         if manifest.web is not None:
             composed[manifest.module_id] = manifest.web
             reads[manifest.module_id] = read_operations(manifest)
+            form_names = {form.operation for form in manifest.web.forms}
+            submissions[manifest.module_id] = tuple(
+                sorted(
+                    declaration.name
+                    for declaration, _ in manifest.operations
+                    if declaration.name in form_names
+                    and declaration.safety_class
+                    in {SafetyClass.MUTATE, SafetyClass.DRAFT}
+                    and declaration.name.startswith(manifest.module_id + ".")
+                )
+            )
     # Again here, not only in ``installed_manifests``: ``render`` takes manifests from
     # any caller, and a surface-name collision it rendered would be a file the
     # runtime's ``module_surfaces()`` could not agree with (#123).
@@ -140,7 +152,11 @@ def render(manifests: Iterable[ModuleManifest]) -> str:
     lines += ["", "export const MODULES = ["]
     for module_id in sorted(composed):
         lines += _module(
-            module_id, composed[module_id], bindings[module_id], reads[module_id]
+            module_id,
+            composed[module_id],
+            bindings[module_id],
+            reads[module_id],
+            submissions[module_id],
         )
     lines.append("] as const satisfies readonly ComposedModule[];")
     return "\n".join(lines) + "\n"
@@ -201,7 +217,11 @@ def _array(name: str, items: list[str], depth: int) -> list[str]:
 
 
 def _module(
-    module_id: str, web: WebContribution, binding: str, reads: tuple[str, ...]
+    module_id: str,
+    web: WebContribution,
+    binding: str,
+    reads: tuple[str, ...],
+    submissions: tuple[str, ...],
 ) -> list[str]:
     pad = _INDENT * 2
     navigation = [
@@ -267,5 +287,6 @@ def _module(
         *_array("forms", forms, 2),
         *_array("searchProviders", search_providers, 2),
         *_array("readOperations", [_literal(name) for name in reads], 2),
+        *_array("submitOperations", [_literal(name) for name in submissions], 2),
         f"{_INDENT}}},",
     ]

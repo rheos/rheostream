@@ -10,6 +10,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@rheo-stream/leads-web':
+        specifier: workspace:*
+        version: link:../../modules/leads/web
       '@rheo-stream/recallatron-web':
         specifier: workspace:*
         version: link:../../modules/recallatron/web
@@ -47,6 +50,43 @@ importers:
       openapi-typescript:
         specifier: 7.13.0
         version: 7.13.0(typescript@5.9.3)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+      vite:
+        specifier: ^8
+        version: 8.3.1(@types/node@26.6.3)(esbuild@0.28.2)
+      vitest:
+        specifier: ^5
+        version: 5.0.2(@types/node@26.6.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2))
+
+  modules/leads/web:
+    dependencies:
+      '@rheo-stream/web-contract':
+        specifier: workspace:*
+        version: link:../../../packages/web-contract
+    devDependencies:
+      '@types/node':
+        specifier: ^26
+        version: 26.6.3
+      '@types/react':
+        specifier: ^19
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.3.0(@types/react@19.3.0)
+      eslint:
+        specifier: ^9
+        version: 9.39.5
+      eslint-config-next:
+        specifier: ^16
+        version: 16.3.6(eslint@9.39.5)(typescript@5.9.3)
+      react:
+        specifier: ^19
+        version: 19.3.0
+      react-dom:
+        specifier: ^19
+        version: 19.3.0(react@19.3.0)
       typescript:
         specifier: ^5
         version: 5.9.3

@@ -57,8 +57,6 @@ describe("composition over the real MODULES", () => {
     const navigation = composeNavigation(MODULES, { ...options, role: "member" });
     expect(navigation.map((entry) => [entry.surface, entry.label, entry.path])).toEqual([
       ["recallatron", "Memory", "/"],
-      ["recallatron", "Search", "/search"],
-      ["recallatron", "Possible duplicates", "/duplicates"],
     ]);
     const visible = visibleModules(MODULES, options);
     for (const route of ROUTES) {

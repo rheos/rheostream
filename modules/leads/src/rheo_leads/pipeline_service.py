@@ -70,6 +70,33 @@ def get(ctx: WorkspaceContext, uow: UnitOfWork, m: c.RefInput) -> c.RecordOutput
         .one_or_none()
     )
     record["qualification"] = dict(assessment) if assessment else None
+    record["transitions"] = [
+        dict(r)
+        for r in uow.connection.execute(
+            select(p.preset_stage)
+            .join(
+                p.preset_transition,
+                (p.preset_transition.c.preset_id == p.preset_stage.c.preset_id)
+                & (p.preset_transition.c.version == p.preset_stage.c.version)
+                & (p.preset_transition.c.to_stage_id == p.preset_stage.c.stage_id),
+            )
+            .where(
+                p.preset_transition.c.preset_id == record["preset_id"],
+                p.preset_transition.c.version == record["preset_version"],
+                p.preset_transition.c.from_stage_id == record["stage_id"],
+            )
+            .order_by(p.preset_stage.c.ordinal)
+        ).mappings()
+    ]
+    record["drafts"] = [
+        dict(r)
+        for r in uow.connection.execute(
+            select(p.draft)
+            .where(p.draft.c.opportunity_id == record["id"])
+            .order_by(p.draft.c.created_at.desc())
+            .limit(20)
+        ).mappings()
+    ]
     return h.output(record)
 
 

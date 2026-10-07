@@ -1,3 +1,4 @@
+import { withNavigation } from "./navigation";
 import type { Screen } from "@rheo-stream/web-contract/screen";
 
 import { browse } from "./screens/browse/screen";
@@ -15,7 +16,7 @@ import { search } from "./screens/search/screen";
  * `load*` data loader and a synchronous `*View`, exported too so each half is testable
  * on its own.
  */
-export const screens = { browse, search, item, duplicates, historyItem } satisfies Record<string, Screen>;
+export const screens = Object.fromEntries(Object.entries({ browse, search, item, duplicates, historyItem }).map(([name, screen]) => [name, withNavigation(screen, name)])) as Record<"browse" | "search" | "item" | "duplicates" | "historyItem", Screen>;
 
 export { browse, duplicates, historyItem, item, search };
 export { loadBrowse, type BrowseState } from "./screens/browse/load";

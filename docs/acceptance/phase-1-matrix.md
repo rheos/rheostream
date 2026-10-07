@@ -691,14 +691,16 @@ means the both-modes assertions are not sleeping.
 **Mutation:**
 ```diff
 diff --git a/apps/web/src/app/layout.tsx b/apps/web/src/app/layout.tsx
+index d439002..1c1f9e6 100644
 --- a/apps/web/src/app/layout.tsx
 +++ b/apps/web/src/app/layout.tsx
-@@ -1,5 +1,6 @@
+@@ -1,6 +1,7 @@
+ import { cookies } from "next/headers";
  import type { Metadata } from "next";
  import type { ReactNode } from "react";
 +import { x } from "@vercel/edge";
  
- import { BUILT_IN_THEMES } from "@/theme/builtins";
+ import { BUILT_IN_THEMES, themeId } from "@/theme/builtins";
  import { builtInThemeCss } from "@/theme/built-in-css";
 ```
 
@@ -715,6 +717,11 @@ and exit status 1
 **Why the hunk moved:** run 1a3 added the theme and font imports under the layout's two type
 imports, so the hunk's trailing context is now those imports rather than `metadata`. The
 mutation is the same added line in the same place.
+
+**Note (2026-10-07, Leads UI #312):** the theme-selection imports changed the
+hunk's context. Reapplied the same platform-only import to the current layout,
+observed `Platform-only @vercel/* import: apps/web/src/app/layout.tsx` and exit 1,
+captured the diff above, then restored the original file. Performed by Codex.
 
 ---
 

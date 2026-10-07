@@ -63,7 +63,7 @@ x-rheo-settings: &rheo-settings
   RHEO__identity__providers__github__client_id: ${RHEO_GITHUB_CLIENT_ID:?}
   RHEO__identity__providers__github__client_secret_ref: secret://env/RHEO_GITHUB_CLIENT_SECRET
   RHEO__internal__secret_ref: secret://env/RHEO_INTERNAL_SECRET
-  RHEO__modules__installed: recallatron
+  RHEO__modules__installed: recallatron,relationships,leads
   RHEO__recallatron__embedding__provider: local
 
 services:
@@ -130,10 +130,10 @@ services:
       - traefik.http.services.rheostream-core.loadbalancer.server.port=8000
       # /auth/* is served by core on every application host (identity's fixed_path,
       # packages/core/src/rheo_core/routing/config.py), so this router must win over
-      # rheostream-web's plain host match on the same three hosts. Hence the
+      # rheostream-web's plain host match on the same four hosts. Hence the
       # explicit priority above it, since a Traefik rule-length heuristic would not
-      # reliably rank a path-qualified rule above a host-only one across all three.
-      - traefik.http.routers.rheostream-auth.rule=(Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`)) && (Path(`/auth`) || PathPrefix(`/auth/`))
+      # reliably rank a path-qualified rule above a host-only one across all four.
+      - traefik.http.routers.rheostream-auth.rule=(Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`) || Host(`leads.${RHEO_BASE_HOST:?}`)) && (Path(`/auth`) || PathPrefix(`/auth/`))
       - traefik.http.routers.rheostream-auth.entrypoints=https
       - traefik.http.routers.rheostream-auth.tls=true
       - traefik.http.routers.rheostream-auth.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
@@ -220,15 +220,15 @@ services:
       - traefik.enable=true
       - traefik.docker.network=${RHEO_TRAEFIK_NETWORK:?}
       - traefik.http.services.rheostream-web.loadbalancer.server.port=3000
-      - traefik.http.routers.rheostream-web.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`)
+      - traefik.http.routers.rheostream-web.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`) || Host(`leads.${RHEO_BASE_HOST:?}`)
       - traefik.http.routers.rheostream-web.entrypoints=https
       - traefik.http.routers.rheostream-web.tls=true
       - traefik.http.routers.rheostream-web.tls.certresolver=${RHEO_TLS_CERTRESOLVER:?}
       - traefik.http.routers.rheostream-web.tls.domains[0].main=*.${RHEO_BASE_HOST:?}
       - traefik.http.routers.rheostream-web.priority=90
       - traefik.http.routers.rheostream-web.service=rheostream-web
-      # Redirect-only: http -> https for all five routed hosts. No TLS labels.
-      - traefik.http.routers.rheostream-http.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`) || Host(`api.${RHEO_BASE_HOST:?}`) || Host(`mcp.${RHEO_BASE_HOST:?}`)
+      # Redirect-only: http -> https for all six routed hosts. No TLS labels.
+      - traefik.http.routers.rheostream-http.rule=Host(`circuit.${RHEO_BASE_HOST:?}`) || Host(`auth.${RHEO_BASE_HOST:?}`) || Host(`recall.${RHEO_BASE_HOST:?}`) || Host(`leads.${RHEO_BASE_HOST:?}`) || Host(`api.${RHEO_BASE_HOST:?}`) || Host(`mcp.${RHEO_BASE_HOST:?}`)
       - traefik.http.routers.rheostream-http.entrypoints=http
       - traefik.http.routers.rheostream-http.middlewares=rheostream-https-redirect
       - traefik.http.routers.rheostream-http.service=rheostream-web

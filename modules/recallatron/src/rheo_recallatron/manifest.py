@@ -337,13 +337,7 @@ MANIFEST: Final = ModuleManifest(
             WebRoute(id="history-item", path="/history/item", screen="historyItem"),
             WebRoute(id="duplicates", path="/duplicates", screen="duplicates"),
         ),
-        navigation=(
-            NavigationEntry(id="memory", label="Memory", path="/"),
-            NavigationEntry(id="search", label="Search", path="/search"),
-            NavigationEntry(
-                id="duplicates", label="Possible duplicates", path="/duplicates"
-            ),
-        ),
+        navigation=(NavigationEntry(id="memory", label="Memory", path="/"),),
         search_providers=(
             SearchProvider(id="recall", operation="recallatron.memory.recall"),
         ),

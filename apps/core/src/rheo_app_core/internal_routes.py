@@ -177,6 +177,9 @@ async def run_operation(
     request: Request,
     x_rheo_session: str | None = Header(default=None, alias="X-Rheo-Session"),
     x_rheo_host: str | None = Header(default=None, alias="X-Rheo-Host"),
+    x_rheo_expected_workspace: str | None = Header(
+        default=None, alias="X-Rheo-Expected-Workspace"
+    ),
 ) -> JSONResponse:
     """Dispatch one registered operation for the session behind ``X-Rheo-Session``.
 
@@ -202,9 +205,10 @@ async def run_operation(
     its own ``context_required`` refusal is unreachable through HTTP — a property
     of this route being correct, not a gap in the tests.
 
-    **No workspace identifier is read from the request.** The path carries the
-    operation name; the query string and the JSON body carry the operation's own
-    input; the workspace comes from the session row's ``active_workspace_id`` by
+    **The request cannot select a workspace.** An optional expected-workspace
+    header only refuses a changed session; it never changes the context. The path
+    carries the operation name; the query string and JSON body carry the operation's
+    own input; the workspace comes from the session row's ``active_workspace_id`` by
     way of ``context_from_session`` and from nowhere else. A payload that also
     names a workspace, database, DSN, connection string or schema has those keys
     dropped by the operation's input model — ``RESERVED_INPUT_FIELDS`` is refused
@@ -226,6 +230,12 @@ async def run_operation(
     ctx = context_from_session(secret, normalize_host(x_rheo_host))
     if isinstance(ctx, Refusal):
         return _session_refusal(ctx.state, str(ctx))
+    if x_rheo_expected_workspace is not None and x_rheo_expected_workspace != str(
+        ctx.workspace_id
+    ):
+        return _session_refusal(
+            "workspace_changed", "Workspace changed; reload before saving"
+        )
     payload: dict[str, object] = dict(request.query_params)
     try:
         body = await request.json()

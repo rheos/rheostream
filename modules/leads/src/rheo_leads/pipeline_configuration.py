@@ -1,5 +1,7 @@
 """Owner-authored, bounded configuration and explicit version migration."""
 
+from uuid import UUID
+
 from rheo_contracts import StaleRecord, WorkspaceContext
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs import uuid7
@@ -202,6 +204,16 @@ def set_routing(
 ) -> c.ItemsOutput:
     h.lock(uow)
     h.row(uow, t.intake_connection, m.connection_id)
+    if m.expected_rule_ids is not None:
+        current: list[UUID] = list(
+            uow.connection.execute(
+                select(p.routing_rule.c.id)
+                .where(p.routing_rule.c.connection_id == m.connection_id)
+                .order_by(p.routing_rule.c.ordinal)
+            ).scalars()
+        )
+        if current != m.expected_rule_ids:
+            raise StaleRecord("connection routing changed; reload before saving")
     for rule in m.rules:
         if rule.pipeline_id:
             h.row(uow, p.pipeline, rule.pipeline_id)

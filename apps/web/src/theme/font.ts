@@ -21,3 +21,11 @@ export const brandFont = localFont({
   display: "swap",
   variable: "--rs-font-brand",
 });
+
+/** Sora Latin variable, @fontsource-variable/sora 5.3.0, SIL OFL 1.1.
+ * Self-hosted; the unmodified license is fonts/Sora-OFL.txt.
+ */
+export const novadiemFont = localFont({
+  src: "./fonts/sora-latin-wght-normal.woff2", weight: "100 800", style: "normal",
+  display: "swap", variable: "--rs-font-brand",
+});

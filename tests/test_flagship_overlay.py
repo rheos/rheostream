@@ -31,6 +31,7 @@ from rheo_core.routing import (
     url_for,
 )
 from rheo_core.settings import resolve
+from rheo_leads.manifest import MANIFEST as LEADS_MANIFEST
 from rheo_recallatron.manifest import MANIFEST as RECALLATRON_MANIFEST
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -145,7 +146,13 @@ def _resolved_routing_config(monkeypatch: pytest.MonkeyPatch) -> RoutingConfig:
     monkeypatch.setenv("RHEO__routing__base_host", EXAMPLE_BASE_HOST)
     return RoutingConfig.from_settings(
         resolve(),
-        modules={RECALLATRON_MANIFEST.module_id: _recallatron_surface_config()},
+        modules={
+            manifest.module_id: SurfaceConfig(
+                host=manifest.web.surface.host, path=manifest.web.surface.path
+            )
+            for manifest in (RECALLATRON_MANIFEST, LEADS_MANIFEST)
+            if manifest.web is not None
+        },
     )
 
 

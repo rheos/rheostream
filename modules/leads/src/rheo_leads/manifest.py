@@ -10,9 +10,14 @@ from rheo_core.modules.manifest import (
     DeletionParticipant,
     Dependency,
     ExportDeclaration,
+    FormDeclaration,
     ModuleManifest,
+    NavigationEntry,
     RecordType,
     StorageDeclaration,
+    WebContribution,
+    WebRoute,
+    WebSurface,
 )
 
 from rheo_leads.configuration import SETTINGS
@@ -32,6 +37,7 @@ from rheo_leads.pipeline_contracts import DeleteInput
 from rheo_leads.pipeline_operations import OPERATIONS as PIPELINE_OPERATIONS
 from rheo_leads.pipeline_operations import TOOLS
 from rheo_leads.resolvers import RECORD_TABLES, resolve_record
+from rheo_leads.web_reads import OPERATIONS as WEB_OPERATIONS
 
 MANIFEST = ModuleManifest(
     module_id="leads",
@@ -63,7 +69,7 @@ MANIFEST = ModuleManifest(
         required_extensions=(),
     ),
     configuration_schema=SETTINGS,
-    operations=OPERATIONS + PIPELINE_OPERATIONS,
+    operations=OPERATIONS + PIPELINE_OPERATIONS + WEB_OPERATIONS,
     tools=(
         *TOOLS,
         ToolDeclaration(
@@ -125,7 +131,38 @@ MANIFEST = ModuleManifest(
         exporter=export_records,
         importer=import_records,
     ),
-    web=None,
+    web=WebContribution(
+        surface=WebSurface(surface="leads", host="leads", path="/leads"),
+        package_name="@rheo-stream/leads-web",
+        navigation=(NavigationEntry(id="leads", label="Leads", path="/"),),
+        routes=tuple(
+            WebRoute(id=name, path=path, screen=name)
+            for name, path in (
+                ("list", "/"),
+                ("board", "/board"),
+                ("detail", "/detail"),
+                ("capture", "/capture"),
+                ("receipt", "/receipt"),
+                ("connections", "/connections"),
+            )
+        ),
+        record_views=(),
+        search_providers=(),
+        forms=tuple(
+            FormDeclaration(operation="leads." + name, component="ActionForm")
+            for name in (
+                "intake.capture",
+                "pipeline.create",
+                "connection.set_routing",
+                "opportunity.create_from_observation",
+                "opportunity.update",
+                "opportunity.transition",
+                "opportunity.add_note",
+                "qualification.assess",
+                "followup.draft",
+            )
+        ),
+    ),
     agent_guidance=None,
     secret_scopes=(),
     connector_bindings=tuple(

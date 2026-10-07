@@ -1,9 +1,10 @@
+import { cookies } from "next/headers";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import { BUILT_IN_THEMES } from "@/theme/builtins";
+import { BUILT_IN_THEMES, themeId } from "@/theme/builtins";
 import { builtInThemeCss } from "@/theme/built-in-css";
-import { brandFont } from "@/theme/font";
+import { brandFont, novadiemFont } from "@/theme/font";
 
 import "./globals.css";
 
@@ -12,13 +13,13 @@ export const metadata: Metadata = {
   description: "rheoStream application shell.",
 };
 
-// Compiled once at module load. A seed theme that fails validation throws here,
-// which fails the build or the server's boot instead of rendering unstyled.
-const themeCss = builtInThemeCss(BUILT_IN_THEMES["seed-dark"]);
+const themeStyles = Object.fromEntries(Object.entries(BUILT_IN_THEMES).map(([id, raw]) => [id, builtInThemeCss(raw)]));
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const theme = themeId((await cookies()).get("rheo_theme")?.value);
+  const themeCss = themeStyles[theme];
   return (
-    <html lang="en" className={brandFont.variable}>
+    <html lang="en" className={theme.startsWith("novadiem") ? novadiemFont.variable : brandFont.variable} data-theme={theme}>
       <head>
         {/* Not escaped: every value was grammar-checked by validateTheme and
             again by compileTheme, and no token grammar admits `<`, `;`, `{` or `}`. */}

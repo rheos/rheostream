@@ -59,5 +59,43 @@ workspaces where Recallatron was never installed.
 Export format two covers all 35 owned tables. Restore preserves source identities,
 replaces only a fresh seed and strips deployment-local signing handles. The populated
 round-trip test also exercises Relationships through the real archive format. Webhook
-receivers, import runners, authenticated transport work, UI, live module activation and
+receivers, import runners, authenticated transport work, live module activation and
 the first external handoff destination remain separate slices.
+
+## Workspace UI and manual intake
+
+The composed Leads surface provides a paginated opportunity list, pipeline board, source
+and note detail, allowed stage changes, qualification, saved follow-up drafts, manual capture
+and processing receipts. The main navigation has one entry per module; list, pipeline,
+capture and connection controls stay inside Leads. Board counts describe the current page,
+not the entire pipeline. Drafts never send a message.
+
+In a workspace where an owner has installed and enabled Relationships and Leads:
+
+1. Open **Connections**, create a pipeline, and route the seeded manual connection to it.
+   Leaving routing at record-only retains evidence without creating opportunities.
+2. Open **Capture inquiry**, choose the funnel and enter the inquiry. Acceptance returns a
+   receipt immediately; a running worker processes it asynchronously.
+3. Open the receipt to check processing and follow the actual opportunity link. A record-only
+   result offers an explicit opportunity-creation form instead of claiming creation occurred.
+4. Review the original source separately from notes, assess evidence against an objective,
+   choose an allowed next stage and save a follow-up draft.
+
+Connection settings are owner-only and expose no signing handles. The simple routing form
+edits only an empty rule set or one unconditional create/record-only rule; advanced rules
+remain readable and require the operation API. Routing edits include the ordered rule IDs
+so a stale form cannot overwrite newer configuration. Opportunity edits use record revisions.
+
+Appearance offers GreenStream dark (default), Novadiem dark and Novadiem light. A host-local
+cookie remembers the selection. The Novadiem pair shares Sora typography and corner geometry;
+confirmation chrome stays identical across all themes.
+
+The flagship overlay loads the Leads and Relationships packages and routes the Leads host.
+This only makes the surface available: deployment does not install or enable either module
+in an existing workspace, select a pipeline, or connect live inquiry traffic. Authenticated
+transport activation remains a separate operator step.
+
+The interface participates in the existing routing-literal, platform-only, legacy-name,
+fixture-provenance and module-web-boundary gates (criterion 68's regression scope). These
+checks do not claim that the complete phase-three acceptance matrix or a live funnel has
+been demonstrated.

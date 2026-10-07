@@ -14,27 +14,29 @@ vi.mock("next/font/local", () => ({
   },
 }));
 
+vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => undefined }) }));
+
 const { default: RootLayout } = await import("./layout");
 
-function render(): string {
-  return renderToStaticMarkup(<RootLayout><main>page body</main></RootLayout>);
+async function render(): Promise<string> {
+  return renderToStaticMarkup(await RootLayout({children: <main>page body</main>}));
 }
 
 describe("RootLayout", () => {
-  it("injects the compiled seed theme as a style element in head", () => {
-    const html = render();
+  it("injects the compiled seed theme as a style element in head", async () => {
+    const html = await render();
     const style = /<head><style>([\s\S]*?)<\/style>/.exec(html);
     expect(style).not.toBeNull();
     expect(style?.[1]).toContain("--rs-color-ground: #06181b;");
     expect(style?.[1]).toContain("color-scheme: dark;");
   });
 
-  it("puts the brand font's variable class on html and keeps lang", () => {
-    expect(render()).toMatch(/^<html lang="en" class="brand-font-variable">/);
+  it("puts the brand font's variable class on html and keeps lang", async () => {
+    expect(await render()).toMatch(/^<html lang="en" class="brand-font-variable" data-theme="greenstream-dark">/);
   });
 
   it("loads the vendored font file as --rs-font-brand", () => {
-    expect(fontCalls).toHaveLength(1);
+    expect(fontCalls).toHaveLength(2);
     const [options] = fontCalls;
     expect(options.variable).toBe("--rs-font-brand");
     expect(typeof options.src).toBe("string");
@@ -43,7 +45,7 @@ describe("RootLayout", () => {
     expect(existsSync(resolve(fontsDir, "fonts/OFL.txt"))).toBe(true);
   });
 
-  it("renders its children in body", () => {
-    expect(render()).toContain("<body><main>page body</main></body>");
+  it("renders its children in body", async () => {
+    expect(await render()).toContain("<body><main>page body</main></body>");
   });
 });

@@ -175,6 +175,7 @@ class Rule(Strict):
 
 class RoutingInput(Strict):
     connection_id: UUID
+    expected_rule_ids: list[UUID] | None = Field(default=None, max_length=100)
     rules: list[Rule] = Field(max_length=100)
 
 
