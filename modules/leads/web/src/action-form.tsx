@@ -168,7 +168,7 @@ export function ActionForm({
         {result?.state === "refused" ? (
           <p className={styles.error} role="alert">
             {result.code === "record_stale"
-              ? "This opportunity changed. Reload the page before saving again; your entry is still here."
+              ? "This record changed. Your entry is still here; copy it before reloading, then try saving again."
               : result.text ||
                 "The change was refused. Check your access and try again."}
           </p>
