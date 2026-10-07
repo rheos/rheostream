@@ -19,6 +19,6 @@
   background: var(--rs-color-surface-1);
 }
 .nav a:focus-visible {
-  outline: 2px solid var(--rs-color-control-focus);
-  outline-offset: 3px;
+  outline: calc(var(--rs-size-hairline) * 2) solid var(--rs-color-control-focus);
+  outline-offset: calc(var(--rs-size-hairline) * 3);
 }

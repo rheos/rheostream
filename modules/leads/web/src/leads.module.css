@@ -1,5 +1,5 @@
 .surface {
-  max-width: 88rem;
+  max-width: calc(var(--rs-space-6) * 44);
   margin-inline: auto;
   color: var(--rs-color-ink);
 }
@@ -75,12 +75,12 @@
 .surface select:focus-visible,
 .surface textarea:focus-visible,
 .surface summary:focus-visible {
-  outline: 2px solid var(--rs-color-control-focus);
-  outline-offset: 3px;
+  outline: calc(var(--rs-size-hairline) * 2) solid var(--rs-color-control-focus);
+  outline-offset: calc(var(--rs-size-hairline) * 3);
 }
 .surface a:hover {
   text-decoration: underline;
-  text-underline-offset: 0.2em;
+  text-underline-offset: var(--rs-space-1);
 }
 .toolbar {
   display: flex;
@@ -139,8 +139,8 @@
   border-bottom: var(--rs-size-hairline) solid var(--rs-color-hairline);
 }
 .table td:first-child {
-  min-width: 15rem;
-  max-width: 35rem;
+  min-width: calc(var(--rs-space-5) * 10);
+  max-width: calc(var(--rs-space-4) * 35);
   overflow-wrap: anywhere;
 }
 .table a,
@@ -167,7 +167,7 @@
 .board {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(16rem, 20rem);
+  grid-auto-columns: minmax(calc(var(--rs-space-6) * 8), calc(var(--rs-space-6) * 10));
   gap: var(--rs-space-4);
   overflow-x: auto;
   padding-bottom: var(--rs-space-4);
@@ -207,7 +207,7 @@
 }
 .columns {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(18rem, 1fr);
+  grid-template-columns: minmax(0, 1.6fr) minmax(calc(var(--rs-space-6) * 9), 1fr);
   gap: var(--rs-space-6);
 }
 .section {
@@ -221,7 +221,7 @@
   margin: 0 0 var(--rs-space-4);
 }
 .form {
-  max-width: 44rem;
+  max-width: calc(var(--rs-space-6) * 22);
 }
 .fieldset {
   border: 0;
@@ -252,7 +252,7 @@
 }
 .facts {
   display: grid;
-  grid-template-columns: minmax(8rem, 0.5fr) minmax(0, 1fr);
+  grid-template-columns: minmax(calc(var(--rs-space-6) * 4), 0.5fr) minmax(0, 1fr);
   gap: var(--rs-space-3) var(--rs-space-5);
 }
 .facts > div {
@@ -298,7 +298,7 @@
     font-size: var(--rs-font-size-xl);
   }
   .toolbar > * {
-    flex: 1 1 12rem;
+    flex: 1 1 calc(var(--rs-space-6) * 6);
   }
   .facts {
     grid-template-columns: 1fr;
