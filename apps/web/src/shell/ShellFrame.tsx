@@ -1,3 +1,5 @@
+import { ThemePicker } from "@/theme/theme-picker";
+import type { ThemeId } from "@/theme/builtins";
 import type { ReactNode } from "react";
 
 import { LogoutForm } from "@/components/logout-form";
@@ -60,6 +62,7 @@ export function ShellFrame({
   navigation = [],
   homeHref,
   children,
+  theme = "greenstream-dark",
 }: {
   health: CoreHealthResult;
   account?: ShellAccount | null;
@@ -70,6 +73,7 @@ export function ShellFrame({
    */
   homeHref?: string;
   children: ReactNode;
+  theme?: ThemeId;
 }) {
   return (
     <div className={styles.frame}>
@@ -104,6 +108,7 @@ export function ShellFrame({
             </ul>
           </nav>
         ) : null}
+        <ThemePicker key={theme} current={theme} />
         {account ? (
           <div className={styles.controls}>
             <WorkspaceSwitcher

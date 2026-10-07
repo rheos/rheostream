@@ -302,7 +302,7 @@ is composed, and the package exports the screens and components the declarations
 | `forms` | `{ operation, component }` for operations that need a bespoke form | operation set, role |
 | `searchProviders` | `{ id, operation }` naming a read-class search operation | enabled modules |
 
-Compose adds one field the package does not export: `readOperations`, the sorted names of the
+Compose adds a field the package does not export: `readOperations`, the sorted names of the
 module's own `READ`-class operation declarations. Compose refuses, by name, a `READ` declaration
 outside the module's own prefix. It is the runtime allowlist for the module's screens, and the
 shell copies it once at load, so changing the array later does not widen it. The shell's
@@ -315,6 +315,17 @@ that skips `ShellApi` entirely, because that code runs inside the web tier's own
 web package's entry points load may import only its own files, `react` and web-contract exports,
 and may not call `fetch` or another network API, read `process.env` or cookies, or declare
 `"use server"`.
+
+Compose also generates `submitOperations` from the module's explicit form declarations,
+limited to its own `MUTATE` and `DRAFT` operations. `ShellApi.submit` is a shell-owned Next
+server action. It rechecks the session, enabled module and routed surface on every POST;
+Next enforces the server-action origin check. The action binds the rendered workspace and
+sends a reject-only `X-Rheo-Expected-Workspace` header to the internal listener. Core first
+resolves the current session context, then rejects a mismatched expectation before dispatch.
+The header cannot select a workspace. Core remains responsible for roles, validation,
+revision checks and transactional writes. Destructive or external operations are not granted
+by this form path. A successful submission refreshes server reads; a refusal remains visible
+and does not clear the user's input.
 
 **A route is an exact path with no parameters**: `/` or `/segment(/segment)*`, each segment
 `[a-z0-9-]+`. Parameters travel in the query string, so one path names one screen and nothing

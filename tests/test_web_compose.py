@@ -188,6 +188,7 @@ export const MODULES = [
     forms: [],
     searchProviders: [],
     readOperations: [],
+    submitOperations: [],
   },
   {
     id: "compose_probe",
@@ -211,6 +212,9 @@ export const MODULES = [
     ],
     readOperations: [
       "compose_probe.note.find",
+    ],
+    submitOperations: [
+      "compose_probe.note.add",
     ],
   },
 ] as const satisfies readonly ComposedModule[];

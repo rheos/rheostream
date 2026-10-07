@@ -1,4 +1,6 @@
 import type { ComposedModule, Screen, ShellApi } from "@rheo-stream/web-contract/screen";
+import { cookies } from "next/headers";
+import { themeId } from "@/theme/builtins";
 import { notFound } from "next/navigation";
 import { cache, type ReactNode } from "react";
 
@@ -15,7 +17,7 @@ import {
 import type { RoutingConfig } from "@/lib/routing/config";
 import { homeHref, loginHref, logoutAction, switcherAction } from "@/lib/routing/links";
 import { loadRoutingConfig } from "@/lib/routing/load";
-import { normalizePath, resolveRequest, type ResolvedRequest } from "@/lib/routing/resolve";
+import { resolveRequest, type ResolvedRequest } from "@/lib/routing/resolve";
 import { urlFor } from "@/lib/routing/url-for";
 import { activeWorkspaceName, type SessionResult } from "@/lib/session";
 import { MODULES } from "@/modules.generated";
@@ -26,6 +28,7 @@ import {
   type VisibilityOptions,
 } from "@/shell/compose";
 import panel from "@/shell/panel.module.css";
+import { submitModuleForm } from "@/shell/submit-form";
 import { moduleScreenCall } from "@/shell/screen-call";
 import { ShellFrame, type ShellAccount, type ShellNavigationItem } from "@/shell/ShellFrame";
 
@@ -225,8 +228,7 @@ function navigationItems(
     href: urlFor(config, entry.surface, entry.path),
     current:
       resolved.kind === "module" &&
-      resolved.surface === entry.surface &&
-      normalizePath(resolved.subPath) === normalizePath(entry.path),
+      resolved.surface === entry.surface,
   }));
 }
 
@@ -273,6 +275,7 @@ function accountOf(config: RoutingConfig, session: SignedIn): ShellAccount {
  * unreachable core still leaves the page rendering and no branch renders blank.
  */
 export async function renderSurface(request: SurfaceRequest): Promise<ReactNode> {
+  const theme = themeId((await cookies()).get("rheo_theme")?.value);
   const baseUrl = process.env.RHEO_CORE_INTERNAL_URL;
   const [health, decision] = await Promise.all([
     baseUrl ? fetchCoreHealth(baseUrl) : unavailableHealth(),
@@ -282,7 +285,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
   switch (decision.kind) {
     case "routing-unavailable":
       return (
-        <ShellFrame health={health}>
+        <ShellFrame theme={theme} health={health}>
           <StatusPanel heading="Home">
             <p className={panel.line}>routing: unavailable</p>
           </StatusPanel>
@@ -292,7 +295,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
       return notFound();
     case "signed-out":
       return (
-        <ShellFrame health={health} homeHref={homeHref(decision.config)}>
+        <ShellFrame theme={theme} health={health} homeHref={homeHref(decision.config)}>
           <StatusPanel heading={decision.resolved.kind === "shell" ? "Home" : "Workspace"}>
             {sessionStatus(decision.config, decision.session)}
           </StatusPanel>
@@ -300,7 +303,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
       );
     case "no-workspace":
       return (
-        <ShellFrame health={health} homeHref={homeHref(decision.config)}>
+        <ShellFrame theme={theme} health={health} homeHref={homeHref(decision.config)}>
           <StatusPanel heading="No workspace yet">
             <p className={panel.line}>session: signed in, no workspace</p>
             <p className={panel.detail}>
@@ -323,7 +326,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
 
   if (decision.kind === "shell") {
     return (
-      <ShellFrame health={health} account={account} navigation={navigation} homeHref={home}>
+      <ShellFrame theme={theme} health={health} account={account} navigation={navigation} homeHref={home}>
         <StatusPanel heading="Home">
           <p className={panel.line}>
             account: {session.actor.kind} {session.actor.id}
@@ -341,7 +344,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
 
   if (decision.kind === "modules-unavailable") {
     return (
-      <ShellFrame health={health} account={account} navigation={navigation} homeHref={home}>
+      <ShellFrame theme={theme} health={health} account={account} navigation={navigation} homeHref={home}>
         <StatusPanel heading="Workspace">
           <p className={panel.line}>modules: unavailable</p>
         </StatusPanel>
@@ -353,6 +356,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
   const { owner, screen } = decision;
   const shell: ShellApi = {
     role: session.role,
+    submit: submitModuleForm.bind(null, owner.id, session.activeWorkspaceId),
     // #122: only the owning module's READ-class operations, refused before core.
     call: moduleScreenCall(owner.id, (operation, input) =>
       callOperation(operation, input, identity),
@@ -360,7 +364,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
     href: (routeId, query) => moduleHref(config, owner, routeId, query),
   };
   return (
-    <ShellFrame health={health} account={account} navigation={navigation} homeHref={home}>
+    <ShellFrame theme={theme} health={health} account={account} navigation={navigation} homeHref={home}>
       {await screen({ shell, query: request.query })}
     </ShellFrame>
   );

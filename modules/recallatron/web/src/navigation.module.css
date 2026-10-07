@@ -1,0 +1,24 @@
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-3);
+  margin-bottom: var(--rs-space-5);
+  padding-bottom: var(--rs-space-3);
+  border-bottom: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+.nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--rs-size-control);
+  padding-inline: var(--rs-space-3);
+  color: var(--rs-color-ink-dim);
+  border-radius: var(--rs-radius-sm);
+}
+.nav a[aria-current="page"] {
+  color: var(--rs-color-accent);
+  background: var(--rs-color-surface-1);
+}
+.nav a:focus-visible {
+  outline: 2px solid var(--rs-color-control-focus);
+  outline-offset: 3px;
+}

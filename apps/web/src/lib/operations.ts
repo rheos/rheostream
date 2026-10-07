@@ -80,6 +80,7 @@ export async function callOperation(
   name: string,
   input: unknown,
   identity: RequestIdentity,
+  expectedWorkspaceId?: string,
 ): Promise<OperationOutcome> {
   const credentials = internalApiCredentials();
   if (credentials === null) {
@@ -100,6 +101,7 @@ export async function callOperation(
           [INTERNAL_SECRET_HEADER]: credentials.secret,
           [SESSION_HEADER]: identity.sessionSecret,
           [HOST_HEADER]: identity.host,
+          ...(expectedWorkspaceId ? { "X-Rheo-Expected-Workspace": expectedWorkspaceId } : {}),
         },
         body: JSON.stringify(input ?? {}),
       },

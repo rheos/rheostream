@@ -1,0 +1,40 @@
+.picker {
+  position: relative;
+  font-size: var(--rs-font-size-sm);
+  margin-inline-start: auto;
+}
+.picker summary {
+  cursor: pointer;
+  padding: var(--rs-space-3);
+  min-height: var(--rs-size-control);
+  box-sizing: border-box;
+}
+.form {
+  position: absolute;
+  z-index: 10;
+  inset-inline-end: 0;
+  min-width: 14rem;
+  display: grid;
+  gap: var(--rs-space-2);
+  padding: var(--rs-space-4);
+  background: var(--rs-color-surface-1);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-md);
+}
+.form select,
+.form button {
+  font: inherit;
+  min-height: var(--rs-size-control);
+  padding: var(--rs-space-2);
+  color: var(--rs-color-ink);
+  background: var(--rs-color-control-bg);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-sm);
+}
+.form button {
+  cursor: pointer;
+}
+.picker :focus-visible {
+  outline: 2px solid var(--rs-color-control-focus);
+  outline-offset: 2px;
+}

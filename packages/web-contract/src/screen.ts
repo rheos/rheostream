@@ -7,6 +7,8 @@ export interface ScreenProps {
 
 export interface ShellApi {
   role: string;
+  /** Server action for explicitly declared MUTATE/DRAFT forms; absent in read-only hosts. */
+  submit?: (operation: string, input: unknown) => Promise<OperationOutcome>;
   call(operation: string, input: unknown): Promise<OperationOutcome>;
   href(routeId: string, query?: Record<string, string | undefined>): string;
 }
@@ -64,4 +66,5 @@ export interface ComposedModule {
    * tier; core still enforces roles and token sets on every call that does.
    */
   readOperations: readonly string[];
+  submitOperations?: readonly string[];
 }
