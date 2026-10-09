@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { pastedInput, suggestInquiry } from "./paste";
 
 describe("pasted inquiry evidence", () => {
+  it("leaves conflicting explicit names and sender names blank", () => {
+    expect(
+      suggestInquiry("Name: Avery\nFrom: Blake <blake@example.test>")[
+        "person.name"
+      ],
+    ).toBe("");
+    expect(
+      suggestInquiry(
+        "Name: Avery\nName: Blake\nFrom: Avery <avery@example.test>",
+      )["person.name"],
+    ).toBe("");
+  });
   it("suggests labeled details from a message without changing its original text", () => {
     const source =
       '  From: "Avery Example" <avery@example.test>\r\nSubject: Accessibility review\r\nCompany: Sample Studio\r\nPhone: +1 555 0100\r\n\r\nPlease review our booking flow.  ';
