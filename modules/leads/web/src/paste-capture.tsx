@@ -32,6 +32,7 @@ export function PasteCapture({
   const title = useRef<HTMLInputElement>(null);
   const sourceInput = useRef<HTMLTextAreaElement>(null);
   const saved = result?.state === "ok";
+  const tooLong = source.length > PASTE_LIMIT;
   const receipt = saved ? str(row(result.result).receipt_ref) : "";
   function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -61,7 +62,7 @@ export function PasteCapture({
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (!source.trim()) return;
+            if (!source.trim() || tooLong) return;
             setReview(suggestInquiry(source));
             requestAnimationFrame(() => title.current?.focus());
           }}
@@ -77,16 +78,25 @@ export function PasteCapture({
               value={source}
               onChange={(event) => setSource(event.target.value)}
               required
-              maxLength={PASTE_LIMIT}
+              aria-invalid={tooLong || undefined}
               rows={10}
-              aria-describedby={`${id}-hint`}
+              aria-describedby={`${id}-hint${tooLong ? ` ${id}-length` : ""}`}
             />
             <p id={`${id}-hint`} className={styles.meta}>
               Keep the original wording. Nothing is saved until you review and
               capture it. Up to 16,000 characters.
             </p>
           </div>
-          <button className={styles.primary} disabled={!source.trim()}>
+          {tooLong ? (
+            <p id={`${id}-length`} role="alert" className={styles.error}>
+              This text exceeds 16,000 characters. It has not been shortened or
+              saved. Choose a smaller excerpt to capture.
+            </p>
+          ) : null}
+          <button
+            className={styles.primary}
+            disabled={!source.trim() || tooLong}
+          >
             Review inquiry
           </button>
         </form>
@@ -162,7 +172,9 @@ export function PasteCapture({
                   className={styles.secondary}
                   onClick={() => {
                     setReview(null);
-                    setResult(null);
+                    setResult((before) =>
+                      before?.state === "unavailable" ? before : null,
+                    );
                     requestAnimationFrame(() => sourceInput.current?.focus());
                   }}
                 >
@@ -188,12 +200,6 @@ export function PasteCapture({
                   "The capture was refused. Your text is still here; check your access before retrying."}
               </p>
             ) : null}
-            {result?.state === "unavailable" ? (
-              <p role="alert" className={styles.error}>
-                We could not confirm the save. Your text is still here. Check
-                recent opportunities before retrying to avoid a duplicate.
-              </p>
-            ) : null}
           </div>
           {saved ? (
             <button type="button" className={styles.secondary} onClick={reset}>
@@ -202,6 +208,15 @@ export function PasteCapture({
           ) : null}
         </>
       )}
+      <div aria-live="polite" aria-atomic="true">
+        {result?.state === "unavailable" ? (
+          <p role="alert" className={styles.error}>
+            We could not confirm the save. Your text is still here. Check
+            whether the inquiry was received before retrying to avoid a
+            duplicate, even if you edit the text.
+          </p>
+        ) : null}
+      </div>
     </section>
   );
 }
