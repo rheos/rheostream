@@ -223,12 +223,18 @@ restore.
 | --- | --- | --- | --- |
 | `relationships.party.resolve_or_create` | mutate | service | none (Leads calls it) |
 | `relationships.party.get`, `.find`, `.aliases` | read | owner, member, service | `relationships_get_party`, `relationships_find_party` |
-| `relationships.party.create`, `.update` | mutate | owner, member | none in release one |
+| `relationships.party.create` | mutate | owner, member | `relationships_create_contact` |
+| `relationships.party.update` | mutate | owner, member | none in release one |
 | `relationships.contact_point.add`, `.confirm`, `.retire` | mutate | owner, member | none in release one |
 | `relationships.affiliation.add`, `.end` | mutate | owner, member | none in release one |
 | `relationships.party.merge`, `.unmerge` | mutate | owner, member | `relationships_merge_parties`, `relationships_unmerge` |
 | `relationships.review_candidate.list`, `.resolve` | read, mutate | owner, member | `relationships_list_review`, `relationships_resolve_review` |
 | `core.record.delete` for `relationships.party` | destructive | owner | `relationships_delete_party` |
+
+`party.create` accepts up to 20 unverified contact points in the same transaction
+as the new party. The agent tool does not create an inquiry or opportunity and
+cannot assert source verification. Search before creating; creation has no
+idempotency key, so an uncertain response requires a lookup before retrying.
 
 ## A16. Alias-based merge, decided
 

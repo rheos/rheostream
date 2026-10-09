@@ -1000,7 +1000,10 @@ def test_contact_creation_allows_member_but_not_service(
     assert created.ok, created
     with open_unit_of_work(relationships.ctx) as uow:
         service = context_for_event_consumer(
-            relationships.workspace, uow, request_id=relationships.ctx.request_id
+            relationships.workspace,
+            uow,
+            request_id=relationships.ctx.request_id,
+            operation_names=frozenset({"relationships.party.create"}),
         )
     assert isinstance(service, WorkspaceContext)
     refused = dispatch(
