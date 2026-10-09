@@ -1546,6 +1546,12 @@ history.
 
 ### Settled direction
 
+- Interactive intake prioritizes agent/MCP contact creation and pasting existing
+  material for inquiry capture; detailed manual forms remain a fallback. Adding a
+  contact does not imply creating an opportunity. Website and email adapters submit
+  directly to intake without an agent runtime. Original inquiry evidence is retained,
+  and copied contact details do not imply verified identity or communication consent.
+
 - The umbrella name is **rheoStream** and the project domain is `rheo.stream`.
 - The agent is **rheo**.
 - Opportunity discovery and qualification is **Leads**.

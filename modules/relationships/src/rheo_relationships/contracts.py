@@ -18,9 +18,15 @@ class PartyInput(Strict):
     ref: PartyRef
 
 
+class NewContactPoint(Strict):
+    kind: Literal["email", "phone", "address", "url"]
+    value: str = Field(min_length=1, max_length=2048)
+
+
 class CreateInput(Strict):
     kind: Literal["person", "organization"]
     display_name: str = Field(min_length=1, max_length=512)
+    contact_points: list[NewContactPoint] = Field(default_factory=list, max_length=20)
 
 
 class UpdateInput(PartyInput):

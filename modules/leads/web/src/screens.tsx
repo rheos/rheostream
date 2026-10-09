@@ -5,6 +5,7 @@ import type {
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
 import { ActionForm, type FormProps } from "./action-form";
+import { PasteCapture } from "./paste-capture";
 import {
   data,
   date,
@@ -362,7 +363,7 @@ export async function capture({ shell }: ScreenProps) {
       shell={shell}
       active="capture"
       title="Capture an inquiry"
-      description="Keep the original message and contact details together. Capture queues processing; your connection’s routing decides whether to create an opportunity."
+      description="Bring an inquiry from wherever it arrived. Paste the original, review the details, then capture it."
     >
       {result.state !== "ok" ? (
         <Failure outcome={result} />
@@ -372,35 +373,57 @@ export async function capture({ shell }: ScreenProps) {
           intake.
         </p>
       ) : (
-        <Form
-          shell={shell}
-          operation="leads.intake.capture"
-          button="Capture inquiry"
-          receiptHref={shell.href("receipt")}
-          fields={[
-            {
-              name: "funnel_ref",
-              label: "Funnel",
-              type: "select",
-              required: true,
-              options: funnels.map((f) => ({
+        <>
+          {shell.submit ? (
+            <PasteCapture
+              submit={shell.submit}
+              funnels={funnels.map((f) => ({
                 value: str(f.ref),
                 label: str(f.name),
-              })),
-            },
-            { name: "subject", label: "Inquiry title", required: true },
-            { name: "person.name", label: "Contact name" },
-            { name: "person.email", label: "Email", type: "email" },
-            { name: "organization.name", label: "Organization" },
-            {
-              name: "message",
-              label: "Original message",
-              type: "textarea",
-              required: true,
-            },
-            { name: "interest", label: "Interest or service" },
-          ]}
-        />
+              }))}
+              receiptHref={shell.href("receipt")}
+            />
+          ) : (
+            <p>Editing is unavailable in this view.</p>
+          )}
+          <details className={styles.manualCapture}>
+            <summary>Enter details manually instead</summary>
+            <Form
+              shell={shell}
+              operation="leads.intake.capture"
+              button="Capture inquiry"
+              receiptHref={shell.href("receipt")}
+              fields={[
+                {
+                  name: "funnel_ref",
+                  label: "Funnel",
+                  type: "select",
+                  required: true,
+                  options: funnels.map((f) => ({
+                    value: str(f.ref),
+                    label: str(f.name),
+                  })),
+                },
+                { name: "subject", label: "Inquiry title", required: true },
+                { name: "person.name", label: "Contact name" },
+                { name: "person.email", label: "Email", type: "email" },
+                { name: "organization.name", label: "Organization" },
+                {
+                  name: "message",
+                  label: "Original message",
+                  type: "textarea",
+                  required: true,
+                },
+                { name: "interest", label: "Interest or service" },
+              ]}
+            />
+          </details>
+          <p className={styles.meta}>
+            Just adding a contact? Ask your connected agent to add the person
+            through Relationships. An inquiry is only needed when there is
+            something to follow up.
+          </p>
+        </>
       )}
     </Frame>
   );

@@ -74,8 +74,12 @@ In a workspace where an owner has installed and enabled Relationships and Leads:
 
 1. Open **Connections**, create a pipeline, and route the seeded manual connection to it.
    Leaving routing at record-only retains evidence without creating opportunities.
-2. Open **Capture inquiry**, choose the funnel and enter the inquiry. Acceptance returns a
-   receipt immediately; a running worker processes it asynchronously.
+2. Open **Capture inquiry** and paste an email, message or conversation. Review and
+   correct the suggested title and contact details, choose the funnel, then capture.
+   Suggestions use explicit labels and unambiguous email addresses, not a model;
+   ambiguous details stay blank. Original text remains in the intake payload.
+   The detailed form remains available under **Enter details manually instead**.
+   Acceptance returns a receipt immediately; a running worker processes it asynchronously.
 3. Open the receipt to check processing and follow the actual opportunity link. A record-only
    result offers an explicit opportunity-creation form instead of claiming creation occurred.
 4. Review the original source separately from notes, assess evidence against an objective,
@@ -99,3 +103,9 @@ The interface participates in the existing routing-literal, platform-only, legac
 fixture-provenance and module-web-boundary gates (criterion 68's regression scope). These
 checks do not claim that the complete phase-three acceptance matrix or a live funnel has
 been demonstrated.
+
+Agents can submit the same flat inquiry facts through `leads_capture`, keeping
+original text in `body.message`. To add only a person or organization, use
+`relationships_create_contact` instead; contact creation is independent of Leads.
+Website and email adapters call intake directly and do not require an agent runtime;
+those transports are not implemented by the paste UI.

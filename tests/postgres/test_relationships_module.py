@@ -148,7 +148,7 @@ def test_relationships_install_without_other_modules(
         }
     party = relationships.create()
     assert party.kind == "person"
-    assert len(MANIFEST.operations) == 15 and len(MANIFEST.tools) == 7
+    assert len(MANIFEST.operations) == 15 and len(MANIFEST.tools) == 8
 
 
 def test_relationships_verified_identity_is_namespace_bound(
@@ -905,3 +905,110 @@ def test_relationships_import_bad_score_is_artifact_invalid(
         candidate["score"] = "not-a-number"
         with pytest.raises(OperationRefused, match="artifact_invalid"):
             import_records(uow, rows)
+
+
+def test_agent_creates_contact_atomically_without_leads(
+    relationships: Relationships,
+) -> None:
+    from rheo_core.operations.tool_facade import call_registered_tool
+
+    outcome = call_registered_tool(
+        relationships.ctx,
+        "relationships_create_contact",
+        {
+            "kind": "person",
+            "display_name": " Avery Example ",
+            "contact_points": [
+                {"kind": "email", "value": "Avery@EXAMPLE.TEST"},
+                {"kind": "phone", "value": "+1 555 0100"},
+            ],
+        },
+        consumers=relationships.consumers,
+        tools=relationships.surfaces.tools,
+        registry=relationships.surfaces.operations,
+    )
+    assert outcome.ok, outcome
+    assert relationships.count(t.party) == 1
+    party = relationships.ok("party.find", query="avery@example.test").items[0]
+    saved = relationships.get(party["ref"])
+    assert saved.display_name == "Avery Example"
+    assert len(saved.contact_points) == 2
+    assert all(p["verification"] == "unverified" for p in saved.contact_points)
+    assert all(p["namespace"] is None for p in saved.contact_points)
+    # Ordinary contact data never becomes a trusted automatic match key.
+    resolved = relationships.resolve(verified_email="avery@example.test")
+    assert resolved.party_ref != saved.ref
+
+
+def test_contact_creation_rolls_back_partial_contact_list(
+    relationships: Relationships,
+) -> None:
+    result = relationships.call(
+        "party.create",
+        kind="person",
+        display_name="Example",
+        contact_points=[
+            {"kind": "email", "value": "example@example.test"},
+            {"kind": "phone", "value": "no digits"},
+        ],
+    )
+    assert result.state == "input_invalid", result
+    assert relationships.count(t.party) == relationships.count(t.contact_point) == 0
+
+
+@pytest.mark.parametrize(
+    "extra", [{"verification": "verified"}, {"namespace": "trusted"}]
+)
+def test_contact_creation_cannot_claim_trusted_identity(
+    relationships: Relationships, extra: dict[str, str]
+) -> None:
+    result = relationships.call(
+        "party.create",
+        kind="person",
+        display_name="Example",
+        contact_points=[{"kind": "email", "value": "example@example.test", **extra}],
+    )
+    assert result.state == "input_invalid", result
+    assert relationships.count(t.party) == 0
+
+
+def test_contact_creation_allows_member_but_not_service(
+    relationships: Relationships,
+) -> None:
+    from harness.registry import add_member
+
+    account = add_member(
+        relationships.cluster.backend,
+        relationships.workspace,
+        Role.MEMBER,
+        display_name="Example Member",
+    )
+    member = context_for_harness(relationships.workspace, account, Role.MEMBER)
+    assert isinstance(member, WorkspaceContext)
+    payload = {
+        "kind": "organization",
+        "display_name": "Example Studio",
+        "contact_points": [{"kind": "url", "value": "https://example.test"}],
+    }
+    created = dispatch(
+        member,
+        "relationships.party.create",
+        payload,
+        registry=relationships.surfaces.operations,
+        consumers=relationships.consumers,
+    )
+    assert created.ok, created
+    with open_unit_of_work(relationships.ctx) as uow:
+        service = context_for_event_consumer(
+            relationships.workspace, uow, request_id=relationships.ctx.request_id
+        )
+    assert isinstance(service, WorkspaceContext)
+    refused = dispatch(
+        service,
+        "relationships.party.create",
+        payload,
+        registry=relationships.surfaces.operations,
+        consumers=relationships.consumers,
+    )
+    assert refused.state == "role_not_permitted", refused
+    assert relationships.count(t.party) == 1

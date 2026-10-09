@@ -46,6 +46,22 @@ TOOLS = tuple(
     )
     for name, operation, safety, model, description in (
         (
+            "relationships_create_contact",
+            "relationships.party.create",
+            SafetyClass.MUTATE,
+            c.CreateInput,
+            "Add a person or organization with optional contact_points "
+            "in one transaction. "
+            "Each contact point has kind (email, phone, address, url) and value. "
+            "Search with relationships_find_party first to avoid duplicates. "
+            "Creates only a contact, never an inquiry or opportunity. "
+            "Copied or agent-supplied details remain unverified and are not automatic "
+            "identity-match keys. This does not grant permission to contact "
+            "the person. "
+            "Creation is not idempotent: after an uncertain result, "
+            "search before retrying.",
+        ),
+        (
             "relationships_get_party",
             "relationships.party.get",
             SafetyClass.READ,
