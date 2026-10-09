@@ -184,7 +184,12 @@ def party_create(
     ctx: WorkspaceContext, uow: UnitOfWork, data: c.CreateInput
 ) -> c.PartyOutput:
     lock_workspace_lifecycle(uow.connection)
-    identifier = create_row(uow, data.kind, data.display_name)
+    name = data.display_name.strip()
+    if not name:
+        refuse("input_invalid")
+    identifier = create_row(uow, data.kind, name)
+    for point in data.contact_points:
+        add_contact(uow, identifier, point.kind, point.value)
     return party_get(
         ctx, uow, c.PartyInput.model_validate({"ref": ref("party", identifier)})
     )

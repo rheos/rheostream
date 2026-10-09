@@ -43,6 +43,15 @@ const catalog = ok({
   ],
 });
 describe("Leads screens", () => {
+  it("leads with paste capture and keeps the manual form collapsed", async () => {
+    const api = shell({ "leads.ui.catalog": catalog });
+    const html = renderToStaticMarkup(await screens.capture({ shell: api, query: {} }));
+    expect(html).toContain("Paste an email, message, or conversation");
+    expect(html).toContain("Review inquiry");
+    expect(html).toMatch(/<details[^>]*><summary>Enter details manually instead/);
+    expect(html).not.toMatch(/<details[^>]*open[^>]*><summary>Enter details manually instead/);
+    expect(api.submit).not.toHaveBeenCalled();
+  });
   it.each(["list", "board"] as const)(
     "%s renders opportunities without dispatching a mutation",
     async (name) => {

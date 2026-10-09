@@ -151,7 +151,10 @@ def test_manual_form_payload_reaches_a_routed_opportunity(intake: Intake) -> Non
             "subject": "Synthetic browser inquiry",
             "person.name": "Example contact",
             "person.email": "contact@example.test",
-            "message": "Please review our booking flow.",
+            "message": (
+                "  From: Example <original@example.test>\r\n"
+                "Please review our booking flow.  "
+            ),
         },
     )
     assert (
@@ -165,3 +168,16 @@ def test_manual_form_payload_reaches_a_routed_opportunity(intake: Intake) -> Non
     assert receipt.data["opportunity_refs"] == [opportunity.ref]
     assert opportunity.data["title"] == "Synthetic browser inquiry"
     assert opportunity.data["pipeline_id"] == RecordRef.parse(pipeline.ref).id
+
+    # Corrected contact evidence does not rewrite the original pasted source.
+    import json
+
+    from rheo_core.storage.routing import open_unit_of_work
+    from rheo_leads.storage import tables as t
+    from sqlalchemy import select
+
+    with open_unit_of_work(intake.ctx) as uow:
+        payload = uow.connection.execute(select(t.delivery_payload.c.body)).scalar_one()
+    assert json.loads(payload)["message"] == (
+        "  From: Example <original@example.test>\r\nPlease review our booking flow.  "
+    )

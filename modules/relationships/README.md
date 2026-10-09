@@ -4,11 +4,20 @@ Shared workspace party identity: people, organizations, contact points and affil
 history. Install and enable this module through the standard module lifecycle. It has
 no domain-module dependency, background worker or web UI.
 
-The backend declares 15 operations and seven MCP tools. It links only authenticated
+The backend declares 15 operations and eight MCP tools. It links only authenticated
 subjects or source-verified emails in the same source namespace. Other evidence creates
 review candidates. Source verification belongs to the calling service's authenticated
 transport; arbitrary contact writes can record only unverified contacts, which a person
 can confirm. Confirmation never upgrades a contact into an automatic match key.
+
+`relationships_create_contact` exposes `party.create` to agents. It creates a person
+or organization and up to 20 contact points atomically, without requiring Leads or
+creating an inquiry/opportunity. Search with `relationships_find_party` before
+creating to avoid duplicates; after an uncertain response, search before retrying.
+Supply `kind`, `display_name`, and optional `contact_points` entries with `kind`
+(email, phone, address, url) and `value`. These values are always unverified, never
+trusted identity keys or permission to send messages. Invalid contact data rolls
+back the whole creation. Owners and members can use it; service identities cannot.
 
 `party.resolve_or_create` is service-only. Ordinary account roles cannot assert verified
 source identities, even through a token granted the operation. Its internal handler checks

@@ -314,3 +314,22 @@
     transition: background-color 150ms ease-out;
   }
 }
+
+.capture {
+  max-width: 70ch;
+}
+.captureActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-3);
+}
+.manualCapture {
+  margin-block: var(--rs-space-6);
+  border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  padding-top: var(--rs-space-4);
+}
+.manualCapture summary {
+  cursor: pointer;
+  min-height: var(--rs-size-control);
+  color: var(--rs-color-ink-dim);
+}

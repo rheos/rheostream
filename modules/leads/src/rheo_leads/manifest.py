@@ -89,6 +89,11 @@ MANIFEST = ModuleManifest(
             safety_class=SafetyClass.MUTATE,
             input_model=CaptureInput,
             description="Capture an inquiry into a chosen workspace funnel. "
+            "For pasted inquiries, keep the original text in body.message and supply "
+            "reviewed flat fields such as subject, person.name, person.email, "
+            "person.phone and organization.name. "
+            "Do not infer consent or verified identity. "
+            "To add only a contact, use relationships_create_contact instead. "
             "A funnel is required; "
             "missing or malformed arguments return input_invalid, "
             "unavailable attribution returns not_found, "
