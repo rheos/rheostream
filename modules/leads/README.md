@@ -185,6 +185,7 @@ exports the new generation to a new file. Rotation retains at most one previous 
 `leads_connection_revoke` revokes the whole connection permanently. Acceptance and
 worker processing recheck the generation: zero-overlap rotation, expired overlap or
 revocation can refuse already queued deliveries. Creation and rotation are not
-idempotent; inspect connections before retrying an uncertain administrative result.
+idempotent; inspect `leads.ui.catalog` (owner view includes the current signing-key
+generation) before retrying an uncertain administrative result.
 A restored connection needs a fresh credential. Rotation can supply it in the same
 workspace; a copy restored into another workspace must create a new connection.

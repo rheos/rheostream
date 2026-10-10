@@ -273,6 +273,15 @@ def test_locator_and_key_are_not_returned_by_owner_operation(intake: Intake, web
     assert result.ok
     encoded = result.result.model_dump_json()
     assert "secret://" not in encoded and website[1].decode() not in encoded
+    catalog = intake.call("leads.ui.catalog")
+    assert catalog.ok
+    current = next(
+        item
+        for item in catalog.result.items
+        if item.get("ref") == ref("intake_connection", website[0])
+    )
+    assert current["signing_key_generation"] == 2
+    assert "secret://" not in catalog.result.model_dump_json()
     with intake.cluster.backend.control_engine.connect() as conn:
         row = (
             conn.execute(select(locator).where(locator.c.connection_id == website[0]))
