@@ -90,6 +90,7 @@ from rheo_core.events import (
     record_processed,
     requeue_delivery,
 )
+from rheo_core.events.deliveries import defer_unready_delivery
 from rheo_core.operations import records as operation_records
 from rheo_core.refs import uuid7
 from rheo_core.settings import resolve
@@ -109,6 +110,7 @@ from rheo_core.work.jobs import (
     LEASED,
     LeasedJob,
     acquire_lease,
+    defer_unready_job,
     earliest_due_at,
     finish_cancelled,
     finish_failed,
@@ -616,7 +618,20 @@ def _run_handler(
             work_uow.rollback()
             stopped = True
 
-    if failure is not None:
+    from rheo_core.modules.readiness import ModuleNotReady
+
+    if isinstance(failure, ModuleNotReady):
+        stopped = not _finish_alone(
+            engine,
+            database,
+            write=lambda uow: defer_unready_job(
+                uow.connection,
+                job_id=leased.id,
+                owner=owner,
+                next_run_at=clock() + timedelta(seconds=60),
+            ),
+        )
+    elif failure is not None:
         # Decide by the **row's** attempts, never by the setting. Then check the
         # write's own return value: with ``AND cancel_requested = false`` on both
         # ``finish_failed`` and ``requeue_for_retry``, a False from either means a
@@ -1011,6 +1026,22 @@ def _run_consumer(
             clock=clock,
             error=str(missing),
         )
+        return
+    from rheo_core.modules.readiness import ModuleNotReady
+
+    if isinstance(failure, ModuleNotReady):
+        if not _finish_alone(
+            engine,
+            database,
+            write=lambda uow: defer_unready_delivery(
+                uow.connection,
+                event_id=leased.event_id,
+                consumer_id=leased.consumer_id,
+                owner=owner,
+                next_attempt_at=clock() + timedelta(seconds=60),
+            ),
+        ):
+            _lease_lost(leased)
         return
     if failure is not None:
         logger.warning(

@@ -519,7 +519,10 @@ commit together. Repeating the exact completed target returns `changed: false`.
 A failed migration/health check rolls back; the prior schema/package stays intact.
 
 Readiness compares installed package and actual Alembic heads to loaded code,
-including declared dependencies. Module operation execution (including approved
+including declared dependencies. Migration heads are cached until module reload;
+database readiness is checked on every execution. Queued jobs and deliveries
+defer for a minute without spending a retry attempt while readiness refuses, then
+resume normally once compatible. Module operation execution (including approved
 and in-transaction calls), queued jobs/consumers, reference resolution and module
 exports refuse incompatible schemas. Executions hold a shared transaction lock;
 an upgrade requires its exclusive counterpart as well as the lifecycle lock.

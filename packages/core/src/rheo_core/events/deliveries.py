@@ -301,6 +301,26 @@ def requeue_delivery(
     )
 
 
+def defer_unready_delivery(
+    conn: Connection,
+    *,
+    event_id: UUID,
+    consumer_id: str,
+    owner: str,
+    next_attempt_at: datetime,
+) -> bool:
+    """Return an unexecuted lease without spending its retry budget."""
+    return _apply(
+        conn,
+        _held(event_id, consumer_id, owner),
+        state=PENDING,
+        attempts=t.event_delivery.c.attempts - 1,
+        next_attempt_at=next_attempt_at,
+        lease_owner=None,
+        lease_until=None,
+    )
+
+
 def fail_delivery(
     conn: Connection,
     *,

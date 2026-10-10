@@ -70,7 +70,7 @@ from rheo_core.audit import (
     install_sink,
     reset_sinks,
 )
-from rheo_core.boundary import context_for_harness
+from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.boundary.factories import context_from_token
 from rheo_core.deletion.operations import RECORD_DELETE
 from rheo_core.evidence.enrollment import (
@@ -149,6 +149,7 @@ THE_SEVENTEEN = frozenset(
         SINK_SEND,
         MODULE_INSTALL,
         MODULE_ENABLE,
+        "core.module.upgrade",
         RECORD_DELETE,
         WORK_RETRY,
         WORK_SKIP,
@@ -159,11 +160,11 @@ THE_SEVENTEEN = frozenset(
         EVIDENCE_INGEST,
     }
 )
-"""Every registered operation above the read class: twenty-two core and five harness
+"""Every registered operation above the read class: twenty-three core and five harness
 (test profile only).
 
 **The name is pinned by an acceptance record and does not track the count.** It says
-seventeen and the set holds twenty-seven, which is the right trade:
+seventeen and the set holds twenty-eight, which is the right trade:
 ``test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen`` below is
 one of criterion 14's demonstrator pytest node ids, listed verbatim in
 ``docs/acceptance/phase-1-matrix.md``, and ``tests/test_acceptance_matrix.py`` resolves
@@ -185,12 +186,13 @@ and ``harness.sink.send`` (``EXTERNAL``), the first operations of any class abov
 ``MUTATE`` in the tree. Issue #131 adds ``core.work.retry``, ``.skip`` and ``.replay``
 (all ``MUTATE``), which makes twenty-three. Run 1a4b adds the three
 ``core.evidence_enrollment.*`` operations and ``core.evidence.ingest`` (all
-``MUTATE``), which makes twenty-seven.
+``MUTATE``), which makes twenty-seven. Issue #323 adds the operator-only
+``core.module.upgrade`` (``MUTATE``), which makes twenty-eight.
 
 **A literal, and the registry-derived set is compared against it**, not the other way
 round. Derived alone, the assertion would equal whatever the registry happened to hold
 and could not fail — an operation that lost its ``MUTATE`` class would match its own
-mistake. The count is asserted as well as the membership, so a twenty-eighth operation
+mistake. The count is asserted as well as the membership, so a twenty-ninth operation
 added later fails here loudly rather than being silently left out of the coverage
 below."""
 
@@ -350,7 +352,7 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
     private_registry: OperationRegistry,
 ) -> None:
     """AC 26's first half: the set under test comes from the registry, and is
-    twenty-seven.
+    twenty-eight.
 
     **The name still says seventeen and stays that way**: it is a criterion-14
     demonstrator node id, resolved verbatim by ``tests/test_acceptance_matrix.py``
@@ -373,7 +375,7 @@ def test_the_mutating_set_derived_from_the_registry_is_the_declared_seventeen(
         and operation.declaration.safety_class is not SafetyClass.READ
     }
     assert mutating == set(THE_SEVENTEEN), sorted(mutating)
-    assert len(mutating) == 27, sorted(mutating)
+    assert len(mutating) == 28, sorted(mutating)
 
 
 def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
@@ -405,6 +407,8 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
     write no row and no audit record at all.
     """
     before = _ids(owner)
+    operator = context_for_operator(workspace)
+    assert isinstance(operator, WorkspaceContext)
     unresolved = _unresolved_operation(engine, database)
     member = add_member(cluster.backend, workspace, Role.MEMBER, display_name="m-audit")
 
@@ -492,6 +496,15 @@ def test_one_dispatch_of_every_mutating_kind_leaves_a_matching_audit_record(
         # ``absent`` rather than ``module_unavailable``. Another refused-but-audited
         # record, and outside the four codes the loop below excludes.
         MODULE_ENABLE: dispatch(owner, MODULE_ENABLE, {"module_id": "no_such_module"}),
+        "core.module.upgrade": dispatch(
+            operator,
+            "core.module.upgrade",
+            {
+                "module_id": "no_such_module",
+                "target_version": "0.1.0",
+                "target_schema": "none",
+            },
+        ),
         # Refused ``record_not_deletable`` by the owned-delete authorizer before an
         # approval is minted: ``harness.note`` resolves, and nothing declares that it
         # owns deleting one. Another refused-but-audited record, and the only route

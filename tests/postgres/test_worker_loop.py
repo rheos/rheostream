@@ -2318,3 +2318,59 @@ def test_a_reference_of_another_type_than_the_sweep_declared_refuses(
     assert seen[0].state == EXPIRY_TYPE_MISMATCH
     with engine.connect() as conn:
         assert probe_exists(conn, probe.id)
+
+
+def test_unready_module_preserves_job_budget_until_ready(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rheo_core.modules import readiness
+
+    job_id = _put(engine, now=now, max_attempts=1)
+
+    def refuse(_conn: object, _module: str) -> None:
+        raise readiness.ModuleNotReady("module_unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(readiness, "require_ready", refuse)
+        for attempt in range(4):
+            at = now + timedelta(minutes=attempt)
+            _visit(workspace, kinds=_registry(), backend=cluster.backend, at=at)
+            row = _read(engine, job_id)
+            assert row.state == "queued" and row.attempts == 0
+            assert row.next_run_at == at + timedelta(minutes=1)
+            assert _notes(engine) == ()
+    _visit(
+        workspace,
+        kinds=_registry(),
+        backend=cluster.backend,
+        at=now + timedelta(minutes=4),
+    )
+    row = _read(engine, job_id)
+    assert row.state == "succeeded" and row.attempts == 1
+    assert _notes(engine) == ("done",)
+
+
+def test_cancellation_wins_over_module_deferral(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rheo_core.modules import readiness
+
+    job_id = _put(engine, now=now)
+
+    def cancel_then_refuse(_conn: object, _module: str) -> None:
+        with engine.begin() as conn:
+            assert request_cancellation(conn, job_id, now=now) == "leased"
+        raise readiness.ModuleNotReady("module_unavailable")
+
+    monkeypatch.setattr(readiness, "require_ready", cancel_then_refuse)
+    _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
+    assert _read(engine, job_id).state == "cancelled"
+    assert _notes(engine) == ()

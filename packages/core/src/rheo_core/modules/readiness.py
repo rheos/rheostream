@@ -1,5 +1,7 @@
 """Read-only compatibility checks against the module code loaded by this process."""
 
+from functools import lru_cache
+
 from alembic.script import ScriptDirectory
 from packaging.specifiers import SpecifierSet
 from sqlalchemy import Connection, text
@@ -15,6 +17,10 @@ from rheo_core.storage.repositories import ModuleStateRow, list_module_states
 MODULE_EXECUTION_LOCK = 0x5248454F4D4F444C
 
 
+class ModuleNotReady(OperationRefused):
+    """Compatibility/upgrade deferral; workers preserve the retry budget."""
+
+
 def lock_module_execution(conn: Connection, *, upgrade: bool = False) -> None:
     function = (
         "pg_try_advisory_xact_lock" if upgrade else "pg_try_advisory_xact_lock_shared"
@@ -23,12 +29,13 @@ def lock_module_execution(conn: Connection, *, upgrade: bool = False) -> None:
         text(f"SELECT {function}(:key)"), {"key": MODULE_EXECUTION_LOCK}
     ).scalar_one()
     if not acquired:
-        raise OperationRefused(
+        raise ModuleNotReady(
             "upgrade_busy" if upgrade else "module_unavailable",
             "module execution or upgrade is in progress; retry after it finishes",
         )
 
 
+@lru_cache(maxsize=128)
 def expected_heads(module_id: str) -> frozenset[str]:
     return frozenset(ScriptDirectory.from_config(build_config(module_id)).get_heads())
 
@@ -78,6 +85,6 @@ def require_ready(conn: Connection, module_id: str) -> None:
         (s for s in list_module_states(conn) if s.module_id == module_id), None
     )
     if state is None or readiness_problem(conn, state) is not None:
-        raise OperationRefused(
+        raise ModuleNotReady(
             "module_unavailable", "module upgrade or matching deployment required"
         )

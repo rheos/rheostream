@@ -822,3 +822,62 @@ def test_a_delivery_whose_event_is_missing_is_terminal_rather_than_retried(
     assert row.lease_owner is None and row.lease_until is None
     with engine.connect() as conn:
         assert invocation_count(conn, event_id=event_id) == 0
+
+
+def test_unready_module_preserves_delivery_budget_until_ready(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    ctx: WorkspaceContext,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rheo_core.modules import readiness
+
+    event_id = _publish(ctx, now=now)
+
+    def refuse(_conn: object, _module: str) -> None:
+        raise readiness.ModuleNotReady("module_unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(readiness, "require_ready", refuse)
+        for attempt in range(resolve().get_int("work.max_attempts") + 1):
+            at = now + timedelta(minutes=attempt)
+            _visit(workspace, cluster=cluster, consumers=consumer_registry(), at=at)
+            row = _delivery(engine, event_id)
+            assert row.state == PENDING and row.attempts == 0
+            assert row.next_attempt_at == at + timedelta(minutes=1)
+            assert _observed(engine, event_id) == ((), 0)
+    _visit(
+        workspace,
+        cluster=cluster,
+        consumers=consumer_registry(),
+        at=at + timedelta(minutes=1),
+    )
+    row = _delivery(engine, event_id)
+    assert row.state == DELIVERED and row.attempts == 1
+    assert _observed(engine, event_id) == ((event_id,), 1)
+
+
+def test_lost_lease_is_not_refunded_by_module_deferral(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    ctx: WorkspaceContext,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rheo_core.modules import readiness
+
+    event_id = _publish(ctx, now=now)
+
+    def steal_then_refuse(_conn: object, _module: str) -> None:
+        _steal(engine, event_id, at=now + timedelta(seconds=61))
+        raise readiness.ModuleNotReady("module_unavailable")
+
+    monkeypatch.setattr(readiness, "require_ready", steal_then_refuse)
+    _visit(workspace, cluster=cluster, consumers=consumer_registry(), at=now)
+    row = _delivery(engine, event_id)
+    assert row.state == LEASED and row.lease_owner == THIEF
+    assert row.attempts == 2
+    assert _observed(engine, event_id) == ((), 0)
