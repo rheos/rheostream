@@ -7,6 +7,7 @@ import type {
 import { screens } from "./index";
 import { formInput } from "./action-form";
 import { pageOffset } from "./data";
+import { value } from "./screens";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const opportunity = {
@@ -254,6 +255,38 @@ describe("form input", () => {
       funnel_ref: "f",
       body: { subject: "Hello", message: "Original" },
     }));
+  it("sends a normalized value group, or clears it when the amount is blank", () => {
+    const base = { ref: "r", revision: 3 };
+    expect(
+      formInput("leads.opportunity.update", base, {
+        value_amount: " $10,000 ",
+        value_currency: "cad",
+        value_basis: "project_fee",
+      }),
+    ).toEqual({
+      ref: "r",
+      revision: 3,
+      value_amount: "10000",
+      value_currency: "CAD",
+      value_basis: "project_fee",
+    });
+    expect(
+      formInput("leads.opportunity.update", base, {
+        value_amount: "",
+        value_currency: "CAD",
+        value_basis: "project_fee",
+      }),
+    ).toEqual({
+      ref: "r",
+      revision: 3,
+      value_amount: null,
+      value_currency: null,
+      value_basis: null,
+    });
+    expect(
+      formInput("leads.opportunity.update", base, { title: "Renamed" }),
+    ).toEqual({ ref: "r", revision: 3, title: "Renamed" });
+  });
   it("retains the rendered revision without coercing a form value", () =>
     expect(
       formInput(
@@ -403,5 +436,24 @@ describe("dated follow-ups", () => {
     );
     expect(html).toContain("Opportunity closed.");
     expect(html).not.toContain("Schedule follow-up");
+  });
+});
+describe("opportunity value", () => {
+  it("formats a recorded value and says when none is set", () => {
+    expect(value({ value_amount: null })).toBe("Not set");
+    expect(
+      value({
+        value_amount: "10000",
+        value_currency: "CAD",
+        value_basis: "project_fee",
+      }),
+    ).toMatch(/^CAD\s10,000 · project fee$/);
+    expect(
+      value({
+        value_amount: "85.5",
+        value_currency: "CAD",
+        value_basis: "hourly_rate",
+      }),
+    ).toMatch(/^CAD\s85\.50 · hourly rate$/);
   });
 });
