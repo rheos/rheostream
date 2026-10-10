@@ -230,6 +230,33 @@ def _finish_alone(
     return applied
 
 
+def _unless_unready(
+    module_id: str,
+    *,
+    write: Callable[[UnitOfWork], bool],
+    defer: Callable[[UnitOfWork], bool],
+) -> Callable[[UnitOfWork], bool]:
+    """Run a terminal write only if ``module_id`` is ready, else ``defer``, in one
+    transaction.
+
+    A package deployed ahead of its schema upgrade can drop a job kind, consumer or
+    payload field that persisted work still uses. That work must wait for the upgrade
+    or a rollback rather than fail. ``require_ready`` holds the shared module execution
+    lock until this transaction ends, so an upgrade cannot commit between the check
+    and the write.
+    """
+    from rheo_core.modules.readiness import ModuleNotReady, require_ready
+
+    def run(uow: UnitOfWork) -> bool:
+        try:
+            require_ready(uow.connection, module_id)
+        except ModuleNotReady:
+            return defer(uow)
+        return write(uow)
+
+    return run
+
+
 def _with_operation(
     *,
     operation_id: UUID | None,
@@ -428,7 +455,13 @@ def _run_leased_job(
         input_model, handler = kinds.lookup(leased.kind)
     except JobKindUnknown as exc:
         _fail_terminally(
-            engine, database, leased=leased, owner=owner, now=now, error=str(exc)
+            engine,
+            database,
+            leased=leased,
+            owner=owner,
+            now=now,
+            error=str(exc),
+            clock=clock,
         )
         return
     try:
@@ -444,6 +477,7 @@ def _run_leased_job(
                 f"job kind {leased.kind!r} rejected its stored input: "
                 f"{_validation_detail(exc)}"
             ),
+            clock=clock,
         )
         return
 
@@ -468,23 +502,35 @@ def _fail_terminally(
     owner: str,
     now: datetime,
     error: str,
+    clock: Callable[[], datetime],
 ) -> None:
     """Terminal on first sight: neither an unknown kind nor a payload that cannot parse
-    can succeed on a later attempt, so neither is ever requeued."""
+    can succeed on a later attempt against a ready module, so neither is ever
+    requeued. Against a module that is not ready the job is deferred instead, because
+    the loaded package may simply be ahead of its schema upgrade."""
     applied = _finish_alone(
         engine,
         database,
-        write=_with_operation(
-            operation_id=leased.operation_id,
-            job_write=lambda conn: finish_failed(
-                conn, job_id=leased.id, owner=owner, now=now, error=error
+        write=_unless_unready(
+            leased.kind.split(".")[0],
+            write=_with_operation(
+                operation_id=leased.operation_id,
+                job_write=lambda conn: finish_failed(
+                    conn, job_id=leased.id, owner=owner, now=now, error=error
+                ),
+                operation_write=lambda conn, record_id: operation_records.finish_failed(
+                    conn,
+                    operation_id=record_id,
+                    now=now,
+                    error_code=JOB_FAILED,
+                    error_text=error,
+                ),
             ),
-            operation_write=lambda conn, record_id: operation_records.finish_failed(
-                conn,
-                operation_id=record_id,
-                now=now,
-                error_code=JOB_FAILED,
-                error_text=error,
+            defer=lambda uow: defer_unready_job(
+                uow.connection,
+                job_id=leased.id,
+                owner=owner,
+                next_run_at=clock() + timedelta(seconds=60),
             ),
         ),
     )
@@ -805,9 +851,13 @@ def _fail_delivery_alone(
     owner: str,
     clock: Callable[[], datetime],
     error: str,
+    unless_unready: str | None = None,
 ) -> None:
     """Write ``failed`` in its own short transaction, for the three delivery outcomes
     that are terminal without a retry.
+
+    ``unless_unready`` names the module an unknown consumer belongs to; the delivery is
+    deferred instead when that module is not ready, as on the job side.
 
     Named rather than described as a shape, because the three do not share one: the
     **spent budget** (:func:`_run_leased_delivery`'s gate) is terminal because the
@@ -818,16 +868,34 @@ def _fail_delivery_alone(
     ``failed`` blocks the head of that ``(consumer_id, subject_ref)`` queue until a
     person acts, which is the ratified behaviour rather than a cost of this branch.
     """
-    applied = _finish_alone(
-        engine,
-        database,
-        write=lambda uow: fail_delivery(
+
+    def fail(uow: UnitOfWork) -> bool:
+        return fail_delivery(
             uow.connection,
             event_id=leased.event_id,
             consumer_id=leased.consumer_id,
             owner=owner,
             now=clock(),
             error=error,
+        )
+
+    applied = _finish_alone(
+        engine,
+        database,
+        write=(
+            fail
+            if unless_unready is None
+            else _unless_unready(
+                unless_unready,
+                write=fail,
+                defer=lambda uow: defer_unready_delivery(
+                    uow.connection,
+                    event_id=leased.event_id,
+                    consumer_id=leased.consumer_id,
+                    owner=owner,
+                    next_attempt_at=clock() + timedelta(seconds=60),
+                ),
+            )
         ),
     )
     if not applied:
@@ -886,7 +954,13 @@ def _run_leased_delivery(
         subscription = consumers.lookup(leased.consumer_id)
     except ConsumerUnknown as exc:
         _fail_delivery_alone(
-            engine, database, leased=leased, owner=owner, clock=clock, error=str(exc)
+            engine,
+            database,
+            leased=leased,
+            owner=owner,
+            clock=clock,
+            error=str(exc),
+            unless_unready=leased.consumer_id.split(".")[0],
         )
         return
 

@@ -881,3 +881,39 @@ def test_lost_lease_is_not_refunded_by_module_deferral(
     assert row.state == LEASED and row.lease_owner == THIEF
     assert row.attempts == 2
     assert _observed(engine, event_id) == ((), 0)
+
+
+def test_unready_module_defers_a_consumer_its_loaded_package_dropped(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    ctx: WorkspaceContext,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The delivery twin of the job-side case: readiness runs before the consumer
+    lookup, so a dropped consumer waits while the module is not ready and is still
+    terminal once it is."""
+    from rheo_core.modules import readiness
+
+    event_id = _publish(ctx, now=now)
+
+    def refuse(_conn: object, _module: str) -> None:
+        raise readiness.ModuleNotReady("module_unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(readiness, "require_ready", refuse)
+        _visit(workspace, cluster=cluster, consumers=ConsumerRegistry(), at=now)
+        row = _delivery(engine, event_id)
+        assert row.state == PENDING and row.attempts == 0
+        assert row.next_attempt_at == now + timedelta(minutes=1)
+
+    _visit(
+        workspace,
+        cluster=cluster,
+        consumers=ConsumerRegistry(),
+        at=now + timedelta(minutes=1),
+    )
+    row = _delivery(engine, event_id)
+    assert row.state == FAILED
+    assert row.last_error is not None and "no subscription" in row.last_error
