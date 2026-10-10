@@ -1,6 +1,9 @@
 """Shared lookup, revision and registered-dependency boundaries."""
 
+import hashlib
+import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -134,3 +137,43 @@ def party_read(
 
 def observation(uow: UnitOfWork, identifier: UUID) -> dict[str, Any]:
     return row(uow, t.observation, identifier)
+
+
+def evidence_digest(uow: UnitOfWork, record: dict[str, Any]) -> str:
+    """A fingerprint of what an assessment judges: the attached observations, the
+    resolved field values and the recorded value. Notes, drafts, follow-ups and
+    stage moves change the revision but not this, so they never call for a
+    reassessment."""
+    attached: list[UUID] = list(
+        uow.connection.execute(
+            select(p.opportunity_observation.c.observation_id).where(
+                p.opportunity_observation.c.opportunity_id == record["id"]
+            )
+        ).scalars()
+    )
+    observations = sorted(str(i) for i in attached)
+    fields = sorted(
+        [r.target, r.value_kind, r.value_text]
+        for r in uow.connection.execute(
+            select(
+                p.opportunity_field_state.c.target,
+                p.opportunity_field_state.c.value_kind,
+                p.opportunity_field_state.c.value_text,
+            ).where(
+                p.opportunity_field_state.c.opportunity_id == record["id"],
+                p.opportunity_field_state.c.orphaned.is_(False),
+            )
+        )
+    )
+    amount = record.get("value_amount")
+    value = [
+        None if amount is None else format(Decimal(amount).normalize(), "f"),
+        record.get("value_currency"),
+        record.get("value_basis"),
+    ]
+    payload = json.dumps(
+        {"observations": observations, "fields": fields, "value": value},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()

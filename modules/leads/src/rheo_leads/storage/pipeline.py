@@ -313,6 +313,7 @@ qualification = child(
     col("created_by_kind"),
     col("created_by_id", Uuid, nullable=True),
     col("created_at", DateTime(timezone=True)),
+    col("evidence_digest", nullable=True),
 )
 draft = child(
     "draft",

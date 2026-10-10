@@ -55,6 +55,7 @@ def assess(ctx: WorkspaceContext, uow: UnitOfWork, m: c.AssessInput) -> c.Record
         objective=m.objective,
         evidence_refs=[ref("observation", i) for i in evidence],
         input_revision=record["revision"],
+        evidence_digest=h.evidence_digest(uow, record),
         fit="needs_information",
         intent="needs_information",
         urgency="needs_information",

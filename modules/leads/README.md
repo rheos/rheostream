@@ -68,11 +68,12 @@ uses canonical references and Recallatron's own deletion rules; unrelated memori
 survive and any participant failure rolls back the transaction. Leads also works in
 workspaces where Recallatron was never installed.
 
-Export format three covers all 36 owned tables, including dated follow-up history.
-Format-two archives require a matching older host for restore; the core refuses
-format mismatches. Take a full database backup before upgrading from the previous
-Leads schema (0004_opportunities); rollback means restoring that backup with the
-previous image, not downgrading the additive 0005_followup_reminders migration. Restore preserves source identities,
+Export format four covers all 36 owned tables, including dated follow-up history
+and each assessment's evidence digest. Older-format archives require a matching older
+host for restore; the core refuses format mismatches. Take a full database backup
+before upgrading from a previous Leads schema; rollback means restoring that backup
+with the previous image, not downgrading the additive 0005_followup_reminders or
+0006_assessment_evidence_digest migrations. Restore preserves source identities,
 replaces only a fresh seed and strips deployment-local signing handles. The populated
 round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters,
 live source activation and the first external handoff destination remain separate work.

@@ -12,7 +12,7 @@ from rheo_leads.references import ref
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 from rheo_relationships.storage import tables as rt
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
@@ -1090,3 +1090,121 @@ def test_explicit_assessment_to_outcome_preserves_evidence_and_history(
     assert len(final.data["drafts"]) == 1
     assert len(ok(intake, "qualification.list", ref=current.ref).items) == 3
     assert ok(intake, "observation.get", observation_ref=observation).data["fields"]
+
+
+def test_assessment_evidence_digest_ignores_work_and_follows_evidence(
+    intake: Intake,
+) -> None:
+    """Drafts, notes, follow-ups and stage moves bump the revision but not what an
+    assessment judged; a field or value edit does."""
+    setup(intake)
+    capture(
+        intake,
+        "digest",
+        {
+            "subject": "Synthetic booking tool",
+            "person.email": "digest@example.test",
+            "message": "We keep double-booking crews.",
+        },
+    )
+    current = one(intake)
+    recorded = ok(
+        intake,
+        "qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Service suitability",
+    )
+    digest = recorded.data["evidence_digest"]
+    assert digest and digest == one(intake).data["evidence_digest"]
+
+    current = one(intake)
+    ok(intake, "followup.draft", ref=current.ref, revision=current.revision, body="Hi")
+    current = one(intake)
+    ok(
+        intake,
+        "opportunity.add_note",
+        ref=current.ref,
+        revision=current.revision,
+        body="n",
+    )
+    current = one(intake)
+    ok(
+        intake,
+        "followup.schedule",
+        ref=current.ref,
+        revision=current.revision,
+        action="Book the call",
+        due_on="2026-10-13",
+    )
+    current = one(intake)
+    ok(
+        intake,
+        "opportunity.transition",
+        ref=current.ref,
+        revision=current.revision,
+        to_stage_id="discovery",
+    )
+    current = one(intake)
+    assert current.revision > recorded.data["input_revision"] + 3
+    assert current.data["evidence_digest"] == digest
+
+    ok(
+        intake,
+        "opportunity.update",
+        ref=current.ref,
+        revision=current.revision,
+        value_amount="10000",
+        value_currency="CAD",
+        value_basis="project_fee",
+    )
+    valued = one(intake).data["evidence_digest"]
+    assert valued != digest
+    current = one(intake)
+    ok(
+        intake,
+        "opportunity.update",
+        ref=current.ref,
+        revision=current.revision,
+        title="Corrected title",
+    )
+    assert one(intake).data["evidence_digest"] not in (digest, valued)
+
+
+def test_assessment_survives_frozen_digest_upgrade(intake: Intake) -> None:
+    """An assessment recorded before 0006 keeps every value and a null digest, so
+    the UI falls back to comparing revisions for it."""
+    from rheo_core.migrations.orchestrator import run_chain
+
+    setup(intake)
+    capture(intake, "before-digest", {"subject": "Before digest"})
+    current = one(intake)
+    recorded = ok(
+        intake,
+        "qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Service suitability",
+    )
+    with open_unit_of_work(intake.ctx) as uow:
+        uow.connection.execute(
+            text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
+        )
+        uow.connection.execute(
+            text(
+                "UPDATE leads.alembic_version_leads "
+                "SET version_num = '0005_followup_reminders'"
+            )
+        )
+        database = uow.connection.execute(
+            text("SELECT current_database()")
+        ).scalar_one()
+        run_chain(uow.connection, "leads", expected_database=database)
+        run_chain(uow.connection, "leads", expected_database=database)
+        uow.commit()
+    after = one(intake)
+    kept = after.data["qualification"]
+    assert kept["id"] == recorded.data["id"]
+    assert kept["input_revision"] == recorded.data["input_revision"]
+    assert kept["evidence_digest"] is None
+    assert after.data["evidence_digest"]

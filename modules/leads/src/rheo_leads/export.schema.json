@@ -2228,6 +2228,16 @@
         "created_at": {
           "type": "string",
           "format": "date-time"
+        },
+        "evidence_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -2250,7 +2260,8 @@
         "prompt_version",
         "created_by_kind",
         "created_by_id",
-        "created_at"
+        "created_at",
+        "evidence_digest"
       ],
       "additionalProperties": false
     },
