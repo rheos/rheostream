@@ -7,6 +7,7 @@ import type {
 import { screens } from "./index";
 import { formInput } from "./action-form";
 import { pageOffset } from "./data";
+import { phoneDisplay } from "./screens";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const opportunity = {
@@ -161,6 +162,10 @@ describe("Leads screens", () => {
           ...opportunity,
           stage: { label: "Discovery" },
           qualification: assessment,
+          drafts: [
+            { id: "d2", body: "Newest draft", created_at: "2026-01-03" },
+            { id: "d1", body: "Older draft", created_at: "2026-01-02" },
+          ],
         },
       }),
       "leads.qualification.list": ok({
@@ -184,6 +189,15 @@ describe("Leads screens", () => {
     expect(html).toContain('name="fit"');
     expect(html).toContain('name="intent"');
     expect(html).toContain('name="uncertainty"');
+    expect(html).toMatch(
+      /<select[^>]*name="uncertainty"[^>]*required=""[^>]*>.*?<option value="" selected="">Choose…<\/option>/s,
+    );
+    expect(html).toMatch(
+      /<details[^>]*open=""[^>]*><summary>Draft ·.*?Newest draft/s,
+    );
+    expect(html).not.toMatch(
+      /<details[^>]*open=""[^>]*><summary>Draft ·[^<]*<\/summary><p[^>]*>Older draft/,
+    );
     expect(html).toContain("Reassess after changes");
     expect(html).toContain("Assessment history (2)");
     expect(html).toContain("example-model");
@@ -403,5 +417,14 @@ describe("dated follow-ups", () => {
     );
     expect(html).toContain("Opportunity closed.");
     expect(html).not.toContain("Schedule follow-up");
+  });
+});
+describe("phone display", () => {
+  it("groups stored North American digits and leaves others as stored", () => {
+    const digits = ["250", "555", "0142"];
+    expect(phoneDisplay(digits.join(""))).toBe(digits.join("-"));
+    expect(phoneDisplay(`+1${digits.join("")}`)).toBe(`+1 ${digits.join("-")}`);
+    expect(phoneDisplay("+4420")).toBe("+4420");
+    expect(phoneDisplay("")).toBe("");
   });
 });
