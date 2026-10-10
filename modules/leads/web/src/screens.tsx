@@ -1037,7 +1037,7 @@ export async function detail({ shell, query }: ScreenProps) {
                   fields={[
                     {
                       name: "value_amount",
-                      label: "Estimated amount (leave blank to clear)",
+                      label: "Estimated amount; leave blank to clear",
                       value: str(record.value_amount),
                       maxLength: 32,
                     },
