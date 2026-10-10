@@ -534,3 +534,33 @@ async def test_body_digest_fallback_and_matching_event_header(intake: Intake, we
     retry = await send(website, body)
     assert retry.json()["receipt_ref"] == response.json()["receipt_ref"]
     assert retry.json()["outcome"] == "duplicate"
+
+
+@pytest.mark.parametrize("actor", ["owner", "system", "other_connection"])
+def test_acceptance_cannot_bypass_verified_connection(intake: Intake, website, actor):
+    from rheo_core.boundary.factories import context_for_event_consumer
+    from rheo_core.operations.refusals import OperationRefused
+    from rheo_leads.contracts import AcceptDeliveryInput
+    from rheo_leads.intake.accept import accept_delivery
+
+    with open_unit_of_work(intake.ctx) as uow:
+        if actor == "owner":
+            ctx = intake.ctx
+        elif actor == "system":
+            ctx = context_for_event_consumer(
+                intake.workspace, uow, request_id=intake.ctx.request_id
+            )
+        else:
+            ctx = context_for_connection(intake.workspace, uuid7(), "leads", "webhook")
+        with pytest.raises(OperationRefused, match="authenticated connection required"):
+            accept_delivery(
+                ctx,
+                uow,
+                AcceptDeliveryInput(
+                    connection_ref=ref("intake_connection", website[0]),
+                    source_event_id="unsigned-bypass",
+                    body='{"subject":"Unsigned"}',
+                    signing_key_generation=1,
+                ),
+            )
+    assert intake.count(t.delivery_receipt) == 0

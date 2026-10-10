@@ -605,12 +605,12 @@ it is not re-claimed here.
 **Mutation:**
 ```diff
 diff --git a/packages/core/src/rheo_core/modules/loader.py b/packages/core/src/rheo_core/modules/loader.py
-index 3de7d9f..46fe27e 100644
+index 7615055..6fb06a2 100644
 --- a/packages/core/src/rheo_core/modules/loader.py
 +++ b/packages/core/src/rheo_core/modules/loader.py
-@@ -102,6 +102,8 @@ from typing import Final
+@@ -115,6 +115,8 @@ from typing import Final
  from packaging.specifiers import SpecifierSet
- from rheo_contracts import CONTRACT_VERSION
+ from rheo_contracts import CONTRACT_VERSION, Role
  
 +from rheo_recallatron.manifest import MODULE_ID as _MEMORY_MODULE_ID
 +
@@ -622,6 +622,10 @@ index 3de7d9f..46fe27e 100644
 **Cost:** `pytest:tests/test_module_import_graph.py::test_core_contracts_and_apps_do_not_depend_on_recallatron` — first observed failure line: `E       AssertionError: undeclared Recallatron dependencies: ['packages/core/src/rheo_core/modules/loader.py']`
 
 **Performed by:** P7 (2026-09-21)
+
+Re-captured 2026-10-09 after the loader gained connector validation. The forbidden
+import was applied, the named import-graph demonstrator failed, and the mutation
+was reverted before validation.
 
 **Note:** the criterion has two halves and the first demonstrator is the one that answers it
 directly: `make absence-proof` runs the phase-one matrix's own demonstrators twice, once
