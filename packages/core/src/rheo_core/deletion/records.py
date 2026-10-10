@@ -78,7 +78,7 @@ def deletion_ref(deletion_id: UUID) -> RecordRef:
     return RecordRef(module="core", record_type="deletion_record", id=deletion_id)
 
 
-def _row(row: Row[Any]) -> DeletionRecordRow:
+def _row(row: Row[Any, *tuple[Any, ...]]) -> DeletionRecordRow:
     """One selected row, written out rather than splatted.
 
     ``operations/records.py``'s own ``_row`` gives the reason: a splat pairs the wrong

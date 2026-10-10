@@ -93,7 +93,7 @@ _COLUMNS: Final = (
 """The read's select list, named once so :func:`_row` has one row shape to map."""
 
 
-def _row(row: Row[Any]) -> AuditRow:
+def _row(row: Row[Any, *tuple[Any, ...]]) -> AuditRow:
     """One selected row as an :class:`AuditRow`, field for field.
 
     Written out rather than splatted, for the reason ``operations/records.py``'s own

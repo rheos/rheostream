@@ -6,7 +6,7 @@ dependencies = [
     "rheo-core",
     "rheo-contracts",
     "rheo-app-mcp",
-    "fastapi>=0.115",
+    "fastapi>=0.142.2",
     "uvicorn[standard]>=0.54.0",
 ]
 

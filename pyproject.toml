@@ -31,8 +31,8 @@ dev = [
     # importing a package nothing declares breaks the day that package's own
     # dependencies drop it, and the break lands on whoever next runs `uv lock`.
     "httpx2>=2.13.1",
-    "ruff>=0.16.9",
-    "mypy>=1.11",
+    "ruff>=0.16.10",
+    "mypy>=2.4.0",
 ]
 
 [tool.ruff]
