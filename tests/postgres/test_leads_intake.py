@@ -15,7 +15,10 @@ from harness.modules import (
 )
 from rheo_contracts import RecordRef, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
-from rheo_core.boundary.factories import context_for_event_consumer
+from rheo_core.boundary.factories import (
+    context_for_connection,
+    context_for_event_consumer,
+)
 from rheo_core.deletion import OWNED_DELETIONS, Disposition
 from rheo_core.events import ConsumerRegistry
 from rheo_core.events.consumers import HandlerUnitOfWork
@@ -78,16 +81,25 @@ class Intake:
         return outcome.result
 
     def service_accept(self, **payload: Any) -> AcceptedDelivery:
-        """The internal system-service seam; no connector authentication is simulated.
+        """Simulate trusted acceptance for processor tests, without HTTP authentication.
 
-        The existing boundary binds this synthetic system actor to the actual
-        workspace transaction. It grants no operations; call the internal service
-        in that transaction, as the later import connector will do.
+        Imports use a system actor; webhooks use the connection factory. Real
+        authentication is tested separately through the website HTTP receiver.
         """
         with open_unit_of_work(self.ctx) as uow:
             ctx = context_for_event_consumer(
                 self.workspace, uow, request_id=self.ctx.request_id
             )
+            connection_id = RecordRef.parse(payload["connection_ref"]).id
+            transport = uow.connection.execute(
+                select(t.intake_connection.c.transport).where(
+                    t.intake_connection.c.id == connection_id
+                )
+            ).scalar_one()
+            if transport == "webhook":
+                ctx = context_for_connection(
+                    self.workspace, connection_id, "leads", "webhook"
+                )
             assert isinstance(ctx, WorkspaceContext) and ctx.role is Role.SERVICE
             result = accept_delivery(
                 ctx,
@@ -661,9 +673,15 @@ def test_signing_generation_is_rechecked(
         connection_ref=ref("intake_connection", connection["id"]),
         source_event_id="signed-fixture",
         body="{}",
-        signing_key_generation=generation,
+        signing_key_generation=2,
     )
     assert outcome.outcome == "accepted"
+    # Isolate the worker's independent validation of stored generation metadata.
+    with open_unit_of_work(intake.ctx) as uow:
+        uow.connection.execute(
+            update(t.delivery_receipt).values(signing_key_generation=generation)
+        )
+        uow.commit()
     intake.visit()
     with open_unit_of_work(intake.ctx) as uow:
         assert (

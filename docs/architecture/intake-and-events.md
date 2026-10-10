@@ -5,10 +5,10 @@ FR 31 to FR 39, FR 46, R2, R4, and criteria 11 to 14 and 38 to 49. Answers idea-
 6 (event schemas, ordering, retry limits, replay) and fixes the intake contract's shapes.
 **Decisions:** A7 (intake lives in Leads; transports are connectors), A8 (outbox, envelope,
 worker, audit shapes). See the [decision list](README.md#architecture-decisions).
-**Built so far:** part two's outbox, jobs, worker, operations and audit, with the gaps
-marked where they fall. Part one, the external actions, and the contact permission records
-are phase three's design and are not built yet: `modules/leads` and `connectors/` are still
-placeholder packages, so no `leads.*` table, operation, event or transport exists.
+**Built so far:** outbox, jobs, worker, operations, audit, Leads intake and pipelines,
+contact permission records, manual/paste capture, and signed website intake with
+owner-managed connections. Import runners, email adapters and external destinations
+remain follow-up work; a deployed receiver does not activate a live source.
 
 ## Part one: the intake contract
 
@@ -16,7 +16,7 @@ placeholder packages, so no `leads.*` table, operation, event or transport exist
 
 Intake is the Leads module's front half. Connections, mappings, routing rules, funnels, receipts,
 and observations are `leads.*` record types in the `leads` schema. The three release-one
-transports are **connectors**: thin adapters in `connectors/` that authenticate a delivery, turn
+transports are **connectors**: thin adapters that authenticate a delivery, turn
 it into a `Delivery` value, and call `leads.intake.accept_delivery`. A connector owns transport
 and translation; it holds no domain rule (connectors README). The webhook receiver's HTTP route is
 registered by the Leads module under its `connector_bindings`, on the `api` surface.
@@ -57,7 +57,7 @@ CloudEvents-compatible in the attributes that matter and carries Rheo-specific e
 | --- | --- | --- |
 | `specversion` | constant `1.0` | |
 | `source` | the connection's `source_namespace` | Server-assigned; never the sender's claim. |
-| `id` | the source event identifier | From `event_id_path`, else the `X-Rheo-Event-Id` header, else the SHA-256 of the body. Event identity is `(source, id)`, distinct from subject identity. |
+| `id` | the source event identifier | For the shipped website mapping, the signed body’s `event_id`, else SHA-256 of the exact body. The optional `X-Rheo-Event-Id` header must match; it never overrides signed identity. Event identity is `(source, id)`, distinct from subject identity. |
 | `type` | `leads.delivery.received` | |
 | `time` | source occurrence time from `occurred_at_path`, else receipt time | Both are stored; `time` is the source's. |
 | `subject` | the external subject id when the mapping yields one | Subject identity, separate from event identity. |
@@ -212,7 +212,10 @@ same operation:
 HMAC-SHA256 of "<timestamp>.<body>">`), optional `X-Rheo-Event-Id`. The receiver runs these
 steps in this order, and stops at the first that fails:
 
-1. Resolve the connection by the path id. Unknown: `401`, nothing recorded. Known and not
+1. Look up the path id in core’s `control.connector_locator`, then read the authoritative
+   module-owned row in that active workspace. The loaded module must be enabled.
+   Request bodies, headers and query strings cannot select a workspace.
+   Resolve the connection by the path id. Unknown: `401`, nothing recorded. Known and not
    `active`: `401`, no receipt, an unresolved failure counted on that connection. The state is
    checked **before** any signature work, so a revoked connection refuses even a correctly
    signed delivery.
@@ -221,8 +224,17 @@ steps in this order, and stops at the first that fails:
    in constant time against the current secret and, while `previous_valid_until` is in the
    future, the previous one. A failure is `401`, no receipt, no acknowledgement, and an
    unresolved failure counted (criterion 42).
-4. Record which generation matched, build the `WorkspaceContext` from the connection, and call
-   `accept_delivery`.
+4. Enforce the workspace body limit, parse one UTF-8 JSON object, and derive event identity
+   from signed `event_id` or the body digest. Reject duplicate keys and non-finite numbers.
+   Record which generation matched, build the narrow `WorkspaceContext` from the binding,
+   and call `accept_delivery`. Acceptance rechecks state, module enablement and generation
+   under the lifecycle lock; the worker independently rechecks before processing.
+
+The HTTP layer streams at most 256 KiB (a hard ceiling), accepts only JSON without
+compression, rejects duplicate signature/identity headers and query parameters, and
+mounts only on the configured API surface. Owner creation/rotation returns no key or
+secret reference; `rheo connector export-key` is the host-operator handoff to a new
+private file. See the [sender setup](../../modules/leads/README.md#signed-website-intake).
 
 The failure count is the one Leads write that happens before a context exists: the route handler
 increments `connection_health.unresolved_failures` and sets `last_error` and `last_error_at` in

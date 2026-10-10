@@ -50,6 +50,7 @@ from rheo_core.storage.data_root import DataRootRefusal
 
 from rheo_app_cli.commands import (
     account,
+    connector,
     doctor,
     evidence,
     member,
@@ -127,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         member,
         token,
         evidence,
+        connector,
         openapi,
         web,
     ):

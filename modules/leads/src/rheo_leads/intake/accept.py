@@ -5,12 +5,14 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from rheo_contracts import Role, WorkspaceContext
+from rheo_contracts import ActorKind, Entry, Role, WorkspaceContext
+from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
+from rheo_core.storage.repositories import list_module_states
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
@@ -90,6 +92,7 @@ def accept_delivery(
     if len(body) > settings.get_int("leads.intake.max_payload_bytes"):
         raise OperationRefused("payload_too_large", "payload exceeds configured limit")
     connection_id = identifier(model_input.connection_ref, "intake_connection")
+    lock_workspace_lifecycle(uow.connection)
     connection = (
         uow.connection.execute(
             select(t.intake_connection)
@@ -103,6 +106,36 @@ def accept_delivery(
         raise OperationRefused("not_found", "connection unavailable")
     if connection["state"] != "active":
         raise OperationRefused("connection_revoked", "connection is inactive")
+    if connection["transport"] == "webhook":
+        if not any(
+            state.module_id == "leads" and state.state == "enabled"
+            for state in list_module_states(uow.connection)
+        ):
+            raise OperationRefused(
+                "module_unavailable", "connection module unavailable"
+            )
+        if (
+            ctx.actor.kind is not ActorKind.CONNECTION
+            or ctx.actor.id != connection_id
+            or ctx.entry is not Entry.INTAKE
+        ):
+            raise OperationRefused(
+                "role_not_permitted", "authenticated connection required"
+            )
+        generation = model_input.signing_key_generation
+        until = connection["previous_valid_until"]
+        previous = (
+            generation == connection["signing_key_generation"] - 1
+            and connection["previous_secret_ref"] is not None
+            and until is not None
+            and until > datetime.now(UTC)
+        )
+        if generation is None or (
+            generation != connection["signing_key_generation"] and not previous
+        ):
+            raise OperationRefused(
+                "connection_revoked", "signing generation unavailable"
+            )
     if connection["transport"] == "manual":
         if model_input.funnel_ref is None:
             raise OperationRefused("funnel_required", "choose a funnel")

@@ -113,7 +113,7 @@ from importlib.metadata import EntryPoint, entry_points
 from typing import Final
 
 from packaging.specifiers import SpecifierSet
-from rheo_contracts import CONTRACT_VERSION
+from rheo_contracts import CONTRACT_VERSION, Role
 
 from rheo_core.audit.sink import install_sink
 from rheo_core.deletion.registry import (
@@ -416,6 +416,9 @@ def load_modules(
             *manifests,
         )
     )
+    check_connector_routes(
+        (*(m for key, m in _LOADED.items() if key not in incoming), *manifests)
+    )
     _check_no_replacement(manifests, tools=tools, kinds=kinds, consumers=consumers)
     loaded: list[str] = []
     for manifest in _dependency_order(manifests):
@@ -692,6 +695,29 @@ def _check_no_replacement(
                     f"{existing_subscription.module_id!r}; a module may not replace "
                     "a registered name",
                 )
+
+
+def check_connector_routes(manifests: Iterable[ModuleManifest]) -> None:
+    claimed: dict[str, str] = {}
+    for manifest in manifests:
+        declarations = {d.name: d for d, _ in manifest.operations}
+        for binding in manifest.connector_bindings:
+            try:
+                binding.check_receiver_contract()
+            except ValueError as exc:
+                raise ManifestInvalid(manifest.module_id, str(exc)) from exc
+            declaration = declarations.get(binding.service_operation)
+            if declaration is None or Role.SERVICE not in declaration.roles:
+                raise ManifestInvalid(
+                    manifest.module_id, "connector operation must allow service"
+                )
+            if binding.route is None:
+                continue
+            if binding.route in claimed:
+                raise ManifestInvalid(
+                    manifest.module_id, "connector route already claimed"
+                )
+            claimed[binding.route] = manifest.module_id
 
 
 def check_web_surfaces(manifests: Iterable[ModuleManifest]) -> None:

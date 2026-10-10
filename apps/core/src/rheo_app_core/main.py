@@ -31,6 +31,7 @@ from rheo_core.log_config import configure_logging
 from rheo_core.storage.postgres import get_backend
 
 from rheo_app_core import api_routes, auth_routes, oauth_routes
+from rheo_app_core.connector_routes import ConnectorRoutes
 from rheo_app_core.internal_app import internal_app as internal_app
 from rheo_app_core.mcp_mount import McpSurfaceRouter, mounted_mcp
 from rheo_app_core.startup import run_startup
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(McpSurfaceRouter)
+app.add_middleware(ConnectorRoutes)
 
 public_app = app
 """``app`` bound to a second name. ``spec.md``'s architecture text and 11's
