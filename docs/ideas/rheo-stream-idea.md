@@ -1926,6 +1926,14 @@ The following changes are recorded here.
     cleanup and per-reference deletion evidence; existing single-record owners keep
     their return shape. These implement R4/A16 rather than rewriting outside references.
 
+### Website intake implementation clarification (2026-10-09)
+
+Signed website event identity comes from the signed body (`event_id`) or its exact-byte
+SHA-256 digest; an optional event-ID header can only confirm it. An unsigned header
+must never allow a captured delivery to acquire a new identity. The first connection
+setup uses owner operations plus a host-operator export to a private file for the
+website server. Keys stay out of agent/tool results and visitor browser code.
+
 ### Preferred but still to validate
 
 - One goal-oriented rheo MCP façade is the initial agent boundary.

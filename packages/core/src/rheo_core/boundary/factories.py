@@ -783,3 +783,39 @@ def _approval_provenance(
             f"{approval.operation_id}, which is not in this workspace",
         )
     return provenance
+
+
+def context_for_connection(
+    workspace_id: UUID, connection_id: UUID, module_id: str, transport: str
+) -> WorkspaceContext | Refusal:
+    """Context for a receiver that has verified a connection's credential.
+
+    Like other factories this is a value, not a credential. HTTP callers cannot
+    invoke it. Its grants come only from the loaded manifest, never the request.
+    """
+    from rheo_core.modules import loaded_manifests
+
+    enabled = _active_workspace_modules(get_backend(), workspace_id)
+    if isinstance(enabled, Refusal):
+        return enabled
+    manifest = loaded_manifests().get(module_id)
+    if manifest is None or module_id not in enabled:
+        return Refusal("module_unavailable", "connection module unavailable")
+    operations = frozenset(
+        binding.service_operation
+        for binding in manifest.connector_bindings
+        if binding.transport == transport
+    )
+    if not operations:
+        return Refusal("operation_not_permitted", "connection binding unavailable")
+    return WorkspaceContext(
+        workspace_id=workspace_id,
+        actor=Actor(kind=ActorKind.CONNECTION, id=connection_id),
+        role=Role.SERVICE,
+        entry=Entry.INTAKE,
+        audience=None,
+        operation_set=operations,
+        enabled_modules=enabled,
+        request_id=uuid7(),
+        principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),
+    )

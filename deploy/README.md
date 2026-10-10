@@ -544,3 +544,14 @@ RHEO_DOCTOR_COMPOSE_PROJECT=... RHEO_DOCTOR_TICKETS_URL=... /usr/local/sbin/rheo
 
 To stop paging, delete `/etc/cron.d/rheostream-doctor`. Any tickets it filed stay
 open in the service until closed by hand.
+
+### Signed website receiver migration
+
+The signed website intake release adds control revision `0004_connector_locator`
+automatically at startup. It is additive, but migrations are forward-only: an older
+image that knows only `0003_oauth` refuses to start against that control database.
+Keep a verified pre-migration backup; recover by rolling forward, or restore that
+backup if intentionally crossing the migration boundary (with the write-loss
+consequences described under rollback). Deployment does not create website keys or
+connect source traffic. Owners create connections and the host operator hands a key
+to the website server using the [private-file export](../modules/leads/README.md#signed-website-intake).

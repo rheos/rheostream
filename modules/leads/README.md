@@ -58,9 +58,8 @@ workspaces where Recallatron was never installed.
 
 Export format two covers all 35 owned tables. Restore preserves source identities,
 replaces only a fresh seed and strips deployment-local signing handles. The populated
-round-trip test also exercises Relationships through the real archive format. Webhook
-receivers, import runners, authenticated transport work, live module activation and
-the first external handoff destination remain separate slices.
+round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters,
+live source activation and the first external handoff destination remain separate work.
 
 ## Workspace UI and manual intake
 
@@ -109,3 +108,84 @@ original text in `body.message`. To add only a person or organization, use
 `relationships_create_contact` instead; contact creation is independent of Leads.
 Website and email adapters call intake directly and do not require an agent runtime;
 those transports are not implemented by the paste UI.
+
+
+## Signed website intake
+
+An owner can create a connection through `leads_connection_create_webhook` (operation
+`leads.connection.create_webhook`) with a name, existing `funnel_ref` and optional
+`campaign_ref`. The connection pins the seeded flat JSON mapping. Configure its
+routing in **Connections** to create opportunities in a chosen pipeline; otherwise
+accepted requests produce observations only. Creation does not assert verified email,
+authenticated subject identity, or permission to contact someone.
+
+Creation returns the connection reference and key generation, never key material or a
+secret-store handle. The host operator hands the key to the website's **server**:
+
+```sh
+mkdir -m 700 /tmp/website-handoff
+rheo connector export-key CONNECTION_UUID --output /tmp/website-handoff/website-key
+```
+
+Run this on the configured core host with its private data root and database access.
+The destination directory must already be owned by that OS user with mode 0700.
+The export writes a new mode-0600 file and refuses to overwrite an existing file.
+Transfer its exact ASCII bytes into the website server's private secret store; do not
+hex-decode the value. Remove the temporary handoff file after configuring the sender.
+Never embed this key in JavaScript sent to visitors. A static website needs a server
+or edge function to sign submissions. No agent runtime is involved in delivery.
+
+POST UTF-8 JSON to `/api/v1/intake/webhook/CONNECTION_UUID` on the configured API
+host. Path-mode deployments replace `/api` with their configured API prefix. Send
+`Content-Type: application/json`, no content encoding, and no query parameters.
+The hard body limit is 256 KiB; a lower workspace payload limit also applies.
+Use a stable event ID in the signed body and the mapping's literal dotted keys:
+
+```json
+{"event_id":"submission-123","subject":"Website inquiry","person.name":"Example Person","person.email":"person@example.com","message":"Please send more information."}
+```
+
+For example, the website server can construct the signature in Python:
+
+```python
+import hashlib
+import hmac
+import json
+import time
+
+body = json.dumps(submission, separators=(",", ":")).encode("utf-8")
+timestamp = str(int(time.time()))
+signature = hmac.new(
+    key_bytes, timestamp.encode("ascii") + b"." + body, hashlib.sha256
+).hexdigest()
+headers = {
+    "Content-Type": "application/json",
+    "X-Rheo-Timestamp": timestamp,
+    "X-Rheo-Signature": "v1=" + signature,
+}
+# Send these exact body bytes with these headers from the server.
+```
+
+Timestamps must be within the replay window (default 300 seconds). The optional
+`X-Rheo-Event-Id` header must equal the signed `event_id`; it cannot override it.
+Without `event_id`, the receiver uses the SHA-256 of the exact body as identity.
+JSON objects with duplicate keys or non-finite numbers are refused.
+
+HTTP 202 returns `receipt_ref` and `outcome` (`accepted` or `duplicate`); it means
+acceptance is committed and asynchronous processing is queued. Read the receipt to
+confirm processing. On a lost response, retry with the same event ID and exact body,
+and a fresh timestamp/signature. A changed body under the same event ID returns
+409 and records a conflict. Authentication refusals return 401, malformed input 422,
+oversized bodies 413, unsupported media 415, and temporary storage failures 503.
+
+Owners use `leads_connection_rotate_secret` with `connection_ref` and optional
+`overlap_seconds` (default zero; bounded by workspace settings), then the operator
+exports the new generation to a new file. Rotation retains at most one previous key.
+`leads_connection_revoke_secret` ends that previous-key overlap immediately;
+`leads_connection_revoke` revokes the whole connection permanently. Acceptance and
+worker processing recheck the generation: zero-overlap rotation, expired overlap or
+revocation can refuse already queued deliveries. Creation and rotation are not
+idempotent; inspect `leads.ui.catalog` (owner view includes the current signing-key
+generation) before retrying an uncertain administrative result.
+A restored connection needs a fresh credential. Rotation can supply it in the same
+workspace; a copy restored into another workspace must create a new connection.

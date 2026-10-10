@@ -57,6 +57,7 @@ def catalog(ctx: WorkspaceContext, uow: UnitOfWork, m: c.Empty) -> c.ItemsOutput
                 "state",
                 "funnel_id",
                 "mapping_version",
+                "signing_key_generation",
             )
         ]
         for row in uow.connection.execute(

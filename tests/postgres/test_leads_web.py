@@ -33,6 +33,7 @@ def test_catalog_never_exposes_connection_credentials_and_member_gets_no_setting
         "state",
         "funnel_id",
         "mapping_version",
+        "signing_key_generation",
         "rules",
     }
     member = add_member(

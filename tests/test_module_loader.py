@@ -536,3 +536,23 @@ def test_the_allowlist_setting_is_not_set_by_the_suite() -> None:
             f"{name} is set in this process; the suite must resolve "
             f"{ALLOWLIST_KEY} to its empty package default"
         )
+
+
+@pytest.mark.parametrize("bypass", [False, True])
+def test_connector_binding_requires_service_operation(bypass):
+    from rheo_core.modules.loader import check_connector_routes
+    from rheo_core.modules.manifest import ConnectorBinding
+
+    manifest = _manifest(MODULE_ID)
+    binding = ConnectorBinding(
+        transport="webhook", service_operation="missing.accept", route=None
+    )
+    if bypass:
+        manifest = manifest.model_copy(update={"connector_bindings": (binding,)})
+        with pytest.raises(ManifestInvalid, match="allow service"):
+            check_connector_routes([manifest])
+    else:
+        with pytest.raises(ValidationError, match="allow service"):
+            ModuleManifest.model_validate(
+                manifest.model_copy(update={"connector_bindings": (binding,)})
+            )

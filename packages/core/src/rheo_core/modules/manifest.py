@@ -55,6 +55,7 @@ from rheo_contracts import OperationDeclaration, Role, SafetyClass, ToolDeclarat
 from rheo_contracts.refs import is_reserved_module
 
 from rheo_core.audit.sink import AuditSink
+from rheo_core.connectors.contracts import ConnectionReader, FailureRecorder
 from rheo_core.deletion.registry import (
     DeleteAuthorizer as _DeleteAuthorizer,
 )
@@ -805,6 +806,26 @@ class ConnectorBinding(BaseModel):
     transport: str
     service_operation: str
     route: str | None
+    read_connection: ConnectionReader | None = None
+    record_refusal: FailureRecorder | None = None
+
+    @model_validator(mode="after")
+    def _receiver_contract(self) -> Self:
+        self.check_receiver_contract()
+        return self
+
+    def check_receiver_contract(self) -> None:
+        if self.read_connection is not None:
+            if self.transport != "webhook" or self.record_refusal is None:
+                raise ValueError(
+                    "an HTTP intake binding needs webhook and refusal callbacks"
+                )
+            if self.route is None or not re.fullmatch(
+                r"/api/(?:[a-z0-9-]+/)+<connection_id>", self.route
+            ):
+                raise ValueError(
+                    "connector route must be a canonical API connection route"
+                )
 
 
 def check_module_id(module_id: object) -> None:
@@ -967,6 +988,18 @@ class ModuleManifest(BaseModel):
         """
         module_id = self.module_id
         check_module_id(module_id)
+        declarations = {d.name: d for d, _ in self.operations}
+        routes: set[str] = set()
+        for binding in self.connector_bindings:
+            declaration = declarations.get(binding.service_operation)
+            if declaration is None or Role.SERVICE not in declaration.roles:
+                raise ValueError(
+                    "connector operation must belong to its module and allow service"
+                )
+            if binding.route is not None:
+                if binding.route in routes:
+                    raise ValueError("duplicate connector route")
+                routes.add(binding.route)
         if self.storage.schema_name != module_id:
             # One module owns one schema, named for it: the resolver, the audit sink
             # and the migration all address the same place without being told twice.

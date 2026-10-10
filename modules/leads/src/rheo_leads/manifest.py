@@ -21,6 +21,9 @@ from rheo_core.modules.manifest import (
 )
 
 from rheo_leads.configuration import SETTINGS
+from rheo_leads.connections import OPERATIONS as CONNECTION_OPERATIONS
+from rheo_leads.connections import TOOLS as CONNECTION_TOOLS
+from rheo_leads.connections import read_connection, record_refusal
 from rheo_leads.contracts import CaptureInput
 from rheo_leads.events import CONSUMER_ID, DELIVERY_RECEIVED, EVENTS
 from rheo_leads.export import export_records, import_records
@@ -69,9 +72,13 @@ MANIFEST = ModuleManifest(
         required_extensions=(),
     ),
     configuration_schema=SETTINGS,
-    operations=OPERATIONS + PIPELINE_OPERATIONS + WEB_OPERATIONS,
+    operations=OPERATIONS
+    + PIPELINE_OPERATIONS
+    + WEB_OPERATIONS
+    + CONNECTION_OPERATIONS,
     tools=(
         *TOOLS,
+        *CONNECTION_TOOLS,
         ToolDeclaration(
             name="leads_delete",
             operation="core.record.delete",
@@ -177,6 +184,8 @@ MANIFEST = ModuleManifest(
             route="/api/v1/intake/webhook/<connection_id>"
             if transport == "webhook"
             else None,
+            read_connection=read_connection if transport == "webhook" else None,
+            record_refusal=record_refusal if transport == "webhook" else None,
         )
         for transport in ("webhook", "import", "manual")
     ),
