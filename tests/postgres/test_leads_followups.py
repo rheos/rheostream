@@ -14,7 +14,7 @@ from postgres.test_leads_pipeline import (
     capture,
     ok,
     one,
-    remove_jobsearch_preset,
+    rewind_leads,
     setup,
 )
 
@@ -177,21 +177,9 @@ def test_existing_opportunity_survives_frozen_upgrade(intake: Intake) -> None:
     setup(intake)
     capture(intake, "one", {"subject": "Before migration"})
     before = one(intake)
-    # This disposable workspace starts at head. Reconstruct the predecessor by
-    # removing only the new, empty table (and 0006's column) and resetting Alembic's
-    # version marker.
+    # This disposable workspace starts at head. Reconstruct the 0004 predecessor.
     with open_unit_of_work(intake.ctx) as uow:
-        remove_jobsearch_preset(uow.connection)
-        uow.connection.execute(text("DROP TABLE leads.followup_reminder"))
-        uow.connection.execute(
-            text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
-        )
-        uow.connection.execute(
-            text(
-                "UPDATE leads.alembic_version_leads "
-                "SET version_num = '0004_opportunities'"
-            )
-        )
+        rewind_leads(uow.connection, "0004_opportunities")
         database = uow.connection.execute(
             text("SELECT current_database()")
         ).scalar_one()

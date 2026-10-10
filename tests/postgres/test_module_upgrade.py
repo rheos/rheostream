@@ -19,7 +19,7 @@ from postgres.test_leads_pipeline import (
     capture,
     ok,
     one,
-    remove_jobsearch_preset,
+    rewind_leads,
     setup,
 )
 
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.postgres
 TARGET = {
     "module_id": "leads",
     "target_version": MANIFEST.package_version,
-    "target_schema": "0007_jobsearch_preset",
+    "target_schema": "0008_attach_by_field",
 }
 
 
@@ -36,27 +36,11 @@ def predecessor(i: Intake) -> str:
     capture(i, "upgrade", {"subject": "Preserved inquiry"})
     reference = one(i).ref
     with open_unit_of_work(i.ctx) as uow:
-        remove_jobsearch_preset(uow.connection)
-        uow.connection.execute(text("DROP TABLE leads.followup_reminder"))
-        uow.connection.execute(
-            text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
-        )
-        uow.connection.execute(
-            text(
-                "UPDATE leads.alembic_version_leads "
-                "SET version_num = '0004_opportunities'"
-            )
-        )
+        undone = rewind_leads(uow.connection, "0004_opportunities")
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
-                module_schema_version.c.schema_version.in_(
-                    (
-                        "0005_followup_reminders",
-                        "0006_assessment_evidence_digest",
-                        "0007_jobsearch_preset",
-                    )
-                ),
+                module_schema_version.c.schema_version.in_(undone),
             )
         )
         uow.commit()

@@ -1213,16 +1213,7 @@ def test_assessment_survives_frozen_digest_upgrade(intake: Intake) -> None:
         objective="Service suitability",
     )
     with open_unit_of_work(intake.ctx) as uow:
-        remove_jobsearch_preset(uow.connection)
-        uow.connection.execute(
-            text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
-        )
-        uow.connection.execute(
-            text(
-                "UPDATE leads.alembic_version_leads "
-                "SET version_num = '0005_followup_reminders'"
-            )
-        )
+        rewind_leads(uow.connection, "0005_followup_reminders")
         database = uow.connection.execute(
             text("SELECT current_database()")
         ).scalar_one()
@@ -1248,14 +1239,64 @@ JOBSEARCH_TABLES = (
 )
 
 
-def remove_jobsearch_preset(connection: Any) -> None:
-    """Rebuild a pre-0007 schema state: drop only the seeded Job search preset."""
+def _undo_0008(connection: Any) -> None:
+    connection.execute(
+        text(
+            "ALTER TABLE leads.routing_rule "
+            "DROP CONSTRAINT routing_rule_match_field, "
+            "DROP CONSTRAINT routing_rule_action_known, "
+            "DROP COLUMN match_field, "
+            "ADD CHECK (action IN "
+            "('record_only','create_opportunity','attach_to_open_opportunity'))"
+        )
+    )
+
+
+def _undo_0007(connection: Any) -> None:
     for table in JOBSEARCH_TABLES:
         column = "id" if table == "pipeline_preset" else "preset_id"
         connection.execute(
             text(f"DELETE FROM leads.{table} WHERE {column} = :preset"),
             {"preset": str(h.JOBSEARCH_PRESET_ID)},
         )
+
+
+def _undo_0006(connection: Any) -> None:
+    connection.execute(
+        text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
+    )
+
+
+def _undo_0005(connection: Any) -> None:
+    connection.execute(text("DROP TABLE leads.followup_reminder"))
+
+
+# Newest first. Each step undoes one frozen Leads migration on a disposable
+# workspace that started at head, so a test can rebuild an exact predecessor.
+LEADS_REVISIONS = (
+    ("0008_attach_by_field", _undo_0008),
+    ("0007_jobsearch_preset", _undo_0007),
+    ("0006_assessment_evidence_digest", _undo_0006),
+    ("0005_followup_reminders", _undo_0005),
+    ("0004_opportunities", None),
+)
+
+
+def rewind_leads(connection: Any, to: str) -> tuple[str, ...]:
+    """Undo every Leads migration after ``to``; returns the revisions undone."""
+    undone = []
+    for revision, undo in LEADS_REVISIONS:
+        if revision == to:
+            break
+        assert undo is not None, to
+        undo(connection)
+        undone.append(revision)
+    else:
+        raise AssertionError(f"unknown Leads revision {to}")
+    connection.execute(
+        text("UPDATE leads.alembic_version_leads SET version_num = :to"), {"to": to}
+    )
+    return tuple(undone)
 
 
 def test_jobsearch_preset_is_refused_until_the_capability_is_on(
@@ -1311,13 +1352,7 @@ def test_jobsearch_preset_survives_frozen_upgrade(intake: Intake) -> None:
     capture(intake, "before-jobsearch", {"subject": "Before job search"})
     before = one(intake)
     with open_unit_of_work(intake.ctx) as uow:
-        remove_jobsearch_preset(uow.connection)
-        uow.connection.execute(
-            text(
-                "UPDATE leads.alembic_version_leads "
-                "SET version_num = '0006_assessment_evidence_digest'"
-            )
-        )
+        rewind_leads(uow.connection, "0006_assessment_evidence_digest")
         database = uow.connection.execute(
             text("SELECT current_database()")
         ).scalar_one()
@@ -1327,3 +1362,144 @@ def test_jobsearch_preset_survives_frozen_upgrade(intake: Intake) -> None:
     after = one(intake)
     assert after.ref == before.ref and after.revision == before.revision
     assert intake.count(p.pipeline_preset) == 2
+
+
+def test_attach_by_field_merges_repeat_postings_open_or_closed(intake: Intake) -> None:
+    """Postings have no contact person: repeat sightings join on the posting id,
+    refresh the newer count, and a posting already passed on is not reopened."""
+    from sqlalchemy import insert
+
+    setup(intake)
+    ok(intake, "core.settings.set", key="leads.capabilities.jobsearch", value=True)
+    jobs = ok(intake, "pipeline.create", name="Upwork jobs", preset="job_search")
+    with open_unit_of_work(intake.ctx) as uow:
+        mapping = uow.connection.execute(select(t.field_mapping)).mappings().one()
+        for name in ("posting_id", "proposal_count"):
+            uow.connection.execute(
+                insert(t.field_mapping_rule).values(
+                    mapping_id=mapping["id"],
+                    version=mapping["version"],
+                    target=f"ext.jobsearch.{name}",
+                    source_path=f"/{name}",
+                    required=False,
+                    clear_on_null=False,
+                )
+            )
+        uow.commit()
+    rule = {
+        "action": "attach_by_field",
+        "pipeline_id": str(jobs.data["id"]),
+        "match_field": "ext.jobsearch.posting_id",
+    }
+    ok(
+        intake,
+        "connection.set_routing",
+        connection_id=str(intake.connection_id),
+        rules=[rule],
+    )
+
+    def sighting(event: str, posting: str, count: int) -> None:
+        capture(
+            intake,
+            event,
+            {
+                "subject": f"Posting {posting}",
+                "posting_id": posting,
+                "proposal_count": str(count),
+            },
+        )
+
+    def postings() -> dict[str, Any]:
+        found = {}
+        for item in ok(intake, "opportunity.list").items:
+            record = ok(intake, "opportunity.get", ref=item["ref"])
+            fields = {
+                f["target"]: f["value_text"]
+                for f in record.data["opportunity_field_state"]
+            }
+            found[fields["ext.jobsearch.posting_id"]] = (record, fields)
+        return found
+
+    sighting("a-1", "~021", 5)
+    sighting("a-2", "~021", 12)
+    sighting("b-1", "~022", 3)
+    seen = postings()
+    assert set(seen) == {"~021", "~022"}
+    first, fields = seen["~021"]
+    assert fields["ext.jobsearch.proposal_count"] == "12"
+    assert len(first.data["opportunity_observation"]) == 2
+    assert first.data["opportunity_party"] == [], "no person party for a posting"
+
+    ok(
+        intake,
+        "opportunity.transition",
+        ref=first.ref,
+        revision=first.revision,
+        to_stage_id="passed",
+    )
+    sighting("a-3", "~021", 20)
+    seen = postings()
+    assert set(seen) == {"~021", "~022"}, (
+        "a passed posting is refreshed, not re-created"
+    )
+    passed, fields = seen["~021"]
+    assert passed.data["stage_id"] == "passed"
+    assert fields["ext.jobsearch.proposal_count"] == "20"
+
+    capture(intake, "no-id", {"subject": "No posting id"})
+    assert len(ok(intake, "opportunity.list").items) == 2, "no match field, no rule"
+
+
+def test_attach_by_field_requires_a_declared_match_field(intake: Intake) -> None:
+    services = setup(intake)
+    ok(intake, "core.settings.set", key="leads.capabilities.jobsearch", value=True)
+    jobs = ok(intake, "pipeline.create", name="Upwork jobs", preset="job_search")
+
+    def routing(pipeline: object, **rule: Any) -> Any:
+        return intake.call(
+            "leads.connection.set_routing",
+            connection_id=str(intake.connection_id),
+            rules=[{"action": "attach_by_field", "pipeline_id": str(pipeline), **rule}],
+        )
+
+    assert routing(jobs.data["id"]).state == "input_invalid"
+    assert (
+        routing(jobs.data["id"], match_field="ext.jobsearch.nope").state
+        == "field_unknown"
+    )
+    assert (
+        routing(services, match_field="ext.jobsearch.posting_id").state
+        == "field_unknown"
+    ), "the services preset does not declare job fields"
+    assert routing(services, match_field="person.email").ok
+    assert routing(jobs.data["id"], match_field="ext.jobsearch.posting_id").ok
+    other = intake.call(
+        "leads.connection.set_routing",
+        connection_id=str(intake.connection_id),
+        rules=[
+            {
+                "action": "create_opportunity",
+                "pipeline_id": str(services),
+                "match_field": "person.email",
+            }
+        ],
+    )
+    assert other.state == "input_invalid"
+
+
+def test_attach_by_field_survives_frozen_upgrade(intake: Intake) -> None:
+    from rheo_core.migrations.orchestrator import run_chain
+
+    setup(intake)
+    with open_unit_of_work(intake.ctx) as uow:
+        assert rewind_leads(uow.connection, "0007_jobsearch_preset") == (
+            "0008_attach_by_field",
+        )
+        database = uow.connection.execute(
+            text("SELECT current_database()")
+        ).scalar_one()
+        run_chain(uow.connection, "leads", expected_database=database)
+        run_chain(uow.connection, "leads", expected_database=database)
+        rules = uow.connection.execute(select(p.routing_rule)).mappings().all()
+        uow.commit()
+    assert rules and all(r["match_field"] is None for r in rules)

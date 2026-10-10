@@ -162,11 +162,18 @@ routing_rule = Table(
     col("action"),
     Column("pipeline_id", Uuid, ForeignKey("leads.pipeline.id")),
     col("enabled", Boolean),
+    col("match_field", nullable=True),
     UniqueConstraint("connection_id", "ordinal"),
     CheckConstraint(
-        "action IN ('record_only','create_opportunity','attach_to_open_opportunity')"
+        "action IN ('record_only','create_opportunity',"
+        "'attach_to_open_opportunity','attach_by_field')",
+        name="routing_rule_action_known",
     ),
     CheckConstraint("action = 'record_only' OR pipeline_id IS NOT NULL"),
+    CheckConstraint(
+        "(action = 'attach_by_field') = (match_field IS NOT NULL)",
+        name="routing_rule_match_field",
+    ),
 )
 routing_condition = Table(
     "routing_condition",

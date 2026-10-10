@@ -1,4 +1,4 @@
-"""Version-five intake and pipeline snapshot; restore preserves identities.
+"""Version-six intake and pipeline snapshot; restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. Restore replaces only the fresh seed;

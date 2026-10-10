@@ -1,6 +1,6 @@
 """Intake steps 4–6: source-authenticated party identity and explicit routing."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rheo_contracts import WorkspaceContext
 from rheo_core.operations.transaction import call_in_transaction
@@ -97,7 +97,40 @@ def route(ctx: WorkspaceContext, uow: UnitOfWork, state: "DeliveryState") -> Non
         if rule["action"] == "record_only":
             return
         decision = f"routing_rule:{rule['id']}"
-        if rule["action"] == "attach_to_open_opportunity" and obs["party_ref"]:
+        if rule["action"] == "attach_by_field":
+            key = values.get(rule["match_field"])
+            if key is None:
+                # Nothing to match on: fall through like a rule whose conditions failed.
+                continue
+            # Open or closed: a posting already passed on is refreshed, not reopened
+            # as a new lead.
+            target = (
+                uow.connection.execute(
+                    select(p.opportunity)
+                    .join(
+                        p.opportunity_field_state,
+                        p.opportunity_field_state.c.opportunity_id
+                        == p.opportunity.c.id,
+                    )
+                    .where(
+                        p.opportunity.c.pipeline_id == rule["pipeline_id"],
+                        p.opportunity_field_state.c.target == rule["match_field"],
+                        p.opportunity_field_state.c.value_kind == "value",
+                        p.opportunity_field_state.c.value_text == key,
+                        p.opportunity_field_state.c.orphaned.is_(False),
+                    )
+                    .order_by(
+                        p.opportunity.c.created_at.desc(), p.opportunity.c.id.desc()
+                    )
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if target:
+                _attach(ctx, uow, target, obs["id"], decision)
+                return
+        elif rule["action"] == "attach_to_open_opportunity" and obs["party_ref"]:
             aliases = h.party_read(ctx, uow, obs["party_ref"], aliases=True)
             refs = [aliases.canonical_ref, *aliases.alias_refs]
             target = (
@@ -122,17 +155,7 @@ def route(ctx: WorkspaceContext, uow: UnitOfWork, state: "DeliveryState") -> Non
                 .one_or_none()
             )
             if target:
-                answer = call_in_transaction(
-                    ctx,
-                    uow,
-                    "leads.opportunity.attach_observation",
-                    dict(
-                        ref=ref("opportunity", target["id"]),
-                        revision=target["revision"],
-                        observation_ref=ref("observation", obs["id"]),
-                    ),
-                )
-                _record_route(uow, answer.model_dump()["ref"], obs["id"], decision)
+                _attach(ctx, uow, target, obs["id"], decision)
                 return
         answer = call_in_transaction(
             ctx,
@@ -145,6 +168,26 @@ def route(ctx: WorkspaceContext, uow: UnitOfWork, state: "DeliveryState") -> Non
         )
         _record_route(uow, answer.model_dump()["ref"], obs["id"], decision)
         return
+
+
+def _attach(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    target: Any,
+    observation_id: Any,
+    decision: str,
+) -> None:
+    answer = call_in_transaction(
+        ctx,
+        uow,
+        "leads.opportunity.attach_observation",
+        dict(
+            ref=ref("opportunity", target["id"]),
+            revision=target["revision"],
+            observation_ref=ref("observation", observation_id),
+        ),
+    )
+    _record_route(uow, answer.model_dump()["ref"], observation_id, decision)
 
 
 def _record_route(
