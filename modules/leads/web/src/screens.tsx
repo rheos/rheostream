@@ -138,11 +138,31 @@ function stageLabel(record: Row, catalog: Row[]): string {
     ) || label(record.stage_id)
   );
 }
-function value(record: Row): string {
-  return record.value_amount == null
-    ? "Not set"
-    : `${str(record.value_currency)} ${str(record.value_amount)} · ${label(record.value_basis)}`;
+export function value(record: Row): string {
+  if (record.value_amount == null) return "Not set";
+  const currency = str(record.value_currency);
+  const amount = Number(str(record.value_amount));
+  let shown = `${currency} ${str(record.value_amount)}`;
+  try {
+    if (Number.isFinite(amount))
+      shown = new Intl.NumberFormat("en-CA", {
+        style: "currency",
+        currency,
+        currencyDisplay: "code",
+        minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+        maximumFractionDigits: 2,
+      }).format(amount);
+  } catch {
+    // An unrecognized currency code keeps the stored text.
+  }
+  return `${shown} · ${label(record.value_basis)}`;
 }
+const VALUE_BASES = [
+  { value: "project_fee", label: "Project fee" },
+  { value: "annual_contract", label: "Annual contract" },
+  { value: "hourly_rate", label: "Hourly rate" },
+  { value: "referral_fee", label: "Referral fee" },
+];
 export async function overview({ shell, query }: ScreenProps, board: boolean) {
   const offset = pageOffset(query.offset);
   const [catalogResult, result] = await Promise.all([
@@ -1005,6 +1025,38 @@ export async function detail({ shell, query }: ScreenProps) {
                 <dt>Revision</dt>
                 <dd>{str(envelope.revision)}</dd>
               </dl>
+              <details>
+                <summary>
+                  {record.value_amount == null ? "Set value" : "Change value"}
+                </summary>
+                <Form
+                  shell={shell}
+                  operation="leads.opportunity.update"
+                  base={base}
+                  button="Save value"
+                  fields={[
+                    {
+                      name: "value_amount",
+                      label: "Estimated amount (leave blank to clear)",
+                      value: str(record.value_amount),
+                      maxLength: 32,
+                    },
+                    {
+                      name: "value_currency",
+                      label: "Currency code",
+                      value: str(record.value_currency) || "CAD",
+                      maxLength: 3,
+                    },
+                    {
+                      name: "value_basis",
+                      label: "Basis",
+                      type: "select",
+                      value: str(record.value_basis) || "project_fee",
+                      options: VALUE_BASES,
+                    },
+                  ]}
+                />
+              </details>
             </section>
           </aside>
         </div>
