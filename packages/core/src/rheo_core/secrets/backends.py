@@ -3,8 +3,8 @@ the environment. Both return raw bytes; the store wraps them in ``SecretValue``.
 
 The ``secrets/`` directory itself (mode 0700) is created by the data-root layout,
 ``rheo_core.storage.data_root.ensure_layout``, which is its single owner; the file
-backend only reads. A managed secret manager would be a third backend a deployment
-adds later; nothing in release one needs one.
+backend requires that root before creating scoped values. A managed secret manager
+would be a third backend a deployment adds later; nothing in release one needs one.
 """
 
 import os
@@ -19,6 +19,7 @@ from rheo_core.secrets.refs import (
     SecretRefusal,
     is_slug_path,
 )
+from rheo_core.secrets.write import create_file_secret
 
 # Any bit outside owner read/write: group, other, or owner-execute.
 _BEYOND_OWNER_RW = 0o177
@@ -36,6 +37,10 @@ class FileBackend:
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
+
+    def create(self, ref_id: str, raw: bytes) -> None:
+        """Create once, privately and atomically; never overwrite a reference."""
+        create_file_secret(self.root, ref_id, raw)
 
     def read(self, ref_id: str) -> bytes:
         if not is_slug_path(ref_id):

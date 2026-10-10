@@ -41,9 +41,15 @@ _NO_TRAVEL: Final = "a SecretScope does not travel: it is neither pickled nor co
 class SecretScope:
     component: str
     prefixes: tuple[str, ...]
+    writable: bool
 
     def __init__(
-        self, component: str, prefixes: tuple[str, ...], *, _token: object = None
+        self,
+        component: str,
+        prefixes: tuple[str, ...],
+        *,
+        writable: bool = False,
+        _token: object = None,
     ) -> None:
         if _token is not _SENTINEL:
             raise TypeError(
@@ -51,6 +57,7 @@ class SecretScope:
             )
         object.__setattr__(self, "component", component)
         object.__setattr__(self, "prefixes", prefixes)
+        object.__setattr__(self, "writable", writable)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         raise TypeError("SecretScope cannot be subclassed")
@@ -72,10 +79,14 @@ class SecretScope:
         return False
 
 
-def _new_scope(component: str, prefixes: Iterable[str]) -> SecretScope:
+def _new_scope(
+    component: str, prefixes: Iterable[str], *, writable: bool = False
+) -> SecretScope:
     """Build a scope. Package-private: ``SecretStore.scope_for`` is the public door."""
     if not isinstance(component, str) or not component:
         raise ValueError("a secret scope needs a non-empty component name")
+    if not isinstance(writable, bool):
+        raise TypeError("writable must be a boolean")
     names = tuple(prefixes)
     if not names:
         raise ValueError(f"scope for {component!r} names no reference prefix")
@@ -85,4 +96,4 @@ def _new_scope(component: str, prefixes: Iterable[str]) -> SecretScope:
                 f"scope for {component!r}: a prefix must start with one of "
                 f"{list(_PREFIX_ROOTS)}"
             )
-    return SecretScope(component, names, _token=_SENTINEL)
+    return SecretScope(component, names, writable=writable, _token=_SENTINEL)

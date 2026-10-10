@@ -555,6 +555,7 @@ start if a referenced variable is missing.
 
 ```text
 SecretStore.resolve(ref: SecretRef, scope: SecretScope) -> SecretValue
+SecretStore.create(ref: SecretRef, value: SecretValue, scope: SecretScope) -> None
 ```
 
 `SecretScope` is an unforgeable token the core constructs for a component at registration time,
@@ -595,6 +596,25 @@ connection's `signing_secret_ref`, `previous_secret_ref`, and `previous_valid_un
 overlap window criterion 42 needs ([intake transports](intake-and-events.md#transports)). The
 store has no notion of current and previous, so there is one rotation mechanism and it lives with
 the record that owns the reference.
+
+**File creation is immutable and explicitly scoped.** `scope_for(..., writable=True)`
+opts a presenting component into creation within its reference prefixes. Existing scopes
+remain read-only. `create` accepts a `SecretValue`, writes only to the file backend,
+and never replaces an existing reference, even with identical bytes (`secret_exists`).
+The data-root layout must already have created `secrets/`; the store creates nested
+directories with mode 0700, refuses symlinks and directories not owned by its OS user
+with mode 0700, and publishes a fully written, fsynced mode-0600 file using an atomic
+no-replace link. It fsyncs directory entries before reporting success. The configured
+data root and its ancestors remain operator-trusted, as do other processes running
+under the same OS identity. Environment references remain read-only.
+
+Ordinary failed writes remove their staging file. A process killed before cleanup can
+leave a private staging file whose name is not a valid reference. An I/O failure after
+publication may leave a complete value at the requested reference; callers must not
+overwrite or delete it on retry. None of this exposes a secret through an operation,
+event, audit record or module import. Connection provisioning and rotation must manage
+their own database transaction and recover unreferenced values without granting a
+credential until the connection update commits.
 
 ## Storage decision record (D1, D2)
 
