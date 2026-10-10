@@ -27,6 +27,7 @@ from rheo_core.exports import (
     run_export_job,
     run_restore_job,
 )
+from rheo_core.exports.erasure import SWEEP_JOB_KIND
 from rheo_core.modules import ENTRY_POINT_GROUP, JobKind, reset_surfaces
 from rheo_core.modules.operations import (
     MODULE_INSTALL,
@@ -45,7 +46,14 @@ from rheo_core.work.schedules import (
 from rheo_runtimes import ClaudeCliRuntime
 
 PRODUCTION_KINDS = frozenset(
-    {EXPORT_JOB_KIND, RESTORE_JOB_KIND, RUNTIME_RUN, RETENTION_SWEEP, MODULE_INSTALL}
+    {
+        EXPORT_JOB_KIND,
+        RESTORE_JOB_KIND,
+        RUNTIME_RUN,
+        RETENTION_SWEEP,
+        MODULE_INSTALL,
+        SWEEP_JOB_KIND,
+    }
 )
 """Every job kind the composition root registers at import, as an exact set.
 

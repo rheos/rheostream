@@ -142,9 +142,11 @@ def scratch(cluster: ClusterSession) -> Iterator[Scratch]:
     yield Scratch(name, engine, account_id, workspace_id, tuple(seeded))
 
 
-def test_upgrade_reaches_0003_with_the_six_tables(scratch: Scratch) -> None:
+def test_upgrade_retains_the_six_oauth_tables(scratch: Scratch) -> None:
     with scratch.engine.connect() as connection:
-        assert recorded_revisions(connection, CONTROL_CHAIN) == {"0003_oauth"}
+        assert recorded_revisions(connection, CONTROL_CHAIN) == {
+            "0004_connector_locator"
+        }
         present = set(
             connection.execute(
                 text(

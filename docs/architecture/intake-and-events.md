@@ -5,10 +5,10 @@ FR 31 to FR 39, FR 46, R2, R4, and criteria 11 to 14 and 38 to 49. Answers idea-
 6 (event schemas, ordering, retry limits, replay) and fixes the intake contract's shapes.
 **Decisions:** A7 (intake lives in Leads; transports are connectors), A8 (outbox, envelope,
 worker, audit shapes). See the [decision list](README.md#architecture-decisions).
-**Built so far:** part two's outbox, jobs, worker, operations and audit, with the gaps
-marked where they fall. Part one, the external actions, and the contact permission records
-are phase three's design and are not built yet: `modules/leads` and `connectors/` are still
-placeholder packages, so no `leads.*` table, operation, event or transport exists.
+**Built so far:** outbox, jobs, worker, operations, audit, Leads intake and pipelines,
+contact permission records, manual/paste capture, and signed website intake with
+owner-managed connections. Import runners, email adapters and external destinations
+remain follow-up work; a deployed receiver does not activate a live source.
 
 ## Part one: the intake contract
 
@@ -16,7 +16,7 @@ placeholder packages, so no `leads.*` table, operation, event or transport exist
 
 Intake is the Leads module's front half. Connections, mappings, routing rules, funnels, receipts,
 and observations are `leads.*` record types in the `leads` schema. The three release-one
-transports are **connectors**: thin adapters in `connectors/` that authenticate a delivery, turn
+transports are **connectors**: thin adapters that authenticate a delivery, turn
 it into a `Delivery` value, and call `leads.intake.accept_delivery`. A connector owns transport
 and translation; it holds no domain rule (connectors README). The webhook receiver's HTTP route is
 registered by the Leads module under its `connector_bindings`, on the `api` surface.
@@ -57,7 +57,7 @@ CloudEvents-compatible in the attributes that matter and carries Rheo-specific e
 | --- | --- | --- |
 | `specversion` | constant `1.0` | |
 | `source` | the connection's `source_namespace` | Server-assigned; never the sender's claim. |
-| `id` | the source event identifier | From `event_id_path`, else the `X-Rheo-Event-Id` header, else the SHA-256 of the body. Event identity is `(source, id)`, distinct from subject identity. |
+| `id` | the source event identifier | For the shipped website mapping, the signed body’s `event_id`, else SHA-256 of the exact body. The optional `X-Rheo-Event-Id` header must match; it never overrides signed identity. Event identity is `(source, id)`, distinct from subject identity. |
 | `type` | `leads.delivery.received` | |
 | `time` | source occurrence time from `occurred_at_path`, else receipt time | Both are stored; `time` is the source's. |
 | `subject` | the external subject id when the mapping yields one | Subject identity, separate from event identity. |
@@ -149,6 +149,16 @@ in one transaction per receipt:
 
 No model is involved anywhere in this path (FR 35, criterion 38).
 
+The worker constructs a verified service context from its routed workspace. The
+subscription explicitly grants only Relationships' identity resolution and Leads'
+create/attach operations. `call_in_transaction` authorizes the registered declaration,
+checks the enabled module and role, validates input/output, and writes the operation's
+audit in the same transaction. Approval-gated and deferred operations are refused on
+this path. Source payloads cannot choose grants. Installation seeds the preset but
+requires an owner-created pipeline and explicit routing rules before opportunities
+are created automatically.
+
+
 ### Field derivation (FR 37)
 
 `leads.opportunity_field_state` holds the current value of each opportunity field with why it is
@@ -162,16 +172,21 @@ the current value:
 | `observation_id`, `occurred_at`, `completeness`, `priority` | The evidence that set it. |
 | `orphaned` | `false` by default; `true` for an `ext.*` target the opportunity's current preset version no longer declares after a [version migration](confirmation-and-safety.md#the-migration-operation). Readable, exportable, not writable. |
 
-A new observation may write a field only when all hold: `owner = source`; the observation's
-`occurred_at` is not older than the current one; and, when `occurred_at` is equal, the
-observation's `completeness` is not lower and its connection `priority` is not lower. A thinner
-or older observation therefore never overwrites (criterion 47); a user-set field is `owner =
-user` and survives everything, and a user-set stage and a note live in columns intake never
-writes (`opportunity.stage_id` and
-[`opportunity_note`](confirmation-and-safety.md#opportunities-parties-qualifications-and-handoffs)),
-which is criterion 49; a `cleared` fact overwrites under the same rule and is distinguishable
-from absence (criterion 48). The observation itself is stored regardless, so nothing is lost,
-only not applied.
+Derivation replays the complete linked evidence set in occurrence-time order, so
+arrival order does not affect the result. A candidate replaces a source-owned field
+only if its completeness and connection priority are both at least the current
+winner's. Equal-time ties use priority, completeness, namespace and source event ID
+in that order. This resolves the former ambiguity between freshness and the promise
+that a newer but thinner observation does not overwrite richer evidence (criterion
+47). Missing fields do not clear earlier facts. An explicit `cleared` correction
+invalidates older evidence for that target even when the correction is thin; later
+surviving evidence is evaluated with the same rule. Original observations and their
+field values remain available through the linked observation read, including
+conflicting evidence that did not become current.
+
+User-set fields are `owner = user` and survive intake. A user-set stage and notes live
+in columns intake never writes, satisfying criterion 49. Field state names its source
+observation, occurrence time, completeness and priority so the winner is explainable.
 
 **After an observation is deleted.** The Leads owning delete removes the field-state rows whose
 `observation_id` is the erased observation, then re-derives each affected `(opportunity_id,
@@ -197,7 +212,10 @@ same operation:
 HMAC-SHA256 of "<timestamp>.<body>">`), optional `X-Rheo-Event-Id`. The receiver runs these
 steps in this order, and stops at the first that fails:
 
-1. Resolve the connection by the path id. Unknown: `401`, nothing recorded. Known and not
+1. Look up the path id in core’s `control.connector_locator`, then read the authoritative
+   module-owned row in that active workspace. The loaded module must be enabled.
+   Request bodies, headers and query strings cannot select a workspace.
+   Unknown: `401`, nothing recorded. Known and not
    `active`: `401`, no receipt, an unresolved failure counted on that connection. The state is
    checked **before** any signature work, so a revoked connection refuses even a correctly
    signed delivery.
@@ -206,8 +224,17 @@ steps in this order, and stops at the first that fails:
    in constant time against the current secret and, while `previous_valid_until` is in the
    future, the previous one. A failure is `401`, no receipt, no acknowledgement, and an
    unresolved failure counted (criterion 42).
-4. Record which generation matched, build the `WorkspaceContext` from the connection, and call
-   `accept_delivery`.
+4. Enforce the workspace body limit, parse one UTF-8 JSON object, and derive event identity
+   from signed `event_id` or the body digest. Reject duplicate keys and non-finite numbers.
+   Record which generation matched, build the narrow `WorkspaceContext` from the binding,
+   and call `accept_delivery`. Acceptance rechecks state, module enablement and generation
+   under the lifecycle lock; the worker independently rechecks before processing.
+
+The HTTP layer streams at most 256 KiB (a hard ceiling), accepts only JSON without
+compression, rejects duplicate signature/identity headers and query parameters, and
+mounts only on the configured API surface. Owner creation/rotation returns no key or
+secret reference; `rheo connector export-key` is the host-operator handoff to a new
+private file. See the [sender setup](../../modules/leads/README.md#signed-website-intake).
 
 The failure count is the one Leads write that happens before a context exists: the route handler
 increments `connection_health.unresolved_failures` and sets `last_error` and `last_error_at` in

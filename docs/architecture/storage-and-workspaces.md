@@ -105,6 +105,7 @@ schema.
 | `access_token` | `id uuid`, `token_hash bytea`, `account_id`, `workspace_id`, `kind text`, `issued_from text`, `set_name text null`, `purpose text null`, `created_at`, `expires_at`, `revoked_at null`, `last_used_at null` | CLI and MCP tokens (FR 4). `kind` in `cli`, `mcp`, `runtime`; `issued_from` in `session`, `operator`, `runtime`, `connector` (the `access_token_issued_from` CHECK, widened by `0003_oauth` with the fourth value; no column changed), with a check constraint that `kind = runtime` and `issued_from = runtime` hold together. `set_name` is the package set the snapshot was expanded from, for display; null on a run-scoped token. `purpose` is set on a run-scoped token from the run's purpose and is null on a person's token; the MCP facade renders tool outputs under it ([facade](runtime-and-mcp.md#the-mcp-facade)). |
 | `access_token_operation` | `token_id`, `operation_name text` | Primary key both columns. The token's operation set, snapshotted at issuance and never widened ([tokens](identity-and-topology.md#tokens-for-cli-and-mcp-fr-4)). Deleted with a run-scoped token at run end. |
 | `identity_provider` | `provider_id text`, `enabled boolean`, `client_id text`, `client_secret_ref text` | Deployment-level provider configuration; the secret is a reference, never a value. |
+| `connector_locator` | `connection_id uuid pk`, `workspace_id uuid` (cascades with its `workspace`), `module_id text`, `transport text` | Trusted intake routing hint. The active workspace’s module-owned connection and credential remain authoritative. No source payload or secret is stored here. |
 | `workspace_work_due` | `workspace_id uuid pk` (cascades with its `workspace`), `due_at timestamptz`, `updated_at timestamptz` | The worker's due-work index ([jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16)). A hint, not a lease; a workspace with no row counts as due now. |
 | `oauth_client` | `client_id text pk`, `client_name text`, `registered_from text`, `created_at` | One per MCP connector registration (issue #287); a public client, no secret. Deleted only while abandoned (never had a grant) ([connector sign-in](identity-and-topology.md#connector-sign-in-oauth-for-mcp-clients)). |
 | `oauth_client_redirect_uri` | `client_id` (cascades with its client), `redirect_uri text` | Primary key both columns. Each registered redirect URI, every one an allowlist member. |
@@ -555,6 +556,7 @@ start if a referenced variable is missing.
 
 ```text
 SecretStore.resolve(ref: SecretRef, scope: SecretScope) -> SecretValue
+SecretStore.create(ref: SecretRef, value: SecretValue, scope: SecretScope) -> None
 ```
 
 `SecretScope` is an unforgeable token the core constructs for a component at registration time,
@@ -564,8 +566,8 @@ and `RHEO_ANTHROPIC_API_KEY` under `api_key`, or the same file prefix and
 `RHEO_CLAUDE_OAUTH_TOKEN` under `oauth_token`, the GitHub identity provider `secret://file/identity/github/` and
 `RHEO_GITHUB_CLIENT_SECRET`, the storage component `secret://file/cluster/` and
 `RHEO_CLUSTER_DSN`, and the internal listener `secret://file/internal/` and
-`RHEO_INTERNAL_SECRET`. The intake receiver is to get `ws/*/connection/*/signing` when intake is
-built. Domain services and modules
+`RHEO_INTERNAL_SECRET`. The intake receiver gets the exact `ws/<workspace>/connection/<connection>/signing/`
+prefix after trusted locator lookup. Domain services and modules
 are constructed without a scope, so they have no way to call `resolve` at all; a test asserts no
 module package imports `SecretStore`. `SecretValue` is a wrapper whose `repr` and `str` are
 redacted, which cannot be serialised by the JSON encoders the core uses for events, operation
@@ -582,10 +584,11 @@ component ever sees the reference.
 
 **Per-workspace secrets.** Connection signing secrets and member credentials are workspace data
 by ownership but live in the deployment's secret store under a workspace-scoped id, referenced
-from the workspace table. An export carries the reference and never the value; a restore marks
-every connection `needs_credential` and every member credential `needs_value` until re-supplied
-([export and restore](deletion-export-migration.md#export-and-restore-fr-52)); neither state is
-built yet, since no connection exists and `member_credential` has no state column. Encryption
+from the workspace table. Leads exports strip deployment-local signing references and
+never include values; restored website connections are marked `needs_credential`.
+Rotation supplies a fresh credential in the same workspace. A copy restored into a
+different workspace must create a new connection: a locator cannot be rebound. The
+planned member credential `needs_value` state remains unbuilt. Encryption
 at rest of the file store is the volume's job in release one; per-workspace keys and key
 management are the hosted edition's prerequisite, as the build plan already records.
 
@@ -595,6 +598,25 @@ connection's `signing_secret_ref`, `previous_secret_ref`, and `previous_valid_un
 overlap window criterion 42 needs ([intake transports](intake-and-events.md#transports)). The
 store has no notion of current and previous, so there is one rotation mechanism and it lives with
 the record that owns the reference.
+
+**File creation is immutable and explicitly scoped.** `scope_for(..., writable=True)`
+opts a presenting component into creation within its reference prefixes. Existing scopes
+remain read-only. `create` accepts a `SecretValue`, writes only to the file backend,
+and never replaces an existing reference, even with identical bytes (`secret_exists`).
+The data-root layout must already have created `secrets/`; the store creates nested
+directories with mode 0700, refuses symlinks and directories not owned by its OS user
+with mode 0700, and publishes a fully written, fsynced mode-0600 file using an atomic
+no-replace link. It fsyncs directory entries before reporting success. The configured
+data root and its ancestors remain operator-trusted, as do other processes running
+under the same OS identity. Environment references remain read-only.
+
+Ordinary failed writes remove their staging file. A process killed before cleanup can
+leave a private staging file whose name is not a valid reference. An I/O failure after
+publication may leave a complete value at the requested reference; callers must not
+overwrite or delete it on retry. None of this exposes a secret through an operation,
+event, audit record or module import. Connection provisioning and rotation must manage
+their own database transaction and recover unreferenced values without granting a
+credential until the connection update commits.
 
 ## Storage decision record (D1, D2)
 
@@ -625,3 +647,13 @@ the run's `permitted_tools` and `requirements`, a deletion record's `participant
 child table to every list a query filters by: a memory's purposes
 ([`memory_purpose`](memory.md#entities)) and a run's context references
 ([`runtime_request_context`](runtime-and-mcp.md#what-the-core-records-about-a-run)).
+
+
+**Connector provisioning transactions.** The locator commits before the module's
+workspace transaction, and immutable key files are outside both database transactions.
+A failed creation or rotation can leave an inert locator or an unreferenced key file;
+only a committed active module connection can authenticate. No automatic key-file
+pruning is performed. Workspace deletion cascades its locator rows. The receiver
+checks active workspace, loaded/enabled module, connection state and exact scoped
+credential before constructing a service context. Generic service tokens cannot
+bypass signature verification through Leads' accept-delivery operation.

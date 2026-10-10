@@ -1,52 +1,231 @@
 # Leads
 
-Reserved for signals, source observations, opportunity development, qualification,
-configurable pipelines, and tracked handoffs. Job search is optional.
+Signals, source observations, opportunities, configurable pipelines, qualification,
+contact-purpose permissions and tracked handoffs. Job search is optional and is not
+part of this module's core workflow. Leads requires Relationships; Recallatron is
+optional.
 
-Delivery deduplication, party matching, and opportunity matching are separate
-decisions. Sources and professional workflows vary independently. No opportunity
-must become a project merely because it was ingested or qualified.
+Installation seeds a manual connection, mapping, “General inquiries” funnel and
+version one of the inbound-services preset. An owner explicitly creates a pipeline
+and configures its connection's ordered routing rules. With no matching rule, intake
+records the observation without creating an opportunity. Rules can create a new
+opportunity or attach to the newest open opportunity for the same canonical party
+in a selected pipeline. Delivery deduplication, party matching and opportunity
+matching remain separate decisions.
 
-The first delivery slice supplies receipt acceptance, manual capture, deterministic
-field mapping, the processing consumer, connection health, and an intake erasure
-participant. Installation seeds one manual connection, its mapping, and a “General
-inquiries” funnel. `leads_capture` requires an explicit funnel reference. Acceptance
-queues processing; it does not create a party or opportunity.
+Acceptance queues processing; it does not synchronously create a party or opportunity.
+The worker rechecks the connection, applies its pinned mapping, creates an observation,
+resolves identity through Relationships' registered service operation, applies routing,
+and publishes the result in one transaction. Its operation grants come only from the
+registered subscription. Trusted subject/email declarations control automatic identity;
+ordinary source text is evidence and never an instruction or permission grant.
 
-A receipt pins mapping version and acquisition attribution. A duplicate event with
-the same digest adds no work; a different digest records a conflict. The receipt,
-payload, received event, fan-out, and acceptance health update commit together. The
-caller acknowledges only after dispatch commits. A best-effort post-commit due mark
-wakes the worker; if that mark is lost, the configured reconciliation interval
-(default 900 seconds) bounds discovery delay.
+The opportunity pins its preset version and stable stage ID. Display labels can change
+without changing that version's transition rules or terminal outcome. Preset edits
+publish a new immutable version; migration is an explicit revision-checked operation
+on one opportunity with a stage map. Removed extension fields remain readable and
+exportable as orphaned fields. User edits, stages and notes survive new intake. Source
+fields retain their winning observation and are deterministically re-derived from the
+linked set; see [field derivation](../../docs/architecture/intake-and-events.md#field-derivation-fr-37).
 
-The numbered processing steps are connection recheck, pinned mapping, and observation
-creation. Future party resolution and routing fit before finalization. Finalization
-marks the receipt processed and publishes an event with explicit `party_ref: null`.
-Observation and receipt share a UUID under distinct record types, so the erasure
-participant can find the receipt even after the owner has deleted the observation.
-It removes payload and conflict bodies and retains the delivery identity tombstone.
-Neither observation nor receipt exposes an owned-delete operation in this slice.
+The `leads_*` MCP tools cover capture, ingest-link, get/list/search, evidence reads,
+updates, stage transitions, qualification, drafts and tracked handoffs.
+Qualification records the objective, evidence, input revision and rubric/preset version.
+Calling `leads_qualify` without `assessment` runs the deterministic completeness
+check; fit, intent and urgency remain `needs_information`. To record a judgment,
+pass `assessment` with `fit`, `intent`, `urgency`, `evidence_completeness` (each
+`high`, `medium`, `low` or `needs_information`), `uncertainty` (`high`, `medium`,
+`low`), a nonblank `explanation`, and `author` (`human` or `model`). Model-assisted
+callers must include both `model_id` and `prompt_version`; these are caller-declared
+provenance, not proof of a server-side model invocation. The service invokes no
+model and binds actor, linked evidence, input revision and rubric itself. Stale
+submissions are refused. Every assessment remains in history; saving one neither
+moves the stage nor grants contact permission. The detail screen supports recording
+a person's judgment and reviewing prior assessments.
 
-Health timestamps are null until an actual acceptance or processing occurs. Lag is
-the nonnegative whole-second difference between those timestamps, or zero while one
-is absent. Failed delivery counts are read from core for this connection's receipts;
-they are not a second stored counter. Generic record labels contain no captured facts.
+Drafts are internal records. A handoff
+stores a bounded snapshot and idempotency binding to its exact body, destination and
+purpose; without a destination it records `unavailable`, creates no external effect and
+does not change the opportunity's disposition.
 
-Webhook and file-import connector declarations reserve the service seam; receivers,
-signing-secret management, import jobs, configuration screens, relationship matching,
-and opportunity routing are later work. This release enables no module in an existing
-workspace automatically.
+Permission records are explicit and scoped by party, purpose and channel. Withdrawal
+and suppression deny subsequent permission checks. Recallatron's existing eligibility
+check consumes the registered permission operation when installed. `ContactPermissionGuard`
+rechecks permission under the lifecycle lock at execution; a test-only recording sink
+proves a held action cannot execute after withdrawal. No production destination or
+external-action operation is registered in this slice.
 
-The version-one export describes all thirteen tables. Restore requires a fresh seed,
-replaces that seed with the source identities, and strips deployment-local signing
-handles; active webhook connections restore as needing credentials. Full operational
-export/restore acceptance, including resuming pending deliveries, belongs to the later
-platform restore work.
+Observation and opportunity erasure require owner approval through core. Deleting an
+observation clears its intake payload/conflict bodies, retains a delivery tombstone,
+removes affected derived assessments/drafts/follow-up reminders/handoffs and re-derives surviving source
+fields while preserving user edits. Deleting a party removes its links and permission
+content. Core cancels reference-bound queued work and held approvals and invalidates
+held exports; artifact deletion runs after commit with durable retry.
 
-Non-manual acceptance requires a service context; owner/member sessions cannot claim
-a webhook/import source event or signing generation. The later connectors must build
-that context only after their transport authentication. Observation identity evidence
-is populated only under the connection's independent `subject_authenticated` and
-`email_verified` declarations. Unvouched values remain in the source payload and are
-not promoted into those identity columns.
+With Recallatron enabled, confirmed source erasure also removes directly linked
+memories and their derived descendants, embeddings and index entries. The cascade
+uses canonical references and Recallatron's own deletion rules; unrelated memories
+survive and any participant failure rolls back the transaction. Leads also works in
+workspaces where Recallatron was never installed.
+
+Export format three covers all 36 owned tables, including dated follow-up history.
+Format-two archives require a matching older host for restore; the core refuses
+format mismatches. Take a full database backup before upgrading from the previous
+Leads schema (0004_opportunities); rollback means restoring that backup with the
+previous image, not downgrading the additive 0005_followup_reminders migration. Restore preserves source identities,
+replaces only a fresh seed and strips deployment-local signing handles. The populated
+round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters,
+live source activation and the first external handoff destination remain separate work.
+
+## Dated next follow-up
+
+Each opportunity has at most one pending reminder, owned by Leads. Call
+`leads_schedule_followup` with the opportunity reference and current revision,
+an action (1–2,000 characters), and a `due_on` calendar date (`YYYY-MM-DD`).
+Rescheduling preserves the old reminder as superseded. `leads_get` returns
+`followup` plus up to 20 resolved reminders in `followup_history`, newest first.
+All reminder history remains in storage and exports.
+
+`leads_resolve_followup` requires the opportunity reference/revision, pending
+`reminder_id`, and `outcome` (`completed` or `cancelled`). Both operations allow
+owners, members and appropriately scoped services; ordinary operation grants still
+apply. Stale revisions cannot overwrite a newer reminder. Moving to a terminal
+stage cancels the pending reminder; closed opportunities refuse scheduling.
+Later source evidence leaves the user-selected reminder unchanged.
+
+Pass `followup_due_by` to `leads_list` / `leads_search` for pending reminders due
+on or before that date, ordered by due date then stable opportunity creation/ID.
+The list and board expose the same cutoff and preserve it through pagination.
+Dates have no time or timezone; callers choose their own calendar cutoff. With no
+cutoff, the usual opportunity list includes records with or without a reminder.
+These are actions to check in Leads, not notifications: scheduling sends no message,
+enqueues no agent run and creates no Current task or contact permission.
+
+## Workspace UI and manual intake
+
+The composed Leads surface provides a paginated opportunity list, pipeline board, source
+and note detail, allowed stage changes, qualification, dated follow-ups, saved drafts, manual capture
+and processing receipts. The main navigation has one entry per module; list, pipeline,
+capture and connection controls stay inside Leads. Board counts describe the current page,
+not the entire pipeline. Drafts never send a message.
+
+In a workspace where an owner has installed and enabled Relationships and Leads:
+
+1. Open **Connections**, create a pipeline, and route the seeded manual connection to it.
+   Leaving routing at record-only retains evidence without creating opportunities.
+2. Open **Capture inquiry** and paste an email, message or conversation. Review and
+   correct the suggested title and contact details, choose the funnel, then capture.
+   Suggestions use explicit labels and unambiguous email addresses, not a model;
+   ambiguous details stay blank. Original text remains in the intake payload.
+   The detailed form remains available under **Enter details manually instead**.
+   Acceptance returns a receipt immediately; a running worker processes it asynchronously.
+3. Open the receipt to check processing and follow the actual opportunity link. A record-only
+   result offers an explicit opportunity-creation form instead of claiming creation occurred.
+4. Review the original source separately from notes, assess evidence against an objective,
+   choose an allowed next stage, schedule a dated next action and optionally save a draft.
+
+Connection settings are owner-only and expose no signing handles. The simple routing form
+edits only an empty rule set or one unconditional create/record-only rule; advanced rules
+remain readable and require the operation API. Routing edits include the ordered rule IDs
+so a stale form cannot overwrite newer configuration. Opportunity edits use record revisions.
+
+Appearance offers GreenStream dark (default), Novadiem dark and Novadiem light. A host-local
+cookie remembers the selection. The Novadiem pair shares Sora typography and corner geometry;
+confirmation chrome stays identical across all themes.
+
+The flagship overlay loads the Leads and Relationships packages and routes the Leads host.
+This only makes the surface available: deployment does not install or enable either module
+in an existing workspace, select a pipeline, or connect live inquiry traffic. Authenticated
+transport activation remains a separate operator step.
+
+The interface participates in the existing routing-literal, platform-only, legacy-name,
+fixture-provenance and module-web-boundary gates (criterion 68's regression scope). These
+checks do not claim that the complete phase-three acceptance matrix or a live funnel has
+been demonstrated.
+
+Agents can submit the same flat inquiry facts through `leads_capture`, keeping
+original text in `body.message`. To add only a person or organization, use
+`relationships_create_contact` instead; contact creation is independent of Leads.
+Website and email adapters call intake directly and do not require an agent runtime;
+those transports are not implemented by the paste UI.
+
+
+## Signed website intake
+
+An owner can create a connection through `leads_connection_create_webhook` (operation
+`leads.connection.create_webhook`) with a name, existing `funnel_ref` and optional
+`campaign_ref`. The connection pins the seeded flat JSON mapping. Configure its
+routing in **Connections** to create opportunities in a chosen pipeline; otherwise
+accepted requests produce observations only. Creation does not assert verified email,
+authenticated subject identity, or permission to contact someone.
+
+Creation returns the connection reference and key generation, never key material or a
+secret-store handle. The host operator hands the key to the website's **server**:
+
+```sh
+mkdir -m 700 /tmp/website-handoff
+rheo connector export-key CONNECTION_UUID --output /tmp/website-handoff/website-key
+```
+
+Run this on the configured core host with its private data root and database access.
+The destination directory must already be owned by that OS user with mode 0700.
+The export writes a new mode-0600 file and refuses to overwrite an existing file.
+Transfer its exact ASCII bytes into the website server's private secret store; do not
+hex-decode the value. Remove the temporary handoff file after configuring the sender.
+Never embed this key in JavaScript sent to visitors. A static website needs a server
+or edge function to sign submissions. No agent runtime is involved in delivery.
+
+POST UTF-8 JSON to `/api/v1/intake/webhook/CONNECTION_UUID` on the configured API
+host. Path-mode deployments replace `/api` with their configured API prefix. Send
+`Content-Type: application/json`, no content encoding, and no query parameters.
+The hard body limit is 256 KiB; a lower workspace payload limit also applies.
+Use a stable event ID in the signed body and the mapping's literal dotted keys:
+
+```json
+{"event_id":"submission-123","subject":"Website inquiry","person.name":"Example Person","person.email":"person@example.com","message":"Please send more information."}
+```
+
+For example, the website server can construct the signature in Python:
+
+```python
+import hashlib
+import hmac
+import json
+import time
+
+body = json.dumps(submission, separators=(",", ":")).encode("utf-8")
+timestamp = str(int(time.time()))
+signature = hmac.new(
+    key_bytes, timestamp.encode("ascii") + b"." + body, hashlib.sha256
+).hexdigest()
+headers = {
+    "Content-Type": "application/json",
+    "X-Rheo-Timestamp": timestamp,
+    "X-Rheo-Signature": "v1=" + signature,
+}
+# Send these exact body bytes with these headers from the server.
+```
+
+Timestamps must be within the replay window (default 300 seconds). The optional
+`X-Rheo-Event-Id` header must equal the signed `event_id`; it cannot override it.
+Without `event_id`, the receiver uses the SHA-256 of the exact body as identity.
+JSON objects with duplicate keys or non-finite numbers are refused.
+
+HTTP 202 returns `receipt_ref` and `outcome` (`accepted` or `duplicate`); it means
+acceptance is committed and asynchronous processing is queued. Read the receipt to
+confirm processing. On a lost response, retry with the same event ID and exact body,
+and a fresh timestamp/signature. A changed body under the same event ID returns
+409 and records a conflict. Authentication refusals return 401, malformed input 422,
+oversized bodies 413, unsupported media 415, and temporary storage failures 503.
+
+Owners use `leads_connection_rotate_secret` with `connection_ref` and optional
+`overlap_seconds` (default zero; bounded by workspace settings), then the operator
+exports the new generation to a new file. Rotation retains at most one previous key.
+`leads_connection_revoke_secret` ends that previous-key overlap immediately;
+`leads_connection_revoke` revokes the whole connection permanently. Acceptance and
+worker processing recheck the generation: zero-overlap rotation, expired overlap or
+revocation can refuse already queued deliveries. Creation and rotation are not
+idempotent; inspect `leads.ui.catalog` (owner view includes the current signing-key
+generation) before retrying an uncertain administrative result.
+A restored connection needs a fresh credential. Rotation can supply it in the same
+workspace; a copy restored into another workspace must create a new connection.

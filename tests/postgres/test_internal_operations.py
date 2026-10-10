@@ -491,6 +491,28 @@ async def test_a_mutate_operation_through_the_internal_boundary(
     assert _notes(cluster, harness_workspace) == ("through the boundary",)
 
 
+async def test_expected_workspace_refuses_stale_forms_before_writing(
+    cluster: ClusterSession, harness_workspace: UUID, owner_session: str
+) -> None:
+    headers = {
+        **_headers(owner_session),
+        "X-Rheo-Expected-Workspace": "another-workspace",
+    }
+    refused = await _post(
+        NOTE_WRITE, owner_session, {"body": "stale tab"}, headers=headers
+    )
+    assert refused.status_code == 401
+    assert refused.json()["error"]["error_code"] == "workspace_changed"
+    assert _notes(cluster, harness_workspace) == ()
+
+    headers["X-Rheo-Expected-Workspace"] = str(harness_workspace)
+    accepted = await _post(
+        NOTE_WRITE, owner_session, {"body": "current tab"}, headers=headers
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert _notes(cluster, harness_workspace) == ("current tab",)
+
+
 async def test_a_long_running_operation_through_the_internal_boundary(
     harness_workspace: UUID, owner_session: str
 ) -> None:

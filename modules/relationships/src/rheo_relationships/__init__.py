@@ -1,1 +1,5 @@
-"""Relationships module placeholder: party records (overview.md). Empty in 0a."""
+"""Shared party identity, independent of domain workflows."""
+
+from rheo_relationships.manifest import MANIFEST
+
+__all__ = ["MANIFEST"]

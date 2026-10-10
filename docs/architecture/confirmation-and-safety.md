@@ -239,11 +239,14 @@ display text.
 
 ### The migration operation
 
-`leads.pipeline.migrate_version(pipeline_id, opportunity_ids, to_version, stage_map)`, mutate
-class, owner only, audited per opportunity:
+The initial implementation exposes
+`leads.pipeline.migrate_version(ref, revision, to_version, stage_map)`, mutate class,
+owner only, audited and revision-checked for one opportunity. The proposed batch
+`pipeline_id`/`opportunity_ids` form remains future work:
 
-- `stage_map` maps every `stage_id` in use among the selected opportunities to a `stage_id` in
-  `to_version`; a missing entry refuses the whole call naming the stage.
+
+- `stage_map` must map the selected opportunity's current stage to a stage in
+  `to_version`; a missing entry refuses the call.
 - Extension fields present in the old version and absent in the new are kept in
   `opportunity_field_state` with `orphaned = true`, readable and exportable, not writable.
 - A field required in the new version and empty on an opportunity does not block the migration;
@@ -275,6 +278,18 @@ There is no stage-transition history table. Every transition is a mutate operati
 opportunity as its audit subject, so `core.audit.list` filtered by the subject lists each
 transition's actor, time, and request digest, and the text a person wrote at the transition is in
 `opportunity_note` with its `stage_id`; the audit row holds a digest and never the note.
+
+**Recording an assessment.** `leads.qualification.assess` accepts an optional
+structured `assessment` containing the four dimensions, uncertainty, explanation
+and `author` (`human` or `model`). Model participation requires both `model_id` and
+`prompt_version`; these describe the caller's assessment process and do not claim
+that the service ran or verified a model. Human assessments carry neither field.
+The service binds the actor, all currently linked observations, input revision and
+pinned preset/rubric. Stale opportunity revisions are refused, and earlier
+assessments remain readable through `leads.qualification.list`. Omitting
+`assessment` retains the deterministic field-completeness check, with fit, intent
+and urgency left as `needs_information`. Neither path advances the stage, creates
+contact permission or invokes a model.
 
 **Where a rubric lives.** A rubric is **package data referenced by slug and version**
 (`modules/leads/rubrics/<slug>/<version>.toml`, listing the objective and the four dimensions'

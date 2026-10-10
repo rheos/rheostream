@@ -58,7 +58,7 @@ RECALL_OPERATION: Final = "recallatron.memory.recall"
 
 # Written out rather than read off the manifest: a pin derived from the manifest would
 # agree with whatever the manifest declares, including a dropped entry.
-_NAVIGATION_IDS: Final = ["memory", "search", "duplicates"]
+_NAVIGATION_IDS: Final = ["memory"]
 _ROUTE_SCREENS: Final = [
     ("browse", "browse"),
     ("search", "search"),

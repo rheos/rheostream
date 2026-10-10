@@ -5,6 +5,54 @@
       "type": "object",
       "properties": {
         "record_type": {
+          "const": "leads.contact_suppression"
+        },
+        "party_ref": {
+          "type": "string"
+        },
+        "suppressed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "suppressed_by_kind": {
+          "type": "string"
+        },
+        "suppressed_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "party_ref",
+        "suppressed_at",
+        "reason",
+        "suppressed_by_kind",
+        "suppressed_by_id"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
           "const": "leads.field_mapping"
         },
         "id": {
@@ -55,11 +103,15 @@
           "format": "date-time"
         },
         "archived_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -69,6 +121,36 @@
         "description",
         "created_at",
         "archived_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.pipeline_preset"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "current_version": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "name",
+        "current_version",
+        "created_at"
       ],
       "additionalProperties": false
     },
@@ -94,11 +176,15 @@
           "format": "date-time"
         },
         "archived_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -125,27 +211,43 @@
           "type": "integer"
         },
         "event_id_path": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "occurred_at_path": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "subject_id_path": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "verified_email_path": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -180,15 +282,23 @@
           "type": "string"
         },
         "transform": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "transform_arg": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "required": {
@@ -208,6 +318,84 @@
         "transform_arg",
         "required",
         "clear_on_null"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.pipeline"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "preset_id",
+        "name",
+        "owner_id",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.preset_version"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "created_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_type",
+        "preset_id",
+        "version",
+        "created_at",
+        "created_by_id",
+        "note"
       ],
       "additionalProperties": false
     },
@@ -238,18 +426,26 @@
           "type": "integer"
         },
         "funnel_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "uuid"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "campaign_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "uuid"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "priority": {
           "type": "integer"
@@ -261,26 +457,38 @@
           "type": "boolean"
         },
         "signing_secret_ref": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "signing_key_generation": {
           "type": "integer"
         },
         "previous_secret_ref": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "previous_valid_until": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "state": {
           "type": "string"
@@ -290,11 +498,15 @@
           "format": "date-time"
         },
         "revoked_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -324,6 +536,156 @@
       "type": "object",
       "properties": {
         "record_type": {
+          "const": "leads.preset_field"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "target": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sensitivity": {
+          "type": "string"
+        },
+        "enum_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "record_type",
+        "preset_id",
+        "version",
+        "target",
+        "type",
+        "required",
+        "sensitivity",
+        "enum_values"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.preset_rubric"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "rubric_slug": {
+          "type": "string"
+        },
+        "rubric_version": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "record_type",
+        "preset_id",
+        "version",
+        "rubric_slug",
+        "rubric_version"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.preset_stage"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "stage_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "ordinal": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "preset_id",
+        "version",
+        "stage_id",
+        "label",
+        "ordinal",
+        "kind",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.preset_template"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_type",
+        "preset_id",
+        "version",
+        "kind",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
           "const": "leads.connection_health"
         },
         "connection_id": {
@@ -331,18 +693,26 @@
           "format": "uuid"
         },
         "last_accepted_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "last_processed_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "pending_count": {
           "type": "integer"
@@ -351,24 +721,36 @@
           "type": "integer"
         },
         "last_error": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "last_error_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "last_unauthenticated_write_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "lag_seconds": {
           "type": "integer"
@@ -406,8 +788,7 @@
           "type": "string"
         },
         "content_digest": {
-          "type": "string",
-          "pattern": "^([0-9a-f]{2})*$"
+          "type": "string"
         },
         "byte_length": {
           "type": "integer"
@@ -420,11 +801,15 @@
           "format": "date-time"
         },
         "source_occurred_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "mapping_id": {
           "type": "string",
@@ -438,33 +823,49 @@
           "format": "uuid"
         },
         "campaign_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "uuid"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "signing_key_generation": {
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "state": {
           "type": "string"
         },
         "state_detail": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "processed_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -518,9 +919,13 @@
           "type": "string"
         },
         "state_detail": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "created_at": {
@@ -528,11 +933,15 @@
           "format": "date-time"
         },
         "finished_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -554,6 +963,110 @@
       "type": "object",
       "properties": {
         "record_type": {
+          "const": "leads.preset_requirement"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "to_stage_id": {
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_type",
+        "preset_id",
+        "version",
+        "to_stage_id",
+        "field"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.preset_transition"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "from_stage_id": {
+          "type": "string"
+        },
+        "to_stage_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_type",
+        "preset_id",
+        "version",
+        "from_stage_id",
+        "to_stage_id"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.routing_rule"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "connection_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ordinal": {
+          "type": "integer"
+        },
+        "action": {
+          "type": "string"
+        },
+        "pipeline_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "connection_id",
+        "ordinal",
+        "action",
+        "pipeline_id",
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
           "const": "leads.delivery_conflict"
         },
         "id": {
@@ -568,8 +1081,7 @@
           "type": "string"
         },
         "content_digest": {
-          "type": "string",
-          "pattern": "^([0-9a-f]{2})*$"
+          "type": "string"
         },
         "byte_length": {
           "type": "integer"
@@ -579,30 +1091,45 @@
           "format": "date-time"
         },
         "body": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "pattern": "^([0-9a-f]{2})*$"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "resolved_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "resolved_by_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "uuid"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "resolution_note": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -632,8 +1159,7 @@
           "format": "uuid"
         },
         "body": {
-          "type": "string",
-          "pattern": "^([0-9a-f]{2})*$"
+          "type": "string"
         },
         "content_type": {
           "type": "string"
@@ -674,11 +1200,15 @@
           "format": "uuid"
         },
         "campaign_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "uuid"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "transport": {
           "type": "string"
@@ -687,15 +1217,23 @@
           "type": "string"
         },
         "external_subject_id": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "verified_email": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "source_occurred_at": {
@@ -713,9 +1251,13 @@
           "type": "integer"
         },
         "party_ref": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "created_at": {
@@ -747,6 +1289,190 @@
       "type": "object",
       "properties": {
         "record_type": {
+          "const": "leads.routing_condition"
+        },
+        "rule_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ordinal": {
+          "type": "integer"
+        },
+        "field": {
+          "type": "string"
+        },
+        "op": {
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "rule_id",
+        "ordinal",
+        "field",
+        "op",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.contact_permission"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "party_ref": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recipient_scope": {
+          "type": "string"
+        },
+        "disclosure_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_observation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "granted_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "granted_by_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "granted_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "withdrawn_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "withdrawn_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "withdrawn_by_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "withdrawn_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "party_ref",
+        "purpose",
+        "channel",
+        "recipient_scope",
+        "disclosure_version",
+        "evidence_observation_id",
+        "granted_at",
+        "granted_by_kind",
+        "granted_by_id",
+        "withdrawn_at",
+        "withdrawn_reason",
+        "withdrawn_by_kind",
+        "withdrawn_by_id"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
           "const": "leads.observation_field"
         },
         "observation_id": {
@@ -760,18 +1486,26 @@
           "type": "string"
         },
         "value_text": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "source_path": {
           "type": "string"
         },
         "transform": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "mapping_version": {
@@ -787,6 +1521,858 @@
         "source_path",
         "transform",
         "mapping_version"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.opportunity"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "pipeline_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preset_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preset_version": {
+          "type": "integer"
+        },
+        "stage_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "funnel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "campaign_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_observation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value_amount": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value_currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value_basis": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disposition_outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disposition_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "created_by_kind": {
+          "type": "string"
+        },
+        "created_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "pipeline_id",
+        "preset_id",
+        "preset_version",
+        "stage_id",
+        "title",
+        "owner_id",
+        "funnel_id",
+        "campaign_id",
+        "source_observation_id",
+        "value_amount",
+        "value_currency",
+        "value_basis",
+        "disposition_outcome",
+        "disposition_at",
+        "revision",
+        "created_by_kind",
+        "created_by_id",
+        "created_at",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.draft"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "template_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime_request_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_by_kind": {
+          "type": "string"
+        },
+        "created_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "opportunity_id",
+        "kind",
+        "body",
+        "template_version",
+        "runtime_request_id",
+        "created_by_kind",
+        "created_by_id",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.handoff"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "destination_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "snapshot_digest": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "result_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result_detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "external_action_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requested_by_kind": {
+          "type": "string"
+        },
+        "requested_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requested_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "resolved_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "opportunity_id",
+        "purpose",
+        "destination_ref",
+        "idempotency_key",
+        "snapshot_digest",
+        "state",
+        "result_ref",
+        "result_detail",
+        "approval_id",
+        "external_action_id",
+        "requested_by_kind",
+        "requested_by_id",
+        "requested_at",
+        "resolved_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.opportunity_field_state"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "target": {
+          "type": "string"
+        },
+        "value_kind": {
+          "type": "string"
+        },
+        "value_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner": {
+          "type": "string"
+        },
+        "observation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurred_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completeness": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "orphaned": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "record_type",
+        "opportunity_id",
+        "target",
+        "value_kind",
+        "value_text",
+        "owner",
+        "observation_id",
+        "occurred_at",
+        "completeness",
+        "priority",
+        "orphaned"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.opportunity_note"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "body": {
+          "type": "string"
+        },
+        "stage_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_by_kind": {
+          "type": "string"
+        },
+        "created_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "opportunity_id",
+        "body",
+        "stage_id",
+        "created_by_kind",
+        "created_by_id",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.opportunity_observation"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "observation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "decided_by_kind": {
+          "type": "string"
+        },
+        "decided_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decided_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "opportunity_id",
+        "observation_id",
+        "decision",
+        "decided_by_kind",
+        "decided_by_id",
+        "decided_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.opportunity_party"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "party_ref": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "added_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "added_by_kind": {
+          "type": "string"
+        },
+        "added_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "removed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "opportunity_id",
+        "party_ref",
+        "role",
+        "added_at",
+        "added_by_kind",
+        "added_by_id",
+        "removed_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.qualification"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "preset_version": {
+          "type": "integer"
+        },
+        "rubric_slug": {
+          "type": "string"
+        },
+        "rubric_version": {
+          "type": "integer"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "input_revision": {
+          "type": "integer"
+        },
+        "fit": {
+          "type": "string"
+        },
+        "intent": {
+          "type": "string"
+        },
+        "evidence_completeness": {
+          "type": "string"
+        },
+        "urgency": {
+          "type": "string"
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "uncertainty": {
+          "type": "string"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_by_kind": {
+          "type": "string"
+        },
+        "created_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "opportunity_id",
+        "preset_version",
+        "rubric_slug",
+        "rubric_version",
+        "objective",
+        "evidence_refs",
+        "input_revision",
+        "fit",
+        "intent",
+        "evidence_completeness",
+        "urgency",
+        "explanation",
+        "uncertainty",
+        "model_id",
+        "prompt_version",
+        "created_by_kind",
+        "created_by_id",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.handoff_snapshot"
+        },
+        "handoff_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "body": {
+          "type": "object"
+        },
+        "byte_length": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "record_type",
+        "handoff_id",
+        "body",
+        "byte_length"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.followup_reminder"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_by_kind": {
+          "type": "string"
+        },
+        "created_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "action": {
+          "type": "string"
+        },
+        "due_on": {
+          "type": "string",
+          "format": "date"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "completed",
+            "cancelled",
+            "superseded"
+          ]
+        },
+        "resolved_by_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolved_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolved_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "opportunity_id",
+        "created_by_kind",
+        "created_by_id",
+        "created_at",
+        "action",
+        "due_on",
+        "state",
+        "resolved_by_kind",
+        "resolved_by_id",
+        "resolved_at"
       ],
       "additionalProperties": false
     }

@@ -15,7 +15,8 @@
     "@rheo-stream/web-contract": "workspace:*",
     "next": "^16",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "@rheo-stream/leads-web": "workspace:*"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

@@ -4,6 +4,7 @@ from rheo_contracts import RecordRef, Role, WorkspaceContext
 from rheo_core.refs.resolver import LIVE, RecordHead, Unavailable, UnitOfWork
 from sqlalchemy import select
 
+from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
 RECORD_TABLES = {
@@ -15,6 +16,12 @@ RECORD_TABLES = {
         t.field_mapping,
         t.delivery_receipt,
         t.observation,
+        p.pipeline,
+        p.pipeline_preset,
+        p.opportunity,
+        p.qualification,
+        p.handoff,
+        p.draft,
     )
 }
 
@@ -42,5 +49,5 @@ def resolve_record(
         display=f"{ref.record_type.replace('_', ' ').title()} {ref.id}",
         readable=True,
         state=LIVE,
-        revision=row["version"] if ref.record_type == "field_mapping" else 1,
+        revision=row.get("revision", row.get("version", 1)),
     )

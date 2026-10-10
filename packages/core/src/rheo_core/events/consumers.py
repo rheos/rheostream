@@ -64,6 +64,7 @@ class ConsumerSubscription:
     module_id: str
     replay_safe: bool
     handler: ConsumerHandler
+    operation_names: frozenset[str] = frozenset()
 
 
 class ConsumerRegistry:
@@ -102,6 +103,15 @@ class ConsumerRegistry:
         ):
             if not isinstance(value, str) or not value:
                 raise ValueError(f"a subscription's {label} is a non-empty string")
+        if not isinstance(subscription.operation_names, frozenset) or any(
+            not isinstance(name, str)
+            or len(name.split(".")) != 3
+            or any(not segment.isidentifier() for segment in name.split("."))
+            for name in subscription.operation_names
+        ):
+            raise ValueError(
+                "consumer operation names must be explicit qualified names"
+            )
         self._consumers[subscription.consumer_id] = subscription
 
     def for_type(self, event_type: str) -> tuple[ConsumerSubscription, ...]:

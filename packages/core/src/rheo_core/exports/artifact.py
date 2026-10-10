@@ -10,7 +10,8 @@ import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from importlib import resources
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, Final
@@ -297,8 +298,18 @@ def _json_value(value: object) -> object:
         return str(value)
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ArtifactRefused("non-finite decimal in export")
+        return str(value)
     if isinstance(value, bytes):
         return value.hex()
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
     return value
 
 
@@ -357,7 +368,13 @@ def _composition_bytes(connection: Connection) -> bytes:
             "module_id": row.module_id,
             "schema_version": row.schema_version,
         }
-        for row in repositories.list_module_schema_versions(connection)
+        # Installation timestamps change on restore and modules may be installed
+        # in a different dependency order. Canonical bytes describe versions,
+        # never that incidental execution order.
+        for row in sorted(
+            repositories.list_module_schema_versions(connection),
+            key=lambda row: (row.module_id, row.schema_version),
+        )
     )
     return _lines(rows)
 
@@ -739,6 +756,7 @@ def create_artifact(
     owner_account_id: UUID,
     destination: Path,
     skip_operation_id: UUID | None,
+    record_refs: set[str] | None = None,
 ) -> int:
     """Write the snapshot's bytes to ``destination`` and return their length.
 
@@ -760,6 +778,38 @@ def create_artifact(
     """
     connection = snapshot.connection
     categories = all_categories(snapshot, skip_operation_id=skip_operation_id)
+    if record_refs is not None:
+        from rheo_contracts import RecordRef, RecordRefMalformed
+
+        for module in _exportable(connection):
+            known = {record.name for record in module.record_types}
+            for line in categories[module_entry_name(module.module_id)].splitlines():
+                row = json.loads(line)
+                kind = row.get("record_type", row.get("record", ""))
+                if isinstance(kind, str):
+                    kind = kind.removeprefix(module.module_id + ".")
+                if kind in known and row.get("id"):
+                    record_refs.add(
+                        RecordRef(
+                            module=module.module_id,
+                            record_type=kind,
+                            id=UUID(row["id"]),
+                        ).format()
+                    )
+                # Canonical references in provenance and child rows also matter.
+                pending = list(row.values())
+                while pending:
+                    value = pending.pop()
+                    if isinstance(value, dict):
+                        pending.extend(value.values())
+                    elif isinstance(value, list):
+                        pending.extend(value)
+                    elif isinstance(value, str) and len(value) < 512:
+                        try:
+                            record_refs.add(RecordRef.parse(value).format())
+                        except RecordRefMalformed:
+                            pass
+
     manifest = {
         "core_version": core_version(),
         "contract_version": CONTRACT_VERSION,

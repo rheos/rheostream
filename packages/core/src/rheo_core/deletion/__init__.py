@@ -35,6 +35,7 @@ from rheo_core.deletion.registry import (
     OwnedDeletionRegistry,
     RegisteredParticipant,
     RemovedMemories,
+    RemovedOwnedRecords,
     authorize_owned_delete,
 )
 from rheo_core.deletion.tables import (
@@ -62,6 +63,7 @@ __all__ = [
     "OwnedDeletionRegistry",
     "RegisteredParticipant",
     "RemovedMemories",
+    "RemovedOwnedRecords",
     "authorize_owned_delete",
     "deletion_record",
     "deletion_ref",

@@ -940,7 +940,12 @@ def _run_consumer(
 
                 envelope = _envelope_for(connection, leased)
                 context = context_for_event_consumer(
-                    workspace_id, uow, request_id=envelope.correlation_id
+                    workspace_id,
+                    uow,
+                    request_id=envelope.correlation_id,
+                    operation_names=consumers.lookup(
+                        leased.consumer_id
+                    ).operation_names,
                 )
                 if isinstance(context, Refusal):
                     raise RuntimeError(f"consumer context refused: {context.state}")

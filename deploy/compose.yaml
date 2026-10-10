@@ -47,19 +47,9 @@ services:
     # tracked images left behind: two services with identical `build:`
     # blocks but no shared `image:` tag resolve to two separately-tagged,
     # byte-identical images (`docker images` lists both); with the tag
-    # shared, both build passes write the same tag, so `docker images` lists
-    # one. Either service can still be built standalone; only the resulting
-    # tag is shared. This does change `core`'s behavior under `make demo`
-    # specifically: that target runs its
-    # own compose project (`-p rheo-stream-demo`), where compose's unpinned
-    # default for `core` would have been `rheo-stream-demo-core` — pinning
-    # this tag means `make up` and `make demo` now share one image tag for
-    # `core`, where before this they built to two distinct, never-shared
-    # tags. Low severity, since neither target passes `--build`, but real: a
-    # `make up`-built image under this tag can now be silently served by a
-    # later `make demo` run, or vice versa, without either target rebuilding
-    # it.
-    image: rheo-stream-core
+    # shared within a Compose project. Project-specific tags prevent a demo build
+    # from replacing the image used by the development stack (and vice versa).
+    image: ${COMPOSE_PROJECT_NAME:-rheo-stream}-core
     # Host port is parameterised for the same reason as postgres's: an unrelated
     # process on this machine may already hold 8000. The container always
     # listens on 8000 internally; only the host-side publish moves.
@@ -133,7 +123,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: rheo-stream-core
+    image: ${COMPOSE_PROJECT_NAME:-rheo-stream}-core
     # `apps/worker/src/rheo_app_worker/main.py` (02), run as a module so it
     # picks up the same interpreter and dependency set the image already has
     # — no second Dockerfile and no image change, only the command differs

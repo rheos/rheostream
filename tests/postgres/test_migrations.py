@@ -55,6 +55,7 @@ pytestmark = pytest.mark.postgres
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 CONTROL_TABLES = {
+    "connector_locator",
     # 0001_control_plane
     "account",
     "identity",
@@ -199,6 +200,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
         "0001_control_plane",
         "0002_work_index",
         "0003_oauth",
+        "0004_connector_locator",
     }
     assert known_revisions(CORE_CHAIN) == {
         "0001_core_schema",
@@ -227,7 +229,9 @@ def test_control_chain_creates_exactly_the_seventeen_tables(
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CONTROL_CHAIN) == {"0003_oauth"}
+        assert recorded_revisions(connection, CONTROL_CHAIN) == {
+            "0004_connector_locator"
+        }
 
 
 def test_core_chain_creates_exactly_the_twenty_seven_tables(
