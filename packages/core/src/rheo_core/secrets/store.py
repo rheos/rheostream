@@ -1,9 +1,10 @@
-"""``SecretStore``: ``resolve(ref, scope) -> SecretValue``, ``scope_for``, and the
+"""``SecretStore``: scoped resolution, immutable file creation, ``scope_for``, and the
 startup check of every ``secret://env/*`` reference the deployment settings name.
 
 Scope constants belong to their components, not here: the storage component (C3)
 calls ``scope_for("storage", "secret://file/cluster/", "secret://env/RHEO_CLUSTER_DSN")``
-where it is constructed. This module ships ``scope_for`` and nothing else.
+where it is constructed. Writable scopes require an explicit opt-in; existing
+readers retain only read access.
 """
 
 from collections.abc import Mapping
@@ -34,9 +35,28 @@ class SecretStore:
         self._env = EnvBackend(environ)
 
     @staticmethod
-    def scope_for(component: str, *prefixes: str) -> SecretScope:
+    def scope_for(
+        component: str, *prefixes: str, writable: bool = False
+    ) -> SecretScope:
         """The one public constructor of a ``SecretScope``."""
-        return _new_scope(component, prefixes)
+        return _new_scope(component, prefixes, writable=writable)
+
+    def create(self, ref: SecretRef, value: SecretValue, scope: SecretScope) -> None:
+        """Publish a new immutable file value within an explicitly writable scope.
+
+        No existing value is replaced, even when its bytes match. Rotation creates
+        a new reference; the owning connection manages generations and overlap.
+        No environment mutation or secret-returning operation is provided.
+        """
+        if not isinstance(ref, SecretRef) or not isinstance(value, SecretValue):
+            raise TypeError("create() takes a SecretRef and SecretValue")
+        if not isinstance(scope, SecretScope):
+            raise TypeError("create() requires a SecretScope")
+        if not scope.writable or not scope.permits(ref):
+            raise SecretRefusal(SECRET_SCOPE_DENIED, "scope may not create this secret")
+        if ref.backend is not SecretBackend.FILE:
+            raise SecretRefusal("secret_read_only", "environment secrets are read-only")
+        self._files.create(ref.id, value.expose())
 
     def resolve(self, ref: SecretRef, scope: SecretScope) -> SecretValue:
         """The value behind ``ref``, if ``scope`` permits it.

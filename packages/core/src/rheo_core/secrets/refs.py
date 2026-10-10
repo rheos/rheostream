@@ -23,7 +23,7 @@ SECRET_PERMISSIONS: Final = "secret_permissions"
 
 
 class SecretRefusal(Exception):
-    """A secret-store refusal. ``state`` is one of the four ``secret_*`` names.
+    """A secret-store refusal. ``state`` is a content-free ``secret_*`` name.
 
     ``detail`` names a key, a variable or a path — never a value.
     """
