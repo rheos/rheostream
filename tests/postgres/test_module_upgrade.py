@@ -21,7 +21,7 @@ pytestmark = pytest.mark.postgres
 TARGET = {
     "module_id": "leads",
     "target_version": MANIFEST.package_version,
-    "target_schema": "0005_followup_reminders",
+    "target_schema": "0006_assessment_evidence_digest",
 }
 
 
@@ -32,6 +32,9 @@ def predecessor(i: Intake) -> str:
     with open_unit_of_work(i.ctx) as uow:
         uow.connection.execute(text("DROP TABLE leads.followup_reminder"))
         uow.connection.execute(
+            text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
+        )
+        uow.connection.execute(
             text(
                 "UPDATE leads.alembic_version_leads "
                 "SET version_num = '0004_opportunities'"
@@ -40,7 +43,9 @@ def predecessor(i: Intake) -> str:
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
-                module_schema_version.c.schema_version == "0005_followup_reminders",
+                module_schema_version.c.schema_version.in_(
+                    ("0005_followup_reminders", "0006_assessment_evidence_digest")
+                ),
             )
         )
         uow.commit()

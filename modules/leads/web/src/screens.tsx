@@ -108,6 +108,17 @@ function Options({ catalog }: { catalog: Row[] }) {
     </>
   );
 }
+/** Stale only when what the assessment judged has changed. Assessments recorded
+ * before evidence digests existed fall back to the revision comparison. */
+export function assessmentStale(
+  assessment: Row,
+  record: Row,
+  revision: unknown,
+): boolean {
+  return assessment.evidence_digest
+    ? assessment.evidence_digest !== record.evidence_digest
+    : assessment.input_revision !== revision;
+}
 function fieldLabel(target: string): string {
   const labels: Record<string, string> = {
     "person.name": "Contact",
@@ -840,11 +851,10 @@ export async function detail({ shell, query }: ScreenProps) {
                     </p>
                   ) : null}
                   <p className={styles.meta}>
-                    Evidence revision {str(qualification.input_revision)} ·
-                    Current revision {str(envelope.revision)}
-                    {qualification.input_revision !== envelope.revision
-                      ? " · Reassess after changes"
-                      : ""}
+                    Assessed at revision {str(qualification.input_revision)} ·{" "}
+                    {assessmentStale(qualification, record, envelope.revision)
+                      ? "Evidence changed since · Reassess after changes"
+                      : "Evidence unchanged"}
                   </p>
                 </>
               ) : (

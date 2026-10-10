@@ -171,9 +171,13 @@ def test_existing_opportunity_survives_frozen_upgrade(intake: Intake) -> None:
     capture(intake, "one", {"subject": "Before migration"})
     before = one(intake)
     # This disposable workspace starts at head. Reconstruct the predecessor by
-    # removing only the new, empty table and resetting Alembic's version marker.
+    # removing only the new, empty table (and 0006's column) and resetting Alembic's
+    # version marker.
     with open_unit_of_work(intake.ctx) as uow:
         uow.connection.execute(text("DROP TABLE leads.followup_reminder"))
+        uow.connection.execute(
+            text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
+        )
         uow.connection.execute(
             text(
                 "UPDATE leads.alembic_version_leads "
