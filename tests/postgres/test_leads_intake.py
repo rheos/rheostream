@@ -22,10 +22,16 @@ from rheo_core.boundary.factories import (
 from rheo_core.deletion import OWNED_DELETIONS, Disposition
 from rheo_core.events import ConsumerRegistry
 from rheo_core.events.consumers import HandlerUnitOfWork
-from rheo_core.operations import dispatch, register_core_operations, transaction
+from rheo_core.operations import (
+    core_ops,
+    dispatch,
+    register_core_operations,
+    transaction,
+)
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.refs.resolver import register_resolver
 from rheo_core.settings import resolver as settings_resolver
+from rheo_core.settings import write_path
 from rheo_core.settings.schema import REGISTRY, SettingsRegistry
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
@@ -161,6 +167,9 @@ def intake(
                 if spec.key not in {v.key for v in settings.specs()}:
                     settings.register(spec, origin=manifest.module_id)
         monkeypatch.setattr(settings_resolver, "REGISTRY", settings)
+        # core.settings.set validates against the same isolated keys.
+        monkeypatch.setattr(core_ops, "SETTINGS_REGISTRY", settings)
+        monkeypatch.setattr(write_path, "REGISTRY", settings)
         monkeypatch.setattr(pipeline_common, "REGISTRY", surfaces.operations)
         monkeypatch.setattr(transaction, "REGISTRY", surfaces.operations)
         register_core_operations()

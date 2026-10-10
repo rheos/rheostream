@@ -1084,6 +1084,9 @@ export async function connections({ shell }: ScreenProps) {
   const result = await read(shell, "leads.ui.catalog"),
     catalog = items(result);
   const pipelines = catalog.filter((r) => r.kind === "pipeline");
+  const jobsearch = catalog.some(
+    (r) => r.kind === "capability" && r.name === "jobsearch",
+  );
   const connections = catalog.filter((r) => r.kind === "connection");
   const health = await Promise.all(
     connections.map((c) =>
@@ -1200,8 +1203,9 @@ export async function connections({ shell }: ScreenProps) {
               <p key={str(pipeline.id)}>{str(pipeline.name)}</p>
             ))}
             <p className={styles.meta}>
-              Create a pipeline using the inbound-services preset, then select
-              it in connection routing.
+              {jobsearch
+                ? "Create a pipeline from a preset, then select it in connection routing."
+                : "Create a pipeline using the inbound-services preset, then select it in connection routing."}
             </p>
             <Form
               shell={shell}
@@ -1214,6 +1218,25 @@ export async function connections({ shell }: ScreenProps) {
                   required: true,
                   maxLength: 512,
                 },
+                // The job-search preset is absent, not hidden, unless the workspace
+                // turned the capability on.
+                ...(jobsearch
+                  ? [
+                      {
+                        name: "preset",
+                        label: "Preset",
+                        type: "select" as const,
+                        required: true,
+                        options: [
+                          {
+                            value: "inbound_services",
+                            label: "Inbound services",
+                          },
+                          { value: "job_search", label: "Job search" },
+                        ],
+                      },
+                    ]
+                  : []),
               ]}
             />
           </section>

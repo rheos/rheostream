@@ -8,6 +8,7 @@ import pytest
 from rheo_contracts import RecordRef, WorkspaceContext
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record
+from rheo_leads import pipeline_common as h
 from rheo_leads.references import ref
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
@@ -223,13 +224,20 @@ def test_preset_edit_pins_semantics_and_explicit_migration(intake: Intake) -> No
             {k: r[k] for k in ("stage_id", "label", "kind", "outcome")}
             for r in uow.connection.execute(
                 select(p.preset_stage)
-                .where(p.preset_stage.c.version == 1)
+                .where(
+                    p.preset_stage.c.version == 1,
+                    p.preset_stage.c.preset_id == h.PRESET_ID,
+                )
                 .order_by(p.preset_stage.c.ordinal)
             ).mappings()
         ]
         transitions = [
             (r["from_stage_id"], r["to_stage_id"])
-            for r in uow.connection.execute(select(p.preset_transition)).mappings()
+            for r in uow.connection.execute(
+                select(p.preset_transition).where(
+                    p.preset_transition.c.preset_id == h.PRESET_ID
+                )
+            ).mappings()
         ]
     stages[0]["label"] = "Review inquiry"
     ok(
@@ -935,14 +943,20 @@ def test_invalid_source_extension_does_not_poison_reconciliation(
         stages = [
             {k: r[k] for k in ("stage_id", "label", "kind", "outcome")}
             for r in uow.connection.execute(
-                select(p.preset_stage).order_by(p.preset_stage.c.ordinal)
+                select(p.preset_stage)
+                .where(p.preset_stage.c.preset_id == h.PRESET_ID)
+                .order_by(p.preset_stage.c.ordinal)
             ).mappings()
         ]
         transitions = [
             (r["from_stage_id"], r["to_stage_id"])
-            for r in uow.connection.execute(select(p.preset_transition)).mappings()
+            for r in uow.connection.execute(
+                select(p.preset_transition).where(
+                    p.preset_transition.c.preset_id == h.PRESET_ID
+                )
+            ).mappings()
         ]
-        preset = uow.connection.execute(select(p.pipeline_preset.c.id)).scalar_one()
+        preset = h.PRESET_ID
         uow.commit()
     ok(
         intake,
@@ -1199,6 +1213,7 @@ def test_assessment_survives_frozen_digest_upgrade(intake: Intake) -> None:
         objective="Service suitability",
     )
     with open_unit_of_work(intake.ctx) as uow:
+        remove_jobsearch_preset(uow.connection)
         uow.connection.execute(
             text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
         )
@@ -1220,3 +1235,95 @@ def test_assessment_survives_frozen_digest_upgrade(intake: Intake) -> None:
     assert kept["input_revision"] == recorded.data["input_revision"]
     assert kept["evidence_digest"] is None
     assert after.data["evidence_digest"]
+
+
+JOBSEARCH_TABLES = (
+    "preset_template",
+    "preset_rubric",
+    "preset_field",
+    "preset_transition",
+    "preset_stage",
+    "preset_version",
+    "pipeline_preset",
+)
+
+
+def remove_jobsearch_preset(connection: Any) -> None:
+    """Rebuild a pre-0007 schema state: drop only the seeded Job search preset."""
+    for table in JOBSEARCH_TABLES:
+        column = "id" if table == "pipeline_preset" else "preset_id"
+        connection.execute(
+            text(f"DELETE FROM leads.{table} WHERE {column} = :preset"),
+            {"preset": str(h.JOBSEARCH_PRESET_ID)},
+        )
+
+
+def test_jobsearch_preset_is_refused_until_the_capability_is_on(
+    intake: Intake,
+) -> None:
+    refused = intake.call(
+        "leads.pipeline.create", name="Upwork jobs", preset="job_search"
+    )
+    assert refused.state == "capability_disabled"
+    assert not [r for r in ok(intake, "ui.catalog").items if r["kind"] == "capability"]
+    services = ok(intake, "pipeline.create", name="Service inquiries")
+    assert services.data["preset_id"] == h.PRESET_ID
+
+    ok(intake, "core.settings.set", key="leads.capabilities.jobsearch", value=True)
+    jobs = ok(intake, "pipeline.create", name="Upwork jobs", preset="job_search")
+    assert jobs.data["preset_id"] == h.JOBSEARCH_PRESET_ID
+    catalog = ok(intake, "ui.catalog").items
+    assert {"kind": "capability", "name": "jobsearch"} in catalog
+    stages = next(r["stages"] for r in catalog if r.get("id") == jobs.data["id"])
+    assert [s["stage_id"] for s in stages] == [
+        "review",
+        "qualified",
+        "applied",
+        "interviewing",
+        "hired",
+        "lost",
+        "passed",
+    ]
+    with open_unit_of_work(intake.ctx) as uow:
+        fields = (
+            uow.connection.execute(
+                select(p.preset_field.c.target).where(
+                    p.preset_field.c.preset_id == h.JOBSEARCH_PRESET_ID
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert "ext.jobsearch.posting_id" in fields and len(fields) == 16
+
+    ok(intake, "core.settings.set", key="leads.capabilities.jobsearch", value=False)
+    again = intake.call("leads.pipeline.create", name="Another", preset="job_search")
+    assert again.state == "capability_disabled"
+    assert any(
+        r.get("id") == jobs.data["id"] for r in ok(intake, "ui.catalog").items
+    ), "existing job-search pipelines stay readable when the capability is off"
+
+
+def test_jobsearch_preset_survives_frozen_upgrade(intake: Intake) -> None:
+    from rheo_core.migrations.orchestrator import run_chain
+
+    setup(intake)
+    capture(intake, "before-jobsearch", {"subject": "Before job search"})
+    before = one(intake)
+    with open_unit_of_work(intake.ctx) as uow:
+        remove_jobsearch_preset(uow.connection)
+        uow.connection.execute(
+            text(
+                "UPDATE leads.alembic_version_leads "
+                "SET version_num = '0006_assessment_evidence_digest'"
+            )
+        )
+        database = uow.connection.execute(
+            text("SELECT current_database()")
+        ).scalar_one()
+        run_chain(uow.connection, "leads", expected_database=database)
+        run_chain(uow.connection, "leads", expected_database=database)
+        uow.commit()
+    after = one(intake)
+    assert after.ref == before.ref and after.revision == before.revision
+    assert intake.count(p.pipeline_preset) == 2
