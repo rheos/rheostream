@@ -38,7 +38,7 @@ from sqlalchemy.exc import IntegrityError
 
 pytestmark = pytest.mark.postgres
 
-HEAD = "0012_evidence_retention_index"
+HEAD = "0013_outbox_retention"
 PREVIOUS = "0009_runtime_session_policy"
 
 CHECK_CONSTRAINTS = {

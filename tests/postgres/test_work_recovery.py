@@ -15,8 +15,9 @@ consumer blocks its subject queue" is a claim about the worker. The others put a
 delivery into ``failed`` through the repository's own ``lease_delivery`` and
 ``fail_delivery``, as ``test_work_failures.py`` does, because what they test is the
 operation and eight visits per case would test the budget again. One test deletes an
-outbox row directly, standing in for the retention sweep release one does not have;
-it says so where it does it.
+outbox row directly, to reach the oldest-row half of the gap check without the
+retention sweep (``test_outbox_retention.py`` covers the sweep's half); it says so
+where it does it.
 
 **Time.** The operations stamp the moment a person acted with the wall clock, as
 ``core.operation.resolve`` does, so the visits that follow them use a clock just past
@@ -590,10 +591,10 @@ def test_replay_refuses_a_consumer_that_is_not_replay_safe(
 def test_replay_refuses_a_position_older_than_the_oldest_retained_event(
     workspace: UUID, cluster: ClusterSession, engine: Engine, ctx: WorkspaceContext
 ) -> None:
-    """The first outbox row is deleted directly here, standing in for the retention
-    sweep release one does not ship. A replay from its position would rebuild from a
-    hole, so it is refused, naming the oldest position that is still there; from that
-    position it runs."""
+    """The first outbox row is deleted directly here, not by the retention sweep, so
+    nothing is recorded and only the oldest-row half of the gate applies. A replay
+    from its position would rebuild from a hole, so it is refused, naming the oldest
+    position that is still there; from that position it runs."""
     consumers = _registry(subscription())
     first, second, _ = _delivered_three(workspace, cluster, engine, ctx, consumers)
     gone = int(_delivery(engine, first).position)

@@ -56,6 +56,7 @@ from rheo_core.events import (
     skip_delivery,
 )
 from rheo_core.events.deliveries import FAILED
+from rheo_core.events.retention import swept_through_position
 from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.tokens.policy import PERSON_HELD_TOKEN_KINDS
 from rheo_core.work.jobs import list_failed_jobs
@@ -76,8 +77,9 @@ REPLAY_UNSAFE: Final = "replay_unsafe"
 """Replay asked of a consumer whose subscription declares ``replay_safe = False``."""
 
 REPLAY_GAP: Final = "replay_gap"
-"""A ``from_position`` older than the oldest retained outbox row: the rows in between
-are gone, and a replay that started past them would rebuild from a hole."""
+"""A ``from_position`` the outbox can no longer vouch for: older than the oldest
+retained row, or at or below the highest position the retention sweep has deleted.
+Some event in range is gone, and a replay over it would rebuild from a hole."""
 
 DELIVERY_IN_FLIGHT: Final = "delivery_in_flight"
 """A delivery of the consumer at or after ``from_position`` is ``leased`` right now."""
@@ -492,12 +494,17 @@ def replay_handler(
        would do those again (``intake-and-events.md`` § Replay).
     4. ``consumer_not_enabled``: the consumer's module is not enabled here, so the
        fan-out would give it no delivery and neither may a replay.
-    5. ``replay_gap``: ``from_position`` is older than the oldest retained outbox row,
-       or the outbox holds no row at all. The detail names the oldest retained
-       position, which is the earliest a replay can start from. Positions come from a
-       sequence and a rolled-back publish leaves a hole in it, so the oldest row can
-       sit above the first position ever issued; the refusal is strict about that
-       rather than guess which missing positions were never events.
+    5. ``replay_gap``: the outbox holds no row at all, or ``from_position`` is older
+       than the oldest retained row, or it is at or below the highest position the
+       retention sweep has deleted (``core.outbox_retention``). The detail names the
+       earliest position a replay can start from. The recorded position is the gate
+       that matters once rows are swept: the sweep keeps an old event whose delivery
+       is stuck and deletes newer ones around it, so the oldest row can sit below
+       holes (``rheo_core.events.retention``). The oldest-row half stays because
+       positions come from a sequence and a rolled-back publish leaves a hole in it;
+       the refusal is strict about that rather than guess which missing positions
+       were never events. The recorded position is read ``FOR SHARE`` before the
+       check and held to the commit, so a sweep cannot move it in between.
     6. ``delivery_in_flight``: a delivery of this consumer at or after the position is
        ``leased``. Resetting rows behind a delivery a worker is running would let that
        one finish out of order with the replayed ones; waiting and asking again is
@@ -537,18 +544,26 @@ def replay_handler(
             f"{model_input.consumer_id!r} belongs to module "
             f"{subscription.module_id!r}, which is not enabled in this workspace",
         )
-    # Sound only while nothing deletes outbox rows. The specified retention sweep
-    # would keep an old event whose delivery is stuck and delete newer ones, leaving
-    # holes above the minimum; when it ships it must record the highest position it
-    # deleted, and this check must gate on that instead (intake-and-events.md
-    # § Retention).
+    # The swept horizon first, under a share lock held to the commit: a retention
+    # sweep holds the same row FOR UPDATE while it deletes, so the two serialise and
+    # the gate below cannot go stale before the writes (rheo_core.events.retention).
+    swept = swept_through_position(uow.connection)
     oldest = oldest_retained_position(uow.connection)
-    if oldest is None or model_input.from_position < oldest:
+    earliest = (
+        None
+        if oldest is None
+        else (oldest if swept is None else max(oldest, swept + 1))
+    )
+    if earliest is None or model_input.from_position < earliest:
         horizon = (
             "the outbox holds no event"
-            if oldest is None
-            else (f"the oldest retained outbox position is {oldest}")
+            if earliest is None
+            else f"the earliest position a replay can start from is {earliest}"
         )
+        if swept is not None:
+            horizon += (
+                f"; the retention sweep has deleted events up to position {swept}"
+            )
         raise _refused(
             REPLAY_GAP,
             f"from_position {model_input.from_position} is older than what is "

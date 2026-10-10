@@ -6,9 +6,11 @@ release-one cadence is ``next_run_at + 1 day``. Every enqueue carries
 ``RetentionSweepPayload.workspace_id`` from the visit, never an empty dict.
 
 ``run_retention_sweep`` reads that id from the payload (``HandlerUnitOfWork`` has
-no workspace slot), deletes expired ``core.runtime_transcript`` rows, and unlinks
-regular files under that workspace's Claude CLI ``projects/`` subtree only. The
-once-copied login seed at the configuration-directory root is not a session file.
+no workspace slot), deletes expired ``core.runtime_transcript`` rows, purges settled
+outbox events past ``work.outbox_retention_days`` (``rheo_core.events.retention``),
+and unlinks regular files under that workspace's Claude CLI ``projects/`` subtree
+only. The once-copied login seed at the configuration-directory root is not a session
+file.
 
 **One scheduled kind is treated differently here, and only one.**
 ``scheduled_authority.CATCH_UP_JOB_KIND`` is the ratified exception
@@ -347,10 +349,20 @@ def run_retention_sweep(
     such rows exist, no delivery of it is in flight, and recording conditions 1 to 3
     hold, so the subscribing module's consumer enqueues a drain as it would for a
     new turn. With recording off or no provider it reads no row and writes nothing.
+
+    **The outbox purge (#335)** runs between the evidence purge and that republish.
+    Settled events older than ``work.outbox_retention_days`` go with their deliveries
+    and ledger rows, and the highest position deleted is recorded for replay's gap
+    check. Also above the early return, for the same reason as the purges. It holds
+    ``core.outbox_retention``'s row from its first read to this transaction's commit,
+    which makes a concurrent ``core.work.replay`` wait; it pauses no delivery. It
+    comes before the republish so that this transaction writes no delivery row
+    before it holds that row, the order replay takes the same two locks in.
     """
     # Deferred, the approvals/gate.py:524 pattern: rheo_core.work imports this module
     # at package import, so once rheo_core.evidence re-exports its drain service
     # (which imports rheo_core.work.backoff) a module-level import here is a cycle.
+    from rheo_core.events.retention import OUTBOX_RETENTION_DAYS_KEY, purge_outbox
     from rheo_core.evidence.record import republish_for_stalled_drain
     from rheo_core.evidence.retention import purge_evidence
 
@@ -370,6 +382,17 @@ def run_retention_sweep(
         not_before=now - timedelta(days=settings.get_int(TOOL_RETENTION_DAYS_KEY)),
     )
     purge_evidence(uow.connection, now=now, settled_before=horizon)
+    # Before the republish, which can write core.event_delivery: the outbox purge
+    # takes core.outbox_retention's row and then delivery row locks, and replay takes
+    # that row and then a lock on the whole delivery table. A delivery write held
+    # ahead of the row would let the two wait on each other.
+    purge_outbox(
+        uow.connection,
+        now=now,
+        occurred_before=now
+        - timedelta(days=settings.get_int(OUTBOX_RETENTION_DAYS_KEY)),
+        checkpoint=token.checkpoint,
+    )
     republish_for_stalled_drain(
         uow, workspace_id=payload.workspace_id, settings=settings, now=now
     )

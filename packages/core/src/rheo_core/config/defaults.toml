@@ -114,9 +114,13 @@ secret_ref = ""
 # The default job retry budget (C1, run 0c1) sits beside it: `enqueue` writes this
 # into the row's max_attempts column when the caller names no budget, and the column
 # is the authority from then on.
+# outbox_retention_days (issue #335) is how long an outbox event and its settled
+# deliveries are kept before the daily core.retention_sweep deletes them; replay
+# reaches back only this far. Workspace scope with a min floor.
 [work]
 due_reconcile_seconds = 900
 max_attempts = 8
+outbox_retention_days = 30
 
 # The approval record's two bounds (C6, run 0c3). max_payload_bytes bounds the stored
 # snapshot of one approved operation's input — what a person reads at the point of

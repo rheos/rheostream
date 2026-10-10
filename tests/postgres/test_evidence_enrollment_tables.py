@@ -39,7 +39,7 @@ from sqlalchemy.exc import IntegrityError
 
 pytestmark = pytest.mark.postgres
 
-HEAD = "0012_evidence_retention_index"
+HEAD = "0013_outbox_retention"
 PREVIOUS = "0010_evidence_unit"
 PRODUCER_KIND_CHECK = "evidence_unit_producer_kind"
 

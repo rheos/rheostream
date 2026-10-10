@@ -468,20 +468,40 @@ table nothing else is changing. A worker blocked on it re-reads after the commit
 that deliveries across the whole workspace pause for the length of one replay transaction,
 which is an operator's act and bounded by the retained outbox.
 
-**Retention.** Outbox rows and their deliveries are specified to be kept for
-`work.outbox_retention_days` (package default 30, floor `min`), after which older rows
-whose deliveries are all terminal would be removed. **That outbox sweep is unimplemented
-in release one** — no job, including `core.retention_sweep`, deletes those rows.
-Replay reaches back only as far as retained rows, and `replay` refuses a
-`from_position` older than the oldest retained row (`replay_gap`, naming that row's
-position) rather than replaying a gap. An empty outbox is refused the same way.
+**Retention.** Outbox rows and their deliveries are kept for `work.outbox_retention_days`
+(package default 30, minimum 1, workspace scope with floor `min`). The daily
+`core.retention_sweep` then deletes each event older than that whose deliveries are all
+`delivered` or `skipped`, or which never had one, together with those deliveries and
+every consumer's `consumer_processed` row for it (`rheo_core.events.retention`). An event
+with a `pending`, `leased` or `failed` delivery is kept, and so is that delivery: a
+`failed` row is a person's open item and the head of its queue. The event delete is
+itself guarded on no delivery row being left, so the sweep never leaves a delivery whose
+event is gone. Deletes run oldest position first, in batches of 1,000 events and at most
+20 batches a sweep; a larger backlog waits for the next day.
 
-**That check is sound only while nothing deletes outbox rows.** The specified sweep removes a
-row only once its deliveries are all terminal, so it would keep an old event whose delivery
-is stuck and delete newer ones around it: the oldest retained position would stay low while
-holes open above it, and `from_position >= min(position)` would let a replay start below a
-hole. When the sweep ships it must record the highest position it has deleted, and replay
-must gate on that recorded position rather than on the smallest one still present.
+Replay reaches back only as far as retained rows. `replay` refuses (`replay_gap`) a
+`from_position` older than the oldest retained row, or at or below the highest position
+the sweep has ever deleted, naming the earliest position a replay can start from. An
+empty outbox is refused the same way.
+
+**Why the recorded position and not the smallest one present.** The sweep keeps an old
+event whose delivery is stuck and deletes newer ones around it, so the oldest retained
+position stays low while holes open above it, and `from_position >= min(position)` would
+let a replay start below a hole. The sweep therefore records the highest position it has
+deleted in `core.outbox_retention`, a one-row table created by core revision
+`0013_outbox_retention`, and the record only moves forward. The oldest-row half of the
+check stays for the reason it was first written: a rolled-back publish leaves a hole in
+the position sequence, and the refusal is strict about which missing positions were
+never events.
+
+**The sweep and replay serialise on that row.** The sweep takes it `FOR UPDATE` before
+its first read and holds it to its commit; replay reads it `FOR SHARE` before its gap
+check and holds it to its own. A replay that arrives mid-sweep waits and then sees the
+new horizon, and a sweep that arrives mid-replay waits for the replay's writes. Neither
+takes a table lock for this, so deliveries keep flowing during a sweep. Nothing else can
+change what the sweep reads: outside replay, no write moves a `delivered` or `skipped`
+row to another state, and only replay adds a delivery to an event that has already
+committed.
 
 The outbox is outside the R5 cascade because of the rule below, not despite it.
 
@@ -599,8 +619,9 @@ steps run before the session-file walk, which returns early on a workspace with 
 configuration directory, so they run on every workspace, including the ones nothing drains.
 Because the sweep skips locked rows, a still-pending row whose lock holder rolls back is
 left for a later daily sweep; expiry therefore has no hard one-sweep-interval upper bound.
-Outbox retention named under [Events and the outbox](#events-and-the-outbox-fr-15) is
-unimplemented and is not part of that handler. Each workspace is provisioned a
+It also deletes settled outbox events past `work.outbox_retention_days`, as described
+under [Events and the outbox](#events-and-the-outbox-fr-15), before the session-file
+walk for the same reason. Each workspace is provisioned a
 `core.schedule` row at migrate time; the worker's schedule ticker enqueues
 `RetentionSweepPayload(workspace_id)` when the row is due
 ([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep`, not

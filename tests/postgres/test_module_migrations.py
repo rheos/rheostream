@@ -51,7 +51,7 @@ pytestmark = pytest.mark.postgres
 
 MODULE_ID = MANIFEST.module_id
 MODULE_VERSION_TABLE = f"alembic_version_{MODULE_ID}"
-CORE_HEAD = "0012_evidence_retention_index"
+CORE_HEAD = "0013_outbox_retention"
 # The `core` chain's revisions, oldest first. Spelled out because this file uses them
 # as the chain whose length is fixed and known: the module chain grows a revision
 # whenever a run adds one, and a literal list of its revisions here would be a second
@@ -69,6 +69,7 @@ CORE_REVISIONS = (
     "0010_evidence_unit",
     "0011_local_evidence",
     "0012_evidence_retention_index",
+    "0013_outbox_retention",
 )
 
 
