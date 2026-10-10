@@ -99,8 +99,9 @@ def route(ctx: WorkspaceContext, uow: UnitOfWork, state: "DeliveryState") -> Non
         decision = f"routing_rule:{rule['id']}"
         if rule["action"] == "attach_by_field":
             key = values.get(rule["match_field"])
-            if key is None:
-                # Nothing to match on: fall through like a rule whose conditions failed.
+            if key is None or not key.strip():
+                # Nothing to match on, and a blank id must never join unrelated
+                # sightings: fall through like a rule whose conditions failed.
                 continue
             # Open or closed: a posting already passed on is refreshed, not reopened
             # as a new lead.

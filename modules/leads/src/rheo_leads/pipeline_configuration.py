@@ -263,13 +263,16 @@ def _check_match_field(uow: UnitOfWork, pipeline: dict[str, Any], target: str) -
         return
     preset = h.row(uow, p.pipeline_preset, pipeline["preset_id"])
     declared = uow.connection.execute(
-        select(p.preset_field.c.target).where(
+        select(p.preset_field.c.type).where(
             p.preset_field.c.preset_id == pipeline["preset_id"],
             p.preset_field.c.version == preset["current_version"],
             p.preset_field.c.target == target,
         )
-    ).first()
+    ).scalar_one_or_none()
     if declared is None:
         raise OperationRefused(
             "field_unknown", "match_field is not a fact or a field of this preset"
         )
+    # A typed value that fails validation is never stored, so it could never match.
+    if declared != "text":
+        raise OperationRefused("input_invalid", "match_field must be a text field")

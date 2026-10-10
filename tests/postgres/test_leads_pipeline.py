@@ -1447,7 +1447,11 @@ def test_attach_by_field_merges_repeat_postings_open_or_closed(intake: Intake) -
     assert fields["ext.jobsearch.proposal_count"] == "20"
 
     capture(intake, "no-id", {"subject": "No posting id"})
-    assert len(ok(intake, "opportunity.list").items) == 2, "no match field, no rule"
+    capture(intake, "blank-1", {"subject": "Blank one", "posting_id": " "})
+    capture(intake, "blank-2", {"subject": "Blank two", "posting_id": ""})
+    assert len(ok(intake, "opportunity.list").items) == 2, (
+        "a missing or blank id never matches or creates through this rule"
+    )
 
 
 def test_attach_by_field_requires_a_declared_match_field(intake: Intake) -> None:
@@ -1471,6 +1475,10 @@ def test_attach_by_field_requires_a_declared_match_field(intake: Intake) -> None
         routing(services, match_field="ext.jobsearch.posting_id").state
         == "field_unknown"
     ), "the services preset does not declare job fields"
+    assert (
+        routing(jobs.data["id"], match_field="ext.jobsearch.proposal_count").state
+        == "input_invalid"
+    ), "typed fields can fail validation and never match"
     assert routing(services, match_field="person.email").ok
     assert routing(jobs.data["id"], match_field="ext.jobsearch.posting_id").ok
     other = intake.call(
