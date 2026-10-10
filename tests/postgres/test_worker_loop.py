@@ -2408,7 +2408,40 @@ def test_unready_module_defers_a_kind_its_loaded_package_dropped(
     assert "harness.note.unregistered" in row.last_error
 
 
-def test_cancellation_wins_over_pre_lookup_module_deferral(
+def test_unready_module_defers_a_payload_its_loaded_model_rejects(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A payload model that changed ahead of its schema upgrade defers the job too;
+    on a ready module the payload is still terminal."""
+    from rheo_core.modules import readiness
+
+    job_id = _put(engine, now=now, payload={"not_the_field": "at all"})
+
+    def refuse(_conn: object, _module: str) -> None:
+        raise readiness.ModuleNotReady("module_unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(readiness, "require_ready", refuse)
+        _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
+        row = _read(engine, job_id)
+        assert row.state == "queued" and row.attempts == 0
+
+    _visit(
+        workspace,
+        kinds=_registry(),
+        backend=cluster.backend,
+        at=now + timedelta(minutes=1),
+    )
+    row = _read(engine, job_id)
+    assert row.state == "failed" and "body" in row.last_error
+    assert _notes(engine) == ()
+
+
+def test_cancellation_wins_over_unknown_kind_module_deferral(
     cluster: ClusterSession,
     workspace: UUID,
     engine: Engine,
