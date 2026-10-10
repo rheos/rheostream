@@ -1168,7 +1168,19 @@ def test_assessment_evidence_digest_ignores_work_and_follows_evidence(
         revision=current.revision,
         title="Corrected title",
     )
-    assert one(intake).data["evidence_digest"] not in (digest, valued)
+    titled = one(intake)
+    assert titled.data["evidence_digest"] not in (digest, valued)
+    linked = [r for r in titled.data["opportunity_party"] if r["removed_at"] is None]
+    assert linked, "capture with an email links a contact party"
+    ok(
+        intake,
+        "opportunity.remove_party",
+        ref=titled.ref,
+        revision=titled.revision,
+        party_ref=linked[0]["party_ref"],
+        role=linked[0]["role"],
+    )
+    assert one(intake).data["evidence_digest"] != titled.data["evidence_digest"]
 
 
 def test_assessment_survives_frozen_digest_upgrade(intake: Intake) -> None:

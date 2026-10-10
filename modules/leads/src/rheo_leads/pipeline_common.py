@@ -141,9 +141,9 @@ def observation(uow: UnitOfWork, identifier: UUID) -> dict[str, Any]:
 
 def evidence_digest(uow: UnitOfWork, record: dict[str, Any]) -> str:
     """A fingerprint of what an assessment judges: the attached observations, the
-    resolved field values and the recorded value. Notes, drafts, follow-ups and
-    stage moves change the revision but not this, so they never call for a
-    reassessment."""
+    resolved field values, the linked parties and the recorded value. Notes, drafts,
+    follow-ups and stage moves change the revision but not this, so they never call
+    for a reassessment."""
     attached: list[UUID] = list(
         uow.connection.execute(
             select(p.opportunity_observation.c.observation_id).where(
@@ -165,6 +165,15 @@ def evidence_digest(uow: UnitOfWork, record: dict[str, Any]) -> str:
             )
         )
     )
+    parties = sorted(
+        [r.party_ref, r.role]
+        for r in uow.connection.execute(
+            select(p.opportunity_party.c.party_ref, p.opportunity_party.c.role).where(
+                p.opportunity_party.c.opportunity_id == record["id"],
+                p.opportunity_party.c.removed_at.is_(None),
+            )
+        )
+    )
     amount = record.get("value_amount")
     value = [
         None if amount is None else format(Decimal(amount).normalize(), "f"),
@@ -172,7 +181,12 @@ def evidence_digest(uow: UnitOfWork, record: dict[str, Any]) -> str:
         record.get("value_basis"),
     ]
     payload = json.dumps(
-        {"observations": observations, "fields": fields, "value": value},
+        {
+            "observations": observations,
+            "fields": fields,
+            "parties": parties,
+            "value": value,
+        },
         separators=(",", ":"),
         sort_keys=True,
     )
