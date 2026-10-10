@@ -74,6 +74,8 @@ def assess(ctx: WorkspaceContext, uow: UnitOfWork, m: c.AssessInput) -> c.Record
         prompt_version=None,
         **h.actor(ctx),
     )
+    if m.assessment is not None:
+        result.update(m.assessment.model_dump(exclude={"author"}))
     uow.connection.execute(insert(p.qualification).values(**result))
     h.event(
         ctx, uow, "opportunity.qualified", record, ref("qualification", result["id"])
@@ -94,6 +96,7 @@ def qualifications(
                 .order_by(
                     p.qualification.c.input_revision.desc(),
                     p.qualification.c.created_at.desc(),
+                    p.qualification.c.id.desc(),
                 )
             ).mappings()
         ]

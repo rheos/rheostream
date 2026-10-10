@@ -45,11 +45,17 @@ const catalog = ok({
 describe("Leads screens", () => {
   it("leads with paste capture and keeps the manual form collapsed", async () => {
     const api = shell({ "leads.ui.catalog": catalog });
-    const html = renderToStaticMarkup(await screens.capture({ shell: api, query: {} }));
+    const html = renderToStaticMarkup(
+      await screens.capture({ shell: api, query: {} }),
+    );
     expect(html).toContain("Paste an email, message, or conversation");
     expect(html).toContain("Review inquiry");
-    expect(html).toMatch(/<details[^>]*><summary>Enter details manually instead/);
-    expect(html).not.toMatch(/<details[^>]*open[^>]*><summary>Enter details manually instead/);
+    expect(html).toMatch(
+      /<details[^>]*><summary>Enter details manually instead/,
+    );
+    expect(html).not.toMatch(
+      /<details[^>]*open[^>]*><summary>Enter details manually instead/,
+    );
     expect(api.submit).not.toHaveBeenCalled();
   });
   it.each(["list", "board"] as const)(
@@ -133,6 +139,61 @@ describe("Leads screens", () => {
     expect(html).not.toContain('value="won"');
     expect(api.submit).not.toHaveBeenCalled();
   });
+  it("records separate judgments and shows assessment history and provenance", async () => {
+    const assessment = {
+      id: "new",
+      objective: "Service fit",
+      input_revision: 2,
+      fit: "high",
+      intent: "medium",
+      urgency: "needs_information",
+      evidence_completeness: "low",
+      uncertainty: "high",
+      explanation: "Budget remains unknown.",
+      model_id: "example-model",
+      prompt_version: "review-v1",
+    };
+    const api = shell({
+      "leads.opportunity.get": ok({
+        ref: opportunity.ref,
+        revision: 3,
+        data: {
+          ...opportunity,
+          stage: { label: "Discovery" },
+          qualification: assessment,
+        },
+      }),
+      "leads.qualification.list": ok({
+        items: [
+          assessment,
+          {
+            ...assessment,
+            id: "old",
+            objective: "Earlier review",
+            input_revision: 1,
+            explanation: "<script>Untrusted explanation</script>",
+          },
+        ],
+      }),
+    });
+    const html = renderToStaticMarkup(
+      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    );
+    expect(html).toContain("Record assessment");
+    expect(html).toContain("Save assessment");
+    expect(html).toContain('name="fit"');
+    expect(html).toContain('name="intent"');
+    expect(html).toContain('name="uncertainty"');
+    expect(html).toContain("Reassess after changes");
+    expect(html).toContain("Assessment history (2)");
+    expect(html).toContain("example-model");
+    expect(html).toContain("review-v1");
+    expect(html).toContain("Earlier review");
+    expect(html).toContain(
+      "&lt;script&gt;Untrusted explanation&lt;/script&gt;",
+    );
+    expect(api.submit).not.toHaveBeenCalled();
+  });
   it("does not claim a pending capture has created an opportunity", async () => {
     const html = renderToStaticMarkup(
       await screens.receipt({
@@ -213,6 +274,37 @@ describe("form input", () => {
       expected_rule_ids: ["old"],
       rules: [{ action: "create_opportunity", pipeline_id: "p" }],
     }));
+  it("submits a human assessment with separate ratings while retaining revision", () => {
+    const values = {
+      objective: "Service fit",
+      fit: "high",
+      intent: "medium",
+      urgency: "needs_information",
+      evidence_completeness: "low",
+      uncertainty: "high",
+      explanation: "Budget is unknown.",
+    };
+    const { objective, ...assessment } = values;
+    expect(
+      formInput(
+        "leads.qualification.assess",
+        { ref: "r", revision: 2 },
+        values,
+      ),
+    ).toEqual({
+      ref: "r",
+      revision: 2,
+      objective,
+      assessment: { ...assessment, author: "human" },
+    });
+    expect(
+      formInput(
+        "leads.qualification.assess",
+        { ref: "r", revision: 2 },
+        { objective },
+      ),
+    ).toEqual({ ref: "r", revision: 2, objective });
+  });
   it("bounds pagination input", () => {
     expect(pageOffset("NaN")).toBe(0);
     expect(pageOffset("-25")).toBe(0);

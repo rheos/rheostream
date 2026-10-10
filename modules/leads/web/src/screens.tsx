@@ -520,6 +520,16 @@ export async function detail({ shell, query }: ScreenProps) {
     })),
   );
   const qualification = row(record.qualification);
+  const historyResult =
+    result.state === "ok"
+      ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
+      : null;
+  const ratingOptions = [
+    { value: "needs_information", label: "Needs information" },
+    { value: "high", label: "High" },
+    { value: "medium", label: "Medium" },
+    { value: "low", label: "Low" },
+  ];
   return (
     <Frame
       shell={shell}
@@ -684,9 +694,15 @@ export async function detail({ shell, query }: ScreenProps) {
                       </div>
                     ))}
                   </dl>
-                  <p className={styles.meta}>
+                  <p className={styles.note}>
                     {str(qualification.explanation)}
                   </p>
+                  {qualification.model_id ? (
+                    <p className={styles.meta}>
+                      Model: {str(qualification.model_id)} · Prompt:{" "}
+                      {str(qualification.prompt_version)}
+                    </p>
+                  ) : null}
                   <p className={styles.meta}>
                     Evidence revision {str(qualification.input_revision)} ·
                     Current revision {str(envelope.revision)}
@@ -697,24 +713,134 @@ export async function detail({ shell, query }: ScreenProps) {
                 </>
               ) : (
                 <p>
-                  No assessment yet. Assess evidence completeness against a
-                  specific objective.
+                  No assessment yet. Review the evidence, then record how well
+                  this inquiry fits your objective.
                 </p>
               )}
-              <Form
-                shell={shell}
-                operation="leads.qualification.assess"
-                base={base}
-                button="Assess evidence"
-                fields={[
-                  {
-                    name: "objective",
-                    label: "Qualification objective",
-                    required: true,
-                    value: str(qualification.objective),
-                  },
-                ]}
-              />
+              <details className={styles.evidence}>
+                <summary>Record assessment</summary>
+                <p className={styles.meta}>
+                  Record your judgment against the source evidence. Choose Needs
+                  information wherever the evidence is missing. Saving keeps
+                  prior assessments and leaves the stage unchanged.
+                </p>
+                <Form
+                  shell={shell}
+                  operation="leads.qualification.assess"
+                  base={base}
+                  button="Save assessment"
+                  fields={[
+                    {
+                      name: "objective",
+                      label: "Qualification objective",
+                      required: true,
+                      value: str(qualification.objective),
+                    },
+                    ...(
+                      [
+                        ["fit", "Fit for this objective"],
+                        ["intent", "Buying intent"],
+                        ["urgency", "Urgency"],
+                        ["evidence_completeness", "Evidence completeness"],
+                      ] as const
+                    ).map(([name, label]) => ({
+                      name,
+                      label,
+                      type: "select" as const,
+                      required: true,
+                      options: ratingOptions,
+                    })),
+                    {
+                      name: "uncertainty",
+                      label: "Uncertainty",
+                      type: "select",
+                      required: true,
+                      options: [
+                        { value: "high", label: "High" },
+                        { value: "medium", label: "Medium" },
+                        { value: "low", label: "Low" },
+                      ],
+                    },
+                    {
+                      name: "explanation",
+                      label: "Reasoning and missing information",
+                      type: "textarea",
+                      required: true,
+                    },
+                  ]}
+                />
+              </details>
+              <details className={styles.evidence}>
+                <summary>Check evidence completeness</summary>
+                <p className={styles.meta}>
+                  Counts populated fields and records an assessment with fit,
+                  intent and urgency left as Needs information. This does not
+                  judge suitability.
+                </p>
+                <Form
+                  shell={shell}
+                  operation="leads.qualification.assess"
+                  base={base}
+                  button="Check completeness"
+                  fields={[
+                    {
+                      name: "objective",
+                      label: "Completeness objective",
+                      required: true,
+                      value: str(qualification.objective),
+                    },
+                  ]}
+                />
+              </details>
+              {historyResult && historyResult.state !== "ok" ? (
+                <Failure outcome={historyResult} />
+              ) : historyResult && items(historyResult).length > 1 ? (
+                <details className={styles.evidence}>
+                  <summary>
+                    Assessment history ({items(historyResult).length})
+                  </summary>
+                  {items(historyResult)
+                    .slice(0, 20)
+                    .map((assessment) => (
+                      <article key={str(assessment.id)}>
+                        <h3>{str(assessment.objective)}</h3>
+                        <p className={styles.meta}>
+                          {date(assessment.created_at)} · Evidence revision{" "}
+                          {str(assessment.input_revision)}
+                          {assessment.id === qualification.id
+                            ? " · Latest assessment"
+                            : ""}
+                        </p>
+                        <dl className={styles.facts}>
+                          {[
+                            "fit",
+                            "intent",
+                            "urgency",
+                            "evidence_completeness",
+                            "uncertainty",
+                          ].map((key) => (
+                            <div key={key}>
+                              <dt>{label(key)}</dt>
+                              <dd>{label(assessment[key])}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <p className={styles.note}>
+                          {str(assessment.explanation)}
+                        </p>
+                        {assessment.model_id ? (
+                          <p className={styles.meta}>
+                            Model: {str(assessment.model_id)} · Prompt:{" "}
+                            {str(assessment.prompt_version)}
+                          </p>
+                        ) : null}
+                      </article>
+                    ))}
+                  {items(historyResult).length > 20 ? (
+                    <p>Showing the latest 20 assessments.</p>
+                  ) : null}
+                </details>
+              ) : null}
             </section>
             <details className={styles.section}>
               <summary>Edit opportunity title</summary>

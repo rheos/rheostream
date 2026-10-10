@@ -44,6 +44,7 @@ const READS = [
   "leads.ui.catalog",
   "leads.opportunity.list",
   "leads.opportunity.get",
+  "leads.qualification.list",
   "leads.observation.get",
   "leads.intake.receipt",
   "leads.connection.health",

@@ -179,9 +179,42 @@ class RoutingInput(Strict):
     rules: list[Rule] = Field(max_length=100)
 
 
+Rating = Literal["high", "medium", "low", "needs_information"]
+
+
+class Assessment(Strict):
+    """An explicit caller judgment, never inferred from inbound instructions."""
+
+    fit: Rating
+    intent: Rating
+    urgency: Rating
+    evidence_completeness: Rating
+    uncertainty: Literal["low", "medium", "high"]
+    explanation: str = Field(min_length=1, max_length=16000)
+    author: Literal["human", "model"]
+    model_id: str | None = Field(default=None, min_length=1, max_length=256)
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def provenance(self) -> "Assessment":
+        if not self.explanation.strip():
+            raise ValueError("assessment explanation is required")
+        if self.author == "model":
+            if not (self.model_id and self.model_id.strip()) or not (
+                self.prompt_version and self.prompt_version.strip()
+            ):
+                raise ValueError(
+                    "model assessment requires model_id and prompt_version"
+                )
+        elif self.model_id is not None or self.prompt_version is not None:
+            raise ValueError("human assessment cannot claim model provenance")
+        return self
+
+
 class AssessInput(RevisionInput):
     objective: str = Field(min_length=1, max_length=2000)
-    # The initial rubric is deterministic; source text cannot select tools or a model.
+    assessment: Assessment | None = None
+    # Omission retains the deterministic completeness check; no model is invoked.
 
 
 class HandoffInput(RevisionInput):
