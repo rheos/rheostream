@@ -679,7 +679,7 @@ export async function detail({ shell, query }: ScreenProps) {
               <h2>Qualification</h2>
               {record.qualification ? (
                 <>
-                  <p>{str(qualification.objective)}</p>
+                  <p className={styles.note}>{str(qualification.objective)}</p>
                   <dl className={styles.facts}>
                     {[
                       "fit",
@@ -803,7 +803,9 @@ export async function detail({ shell, query }: ScreenProps) {
                     .slice(0, 20)
                     .map((assessment) => (
                       <article key={str(assessment.id)}>
-                        <h3>{str(assessment.objective)}</h3>
+                        <h3 className={styles.note}>
+                          {str(assessment.objective)}
+                        </h3>
                         <p className={styles.meta}>
                           {date(assessment.created_at)} · Evidence revision{" "}
                           {str(assessment.input_revision)}
