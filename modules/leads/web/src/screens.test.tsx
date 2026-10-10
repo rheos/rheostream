@@ -7,7 +7,7 @@ import type {
 import { screens } from "./index";
 import { formInput } from "./action-form";
 import { pageOffset } from "./data";
-import { phoneDisplay, value } from "./screens";
+import { assessmentStale, phoneDisplay, value } from "./screens";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const opportunity = {
@@ -471,6 +471,16 @@ describe("phone display", () => {
     expect(phoneDisplay(`+1${digits.join("")}`)).toBe(`+1 ${digits.join("-")}`);
     expect(phoneDisplay("+4420")).toBe("+4420");
     expect(phoneDisplay("")).toBe("");
+  });
+});
+describe("assessment staleness", () => {
+  it("follows the evidence digest, and the revision only for older assessments", () => {
+    const assessed = { input_revision: 1, evidence_digest: "a" };
+    expect(assessmentStale(assessed, { evidence_digest: "a" }, 4)).toBe(false);
+    expect(assessmentStale(assessed, { evidence_digest: "b" }, 1)).toBe(true);
+    const older = { input_revision: 1, evidence_digest: null };
+    expect(assessmentStale(older, { evidence_digest: "a" }, 1)).toBe(false);
+    expect(assessmentStale(older, { evidence_digest: "a" }, 2)).toBe(true);
   });
 });
 describe("opportunity value", () => {

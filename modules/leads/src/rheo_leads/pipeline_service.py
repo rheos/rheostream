@@ -71,6 +71,7 @@ def get(ctx: WorkspaceContext, uow: UnitOfWork, m: c.RefInput) -> c.RecordOutput
         .one_or_none()
     )
     record["qualification"] = dict(assessment) if assessment else None
+    record["evidence_digest"] = h.evidence_digest(uow, record)
     record["transitions"] = [
         dict(r)
         for r in uow.connection.execute(
