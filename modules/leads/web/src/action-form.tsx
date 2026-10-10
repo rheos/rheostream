@@ -45,6 +45,14 @@ export function formInput(
         ? [{ action: "create_opportunity", pipeline_id: values.pipeline_id }]
         : [{ action: "record_only" }],
     };
+  if (operation === "leads.qualification.assess" && "fit" in values) {
+    const { objective, ...assessment } = values;
+    return {
+      ...base,
+      objective,
+      assessment: { ...assessment, author: "human" },
+    };
+  }
   return { ...base, ...values };
 }
 export function ActionForm({

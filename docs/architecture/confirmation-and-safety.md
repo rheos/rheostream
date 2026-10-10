@@ -279,6 +279,18 @@ opportunity as its audit subject, so `core.audit.list` filtered by the subject l
 transition's actor, time, and request digest, and the text a person wrote at the transition is in
 `opportunity_note` with its `stage_id`; the audit row holds a digest and never the note.
 
+**Recording an assessment.** `leads.qualification.assess` accepts an optional
+structured `assessment` containing the four dimensions, uncertainty, explanation
+and `author` (`human` or `model`). Model participation requires both `model_id` and
+`prompt_version`; these describe the caller's assessment process and do not claim
+that the service ran or verified a model. Human assessments carry neither field.
+The service binds the actor, all currently linked observations, input revision and
+pinned preset/rubric. Stale opportunity revisions are refused, and earlier
+assessments remain readable through `leads.qualification.list`. Omitting
+`assessment` retains the deterministic field-completeness check, with fit, intent
+and urgency left as `needs_information`. Neither path advances the stage, creates
+contact permission or invokes a model.
+
 **Where a rubric lives.** A rubric is **package data referenced by slug and version**
 (`modules/leads/rubrics/<slug>/<version>.toml`, listing the objective and the four dimensions'
 criteria), not a workspace record. The reason is that the scoring code that interprets a rubric

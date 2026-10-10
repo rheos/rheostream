@@ -29,9 +29,21 @@ fields retain their winning observation and are deterministically re-derived fro
 linked set; see [field derivation](../../docs/architecture/intake-and-events.md#field-derivation-fr-37).
 
 The `leads_*` MCP tools cover capture, ingest-link, get/list/search, evidence reads,
-updates, stage transitions, deterministic qualification, drafts and tracked handoffs.
+updates, stage transitions, qualification, drafts and tracked handoffs.
 Qualification records the objective, evidence, input revision and rubric/preset version.
-No model participates in the shipped assessor. Drafts are internal records. A handoff
+Calling `leads_qualify` without `assessment` runs the deterministic completeness
+check; fit, intent and urgency remain `needs_information`. To record a judgment,
+pass `assessment` with `fit`, `intent`, `urgency`, `evidence_completeness` (each
+`high`, `medium`, `low` or `needs_information`), `uncertainty` (`high`, `medium`,
+`low`), a nonblank `explanation`, and `author` (`human` or `model`). Model-assisted
+callers must include both `model_id` and `prompt_version`; these are caller-declared
+provenance, not proof of a server-side model invocation. The service invokes no
+model and binds actor, linked evidence, input revision and rubric itself. Stale
+submissions are refused. Every assessment remains in history; saving one neither
+moves the stage nor grants contact permission. The detail screen supports recording
+a person's judgment and reviewing prior assessments.
+
+Drafts are internal records. A handoff
 stores a bounded snapshot and idempotency binding to its exact body, destination and
 purpose; without a destination it records `unavailable`, creates no external effect and
 does not change the opportunity's disposition.

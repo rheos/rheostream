@@ -417,6 +417,35 @@ def test_tools_roundtrip_and_delete_requires_approval(intake: Intake) -> None:
         )
 
     assert tool("get", ref=current.ref).ok
+    payload = {
+        "fit": "needs_information",
+        "intent": "medium",
+        "urgency": "low",
+        "evidence_completeness": "low",
+        "uncertainty": "high",
+        "explanation": "Only a title is available; request scope and budget.",
+        "author": "model",
+        "model_id": "synthetic-assessor",
+        "prompt_version": "v1",
+    }
+    assessed = tool(
+        "qualify",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Decide whether to pursue",
+        assessment=payload,
+    )
+    assert assessed.ok, assessed
+    assert assessed.result.data["intent"] == "medium"
+    malformed = tool(
+        "qualify",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Invalid",
+        assessment={**payload, "model_id": None},
+    )
+    assert malformed.state == "input_invalid"
+    assert intake.count(p.qualification) == 1
     changed = tool(
         "transition",
         ref=current.ref,
@@ -944,3 +973,111 @@ def test_invalid_source_extension_does_not_poison_reconciliation(
         f["target"] == "ext.services.count"
         for f in one(intake).data["opportunity_field_state"]
     )
+
+
+def test_explicit_assessment_to_outcome_preserves_evidence_and_history(
+    intake: Intake,
+) -> None:
+    setup(intake)
+    observation = capture(
+        intake,
+        "assessment-workflow",
+        {
+            "subject": "Synthetic accessibility review",
+            "person.email": "review@example.test",
+            "message": "Request an accessibility review before our spring launch.",
+        },
+    )
+    current = one(intake)
+    baseline = ok(
+        intake,
+        "qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Service suitability",
+    )
+    assessment = {
+        "fit": "high",
+        "intent": "medium",
+        "urgency": "needs_information",
+        "evidence_completeness": "low",
+        "uncertainty": "high",
+        "explanation": (
+            "The requested review fits our service. "
+            "Budget and launch date are unconfirmed."
+        ),
+        "author": "model",
+        "model_id": "synthetic-assessor",
+        "prompt_version": "service-review-v1",
+    }
+    recorded = ok(
+        intake,
+        "qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Service suitability",
+        assessment=assessment,
+    )
+    assert recorded.data["fit"] == "high"
+    assert recorded.data["urgency"] == "needs_information"
+    assert recorded.data["evidence_refs"] == [observation]
+    assert recorded.data["input_revision"] == current.revision
+    assert recorded.data["preset_version"] == current.data["preset_version"]
+    assert recorded.data["rubric_slug"] == "inbound_services"
+    assert recorded.data["model_id"] == "synthetic-assessor"
+    assert recorded.data["prompt_version"] == "service-review-v1"
+    assert recorded.data["created_by_id"] == intake.ctx.actor.id
+    assert one(intake).data["qualification"]["id"] == recorded.data["id"]
+    assert one(intake).data["stage_id"] == "triage"
+    assert intake.count(p.contact_permission) == 0
+    assert intake.count(p.handoff) == 0
+    ok(
+        intake,
+        "followup.draft",
+        ref=current.ref,
+        revision=current.revision,
+        body="Please confirm your target launch date and review budget.",
+    )
+    stale = intake.call(
+        "leads.qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Late result",
+        assessment=assessment,
+    )
+    assert not stale.ok and stale.state == "record_stale"
+    assert intake.count(p.qualification) == 2
+    current = one(intake)
+    assert current.data["qualification"]["input_revision"] < current.revision
+    human = {**assessment, "author": "human"}
+    del human["model_id"], human["prompt_version"]
+    reassessed = ok(
+        intake,
+        "qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Human review",
+        assessment=human,
+    )
+    assert reassessed.data["model_id"] is None
+    assert reassessed.data["prompt_version"] is None
+    history = ok(intake, "qualification.list", ref=current.ref).items
+    assert [r["id"] for r in history] == [
+        reassessed.data["id"],
+        recorded.data["id"],
+        baseline.data["id"],
+    ]
+    for stage in ("discovery", "qualified", "proposal", "decision", "won"):
+        current = ok(
+            intake,
+            "opportunity.transition",
+            ref=current.ref,
+            revision=current.revision,
+            to_stage_id=stage,
+            note="Synthetic explicit stage decision",
+        )
+    final = one(intake)
+    assert final.data["disposition_outcome"] == "succeeded"
+    assert len(final.data["drafts"]) == 1
+    assert len(ok(intake, "qualification.list", ref=current.ref).items) == 3
+    assert ok(intake, "observation.get", observation_ref=observation).data["fields"]

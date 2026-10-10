@@ -153,6 +153,7 @@
   background: var(--rs-color-surface-1);
 }
 .meta {
+  overflow-wrap: anywhere;
   color: var(--rs-color-ink-dim);
   font-size: var(--rs-font-size-sm);
 }
