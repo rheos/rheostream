@@ -68,7 +68,7 @@ uses canonical references and Recallatron's own deletion rules; unrelated memori
 survive and any participant failure rolls back the transaction. Leads also works in
 workspaces where Recallatron was never installed.
 
-Export format five covers all 36 owned tables, including dated follow-up history
+Export format six covers all 36 owned tables, including dated follow-up history
 and each assessment's evidence digest. Older-format archives require a matching older
 host for restore; the core refuses format mismatches. Take a full database backup
 before upgrading from a previous Leads schema; rollback means restoring that backup

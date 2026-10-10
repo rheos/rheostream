@@ -389,7 +389,7 @@ installation that needs upgrading, before declaring that module available:
 
 ```sh
 rheo module upgrade --workspace "$WORKSPACE_ID" --module leads \
-  --target-version 0.1.0 --target-schema 0007_jobsearch_preset
+  --target-version 0.1.0 --target-schema 0008_attach_by_field
 rheo module check --all
 ```
 

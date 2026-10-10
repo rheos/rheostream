@@ -1,5 +1,6 @@
 """Owner-authored, bounded configuration and explicit version migration."""
 
+from typing import Any
 from uuid import UUID
 
 from rheo_contracts import StaleRecord, WorkspaceContext
@@ -10,6 +11,7 @@ from sqlalchemy import delete, insert, select, update
 
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
+from rheo_leads.configuration import FACTS
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
@@ -220,7 +222,9 @@ def set_routing(
             raise StaleRecord("connection routing changed; reload before saving")
     for rule in m.rules:
         if rule.pipeline_id:
-            h.row(uow, p.pipeline, rule.pipeline_id)
+            pipeline = h.row(uow, p.pipeline, rule.pipeline_id)
+            if rule.match_field is not None:
+                _check_match_field(uow, pipeline, rule.match_field)
     ids = select(p.routing_rule.c.id).where(
         p.routing_rule.c.connection_id == m.connection_id
     )
@@ -240,6 +244,7 @@ def set_routing(
             action=rule.action,
             pipeline_id=rule.pipeline_id,
             enabled=rule.enabled,
+            match_field=rule.match_field,
         )
         uow.connection.execute(insert(p.routing_rule).values(**r))
         result.append(r)
@@ -250,3 +255,24 @@ def set_routing(
                 )
             )
     return c.ItemsOutput(items=result)
+
+
+def _check_match_field(uow: UnitOfWork, pipeline: dict[str, Any], target: str) -> None:
+    """A match field is a core fact or an extension the pipeline's preset declares."""
+    if target in FACTS:
+        return
+    preset = h.row(uow, p.pipeline_preset, pipeline["preset_id"])
+    declared = uow.connection.execute(
+        select(p.preset_field.c.type).where(
+            p.preset_field.c.preset_id == pipeline["preset_id"],
+            p.preset_field.c.version == preset["current_version"],
+            p.preset_field.c.target == target,
+        )
+    ).scalar_one_or_none()
+    if declared is None:
+        raise OperationRefused(
+            "field_unknown", "match_field is not a fact or a field of this preset"
+        )
+    # A typed value that fails validation is never stored, so it could never match.
+    if declared != "text":
+        raise OperationRefused("input_invalid", "match_field must be a text field")

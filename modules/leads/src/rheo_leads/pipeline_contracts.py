@@ -178,15 +178,27 @@ class Condition(Strict):
 
 
 class Rule(Strict):
-    action: Literal["record_only", "create_opportunity", "attach_to_open_opportunity"]
+    action: Literal[
+        "record_only",
+        "create_opportunity",
+        "attach_to_open_opportunity",
+        "attach_by_field",
+    ]
     pipeline_id: UUID | None = None
     enabled: bool = True
     conditions: list[Condition] = Field(default_factory=list, max_length=30)
+    # attach_by_field only: the fact or ext.* target whose value identifies the
+    # external thing (a posting id), compared with the opportunity's current value.
+    match_field: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def destination(self) -> "Rule":
         if self.action != "record_only" and self.pipeline_id is None:
             raise ValueError("routing action requires a pipeline")
+        if (self.action == "attach_by_field") != (self.match_field is not None):
+            raise ValueError(
+                "match_field is required for, and only for, attach_by_field"
+            )
         return self
 
 

@@ -1050,6 +1050,16 @@
         },
         "enabled": {
           "type": "boolean"
+        },
+        "match_field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1059,7 +1069,8 @@
         "ordinal",
         "action",
         "pipeline_id",
-        "enabled"
+        "enabled",
+        "match_field"
       ],
       "additionalProperties": false
     },
