@@ -28,7 +28,8 @@ fifty-three, and issue #130 adds the two ``redaction.*`` keys the tier policy re
 (``rheo_core/redaction/policy.py``), for fifty-five. Run 1a4 adds the six
 ``automatic_memory.*`` keys, for sixty-one, and run 1a4b adds
 ``automatic_memory.extraction.model_id``, for sixty-two. Issue #287 adds the eight
-``identity.oauth.*`` keys, for seventy.
+``identity.oauth.*`` keys, for seventy, and issue #335 adds
+``work.outbox_retention_days``, for seventy-one.
 ``api.cors_origins`` is still not declared here, for the reason this key was not
 until now: a key with no reader is machinery with no caller, and the registry/TOML
 identity check holds per merge SHA — every later chunk that adds a key adds it to
@@ -871,6 +872,19 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default=8,
+    ),
+    # How long an outbox event and its settled deliveries are kept before the daily
+    # ``core.retention_sweep`` deletes them (``rheo_core.events.retention``). Replay
+    # reaches back only this far. Workspace scope with a ``min`` floor, so a workspace
+    # may only shorten it; the minimum keeps at least a day of history to replay.
+    KeySpec(
+        key="work.outbox_retention_days",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=30,
+        minimum=1,
     ),
     # The bound on one approval's stored payload snapshot
     # (``confirmation-and-safety.md`` § The approval record). The snapshot is what a

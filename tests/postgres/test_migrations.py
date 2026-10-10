@@ -115,6 +115,8 @@ CORE_TABLES = {
     "evidence_unit",
     # 0011_local_evidence
     "evidence_enrollment",
+    # 0013_outbox_retention
+    "outbox_retention",
 }
 # The rest of the approval family, owned by later chain steps; their presence here
 # would contaminate the trial. Tables leave this set exactly when the revision that
@@ -194,7 +196,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
     # Every revision the script directory holds, not the one the database records:
-    # the control chain ships three files and the core chain twelve, so these are all
+    # the control chain ships four files and the core chain thirteen, so these are all
     # the ids each carries.
     assert known_revisions(CONTROL_CHAIN) == {
         "0001_control_plane",
@@ -215,6 +217,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
         "0010_evidence_unit",
         "0011_local_evidence",
         "0012_evidence_retention_index",
+        "0013_outbox_retention",
     }
 
 
@@ -234,7 +237,7 @@ def test_control_chain_creates_exactly_the_seventeen_tables(
         }
 
 
-def test_core_chain_creates_exactly_the_twenty_seven_tables(
+def test_core_chain_creates_exactly_the_twenty_eight_tables(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
     _, engine = workspace_engine(cluster, workspace)
@@ -244,9 +247,7 @@ def test_core_chain_creates_exactly_the_twenty_seven_tables(
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CORE_CHAIN) == {
-            "0012_evidence_retention_index"
-        }
+        assert recorded_revisions(connection, CORE_CHAIN) == {"0013_outbox_retention"}
 
 
 def test_migrate_control_is_idempotent_and_survives_an_existing_database(
@@ -361,7 +362,7 @@ def test_failing_core_revision_marks_unavailable_and_startup_completes(
     with broken_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO core.alembic_version_core (version_num) VALUES (:v)"),
-            {"v": "0012_evidence_retention_index"},
+            {"v": "0013_outbox_retention"},
         )
     repair(broken)
     assert cluster.registry_row(broken).state is WorkspaceState.ACTIVE
@@ -399,7 +400,7 @@ def test_schema_ahead_marks_unavailable_and_refuses_repair(
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE core.alembic_version_core SET version_num = :v"),
-            {"v": "0012_evidence_retention_index"},
+            {"v": "0013_outbox_retention"},
         )
     repair(workspace)
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE
