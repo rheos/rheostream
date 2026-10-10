@@ -61,6 +61,9 @@ from rheo_app_cli.commands import (
     web,
     workspace,
 )
+from rheo_app_cli.commands import (
+    module as module_commands,
+)
 
 Handler = Callable[[argparse.Namespace], int]
 
@@ -121,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
     for module in (
         migrate,
+        module_commands,
         account,
         workspace,
         doctor,

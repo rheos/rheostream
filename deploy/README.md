@@ -365,6 +365,52 @@ directory ships no such front configuration, and the tests prove path mode again
 the core application only. The subdomain flagship needs no proxy change: the whole
 `mcp` host and `/auth/*` already reach `core`.
 
+### Upgrading installed modules
+
+A green `/healthz` confirms process liveness, not module schema compatibility.
+Startup and `rheo migrate` apply the control/core chains; they do not upgrade
+already installed module schemas. Include the explicit readiness check in every
+release verification, using the new core image and its normal deployment settings:
+
+```sh
+rheo module check --all
+```
+
+The command exits nonzero for an installed module whose package, schema or dependency
+is incompatible. Output includes the workspace/module, problem, installed package
+and loaded target. Removed modules are skipped. No data or lifecycle state changes.
+An enabled incompatible module is shown as unavailable and its operations refuse;
+other compatible modules keep serving.
+
+Before deploying a module with pending schema changes, take and verify a complete
+cluster backup (below). Review its frozen migrations and prepare the exact targets.
+After starting the new image, run the following inside its core container for each
+installation that needs upgrading, before declaring that module available:
+
+```sh
+rheo module upgrade --workspace "$WORKSPACE_ID" --module leads \
+  --target-version 0.1.0 --target-schema 0005_followup_reminders
+rheo module check --all
+```
+
+Use the target version/schema reported by the new image; the example names the
+first supported Leads upgrade. This host-operator command is audited, preserves
+installed/enabled/disabled state, and refuses stale targets, downgrades and pending
+migrations lacking `non_destructive_upgrade = True`. It also refuses a destructive
+marker; there is no force option. New installations still use install/enable.
+
+If the command returns `upgrade_busy`, let active module work finish and retry.
+Module calls in that workspace are briefly refused while an upgrade holds its lock.
+Required extensions must already be provisioned.
+
+Migration, health checks, package version and schema history are transactional.
+After failure, correct the cause and retry the same target; a completed target is
+a no-op. Do not reinstall, edit Alembic markers manually, or route a module chain
+through `migrate_workspace`. Roll back by restoring the verified pre-upgrade backup
+with the matching previous image; merely switching to older code can leave its
+schema incompatible. Destructive upgrades require the future export/approval
+workflow and are not supported by this command.
+
 ### Backups
 
 A host cron job runs `deploy/backup/rheostream-pgdumpall.sh` once a night. It

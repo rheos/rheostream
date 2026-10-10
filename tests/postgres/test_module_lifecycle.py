@@ -192,7 +192,9 @@ def test_install_then_enable_makes_workspace_status_report_recallatron(
     assert isinstance(after, WorkspaceContext), after
     assert RECALLATRON_ID in after.enabled_modules
 
-    status = status_of(after)
+    # Read availability while the same deployment still has the module loaded.
+    with loaded_probe_modules(monkeypatch, RECALLATRON_ID):
+        status = status_of(after)
     assert [module.model_dump() for module in status.modules] == [
         {
             "module_id": RECALLATRON_ID,
@@ -254,7 +256,9 @@ def test_status_reports_the_latest_applied_schema_version_of_a_real_module(
 
     after = context_for_operator(workspace)
     assert isinstance(after, WorkspaceContext), after
-    assert [module.model_dump() for module in status_of(after).modules] == [
+    with loaded_probe_modules(monkeypatch, RECALLATRON_ID):
+        status = status_of(after)
+    assert [module.model_dump() for module in status.modules] == [
         {
             "module_id": RECALLATRON_ID,
             "package_version": RECALLATRON_MANIFEST.package_version,

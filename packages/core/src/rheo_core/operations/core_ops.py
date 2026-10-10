@@ -315,6 +315,8 @@ def _workspace_status(
         raise OperationRefused(
             COMPOSITION_MISSING, "the workspace has no core.workspace_composition row"
         )
+    from rheo_core.modules.readiness import readiness_problem
+
     states = list_module_states(connection)
     latest: dict[str, str] = {}
     for version in list_module_schema_versions(connection):
@@ -327,7 +329,11 @@ def _workspace_status(
             ModuleStatus(
                 module_id=state.module_id,
                 package_version=state.package_version,
-                state=state.state,
+                state=(
+                    "unavailable"
+                    if state.state == "enabled" and readiness_problem(connection, state)
+                    else state.state
+                ),
                 schema_version=latest.get(state.module_id),
             )
             for state in states
@@ -925,6 +931,22 @@ def register_core_operations(
                 # caller gets the answer rather than an operation id.
             ),
             module_enable_handler,
+        ),
+    )
+    from rheo_core.modules.upgrade import Upgraded, UpgradeInput, upgrade
+
+    module_operations += (
+        (
+            OperationDeclaration(
+                name="core.module.upgrade",
+                safety_class=SafetyClass.MUTATE,
+                roles=frozenset({Role.OPERATOR}),
+                input_model=UpgradeInput,
+                output=Upgraded,
+                idempotency=Idempotency.NATURAL,
+                audit=AuditSpec(subject_field=None),
+            ),
+            upgrade,
         ),
     )
     deletion_operations: tuple[tuple[OperationDeclaration, Handler], ...] = (

@@ -176,6 +176,7 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             # registrar for the same import-direction reason the token pair is.
             MODULE_INSTALL,
             MODULE_ENABLE,
+            "core.module.upgrade",
             # Run 1a1's ``core.record.delete``, declared in
             # ``rheo_core.deletion.operations`` and registered inside the registrar for
             # the same import-direction reason the module pair is.

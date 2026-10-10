@@ -2213,6 +2213,59 @@
         "title": "ToolTelemetryRecord",
         "type": "object"
       },
+      "UpgradeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "module_id": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Module Id",
+            "type": "string"
+          },
+          "target_schema": {
+            "title": "Target Schema",
+            "type": "string"
+          },
+          "target_version": {
+            "title": "Target Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id",
+          "target_version",
+          "target_schema"
+        ],
+        "title": "UpgradeInput",
+        "type": "object"
+      },
+      "Upgraded": {
+        "properties": {
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          },
+          "package_version": {
+            "title": "Package Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id",
+          "package_version",
+          "schema_version",
+          "changed"
+        ],
+        "title": "Upgraded",
+        "type": "object"
+      },
       "WorkspaceDigest": {
         "properties": {
           "categories": {
@@ -2894,6 +2947,73 @@
           }
         },
         "summary": "core.module.install (mutate)"
+      }
+    },
+    "/api/v1/operations/core.module.upgrade": {
+      "post": {
+        "operationId": "core.module.upgrade",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpgradeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/Upgraded"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.module.upgrade (mutate)"
       }
     },
     "/api/v1/operations/core.oauth_event.list": {

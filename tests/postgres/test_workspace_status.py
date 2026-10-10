@@ -136,7 +136,7 @@ def test_status_lists_an_enabled_module_with_no_applied_schema_step(
         {
             "module_id": "harness",
             "package_version": "0",
-            "state": "enabled",
+            "state": "unavailable",
             "schema_version": None,
         }
     ]

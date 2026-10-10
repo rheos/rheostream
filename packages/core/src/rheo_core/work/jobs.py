@@ -516,6 +516,25 @@ def requeue_for_retry(
     )
 
 
+def defer_unready_job(
+    conn: Connection, *, job_id: UUID, owner: str, next_run_at: datetime
+) -> bool:
+    """Return an unexecuted lease, refunding only its attempt and retaining failures.
+
+    The usual ownership/cancellation predicates still apply. A lost lease or a
+    cancelled job must never be put back on the queue by a stale worker.
+    """
+    return _apply(
+        conn,
+        _held(job_id, owner) & t.job.c.cancel_requested.is_(False),
+        state=QUEUED,
+        attempts=t.job.c.attempts - 1,
+        next_run_at=next_run_at,
+        lease_owner=None,
+        lease_until=None,
+    )
+
+
 def request_cancellation(
     conn: Connection, job_id: UUID, *, now: datetime
 ) -> str | None:

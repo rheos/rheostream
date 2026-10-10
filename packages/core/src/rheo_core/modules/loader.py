@@ -254,6 +254,9 @@ def reset_surfaces() -> None:
     surfaces are still forgotten, because :func:`module_surfaces` now reads the table
     this clears.
     """
+    from rheo_core.modules.readiness import expected_heads
+
+    expected_heads.cache_clear()
     _LOADED.clear()
 
 
