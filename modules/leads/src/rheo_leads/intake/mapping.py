@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from rheo_leads.configuration import FACTS
 
@@ -93,7 +94,7 @@ def resolve_identity(
 
 
 def apply_mapping(
-    rules: Sequence[Mapping[str, object]],
+    rules: Sequence[Mapping[Any, Any]],
     payload: object,
     *,
     source_kind: str,

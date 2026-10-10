@@ -156,7 +156,7 @@ _COLUMNS: Final = (
 )
 
 
-def _row(row: Row[Any]) -> ToolTelemetryRow:
+def _row(row: Row[Any, *tuple[Any, ...]]) -> ToolTelemetryRow:
     """One selected row as a :class:`ToolTelemetryRow`, field for field.
 
     Written out rather than splatted, for the reason ``audit/records.py``'s own

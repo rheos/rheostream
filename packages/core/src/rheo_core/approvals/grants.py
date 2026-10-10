@@ -81,7 +81,7 @@ _COLUMNS: Final = (
 same constant."""
 
 
-def _row(row: Row[Any], operation_names: tuple[str, ...]) -> GrantRow:
+def _row(row: Row[Any, *tuple[Any, ...]], operation_names: tuple[str, ...]) -> GrantRow:
     """One selected row as a :class:`GrantRow`, field for field — written out rather
     than splatted, for the reason ``approvals/records.py``'s ``_row`` gives."""
     return GrantRow(

@@ -227,7 +227,7 @@ def _apply(conn: Connection, where: ColumnElement[bool], **values: object) -> bo
     return conn.execute(update(t.operation).where(where).values(**values)).rowcount == 1
 
 
-def _row(row: Row[Any]) -> OperationRow:
+def _row(row: Row[Any, *tuple[Any, ...]]) -> OperationRow:
     """One selected row as an :class:`OperationRow`, field for field.
 
     Written out rather than splatted (``OperationRow(*row)``): the splat compiles

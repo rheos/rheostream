@@ -61,7 +61,9 @@ REFUSAL_REASONS: Final = frozenset(
 """The closed vocabulary of this authority's refusals."""
 
 
-def _pending_row(uow: UnitOfWork, unit: TrustedSourceUnit) -> Row[Any] | None:
+def _pending_row(
+    uow: UnitOfWork, unit: TrustedSourceUnit
+) -> Row[Any, *tuple[Any, ...]] | None:
     """The unit's own ``core.evidence_unit`` row, read ``FOR SHARE`` in ``uow``'s
     transaction, or ``None`` when it is missing or no longer ``pending``.
 
