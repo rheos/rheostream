@@ -564,3 +564,20 @@ def test_acceptance_cannot_bypass_verified_connection(intake: Intake, website, a
                 ),
             )
     assert intake.count(t.delivery_receipt) == 0
+
+
+@pytest.mark.asyncio
+async def test_bad_signature_does_not_wait_for_workspace_lifecycle_lock(
+    intake: Intake, website
+):
+    import asyncio
+
+    from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
+
+    with open_unit_of_work(intake.ctx) as uow:
+        lock_workspace_lifecycle(uow.connection)
+        response = await asyncio.wait_for(
+            send(website, extra={"X-Rheo-Signature": "bad"}), timeout=3
+        )
+        assert response.status_code == 401
+    assert intake.count(t.delivery_receipt) == 0

@@ -215,7 +215,7 @@ steps in this order, and stops at the first that fails:
 1. Look up the path id in core’s `control.connector_locator`, then read the authoritative
    module-owned row in that active workspace. The loaded module must be enabled.
    Request bodies, headers and query strings cannot select a workspace.
-   Resolve the connection by the path id. Unknown: `401`, nothing recorded. Known and not
+   Unknown: `401`, nothing recorded. Known and not
    `active`: `401`, no receipt, an unresolved failure counted on that connection. The state is
    checked **before** any signature work, so a revoked connection refuses even a correctly
    signed delivery.

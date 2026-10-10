@@ -1,7 +1,7 @@
 """Add the connection-to-workspace locator; no credentials or domain records."""
 
+import sqlalchemy as sa
 from alembic import op
-from rheo_core.connectors.tables import metadata
 
 revision = "0004_connector_locator"
 down_revision = "0003_oauth"
@@ -10,7 +10,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    metadata.create_all(op.get_bind(), checkfirst=False)
+    op.create_table(
+        "connector_locator",
+        sa.Column("connection_id", sa.Uuid, primary_key=True),
+        sa.Column(
+            "workspace_id",
+            sa.Uuid,
+            sa.ForeignKey("control.workspace.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("module_id", sa.Text, nullable=False),
+        sa.Column("transport", sa.Text, nullable=False),
+        schema="control",
+    )
 
 
 def downgrade() -> None:

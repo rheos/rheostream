@@ -16,7 +16,6 @@ from rheo_core.boundary.factories import context_for_connection
 from rheo_core.connectors.contracts import ConnectionState
 from rheo_core.connectors.credentials import resolve_key
 from rheo_core.connectors.tables import locator
-from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.events import ConsumerRegistry
 from rheo_core.modules.manifest import ConnectorBinding
 from rheo_core.operations import dispatch
@@ -112,7 +111,6 @@ def receive(
         pools = get_backend().pools
         engine = pools.engine_for(workspace.database_name, pin=True)
         with UnitOfWork(engine, workspace.database_name, pool=pools) as uow:
-            lock_workspace_lifecycle(uow.connection)
             if not any(
                 s.module_id == module_id and s.state == "enabled"
                 for s in list_module_states(uow.connection)
@@ -152,6 +150,9 @@ def receive(
         )
         if isinstance(ctx, Refusal):
             return refused
+        # Acceptance takes the lifecycle lock and rechecks the matched generation,
+        # active connection and enabled module. Pre-authentication reads/health writes
+        # must not take that exclusive workspace lock.
         outcome = dispatch(
             ctx,
             binding.service_operation,
