@@ -46,21 +46,25 @@ export function formInput(
         : [{ action: "record_only" }],
     };
   if (operation === "leads.opportunity.update" && "value_amount" in values) {
-    // "$10,000" and "10 000" both mean 10000; a blank amount clears the value.
-    const amount = (values.value_amount ?? "").replace(/[\s,$]/g, "");
-    return amount
-      ? {
-          ...base,
-          value_amount: amount,
-          value_currency: (values.value_currency ?? "").trim().toUpperCase(),
-          value_basis: values.value_basis,
-        }
-      : {
-          ...base,
-          value_amount: null,
-          value_currency: null,
-          value_basis: null,
-        };
+    // Only a blank amount clears the value. "$10,000" and "10 000" are read as
+    // 10000; anything else is sent as typed so the operation refuses it.
+    const raw = (values.value_amount ?? "").trim();
+    if (!raw)
+      return {
+        ...base,
+        value_amount: null,
+        value_currency: null,
+        value_basis: null,
+      };
+    const grouped = raw.match(/^\$?\s*(\d{1,3}(?:[ ,]\d{3})+|\d+)(\.\d+)?$/);
+    return {
+      ...base,
+      value_amount: grouped
+        ? `${(grouped[1] ?? "").replace(/[ ,]/g, "")}${grouped[2] ?? ""}`
+        : raw,
+      value_currency: (values.value_currency ?? "").trim().toUpperCase(),
+      value_basis: values.value_basis,
+    };
   }
   if (operation === "leads.qualification.assess" && "fit" in values) {
     const { objective, ...assessment } = values;

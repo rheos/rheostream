@@ -283,6 +283,19 @@ describe("form input", () => {
       value_currency: null,
       value_basis: null,
     });
+    for (const [typed, sent] of [
+      ["10 000.50", "10000.50"],
+      ["1,2", "1,2"],
+      ["$", "$"],
+      ["ten", "ten"],
+    ] as const)
+      expect(
+        formInput("leads.opportunity.update", base, {
+          value_amount: typed,
+          value_currency: "CAD",
+          value_basis: "project_fee",
+        }).value_amount,
+      ).toBe(sent);
     expect(
       formInput("leads.opportunity.update", base, { title: "Renamed" }),
     ).toEqual({ ref: "r", revision: 3, title: "Renamed" });
