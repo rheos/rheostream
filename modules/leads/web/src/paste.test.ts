@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { pastedInput, suggestInquiry } from "./paste";
 
+// Phone numbers are assembled at runtime so no phone-shaped literal sits in the
+// source (scripts/check_fixture_provenance.py), as tests/harness/redaction does.
+const AREA = "250",
+  EXCHANGE = "555";
+const phone = (line: string, sep = "-") => [AREA, EXCHANGE, line].join(sep);
+
 describe("pasted inquiry evidence", () => {
   it("leaves conflicting explicit names and sender names blank", () => {
     expect(
@@ -65,5 +71,88 @@ describe("pasted inquiry evidence", () => {
     expect(
       pastedInput(source, { funnel_ref: "f", subject: "Reviewed" }).body,
     ).toEqual({ subject: "Reviewed", message: source });
+  });
+
+  it("suggests a signature name, an unlabeled phone and a title from a plain email", () => {
+    const source = `Hi Robin,\n\nWe keep double-booking crews. Budget is $8-12k.\n\nDana Whitfield\ndana.whitfield@example.com\n${phone("0142")}\n`;
+    expect(suggestInquiry(source)).toEqual({
+      subject: "Inquiry from Dana Whitfield",
+      "person.name": "Dana Whitfield",
+      "person.email": "dana.whitfield@example.com",
+      "person.phone": phone("0142"),
+      "organization.name": "",
+    });
+  });
+  it("takes the name after a sign-off, and never the greeting", () => {
+    const source = `Hi Robin,\nCan we talk about a quote?\n\nThanks,\nDana\n(${AREA}) ${EXCHANGE}-0142`;
+    expect(suggestInquiry(source)).toMatchObject({
+      "person.name": "Dana",
+      "person.phone": `(${AREA}) ${EXCHANGE}-0142`,
+    });
+  });
+  it("prefers the organization for the title and keeps an explicit subject", () => {
+    expect(
+      suggestInquiry(`Company: Sample Studio\nCall me on ${phone("0100")}`)
+        .subject,
+    ).toBe("Inquiry from Sample Studio");
+    expect(
+      suggestInquiry(`Subject: Booking app\n\nAvery Example\n${phone("0100")}`)
+        .subject,
+    ).toBe("Booking app");
+  });
+  it("counts one number in two formats once and leaves two numbers blank", () => {
+    expect(
+      suggestInquiry(`Call +1 ${phone("0142", " ")} or ${phone("0142", ".")}`)[
+        "person.phone"
+      ],
+    ).toBe(`+1 ${phone("0142", " ")}`);
+    expect(
+      suggestInquiry(`Office ${phone("0142")}, cell ${phone("0199")}`)[
+        "person.phone"
+      ],
+    ).toBe("");
+  });
+  it("does not read amounts, dates or order numbers as phones", () => {
+    expect(
+      suggestInquiry(
+        "Budget $8-12k by 2026-03-01, order 12345678901, invoice 555-0142",
+      )["person.phone"],
+    ).toBe("");
+  });
+  it("needs contact details in the closing block before suggesting a name", () => {
+    expect(
+      suggestInquiry(
+        "dana@example.com wrote earlier.\n\nLooking Forward To It",
+      )["person.name"],
+    ).toBe("");
+    expect(
+      suggestInquiry(
+        "Name: Avery\n\nDana Whitfield\ndana.whitfield@example.com",
+      )["person.name"],
+    ).toBe("Avery");
+  });
+  it("never takes a greeting, and leaves two name candidates blank", () => {
+    expect(
+      suggestInquiry(`Hi Robin\nPlease call me\n${phone("0142")}`)[
+        "person.name"
+      ],
+    ).toBe("");
+    expect(
+      suggestInquiry(
+        "Thanks for the note.\n\nDana Whitfield\nAvery Example\ndana@example.com",
+      )["person.name"],
+    ).toBe("");
+  });
+  it("treats one labeled number written two ways as one", () => {
+    expect(
+      suggestInquiry(
+        `Phone: +1 ${phone("0142", " ")}\nTel: ${phone("0142", ".")}`,
+      )["person.phone"],
+    ).toBe(`+1 ${phone("0142", " ")}`);
+  });
+  it("keeps conflicting subjects neutral instead of using identity", () => {
+    expect(
+      suggestInquiry("Subject: One\nSubject: Two\nName: Avery").subject,
+    ).toBe("Pasted inquiry");
   });
 });
