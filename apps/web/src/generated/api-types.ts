@@ -157,6 +157,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.module.upgrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.module.upgrade (mutate) */
+        post: operations["core.module.upgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.oauth_event.list": {
         parameters: {
             query?: never;
@@ -1727,6 +1744,26 @@ export interface components {
             /** Tool Name */
             tool_name: string;
         };
+        /** UpgradeInput */
+        UpgradeInput: {
+            /** Module Id */
+            module_id: string;
+            /** Target Schema */
+            target_schema: string;
+            /** Target Version */
+            target_version: string;
+        };
+        /** Upgraded */
+        Upgraded: {
+            /** Changed */
+            changed: boolean;
+            /** Module Id */
+            module_id: string;
+            /** Package Version */
+            package_version: string;
+            /** Schema Version */
+            schema_version: string;
+        };
         /** WorkspaceDigest */
         WorkspaceDigest: {
             /** Categories */
@@ -2078,6 +2115,41 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["ModuleInstallScheduled"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.module.upgrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpgradeInput"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["Upgraded"];
                         state: string;
                     };
                 };

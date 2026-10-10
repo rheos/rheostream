@@ -176,6 +176,13 @@ def resolve_in(
         parsed.module not in ctx.enabled_modules
     ):
         return Unavailable(reference, MODULE_DISABLED)
+    from rheo_core.modules.readiness import require_ready
+    from rheo_core.operations.refusals import OperationRefused
+
+    try:
+        require_ready(uow.connection, parsed.module)
+    except OperationRefused:
+        return Unavailable(reference, "module_unavailable")
     return resolver(ctx, uow, parsed)
 
 

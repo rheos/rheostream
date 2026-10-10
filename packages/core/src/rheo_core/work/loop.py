@@ -547,6 +547,9 @@ def _run_handler(
             # overwhelming majority of jobs it is one small local ``SELECT`` that
             # answers ``None``; see ``verified_execution_for``'s own docstring for why
             # that query is the first of the checks and not the last.
+            from rheo_core.modules.readiness import require_ready
+
+            require_ready(work_uow.connection, leased.kind.split(".")[0])
             handler(
                 HandlerUnitOfWork(
                     work_uow,
@@ -949,6 +952,11 @@ def _run_consumer(
                 )
                 if isinstance(context, Refusal):
                     raise RuntimeError(f"consumer context refused: {context.state}")
+                from rheo_core.modules.readiness import require_ready
+
+                require_ready(
+                    connection, consumers.lookup(leased.consumer_id).module_id
+                )
                 handler(
                     HandlerUnitOfWork(
                         uow, consumers=consumers, consumer_context=context

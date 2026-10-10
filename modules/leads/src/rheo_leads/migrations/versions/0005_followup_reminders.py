@@ -6,6 +6,8 @@ revision = "0005_followup_reminders"
 down_revision = "0004_opportunities"
 branch_labels = None
 depends_on = None
+# Adds an empty owned table and indexes; preserves every existing record.
+non_destructive_upgrade = True
 
 
 def upgrade() -> None:

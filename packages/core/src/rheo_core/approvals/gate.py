@@ -496,6 +496,9 @@ def execute_approved(
         ),
     )
     try:
+        from rheo_core.modules.readiness import require_ready
+
+        require_ready(uow.connection, operation.declaration.name.split(".")[0])
         output = operation.handler(held_caller, held_view, model_input)
     except StaleRecord as stale:
         # The approved call's own compare-and-set missed (issue #12). Raised as the

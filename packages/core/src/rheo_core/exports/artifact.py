@@ -510,6 +510,9 @@ def module_categories(snapshot: ExportSnapshot) -> dict[str, bytes]:
     categories: dict[str, bytes] = {}
     for manifest in _exportable(snapshot.connection):
         name = module_entry_name(manifest.module_id)
+        from rheo_core.modules.readiness import require_ready
+
+        require_ready(snapshot.connection, manifest.module_id)
         rows = manifest.export.exporter(snapshot)
         categories[name] = b"".join(
             (

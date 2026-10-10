@@ -1174,6 +1174,9 @@ def dispatch(
             view = HandlerUnitOfWork(
                 uow, operation_id=operation_id, consumers=consumers
             )
+            from rheo_core.modules.readiness import require_ready
+
+            require_ready(uow.connection, name.split(".")[0])
             output = operation.handler(ctx, view, model_input)
             if not isinstance(output, declaration.output):
                 return _output_invalid(

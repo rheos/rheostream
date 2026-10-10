@@ -51,6 +51,9 @@ def call_in_transaction(
         model = declaration.input_model.model_validate(payload)
     except ValidationError:
         raise OperationRefused("input_invalid", "invalid service input") from None
+    from rheo_core.modules.readiness import require_ready
+
+    require_ready(uow.connection, name.split(".")[0])
     output = operation.handler(ctx, uow, model)
     if not isinstance(output, declaration.output):
         raise OperationRefused("output_invalid", "invalid service output")

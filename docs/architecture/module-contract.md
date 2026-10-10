@@ -212,6 +212,7 @@ The release-one operations and their roles are listed in the document that owns 
 | `core.workspace.status`, `core.operation.get`, `.list` | read | owner, member, operator |
 | `core.workspace.create` | mutate, long-running | operator, and any account when `identity.allow_workspace_create` (deployment, default `false`); the creator becomes owner. **Not registered yet:** today a workspace is provisioned by the operator CLI (`rheo workspace create --owner`), which calls the provisioning state machine directly. |
 | `core.module.install`, `.enable` | mutate | owner, operator |
+| `core.module.upgrade` | mutate | operator |
 | `core.settings.set` (workspace keys), `core.settings.set_member` (member keys) | mutate | owner; owner, member |
 | `core.token.issue` (for the calling account), `.revoke` | mutate | owner, member (a token never exceeds its account's role and never exceeds its issuer's own permitted set); operator for another account. Non-token-issuable: no token can issue or revoke a token ([tokens](identity-and-topology.md#what-a-token-can-never-carry-and-what-it-holds-for-a-gated-operation)). |
 | `core.approval.approve`, `.refuse` | mutate | owner, member. Non-token-issuable, so reachable only from a web session in release one: the only contexts that carry one of those roles and hold the operation. |
@@ -495,10 +496,53 @@ source. The criterion's row in
 [the phase-two acceptance matrix](../acceptance/phase-2-matrix.md#criterion-24) records the
 mutation that shows the pair bites.
 
+### Explicit non-destructive upgrades and readiness
+
+`core.module.upgrade` is an audited, synchronous host-operator operation. Its input
+pins `module_id`, `target_version` and `target_schema` to the code loaded by that
+process. It upgrades an existing installed, enabled or disabled module; it never
+installs, enables, or downgrades one. Lifecycle state and timestamps remain intact.
+The operator CLI exposes it as `rheo module upgrade`.
+
+Before DDL, it checks required extensions, the core contract, installed dependency
+versions/readiness,
+and loaded installed dependents' version ranges. Every pending Alembic revision
+must explicitly declare `non_destructive_upgrade = True`; a `destructive` marker
+or an unclassified revision refuses the operation. This declaration is a reviewed
+module-author assertion, not an inference from SQL. Existing revision SQL remains
+frozen; adding safety metadata does not change its DDL.
+
+The operation takes the workspace lifecycle lock, uses `run_module_chain` in its
+own operation transaction, runs the manifest health checks, and updates the package
+version only on success. DDL, schema history, package version and audit success
+commit together. Repeating the exact completed target returns `changed: false`.
+A failed migration/health check rolls back; the prior schema/package stays intact.
+
+Readiness compares installed package and actual Alembic heads to loaded code,
+including declared dependencies. Module operation execution (including approved
+and in-transaction calls), queued jobs/consumers, reference resolution and module
+exports refuse incompatible schemas. Executions hold a shared transaction lock;
+an upgrade requires its exclusive counterpart as well as the lifecycle lock.
+These execution locks never wait: concurrent work makes an upgrade return
+`upgrade_busy`, and module calls in that workspace during an upgrade return
+`module_unavailable`. This avoids lock cycles across the separate export snapshot
+transaction. After an upgrade failure, core and other compatible modules keep serving. Workspace status projects an enabled but incompatible or
+unloaded module as `unavailable`, so the shell hides its routes; stored lifecycle
+state remains unchanged and readiness recovers after a successful retry.
+
+`rheo module check --workspace <uuid>` or `--all` is the read-only release gate;
+nonzero means at least one installed module is not ready. Liveness `/healthz`
+stays a database-free process check. See the [operator release procedure](../../deploy/README.md#upgrading-installed-modules).
+
+The destructive-upgrade export/approval lifecycle below remains deferred. This
+bounded operation always refuses such migrations; it supplies no force flag or
+approval bypass. Automatic startup upgrades also remain out of scope.
+
 ### Upgrade, disable, re-enable, remove, purge, restore (on paper, D5)
 
-Written now so a builder in the later milestone has a contract, not a blank page. None of it is
-release-one code, and no release-one path depends on it.
+The broader lifecycle below remains the later-milestone contract. The explicit
+non-destructive upgrade subset above is implemented; it does not claim the full
+destructive-upgrade or other lifecycle behavior.
 
 | Operation | Contract |
 | --- | --- |
