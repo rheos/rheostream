@@ -108,6 +108,13 @@ function Options({ catalog }: { catalog: Row[] }) {
     </>
   );
 }
+/** Stored phones are digits with an optional "+"; show North American ones grouped. */
+export function phoneDisplay(stored: string): string {
+  const north = stored.match(/^(\+1)?(\d{3})(\d{3})(\d{4})$/);
+  return north
+    ? `${north[1] ? "+1 " : ""}${north[2]}-${north[3]}-${north[4]}`
+    : stored;
+}
 /** Stale only when what the assessment judged has changed. Assessments recorded
  * before evidence digests existed fall back to the revision comparison. */
 export function assessmentStale(
@@ -634,7 +641,10 @@ export async function detail({ shell, query }: ScreenProps) {
                         >
                           <dt>{fieldLabel(str(field.target))}</dt>
                           <dd>
-                            {str(field.value_text) || label(field.value_kind)}
+                            {(str(field.target).endsWith("phone")
+                              ? phoneDisplay(str(field.value_text))
+                              : str(field.value_text)) ||
+                              label(field.value_kind)}
                           </dd>
                         </div>
                       ))}
@@ -674,8 +684,13 @@ export async function detail({ shell, query }: ScreenProps) {
               <p className={styles.meta}>
                 Drafts are saved here. Nothing is sent.
               </p>
-              {rows(record.drafts).map((draft) => (
-                <details className={styles.evidence} key={str(draft.id)}>
+              {rows(record.drafts).map((draft, index) => (
+                // Newest first, and open, so a draft is visible right after saving.
+                <details
+                  className={styles.evidence}
+                  key={str(draft.id)}
+                  open={index === 0}
+                >
                   <summary>Draft · {date(draft.created_at)}</summary>
                   <p className={styles.note}>{str(draft.body)}</p>
                 </details>
@@ -901,7 +916,10 @@ export async function detail({ shell, query }: ScreenProps) {
                       label: "Uncertainty",
                       type: "select",
                       required: true,
+                      // No silent default: the assessor chooses how sure they are.
+                      value: "",
                       options: [
+                        { value: "", label: "Choose…" },
                         { value: "high", label: "High" },
                         { value: "medium", label: "Medium" },
                         { value: "low", label: "Low" },
@@ -1029,7 +1047,7 @@ export async function detail({ shell, query }: ScreenProps) {
                   fields={[
                     {
                       name: "value_amount",
-                      label: "Estimated amount (leave blank to clear)",
+                      label: "Estimated amount; leave blank to clear",
                       value: str(record.value_amount),
                       maxLength: 32,
                     },
