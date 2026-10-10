@@ -35,6 +35,7 @@ from rheo_app_core.connector_routes import ConnectorRoutes
 from rheo_app_core.internal_app import internal_app as internal_app
 from rheo_app_core.mcp_mount import McpSurfaceRouter, mounted_mcp
 from rheo_app_core.startup import run_startup
+from rheo_app_core.surface_guard import SurfaceGuard, guarded_surfaces
 
 # Before anything else in this process logs (the lifespan's ``core_startup_complete``
 # included): the one JSON-lines setup issue #228 gives every entry point, so a
@@ -53,22 +54,28 @@ def _dispose_backend() -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup, then the mounted ``mcp`` surface; unwound in reverse at shutdown.
+    """Startup, then the surface rules and the mounted ``mcp`` surface; unwound in
+    reverse at shutdown.
 
     The surface is built after ``run_startup`` because it reads the routing settings
     startup has just checked, and because a tool call needs the registries startup
     fills. It is torn down before the engines are disposed, so no MCP session is
-    still dispatching when its database connections go.
+    still dispatching when its database connections go. The ``api`` host and
+    identity-prefix rules (``surface_guard``, issue #290) are built from the same
+    routing settings first, so a prefix that overlaps another route fails startup.
     """
     app.state.startup = await asyncio.to_thread(run_startup)
     try:
-        async with mounted_mcp(app):
+        async with guarded_surfaces(app), mounted_mcp(app):
             yield
     finally:
         await asyncio.to_thread(_dispose_backend)
 
 
 app = FastAPI(lifespan=lifespan)
+# Added first, so innermost: the ``mcp`` router and the connector routes see the
+# request before this guard does, and FastAPI's routes after it (issue #290).
+app.add_middleware(SurfaceGuard)
 app.add_middleware(McpSurfaceRouter)
 app.add_middleware(ConnectorRoutes)
 

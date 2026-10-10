@@ -2,20 +2,20 @@
 
 Mounted on ``public_app`` (08's alias for 0a's ``app`` -- see ``00-index.md`` §
 Coupling seams; 08 lands first, so the alias already exists). Resolves the
-bearer via ``context_from_token(value, "api")``, merges the query string and
-the JSON body into one payload (query first, body overrides -- B2's two HTTP
-channels: ``operations/core_ops.py``'s and ``tests/harness/registry.py``'s own
-input models already ignore any key they do not declare, including the
-reserved fields ``RESERVED_INPUT_FIELDS`` names, so a workspace-naming key
-arriving through either channel is silently dropped exactly as it is at a bare
-``dispatch()`` call -- the same criterion 6 (B2) proof, over the HTTP surface),
-dispatches, and returns the envelope ``{"state", "operation_id", "result"
+bearer via ``context_from_token(value, "api")``, reads the operation's input
+from the JSON body and nothing else (see :func:`query_refusal`; the input models
+ignore any key they do not declare, including the reserved fields
+``RESERVED_INPUT_FIELDS`` names, so a workspace-naming key in the body is
+silently dropped exactly as it is at a bare ``dispatch()`` call -- the
+criterion 6 (B2) proof, over the HTTP surface), dispatches, and returns the
+envelope ``{"state", "operation_id", "result"
 | "error": {"error_code", "error_text"}}`` (plus ``approval_id`` on an
 ``approval_required`` hold) with the status mapping ``spec.md``
 gives: 200 succeeded, 401 for every ``context_from_token`` refusal (including
 a missing/malformed ``Authorization`` header, before any token is even looked
 up), 403 ``operation_not_permitted``/``role_not_permitted``, 404 ``not_found``,
-422 ``input_invalid``; anything else maps to 400. Run 0c2 adds **202
+422 ``input_invalid`` (which a request carrying a query string also gets,
+before dispatch); anything else maps to 400. Run 0c2 adds **202
 ``pending``**, which is the answer a ``long_running`` dispatch gets: the work
 is accepted and queued, not done, and 202 Accepted is exactly that.
 
@@ -73,6 +73,18 @@ _STATUS_BY_STATE: Final[dict[str, int]] = {
 }
 _DEFAULT_ERROR_STATUS: Final = 400
 _RESULT_STATES: Final = frozenset({SUCCEEDED, PENDING})
+
+API_PREFIX: Final = "/api"
+"""The path prefix every bearer ``api`` route is served under, on the ``api`` host in
+subdomain mode and on the one host in path mode. ``rheo_app_core.surface_guard``
+reads it to keep ``/api/*`` off every other host (issue #290)."""
+
+QUERY_REFUSED_TEXT: Final = (
+    "operation input is read from the JSON body only; send it there and leave "
+    "the query string empty"
+)
+"""The fixed ``error_text`` for :func:`query_refusal`. Fixed on purpose: nothing from
+the URL is echoed back."""
 
 
 def _bearer(request: Request) -> str | None:
@@ -168,7 +180,51 @@ def carries_result(outcome: OperationOutcome) -> bool:
     return outcome.state in _RESULT_STATES
 
 
-@router.post("/api/v1/operations/{name}")
+def query_refusal(request: Request) -> JSONResponse | None:
+    """The ``422 input_invalid`` answer for a request that carries a query string,
+    or ``None`` when it carries none (issue #289).
+
+    Operation input comes from the JSON body only. A query string used to be
+    merged in under the body, which let a payload field travel in the URL, and a
+    URL is logged by every hop between the client and this process: the core's
+    own access-log filter drops it, but a proxy's or a load balancer's need not.
+    Refusing rather than ignoring is deliberate: an ignored field would let an
+    operation run without input its caller believes it sent. No shipped client
+    puts anything in the query string.
+
+    Any query string counts, even one that parses to nothing (``?&``), so the
+    rule is "the URL carries no input" and not a judgement about what parsed.
+    Public and shared, like :func:`envelope`: the internal listener's operations
+    route applies the same rule, so the two surfaces cannot drift apart.
+    """
+    if not request.url.query:
+        return None
+    return JSONResponse(
+        envelope(
+            INPUT_INVALID,
+            None,
+            approval_id=None,
+            error_code=INPUT_INVALID,
+            error_text=QUERY_REFUSED_TEXT,
+        ),
+        status_code=_STATUS_BY_STATE[INPUT_INVALID],
+    )
+
+
+async def body_payload(request: Request) -> dict[str, object]:
+    """The operation input: the JSON body when it is an object, else empty.
+
+    A body that is not JSON, or JSON that is not an object, gives an empty
+    payload, which the operation's own input model then accepts or refuses.
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        return {}
+    return dict(body) if isinstance(body, dict) else {}
+
+
+@router.post(f"{API_PREFIX}/v1/operations/{{name}}")
 async def run_operation(name: str, request: Request) -> JSONResponse:
     value = _bearer(request)
     if value is None:
@@ -198,13 +254,10 @@ async def run_operation(name: str, request: Request) -> JSONResponse:
             ),
             status_code=_TOKEN_REFUSAL_STATUS,
         )
-    payload: dict[str, object] = dict(request.query_params)
-    try:
-        body = await request.json()
-    except ValueError:
-        body = None
-    if isinstance(body, dict):
-        payload.update(body)
+    refused = query_refusal(request)
+    if refused is not None:
+        return refused
+    payload = await body_payload(request)
     # ``consumers`` is this process's one registry, built in ``startup.py`` beside the
     # module load that populates it. Passed on every dispatch rather than resolved
     # inside one, because the registry belongs to the composition root and

@@ -281,7 +281,7 @@ derivation, so the criterion holds at two levels rather than one.
 - `pytest:tests/postgres/test_context_routing.py::test_a_dispatch_payload_naming_workspace_b_lands_in_a`
 - `pytest:tests/postgres/test_context_routing.py::test_actor_id_in_a_payload_is_ignored_at_dispatch`
 - `pytest:tests/postgres/test_context_routing.py::test_reserved_names_as_setting_rows_are_refused_setting_undeclared`
-- `pytest:tests/postgres/test_api_surface.py::test_reserved_field_in_query_string_and_body_is_ignored`
+- `pytest:tests/postgres/test_api_surface.py::test_reserved_field_in_body_is_ignored_and_in_query_string_is_refused`
 
 **Mutation:**
 ```diff
@@ -329,7 +329,7 @@ reddened instead by the deletion described above, which was run and observed (1 
 passed) but is not the hunk this row records, since it demonstrates less. The three routing
 demonstrators (`test_a_dispatch_payload_naming_workspace_b_lands_in_a`,
 `test_actor_id_in_a_payload_is_ignored_at_dispatch`,
-`test_reserved_field_in_query_string_and_body_is_ignored`) cover the dispatch and HTTP
+`test_reserved_field_in_body_is_ignored_and_in_query_string_is_refused`) cover the dispatch and HTTP
 channels of the same criterion. They are reddened by **criterion 7's** hunk, which severs
 context-to-database routing: applying that hunk and running these three gives `3 failed in
 2.70s`, checked here rather than assumed. So they are considered and set aside, not
