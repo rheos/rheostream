@@ -230,6 +230,25 @@ def _finish_alone(
     return applied
 
 
+def _module_ready(engine: Engine, database: str, module_id: str) -> bool:
+    """Whether ``module_id`` is ready, checked before its registration is resolved.
+
+    A package that drops a job kind or consumer, deployed ahead of its schema upgrade,
+    would otherwise fail persisted work as unknown before the handler-time readiness
+    check could defer it. That later check stays, because readiness can change between
+    the two transactions.
+    """
+    from rheo_core.modules.readiness import ModuleNotReady, require_ready
+
+    try:
+        with UnitOfWork(engine, database) as uow:
+            require_ready(uow.connection, module_id)
+            uow.commit()
+    except ModuleNotReady:
+        return False
+    return True
+
+
 def _with_operation(
     *,
     operation_id: UUID | None,
@@ -421,6 +440,28 @@ def _run_leased_job(
             logger.warning(
                 "gate 2 could not fail job %s, which this pass had just leased",
                 leased.id,
+            )
+        return
+
+    if not _module_ready(engine, database, leased.kind.split(".")[0]):
+        if not _finish_alone(
+            engine,
+            database,
+            write=lambda uow: defer_unready_job(
+                uow.connection,
+                job_id=leased.id,
+                owner=owner,
+                next_run_at=clock() + timedelta(seconds=60),
+            ),
+        ):
+            # A cancellation that landed meanwhile still ends ``cancelled``.
+            _resolve_zero_rowcount(
+                engine,
+                database,
+                job_id=leased.id,
+                operation_id=leased.operation_id,
+                owner=owner,
+                now=clock(),
             )
         return
 
@@ -880,6 +921,21 @@ def _run_leased_delivery(
             clock=clock,
             error=RETRY_BUDGET_EXHAUSTED,
         )
+        return
+
+    if not _module_ready(engine, database, leased.consumer_id.split(".")[0]):
+        if not _finish_alone(
+            engine,
+            database,
+            write=lambda uow: defer_unready_delivery(
+                uow.connection,
+                event_id=leased.event_id,
+                consumer_id=leased.consumer_id,
+                owner=owner,
+                next_attempt_at=clock() + timedelta(seconds=60),
+            ),
+        ):
+            _lease_lost(leased)
         return
 
     try:

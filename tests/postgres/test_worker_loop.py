@@ -2374,3 +2374,56 @@ def test_cancellation_wins_over_module_deferral(
     _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
     assert _read(engine, job_id).state == "cancelled"
     assert _notes(engine) == ()
+
+
+def test_unready_module_defers_a_kind_its_loaded_package_dropped(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A package deployed ahead of its schema upgrade may no longer register a kind
+    that persisted work uses. Readiness is checked before the lookup, so the job waits
+    for the upgrade (or a rollback) instead of failing as unknown. Once the module is
+    ready, an unknown kind is still terminal."""
+    from rheo_core.modules import readiness
+
+    job_id = _put(engine, now=now, kind="harness.note.unregistered")
+
+    def refuse(_conn: object, _module: str) -> None:
+        raise readiness.ModuleNotReady("module_unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(readiness, "require_ready", refuse)
+        _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
+        row = _read(engine, job_id)
+        assert row.state == "queued" and row.attempts == 0
+        assert row.next_run_at == now + timedelta(minutes=1)
+
+    later = now + timedelta(minutes=1)
+    _visit(workspace, kinds=_registry(), backend=cluster.backend, at=later)
+    row = _read(engine, job_id)
+    assert row.state == "failed"
+    assert "harness.note.unregistered" in row.last_error
+
+
+def test_cancellation_wins_over_pre_lookup_module_deferral(
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    now: datetime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rheo_core.modules import readiness
+
+    job_id = _put(engine, now=now, kind="harness.note.unregistered")
+
+    def cancel_then_refuse(_conn: object, _module: str) -> None:
+        with engine.begin() as conn:
+            assert request_cancellation(conn, job_id, now=now) == "leased"
+        raise readiness.ModuleNotReady("module_unavailable")
+
+    monkeypatch.setattr(readiness, "require_ready", cancel_then_refuse)
+    _visit(workspace, kinds=_registry(), backend=cluster.backend, at=now)
+    assert _read(engine, job_id).state == "cancelled"
