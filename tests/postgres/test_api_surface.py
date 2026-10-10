@@ -10,10 +10,11 @@ token succeeds (200); ``role_not_permitted``/``operation_not_permitted`` (403);
 every operation shipped in release one and carries the minted id for the one
 ``long_running`` declaration in the tree. Also B2's HTTP channels (plan.md's
 own line for this chunk): a reserved field naming another workspace,
-presented through the query string
-and the JSON body alike, is silently dropped and the dispatch lands in the
-token's own (authenticated) workspace -- not a distinct acceptance-criteria
-row in ``00-index.md``'s matrix (which lists B2 as fully claimed by 0b1), but
+presented in the JSON body, is silently dropped and the dispatch lands in the
+token's own (authenticated) workspace, and presented in the query string is
+refused before dispatch (issue #289: operation input is body-only) -- not a
+distinct acceptance-criteria row in ``00-index.md``'s matrix (which lists B2
+as fully claimed by 0b1), but
 named explicitly by both ``plan.md``'s C8 line ("B2's HTTP JSON-body and
 query-string channels (the api surface)") and ``spec.md``'s own B2 bullet
 ("the HTTP channels are C8"); proved here in favour of the canonical
@@ -27,7 +28,7 @@ from uuid import UUID
 import httpx
 import pytest
 from conftest import ClusterSession, MakeWorkspace
-from harness.records import get_note
+from harness.records import ensure_note_table, get_note, list_notes
 from harness.registry import (
     NOTE_SCHEDULE,
     NOTE_WRITE,
@@ -302,12 +303,16 @@ async def test_a_long_running_dispatch_carries_its_minted_id_in_the_envelope(
 # --- B2's HTTP channels: reserved fields are ignored, either way ------------
 
 
-async def test_reserved_field_in_query_string_and_body_is_ignored(
+async def test_reserved_field_in_body_is_ignored_and_in_query_string_is_refused(
     cluster: ClusterSession,
     make_workspace: MakeWorkspace,
     workspace: UUID,
     owner_account_id: UUID,
 ) -> None:
+    """Criterion 6 over HTTP. The query-string channel is closed (issue #289): a
+    request naming another workspace there is refused ``input_invalid`` before
+    dispatch and writes nothing. The body channel still drops the reserved keys,
+    and the write lands in the token's own workspace."""
     other = make_workspace()
     row = cluster.registry_row(workspace)
     engine = cluster.backend.pools.engine_for(row.database_name)
@@ -315,11 +320,31 @@ async def test_reserved_field_in_query_string_and_body_is_ignored(
         enable_harness_module(uow.connection)
         uow.commit()
     value = _mint(_owner_ctx(workspace, owner_account_id), set_name="cli_full")
-    resp = await _post(
+    refused = await _post(
         f"/api/v1/operations/{NOTE_WRITE}",
         headers={"Authorization": f"Bearer {value}"},
         params={"workspace_id": str(other), "database": "not-consulted"},
-        json={"body": "written through the http api surface", "dsn": "ignored-too"},
+        json={"body": "never written"},
+    )
+    assert refused.status_code == 422, refused.text
+    assert refused.json() == {
+        "state": "input_invalid",
+        "operation_id": None,
+        "error": {
+            "error_code": "input_invalid",
+            "error_text": api_routes.QUERY_REFUSED_TEXT,
+        },
+    }
+    assert str(other) not in refused.text
+    resp = await _post(
+        f"/api/v1/operations/{NOTE_WRITE}",
+        headers={"Authorization": f"Bearer {value}"},
+        json={
+            "body": "written through the http api surface",
+            "workspace_id": str(other),
+            "database": "not-consulted",
+            "dsn": "ignored-too",
+        },
     )
     assert resp.status_code == 200, resp.json()
     ref = resp.json()["result"]["ref"]
@@ -335,3 +360,31 @@ async def test_reserved_field_in_query_string_and_body_is_ignored(
         # exactly the proof the write did not land in it.
         has_table = inspect(other_uow.connection).has_table("note", schema="harness")
         assert not has_table or get_note(other_uow.connection, note_id) is None
+
+
+async def test_a_payload_field_in_the_query_string_is_refused(
+    cluster: ClusterSession, workspace: UUID, owner_account_id: UUID
+) -> None:
+    """Issue #289: a real input field sent in the URL is not read. It used to be
+    merged into the payload, so ``?body=...`` with an empty JSON body wrote a note.
+    Now the request is refused 422 and no note exists afterwards, whatever the
+    body says, and an empty query string (``?&``) counts as a query string."""
+    row = cluster.registry_row(workspace)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    with UnitOfWork(engine, row.database_name) as uow:
+        enable_harness_module(uow.connection)
+        uow.commit()
+    value = _mint(_owner_ctx(workspace, owner_account_id), set_name="cli_full")
+    headers = {"Authorization": f"Bearer {value}"}
+    for path, body in (
+        (f"/api/v1/operations/{NOTE_WRITE}?body=from-the-url", {}),
+        (f"/api/v1/operations/{NOTE_WRITE}?body=from-the-url", {"body": "x"}),
+        (f"/api/v1/operations/{NOTE_WRITE}?&", {"body": "x"}),
+    ):
+        resp = await _post(path, headers=headers, json=body)
+        assert resp.status_code == 422, (path, resp.text)
+        assert resp.json()["error"]["error_code"] == "input_invalid"
+        assert "from-the-url" not in resp.text
+    with UnitOfWork(engine, row.database_name) as uow:
+        ensure_note_table(uow.connection)
+        assert list_notes(uow.connection) == ()

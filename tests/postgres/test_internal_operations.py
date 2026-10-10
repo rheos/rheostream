@@ -18,9 +18,9 @@ with. What this module proves, in the order the route itself checks:
    is correct, not the test suite incomplete. The refusal itself is pinned
    directly on ``main`` by ``tests/test_boundary.py``.
 3. AC 13: the route reads **no** workspace identifier from anywhere in the
-   request. A payload naming another workspace in five different reserved keys,
-   through both the query string and the JSON body, still writes into the
-   session's own workspace.
+   request. A payload naming another workspace in five different reserved keys
+   in the JSON body still writes into the session's own workspace, and the same
+   keys in the query string are refused before dispatch (issue #289).
 4. The dispatcher's check-order refusals through the real route, each asserting
    the *first* refusal wins when two conditions are simultaneously false.
 5. The mutate, read and long-running operations, end to end through the real
@@ -50,6 +50,7 @@ from harness.registry import (
     register_harness,
 )
 from rheo_app_core import internal_routes
+from rheo_app_core.api_routes import QUERY_REFUSED_TEXT
 from rheo_app_core.main import internal_app
 from rheo_app_core.startup import CONSUMERS
 from rheo_contracts import Role
@@ -382,12 +383,13 @@ async def test_a_workspace_naming_payload_is_ignored(
     make_workspace: MakeWorkspace,
     owner_session: str,
 ) -> None:
-    """AC 13. A POST whose query string *and* body both name workspace B in five
-    reserved keys succeeds and writes into workspace A — the session's own.
+    """AC 13. A POST whose body names workspace B in five reserved keys succeeds
+    and writes into workspace A, the session's own; the same keys in the query
+    string are refused ``input_invalid`` and write nothing.
 
-    Both channels on purpose: ``api_routes`` and this route each merge the query
-    string and the JSON body into one payload, so proving only the body would leave
-    the other half unproven. Two mechanisms drop the keys, and either alone would
+    The query channel is closed rather than filtered (issue #289): this route and
+    ``api_routes`` share ``api_routes.query_refusal``, so input arrives through the
+    body alone. Two mechanisms drop the body's keys, and either alone would
     be enough: ``OperationRegistry.register`` refuses at *registration* any input
     model that declares a reserved field, so no registered operation can read one;
     and the model's ``extra = "ignore"`` drops whatever arrives anyway.
@@ -403,11 +405,21 @@ async def test_a_workspace_naming_payload_is_ignored(
         "connection_string": "postgresql://elsewhere/other",
         "schema": "harness",
     }
+    refused = await _post(
+        NOTE_WRITE,
+        owner_session,
+        {"body": "never written"},
+        params={key: value for key, value in naming_b.items()},
+    )
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["error"] == {
+        "error_code": "input_invalid",
+        "error_text": QUERY_REFUSED_TEXT,
+    }
     response = await _post(
         NOTE_WRITE,
         owner_session,
         {"body": "lands in A", **naming_b},
-        params={key: value for key, value in naming_b.items()},
     )
     assert response.status_code == 200, response.text
     assert response.json()["state"] == SUCCEEDED

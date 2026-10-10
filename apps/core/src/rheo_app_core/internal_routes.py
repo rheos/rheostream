@@ -43,7 +43,13 @@ from rheo_core.storage.control_plane import (
 from rheo_core.storage.data_root import resolve_data_root
 from rheo_core.storage.postgres import get_backend
 
-from rheo_app_core.api_routes import carries_result, envelope, outcome_status
+from rheo_app_core.api_routes import (
+    body_payload,
+    carries_result,
+    envelope,
+    outcome_status,
+    query_refusal,
+)
 from rheo_app_core.auth_routes import normalize_host
 from rheo_app_core.routing import routing_config as shared_routing_config
 from rheo_app_core.startup import CONSUMERS
@@ -207,17 +213,18 @@ async def run_operation(
 
     **The request cannot select a workspace.** An optional expected-workspace
     header only refuses a changed session; it never changes the context. The path
-    carries the operation name; the query string and JSON body carry the operation's
-    own input; the workspace comes from the session row's ``active_workspace_id`` by
-    way of ``context_from_session`` and from nowhere else. A payload that also
+    carries the operation name; the JSON body carries the operation's own input;
+    the workspace comes from the session row's ``active_workspace_id`` by way of
+    ``context_from_session`` and from nowhere else. A payload that also
     names a workspace, database, DSN, connection string or schema has those keys
     dropped by the operation's input model — ``RESERVED_INPUT_FIELDS`` is refused
     at *registration*, so no registered operation can declare one to read — and the
     write still lands in the session's own workspace.
 
-    Query first, body second (the body wins on a collision), exactly as
-    ``api_routes.run_operation`` merges them: the same reserved-field drop, over
-    the same models, on a second surface.
+    A query string is refused ``422 input_invalid`` before dispatch, exactly as
+    ``api_routes.run_operation`` refuses one (``api_routes.query_refusal``, issue
+    #289): the same body-only input and the same reserved-field drop, over the same
+    models, on a second surface.
     """
     if not x_rheo_session or not x_rheo_host:
         return _session_refusal(
@@ -236,13 +243,10 @@ async def run_operation(
         return _session_refusal(
             "workspace_changed", "Workspace changed; reload before saving"
         )
-    payload: dict[str, object] = dict(request.query_params)
-    try:
-        body = await request.json()
-    except ValueError:
-        body = None
-    if isinstance(body, dict):
-        payload.update(body)
+    refused = query_refusal(request)
+    if refused is not None:
+        return refused
+    payload = await body_payload(request)
     # The same one registry ``api_routes.run_operation`` passes — one process, one
     # ``ConsumerRegistry``, so a handler's publish fans out identically whichever of
     # the two HTTP surfaces reached it.

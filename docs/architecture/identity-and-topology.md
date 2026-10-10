@@ -486,6 +486,18 @@ when the feature is unconfigured, and no other host reaches MCP. The SDK's DNS-r
 protection admits only the surface's own `Host` values
 ([the MCP facade](runtime-and-mcp.md#the-mcp-facade)).
 
+The `api` surface and the identity prefix are matched inside `core` too (issue #290), so neither
+rule depends on the proxy alone. In subdomain mode `core` answers `/api` and `/api/*` only on the
+`api` host; the same path on any other host (an application host, the bare base host, an
+unconfigured name) is a 404 before any route runs. Path mode has one host and keeps serving
+`/api/*` on it. The identity routes answer at `routing.identity.path`: with the default `/auth`
+nothing moves, and with another prefix `<prefix>/*` reaches the same handlers while the fixed
+`/auth/*` paths answer 404, so the URLs `url_for` and `identity_path` advertise are the ones
+`core` serves. A prefix that overlaps another route `core` answers (`/api`, `/healthz`,
+`/.well-known`, or the path-mode `mcp` path) fails startup. A deployment that moves the prefix
+must also move the proxy rule that sends `/auth/*` to `core`; the flagship overlay routes the
+default.
+
 **The path-mode limit.** In path mode `core` serves the documents at the path-inserted root paths
 `/.well-known/oauth-protected-resource/mcp` (and `.../mcp/`) and
 `/.well-known/oauth-authorization-server/mcp`, on any host, as it serves MCP itself; there is no
