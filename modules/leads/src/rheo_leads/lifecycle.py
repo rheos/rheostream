@@ -129,7 +129,7 @@ def delete_owned(
         .values(evidence_observation_id=None)
     )
     # Textual derivatives cannot safely survive loss of their source evidence.
-    for table in (p.qualification, p.draft, p.handoff):
+    for table in (p.qualification, p.draft, p.handoff, p.followup_reminder):
         uow.connection.execute(
             delete(table).where(table.c.opportunity_id.in_(affected))
         )

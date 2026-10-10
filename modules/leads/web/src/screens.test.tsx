@@ -312,3 +312,96 @@ describe("form input", () => {
     expect(pageOffset("25")).toBe(25);
   });
 });
+
+describe("dated follow-ups", () => {
+  it.each(["list", "board"] as const)(
+    "%s sends an explicit cutoff and displays the next action",
+    async (name) => {
+      const api = shell({
+        "leads.ui.catalog": catalog,
+        "leads.opportunity.list": ok({
+          items: [
+            {
+              ...opportunity,
+              followup_due_on: "2026-10-15",
+              followup_action: "Confirm scope",
+            },
+          ],
+        }),
+      });
+      const html = renderToStaticMarkup(
+        await screens[name]({ shell: api, query: { due: "2026-10-15" } }),
+      );
+      expect(api.call).toHaveBeenCalledWith(
+        "leads.opportunity.list",
+        expect.objectContaining({ followup_due_by: "2026-10-15" }),
+      );
+      expect(html).toContain("Confirm scope");
+      expect(html).toContain('type="date"');
+    },
+  );
+  it("offers rescheduling, completion and cancellation with escaped history", async () => {
+    const api = shell({
+      "leads.opportunity.get": ok({
+        ref: opportunity.ref,
+        revision: 4,
+        data: {
+          ...opportunity,
+          followup: {
+            id: "reminder",
+            action: "Confirm scope",
+            due_on: "2026-10-15",
+          },
+          followup_history: [
+            {
+              id: "old",
+              action: "<script>Earlier action</script>",
+              state: "superseded",
+              due_on: "2026-10-12",
+            },
+          ],
+        },
+      }),
+    });
+    const html = renderToStaticMarkup(
+      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    );
+    expect(html).toContain("Reschedule follow-up");
+    expect(html).toContain("Mark follow-up complete");
+    expect(html).toContain("Cancel follow-up");
+    expect(html).toContain('value="2026-10-15"');
+    expect(html).toContain("&lt;script&gt;Earlier action&lt;/script&gt;");
+    expect(api.submit).not.toHaveBeenCalled();
+    expect(
+      formInput(
+        "leads.followup.resolve",
+        {
+          ref: opportunity.ref,
+          revision: 4,
+          reminder_id: "reminder",
+          outcome: "completed",
+        },
+        {},
+      ),
+    ).toEqual({
+      ref: opportunity.ref,
+      revision: 4,
+      reminder_id: "reminder",
+      outcome: "completed",
+    });
+  });
+  it("does not offer a new reminder for a closed opportunity", async () => {
+    const api = shell({
+      "leads.opportunity.get": ok({
+        ref: opportunity.ref,
+        revision: 4,
+        data: { ...opportunity, disposition_outcome: "lost" },
+      }),
+    });
+    const html = renderToStaticMarkup(
+      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    );
+    expect(html).toContain("Opportunity closed.");
+    expect(html).not.toContain("Schedule follow-up");
+  });
+});

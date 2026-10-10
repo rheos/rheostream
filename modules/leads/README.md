@@ -57,7 +57,7 @@ external-action operation is registered in this slice.
 
 Observation and opportunity erasure require owner approval through core. Deleting an
 observation clears its intake payload/conflict bodies, retains a delivery tombstone,
-removes affected derived assessments/drafts/handoffs and re-derives surviving source
+removes affected derived assessments/drafts/follow-up reminders/handoffs and re-derives surviving source
 fields while preserving user edits. Deleting a party removes its links and permission
 content. Core cancels reference-bound queued work and held approvals and invalidates
 held exports; artifact deletion runs after commit with durable retry.
@@ -68,15 +68,43 @@ uses canonical references and Recallatron's own deletion rules; unrelated memori
 survive and any participant failure rolls back the transaction. Leads also works in
 workspaces where Recallatron was never installed.
 
-Export format two covers all 35 owned tables. Restore preserves source identities,
+Export format three covers all 36 owned tables, including dated follow-up history.
+Format-two archives require a matching older host for restore; the core refuses
+format mismatches. Take a full database backup before upgrading from the previous
+Leads schema (0004_opportunities); rollback means restoring that backup with the
+previous image, not downgrading the additive 0005_followup_reminders migration. Restore preserves source identities,
 replaces only a fresh seed and strips deployment-local signing handles. The populated
 round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters,
 live source activation and the first external handoff destination remain separate work.
 
+## Dated next follow-up
+
+Each opportunity has at most one pending reminder, owned by Leads. Call
+`leads_schedule_followup` with the opportunity reference and current revision,
+an action (1–2,000 characters), and a `due_on` calendar date (`YYYY-MM-DD`).
+Rescheduling preserves the old reminder as superseded. `leads_get` returns
+`followup` plus up to 20 resolved reminders in `followup_history`, newest first.
+All reminder history remains in storage and exports.
+
+`leads_resolve_followup` requires the opportunity reference/revision, pending
+`reminder_id`, and `outcome` (`completed` or `cancelled`). Both operations allow
+owners, members and appropriately scoped services; ordinary operation grants still
+apply. Stale revisions cannot overwrite a newer reminder. Moving to a terminal
+stage cancels the pending reminder; closed opportunities refuse scheduling.
+Later source evidence leaves the user-selected reminder unchanged.
+
+Pass `followup_due_by` to `leads_list` / `leads_search` for pending reminders due
+on or before that date, ordered by due date then stable opportunity creation/ID.
+The list and board expose the same cutoff and preserve it through pagination.
+Dates have no time or timezone; callers choose their own calendar cutoff. With no
+cutoff, the usual opportunity list includes records with or without a reminder.
+These are actions to check in Leads, not notifications: scheduling sends no message,
+enqueues no agent run and creates no Current task or contact permission.
+
 ## Workspace UI and manual intake
 
 The composed Leads surface provides a paginated opportunity list, pipeline board, source
-and note detail, allowed stage changes, qualification, saved follow-up drafts, manual capture
+and note detail, allowed stage changes, qualification, dated follow-ups, saved drafts, manual capture
 and processing receipts. The main navigation has one entry per module; list, pipeline,
 capture and connection controls stay inside Leads. Board counts describe the current page,
 not the entire pipeline. Drafts never send a message.
@@ -94,7 +122,7 @@ In a workspace where an owner has installed and enabled Relationships and Leads:
 3. Open the receipt to check processing and follow the actual opportunity link. A record-only
    result offers an explicit opportunity-creation form instead of claiming creation occurred.
 4. Review the original source separately from notes, assess evidence against an objective,
-   choose an allowed next stage and save a follow-up draft.
+   choose an allowed next stage, schedule a dated next action and optionally save a draft.
 
 Connection settings are owner-only and expose no signing handles. The simple routing form
 edits only an empty rule set or one unconditional create/record-only rule; advanced rules

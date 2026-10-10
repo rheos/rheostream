@@ -29,6 +29,8 @@ export const MODULES = [
       { operation: "leads.opportunity.add_note", component: leadsWeb.components.ActionForm },
       { operation: "leads.qualification.assess", component: leadsWeb.components.ActionForm },
       { operation: "leads.followup.draft", component: leadsWeb.components.ActionForm },
+      { operation: "leads.followup.schedule", component: leadsWeb.components.ActionForm },
+      { operation: "leads.followup.resolve", component: leadsWeb.components.ActionForm },
     ],
     searchProviders: [],
     readOperations: [
@@ -47,6 +49,8 @@ export const MODULES = [
     submitOperations: [
       "leads.connection.set_routing",
       "leads.followup.draft",
+      "leads.followup.resolve",
+      "leads.followup.schedule",
       "leads.intake.capture",
       "leads.opportunity.add_note",
       "leads.opportunity.create_from_observation",

@@ -138,7 +138,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=2,
+        format_version=3,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,
@@ -172,6 +172,8 @@ MANIFEST = ModuleManifest(
                 "opportunity.add_note",
                 "qualification.assess",
                 "followup.draft",
+                "followup.schedule",
+                "followup.resolve",
             )
         ),
     ),

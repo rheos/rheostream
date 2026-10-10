@@ -4,9 +4,11 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     LargeBinary,
     Numeric,
@@ -322,6 +324,31 @@ draft = child(
     col("created_by_id", Uuid, nullable=True),
     col("created_at", DateTime(timezone=True)),
 )
+followup_reminder = child(
+    "followup_reminder",
+    col("action"),
+    col("due_on", Date),
+    col("state"),
+    col("created_by_kind"),
+    col("created_by_id", Uuid, nullable=True),
+    col("created_at", DateTime(timezone=True)),
+    col("resolved_by_kind", nullable=True),
+    col("resolved_by_id", Uuid, nullable=True),
+    col("resolved_at", DateTime(timezone=True), nullable=True),
+)
+followup_reminder.append_constraint(
+    CheckConstraint("state IN ('pending','completed','cancelled','superseded')")
+)
+followup_reminder.append_constraint(
+    CheckConstraint("(state = 'pending') = (resolved_at IS NULL)")
+)
+Index(
+    "followup_one_pending",
+    followup_reminder.c.opportunity_id,
+    unique=True,
+    postgresql_where=followup_reminder.c.state == "pending",
+)
+Index("followup_due", followup_reminder.c.state, followup_reminder.c.due_on)
 handoff = child(
     "handoff",
     col("purpose"),

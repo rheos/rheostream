@@ -1,5 +1,6 @@
 """Bounded pipeline commands; presets describe data and never executable policy."""
 
+from datetime import date
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -58,11 +59,26 @@ class RevisionInput(RefInput):
     revision: int = Field(ge=1)
 
 
+def _calendar_date(value: object) -> date:
+    if type(value) is date:
+        return value
+    if not isinstance(value, str) or len(value) != 10:
+        raise ValueError("use a calendar date in YYYY-MM-DD format")
+    parsed = date.fromisoformat(value)
+    if parsed.isoformat() != value:
+        raise ValueError("use a calendar date in YYYY-MM-DD format")
+    return parsed
+
+
+CalendarDate = Annotated[date, BeforeValidator(_calendar_date)]
+
+
 class ListInput(Strict):
     pipeline_id: UUID | None = None
     query: str = Field(default="", max_length=512)
     limit: int = Field(default=25, ge=1, le=100)
     offset: int = Field(default=0, ge=0, le=100000)
+    followup_due_by: CalendarDate | None = None
 
 
 class ObservationInput(Strict):
@@ -230,6 +246,22 @@ class HandoffGet(Strict):
 
 class DraftInput(RevisionInput):
     body: str = Field(min_length=1, max_length=16000)
+
+
+class FollowupSchedule(RevisionInput):
+    action: str = Field(min_length=1, max_length=2000)
+    due_on: CalendarDate
+
+    @model_validator(mode="after")
+    def meaningful_action(self) -> "FollowupSchedule":
+        if not self.action.strip():
+            raise ValueError("follow-up action is required")
+        return self
+
+
+class FollowupResolve(RevisionInput):
+    reminder_id: UUID
+    outcome: Literal["completed", "cancelled"]
 
 
 class PermissionCheck(Strict):
