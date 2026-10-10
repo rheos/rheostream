@@ -2278,6 +2278,103 @@
         "byte_length"
       ],
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.followup_reminder"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_by_kind": {
+          "type": "string"
+        },
+        "created_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "action": {
+          "type": "string"
+        },
+        "due_on": {
+          "type": "string",
+          "format": "date"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "completed",
+            "cancelled",
+            "superseded"
+          ]
+        },
+        "resolved_by_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolved_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolved_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "opportunity_id",
+        "created_by_kind",
+        "created_by_id",
+        "created_at",
+        "action",
+        "due_on",
+        "state",
+        "resolved_by_kind",
+        "resolved_by_id",
+        "resolved_at"
+      ],
+      "additionalProperties": false
     }
   ]
 }

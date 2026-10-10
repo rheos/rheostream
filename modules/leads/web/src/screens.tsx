@@ -143,6 +143,7 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
     read(shell, "leads.opportunity.list", {
       query: (query.q ?? "").slice(0, 512),
       pipeline_id: query.pipeline || null,
+      followup_due_by: query.due || null,
       limit: 25,
       offset,
     }),
@@ -200,18 +201,27 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                 <Options catalog={catalog} />
               </select>
             </div>
+            <div className={styles.field}>
+              <label htmlFor="lead-due">Follow-ups due on or before</label>
+              <input
+                id="lead-due"
+                name="due"
+                type="date"
+                defaultValue={query.due}
+              />
+            </div>
             <button className={styles.secondary}>Apply filters</button>
           </form>
           {!records.length ? (
             <div className={styles.empty}>
               <h2>
-                {query.q || query.pipeline
+                {query.q || query.pipeline || query.due
                   ? "No matching opportunities"
                   : "Your next inquiry starts here"}
               </h2>
               <p>
-                {query.q || query.pipeline
-                  ? "Try another title or pipeline."
+                {query.q || query.pipeline || query.due
+                  ? "Try another title, pipeline or follow-up date."
                   : "Capture an inquiry, then open its opportunity to review the evidence and choose the next step."}
               </p>
               {!catalog.some((r) => r.kind === "pipeline") ? (
@@ -260,7 +270,9 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                                 {value(record)}
                               </span>
                               <p className={styles.meta}>
-                                Updated {date(record.updated_at)}
+                                {record.followup_due_on
+                                  ? `Follow up ${date(record.followup_due_on)} · ${str(record.followup_action)}`
+                                  : `Updated ${date(record.updated_at)}`}
                               </p>
                             </a>
                           </li>
@@ -284,6 +296,7 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                     <th scope="col">Opportunity</th>
                     <th scope="col">Stage</th>
                     <th scope="col">Value</th>
+                    <th scope="col">Next follow-up</th>
                     <th scope="col">Updated</th>
                   </tr>
                 </thead>
@@ -309,6 +322,18 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                         </span>
                       </td>
                       <td>{value(record)}</td>
+                      <td>
+                        {record.followup_due_on ? (
+                          <>
+                            <div>{date(record.followup_due_on)}</div>
+                            <div className={styles.meta}>
+                              {str(record.followup_action)}
+                            </div>
+                          </>
+                        ) : (
+                          "Not scheduled"
+                        )}
+                      </td>
                       <td>{date(record.updated_at)}</td>
                     </tr>
                   ))}
@@ -520,6 +545,7 @@ export async function detail({ shell, query }: ScreenProps) {
     })),
   );
   const qualification = row(record.qualification);
+  const followup = row(record.followup);
   const historyResult =
     result.state === "ok"
       ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
@@ -640,6 +666,96 @@ export async function detail({ shell, query }: ScreenProps) {
             </section>
           </div>
           <aside>
+            <section className={styles.section}>
+              <h2>Next follow-up</h2>
+              <p className={styles.meta}>
+                A dated action for you or your agent to check here. No
+                notification is sent.
+              </p>
+              {record.followup ? (
+                <>
+                  <p className={styles.note}>{str(followup.action)}</p>
+                  <p>Due {date(followup.due_on)}</p>
+                  <div className={styles.toolbar}>
+                    <Form
+                      shell={shell}
+                      operation="leads.followup.resolve"
+                      base={{
+                        ...base,
+                        reminder_id: followup.id,
+                        outcome: "completed",
+                      }}
+                      fields={[]}
+                      button="Mark follow-up complete"
+                    />
+                    <Form
+                      shell={shell}
+                      operation="leads.followup.resolve"
+                      base={{
+                        ...base,
+                        reminder_id: followup.id,
+                        outcome: "cancelled",
+                      }}
+                      fields={[]}
+                      button="Cancel follow-up"
+                    />
+                  </div>
+                </>
+              ) : (
+                <p>
+                  {record.disposition_outcome
+                    ? "Opportunity closed."
+                    : "No follow-up scheduled."}
+                </p>
+              )}
+              {!record.disposition_outcome ? (
+                <Form
+                  key={str(followup.id) || "new-followup"}
+                  shell={shell}
+                  operation="leads.followup.schedule"
+                  base={base}
+                  button={
+                    record.followup
+                      ? "Reschedule follow-up"
+                      : "Schedule follow-up"
+                  }
+                  fields={[
+                    {
+                      name: "action",
+                      label: "Follow-up action",
+                      required: true,
+                      maxLength: 2000,
+                      value: str(followup.action),
+                    },
+                    {
+                      name: "due_on",
+                      label: "Due date",
+                      type: "date",
+                      required: true,
+                      value: str(followup.due_on),
+                    },
+                  ]}
+                />
+              ) : null}
+              {rows(record.followup_history).length ? (
+                <details className={styles.evidence}>
+                  <summary>Recent follow-up history</summary>
+                  <p className={styles.meta}>
+                    Up to 20 previous reminders. Closing an opportunity cancels
+                    its pending follow-up.
+                  </p>
+                  {rows(record.followup_history).map((reminder) => (
+                    <article key={str(reminder.id)}>
+                      <p className={styles.note}>{str(reminder.action)}</p>
+                      <p className={styles.meta}>
+                        {label(reminder.state)} · Due {date(reminder.due_on)} ·
+                        Resolved {date(reminder.resolved_at)}
+                      </p>
+                    </article>
+                  ))}
+                </details>
+              ) : null}
+            </section>
             <section className={styles.section}>
               <h2>Next step</h2>
               {rows(record.transitions).length ? (

@@ -766,6 +766,14 @@ def test_populated_pipeline_export_restore_matches(
         payload={"title": "Approved subset"},
         idempotency_key="example",
     )
+    current = ok(
+        intake,
+        "followup.schedule",
+        ref=current.ref,
+        revision=one(intake).revision,
+        action="Follow up after restore",
+        due_on="2026-10-15",
+    )
     artifact = export_workspace(intake)
     before = _digest(intake.ctx)
     host = context_for_operator(make_workspace())
@@ -776,6 +784,7 @@ def test_populated_pipeline_export_restore_matches(
     assert isinstance(intake.ctx, WorkspaceContext), intake.ctx
     assert _digest(intake.ctx) == before
     restored = one(intake)
+    assert restored.data["followup"]["action"] == "Follow up after restore"
     assert restored.ref == current.ref
     assert restored.data["qualification"]["id"] == RecordRef.parse(assessment.ref).id
     assert (

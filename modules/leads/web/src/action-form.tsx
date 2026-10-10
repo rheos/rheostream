@@ -13,7 +13,7 @@ export interface Field {
   value?: string;
   required?: boolean;
   maxLength?: number;
-  type?: "text" | "email" | "textarea" | "select";
+  type?: "text" | "email" | "date" | "textarea" | "select";
   options?: { value: string; label: string }[];
 }
 export interface FormProps {

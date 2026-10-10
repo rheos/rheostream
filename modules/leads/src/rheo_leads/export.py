@@ -1,4 +1,4 @@
-"""Version-two intake and pipeline snapshot; restore preserves identities.
+"""Version-three intake and pipeline snapshot; restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. Restore replaces only the fresh seed;
@@ -6,7 +6,7 @@ existing intake records cause a refusal, never a destructive merge.
 """
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -17,6 +17,7 @@ from sqlalchemy import (
     ARRAY,
     JSON,
     Boolean,
+    Date,
     DateTime,
     Integer,
     LargeBinary,
@@ -39,7 +40,7 @@ SECRET_COLUMNS = {"signing_secret_ref", "previous_secret_ref", "previous_valid_u
 
 
 def export_records(snapshot: "ExportSnapshot") -> Sequence[Mapping[str, object]]:
-    """Export all thirty-five owned tables in foreign-key order."""
+    """Export all owned tables in foreign-key order."""
     rows: list[Mapping[str, object]] = []
     for table in TABLES:
         for row in snapshot.connection.execute(
@@ -77,6 +78,8 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
                     value = datetime.fromisoformat(str(value))
                     if value.tzinfo is None:
                         raise ValueError
+                elif isinstance(column.type, Date):
+                    value = date.fromisoformat(str(value))
                 elif isinstance(column.type, LargeBinary):
                     value = bytes.fromhex(str(value))
                 elif isinstance(column.type, Numeric):

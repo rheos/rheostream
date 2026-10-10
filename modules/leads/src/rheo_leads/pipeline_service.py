@@ -9,6 +9,7 @@ from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from rheo_leads import followups
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
 from rheo_leads import pipeline_evidence as e
@@ -97,12 +98,50 @@ def get(ctx: WorkspaceContext, uow: UnitOfWork, m: c.RefInput) -> c.RecordOutput
             .limit(20)
         ).mappings()
     ]
+    reminders = p.followup_reminder
+    pending = (
+        uow.connection.execute(
+            select(reminders).where(
+                reminders.c.opportunity_id == record["id"],
+                reminders.c.state == "pending",
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    record["followup"] = dict(pending) if pending else None
+    record["followup_history"] = [
+        dict(r)
+        for r in uow.connection.execute(
+            select(reminders)
+            .where(
+                reminders.c.opportunity_id == record["id"],
+                reminders.c.state != "pending",
+            )
+            .order_by(reminders.c.created_at.desc(), reminders.c.id.desc())
+            .limit(20)
+        ).mappings()
+    ]
     return h.output(record)
 
 
 def listing(ctx: WorkspaceContext, uow: UnitOfWork, m: c.ListInput) -> c.ItemsOutput:
     h.require(ctx)
-    q = select(p.opportunity)
+    reminders = p.followup_reminder
+    q = select(
+        p.opportunity,
+        reminders.c.id.label("followup_id"),
+        reminders.c.action.label("followup_action"),
+        reminders.c.due_on.label("followup_due_on"),
+    ).outerjoin(
+        reminders,
+        (reminders.c.opportunity_id == p.opportunity.c.id)
+        & (reminders.c.state == "pending"),
+    )
+    if m.followup_due_by is not None:
+        q = q.where(reminders.c.due_on <= m.followup_due_by).order_by(
+            reminders.c.due_on
+        )
     if m.pipeline_id:
         q = q.where(p.opportunity.c.pipeline_id == m.pipeline_id)
     if m.query:
@@ -298,6 +337,8 @@ def transition(
         disposition_outcome=stage["outcome"],
         disposition_at=h.now() if stage["kind"] == "terminal" else None,
     )
+    if stage["kind"] == "terminal":
+        followups.close_pending(ctx, uow, record, "cancelled")
     if m.note:
         uow.connection.execute(
             insert(p.opportunity_note).values(
