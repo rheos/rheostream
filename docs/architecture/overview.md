@@ -130,7 +130,8 @@ over the same registry. None of them contains a branch on domain meaning.
 **The HTTP `api` surface** is one route shape over the registry, so that no builder invents a
 resource layout per module: `POST /api/v1/operations/<operation_name>` with the operation's
 input model as the JSON body, and the body only: a request with any query string is refused
-`input_invalid` (422) before dispatch, so no input travels in a logged URL (issue #289). It returns `{ "state", "operation_id", "result" | "error" }`
+`input_invalid` (422) before dispatch (issue #289). Clients must keep operation input out of the
+query string; a proxy may log the URL before `core` refuses it. It returns `{ "state", "operation_id", "result" | "error" }`
 (`succeeded` with the output model in `result`; `pending` for a long-running operation, with its
 operation record id in `operation_id` and the output model in `result`; `approval_required` with
 the held call's operation record id in `operation_id`, the approval id in `approval_id` (a key
