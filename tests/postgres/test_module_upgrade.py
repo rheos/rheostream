@@ -15,13 +15,19 @@ from sqlalchemy import delete, select, text, update
 
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
-from postgres.test_leads_pipeline import capture, ok, one, setup
+from postgres.test_leads_pipeline import (
+    capture,
+    ok,
+    one,
+    remove_jobsearch_preset,
+    setup,
+)
 
 pytestmark = pytest.mark.postgres
 TARGET = {
     "module_id": "leads",
     "target_version": MANIFEST.package_version,
-    "target_schema": "0006_assessment_evidence_digest",
+    "target_schema": "0007_jobsearch_preset",
 }
 
 
@@ -30,6 +36,7 @@ def predecessor(i: Intake) -> str:
     capture(i, "upgrade", {"subject": "Preserved inquiry"})
     reference = one(i).ref
     with open_unit_of_work(i.ctx) as uow:
+        remove_jobsearch_preset(uow.connection)
         uow.connection.execute(text("DROP TABLE leads.followup_reminder"))
         uow.connection.execute(
             text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")
@@ -44,7 +51,11 @@ def predecessor(i: Intake) -> str:
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
                 module_schema_version.c.schema_version.in_(
-                    ("0005_followup_reminders", "0006_assessment_evidence_digest")
+                    (
+                        "0005_followup_reminders",
+                        "0006_assessment_evidence_digest",
+                        "0007_jobsearch_preset",
+                    )
                 ),
             )
         )

@@ -132,6 +132,7 @@ class PartyInput(RevisionInput):
 
 class PipelineCreate(Strict):
     name: str = Field(min_length=1, max_length=512)
+    preset: Literal["inbound_services", "job_search"] = "inbound_services"
 
 
 class Stage(Strict):

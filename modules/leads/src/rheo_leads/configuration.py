@@ -21,7 +21,19 @@ FACTS: Final = (
     "value.currency",
     "value.basis",
 )
-SETTINGS: Final = tuple(
+JOBSEARCH_KEY: Final = "leads.capabilities.jobsearch"
+# Off unless the workspace itself turned it on: the reader requires a workspace row.
+# The deployment default permits that opt-in; ``Floor.AND`` lets an operator who sets
+# ``false`` veto it for every workspace.
+JOBSEARCH_SETTING: Final = KeySpec(
+    key=JOBSEARCH_KEY,
+    type=ValueType.BOOL,
+    scope=Scope.WORKSPACE,
+    floor=Floor.AND,
+    explicit_per_workspace=False,
+    default=True,
+)
+SETTINGS: Final = (JOBSEARCH_SETTING,) + tuple(
     KeySpec(
         key=f"leads.intake.{name}",
         type=ValueType.INT,

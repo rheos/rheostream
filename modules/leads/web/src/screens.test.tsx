@@ -32,17 +32,16 @@ function shell(answers: Record<string, OperationOutcome>, role = "owner") {
       `/leads/${id}?${new URLSearchParams(Object.entries(query ?? {}).filter((entry): entry is [string, string] => entry[1] !== undefined))}`,
   } satisfies ShellApi;
 }
-const catalog = ok({
-  items: [
-    {
-      kind: "pipeline",
-      id: "pipeline",
-      name: "Service inquiries",
-      stages: [{ stage_id: "triage", label: "Triage" }],
-    },
-    { kind: "funnel", name: "General inquiries", ref: "leads.funnel:sample" },
-  ],
-});
+const catalogItems = [
+  {
+    kind: "pipeline",
+    id: "pipeline",
+    name: "Service inquiries",
+    stages: [{ stage_id: "triage", label: "Triage" }],
+  },
+  { kind: "funnel", name: "General inquiries", ref: "leads.funnel:sample" },
+];
+const catalog = ok({ items: catalogItems });
 describe("Leads screens", () => {
   it("leads with paste capture and keeps the manual form collapsed", async () => {
     const api = shell({ "leads.ui.catalog": catalog });
@@ -102,6 +101,29 @@ describe("Leads screens", () => {
     );
     expect(html).toContain("old stage");
     expect(html).toContain("Example studio inquiry");
+  });
+  it("offers the job-search preset only when the capability is on", async () => {
+    const off = renderToStaticMarkup(
+      await screens.connections({
+        shell: shell({ "leads.ui.catalog": catalog }),
+        query: {},
+      }),
+    );
+    expect(off).toContain("Create pipeline");
+    expect(off).not.toContain("job_search");
+    expect(off).not.toContain('name="preset"');
+    const on = renderToStaticMarkup(
+      await screens.connections({
+        shell: shell({
+          "leads.ui.catalog": ok({
+            items: [...catalogItems, { kind: "capability", name: "jobsearch" }],
+          }),
+        }),
+        query: {},
+      }),
+    );
+    expect(on).toContain('name="preset"');
+    expect(on).toContain('value="job_search"');
   });
   it("refuses the settings surface to members without reading connection data", async () => {
     const api = shell({}, "member");

@@ -29,9 +29,13 @@ def pipeline_create(
     h.lock(uow)
     if ctx.principal.account_id is None:
         raise OperationRefused("account_required", "pipeline owner must be an account")
+    if m.preset == "job_search" and not h.jobsearch_enabled(ctx, uow):
+        raise OperationRefused(
+            "capability_disabled", "job search is not enabled for this workspace"
+        )
     record = dict(
         id=uuid7(),
-        preset_id=h.PRESET_ID,
+        preset_id=h.PRESETS[m.preset],
         name=m.name,
         owner_id=ctx.principal.account_id,
         created_at=h.now(),

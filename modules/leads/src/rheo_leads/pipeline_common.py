@@ -12,15 +12,20 @@ from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import REGISTRY
 from rheo_core.refs.resolver import UnitOfWork
+from rheo_core.settings import resolve
+from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from sqlalchemy import select, update
 
 from rheo_leads import pipeline_contracts as c
+from rheo_leads.configuration import JOBSEARCH_KEY
 from rheo_leads.events import publish_event
 from rheo_leads.references import ref
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
 PRESET_ID = UUID("019bf0b0-0000-7000-8000-000000000001")
+JOBSEARCH_PRESET_ID = UUID("019bf0b0-0000-7000-8000-000000000002")
+PRESETS = {"inbound_services": PRESET_ID, "job_search": JOBSEARCH_PRESET_ID}
 RELATIONSHIPS = "relationships"
 
 
@@ -191,3 +196,12 @@ def evidence_digest(uow: UnitOfWork, record: dict[str, Any]) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def jobsearch_enabled(ctx: WorkspaceContext, uow: UnitOfWork) -> bool:
+    """The job-search capability counts only when this workspace turned it on."""
+    settings = resolve(
+        workspace_id=ctx.workspace_id,
+        source=TransactionBoundOverrideSource(uow, workspace_id=ctx.workspace_id),
+    )
+    return settings.set_by_workspace(JOBSEARCH_KEY) and settings.get_bool(JOBSEARCH_KEY)

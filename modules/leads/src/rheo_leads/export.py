@@ -1,4 +1,4 @@
-"""Version-four intake and pipeline snapshot; restore preserves identities.
+"""Version-five intake and pipeline snapshot; restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. Restore replaces only the fresh seed;
@@ -157,14 +157,14 @@ def import_records(
         field_mapping_rule=13,
         intake_connection=1,
         connection_health=1,
-        pipeline_preset=1,
-        preset_version=1,
-        preset_stage=9,
-        preset_transition=23,
+        pipeline_preset=2,
+        preset_version=2,
+        preset_stage=16,
+        preset_transition=35,
         preset_requirement=0,
-        preset_field=0,
-        preset_rubric=1,
-        preset_template=1,
+        preset_field=16,
+        preset_rubric=2,
+        preset_template=2,
     )
     if counts != expected:
         raise OperationRefused(

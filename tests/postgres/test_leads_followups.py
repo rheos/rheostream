@@ -9,7 +9,14 @@ from rheo_leads.storage import pipeline as p
 
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
-from postgres.test_leads_pipeline import approve_delete, capture, ok, one, setup
+from postgres.test_leads_pipeline import (
+    approve_delete,
+    capture,
+    ok,
+    one,
+    remove_jobsearch_preset,
+    setup,
+)
 
 pytestmark = [
     pytest.mark.postgres,
@@ -174,6 +181,7 @@ def test_existing_opportunity_survives_frozen_upgrade(intake: Intake) -> None:
     # removing only the new, empty table (and 0006's column) and resetting Alembic's
     # version marker.
     with open_unit_of_work(intake.ctx) as uow:
+        remove_jobsearch_preset(uow.connection)
         uow.connection.execute(text("DROP TABLE leads.followup_reminder"))
         uow.connection.execute(
             text("ALTER TABLE leads.qualification DROP COLUMN evidence_digest")

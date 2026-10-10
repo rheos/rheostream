@@ -68,7 +68,7 @@ uses canonical references and Recallatron's own deletion rules; unrelated memori
 survive and any participant failure rolls back the transaction. Leads also works in
 workspaces where Recallatron was never installed.
 
-Export format four covers all 36 owned tables, including dated follow-up history
+Export format five covers all 36 owned tables, including dated follow-up history
 and each assessment's evidence digest. Older-format archives require a matching older
 host for restore; the core refuses format mismatches. Take a full database backup
 before upgrading from a previous Leads schema; rollback means restoring that backup
@@ -77,6 +77,26 @@ with the previous image, not downgrading the additive 0005_followup_reminders or
 replaces only a fresh seed and strips deployment-local signing handles. The populated
 round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters,
 live source activation and the first external handoff destination remain separate work.
+
+## Job-search capability
+
+Job search is an optional capability, not a separate module. It is off unless the
+workspace turns it on: an owner sets `leads.capabilities.jobsearch` to `true` with
+`core.settings.set`. The deployment default permits that opt-in, and an operator who
+sets the key to `false` vetoes it for every workspace. While it is off,
+`leads.pipeline.create` refuses the `job_search` preset with `capability_disabled`, and
+the pipeline form doesn't offer it at all. Job-search pipelines and their records stay
+readable and exportable either way.
+
+Migration `0007_jobsearch_preset` seeds the **Job search** preset:
+- stages review → qualified → applied → interviewing, plus terminal hired, lost and
+  passed;
+- a `job_search` rubric;
+- sixteen `ext.jobsearch.*` extension fields: platform, posting id and URL, job type,
+  budget range, proposal count (with exactness and observation time), posting date,
+  client payment verification, spend, rating, reviews and hire rate, and applied.
+
+Provider-specific parsing belongs to a source's mapping, never to core columns.
 
 ## Dated next follow-up
 
