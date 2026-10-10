@@ -131,4 +131,28 @@ describe("pasted inquiry evidence", () => {
       )["person.name"],
     ).toBe("Avery");
   });
+  it("never takes a greeting, and leaves two name candidates blank", () => {
+    expect(
+      suggestInquiry(`Hi Robin\nPlease call me\n${phone("0142")}`)[
+        "person.name"
+      ],
+    ).toBe("");
+    expect(
+      suggestInquiry(
+        "Thanks for the note.\n\nDana Whitfield\nAvery Example\ndana@example.com",
+      )["person.name"],
+    ).toBe("");
+  });
+  it("treats one labeled number written two ways as one", () => {
+    expect(
+      suggestInquiry(
+        `Phone: +1 ${phone("0142", " ")}\nTel: ${phone("0142", ".")}`,
+      )["person.phone"],
+    ).toBe(`+1 ${phone("0142", " ")}`);
+  });
+  it("keeps conflicting subjects neutral instead of using identity", () => {
+    expect(
+      suggestInquiry("Subject: One\nSubject: Two\nName: Avery").subject,
+    ).toBe("Pasted inquiry");
+  });
 });
