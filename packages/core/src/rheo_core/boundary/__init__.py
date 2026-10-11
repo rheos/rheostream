@@ -25,6 +25,7 @@ from rheo_core.boundary.factories import (
     context_for_harness,
     context_for_memory_expiry,
     context_for_operator,
+    context_for_scheduled_job,
 )
 
 __all__ = [
@@ -39,4 +40,5 @@ __all__ = [
     "context_for_harness",
     "context_for_memory_expiry",
     "context_for_operator",
+    "context_for_scheduled_job",
 ]

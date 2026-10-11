@@ -20,6 +20,7 @@ SECRET_REF_MALFORMED: Final = "secret_ref_malformed"
 SECRET_SCOPE_DENIED: Final = "secret_scope_denied"
 SECRET_MISSING: Final = "secret_missing"
 SECRET_PERMISSIONS: Final = "secret_permissions"
+SECRET_WRITE_FAILED: Final = "secret_write_failed"
 
 
 class SecretRefusal(Exception):

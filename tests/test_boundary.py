@@ -71,13 +71,21 @@ from rheo_core.boundary import (
     context_for_evidence_acceptance,
     context_for_harness,
     context_for_operator,
+    context_for_scheduled_job,
 )
 from rheo_core.boundary.factories import context_from_operation
 from rheo_core.migrations.orchestrator import migrate_workspace
-from rheo_core.operations import OPERATION_UNKNOWN, dispatch
+from rheo_core.operations import (
+    OPERATION_NOT_PERMITTED,
+    OPERATION_UNKNOWN,
+    REGISTRY,
+    dispatch,
+    register_core_operations,
+)
 from rheo_core.refs import uuid7
 from rheo_core.storage.control_plane import set_workspace_state
 from rheo_core.storage.control_tables import WorkspaceState
+from rheo_core.storage.routing import open_unit_of_work
 from sqlalchemy import text
 
 pytestmark = pytest.mark.postgres
@@ -414,6 +422,59 @@ def test_context_for_evidence_acceptance_carries_the_passed_account_and_purpose(
     assert ctx.audience is None
     assert ctx.operation_set == frozenset()
     assert ctx.operation_set is not ALL_OPERATIONS
+
+
+def test_context_for_scheduled_job_routes_short_units_of_work_and_dispatches_nothing(
+    cluster: ClusterSession, make_workspace: MakeWorkspace
+) -> None:
+    """A scheduled handler's own context: a system value that routes a short unit of
+    work to its workspace and is refused every operation, and no context at all for
+    a workspace that is not servable."""
+    workspace = make_workspace()
+    ctx = context_for_scheduled_job(workspace)
+    assert isinstance(ctx, WorkspaceContext)
+    assert ctx.workspace_id == workspace
+    assert ctx.actor.kind is ActorKind.SYSTEM and ctx.actor.id is None
+    assert ctx.role is Role.SERVICE
+    assert ctx.entry is Entry.JOB
+    assert ctx.audience is None
+    assert ctx.principal.account_id is None
+    assert ctx.principal.bound_purpose is None
+    assert ctx.operation_set == frozenset()
+    assert ctx.operation_set is not ALL_OPERATIONS
+    assert ctx.request_id.version == 7
+    with pytest.raises(TypeError):
+        context_for_scheduled_job(str(workspace))  # type: ignore[arg-type]
+
+    database = cluster.registry_row(workspace).database_name
+    with open_unit_of_work(ctx) as uow:
+        current = uow.connection.execute(text("SELECT current_database()"))
+        assert current.scalar_one() == database
+        uow.connection.execute(text("CREATE TABLE scheduled_job_probe (id int)"))
+        uow.commit()
+    engine = cluster.backend.pools.engine_for(database)
+    with engine.connect() as connection:
+        probe = text("SELECT to_regclass('scheduled_job_probe') IS NOT NULL")
+        assert connection.execute(probe).scalar_one() is True
+
+    register_core_operations()
+    names = REGISTRY.names()
+    assert names
+    for name in sorted(names):
+        outcome = dispatch(ctx, name, {})
+        assert outcome.state == OPERATION_NOT_PERMITTED, (name, outcome)
+
+    missing = context_for_scheduled_job(uuid7())
+    assert missing == Refusal(WORKSPACE_UNAVAILABLE, WORKSPACE_MISSING_DETAIL)
+    with cluster.backend.control_engine.begin() as connection:
+        set_workspace_state(
+            connection,
+            workspace,
+            state=WorkspaceState.UNAVAILABLE,
+            state_detail="marked unavailable by the test",
+        )
+    unavailable = context_for_scheduled_job(workspace)
+    assert unavailable == Refusal(WORKSPACE_UNAVAILABLE, "unavailable")
 
 
 def test_harness_context_carries_the_ratified_account_values_and_is_immutable(

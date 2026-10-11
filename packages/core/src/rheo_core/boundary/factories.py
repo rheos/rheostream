@@ -322,6 +322,39 @@ def context_for_evidence_recovery(workspace_id: UUID) -> WorkspaceContext | Refu
     )
 
 
+def context_for_scheduled_job(workspace_id: UUID) -> WorkspaceContext | Refusal:
+    """The context a scheduled job handler opens its own short units of work under.
+
+    A handler receives its unit of work, payload and cancellation token, but no
+    context; ``open_unit_of_work`` needs one to route a short, immediately committed
+    transaction to the workspace database outside the handler's own transaction.
+
+    Actor ``system`` with no id, role ``service``, entry ``job``, no audience, no
+    account, no bound purpose and an empty operation set: the same shape as
+    :func:`context_for_evidence_recovery`, named for this use. Like
+    :func:`context_for_memory_expiry` it is a value and not an authority: it
+    dispatches nothing, and holding one grants only the routing a workspace id
+    already implies.
+    """
+    if not isinstance(workspace_id, UUID):
+        raise TypeError("workspace_id must be a UUID")
+    enabled = _active_workspace_modules(get_backend(), workspace_id)
+    if isinstance(enabled, Refusal):
+        return enabled
+    return WorkspaceContext(
+        workspace_id=workspace_id,
+        actor=Actor(kind=ActorKind.SYSTEM, id=None),
+        role=Role.SERVICE,
+        entry=Entry.JOB,
+        # None, as for ``context_for_memory_expiry``: a job has no audience.
+        audience=None,
+        operation_set=frozenset(),
+        enabled_modules=enabled,
+        request_id=uuid7(),
+        principal=AuthenticatedPrincipal(account_id=None, bound_purpose=None),
+    )
+
+
 def context_for_evidence_acceptance(
     workspace_id: UUID, *, account_id: UUID, purpose: ContextPurpose
 ) -> WorkspaceContext | Refusal:
