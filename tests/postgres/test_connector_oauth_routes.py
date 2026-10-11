@@ -18,8 +18,10 @@ records what actually ran.
 """
 
 import contextlib
+import logging
 import subprocess
 import sys
+import traceback
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any, Final
@@ -569,7 +571,9 @@ async def test_every_outcome_but_connected_is_the_refusal_page(
     owner_account_id: UUID,
     outcome: str,
     dispatched: list[tuple[str, dict[str, Any]]],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.DEBUG)
     _set_mode(monkeypatch, "subdomain")
     host = _identity_host()
     cookie = _session_cookie(owner_account_id, harness_enabled, host)
@@ -594,6 +598,38 @@ async def test_every_outcome_but_connected_is_the_refusal_page(
     if outcome != "dispatcher-raises":
         assert len(dispatched) == 1
         assert len(HANDLER.ran) == 1
+    if outcome in ("raises", "dispatcher-raises"):
+        # The exception's text carries the marker; no server-side log record may.
+        # The test's own httpx client logs the URL it requested, so its records
+        # (the ``httpx``/``httpcore`` loggers, client side only) are left out.
+        server = [
+            record
+            for record in caplog.records
+            if record.name.split(".", 1)[0] not in _CLIENT_LOGGERS
+        ]
+        assert server
+        for record in server:
+            assert MARK not in _rendered(record), record.name
+    if outcome == "dispatcher-raises":
+        # The route's own line names the exception type and nothing else.
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "rheo_app_core.connector_oauth_routes"
+        ] == ["connector_callback_unexpected_error RuntimeError"]
+
+
+_CLIENT_LOGGERS: Final = frozenset({"httpx", "httpcore"})
+
+
+def _rendered(record: logging.LogRecord) -> str:
+    """Everything a handler could write for ``record``: the formatted message, the
+    raw message and arguments, and any exception or stack text."""
+    parts = [record.getMessage(), str(record.msg), repr(record.args)]
+    if record.exc_info:
+        parts.extend(traceback.format_exception(*record.exc_info))
+    parts.extend(str(text) for text in (record.exc_text, record.stack_info) if text)
+    return "\n".join(parts)
 
 
 async def test_no_request_text_is_reflected_in_any_response(
