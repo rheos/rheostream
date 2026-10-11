@@ -294,15 +294,37 @@ def _refresh(
         )
     except OAuthFailure as error:
         failure = error
-    token.checkpoint()
+    # A cancelled or lost job still finishes what the refresh started: a rotated
+    # token is switched to, or revoked and discarded, before the stop propagates.
+    stopped = _checkpoint(token)
     if failure is not None:
+        _reraise(stopped)
         _end(uow, run, _failed(failure))
         return None
     if access is None:  # refresh either returns a token or raises
+        if rotated is not None:
+            oauth.discard(rotated)
         raise TypeError("refresh returned no access token")
-    if rotated is not None and not _rotate(token, run, current, rotated):
-        return None
-    return access
+    goes_on = rotated is None or _rotate(token, run, current, rotated)
+    _reraise(stopped)
+    return access if goes_on else None
+
+
+def _checkpoint(token: CancellationToken, *, force: bool = False) -> Exception | None:
+    """Checkpoint, returning what it raised instead of raising it, so the caller
+    can finish a cleanup first and then raise it with :func:`_reraise`."""
+    try:
+        token.checkpoint(force=force)
+    except Exception as error:
+        return error
+    return None
+
+
+def _reraise(*raised: Exception | None) -> None:
+    """Raise the first captured exception, outside any except block."""
+    for error in raised:
+        if error is not None:
+            raise error
 
 
 def _rotate(token: CancellationToken, run: _Run, old: str, new: str) -> bool:
@@ -311,6 +333,8 @@ def _rotate(token: CancellationToken, run: _Run, old: str, new: str) -> bool:
     Won: the old file goes only after the switch committed, and the run's guard
     moves to the new generation. Lost: the minted token is referenced by nothing,
     so it is revoked once and its file discarded; the run ends writing nothing.
+    A checkpoint that raises on the way stops neither the revocation nor the
+    discard; it is raised once both are done.
     """
     deps = dependencies()
     connection = run.connection
@@ -331,20 +355,25 @@ def _rotate(token: CancellationToken, run: _Run, old: str, new: str) -> bool:
         oauth.discard(old)
         run.generation += 1
         return True
-    token.checkpoint(force=True)
-    oauth.revoke(
-        connection.revocation_endpoint,
-        refresh_ref=new,
-        client=run.client,
-        workspace_id=run.job_ctx.workspace_id,
-        connection_id=connection.connection_id,
-        resolver=deps.resolver,
-        clock=deps.clock,
-        transport=deps.transport,
-        now=deps.now(),
-    )
-    token.checkpoint()
+    before_call = _checkpoint(token, force=True)
+    failed: Exception | None = None
+    try:
+        oauth.revoke(
+            connection.revocation_endpoint,
+            refresh_ref=new,
+            client=run.client,
+            workspace_id=run.job_ctx.workspace_id,
+            connection_id=connection.connection_id,
+            resolver=deps.resolver,
+            clock=deps.clock,
+            transport=deps.transport,
+            now=deps.now(),
+        )
+    except Exception as error:  # revoke never raises; the discard runs regardless
+        failed = error
+    after_call = _checkpoint(token)
     oauth.discard(new)
+    _reraise(before_call, failed, after_call)
     return False
 
 

@@ -59,6 +59,7 @@ from rheo_core.storage.control_plane import set_workspace_state
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record, job
+from rheo_core.work.cancellation import JobCancelled
 from rheo_leads.intake.accept import health_write
 from rheo_leads.jobfeed.run import CollectPayload, JobfeedFailure, collect_job
 from rheo_leads.jobfeed.state import AUTHORIZATION_LOST
@@ -259,6 +260,20 @@ class LeaseModel:
 class NoToken:
     def checkpoint(self, now: Any = None, *, force: bool = False) -> None:
         return None
+
+
+@dataclass
+class CancelledFrom:
+    """A token whose job is cancelled from its ``stop_at``-th checkpoint (counting
+    from 0) on: that call and every later one raise, as a cancelled job's do."""
+
+    stop_at: int
+    calls: list[bool] = field(default_factory=list)
+
+    def checkpoint(self, now: Any = None, *, force: bool = False) -> None:
+        self.calls.append(force)
+        if len(self.calls) > self.stop_at:
+            raise JobCancelled("job cancelled")
 
 
 # --- the claim: one refresh, no overlap, 60-minute spacing ---------------------------
@@ -529,6 +544,52 @@ def test_revoke_after_a_committed_rotation_revokes_the_new_token(
     after = stored(c.owner)
     assert after.token_ref is None and after.authorization_state == "revoked"
     assert secret_files(root) == set()
+
+
+def test_a_cancellation_right_after_a_rotating_refresh_still_stores_the_token(
+    intake: Intake, root: Path, served: FakeAuthorizationServer
+) -> None:
+    """The ordinary checkpoint after the refresh raises: the rotated token is
+    switched to and the old file retired before the cancellation propagates, so
+    a single-use rotation never strands the connection on a dead token."""
+    c = connected_collector(intake, served, registration_token=False)
+    rotating = Tokens(rotating=True)
+    served.token = rotating
+    token = CancelledFrom(stop_at=1)
+    with pytest.raises(JobCancelled) as raised:
+        invoke(c, token)
+    assert raised.value.__cause__ is None and raised.value.__context__ is None
+    assert token.calls == [True, False]
+    after = stored(c.owner)
+    assert after.token_ref is not None and after.token_ref != c.token_ref
+    assert after.credential_generation == 2
+    assert file_of(root, after.token_ref).read_text() == rotating.issued[-1]
+    assert secret_files(root) == {file_of(root, after.token_ref)}
+    assert served.revocation_requests == []
+
+
+@pytest.mark.parametrize(
+    "stop_at", [1, 2, 3], ids=["after-refresh", "before-revocation", "after-revocation"]
+)
+def test_a_cancellation_in_the_lost_race_still_revokes_and_discards(
+    intake: Intake, root: Path, served: FakeAuthorizationServer, stop_at: int
+) -> None:
+    """A checkpoint raising at any point of the lost compare-and-set path: the
+    minted token is still revoked once and its file discarded before the
+    cancellation propagates."""
+    c = connected_collector(intake, served, registration_token=False)
+    rotating = Tokens(rotating=True)
+    served.token = before(lambda: revoke(c), rotating)
+    token = CancelledFrom(stop_at=stop_at)
+    with pytest.raises(JobCancelled) as raised:
+        invoke(c, token)
+    assert raised.value.__cause__ is None and raised.value.__context__ is None
+    assert token.calls == [True, False, True, False]
+    minted = rotating.issued[-1]
+    assert revoked_tokens(served) == [c.refresh_token, minted]
+    assert secret_files(root) == set()
+    after = stored(c.owner)
+    assert after.token_ref is None and after.credential_generation == 2
 
 
 def test_a_revoke_that_wins_the_race_leaves_no_live_token(
