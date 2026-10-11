@@ -1,8 +1,11 @@
-"""Version-six intake and pipeline snapshot; restore preserves identities.
+"""Version-seven intake, pipeline and job feed snapshot; restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
-webhook connections need new credentials. Restore replaces only the fresh seed;
-existing intake records cause a refusal, never a destructive merge.
+webhook connections need new credentials. The job feed connection is exported
+without its token reference, its registered client, its run claim and its backoff,
+and the pending authorization is never exported; a restored collector needs the
+owner to reconnect, which registers a fresh client. Restore replaces only the fresh
+seed; existing intake records cause a refusal, never a destructive merge.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -17,11 +20,13 @@ from sqlalchemy import (
     ARRAY,
     JSON,
     Boolean,
+    Column,
     Date,
     DateTime,
     Integer,
     LargeBinary,
     Numeric,
+    Table,
     Uuid,
     delete,
     func,
@@ -36,24 +41,63 @@ from rheo_leads.storage import tables as t
 if TYPE_CHECKING:
     from rheo_core.exports.artifact import ExportSnapshot
 
-# Temporary: the job feed tables hold secret references and a pending PKCE verifier,
-# so they stay out of export and restore until the export format carries these
-# tables with those columns removed.
-TABLES = tuple(
-    table for table in t.metadata.sorted_tables if table not in jobfeed.TABLES
+TABLES = tuple(t.metadata.sorted_tables)
+"""Every owned table: restore checks each against the fresh seed and replaces it."""
+# The pending authorization holds a PKCE verifier and fresh client references.
+EXPORTED = tuple(
+    table for table in TABLES if table is not jobfeed.jobfeed_authorization
 )
 SECRET_COLUMNS = {"signing_secret_ref", "previous_secret_ref", "previous_valid_until"}
+# Left out of the export entirely, not nulled: a secret reference, the registered
+# client (a restored copy may sit behind another redirect URI), the run claim and the
+# backoff. Restore writes RESTORED_COLLECTOR over them.
+OMITTED_COLUMNS = {
+    jobfeed.jobfeed_connection.name: frozenset(
+        {
+            "token_ref",
+            "run_claimed_at",
+            "not_before",
+            "client_id",
+            "client_auth_method",
+            "client_redirect_uri",
+            "client_secret_expires_at",
+            "client_secret_ref",
+            "registration_token_ref",
+        }
+    )
+}
+RESTORED_COLLECTOR: Mapping[str, object] = {
+    "authorization_state": "authorization_required",
+    "token_ref": None,
+    "credential_generation": 0,
+    "run_claimed_at": None,
+    "consecutive_failures": 0,
+    "not_before": None,
+    "client_id": None,
+    "client_auth_method": None,
+    "client_redirect_uri": None,
+    "client_secret_expires_at": None,
+    "client_secret_ref": None,
+    "registration_token_ref": None,
+}
+
+
+def _columns(table: Table) -> list[Column[Any]]:
+    """The columns a table's exported rows carry."""
+    omitted = OMITTED_COLUMNS.get(table.name, frozenset())
+    return [column for column in table.columns if column.name not in omitted]
 
 
 def export_records(snapshot: "ExportSnapshot") -> Sequence[Mapping[str, object]]:
-    """Export all owned tables in foreign-key order."""
+    """Export the owned tables in foreign-key order."""
     rows: list[Mapping[str, object]] = []
-    for table in TABLES:
+    for table in EXPORTED:
+        columns = _columns(table)
         for row in snapshot.connection.execute(
-            select(table).order_by(*table.primary_key.columns)
+            select(*columns).order_by(*table.primary_key.columns)
         ).mappings():
             values = dict(row)
-            for column in table.columns:
+            for column in columns:
                 value = values[column.name]
                 if column.name in SECRET_COLUMNS:
                     values[column.name] = None
@@ -66,14 +110,15 @@ def export_records(snapshot: "ExportSnapshot") -> Sequence[Mapping[str, object]]
 def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, Any]]]:
     """Reject unknown fields and validate scalar types before issuing any write."""
     grouped: dict[str, list[dict[str, Any]]] = {table.name: [] for table in TABLES}
-    by_type = {f"leads.{table.name}": table for table in TABLES}
+    by_type = {f"leads.{table.name}": table for table in EXPORTED}
     try:
         for row in rows:
             table = by_type[str(row["record_type"])]
-            if set(row) != {"record_type", *table.columns.keys()}:
+            columns = _columns(table)
+            if set(row) != {"record_type", *(column.name for column in columns)}:
                 raise ValueError
             values: dict[str, Any] = {}
-            for column in table.columns:
+            for column in columns:
                 value = row[column.name]
                 if value is None:
                     if not column.nullable:
@@ -118,6 +163,9 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
                 and values["state"] == "active"
             ):
                 values["state"] = "needs_credential"
+            if table is jobfeed.jobfeed_connection:
+                # No token, no client, no claim, no backoff: the owner reconnects.
+                values.update(RESTORED_COLLECTOR)
             grouped[table.name].append(values)
     except (KeyError, ValueError, TypeError, InvalidOperation):
         raise OperationRefused("artifact_invalid", "invalid Leads intake row") from None

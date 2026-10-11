@@ -2397,6 +2397,228 @@
         "resolved_at"
       ],
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.jobfeed_connection"
+        },
+        "connection_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "singleton": {
+          "type": "boolean"
+        },
+        "pipeline_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "authorization_state": {
+          "type": "string"
+        },
+        "credential_generation": {
+          "type": "integer"
+        },
+        "resource_url": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "authorization_endpoint": {
+          "type": "string"
+        },
+        "token_endpoint": {
+          "type": "string"
+        },
+        "registration_endpoint": {
+          "type": "string"
+        },
+        "revocation_endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "organization_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_completed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "consecutive_failures": {
+          "type": "integer"
+        },
+        "fetched": {
+          "type": "integer"
+        },
+        "imported": {
+          "type": "integer"
+        },
+        "skipped_dup": {
+          "type": "integer"
+        },
+        "refreshed": {
+          "type": "integer"
+        },
+        "filtered": {
+          "type": "integer"
+        },
+        "skipped_untracked": {
+          "type": "integer"
+        },
+        "errors": {
+          "type": "integer"
+        },
+        "detail_reads": {
+          "type": "integer"
+        },
+        "pages": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "connection_id",
+        "singleton",
+        "pipeline_id",
+        "authorization_state",
+        "credential_generation",
+        "resource_url",
+        "issuer",
+        "authorization_endpoint",
+        "token_endpoint",
+        "registration_endpoint",
+        "revocation_endpoint",
+        "organization_id",
+        "last_completed_at",
+        "consecutive_failures",
+        "fetched",
+        "imported",
+        "skipped_dup",
+        "refreshed",
+        "filtered",
+        "skipped_untracked",
+        "errors",
+        "detail_reads",
+        "pages",
+        "created_at",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.jobfeed_posting"
+        },
+        "connection_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "posting_id": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "field_digests": {
+          "type": "string"
+        },
+        "last_event_id": {
+          "type": "string"
+        },
+        "first_delivered_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_delivered_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "connection_id",
+        "posting_id",
+        "seq",
+        "field_digests",
+        "last_event_id",
+        "first_delivered_at",
+        "last_delivered_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.jobfeed_account_choice"
+        },
+        "connection_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "organization_id": {
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ordinal": {
+          "type": "integer"
+        },
+        "seen_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "connection_id",
+        "organization_id",
+        "label",
+        "ordinal",
+        "seen_at"
+      ],
+      "additionalProperties": false
     }
   ]
 }

@@ -68,8 +68,12 @@ uses canonical references and Recallatron's own deletion rules; unrelated memori
 survive and any participant failure rolls back the transaction. Leads also works in
 workspaces where Recallatron was never installed.
 
-Export format six covers all 36 owned tables, including dated follow-up history
-and each assessment's evidence digest. Older-format archives require a matching older
+Export format seven covers the owned tables, including dated follow-up history,
+each assessment's evidence digest and the job feed's connection status, posting
+dedupe rows and account choices. It never carries the job feed's token reference,
+registered client, run claim, backoff or pending authorization: a restored collector
+reads "authorization required", has no schedule, and registers a fresh client when the
+owner reconnects. Older-format archives require a matching older
 host for restore; the core refuses format mismatches. Take a full database backup
 before upgrading from a previous Leads schema; rollback means restoring that backup
 with the previous image, not downgrading the additive 0005_followup_reminders or

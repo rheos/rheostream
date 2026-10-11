@@ -1,4 +1,8 @@
-"""Erase intake content while keeping the delivery identity tombstone."""
+"""Erase intake content while keeping the delivery identity tombstone.
+
+Erasure also deletes the job feed's dedupe row for the erased posting in the same
+transaction; delivery receipts and their event ids stay.
+"""
 
 from datetime import UTC, datetime
 from uuid import UUID
@@ -15,7 +19,10 @@ from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import delete, select, update
 
 from rheo_leads import pipeline_common as h
+from rheo_leads.jobfeed.install import POSTING_ID
+from rheo_leads.jobfeed.state import forget_posting
 from rheo_leads.pipeline_evidence import derive
+from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
@@ -26,13 +33,31 @@ def on_observation_deleted(
     """Works after owned deletion: the observation UUID is also its receipt UUID."""
     if ref.module != "leads" or ref.record_type != "observation":
         return NOTHING_REMOVED
-    receipt_id = uow.connection.execute(
-        select(t.delivery_receipt.c.id)
+    receipt = uow.connection.execute(
+        select(
+            t.delivery_receipt.c.id,
+            t.delivery_receipt.c.connection_id,
+            t.delivery_receipt.c.source_event_id,
+        )
         .where(t.delivery_receipt.c.id == ref.id)
         .with_for_update()
-    ).scalar_one_or_none()
-    if receipt_id is None:
+    ).one_or_none()
+    if receipt is None:
         return NOTHING_REMOVED
+    receipt_id = receipt.id
+    collector = uow.connection.execute(
+        select(j.jobfeed_connection.c.connection_id).where(
+            j.jobfeed_connection.c.connection_id == receipt.connection_id
+        )
+    ).scalar_one_or_none()
+    if collector is not None:
+        # A collector event id is "<posting id>.<seq>.<digest>"; posting ids never
+        # contain a dot. The receipt itself keeps its event id.
+        forget_posting(
+            uow,
+            connection_id=collector,
+            posting_id=receipt.source_event_id.split(".", 1)[0],
+        )
     uow.connection.execute(
         delete(t.delivery_payload).where(t.delivery_payload.c.receipt_id == receipt_id)
     )
@@ -79,6 +104,15 @@ def delete_owned(
     h.lock(uow)
     reference = authorization.ref
     if reference.record_type == "opportunity":
+        posting_id = uow.connection.execute(
+            select(p.opportunity_field_state.c.value_text).where(
+                p.opportunity_field_state.c.opportunity_id == reference.id,
+                p.opportunity_field_state.c.target == POSTING_ID,
+                p.opportunity_field_state.c.value_kind == "value",
+            )
+        ).scalar_one_or_none()
+        if posting_id is not None:
+            forget_posting(uow, posting_id=posting_id)
         deleted = uow.connection.execute(
             delete(p.opportunity)
             .where(

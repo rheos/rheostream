@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Final
 from uuid import UUID
 
+from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import Connection, delete, select, update
 
 from rheo_leads.storage import jobfeed as j
@@ -117,6 +118,23 @@ def account_choices(
             .order_by(table.c.ordinal)
         )
     ]
+
+
+def forget_posting(
+    uow: UnitOfWork, *, posting_id: str, connection_id: UUID | None = None
+) -> None:
+    """Delete the dedupe row for ``posting_id`` in the caller's transaction: on every
+    connection when ``connection_id`` is ``None``, else on that connection only.
+
+    The row is derived from content an erasure removes. Delivery receipts are left
+    alone: their event ids keep the posting's sequence from ever restarting.
+    """
+    statement = delete(j.jobfeed_posting).where(
+        j.jobfeed_posting.c.posting_id == posting_id
+    )
+    if connection_id is not None:
+        statement = statement.where(j.jobfeed_posting.c.connection_id == connection_id)
+    uow.connection.execute(statement)
 
 
 def clear_collector_health(conn: Connection, connection_id: UUID) -> None:

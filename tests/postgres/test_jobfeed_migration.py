@@ -339,12 +339,12 @@ def test_transport_singleton_and_client_constraints(intake: Intake) -> None:
         )
 
 
-def test_export_leaves_out_the_job_feed_tables(intake: Intake) -> None:
-    """The temporary exclusion keeps references and the verifier out of export.
-
-    Export format 7 replaces the exclusion with an export that carries the job feed
-    tables minus their secret and client columns; this test changes with it.
-    """
+def test_export_carries_the_job_feed_tables_without_secret_or_client_state(
+    intake: Intake,
+) -> None:
+    """Export format 7: the connection row leaves out its token reference, every
+    client column, its run claim and its backoff; the pending authorization is never
+    exported; the dedupe rows and account choices are."""
     from types import SimpleNamespace
     from typing import cast
 
@@ -358,6 +358,9 @@ def test_export_leaves_out_the_job_feed_tables(intake: Intake) -> None:
         "client_id": "fixture-client-id-7f3a",
         "client_redirect_uri": "https://www.example.com/fixture-callback-7f3a",
     }
+    claimed = datetime(2031, 3, 4, 5, 6, 7, 111111, tzinfo=UTC)
+    backoff = datetime(2031, 3, 4, 7, 8, 9, 222222, tzinfo=UTC)
+    expiry = datetime(2031, 3, 4, 9, 10, 11, 333333, tzinfo=UTC)
     verifier = "fixture-verifier-7f3a" + "v" * 65
     pipeline = RecordRef.parse(ok(intake, "pipeline.create", name="Job examples").ref)
     poll = connector(intake, "poll", "fixture-poll")
@@ -368,7 +371,10 @@ def test_export_leaves_out_the_job_feed_tables(intake: Intake) -> None:
             pipeline.id,
             authorization_state="connected",
             client_auth_method="client_secret_post",
+            client_secret_expires_at=expiry,
             organization_id="fixture-org-7f3a",
+            run_claimed_at=claimed,
+            not_before=backoff,
             **secrets,
         ),
     )
@@ -414,14 +420,45 @@ def test_export_leaves_out_the_job_feed_tables(intake: Intake) -> None:
     # Positive control: the export ran and carried the poll connection itself.
     assert "leads.intake_connection" in record_types
     assert any(row.get("id") == poll for row in rows)
-    assert not {name for name in record_types if name.startswith("leads.jobfeed_")}
+    assert {name for name in record_types if name.startswith("leads.jobfeed_")} == {
+        "leads.jobfeed_connection",
+        "leads.jobfeed_posting",
+        "leads.jobfeed_account_choice",
+    }
+    (collector,) = (r for r in rows if r["record_type"] == "leads.jobfeed_connection")
+    assert collector["connection_id"] == poll
+    assert collector["organization_id"] == "fixture-org-7f3a"
+    assert collector["registration_endpoint"] == "https://auth.example.com/register"
+    omitted = {
+        "token_ref",
+        "run_claimed_at",
+        "not_before",
+        "client_id",
+        "client_auth_method",
+        "client_redirect_uri",
+        "client_secret_expires_at",
+        "client_secret_ref",
+        "registration_token_ref",
+    }
+    assert not omitted & set(collector), collector
+    assert set(collector) == {"record_type"} | (
+        set(j.jobfeed_connection.columns.keys()) - omitted
+    )
+    (posting,) = (r for r in rows if r["record_type"] == "leads.jobfeed_posting")
+    assert posting["posting_id"] == "fixture-posting-7f3a"
     rendered = repr(rows)
     for value in (
         *secrets.values(),
         verifier,
         "fixture-pending-secret-ref-7f3a",
         "fixture-pending-registration-ref-7f3a",
-        "fixture-posting-7f3a",
-        "fixture-org-7f3a",
+        "client_secret_post",
+        "jobfeed_authorization",
+        "code_verifier",
+        "state_hash",
+        (b"\x03" * 32).hex(),
+        *(repr(moment) for moment in (claimed, backoff, expiry)),
+        *(moment.isoformat() for moment in (claimed, backoff, expiry)),
+        *omitted,
     ):
         assert value not in rendered, value
