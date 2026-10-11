@@ -43,6 +43,7 @@ from harness.jobfeed import (
     after_claim,
     after_step_one_read,
     answer,
+    arguments_of,
     before,
     collect_jobs,
     configure_connector,
@@ -337,9 +338,10 @@ def test_a_run_in_flight_is_not_overlapped_and_the_next_waits_60_minutes(
     assert len(refresh_requests(served)) == 1
     assert stored(c.owner).run_claimed_at == claimed
     clock.advance(2 * 60)
+    claimed_at = clock.now()
     invoke(c, NoToken())
     assert len(refresh_requests(served)) == 2
-    assert stored(c.owner).run_claimed_at == clock.now()
+    assert stored(c.owner).run_claimed_at == claimed_at
 
 
 # --- the refresh: checkpoints, lease and one attempt ---------------------------------
@@ -786,12 +788,13 @@ def test_an_installed_before_workspace_is_enrolled_by_its_completion(
     first = connected(intake, owner, served, pipeline)
     assert collect_schedule(owner)["enabled"] is True  # type: ignore[index]
     exchanges = len(served.token_requests)
+    claimed_at = clock.now()
     visit(intake, clock)
     assert len(served.token_requests) == exchanges + 1
     assert grant_type(served.token_requests[-1]) == "refresh_token"
     jobs = collect_jobs(owner)
     assert [(j.state, j.attempts) for j in jobs] == [("succeeded", 1)]
-    assert stored(owner).run_claimed_at == clock.now()
+    assert stored(owner).run_claimed_at == claimed_at
     assert stored(owner).connection_id == first.connection_id
 
 
@@ -1402,6 +1405,20 @@ def test_a_run_never_registers_in_any_outcome(
 OTHER = "org-example-2"
 THIRD = "org-example-3"
 SET_UP = ["initialize", "notifications/initialized", "list_accounts"]
+DEFAULT_SEARCHES = [
+    "find_jobs:smart_search",
+    "find_jobs:smart_search",
+    "find_jobs:search",
+]
+"""An empty feed: one page per default search, none claiming more."""
+
+
+def find_jobs_arguments(mcp: FakeMcpServer) -> list[dict[str, Any]]:
+    return [
+        arguments_of(r)
+        for r in mcp.requests
+        if arguments_of(r).get("action") in {"smart_search", "search", "get"}
+    ]
 
 
 def choices_of(c: ConnectedCollector) -> list[tuple[str, str | None]]:
@@ -1467,8 +1484,12 @@ def test_the_account_is_selected_without_fallback_after_storing_the_choices(
     for entry in listed:
         expected_choices.setdefault(str(entry["org_uid"]), str(entry["name"]))
     assert choices_of(c) == list(expected_choices.items())
-    assert mcp.names() == SET_UP
-    no_collection(mcp)
+    if selected is None:
+        assert mcp.names() == SET_UP
+        no_collection(mcp)
+    else:
+        assert mcp.names() == SET_UP + DEFAULT_SEARCHES
+        assert {args["org_uid"] for args in find_jobs_arguments(mcp)} == {selected}
     after = stored(c.owner)
     assert after.authorization_state == "connected"
     if selected is None:
@@ -1510,15 +1531,18 @@ def test_a_selection_after_a_stop_runs_from_the_end_of_the_claim_window(
     clock.wall_at = claimed + timedelta(minutes=60)
     tick(intake, c.owner, clock)
     assert len(collect_jobs(c.owner)) == 2
+    claimed_at = clock.now()
     visit(intake, clock)
     quietly_succeeded(c, runs=2)
     assert len(refresh_requests(served)) == 2
     assert mcp.calls("list_accounts") == 2
     after = stored(c.owner)
-    assert after.run_claimed_at == clock.now()
+    assert after.run_claimed_at == claimed_at
     assert after.organization_id == OTHER
     assert last_error(c) is None
-    no_collection(mcp)
+    # The first run stopped before collecting; the second collects as the choice.
+    assert mcp.names() == SET_UP + SET_UP + DEFAULT_SEARCHES
+    assert {args["org_uid"] for args in find_jobs_arguments(mcp)} == {OTHER}
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -1674,7 +1698,7 @@ def test_each_set_up_call_runs_between_a_forced_and_an_ordinary_checkpoint(
     ):
         mcp.script[name] = recorded(name, seconds)
     invoke(c, token)
-    assert token.events[2:] == [
+    assert token.events[2:11] == [
         ("checkpoint", True),
         "initialize",
         ("checkpoint", False),

@@ -39,6 +39,8 @@ class CollectResult:
     upstream_failures: tuple[UpstreamFailure, ...] = ()
     """The failed calls among ``search_failures``, in order, for the run's health
     code and back-off."""
+    pages_ok: int = 0
+    """Pages that passed every page check."""
 
 
 @dataclass(frozen=True)
@@ -103,7 +105,7 @@ def collect_presets(
     every row is its preset's index in ``presets``."""
     rows: list[NormalizedPosting] = []
     failures: list[UpstreamFailure] = []
-    raw = pages = page_failures = invalid = 0
+    raw = pages = pages_ok = page_failures = invalid = 0
     terminal: UpstreamFailure | None = None
 
     def result(*, cut: bool = False, capability_lost: bool = False) -> CollectResult:
@@ -115,6 +117,7 @@ def collect_presets(
             cut=cut,
             capability_lost=capability_lost,
             upstream_failures=tuple(failures),
+            pages_ok=pages_ok,
         )
 
     for ordinal, preset in enumerate(presets):
@@ -142,6 +145,7 @@ def collect_presets(
             if jobs is None:
                 page_failures += 1
                 break
+            pages_ok += 1
             # The cap: the page that crosses it is truncated, and no page is
             # requested once it is reached.
             kept = jobs[: ROW_CAP - raw]

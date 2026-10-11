@@ -679,15 +679,47 @@ def write_terminal(
     )
 
 
+@dataclass(frozen=True)
+class RunReport:
+    """A completed run's nine content-free counts, as the owner health read shows
+    them."""
+
+    fetched: int = 0
+    imported: int = 0
+    skipped_dup: int = 0
+    refreshed: int = 0
+    filtered: int = 0
+    skipped_untracked: int = 0
+    errors: int = 0
+    detail_reads: int = 0
+    pages: int = 0
+
+
 def write_success(
-    uow: UnitOfWork, current: JobfeedConnection, *, now: datetime
+    uow: UnitOfWork,
+    current: JobfeedConnection,
+    *,
+    now: datetime,
+    report: RunReport,
+    partial: bool,
 ) -> None:
-    """A completed run: the backoff is reset and only the collector's own health
-    codes are cleared."""
+    """A completed run, on the caller's transaction after :func:`claimed_connection`
+    passed: the report and the completed check's time, the backoff reset, and
+    ``collection_partial`` when ``partial``, else only the collector's own health
+    codes cleared."""
     table = j.jobfeed_connection
     uow.connection.execute(
         update(table)
         .where(table.c.connection_id == current.connection_id)
-        .values(consecutive_failures=0, not_before=None, updated_at=now)
+        .values(
+            **{name.name: getattr(report, name.name) for name in fields(RunReport)},
+            last_completed_at=now,
+            consecutive_failures=0,
+            not_before=None,
+            updated_at=now,
+        )
     )
-    clear_collector_health(uow.connection, current.connection_id)
+    if partial:
+        health_write(uow, current.connection_id, error="collection_partial")
+    else:
+        clear_collector_health(uow.connection, current.connection_id)

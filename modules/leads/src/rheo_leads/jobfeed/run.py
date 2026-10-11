@@ -24,6 +24,22 @@ any fallback (:func:`select_organization`), else ``account_selection_required``
 ends the run with no ``find_jobs`` call. An MCP 401 or 403 is terminal, the stored
 client kept; any other failure is transient and nothing is retried.
 
+Then collection on the open session: the three default searches, paced and capped
+at 80 raw rows, with the capability re-read in a short unit between pages (read off,
+the run stops and writes nothing more); the overlapping sightings merged into one
+per posting; the detail reads, where a failed or omitted read downgrades its
+sighting. When every page call failed, the run ends as an upstream failure with
+the backoff; a later failure, a failed or omitted detail or a deadline cut leaves
+the run complete and partial.
+
+Last, the deliveries and the report on the worker's transaction, committed with the
+job's ``succeeded`` row: a forced lease extension, the lifecycle lock and the
+connection row locked, then nothing at all unless the connection is still the one
+the run claimed. Each delivery has its own savepoint below the lock, so a refused
+one costs that row only. The report records the nine counts and the completed
+check's time, resets the backoff, and sets ``collection_partial`` or clears the
+collector's codes.
+
 Expected failures never raise. Anything unexpected is logged by its type name and
 raised as the fixed ``internal_error``, with no chained exception.
 """
@@ -56,9 +72,18 @@ from rheo_core.work.cancellation import CancellationToken, JobCancelled, JobLeas
 
 from rheo_leads.intake.accept import health_write
 from rheo_leads.jobfeed import dependencies
+from rheo_leads.jobfeed.collect import (
+    Sighting,
+    collect_presets,
+    merge_sightings,
+    read_details,
+)
+from rheo_leads.jobfeed.delivery import deliver
+from rheo_leads.jobfeed.presets import DEFAULT_PRESETS
 from rheo_leads.jobfeed.state import SCHEDULE_NAME as SCHEDULE_NAME
 from rheo_leads.jobfeed.state import (
     JobfeedConnection,
+    RunReport,
     claim_run,
     claimed_connection,
     clear_rejected_client,
@@ -137,17 +162,23 @@ class Transient:
     retry_after: int | None = None
 
 
-@dataclass(frozen=True)
-class Succeeded:
-    """The run completed."""
-
-
-Outcome = Terminal | Transient | Succeeded
+Outcome = Terminal | Transient
 
 
 @dataclass(frozen=True)
-class SessionResult:
-    """What the session phase reports to the run's end."""
+class Collected:
+    """What collection hands to the final write step: one merged sighting per
+    posting, and the report's counts that collection decides."""
+
+    sightings: tuple[Sighting, ...]
+    fetched: int
+    """Raw rows, valid or not, before the merge."""
+    pages: int
+    detail_reads: int
+    errors: int
+    """Invalid rows plus downgraded sightings."""
+    partial: bool
+    """A page or detail failed, a detail was omitted, or the deadline cut the run."""
 
 
 @dataclass
@@ -184,10 +215,58 @@ def select_organization(accounts: Sequence[Account], stored: str | None) -> str 
 
 
 def collect_phase(
-    upstream: Upstream, organization_id: str, *, deadline: float
-) -> SessionResult:
-    """Collection as ``organization_id`` on the open session. Does nothing yet."""
-    return SessionResult()
+    upstream: Upstream, run: _Run, organization_id: str
+) -> Collected | Outcome | None:
+    """Collection as ``organization_id`` on the open session (module docstring).
+
+    Returns what to deliver; the backoff outcome when no page call succeeded and
+    one failed; ``None`` when the capability was read off between pages, and the
+    run then writes nothing more. A refused credential raises.
+    """
+    deps = dependencies()
+    job_hosts = resolve().get_list(JOB_HOSTS_KEY)
+    collected = collect_presets(
+        upstream,
+        DEFAULT_PRESETS,
+        organization_id,
+        job_hosts,
+        clock=deps.now,
+        capability_on=lambda: _capability_on(run.job_ctx),
+    )
+    if collected.capability_lost:
+        return None
+    failures = collected.upstream_failures
+    if collected.pages_ok == 0 and failures:
+        limited = [f for f in failures if f.code == "rate_limited"]
+        return _stopped(limited[0] if limited else failures[0])
+    details = read_details(
+        upstream,
+        merge_sightings(collected.rows),
+        organization_id,
+        job_hosts,
+        deadline=run.deadline,
+    )
+    return Collected(
+        sightings=details.sightings,
+        fetched=len(collected.rows) + collected.invalid_rows,
+        pages=collected.pages_used,
+        detail_reads=details.detail_reads,
+        errors=collected.invalid_rows + details.failures,
+        partial=bool(
+            collected.search_failures
+            or collected.cut
+            or details.failures
+            or details.cut
+        ),
+    )
+
+
+def _capability_on(ctx: WorkspaceContext) -> bool:
+    """The capability, re-read in a short unit of its own that ends at once."""
+    with open_unit_of_work(ctx) as short:
+        enabled = jobsearch_enabled(ctx, short)
+        short.commit()
+    return enabled
 
 
 def session_phase(
@@ -195,10 +274,10 @@ def session_phase(
     token: CancellationToken,
     run: _Run,
     access: AccessToken,
-) -> SessionResult | None:
+) -> None:
     """The MCP session after a successful refresh: the set-up calls, the stored
-    account choices, the selection, then collection. ``None`` means the run has
-    already ended, its outcome written or nothing to write."""
+    account choices, the selection, collection, then the deliveries and the
+    report once the session is closed."""
     deps = dependencies()
     session = McpSession(
         run.connection.resource_url,
@@ -210,6 +289,7 @@ def session_phase(
         monotonic=deps.clock,
     )
     selection: str | Transient | None = None
+    collected: Collected | Outcome | None = None
     stopped: UpstreamFailure | RunCut | None = None
     try:
         with Upstream(
@@ -221,18 +301,62 @@ def session_phase(
         ) as upstream:
             selection = _select(run, upstream.list_accounts())
             if isinstance(selection, str):
-                return collect_phase(upstream, selection, deadline=run.deadline)
+                collected = collect_phase(upstream, run, selection)
     except (UpstreamFailure, RunCut) as error:
         stopped = error
-    if stopped is None:
-        if isinstance(selection, Transient):
-            # Not a failure to back off from: the owner's choice makes the next
-            # run due at the end of this claim's window.
-            _end(uow, run, selection, backoff=False)
-        return None
-    # Ended outside the except block, so nothing upstream is chained to a write.
-    _end(uow, run, _stopped(stopped), backoff=not isinstance(stopped, RunCut))
-    return None
+    # Every write happens outside the except block, so nothing upstream is
+    # chained to it.
+    if stopped is not None:
+        _end(uow, run, _stopped(stopped), backoff=not isinstance(stopped, RunCut))
+    elif isinstance(selection, Transient):
+        # Not a failure to back off from: the owner's choice makes the next run
+        # due at the end of this claim's window.
+        _end(uow, run, selection, backoff=False)
+    elif isinstance(collected, Collected):
+        _deliver_and_report(uow, token, run, collected)
+    elif collected is not None:
+        _end(uow, run, collected)
+
+
+def _deliver_and_report(
+    uow: HandlerUnitOfWork, token: CancellationToken, run: _Run, collected: Collected
+) -> None:
+    """The deliveries and the report, the run's first statements on the worker's
+    transaction (module docstring). The lifecycle lock is taken before the first
+    savepoint, so rolling one back never releases it."""
+    deps = dependencies()
+    token.checkpoint(force=True)
+    current = claimed_connection(
+        uow, connection_id=run.connection.connection_id, generation=run.generation
+    )
+    if current is None:
+        return
+    delivered = deliver(
+        uow,
+        run.conn_ctx,
+        connection_id=current.connection_id,
+        pipeline_id=current.pipeline_id,
+        sightings=collected.sightings,
+        now=deps.now(),
+        checkpoint=token.checkpoint,
+    )
+    write_success(
+        uow,
+        current,
+        now=deps.now(),
+        report=RunReport(
+            fetched=collected.fetched,
+            imported=delivered.imported,
+            skipped_dup=delivered.skipped_dup,
+            refreshed=delivered.refreshed,
+            filtered=delivered.filtered,
+            skipped_untracked=delivered.skipped_untracked,
+            errors=collected.errors + delivered.errors,
+            detail_reads=collected.detail_reads,
+            pages=collected.pages,
+        ),
+        partial=collected.partial or delivered.partial,
+    )
 
 
 def _select(run: _Run, accounts: Sequence[Account]) -> str | Transient | None:
@@ -374,9 +498,8 @@ def _collect(
     access = _refresh(uow, token, run, claimed.token_ref)
     if access is None:
         return
-    # Step 4 on: the session, the account and collection.
-    if session_phase(uow, token, run, access) is not None:
-        _end(uow, run, Succeeded())
+    # Step 4 on: the session, the account, collection, deliveries and the report.
+    session_phase(uow, token, run, access)
 
 
 def _failed(failure: OAuthFailure) -> Outcome:
@@ -529,7 +652,7 @@ def _retire_minted(
 def _end(
     uow: HandlerUnitOfWork, run: _Run, outcome: Outcome, *, backoff: bool = True
 ) -> None:
-    """The one run-ending write, on the worker's transaction (module docstring).
+    """A run-ending failure write, on the worker's transaction (module docstring).
 
     ``backoff`` false records a transient code alone, with no backoff: the
     configuration check before the claim.
@@ -559,16 +682,13 @@ def _end(
     now = deps.now()
     if isinstance(outcome, Terminal):
         write_terminal(uow, current, run.conn_ctx, now=now)
-    elif isinstance(outcome, Transient):
-        if backoff:
-            write_transient(
-                uow,
-                current,
-                code=outcome.code,
-                now=now,
-                retry_after=outcome.retry_after,
-            )
-        else:
-            health_write(uow, current.connection_id, error=outcome.code)
+    elif backoff:
+        write_transient(
+            uow,
+            current,
+            code=outcome.code,
+            now=now,
+            retry_after=outcome.retry_after,
+        )
     else:
-        write_success(uow, current, now=now)
+        health_write(uow, current.connection_id, error=outcome.code)

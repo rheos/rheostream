@@ -836,6 +836,79 @@ def raising(error: Exception) -> Responder:
     return respond
 
 
+SENSITIVE_RATE_LIMIT = "SENSITIVE_RATE_LIMIT_EXCEEDED"
+FEED_DESCRIPTION = "A full synthetic description of an example dashboard build."
+FEED_SNIPPET = "snippet-marker shortened feed text"
+
+
+def feed_row(
+    number: int,
+    *,
+    proposals: int | None = None,
+    tier: str | None = "5 to 10",
+    applied: bool = False,
+    title: str | None = None,
+) -> dict[str, object]:
+    """One feed row as a search page lists it: posting id ``~02<number>``, feed id
+    ``<number>``, a snippet that must never be delivered as a description."""
+    row: dict[str, object] = {
+        "id": str(number),
+        "title": title or f"Example build {number}",
+        "url": f"https://www.example.com/jobs/Example-build_~02{number}?source=feed",
+        "job_type": "fixed",
+        "budget": "$500 - $1,500",
+        "description": FEED_SNIPPET,
+        "applied": applied,
+        "client": {"verification_status": "VERIFIED", "total_spent": "$2,000"},
+    }
+    if proposals is not None:
+        row["proposal_count"] = proposals
+    elif tier is not None:
+        row["proposals_tier"] = tier
+    return row
+
+
+def feed_page(
+    action: str,
+    params: dict[str, Any],
+    jobs: Sequence[object],
+    *,
+    cursor: str | None = None,
+) -> dict[str, object]:
+    """A page that passes every page check: the requested mode echoed and, when
+    ``cursor`` is given, more claimed under the cursor field its action uses."""
+    document: dict[str, object] = {"status": "ok", "jobs": list(jobs)}
+    if action == "smart_search":
+        document.update(
+            mode=params.get("mode"), hasMore=cursor is not None, next_cursor=cursor
+        )
+    else:
+        document["pageInfo"] = {"hasNextPage": cursor is not None, "endCursor": cursor}
+    return document
+
+
+def detail_document(description: str = FEED_DESCRIPTION) -> dict[str, object]:
+    """A successful ``find_jobs get`` answer carrying the full description and the
+    live client record."""
+    return {
+        "status": "ok",
+        "data": {"marketplaceJobPosting": {"content": {"description": description}}},
+        "client_record": {"spend_total": "$3,100.00", "hire_rate_percent": 40},
+    }
+
+
+def rate_limited_tool() -> Responder:
+    """A ``find_jobs`` tool error carrying the sensitive-read rate-limit code."""
+    return tool_result({"error_code": SENSITIVE_RATE_LIMIT}, is_error=True)
+
+
+def arguments_of(request: httpx.Request) -> dict[str, Any]:
+    """A ``tools/call`` request's arguments."""
+    params = _mcp_message(request).get("params")
+    arguments = params.get("arguments") if isinstance(params, dict) else None
+    return arguments if isinstance(arguments, dict) else {}
+
+
 @dataclass
 class FakeMcpServer:
     """A Streamable HTTP MCP server for the run tests.
@@ -843,19 +916,61 @@ class FakeMcpServer:
     By default it answers ``initialize`` (with an ``Mcp-Session-Id`` header), the
     ``initialized`` notification, ``tools/list`` (advertising write-capable tools
     beside the read-only ones), ``list_accounts`` (``accounts``, one TALENT account
-    unless changed) and ``find_jobs`` (an empty page, any action). ``script`` replaces
-    the answer for a request named as :func:`script_name` names it (for example
-    ``"initialize"``, ``"list_accounts"`` or ``"find_jobs:search"``); ``holds``
-    blocks one the same way. Every request is kept and counted by
-    ``(method, tool, action)``.
+    unless changed) and ``find_jobs`` from ``feeds`` and ``details``.
+
+    ``feeds`` maps a search (its ``mode``, or ``"search"``) to its pages of rows: a
+    page that is not the last claims more under the cursor ``<search>-<next>``,
+    and an unknown search or page is an empty last page. A ``get`` answers
+    ``details[<id>]`` (a document, or a responder), else :func:`detail_document`.
+
+    ``queued`` answers the next requests of one name, in order, before anything
+    else; ``script`` replaces the answer for a request named as
+    :func:`script_name` names it (for example ``"initialize"``,
+    ``"list_accounts"`` or ``"find_jobs:search"``); ``holds`` blocks one the same
+    way. Every request is kept and counted by ``(method, tool, action)``; with a
+    ``clock``, each one's start on its monotonic clock is kept in ``starts``.
     """
 
     resource_url: str = RESOURCE_URL
     accounts: list[dict[str, object]] = field(default_factory=lambda: [account()])
+    feeds: dict[str, list[list[dict[str, object]]]] = field(default_factory=dict)
+    details: dict[str, object] = field(default_factory=dict)
+    queued: dict[str, list[Responder]] = field(default_factory=dict)
     script: dict[str, Responder] = field(default_factory=dict)
     holds: dict[str, Hold] = field(default_factory=dict)
+    clock: FakeClock | None = None
     requests: list[httpx.Request] = field(default_factory=list)
     counts: Counter[McpKey] = field(default_factory=Counter)
+    starts: list[tuple[str, float]] = field(default_factory=list)
+
+    def find_jobs_calls(self) -> list[tuple[str, dict[str, Any]]]:
+        """Every ``find_jobs`` request's ``(action, params)``, in arrival order."""
+        return [
+            (str(arguments_of(r).get("action")), dict(arguments_of(r).get("params")))
+            for r in self.requests
+            if script_name(_mcp_key(r)).startswith("find_jobs")
+        ]
+
+    def find_jobs_starts(self) -> list[float]:
+        return [at for name, at in self.starts if name.startswith("find_jobs")]
+
+    def _find_jobs(self, request: httpx.Request) -> httpx.Response:
+        arguments = arguments_of(request)
+        action = str(arguments.get("action"))
+        params = arguments.get("params")
+        params = params if isinstance(params, dict) else {}
+        if action == "get":
+            detail = self.details.get(str(params.get("id")), detail_document())
+            if callable(detail):
+                return detail(request)
+            return tool_result(detail)(request)
+        search = str(params.get("mode") or "search")
+        cursor = params.get("cursor")
+        index = 0 if cursor is None else int(str(cursor).rsplit("-", 1)[1])
+        pages = self.feeds.get(search, [])
+        rows = pages[index] if index < len(pages) else []
+        more = f"{search}-{index + 1}" if index + 1 < len(pages) else None
+        return tool_result(feed_page(action, params, rows, cursor=more))(request)
 
     def calls(self, name: str) -> int:
         """How many requests :func:`script_name` names ``name``."""
@@ -889,7 +1004,7 @@ class FakeMcpServer:
         if name == "list_accounts":
             return accounts_result(*self.accounts)
         if name.startswith("find_jobs"):
-            return tool_result({"jobs": []})
+            return self._find_jobs
         return rpc_result(None)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -897,11 +1012,16 @@ class FakeMcpServer:
         key = _mcp_key(request)
         self.counts[key] += 1
         name = script_name(key)
+        if self.clock is not None:
+            self.starts.append((name, self.clock.monotonic()))
         hold = self.holds.get(name)
         if hold is not None:
             hold.entered.set()
             assert hold.release.wait(timeout=60), f"{name} was never released"
-        responder = self.script.get(name) or self.default(name)
+        queued = self.queued.get(name)
+        responder = (
+            queued.pop(0) if queued else self.script.get(name) or self.default(name)
+        )
         return responder(request)
 
 
