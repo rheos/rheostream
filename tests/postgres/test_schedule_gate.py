@@ -43,6 +43,7 @@ from rheo_core.storage import work_tables
 from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_core.work.schedules import (
     RETENTION_SWEEP,
+    ScheduleEnabledByDefault,
     ScheduleUndeclared,
     ensure_module_schedule,
     run_due_schedules,
@@ -57,6 +58,8 @@ GATED: Final = "collect"
 GATED_KIND: Final = f"{GATE_PROBE_ID}.collect"
 DAILY: Final = "digest"
 DAILY_KIND: Final = f"{GATE_PROBE_ID}.digest"
+ENABLE_OWNED: Final = "sweep"
+"""Declared ``enabled_by_default``: module enable owns its row, not the helper."""
 INTERVAL: Final = timedelta(hours=2)
 TICKS: Final = 4
 
@@ -87,6 +90,12 @@ GATE_MANIFEST: Final = manifest(
             job_kind=DAILY_KIND,
             cron="0 3 * * *",
             enabled_by_default=False,
+        ),
+        Schedule(
+            name=ENABLE_OWNED,
+            job_kind=f"{GATE_PROBE_ID}.{ENABLE_OWNED}",
+            cron="0 4 * * *",
+            enabled_by_default=True,
         ),
     ),
 )
@@ -360,3 +369,21 @@ def test_ensure_refuses_an_undeclared_schedule_and_writes_nothing(
             select(func.count()).select_from(work_tables.schedule)
         ).scalar_one()
         assert after == before
+
+
+@pytest.mark.usefixtures("gate_probe")
+def test_ensure_refuses_an_enabled_by_default_schedule_and_writes_nothing(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    """Module enable writes that row under the module state lock; the helper's own
+    caller holds a different lock, so it must not write the row too."""
+    with _engine(cluster, workspace).begin() as connection:
+        with pytest.raises(ScheduleEnabledByDefault, match="enabled_by_default"):
+            ensure_module_schedule(
+                connection,
+                module_id=GATE_PROBE_ID,
+                name=ENABLE_OWNED,
+                enabled=True,
+                due_at=_start(),
+            )
+        assert _rows(connection, GATE_PROBE_ID, ENABLE_OWNED) == 0

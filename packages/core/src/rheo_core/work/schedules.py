@@ -356,7 +356,14 @@ class ScheduleUndeclared(LookupError):
     """``ensure_module_schedule`` was asked for a schedule no loaded module declares."""
 
 
+class ScheduleEnabledByDefault(ValueError):
+    """``ensure_module_schedule`` was asked for a schedule module enable writes."""
+
+
 _UNDECLARED: Final = "no loaded module declares this schedule"
+_ENABLED_BY_DEFAULT: Final = (
+    "this schedule is declared enabled_by_default; module enable owns its row"
+)
 
 
 def ensure_module_schedule(
@@ -370,9 +377,13 @@ def ensure_module_schedule(
     """Make the declared ``(module_id, name)`` row exist, enabled or not, due at
     ``due_at``. Does not commit.
 
-    For a schedule declared ``enabled_by_default=False``, which module enable skips:
-    the module's own lifecycle turns the row on and off instead, and a workspace whose
-    module was enabled before the schedule was declared gets its row here. The row is
+    **Only for a schedule declared ``enabled_by_default=False``**, which module enable
+    skips: the module's own lifecycle turns the row on and off instead, and a workspace
+    whose module was enabled before the schedule was declared gets its row here. A
+    declaration with ``enabled_by_default=True`` is refused with
+    :class:`ScheduleEnabledByDefault`: module enable writes that row under the module
+    state row lock, which the lock serializing this function does not order, so two
+    writers could each find the row absent. The row is
     written through ``insert_schedule_if_absent`` from the declaration's job kind and
     cron, and then its ``enabled`` and ``next_run_at`` are set on the one row this
     names. No other schedule row is read or written.
@@ -382,11 +393,15 @@ def ensure_module_schedule(
     could write two rows; a caller holds the workspace lifecycle lock (or another
     lock that orders such calls) around this, as module enable holds its module row.
 
-    Raises :class:`ScheduleUndeclared` when no loaded manifest declares the pair.
+    Raises :class:`ScheduleUndeclared` when no loaded manifest declares the pair, and
+    :class:`ScheduleEnabledByDefault` for an ``enabled_by_default`` declaration; both
+    before anything is written.
     """
     declared = _declared_schedule(module_id, name)
     if declared is None:
         raise ScheduleUndeclared(_UNDECLARED)
+    if declared.enabled_by_default:
+        raise ScheduleEnabledByDefault(_ENABLED_BY_DEFAULT)
     insert_schedule_if_absent(
         conn,
         module_id=module_id,

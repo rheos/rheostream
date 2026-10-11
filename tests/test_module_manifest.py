@@ -788,11 +788,11 @@ def test_packaging_is_a_declared_dependency_of_rheo_core() -> None:
 _GATE_KEY = f"{MODULE_ID}.capabilities.collect"
 
 
-def _bool_key(key: str) -> KeySpec:
+def _bool_key(key: str, scope: Scope = Scope.WORKSPACE) -> KeySpec:
     return KeySpec(
         key=key,
         type=ValueType.BOOL,
-        scope=Scope.WORKSPACE,
+        scope=scope,
         floor=None,
         explicit_per_workspace=False,
         default=True,
@@ -855,6 +855,16 @@ SCHEDULE_REFUSALS: dict[str, tuple[Schedule, tuple[KeySpec, ...], str]] = {
         _schedule(gate_setting=_GATE_KEY),
         (),
         "gate_setting must name a bool key",
+    ),
+    "gate deployment scope": (
+        _schedule(gate_setting=_GATE_KEY),
+        (_bool_key(_GATE_KEY, Scope.DEPLOYMENT),),
+        "gate_setting must name a workspace-scope key",
+    ),
+    "gate member scope": (
+        _schedule(gate_setting=_GATE_KEY),
+        (_bool_key(_GATE_KEY, Scope.MEMBER),),
+        "gate_setting must name a workspace-scope key",
     ),
 }
 

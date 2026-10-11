@@ -72,7 +72,7 @@ from rheo_core.redaction.render import RecordLoader as _RecordLoader
 from rheo_core.redaction.tiers import SensitivityTier as SensitivityTier
 from rheo_core.redaction.tiers import restricted_fields
 from rheo_core.refs.resolver import RecordResolver
-from rheo_core.settings.schema import KeySpec, ValueType
+from rheo_core.settings.schema import KeySpec, Scope, ValueType
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.work.kinds import JobHandler
 
@@ -928,10 +928,11 @@ def check_schedules(
 
     - ``interval_seconds``, when set, is positive: a zero or negative interval would
       make the row due again on the very tick that advanced it.
-    - ``gate_setting``, when set, sits under ``<module_id>.`` and names a ``bool``
-      ``KeySpec`` in this manifest's own ``configuration_schema``. A module cannot
-      gate its schedule on another module's key, and a key the module does not
-      declare would never be registered for the ticker to read.
+    - ``gate_setting``, when set, sits under ``<module_id>.`` and names a ``bool``,
+      workspace-scope ``KeySpec`` in this manifest's own ``configuration_schema``. A
+      module cannot gate its schedule on another module's key, a key the module does
+      not declare would never be registered for the ticker to read, and a deployment-
+      or member-scope key has no workspace row, so the gate would never open.
     """
     keys = {spec.key: spec for spec in configuration_schema}
     for schedule in schedules:
@@ -950,6 +951,8 @@ def check_schedules(
                 "schedules: gate_setting must name a bool key declared in the "
                 "module's own configuration_schema"
             )
+        if spec.scope is not Scope.WORKSPACE:
+            raise ValueError("schedules: gate_setting must name a workspace-scope key")
 
 
 _OWNER_ONLY: Final = frozenset({Role.OWNER})
