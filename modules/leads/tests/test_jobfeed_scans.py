@@ -140,7 +140,6 @@ CORE_OAUTH = (
     / "oauth.py"
 )
 SECRET_API = frozenset({"SecretRef", "SecretStore", "SecretValue", "SecretScope"})
-SECRET_SEGMENTS = frozenset({"oauth", "secrets", "connector-oauth"})
 REFERENCE_NAMES = re.compile(
     r"(token|secret)_ref|refresh_ref|(registration|refresh)_token"
 )
@@ -167,10 +166,13 @@ def expose_uses(source: str) -> list[str]:
 
 
 def _segments(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and bool(SECRET_SEGMENTS & set(node.value.strip("/").split("/")))
+    """A string naming the ``secrets`` directory or any ``oauth`` path segment
+    (the scope's own segment included)."""
+    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+        return False
+    return any(
+        part == "secrets" or "oauth" in part
+        for part in node.value.strip("/").split("/")
     )
 
 
