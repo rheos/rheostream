@@ -194,6 +194,7 @@ def _start(
     under the lock that no connection was completed while it was registering.
     """
     retired: list[tuple[str | None, str | None]] = []
+    committed = False
     try:
         now = dependencies().now()
         started = oauth.new_authorization(
@@ -240,16 +241,23 @@ def _start(
                     expires_at=started.expires_at,
                 )
             )
-            uow.commit()
             # A reused client's files belong to the connection, never to the row.
             retired = [
                 (row.client_secret_ref, row.registration_token_ref)
                 for row in replaced
                 if row.client_registered
             ]
+            uow.commit()
+            committed = True
     except BaseException:
-        if client.registered:
+        # Once committed, the new row references this call's files: keep them. A
+        # failure while the unit closes still leaves the replaced row's files
+        # unreferenced, so they go.
+        if not committed and client.registered:
             _discard_files(client.client_secret_ref, client.registration_token_ref)
+        if committed:
+            for secret_ref, token_ref in retired:
+                _discard_files(secret_ref, token_ref)
         raise
     for secret_ref, token_ref in retired:
         _discard_files(secret_ref, token_ref)

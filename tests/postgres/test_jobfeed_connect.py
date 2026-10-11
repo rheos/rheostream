@@ -59,6 +59,7 @@ from rheo_core.sessions import create_session, mint_host_secret, switch_workspac
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record, schedule
 from rheo_core.storage.work_tables import operation as operation_record
+from rheo_leads.jobfeed import authorization
 from rheo_leads.jobfeed.state import read_connection
 from rheo_leads.references import ref
 from rheo_leads.storage import jobfeed as j
@@ -507,6 +508,59 @@ def test_a_replacement_that_fails_before_commit_keeps_the_previous_row_and_files
     assert secret_files(root) == previous_files
     for marker in (SECRET, TOKEN, previous["code_verifier"]):
         assert marker not in repr(outcome)
+
+
+def test_a_failure_after_the_replacement_commits_keeps_the_new_rows_files(
+    intake: Intake,
+    owner: WorkspaceContext,
+    pipeline_id: UUID,
+    served: FakeAuthorizationServer,
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure while the committed replacement unit closes must not discard the
+    files the committed row now references; the replaced row's files still go."""
+    served.registration = with_secrets()
+    assert connect(intake, owner, pipeline_id).ok
+    (previous,) = pending(owner)
+    previous_files = row_files(root, previous)
+    inserted: set[int] = set()
+    real_open = authorization.open_unit_of_work
+
+    def watch(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        if _is_pending_insert(statement):
+            inserted.add(id(conn))
+
+    class FailingClose:
+        def __init__(self, ctx: WorkspaceContext) -> None:
+            self.inner = real_open(ctx)
+
+        def __enter__(self) -> Any:
+            entered = self.inner.__enter__()
+            self.conn = entered.connection
+            return entered
+
+        def __exit__(self, *exc: Any) -> None:
+            self.inner.__exit__(*exc)
+            if exc[0] is None and id(self.conn) in inserted:
+                raise InjectedFailure
+
+    monkeypatch.setattr(authorization, "open_unit_of_work", FailingClose)
+    event.listen(Engine, "before_cursor_execute", watch)
+    try:
+        outcome = connect(intake, owner, pipeline_id)
+    finally:
+        event.remove(Engine, "before_cursor_execute", watch)
+
+    assert inserted
+    assert not outcome.ok and outcome.error is not None
+    assert outcome.error.error_code == "handler_failed"
+    (current,) = pending(owner)
+    assert current["state_hash"] != previous["state_hash"]
+    current_files = row_files(root, current)
+    assert len(current_files) == 2 and all(p.exists() for p in current_files)
+    assert not any(p.exists() for p in previous_files)
+    assert secret_files(root) == current_files
 
 
 def test_the_replaced_rows_files_are_discarded_only_after_the_replacement_commits(
