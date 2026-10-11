@@ -365,9 +365,11 @@ def claim_run(
 ) -> Claimed | None:
     """Claim the next run in a unit of its own that commits at once, or ``None``.
 
-    Only a connected connection whose last claim is older than
-    :data:`RUN_CLAIM_WINDOW` (or that was never claimed) is claimed, so two attempts
-    claim once and no run starts within the window of the previous start. The
+    Only a connected connection whose last claim is at least
+    :data:`RUN_CLAIM_WINDOW` old (or that was never claimed) is claimed, so two
+    attempts claim once and no run starts within the window of the previous start,
+    while a run due exactly at the window's end (:func:`next_run_not_before`, the
+    due time an account selection or a reconnect sets) proceeds. The
     connection must also still be at ``generation``, the one the caller read its
     client with: a reconnect that stored new credentials in between is left for the
     next run rather than refreshed as the client read before it.
@@ -381,7 +383,7 @@ def claim_run(
                 table.c.connection_id == connection_id,
                 table.c.authorization_state == "connected",
                 table.c.credential_generation == generation,
-                claimed.is_(None) | (claimed < now - RUN_CLAIM_WINDOW),
+                claimed.is_(None) | (claimed <= now - RUN_CLAIM_WINDOW),
             )
             .values(run_claimed_at=now)
             .returning(table.c.token_ref, table.c.credential_generation)
@@ -528,6 +530,81 @@ def claimed_connection(
     ):
         return None
     return current
+
+
+def replace_account_choices(
+    ctx: WorkspaceContext,
+    *,
+    connection_id: UUID,
+    generation: int,
+    choices: Sequence[tuple[str, str | None]],
+    now: datetime,
+) -> JobfeedConnection | None:
+    """Replace the stored account choices with ``choices`` (``(organization_id,
+    label)`` in the order received), in a unit of its own under the lifecycle lock.
+
+    Only while the connection is still the one the run claimed; otherwise nothing
+    changes and ``None`` is returned. A repeated organization id is stored once, at
+    its first position. Returns the connection as read under the lock, so the
+    selection sees an owner's choice committed while the run waited upstream.
+    """
+    table = j.jobfeed_account_choice
+    with open_unit_of_work(ctx) as unit:
+        current = claimed_connection(
+            unit, connection_id=connection_id, generation=generation
+        )
+        if current is None:
+            return None
+        unit.connection.execute(
+            delete(table).where(table.c.connection_id == connection_id)
+        )
+        distinct = dict[str, str | None]()
+        for organization_id, label in choices:
+            distinct.setdefault(organization_id, label)
+        if distinct:
+            unit.connection.execute(
+                insert(table),
+                [
+                    {
+                        "connection_id": connection_id,
+                        "organization_id": organization_id,
+                        "label": label,
+                        "ordinal": ordinal,
+                        "seen_at": now,
+                    }
+                    for ordinal, (organization_id, label) in enumerate(distinct.items())
+                ],
+            )
+        unit.commit()
+    return current
+
+
+def store_selection(
+    ctx: WorkspaceContext,
+    *,
+    connection_id: UUID,
+    generation: int,
+    organization_id: str,
+    now: datetime,
+) -> bool:
+    """Store the automatically selected organization, in a unit of its own: whether
+    it was stored. Only while the connection is still the one the run claimed and
+    no organization is stored yet, so an owner's selection is never overwritten."""
+    table = j.jobfeed_connection
+    with open_unit_of_work(ctx) as unit:
+        stored = unit.connection.execute(
+            update(table)
+            .where(
+                table.c.connection_id == connection_id,
+                table.c.authorization_state == "connected",
+                table.c.credential_generation == generation,
+                table.c.organization_id.is_(None),
+            )
+            .values(organization_id=organization_id, updated_at=now)
+        )
+        won = stored.rowcount == 1
+        unit.commit()
+    return won
 
 
 def backoff(failures: int, retry_after: int | None) -> timedelta:

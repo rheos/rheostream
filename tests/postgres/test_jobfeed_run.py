@@ -26,8 +26,10 @@ import pytest
 from harness.jobfeed import (
     CLIENT_SECRET,
     ISSUER,
+    ORGANIZATION,
     REGISTRATION_TOKEN,
     STORED_CLIENT_ID,
+    WRITE_TOOLS,
     ConnectedCollector,
     FakeAuthorizationServer,
     FakeClock,
@@ -36,6 +38,8 @@ from harness.jobfeed import (
     Hold,
     Responder,
     Tokens,
+    account,
+    accounts_result,
     after_claim,
     after_step_one_read,
     answer,
@@ -48,10 +52,13 @@ from harness.jobfeed import (
     issued,
     jobsearch_pipeline,
     owner_web,
+    raising,
     refresh_requests,
     serve,
+    slow,
     tick,
     token_error,
+    tool_result,
     visit,
 )
 from rheo_contracts import WorkspaceContext
@@ -64,7 +71,7 @@ from rheo_core.storage.work_tables import audit_record, job
 from rheo_core.work.cancellation import JobCancelled
 from rheo_leads.intake.accept import health_write
 from rheo_leads.jobfeed.run import CollectPayload, JobfeedFailure, collect_job
-from rheo_leads.jobfeed.state import AUTHORIZATION_LOST
+from rheo_leads.jobfeed.state import AUTHORIZATION_LOST, account_choices
 from rheo_leads.references import ref
 from sqlalchemy import Engine, event, select, text
 
@@ -1291,6 +1298,63 @@ def test_an_unexpected_failure_is_the_fixed_internal_error_with_no_chain(
     assert served.token_requests == []
 
 
+@dataclass(frozen=True)
+class WorkShape:
+    """What the database shows of the run's work transaction mid-call."""
+
+    busy: list[dict[str, Any]]
+    locks: set[tuple[str, str, str]]
+    lifecycle_free: bool
+
+    def assert_inert(self) -> None:
+        """Idle in transaction, nothing written, no lock on any ``leads`` relation
+        beyond the readiness check's read of the module's version tables, and the
+        lifecycle lock free."""
+        assert len(self.busy) == 1, self.busy
+        assert self.busy[0]["state"] == "idle in transaction"
+        assert self.busy[0]["xid"] is None
+        assert {name for schema, name, _ in self.locks if schema == "leads"} <= {
+            "alembic_version_leads",
+            "alembic_version_leads_pkc",
+        }
+        assert {mode for schema, _, mode in self.locks if schema == "leads"} <= {
+            "AccessShareLock"
+        }
+        assert self.lifecycle_free is True
+
+
+def work_shape(c: ConnectedCollector) -> WorkShape:
+    with open_unit_of_work(c.owner) as uow:
+        busy = [
+            dict(row)
+            for row in uow.connection.execute(
+                text(
+                    "SELECT pid, state, backend_xid::text AS xid "
+                    "FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND pid <> pg_backend_pid() AND state <> 'idle'"
+                )
+            ).mappings()
+        ]
+        locks = {
+            (row.nspname, row.relname, row.mode)
+            for row in uow.connection.execute(
+                text(
+                    "SELECT n.nspname, c.relname, l.mode FROM pg_locks l "
+                    "JOIN pg_class c ON c.oid = l.relation "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE l.pid = ANY(:pids)"
+                ),
+                {"pids": [row["pid"] for row in busy]},
+            )
+        }
+        lifecycle_free = uow.connection.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": WORKSPACE_LIFECYCLE_LOCK_KEY},
+        ).scalar_one()
+        uow.rollback()
+    return WorkShape(busy, locks, bool(lifecycle_free))
+
+
 def test_no_leads_lock_or_write_is_held_during_a_slow_refresh(
     intake: Intake, served: FakeAuthorizationServer, clock: FakeClock
 ) -> None:
@@ -1304,50 +1368,14 @@ def test_no_leads_lock_or_write_is_held_during_a_slow_refresh(
     worker.start()
     try:
         assert hold.entered.wait(timeout=30), "the refresh never arrived"
-        with open_unit_of_work(c.owner) as uow:
-            busy = [
-                dict(row)
-                for row in uow.connection.execute(
-                    text(
-                        "SELECT pid, state, backend_xid::text AS xid "
-                        "FROM pg_stat_activity WHERE datname = current_database() "
-                        "AND pid <> pg_backend_pid() AND state <> 'idle'"
-                    )
-                ).mappings()
-            ]
-            locks = {
-                (row.nspname, row.relname, row.mode)
-                for row in uow.connection.execute(
-                    text(
-                        "SELECT n.nspname, c.relname, l.mode FROM pg_locks l "
-                        "JOIN pg_class c ON c.oid = l.relation "
-                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
-                        "WHERE l.pid = ANY(:pids)"
-                    ),
-                    {"pids": [row["pid"] for row in busy]},
-                )
-            }
-            lifecycle_free = uow.connection.execute(
-                text("SELECT pg_try_advisory_xact_lock(:key)"),
-                {"key": WORKSPACE_LIFECYCLE_LOCK_KEY},
-            ).scalar_one()
-            uow.rollback()
+        shape = work_shape(c)
         selected = run(intake, c.owner, SELECT, organization_id=CHOICES[0][0])
         assert selected.ok, selected
         revoke(c)
     finally:
         hold.release.set()
         worker.join(timeout=60)
-    assert len(busy) == 1, busy
-    assert busy[0]["state"] == "idle in transaction" and busy[0]["xid"] is None
-    assert {name for schema, name, _ in locks if schema == "leads"} <= {
-        "alembic_version_leads",
-        "alembic_version_leads_pkc",
-    }
-    assert {mode for schema, _, mode in locks if schema == "leads"} <= {
-        "AccessShareLock"
-    }
-    assert lifecycle_free is True
+    shape.assert_inert()
     quietly_succeeded(c)
     assert stored(c.owner).authorization_state == "revoked"
 
@@ -1367,3 +1395,415 @@ def test_a_run_never_registers_in_any_outcome(
         served.token = responder
         run_at(c, clock, hours=2)
     assert served.registrations == []
+
+
+# --- the MCP session and account selection ------------------------------------------
+
+OTHER = "org-example-2"
+THIRD = "org-example-3"
+SET_UP = ["initialize", "notifications/initialized", "list_accounts"]
+
+
+def choices_of(c: ConnectedCollector) -> list[tuple[str, str | None]]:
+    with open_unit_of_work(c.owner) as uow:
+        return account_choices(uow.connection, c.connection_id)
+
+
+def no_collection(mcp: FakeMcpServer) -> None:
+    """Zero ``find_jobs`` calls, and nothing but the set-up calls at all: no
+    ``tools/list`` and no write-capable tool."""
+    assert {method for method, _, _ in mcp.counts} <= {
+        "initialize",
+        "notifications/initialized",
+        "tools/call",
+    }
+    assert {tool for _, tool, _ in mcp.counts} <= {None, "list_accounts"}
+    assert not set(mcp.names()) & {*WRITE_TOOLS, "tools/list"}
+
+
+@pytest.mark.parametrize(
+    ("stored_org", "listed", "selected"),
+    [
+        (None, [account()], ORGANIZATION),
+        (None, [account(OTHER, role="CLIENT"), account()], ORGANIZATION),
+        (ORGANIZATION, [account(OTHER), account()], ORGANIZATION),
+        (None, [], None),
+        (None, [account(), account(OTHER)], None),
+        (ORGANIZATION, [account(OTHER)], None),
+        (ORGANIZATION, [account(), account(OTHER), account()], None),
+        (ORGANIZATION, [account(role="CLIENT"), account(OTHER)], None),
+    ],
+    ids=[
+        "one-talent",
+        "one-talent-among-others",
+        "stored-listed-once",
+        "none-listed",
+        "several-talent",
+        "stored-absent",
+        "stored-duplicated",
+        "stored-not-talent",
+    ],
+)
+def test_the_account_is_selected_without_fallback_after_storing_the_choices(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    stored_org: str | None,
+    listed: list[dict[str, object]],
+    selected: str | None,
+) -> None:
+    """AC 18, I16: a stored organization is used only when listed exactly once as
+    TALENT; with none stored only a single TALENT account is taken. Every stop
+    (including one with exactly one other TALENT account listed) makes zero
+    ``find_jobs`` calls, and the fresh choices are stored first, in received
+    order, whatever the decision."""
+    c = connected_collector(
+        intake, served, choices=[(THIRD, "Stale choice")], organization_id=stored_org
+    )
+    mcp.accounts = listed
+    run_at(c, clock)
+    expected_choices: dict[str, str | None] = {}
+    for entry in listed:
+        expected_choices.setdefault(str(entry["org_uid"]), str(entry["name"]))
+    assert choices_of(c) == list(expected_choices.items())
+    assert mcp.names() == SET_UP
+    no_collection(mcp)
+    after = stored(c.owner)
+    assert after.authorization_state == "connected"
+    if selected is None:
+        assert last_error(c) == "account_selection_required"
+        assert after.organization_id == stored_org
+        # Not a failure to back off from: the owner's choice decides the next run.
+        assert after.consecutive_failures == 0 and after.not_before is None
+    else:
+        assert last_error(c) is None
+        assert after.organization_id == selected
+    assert lost_audits(c.owner) == []
+    quietly_succeeded(c)
+
+
+def test_a_selection_after_a_stop_runs_from_the_end_of_the_claim_window(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 73 to the claim floor, I28: stopped at ``account_selection_required``;
+    the owner selects five minutes later; ticks before the claim plus 60 minutes
+    enqueue nothing, the first one at it enqueues exactly one job, which claims,
+    refreshes, lists accounts and passes selection with the chosen organization."""
+    c = connected_collector(intake, served)
+    mcp.accounts = [account(), account(OTHER, "Example Freelancer two")]
+    run_at(c, clock)
+    assert last_error(c) == "account_selection_required"
+    claimed = stored(c.owner).run_claimed_at
+    assert claimed == clock.now()
+    clock.advance(5 * 60)
+    chosen = run(intake, c.owner, SELECT, organization_id=OTHER)
+    assert chosen.ok, chosen
+    assert last_error(c) is None
+    for minutes in (10, 30, 59):
+        clock.wall_at = claimed + timedelta(minutes=minutes)
+        tick(intake, c.owner, clock)
+        assert len(collect_jobs(c.owner)) == 1
+    clock.wall_at = claimed + timedelta(minutes=60)
+    tick(intake, c.owner, clock)
+    assert len(collect_jobs(c.owner)) == 2
+    visit(intake, clock)
+    quietly_succeeded(c, runs=2)
+    assert len(refresh_requests(served)) == 2
+    assert mcp.calls("list_accounts") == 2
+    after = stored(c.owner)
+    assert after.run_claimed_at == clock.now()
+    assert after.organization_id == OTHER
+    assert last_error(c) is None
+    no_collection(mcp)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("call", ["initialize", "list_accounts"])
+def test_an_mcp_refusal_after_a_refresh_is_terminal_and_keeps_the_client(
+    intake: Intake,
+    root: Path,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    status: int,
+    call: str,
+) -> None:
+    """AC 47 MCP half: ``authorization_required``, schedule off, one terminal audit
+    row, the stored client and its files kept, and nothing upstream again."""
+    c = connected_collector(intake, served, auth_method="client_secret_basic")
+    files = [file_of(root, value) for value in _client_refs(c).values()]
+    mcp.script[call] = answer(status, {"error": "refused"})
+    run_at(c, clock)
+    assert len(refresh_requests(served)) == 1
+    assert mcp.calls(call) == 1
+    no_collection(mcp)
+    after = stored(c.owner)
+    assert after.authorization_state == "authorization_required"
+    assert collect_schedule(c.owner)["enabled"] is False  # type: ignore[index]
+    assert last_error(c) == "authorization_required"
+    assert after.client_id == STORED_CLIENT_ID and all(f.exists() for f in files)
+    assert len(lost_audits(c.owner)) == 1
+    quietly_succeeded(c)
+    sent, called = len(served.requests), len(mcp.requests)
+    for _ in range(3):
+        run_at(c, clock, hours=2)
+    assert len(served.requests) == sent and len(mcp.requests) == called
+    assert served.registrations == []
+    assert len(lost_audits(c.owner)) == 1
+
+
+@pytest.mark.parametrize("call", ["initialize", "list_accounts"])
+@pytest.mark.parametrize(
+    ("failure", "code", "wait"),
+    [
+        ("5xx", "upstream_unavailable", TWO_HOURS),
+        ("network", "upstream_unavailable", TWO_HOURS),
+        ("timeout", "upstream_unavailable", TWO_HOURS),
+        ("malformed", "upstream_unavailable", TWO_HOURS),
+        ("429", "upstream_rate_limited", timedelta(seconds=30_000)),
+    ],
+)
+def test_a_transient_mcp_failure_backs_off_with_no_retry(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    call: str,
+    failure: str,
+    code: str,
+    wait: timedelta,
+) -> None:
+    """AC 48 MCP half: a 5xx, a network error, a timeout or a malformed answer is
+    ``upstream_unavailable``; an HTTP 429 is ``upstream_rate_limited`` with the
+    larger of the doubling and Retry-After; one call each, no retry."""
+    responders: dict[str, Responder] = {
+        "5xx": answer(503),
+        "network": raising(httpx.ConnectError("connection refused")),
+        "timeout": slow(clock, 55.0),
+        "malformed": answer(200, content=b'{"jsonrpc":"2.0","id":'),
+        "429": answer(429, headers={"Retry-After": "30000"}),
+    }
+    c = connected_collector(intake, served)
+    mcp.script[call] = responders[failure]
+    run_at(c, clock)
+    assert mcp.calls(call) == 1
+    assert mcp.names() == SET_UP[: SET_UP.index(call) + 1]
+    no_collection(mcp)
+    after = stored(c.owner)
+    assert last_error(c) == code
+    assert after.consecutive_failures == 1
+    assert after.not_before == clock.now() + wait
+    assert after.authorization_state == "connected"
+    assert lost_audits(c.owner) == []
+    quietly_succeeded(c)
+
+
+def test_a_malformed_account_list_is_upstream_unavailable(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """A ``list_accounts`` result that is not an account list stores no choices."""
+    c = connected_collector(intake, served, choices=CHOICES)
+    mcp.script["list_accounts"] = tool_result({"accounts": "not a list"})
+    run_at(c, clock)
+    assert last_error(c) == "upstream_unavailable"
+    assert choices_of(c) == list(CHOICES)
+    assert stored(c.owner).consecutive_failures == 1
+    no_collection(mcp)
+
+
+def test_an_mcp_host_that_turned_private_gets_no_byte(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    resolver: FakeResolver,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 72 run half, the MCP request: the token endpoint still resolves public,
+    the pinned MCP host now resolves private."""
+    c = connected_collector(intake, served)
+    resolver.make_private("mcp.example.com")
+    run_at(c, clock)
+    assert len(refresh_requests(served)) == 1
+    assert mcp.requests == []
+    assert last_error(c) == "endpoint_misconfigured"
+    after = stored(c.owner)
+    assert after.authorization_state == "connected"
+    assert after.consecutive_failures == 1
+    assert after.not_before == clock.now() + TWO_HOURS
+    assert lost_audits(c.owner) == []
+    quietly_succeeded(c)
+
+
+def test_each_set_up_call_runs_between_a_forced_and_an_ordinary_checkpoint(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 35 set-up calls, I13: the order of checkpoints and calls, and a
+    ``list_accounts`` just inside its 50 s budget, after a throttled checkpoint,
+    still ends inside the lease."""
+    c = connected_collector(intake, served)
+    token = LeaseModel(clock)
+    seen: list[Any] = []
+
+    def recorded(name: str, seconds: float) -> Responder:
+        inner = mcp.default(name)
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            token.events.append(name)
+            seen.append((name, clock.now(), token.lease_until))
+            clock.advance(seconds)
+            return inner(request)
+
+        return respond
+
+    # The initialize call extends the lease when it returns; the notification
+    # returns 15 s later, so its ordinary checkpoint is throttled.
+    for name, seconds in (
+        ("initialize", 30.0),
+        ("notifications/initialized", 15.0),
+        ("list_accounts", 49.5),
+    ):
+        mcp.script[name] = recorded(name, seconds)
+    invoke(c, token)
+    assert token.events[2:] == [
+        ("checkpoint", True),
+        "initialize",
+        ("checkpoint", False),
+        ("checkpoint", True),
+        "notifications/initialized",
+        ("checkpoint", False),
+        ("checkpoint", True),
+        "list_accounts",
+        ("checkpoint", False),
+    ]
+    _, started, lease_until = seen[-1]
+    assert started + timedelta(seconds=49.5) < lease_until
+    assert last_error(c) is None
+
+
+def test_a_revoke_while_the_accounts_are_listed_leaves_the_run_writing_nothing(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """W1, the guarded stop: the run would need a selection, but the owner revoked
+    while ``list_accounts`` was open; no choices and no code are written."""
+    c = connected_collector(intake, served, choices=CHOICES)
+    mcp.accounts = [account(), account(OTHER)]
+    hold = Hold()
+    mcp.holds["list_accounts"] = hold
+    worker = threading.Thread(target=lambda: visit(intake, clock))
+    worker.start()
+    try:
+        assert hold.entered.wait(timeout=30), "list_accounts never arrived"
+        revoke(c)
+    finally:
+        hold.release.set()
+        worker.join(timeout=60)
+    after = stored(c.owner)
+    assert after.authorization_state == "revoked"
+    assert last_error(c) == "authorization_required"
+    assert after.consecutive_failures == 0 and after.not_before is None
+    assert choices_of(c) == list(CHOICES)
+    assert lost_audits(c.owner) == []
+    quietly_succeeded(c)
+
+
+@pytest.mark.parametrize("call", ["initialize", "list_accounts"])
+def test_no_leads_lock_or_write_is_held_during_a_slow_set_up_call(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    call: str,
+) -> None:
+    """I14, transaction shape for the session: during a slow ``initialize`` or
+    ``list_accounts`` the work transaction is inert, and select_account and revoke
+    complete during the call."""
+    c = connected_collector(intake, served, choices=CHOICES)
+    hold = Hold()
+    mcp.holds[call] = hold
+    worker = threading.Thread(target=lambda: visit(intake, clock))
+    worker.start()
+    try:
+        assert hold.entered.wait(timeout=30), f"{call} never arrived"
+        shape = work_shape(c)
+        selected = run(intake, c.owner, SELECT, organization_id=CHOICES[0][0])
+        assert selected.ok, selected
+        revoke(c)
+    finally:
+        hold.release.set()
+        worker.join(timeout=60)
+    shape.assert_inert()
+    quietly_succeeded(c)
+    assert stored(c.owner).authorization_state == "revoked"
+
+
+ORG_MARKER = "org-marker-5b2e8c41"
+
+
+@pytest.mark.parametrize(
+    "kind", ["401-body", "500-html", "truncated-json", "listed-marker"]
+)
+def test_no_token_or_organization_marker_reaches_a_job_log_audit_or_health(
+    intake: Intake,
+    root: Path,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    caplog: pytest.LogCaptureFixture,
+    kind: str,
+) -> None:
+    """I1 for the session: failing MCP bodies carrying a token marker and an
+    organization-id marker, and an account list carrying the organization-id
+    marker, leave neither in ``core.job.last_error``, logs, audit rows or health
+    error fields."""
+    caplog.set_level(logging.DEBUG)
+    c = connected_collector(intake, served)
+    tokens = Tokens(rotating=False)
+    served.token = tokens
+
+    def leaking(status: int, template: str) -> Responder:
+        def respond(request: httpx.Request) -> httpx.Response:
+            body = template.format(token=tokens.issued[-1], org=ORG_MARKER)
+            return httpx.Response(
+                status, content=body.encode(), headers={"X-Org": ORG_MARKER}
+            )
+
+        return respond
+
+    mcp.script["list_accounts"] = {
+        "401-body": leaking(401, '{{"error": "{token} {org}"}}'),
+        "500-html": leaking(500, "<html>{token} {org}</html>"),
+        "truncated-json": leaking(
+            200, '{{"jsonrpc":"2.0","id":2,"result":{{"x":"{token} {org}'
+        ),
+        "listed-marker": accounts_result(account(ORG_MARKER), account(OTHER)),
+    }[kind]
+    run_at(c, clock)
+    assert mcp.calls("list_accounts") == 1
+    logged = "\n".join(
+        [r.getMessage() for r in caplog.records]
+        + [r.exc_text or "" for r in caplog.records]
+    )
+    with open_unit_of_work(c.owner) as uow:
+        jobs = repr(list(uow.connection.execute(select(job)).mappings()))
+        audits = repr(list(uow.connection.execute(select(audit_record)).mappings()))
+    recorded = repr(health(c.owner, c.connection_id))
+    for marker in [*markers(root, c), *tokens.issued, ORG_MARKER]:
+        for surface in (logged, jobs, audits, recorded):
+            assert marker not in surface
+    if kind == "listed-marker":
+        # The stored choices are a carried surface.
+        assert choices_of(c)[0] == (ORG_MARKER, "Example Freelancer")
+        assert last_error(c) == "account_selection_required"

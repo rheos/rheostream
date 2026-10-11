@@ -16,11 +16,20 @@ the call. A rotated refresh token is switched by compare-and-set before the old 
 is discarded; a lost compare-and-set (a revoke or reconnect won) revokes the freshly
 minted token and discards its file. A terminal answer makes the connection need a
 reconnect; a rejected client is also cleared, and the worker never registers one.
+
+Then the MCP session: ``initialize``, the ``initialized`` notification and
+``list_accounts``, each between a forced and an ordinary checkpoint. The fresh
+account choices are stored before any decision; the account is selected without
+any fallback (:func:`select_organization`), else ``account_selection_required``
+ends the run with no ``find_jobs`` call. An MCP 401 or 403 is terminal, the stored
+client kept; any other failure is transient and nothing is retried.
+
 Expected failures never raise. Anything unexpected is logged by its type name and
 raised as the fixed ``internal_error``, with no chained exception.
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, cast
 from uuid import UUID
@@ -33,6 +42,7 @@ from rheo_core.boundary.factories import (
     context_for_scheduled_job,
 )
 from rheo_core.connectors import oauth
+from rheo_core.connectors.mcp_client import McpSession
 from rheo_core.connectors.oauth import (
     AccessToken,
     ClientAuth,
@@ -54,10 +64,19 @@ from rheo_leads.jobfeed.state import (
     clear_rejected_client,
     current_token,
     read_connection,
+    replace_account_choices,
+    store_selection,
     switch_token,
     write_success,
     write_terminal,
     write_transient,
+)
+from rheo_leads.jobfeed.upstream import (
+    READ_ONLY_POLICY,
+    Account,
+    RunCut,
+    Upstream,
+    UpstreamFailure,
 )
 from rheo_leads.pipeline_common import jobsearch_enabled
 
@@ -76,6 +95,9 @@ INTERNAL_ERROR_LOG: Final = "jobfeed_internal_error %s"
 ENDPOINT_MISCONFIGURED: Final = "endpoint_misconfigured"
 TOKEN_REFRESH_FAILED: Final = "token_refresh_failed"
 UPSTREAM_RATE_LIMITED: Final = "upstream_rate_limited"
+UPSTREAM_UNAVAILABLE: Final = "upstream_unavailable"
+ACCOUNT_SELECTION_REQUIRED: Final = "account_selection_required"
+COLLECTION_PARTIAL: Final = "collection_partial"
 
 
 class CollectPayload(BaseModel):
@@ -147,18 +169,117 @@ class _Run:
         return self.client
 
 
+def select_organization(accounts: Sequence[Account], stored: str | None) -> str | None:
+    """The organization the run collects as, or ``None`` when the owner must pick.
+
+    A stored organization is used only when it is listed exactly once and that
+    entry is a TALENT account; with none stored, the only TALENT entry is used.
+    Nothing ever falls back to another account.
+    """
+    if stored is not None:
+        listed = [a for a in accounts if a.organization_id == stored]
+        return stored if len(listed) == 1 and listed[0].is_talent else None
+    talent = [a.organization_id for a in accounts if a.is_talent]
+    return talent[0] if len(talent) == 1 else None
+
+
+def collect_phase(
+    upstream: Upstream, organization_id: str, *, deadline: float
+) -> SessionResult:
+    """Collection as ``organization_id`` on the open session. Does nothing yet."""
+    return SessionResult()
+
+
 def session_phase(
     uow: HandlerUnitOfWork,
     token: CancellationToken,
-    *,
-    job_ctx: WorkspaceContext,
-    conn_ctx: WorkspaceContext,
-    connection: JobfeedConnection,
+    run: _Run,
     access: AccessToken,
-    deadline: float,
-) -> SessionResult:
-    """The MCP session after a successful refresh. Does nothing yet."""
-    return SessionResult()
+) -> SessionResult | None:
+    """The MCP session after a successful refresh: the set-up calls, the stored
+    account choices, the selection, then collection. ``None`` means the run has
+    already ended, its outcome written or nothing to write."""
+    deps = dependencies()
+    session = McpSession(
+        run.connection.resource_url,
+        access,
+        READ_ONLY_POLICY,
+        deadline=run.deadline,
+        transport=deps.transport,
+        resolver=deps.resolver,
+        monotonic=deps.clock,
+    )
+    selection: str | Transient | None = None
+    stopped: UpstreamFailure | RunCut | None = None
+    try:
+        with Upstream(
+            session,
+            token,
+            deadline=run.deadline,
+            monotonic=deps.clock,
+            sleep=deps.sleep,
+        ) as upstream:
+            selection = _select(run, upstream.list_accounts())
+            if isinstance(selection, str):
+                return collect_phase(upstream, selection, deadline=run.deadline)
+    except (UpstreamFailure, RunCut) as error:
+        stopped = error
+    if stopped is None:
+        if isinstance(selection, Transient):
+            # Not a failure to back off from: the owner's choice makes the next
+            # run due at the end of this claim's window.
+            _end(uow, run, selection, backoff=False)
+        return None
+    # Ended outside the except block, so nothing upstream is chained to a write.
+    _end(uow, run, _stopped(stopped), backoff=not isinstance(stopped, RunCut))
+    return None
+
+
+def _select(run: _Run, accounts: Sequence[Account]) -> str | Transient | None:
+    """Store the fresh choices, then decide: the organization to collect as, the
+    ``account_selection_required`` outcome when the owner must pick one, or
+    ``None`` when the connection moved on (an owner revoked, reconnected or
+    selected meanwhile) and the run writes nothing.
+
+    The choices are stored before any decision, so the owner can pick from them.
+    No network call happens while either unit is open.
+    """
+    deps = dependencies()
+    connection_id = run.connection.connection_id
+    current = replace_account_choices(
+        run.job_ctx,
+        connection_id=connection_id,
+        generation=run.generation,
+        choices=[(a.organization_id, a.label) for a in accounts],
+        now=deps.now(),
+    )
+    if current is None:
+        return None
+    selected = select_organization(accounts, current.organization_id)
+    if selected is None:
+        return Transient(ACCOUNT_SELECTION_REQUIRED)
+    if current.organization_id is None and not store_selection(
+        run.job_ctx,
+        connection_id=connection_id,
+        generation=run.generation,
+        organization_id=selected,
+        now=deps.now(),
+    ):
+        return None
+    return selected
+
+
+def _stopped(stopped: UpstreamFailure | RunCut) -> Outcome:
+    """The outcome of an upstream call that failed, or of a run cut short."""
+    if isinstance(stopped, RunCut):
+        return Transient(COLLECTION_PARTIAL)
+    if stopped.terminal:
+        return Terminal()
+    if stopped.code == "rate_limited":
+        return Transient(UPSTREAM_RATE_LIMITED, retry_after=stopped.retry_after)
+    if stopped.code == ENDPOINT_MISCONFIGURED:
+        return Transient(ENDPOINT_MISCONFIGURED)
+    return Transient(UPSTREAM_UNAVAILABLE)
 
 
 def collect_job(
@@ -253,16 +374,9 @@ def _collect(
     access = _refresh(uow, token, run, claimed.token_ref)
     if access is None:
         return
-    session_phase(
-        uow,
-        token,
-        job_ctx=job_ctx,
-        conn_ctx=conn_ctx,
-        connection=connection,
-        access=access,
-        deadline=run.deadline,
-    )
-    _end(uow, run, Succeeded())
+    # Step 4 on: the session, the account and collection.
+    if session_phase(uow, token, run, access) is not None:
+        _end(uow, run, Succeeded())
 
 
 def _failed(failure: OAuthFailure) -> Outcome:

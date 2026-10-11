@@ -675,19 +675,42 @@ def connected_collector(
     )
 
 
-# --- a basic fake MCP server ----------------------------------------------------------
+# --- a fake MCP server ----------------------------------------------------------------
 
 McpKey = tuple[str, str | None, str | None]
 """``(method, tool, action)`` of one JSON-RPC request; tool and action are ``None``
 when the request has none."""
 
+PROTOCOL_VERSION = "2025-06-18"
+SESSION_ID = "session-example-1"
+ORGANIZATION = "org-example-1"
+WRITE_TOOLS = ("submit_proposal", "send_message", "accept_offer")
+"""Write-capable tool names the fake advertises; the collector must never call one."""
 
-def _mcp_key(request: httpx.Request) -> McpKey:
+
+def account(
+    organization_id: str = ORGANIZATION,
+    label: str | None = "Example Freelancer",
+    role: str = "TALENT",
+) -> dict[str, object]:
+    """One ``list_accounts`` entry as the server lists it."""
+    entry: dict[str, object] = {"org_uid": organization_id, "role": role}
+    if label is not None:
+        entry["name"] = label
+    return entry
+
+
+def _mcp_message(request: httpx.Request) -> dict[str, Any]:
     try:
         message = json.loads(request.content)
     except ValueError:
-        return ("<unparsed>", None, None)
-    if not isinstance(message, dict):
+        return {}
+    return message if isinstance(message, dict) else {}
+
+
+def _mcp_key(request: httpx.Request) -> McpKey:
+    message = _mcp_message(request)
+    if not message:
         return ("<unparsed>", None, None)
     method = str(message.get("method"))
     params = message.get("params")
@@ -702,31 +725,184 @@ def _mcp_key(request: httpx.Request) -> McpKey:
     )
 
 
+def script_name(key: McpKey) -> str:
+    """How :attr:`FakeMcpServer.script` and ``holds`` name a request: the method,
+    else the tool for ``tools/call``, with ``:action`` when it has one."""
+    method, tool, action = key
+    if method != "tools/call" or tool is None:
+        return method
+    return tool if action is None else f"{tool}:{action}"
+
+
+def rpc_result(result: object, *, headers: dict[str, str] | None = None) -> Responder:
+    """A JSON-RPC response carrying ``result`` for the request's own id."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        document = {
+            "jsonrpc": "2.0",
+            "id": _mcp_message(request).get("id"),
+            "result": result,
+        }
+        return httpx.Response(200, json=document, headers=headers)
+
+    return respond
+
+
+def tool_result(document: object, *, is_error: bool = False) -> Responder:
+    """A ``tools/call`` result whose single text block is ``document`` as JSON."""
+    return rpc_result(
+        {
+            "content": [{"type": "text", "text": json.dumps(document)}],
+            "isError": is_error,
+        }
+    )
+
+
+def accounts_result(*entries: dict[str, object]) -> Responder:
+    """A ``list_accounts`` answer listing ``entries`` in that order."""
+    return tool_result({"accounts": list(entries)})
+
+
+class Stalling(httpx.SyncByteStream):
+    """An event stream that sends a comment line every ``interval`` seconds of fake
+    time, ``chunks`` times, then answers with ``document`` (or, when it is
+    ``None``, stalls until the read timeout fires)."""
+
+    def __init__(
+        self,
+        clock: FakeClock,
+        request: httpx.Request,
+        *,
+        interval: float,
+        chunks: int,
+        document: object = None,
+    ) -> None:
+        self.clock = clock
+        self.request_id = _mcp_message(request).get("id")
+        self.interval = interval
+        self.chunks = chunks
+        self.document = document
+
+    def __iter__(self) -> Iterator[bytes]:
+        for _ in range(self.chunks):
+            self.clock.advance(self.interval)
+            yield b":\n"
+        if self.document is None:
+            self.clock.advance(5.0)
+            raise httpx.ReadTimeout("read timed out")
+        message = {"jsonrpc": "2.0", "id": self.request_id, "result": self.document}
+        yield b"event: message\ndata: " + json.dumps(message).encode() + b"\n\n"
+
+
+def slow(
+    clock: FakeClock,
+    seconds: float,
+    responder: Responder | None = None,
+) -> Responder:
+    """``responder``'s answer after ``seconds`` of fake time spent in the call."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        clock.advance(seconds)
+        if responder is None:
+            raise httpx.ReadTimeout("read timed out")
+        return responder(request)
+
+    return respond
+
+
+def trickling(
+    clock: FakeClock, *, interval: float, chunks: int, document: object = None
+) -> Responder:
+    """A 200 event stream built by :class:`Stalling`."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            stream=Stalling(
+                clock, request, interval=interval, chunks=chunks, document=document
+            ),
+        )
+
+    return respond
+
+
+def raising(error: Exception) -> Responder:
+    """A transport failure instead of an answer."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        raise error
+
+    return respond
+
+
 @dataclass
 class FakeMcpServer:
-    """Counts every request it receives by method, tool and action, and answers from
-    ``script`` (keyed by method), else a JSON-RPC ``method not found`` error."""
+    """A Streamable HTTP MCP server for the run tests.
+
+    By default it answers ``initialize`` (with an ``Mcp-Session-Id`` header), the
+    ``initialized`` notification, ``tools/list`` (advertising write-capable tools
+    beside the read-only ones), ``list_accounts`` (``accounts``, one TALENT account
+    unless changed) and ``find_jobs`` (an empty page, any action). ``script`` replaces
+    the answer for a request named as :func:`script_name` names it (for example
+    ``"initialize"``, ``"list_accounts"`` or ``"find_jobs:search"``); ``holds``
+    blocks one the same way. Every request is kept and counted by
+    ``(method, tool, action)``.
+    """
 
     resource_url: str = RESOURCE_URL
+    accounts: list[dict[str, object]] = field(default_factory=lambda: [account()])
     script: dict[str, Responder] = field(default_factory=dict)
+    holds: dict[str, Hold] = field(default_factory=dict)
     requests: list[httpx.Request] = field(default_factory=list)
     counts: Counter[McpKey] = field(default_factory=Counter)
+
+    def calls(self, name: str) -> int:
+        """How many requests :func:`script_name` names ``name``."""
+        return sum(n for key, n in self.counts.items() if script_name(key) == name)
+
+    def names(self) -> list[str]:
+        """Every request's :func:`script_name`, in arrival order."""
+        return [script_name(_mcp_key(r)) for r in self.requests]
+
+    def default(self, name: str) -> Responder:
+        if name == "initialize":
+            return rpc_result(
+                {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": "example-jobs", "version": "1.0.0"},
+                },
+                headers={"Mcp-Session-Id": SESSION_ID},
+            )
+        if name == "notifications/initialized":
+            return answer(202)
+        if name == "tools/list":
+            return rpc_result(
+                {
+                    "tools": [
+                        {"name": tool, "inputSchema": {"type": "object"}}
+                        for tool in ("list_accounts", "find_jobs", *WRITE_TOOLS)
+                    ]
+                }
+            )
+        if name == "list_accounts":
+            return accounts_result(*self.accounts)
+        if name.startswith("find_jobs"):
+            return tool_result({"jobs": []})
+        return rpc_result(None)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         key = _mcp_key(request)
         self.counts[key] += 1
-        responder = self.script.get(key[0])
-        if responder is not None:
-            return responder(request)
-        return httpx.Response(
-            200,
-            json={
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32601, "message": "method not found"},
-            },
-        )
+        name = script_name(key)
+        hold = self.holds.get(name)
+        if hold is not None:
+            hold.entered.set()
+            assert hold.release.wait(timeout=60), f"{name} was never released"
+        responder = self.script.get(name) or self.default(name)
+        return responder(request)
 
 
 def combined(
