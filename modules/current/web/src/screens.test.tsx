@@ -256,7 +256,7 @@ describe("item detail", () => {
       await screens.item({ shell: api, query: { ref: ITEM } }),
     );
     expect(html).toContain("&lt;billing@example.com&gt;");
-    expect(html).toContain("Agent 01a0f5ed");
+    expect(html).toContain("Agent 96bde0dd");
     expect(html).toContain("System");
     expect(html).toContain("From email");
     expect(html).toContain("email.thread: thread-1");

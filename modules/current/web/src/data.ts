@@ -273,10 +273,11 @@ const AUTHOR_LABEL: Record<string, string> = {
   system: "System",
   connection: "Connection",
 };
-/** Who wrote a comment, from the record's own author fields. */
+/** Who wrote a comment, from the record's own author fields. The id shows as its
+ * last eight characters: a UUIDv7 starts with a timestamp, so its head repeats. */
 export function author(comment: Comment): string {
   const kind = AUTHOR_LABEL[comment.authorKind] ?? comment.authorKind;
-  return comment.authorId ? `${kind} ${comment.authorId.slice(0, 8)}` : kind;
+  return comment.authorId ? `${kind} ${comment.authorId.slice(-8)}` : kind;
 }
 export const PROVENANCE_LABEL: Record<string, string> = {
   manual: "Added by hand",
