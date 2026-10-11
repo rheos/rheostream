@@ -975,8 +975,6 @@ REVOCATION_UNEXPECTED: Final = "revocation_unexpected_error %s"
 RevocationOutcome = Literal["revoked", "revocation_failed", "revocation_unavailable"]
 
 _ACCESS_TOKEN: Final = re.compile(r"[\x21-\x7e]+")
-_RETRY_AFTER: Final = re.compile(r"[0-9]+")
-_RETRY_AFTER_MAX: Final = 999_999_999
 _TERMINAL_ERRORS: Final[dict[str, OAuthCode]] = {
     "invalid_client": "client_rejected",
     "invalid_grant": "invalid_grant",
@@ -1017,21 +1015,12 @@ def _error_code(response: EgressResponse) -> str | None:
     return error if isinstance(error, str) else None
 
 
-def _retry_after(headers: httpx.Headers) -> int | None:
-    """A seconds-form ``Retry-After``; ``None`` for a date or anything else."""
-    try:
-        value = headers.get("retry-after")
-    except (ValueError, LookupError):
-        return None
-    if value is None or not _RETRY_AFTER.fullmatch(value):
-        return None
-    return int(value) if len(value) <= 9 else _RETRY_AFTER_MAX
-
-
 def _token_error(response: EgressResponse, failed: OAuthCode) -> OAuthFailure:
     """The failure for a token endpoint answer other than 200."""
     if response.status == 429:
-        return OAuthFailure("rate_limited", retry_after=_retry_after(response.headers))
+        return OAuthFailure(
+            "rate_limited", retry_after=egress.retry_after_seconds(response.headers)
+        )
     error = _error_code(response)
     if error is not None and error in _TERMINAL_ERRORS:
         return OAuthFailure(_TERMINAL_ERRORS[error], terminal=True)

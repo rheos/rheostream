@@ -221,7 +221,48 @@ REFUSED = [
     ("find_jobs", {"action": ["search"]}, "action_not_allowed"),
     ("find_jobs", {"action": None}, "action_not_allowed"),
     ("list_accounts", {"action": "get"}, "action_not_allowed"),
+    ("list_accounts", None, "action_not_allowed"),
+    ("find_jobs", [("action", "search")], "action_not_allowed"),
 ]
+
+
+class Disguised(str):
+    """A string that compares and hashes as ``looks_like`` but carries its own
+    characters onto the wire."""
+
+    looks_like: str | None = None
+
+    def __eq__(self, other: object) -> bool:
+        return other == self.looks_like
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash(self.looks_like)
+
+
+def disguised(real: str, looks_like: str | None) -> str:
+    cls = type("Disguised", (Disguised,), {"looks_like": looks_like})
+    value: str = cls(real)
+    return value
+
+
+ALIASED = [
+    (disguised("submit_proposal", "list_accounts"), {}, "tool_not_allowed"),
+    (
+        "find_jobs",
+        {"action": disguised("delete", "get")},
+        "action_not_allowed",
+    ),
+    ("list_accounts", {disguised("action", None): "get"}, "action_not_allowed"),
+    (
+        "find_jobs",
+        {"action": "get", disguised("action", None): "delete"},
+        "action_not_allowed",
+    ),
+]
+REFUSED += ALIASED
 
 
 @pytest.mark.parametrize(("name", "arguments", "code"), REFUSED)

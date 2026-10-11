@@ -33,6 +33,8 @@ Surface (later callers read this module as built):
   stream that stays open after the answer the caller waits for).
 - :class:`EgressFailure`: the fixed codes ``endpoint_misconfigured``, ``timeout``,
   ``too_large`` and ``unavailable`` (every transport or decoding error).
+- :func:`retry_after_seconds`: a seconds-form ``Retry-After`` header, else
+  ``None``; both callers' 429 handling reads it.
 - :data:`INITIALIZE_BODY`: the canonical JSON-RPC 2.0 ``initialize`` request bytes,
   sent by the discovery probe and the MCP session alike.
 
@@ -50,6 +52,7 @@ request.
 
 import ipaddress
 import json
+import re
 import socket
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -107,6 +110,22 @@ class EgressResponse:
     status: int
     headers: httpx.Headers
     body: bytes
+
+
+_RETRY_AFTER: Final = re.compile(r"[0-9]+")
+_RETRY_AFTER_MAX: Final = 999_999_999
+
+
+def retry_after_seconds(headers: httpx.Headers) -> int | None:
+    """A seconds-form ``Retry-After`` (capped at 999,999,999); ``None`` for a date,
+    anything else, or a header that does not decode."""
+    try:
+        value = headers.get("retry-after")
+    except (ValueError, LookupError):
+        return None
+    if value is None or not _RETRY_AFTER.fullmatch(value):
+        return None
+    return int(value) if len(value) <= 9 else _RETRY_AFTER_MAX
 
 
 def default_resolver(host: str) -> Sequence[str]:

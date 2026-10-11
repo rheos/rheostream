@@ -15,7 +15,10 @@ with nothing sent.
 else: a tool name outside the policy, an ``action`` outside the tool's set, a missing
 or non-string ``action`` where one is required, or any ``action`` for a tool that
 takes none raises :class:`ToolRefused` before the session state, the clock, the
-access token or a host lookup is consulted.
+access token or a host lookup is consulted. The name and the action must be exact
+``str`` objects, and the policy runs twice: on the caller's values, then on the
+values decoded back from the encoded ``params`` (where a repeated key anywhere is
+refused), and those same encoded bytes are what is sent.
 
 **Wire.** Every request carries ``Accept: application/json, text/event-stream`` and
 the access token's ``Authorization`` header, and goes only to the resource URL
@@ -57,7 +60,7 @@ import httpx
 
 from rheo_core.connectors import egress
 from rheo_core.connectors.egress import Clock, EgressResponse, Resolver
-from rheo_core.connectors.oauth import AccessToken, _retry_after
+from rheo_core.connectors.oauth import AccessToken
 
 McpCode = Literal[
     "unauthorized",
@@ -162,8 +165,10 @@ class ToolPolicy(Mapping[str, frozenset[str] | None]):
         return len(self._tools)
 
     def refusal(self, name: object, arguments: object) -> RefusalCode | None:
-        """Why ``name`` with ``arguments`` is not allowed, or ``None``."""
-        if not isinstance(name, str) or name not in self._tools:
+        """Why ``name`` with ``arguments`` is not allowed, or ``None``. The name and
+        the action must be exact ``str`` objects, so a subclass cannot compare or
+        hash as an allowed value while carrying other characters."""
+        if type(name) is not str or name not in self._tools:
             return "tool_not_allowed"
         if not isinstance(arguments, dict):
             return "action_not_allowed"
@@ -171,7 +176,7 @@ class ToolPolicy(Mapping[str, frozenset[str] | None]):
         if actions is None:
             return "action_not_allowed" if "action" in arguments else None
         action = arguments.get("action")
-        if not isinstance(action, str) or action not in actions:
+        if type(action) is not str or action not in actions:
             return "action_not_allowed"
         return None
 
@@ -213,6 +218,10 @@ class _EventReader:
     Fed chunk by chunk while the response streams; :attr:`done` once the response
     for ``request_id`` has arrived or the stream turned out malformed.
     """
+
+    # Its only input is the egress ``stop`` callback (``McpSession._exchange``),
+    # which sees each chunk after the cap and budget checks; it never reads the
+    # finished body, so a change to how egress calls ``stop`` changes this reader.
 
     __slots__ = ("_data", "_event", "_pending", "_request_id", "_started", "found")
 
@@ -315,6 +324,27 @@ def _tool_code(result: dict[str, object]) -> str | None:
     return None
 
 
+def _decode_sent(params: bytes) -> tuple[object, object] | None:
+    """The tool name and arguments exactly as the encoded ``params`` carry them,
+    or ``None`` when any object in them repeats a key (a receiver could read
+    either copy)."""
+    repeated = False
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        nonlocal repeated
+        decoded = dict(items)
+        repeated = repeated or len(decoded) != len(items)
+        return decoded
+
+    try:
+        document = json.loads(params, object_pairs_hook=pairs)
+    except (ValueError, RecursionError):
+        return None
+    if repeated or not isinstance(document, dict):
+        return None
+    return document.get("name"), document.get("arguments")
+
+
 def _encode(message: dict[str, object]) -> bytes | None:
     try:
         return json.dumps(
@@ -329,7 +359,9 @@ def _status_failure(response: EgressResponse) -> McpFailure | None:
     if status in (401, 403):
         return McpFailure("unauthorized")
     if status == 429:
-        return McpFailure("rate_limited", retry_after=_retry_after(response.headers))
+        return McpFailure(
+            "rate_limited", retry_after=egress.retry_after_seconds(response.headers)
+        )
     if status >= 500:
         return McpFailure("unavailable")
     if not 200 <= status < 300:
@@ -418,19 +450,22 @@ class McpSession:
         refusal = self._policy.refusal(name, snapshot)
         if refusal is not None:
             raise ToolRefused(refusal)
+        params = _encode({"name": name, "arguments": snapshot})
+        if params is None:
+            raise McpFailure("protocol")
+        # The policy again, on what the encoded bytes carry: these exact bytes are
+        # sent, so no key or value can differ from what was checked.
+        sent = _decode_sent(params)
+        refusal = "action_not_allowed" if sent is None else self._policy.refusal(*sent)
+        if refusal is not None:
+            raise ToolRefused(refusal)
         self._require("ready")
         request_id = self._next_id
         self._next_id += 1
-        body = _encode(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": snapshot},
-            }
+        body = b'{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":%s}' % (
+            request_id,
+            params,
         )
-        if body is None:
-            raise McpFailure("protocol")
         _, result = self._exchange(body, request_id)
         if result.get("isError") is True:
             raise McpFailure("tool_error", tool_code=_tool_code(result))
