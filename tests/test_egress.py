@@ -376,6 +376,79 @@ def test_a_trickling_stream_is_abandoned_at_the_first_chunk_after_the_budget(
     assert clock.now <= budget + 5
 
 
+def test_a_stop_callback_ends_an_open_stream_with_the_body_so_far() -> None:
+    clock = FakeClock()
+    stream = Trickle(clock, 1.0, b"ab")
+    counting = Counting(
+        lambda request: httpx.Response(
+            200, headers={"Content-Type": "text/event-stream"}, stream=stream
+        )
+    )
+    seen: list[tuple[str | None, bytes]] = []
+
+    def stop(headers: httpx.Headers, chunk: bytes) -> bool:
+        seen.append((headers.get("content-type"), chunk))
+        return len(seen) == 3
+
+    response = bounded_request(
+        counting.client,
+        "GET",
+        URL,
+        budget=15.0,
+        cap=65536,
+        resolver=public,
+        clock=clock,
+        stop=stop,
+    )
+    assert response.status == 200
+    assert response.body == b"ababab"
+    assert stream.sent == 3
+    assert seen == [("text/event-stream", b"ab")] * 3
+
+
+def test_a_stop_callback_runs_only_after_the_cap_and_budget_checks() -> None:
+    calls: list[bytes] = []
+
+    def stop(headers: httpx.Headers, chunk: bytes) -> bool:
+        calls.append(chunk)
+        return False
+
+    counting = Counting(lambda r: httpx.Response(200, stream=Chunks([b"12", b"345"])))
+    exc = failure_of(
+        lambda: bounded_request(
+            counting.client,
+            "GET",
+            URL,
+            budget=15.0,
+            cap=4,
+            resolver=public,
+            clock=FakeClock(),
+            stop=stop,
+        )
+    )
+    assert_content_free(exc, "too_large")
+    assert calls == [b"12"]
+
+    def raises(headers: httpx.Headers, chunk: bytes) -> bool:
+        raise ValueError(MARKER)
+
+    counting = Counting(lambda r: httpx.Response(200, stream=Chunks([b"1"])))
+    exc = failure_of(
+        lambda: bounded_request(
+            counting.client,
+            "GET",
+            URL,
+            budget=15.0,
+            cap=4,
+            resolver=public,
+            clock=FakeClock(),
+            stop=raises,
+        )
+    )
+    assert_content_free(exc, "unavailable")
+    assert exc.__cause__ is None and exc.__context__ is None
+
+
 def test_slow_headers_end_the_request_before_any_body_is_read() -> None:
     clock = FakeClock()
     body = Chunks([b"never read"])

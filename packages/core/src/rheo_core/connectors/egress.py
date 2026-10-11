@@ -27,7 +27,10 @@ Surface (later callers read this module as built):
   ``Accept-Encoding: identity`` is always sent and bytes are counted on the same
   chunks against ``cap`` (``too_large``). A request therefore lasts at most
   ``budget`` plus one 5 s read. Any other status is returned as an
-  :class:`EgressResponse` for the caller to judge.
+  :class:`EgressResponse` for the caller to judge. An optional ``stop`` callback
+  sees the response headers and each chunk once it has passed those checks; when
+  it returns true the read ends there and the body so far is returned (an event
+  stream that stays open after the answer the caller waits for).
 - :class:`EgressFailure`: the fixed codes ``endpoint_misconfigured``, ``timeout``,
   ``too_large`` and ``unavailable`` (every transport or decoding error).
 - :data:`INITIALIZE_BODY`: the canonical JSON-RPC 2.0 ``initialize`` request bytes,
@@ -58,6 +61,7 @@ import httpx
 
 Resolver = Callable[[str], Sequence[str]]
 Clock = Callable[[], float]
+Stop = Callable[[httpx.Headers, bytes], bool]
 EgressCode = Literal["endpoint_misconfigured", "timeout", "too_large", "unavailable"]
 
 TIMEOUT: Final = httpx.Timeout(5.0)
@@ -231,6 +235,7 @@ def _stream(
     headers: httpx.Headers,
     content: bytes | None,
     data: Mapping[str, str] | None,
+    stop: Stop | None,
 ) -> EgressResponse | EgressCode:
     """Send and read under the budget; return the response or a failure code.
 
@@ -257,6 +262,8 @@ def _stream(
                 return "too_large"
             if clock() >= deadline:
                 return "timeout"
+            if stop is not None and stop(response.headers, chunk):
+                break
         return EgressResponse(
             status=response.status_code,
             headers=httpx.Headers(response.headers),
@@ -276,6 +283,7 @@ def bounded_request(
     headers: Mapping[str, str] | None = None,
     content: bytes | None = None,
     data: Mapping[str, str] | None = None,
+    stop: Stop | None = None,
 ) -> EgressResponse:
     """One bounded request (module docstring); raises :class:`EgressFailure`."""
     host = _https_host(url)
@@ -299,6 +307,7 @@ def bounded_request(
             headers=sent_headers,
             content=content,
             data=data,
+            stop=stop,
         )
     except httpx.TimeoutException:
         outcome = "timeout"
