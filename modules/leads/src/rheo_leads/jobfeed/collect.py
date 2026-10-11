@@ -159,10 +159,14 @@ def collect_presets(
                 else:
                     rows.append(posting)
             more, cursor = _continuation(document, preset)
-            if not more or page + 1 >= preset.pages or raw >= ROW_CAP:
+            if not more:
                 break
+            # A page that claims more must name a fresh cursor, even when no
+            # further page will be requested.
             if not isinstance(cursor, str) or not cursor or cursor in seen:
                 page_failures += 1
+                break
+            if page + 1 >= preset.pages or raw >= ROW_CAP:
                 break
             seen.add(cursor)
             params = {**params, "cursor": cursor}
@@ -220,14 +224,6 @@ def _eligible(posting: NormalizedPosting) -> bool:
     )
 
 
-def _detail_id(posting: NormalizedPosting) -> str:
-    """The id a ``get`` takes: the feed row's own id, or, when the row carried
-    none, the posting token's digits after its ``~02``."""
-    if posting.feed_id is not None:
-        return posting.feed_id
-    return posting.posting_id.removeprefix("~02")
-
-
 def _described(
     posting: NormalizedPosting, detail: dict[str, object], job_hosts: Sequence[str]
 ) -> NormalizedPosting | None:
@@ -253,9 +249,10 @@ def read_details(
     max_reads: int = MAX_DETAIL_READS,
 ) -> DetailResult:
     """One ``find_jobs get`` per unique eligible posting, at most ``max_reads``,
-    none starting with the ``deadline`` too close. A discovery posting whose read
-    failed or was not made is downgraded to refresh-only with no description and
-    counts one failure; other sightings pass through unchanged."""
+    none starting with the ``deadline`` too close. A ``get`` sends the feed row's
+    own id; a posting whose row carried none gets no read. A discovery posting
+    whose read failed or was not made is downgraded to refresh-only with no
+    description and counts one failure; other sightings pass through unchanged."""
     # Each posting id's one read: its detail document when it succeeded, else None.
     details: dict[str, dict[str, object] | None] = {}
     updated: list[Sighting] = []
@@ -270,10 +267,11 @@ def read_details(
         key = posting.posting_id
         if key not in details:
             detail: dict[str, object] | None = None
-            if not cut and reads < max_reads:
+            feed_id = posting.feed_id
+            if feed_id is not None and not cut and reads < max_reads:
                 try:
                     detail = upstream.find_jobs(
-                        "get", org_uid, {"id": _detail_id(posting)}, deadline=deadline
+                        "get", org_uid, {"id": feed_id}, deadline=deadline
                     )
                 except RunCut:
                     cut = True

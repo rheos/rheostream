@@ -66,8 +66,12 @@ class LeaseToken:
     def __init__(self, clock: Clock) -> None:
         self.clock = clock
         self.extensions: list[float] = []
+        # How long a forced extension's round trip takes on the fake clock.
+        self.forced_delay = 0.0
 
     def checkpoint(self, now: object = None, *, force: bool = False) -> None:
+        if force:
+            self.clock.now += self.forced_delay
         at = self.clock.now
         self.clock.log.append("forced" if force else "ordinary")
         last = self.extensions[-1] if self.extensions else None
@@ -250,12 +254,14 @@ class CountingMcp:
         return found
 
 
-def real_upstream(mcp: CountingMcp, rig: Rig) -> Upstream:
+def real_upstream(
+    mcp: CountingMcp, rig: Rig, *, deadline: float = DEADLINE
+) -> Upstream:
     session = McpSession(
         RESOURCE,
         AccessToken(ACCESS),
         READ_ONLY_POLICY,
-        deadline=DEADLINE,
+        deadline=deadline,
         transport=httpx.MockTransport(mcp.handle),
         resolver=lambda host: [PUBLIC],
         monotonic=rig.clock.monotonic,
@@ -263,7 +269,7 @@ def real_upstream(mcp: CountingMcp, rig: Rig) -> Upstream:
     return Upstream(
         session,
         rig.token,
-        deadline=DEADLINE,
+        deadline=deadline,
         monotonic=rig.clock.monotonic,
         sleep=rig.clock.sleep,
     )
@@ -546,7 +552,7 @@ def test_set_up_calls_are_not_paced(rig: Rig) -> None:
 
 @pytest.mark.parametrize(
     ("deadline_after_next_start", "made"),
-    [(-0.2, False), (0.0, False), (4.99, False), (5.0, True), (30.0, True)],
+    [(0.2, False), (5.0, False), (5.49, False), (5.5, True), (30.0, True)],
 )
 def test_a_pacing_wait_reaching_the_deadline_cuts_the_run(
     rig: Rig, deadline_after_next_start: float, made: bool
@@ -561,6 +567,30 @@ def test_a_pacing_wait_reaching_the_deadline_cuts_the_run(
             assert_content_free(cut, "run_cut")
             assert rig.clock.slept == []
     assert rig.session.attempts() == (2 if made else 1)
+
+
+@pytest.mark.parametrize("checkpoint_seconds", [0.6, 1.5, 7.0])
+def test_a_checkpoint_that_eats_the_margin_cuts_instead_of_failing(
+    rig: Rig, checkpoint_seconds: float
+) -> None:
+    """The pacing check passes with 6 s left, then the forced checkpoint takes
+    time. The call is cut, not sent and not counted as a failure (the session
+    itself would refuse it as ``unavailable`` under 5 s)."""
+    mcp = CountingMcp()
+    with real_upstream(mcp, rig, deadline=START + 6.0) as upstream:
+        rig.token.forced_delay = checkpoint_seconds
+        cut = raises(lambda: upstream.find_jobs("get", ORG, {"id": "3"}), Exception)
+    assert isinstance(cut, RunCut)
+    assert_content_free(cut, "run_cut")
+    assert ("tools/call", "find_jobs", "get") not in mcp.methods()
+
+
+def test_a_call_with_the_margin_left_after_its_checkpoint_is_sent(rig: Rig) -> None:
+    mcp = CountingMcp()
+    with real_upstream(mcp, rig, deadline=START + 6.0) as upstream:
+        rig.token.forced_delay = 0.5
+        upstream.find_jobs("get", ORG, {"id": "3"})
+    assert ("tools/call", "find_jobs", "get") in mcp.methods()
 
 
 def test_a_call_deadline_earlier_than_the_run_cuts_too(rig: Rig) -> None:

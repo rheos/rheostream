@@ -12,8 +12,9 @@ lease, and a long call is followed at once by a fresh one.
 
 **Pacing.** ``find_jobs`` calls, all three actions, start at least
 :data:`FIND_JOBS_SPACING` seconds apart, start to start. When the wait would reach
-the deadline, or less than :data:`MINIMUM_START_SECONDS` would remain at the start,
-the call is not made and :class:`RunCut` is raised.
+the deadline, or less than :data:`START_SECONDS` would remain at the start (checked
+before the wait and again after the forced checkpoint), the call is not made and
+:class:`RunCut` is raised.
 
 **Exactly one retry.** A ``find_jobs`` tool error whose code is
 :data:`SENSITIVE_RATE_LIMIT` is retried once with the same arguments, starting at
@@ -50,6 +51,11 @@ READ_ONLY_POLICY: Final = ToolPolicy(
 """The only tools and actions the collector may call; the session refuses anything
 else before a byte is sent."""
 
+START_SECONDS: Final = MINIMUM_START_SECONDS + 0.5
+"""The least time a ``find_jobs`` call may start with. The session refuses a call
+under :data:`MINIMUM_START_SECONDS` as a failure; the half-second margin covers the
+forced checkpoint and the gap before the session's own check, so a call near the
+deadline is cut instead."""
 FIND_JOBS_SPACING: Final = 5.3
 RETRY_SPACING: Final = 5.5
 SENSITIVE_RATE_LIMIT: Final = "SENSITIVE_RATE_LIMIT_EXCEEDED"
@@ -257,7 +263,7 @@ class Upstream:
         while True:
             self._pace(cutoff)
             outcome = self._checkpointed(
-                lambda: self._session.call_tool("find_jobs", arguments), paced=True
+                lambda: self._session.call_tool("find_jobs", arguments), cutoff=cutoff
             )
             if (
                 isinstance(outcome, McpFailure)
@@ -279,18 +285,22 @@ class Upstream:
     def _pace(self, cutoff: float) -> None:
         now = self._monotonic()
         start = max(now, self._next_start)
-        if cutoff - start < MINIMUM_START_SECONDS:
+        if cutoff - start < START_SECONDS:
             raise RunCut()
         if start > now:
             self._sleep(start - now)
 
     def _checkpointed[T](
-        self, call: Callable[[], T], *, paced: bool = False
+        self, call: Callable[[], T], *, cutoff: float | None = None
     ) -> T | McpFailure:
         """Forced checkpoint, the call, ordinary checkpoint; a failure is returned,
-        not raised, so the caller raises its translation outside any handler."""
+        not raised, so the caller raises its translation outside any handler. A
+        ``cutoff`` marks a paced call, which is cut, not made, when the checkpoint
+        left it under :data:`START_SECONDS`."""
         self._token.checkpoint(force=True)
-        if paced:
+        if cutoff is not None:
+            if cutoff - self._monotonic() < START_SECONDS:
+                raise RunCut()
             # Start to start: the spacing counts from the moment this call begins.
             self._next_start = self._monotonic() + FIND_JOBS_SPACING
         outcome: T | McpFailure

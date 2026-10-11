@@ -281,10 +281,22 @@ def test_a_missing_cursor_while_more_is_claimed_stops_that_search(
 
     r = run(search)
     result = r.collect()
-    # Most Recent asks for five pages but stops after the first.
+    # Most Recent asks for five pages but stops after the first. A page that claims
+    # more without a usable cursor is a failure even when it is its search's last.
     assert r.session.actions() == ["smart_search", "smart_search", "search"]
-    assert result.search_failures == 1
+    assert result.search_failures == 3
     assert len(result.rows) == 3
+
+
+def test_a_cursor_is_checked_even_on_the_page_that_reaches_the_cap() -> None:
+    def search(action: str, params: dict[str, Any]) -> object:
+        cursor = None if len(r.session.calls) == 8 else f"cursor-{next(counter)}"
+        return page(action, params, [job() for _ in range(10)], cursor=cursor)
+
+    r = run(search)
+    result = r.collect([preset(f"p{n}", pages=4) for n in range(3)])
+    assert len(r.session.calls) == 8 and len(result.rows) == ROW_CAP
+    assert result.search_failures == 1
 
 
 def test_a_repeated_cursor_stops_that_search() -> None:
@@ -625,8 +637,8 @@ def test_a_failed_read_is_not_repeated_for_a_duplicate_id() -> None:
 
 def test_the_deadline_omits_the_remaining_reads() -> None:
     r = run(details_answer())
-    # The fourth read starts with 5.5 s left; the fifth would start with 0.2 s.
-    deadline = START + 3 * 5.3 + 5.5
+    # The fourth read starts with 6 s left; the fifth would start with 0.7 s.
+    deadline = START + 3 * 5.3 + 6.0
     result = r.details(
         sightings(*(posting(1600 + n, ordinal=1, at=n) for n in range(6))),
         deadline=deadline,
@@ -655,13 +667,24 @@ def test_a_terminal_failure_ends_the_reads() -> None:
 
 def test_a_detail_read_sends_the_feed_rows_own_id() -> None:
     r = run(details_answer())
-    r.details(
+    result = r.details(
         sightings(
             posting(1801, ordinal=0, at=0, id="feed-7741"),
             posting(1802, ordinal=0, at=0, id=None),
+            posting(1803, ordinal=0, at=0, id="feed-7743"),
         )
     )
-    assert r.session.calls == [("get", {"id": "feed-7741"}), ("get", {"id": "1802"})]
+    # A row with no usable id of its own gets no read, nothing derived from its URL.
+    assert r.session.calls == [
+        ("get", {"id": "feed-7741"}),
+        ("get", {"id": "feed-7743"}),
+    ]
+    read, unread, other = result.sightings
+    assert read.detail_ok and other.detail_ok
+    assert not unread.detail_ok
+    assert unread.posting.purpose == "refresh_only"
+    assert unread.posting.description is None
+    assert (result.detail_reads, result.failures) == (2, 1)
 
 
 def test_a_merged_sighting_keeps_a_feed_id_from_any_row() -> None:
