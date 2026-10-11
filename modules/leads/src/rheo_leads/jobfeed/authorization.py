@@ -39,6 +39,7 @@ only an organization id from the stored account choices.
 
 import hashlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Literal, cast, get_args
@@ -102,6 +103,7 @@ REGISTRATION_FAILED: Final = "registration_failed"
 AUTHORIZATION_REQUIRED: Final = "authorization_required"
 ACCOUNT_SELECTION_REQUIRED: Final = "account_selection_required"
 CLIENT_CLEAR_FAILED: Final = "client_clear_failed"
+REVOKE_LOCAL_END_CLOSE_FAILED: Final = "revoke_local_end_close_failed"
 COMPLETE_AUTHORIZATION: Final = "leads.jobfeed.complete_authorization"
 REVOKE: Final = "leads.jobfeed.revoke"
 SELECT_ACCOUNT: Final = "leads.jobfeed.select_account"
@@ -573,16 +575,28 @@ def _exchange(
     return _NewToken(reference)
 
 
-def _clear_rejected_client(
-    ctx: WorkspaceContext, pending: PendingAuthorization, now: datetime
-) -> None:
-    """The token endpoint rejected the connection's own stored client: clear it and
-    make the connection terminal, in a unit of this handler's own, and discard the
-    client's files only after that commits.
+def _any_state(connection: JobfeedConnection) -> bool:
+    return True
 
-    A compare-and-set on ``client_id``: a connection that has since stored another
-    client is left alone and nothing is discarded. No audit row is written here;
-    the dispatcher's one completion row stands.
+
+def _clear_client(
+    ctx: WorkspaceContext,
+    *,
+    connection_id: UUID,
+    client_id: str,
+    now: datetime,
+    terminal: bool,
+    still: Callable[[JobfeedConnection], bool] = _any_state,
+) -> None:
+    """An endpoint rejected the connection's stored client: clear it in a unit of
+    this handler's own, so the next reconnect registers, and discard the client's
+    files only after that commits. ``terminal`` also makes the connection terminal
+    (``authorization_required``, schedule off, the health code).
+
+    A compare-and-set on ``client_id`` and on ``still``, read under the lock: a
+    connection that has since stored another client, or moved on from the state
+    the caller left it in, is left alone and nothing is discarded. No audit row is
+    written here; the dispatcher's one row stands.
     """
     table = j.jobfeed_connection
     retired: tuple[str | None, ...] = ()
@@ -593,32 +607,36 @@ def _clear_rejected_client(
             current = read_connection(unit.connection, for_update=True)
             if (
                 current is not None
-                and current.connection_id == pending.connection_id
-                and current.client_id == pending.client_id
+                and current.connection_id == connection_id
+                and current.client_id == client_id
+                and still(current)
             ):
                 retired = (current.client_secret_ref, current.registration_token_ref)
+                values: dict[str, object] = {
+                    "client_id": None,
+                    "client_auth_method": None,
+                    "client_redirect_uri": None,
+                    "client_secret_expires_at": None,
+                    "client_secret_ref": None,
+                    "registration_token_ref": None,
+                    "updated_at": now,
+                }
+                if terminal:
+                    values["authorization_state"] = AUTHORIZATION_REQUIRED
                 unit.connection.execute(
                     update(table)
-                    .where(table.c.connection_id == current.connection_id)
-                    .values(
-                        client_id=None,
-                        client_auth_method=None,
-                        client_redirect_uri=None,
-                        client_secret_expires_at=None,
-                        client_secret_ref=None,
-                        registration_token_ref=None,
-                        authorization_state=AUTHORIZATION_REQUIRED,
-                        updated_at=now,
+                    .where(table.c.connection_id == connection_id)
+                    .values(**values)
+                )
+                if terminal:
+                    ensure_module_schedule(
+                        unit.connection,
+                        module_id=MODULE_ID,
+                        name=SCHEDULE_NAME,
+                        enabled=False,
+                        due_at=now,
                     )
-                )
-                ensure_module_schedule(
-                    unit.connection,
-                    module_id=MODULE_ID,
-                    name=SCHEDULE_NAME,
-                    enabled=False,
-                    due_at=now,
-                )
-                health_write(unit, current.connection_id, error=AUTHORIZATION_REQUIRED)
+                    health_write(unit, connection_id, error=AUTHORIZATION_REQUIRED)
             unit.commit()
             committed = True
     except BaseException:
@@ -627,6 +645,20 @@ def _clear_rejected_client(
             _discard_files(*retired)
         raise
     _discard_files(*retired)
+
+
+def _clear_rejected_client(
+    ctx: WorkspaceContext, pending: PendingAuthorization, now: datetime
+) -> None:
+    """The token endpoint rejected the connection's own stored client at the code
+    exchange: clear it and make the connection terminal."""
+    _clear_client(
+        ctx,
+        connection_id=pending.connection_id,
+        client_id=pending.client_id,
+        now=now,
+        terminal=True,
+    )
 
 
 def _pinned(pending: PendingAuthorization) -> Discovered:
@@ -815,9 +847,11 @@ class Revoked(Strict):
 class _Ended:
     """What revoke's local end cleared and captured under the lock: exactly the
     reference to revoke and discard, and the stored client to authenticate as
-    (``None`` when the connection stores none)."""
+    (``None`` when the connection stores none). ``generation`` is the credential
+    generation the local end wrote."""
 
     connection_id: UUID
+    generation: int
     reference: str | None = field(repr=False)
     revocation_endpoint: str | None
     client: ClientAuth | None
@@ -883,6 +917,7 @@ def _end_locally(ctx: WorkspaceContext, now: datetime) -> _Ended:
             health_write(unit, current.connection_id, error=AUTHORIZATION_REQUIRED)
             ended = _Ended(
                 connection_id=current.connection_id,
+                generation=current.credential_generation + 1,
                 reference=current.token_ref,
                 revocation_endpoint=current.revocation_endpoint,
                 client=_client_auth(current),
@@ -892,6 +927,8 @@ def _end_locally(ctx: WorkspaceContext, now: datetime) -> _Ended:
     except Exception:
         if committed is None:
             raise
+        # Committed, then failed while closing: only the fixed code is logged.
+        _log.warning(REVOKE_LOCAL_END_CLOSE_FAILED)
         return committed
     if committed is None:  # the unit either commits or raises
         raise RuntimeError("revoke did not end the connection")
@@ -918,51 +955,29 @@ def _revoke_upstream(ctx: WorkspaceContext, ended: _Ended, now: datetime) -> Rev
     )
 
 
-def _clear_revoked_client(
-    ctx: WorkspaceContext, connection_id: UUID, client_id: str, now: datetime
-) -> None:
+def _clear_revoked_client(ctx: WorkspaceContext, ended: _Ended, now: datetime) -> None:
     """The revocation endpoint rejected the stored client (or its secret had
-    expired or could not be read): clear it in a unit of this handler's own, so the
-    next reconnect registers, and discard its files only after that commits.
+    expired or could not be read): clear it, only while the connection is still
+    exactly as revoke left it (revoked, at the generation revoke wrote), so a
+    reconnect that completed meanwhile, even reusing the same client, keeps it.
+    The connection is already revoked, so its state and schedule are not touched."""
+    if ended.client is None:
+        return
 
-    A compare-and-set on ``client_id``: a connection that has since stored another
-    client is left alone and nothing is discarded. The connection is already
-    revoked, so its state and schedule are not touched.
-    """
-    table = j.jobfeed_connection
-    retired: tuple[str | None, ...] = ()
-    committed = False
-    try:
-        with open_unit_of_work(ctx) as unit:
-            lock(unit)
-            current = read_connection(unit.connection, for_update=True)
-            if (
-                current is not None
-                and current.connection_id == connection_id
-                and current.client_id == client_id
-            ):
-                retired = (current.client_secret_ref, current.registration_token_ref)
-                unit.connection.execute(
-                    update(table)
-                    .where(table.c.connection_id == connection_id)
-                    .values(
-                        client_id=None,
-                        client_auth_method=None,
-                        client_redirect_uri=None,
-                        client_secret_expires_at=None,
-                        client_secret_ref=None,
-                        registration_token_ref=None,
-                        updated_at=now,
-                    )
-                )
-            unit.commit()
-            committed = True
-    except BaseException:
-        # Committed but failed while closing: the cleared files are unreferenced.
-        if committed:
-            _discard_files(*retired)
-        raise
-    _discard_files(*retired)
+    def as_revoke_left_it(connection: JobfeedConnection) -> bool:
+        return (
+            connection.authorization_state == "revoked"
+            and connection.credential_generation == ended.generation
+        )
+
+    _clear_client(
+        ctx,
+        connection_id=ended.connection_id,
+        client_id=ended.client.client_id,
+        now=now,
+        terminal=False,
+        still=as_revoke_left_it,
+    )
 
 
 def revoke(ctx: WorkspaceContext, uow: UnitOfWork, m: RevokeInput) -> Revoked:
@@ -980,9 +995,9 @@ def revoke(ctx: WorkspaceContext, uow: UnitOfWork, m: RevokeInput) -> Revoked:
         except Exception:  # discard never raises; the local end stands regardless
             _log.warning(oauth.SECRET_DISCARD_FAILED)
     # Step four: a rejected client is cleared so the next reconnect registers.
-    if revocation.client_rejected and ended.client is not None:
+    if revocation.client_rejected:
         try:
-            _clear_revoked_client(ctx, ended.connection_id, ended.client.client_id, now)
+            _clear_revoked_client(ctx, ended, now)
         except Exception:  # only the fixed code: no reference, path or text
             _log.warning(CLIENT_CLEAR_FAILED)
     return Revoked(state="revoked", upstream=revocation.outcome)

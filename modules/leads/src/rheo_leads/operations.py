@@ -10,6 +10,7 @@ from datetime import datetime
 from uuid import UUID
 
 from rheo_contracts import (
+    ActorKind,
     AuditSpec,
     Idempotency,
     OperationDeclaration,
@@ -122,13 +123,22 @@ def health(
         ),
         last_error=row["last_error"] if row else None,
         last_error_at=row["last_error_at"] if row else None,
-        collector=_collector(uow, connection_id),
+        collector=_collector(
+            uow, connection_id, accounts=ctx.actor.kind is ActorKind.ACCOUNT
+        ),
     )
 
 
-def _collector(uow: UnitOfWork, connection_id: UUID) -> CollectorHealth | None:
+def _collector(
+    uow: UnitOfWork, connection_id: UUID, *, accounts: bool
+) -> CollectorHealth | None:
     """The collector object, for the job feed's own poll connection only. Built
-    field by field, so no secret reference, client column or endpoint can reach it."""
+    field by field, so no secret reference, client column or endpoint can reach it.
+
+    The selected organization id and the account choices go only to an account
+    actor (the owner's own session): a token, even an owner's, is commonly held by
+    an agent, so it reads them as null and empty.
+    """
     current = read_connection(uow.connection)
     if current is None or current.connection_id != connection_id:
         return None
@@ -145,11 +155,13 @@ def _collector(uow: UnitOfWork, connection_id: UUID) -> CollectorHealth | None:
         errors=current.errors,
         detail_reads=current.detail_reads,
         pages=current.pages,
-        organization_id=current.organization_id,
+        organization_id=current.organization_id if accounts else None,
         account_choices=[
             AccountChoice(organization_id=organization_id, label=label)
             for organization_id, label in account_choices(uow.connection, connection_id)
-        ],
+        ]
+        if accounts
+        else [],
     )
 
 

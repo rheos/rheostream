@@ -12,6 +12,7 @@ gone" or "file kept" assertion reads the file system.
 
 import base64
 import logging
+import threading
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -466,10 +467,13 @@ def test_a_local_end_that_fails_while_closing_still_revokes_and_discards(
     root: Path,
     served: FakeAuthorizationServer,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Once the local end has committed, a failure while its unit closes is not
-    raised: the captured reference is still revoked and its file discarded."""
+    raised: it is logged as a fixed code only, and the captured reference is still
+    revoked and its file discarded."""
     c = connected(intake, served)
+    markers = secret_markers(root, c)
     ended: set[int] = set()
     real_open = authorization.open_unit_of_work
 
@@ -489,12 +493,13 @@ def test_a_local_end_that_fails_while_closing_still_revokes_and_discards(
         def __exit__(self, *exc: Any) -> None:
             self.inner.__exit__(*exc)
             if exc[0] is None and id(self.conn) in ended:
-                raise InjectedFailure
+                raise InjectedFailure("close-failure-marker")
 
     monkeypatch.setattr(authorization, "open_unit_of_work", FailingClose)
     event.listen(Engine, "before_cursor_execute", watch)
     try:
-        outcome = revoke(intake, c.owner)
+        with caplog.at_level(logging.INFO):
+            outcome = revoke(intake, c.owner)
     finally:
         event.remove(Engine, "before_cursor_execute", watch)
     assert ended
@@ -503,6 +508,11 @@ def test_a_local_end_that_fails_while_closing_still_revokes_and_discards(
     assert form(request)["token"] == [c.refresh_token]
     assert stored(c.owner).token_ref is None
     assert not file_of(root, c.token_ref).exists()
+    ours = [r.getMessage() for r in caplog.records if r.name.startswith("rheo")]
+    assert ours == [authorization.REVOKE_LOCAL_END_CLOSE_FAILED]
+    logged = application_log(caplog)
+    for marker in (*markers, "close-failure-marker", "InjectedFailure"):
+        assert marker not in logged
 
 
 # --- FR 5, FR 9: the request authenticates as the stored client -------------------
@@ -603,6 +613,41 @@ def test_invalid_client_clears_the_stored_client_and_the_next_reconnect_register
     reconnected = stored(c.owner)
     assert reconnected.client_id not in (None, STORED_CLIENT_ID)
     assert reconnected.authorization_state == "connected"
+
+
+def test_invalid_client_never_strips_a_reconnect_that_completed_meanwhile(
+    intake: Intake, root: Path, served: FakeAuthorizationServer
+) -> None:
+    """A reconnect that completes while revoke waits on the revocation endpoint,
+    reusing the very same stored client, keeps that client when the endpoint then
+    answers ``invalid_client``: the clearing requires the connection still to be
+    revoked at the generation revoke wrote."""
+    c = connected(intake, served, auth_method="client_secret_basic")
+    files = client_files(root, stored(c.owner))
+    assert len(files) == 2
+    completed: list[tuple[str, str | None]] = []
+
+    def reconnect_meanwhile() -> None:
+        params = restart(intake, c.owner, served)
+        completed.append(result(complete(intake, c.owner, **params)))
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        # Another request, on its own thread, finishes a reconnect first.
+        worker = threading.Thread(target=reconnect_meanwhile)
+        worker.start()
+        worker.join(timeout=60)
+        return httpx.Response(401, json={"error": "invalid_client"})
+
+    served.revoke = respond
+    assert upstream(revoke(intake, c.owner)) == "revocation_failed"
+    assert completed == [("connected", None)]
+    assert served.registrations == []  # the reconnect reused the stored client
+    after = stored(c.owner)
+    assert after.authorization_state == "connected"
+    assert after.client_id == STORED_CLIENT_ID
+    assert after.credential_generation == 3
+    assert after.token_ref is not None and file_of(root, after.token_ref).exists()
+    assert client_files(root, after) == files and all(f.exists() for f in files)
 
 
 def test_a_normal_revoke_keeps_the_client_and_the_next_reconnect_reuses_it(
@@ -999,6 +1044,36 @@ def test_no_member_or_agent_can_read_the_collector_health(
     agent = owner_token(intake, c.owner, "mcp", "mcp", operations=tool_operations)
     refused(health_read(intake, agent, c.connection_id), "operation_not_permitted")
     assert collector_health(intake, c)["organization_id"] == ORG_ONE
+
+
+def test_an_owner_token_reads_the_collector_without_organization_ids(
+    intake: Intake, root: Path, served: FakeAuthorizationServer
+) -> None:
+    """Owner tokens are commonly held by agents: the organization ids go only to
+    the owner's own session; the rest of the collector object stays."""
+    c = connected(
+        intake,
+        served,
+        report=REPORT,
+        choices=CHOICES,
+        organization_id=ORG_ONE,
+    )
+    session = collector_health(intake, c)
+    assert session["organization_id"] == ORG_ONE
+    assert [choice["organization_id"] for choice in session["account_choices"]] == [
+        ORG_ONE,
+        ORG_TWO,
+    ]
+    token = owner_token(intake, c.owner, "cli", "api", operations=[HEALTH])
+    outcome = health_read(intake, token, c.connection_id)
+    assert outcome.ok and isinstance(outcome.result, ConnectionHealth), outcome
+    assert outcome.result.collector is not None
+    read = outcome.result.collector.model_dump()
+    assert read == {**session, "organization_id": None, "account_choices": []}
+    rendered = repr(outcome.result.model_dump())
+    for organization_id, label in CHOICES:
+        assert organization_id not in rendered
+        assert label is None or label not in rendered
 
 
 # --- AC 17: one audit row each, with no secret and no organization id -------------
