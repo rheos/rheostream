@@ -4,21 +4,30 @@ Surface (later callers read this module as built):
 
 - :data:`Resolver`, :func:`default_resolver`: host name to address strings, on
   ``socket.getaddrinfo`` in production and injected in tests.
-- :func:`check_public`: refuses ``endpoint_misconfigured`` unless every address the
-  host resolves to (or the literal IP host itself) is globally routable and not
-  multicast. That refuses loopback, RFC 1918, link-local, unique-local, unspecified
-  and reserved addresses; a host that fails to resolve is refused the same way.
+- :func:`check_public` ``(host, resolver, *, deadline, clock)``: refuses
+  ``endpoint_misconfigured`` unless every address the host resolves to (or the
+  literal IP host itself) is globally routable and not multicast. That refuses
+  loopback, RFC 1918, link-local, unique-local, site-local (``fec0::/10``),
+  unspecified and reserved addresses, and an IPv6 address that wraps an IPv4 one
+  (IPv4-mapped, IPv4-compatible, NAT64 ``64:ff9b::/96``, 6to4) unless the wrapped
+  address is public too (Python's registry already marks all of 6to4 ``2002::/16``
+  non-global; the unwrap covers a runtime whose registry does not); a host that
+  fails to resolve is refused the same way. The blocking resolver runs in a daemon
+  thread bounded by the time left before ``deadline``, and the clock is checked
+  again after it returns: either overrun is ``timeout``.
 - :func:`open_client`: the ``httpx.Client`` both callers use: no redirects, the
   5 s timeout, and ``trust_env=False`` so neither an environment proxy nor a
   ``.netrc`` credential can change where a request goes or what it carries.
 - :func:`bounded_request`: one streamed request. ``https`` only and a public host,
-  both checked before any byte is sent; ``httpx.Timeout(5.0)``; no redirects, and
+  both checked before any byte is sent; the ``budget`` starts before the host is
+  resolved, so the lookup spends it too; ``httpx.Timeout(5.0)``; no redirects, and
   any 3xx is ``endpoint_misconfigured`` before a body is read; the injected
-  monotonic clock is checked before the request, after the headers and after every
-  chunk against ``budget`` seconds (``timeout`` once spent, the response closed);
-  bytes are counted on the same chunks against ``cap`` (``too_large``). A request
-  therefore lasts at most ``budget`` plus one 5 s read. Any other status is
-  returned as an :class:`EgressResponse` for the caller to judge.
+  monotonic clock is checked before the request, after resolving, after the
+  headers and after every chunk (``timeout`` once spent, the response closed);
+  ``Accept-Encoding: identity`` is always sent and bytes are counted on the same
+  chunks against ``cap`` (``too_large``). A request therefore lasts at most
+  ``budget`` plus one 5 s read. Any other status is returned as an
+  :class:`EgressResponse` for the caller to judge.
 - :class:`EgressFailure`: the fixed codes ``endpoint_misconfigured``, ``timeout``,
   ``too_large`` and ``unavailable`` (every transport or decoding error).
 - :data:`INITIALIZE_BODY`: the canonical JSON-RPC 2.0 ``initialize`` request bytes,
@@ -39,6 +48,7 @@ request.
 import ipaddress
 import json
 import socket
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
@@ -109,22 +119,83 @@ def _literal_address(host: str) -> str | None:
     return candidate
 
 
+_SITE_LOCAL: Final = ipaddress.ip_network("fec0::/10")
+_IPV4_COMPATIBLE: Final = ipaddress.ip_network("::/96")
+_NAT64: Final = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The IPv4 address an IPv4-mapped, IPv4-compatible, NAT64 or 6to4 address
+    carries, else ``None``."""
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip in _IPV4_COMPATIBLE or ip in _NAT64:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip.sixtofour
+
+
 def _is_public(address: str) -> bool:
     ip = ipaddress.ip_address(address)
-    return ip.is_global and not ip.is_multicast
+    if not ip.is_global or ip.is_multicast:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip in _SITE_LOCAL:
+            return False
+        embedded = _embedded_ipv4(ip)
+        if embedded is not None:
+            return embedded.is_global and not embedded.is_multicast
+    return True
 
 
-def check_public(host: str, resolver: Resolver) -> None:
-    """Refuse ``endpoint_misconfigured`` unless ``host`` is public (see module)."""
-    refused = True
-    try:
-        literal = _literal_address(host)
-        addresses = [literal] if literal is not None else list(resolver(host))
-        refused = not addresses or not all(_is_public(a) for a in addresses)
-    except Exception:  # any resolver or parse failure is a refusal
-        refused = True
-    if refused:
-        raise EgressFailure("endpoint_misconfigured")
+def _resolve_within(
+    host: str, resolver: Resolver, seconds: float
+) -> list[str] | EgressCode:
+    """Run the blocking ``resolver`` in a daemon thread for at most ``seconds``.
+
+    Returns the addresses, ``"timeout"``, or ``"endpoint_misconfigured"`` when the
+    lookup failed. An abandoned lookup keeps its thread until the resolver returns;
+    it holds no lock and its result is discarded.
+    """
+    outcome: list[list[str] | EgressCode] = []
+
+    def lookup() -> None:
+        try:
+            outcome.append(list(resolver(host)))
+        except Exception:  # any resolver failure is a refusal
+            outcome.append("endpoint_misconfigured")
+
+    worker = threading.Thread(target=lookup, name="egress-resolve", daemon=True)
+    worker.start()
+    worker.join(max(seconds, 0.0))
+    if not outcome:
+        return "timeout"
+    return outcome[0]
+
+
+def check_public(
+    host: str, resolver: Resolver, *, deadline: float, clock: Clock
+) -> None:
+    """Refuse unless ``host`` is public (see module), resolving it within the time
+    left before ``deadline`` on ``clock``: ``timeout`` when the lookup outlasts it
+    or the clock has passed it afterwards, ``endpoint_misconfigured`` otherwise."""
+    code: EgressCode | None = None
+    literal = _literal_address(host)
+    if literal is not None:
+        addresses: list[str] | EgressCode = [literal]
+    else:
+        addresses = _resolve_within(host, resolver, deadline - clock())
+    if isinstance(addresses, str):
+        code = addresses
+    elif clock() >= deadline:
+        code = "timeout"
+    else:
+        try:
+            if not addresses or not all(_is_public(a) for a in addresses):
+                code = "endpoint_misconfigured"
+        except (TypeError, ValueError):  # an address that does not parse
+            code = "endpoint_misconfigured"
+    if code is not None:
+        raise EgressFailure(code)
 
 
 def open_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
@@ -157,7 +228,7 @@ def _stream(
     deadline: float,
     cap: int,
     clock: Clock,
-    headers: Mapping[str, str] | None,
+    headers: httpx.Headers,
     content: bytes | None,
     data: Mapping[str, str] | None,
 ) -> EgressResponse | EgressCode:
@@ -210,10 +281,12 @@ def bounded_request(
     host = _https_host(url)
     if host is None:
         raise EgressFailure("endpoint_misconfigured")
-    check_public(host, resolver)
     deadline = clock() + budget
-    if clock() >= deadline:
+    if budget <= 0:
         raise EgressFailure("timeout")
+    check_public(host, resolver, deadline=deadline, clock=clock)
+    sent_headers = httpx.Headers(headers)
+    sent_headers["Accept-Encoding"] = "identity"
     outcome: EgressResponse | EgressCode
     try:
         outcome = _stream(
@@ -223,7 +296,7 @@ def bounded_request(
             deadline=deadline,
             cap=cap,
             clock=clock,
-            headers=headers,
+            headers=sent_headers,
             content=content,
             data=data,
         )

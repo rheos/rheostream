@@ -34,22 +34,16 @@ AS_URL = "https://auth.example.com/.well-known/oauth-authorization-server"
 REDIRECT_URI = "https://www.example.com/auth/connector/leads/callback"
 MARKER = "marker-4b9a2f10-upstream-text"
 
-
-def v4(*octets: int) -> str:
-    """An IPv4 address from its octets (the synthetic-content gate allows dotted-quad
-    text only for loopback and the documentation ranges)."""
-    return ".".join(str(octet) for octet in octets)
-
-
 NON_PUBLIC = {
     "loopback": "127.0.0.1",
-    "rfc1918": v4(10, 1, 2, 3),
-    "link-local": v4(169, 254, 169, 254),
+    "rfc1918": "10.1.2.3",
+    "link-local": "169.254.169.254",
     "unique-local": "fd00::5",
     "unspecified": "0.0.0.0",
-    "reserved": v4(240, 0, 0, 9),
+    "reserved": "240.0.0.9",
     "documentation": "192.0.2.44",
-    "multicast": v4(239, 1, 1, 1),
+    "multicast": "239.1.1.1",
+    "nat64-private": "64:ff9b::10.1.2.3",
 }
 
 
@@ -96,6 +90,8 @@ class FakeServers:
         self.clock = FakeClock()
         self.requests: list[httpx.Request] = []
         self.addresses: dict[str, str] = {}
+        self.lookups: list[str] = []
+        self.lookup_seconds = 0.0
         self.probe: Callable[[httpx.Request], httpx.Response] = lambda r: (
             httpx.Response(401, headers={"WWW-Authenticate": "Bearer"})
         )
@@ -121,6 +117,8 @@ class FakeServers:
         return route(request)
 
     def resolve(self, host: str) -> Sequence[str]:
+        self.lookups.append(host)
+        self.clock.advance(self.lookup_seconds)
         return [self.addresses.get(host, PUBLIC)]
 
     def discover(self, resource_url: str = RESOURCE) -> Discovered:
@@ -351,6 +349,22 @@ def test_unusable_authorization_servers_are_refused(
 
 
 @pytest.mark.parametrize(
+    "resource",
+    ["https://mcp.example.com/mcp/", "https://other.example.com/mcp", 7, None],
+    ids=["trailing-slash", "other-host", "not-a-string", "missing"],
+)
+def test_protected_resource_metadata_for_another_resource_is_refused(
+    servers: FakeServers, resource: object
+) -> None:
+    if resource is None:
+        del servers.resource_metadata["resource"]
+    else:
+        servers.resource_metadata["resource"] = resource
+    servers.refused()
+    assert "auth.example.com" not in servers.hosts()
+
+
+@pytest.mark.parametrize(
     "issuer",
     ["https://auth.example.com/", "https://other.example.com", None],
     ids=["trailing-slash", "other-host", "missing"],
@@ -517,7 +531,7 @@ def test_a_literal_non_public_resource_host_is_refused_with_zero_requests(
 def test_any_discovered_url_resolving_non_public_refuses_discovery(
     servers: FakeServers, host: str
 ) -> None:
-    servers.addresses[host] = v4(10, 9, 8, 7)
+    servers.addresses[host] = "10.9.8.7"
     servers.refused()
     assert host not in servers.hosts()
 
@@ -550,7 +564,7 @@ def test_discovery_succeeds_when_every_url_resolves_public(
 def test_a_literal_non_public_issuer_is_refused_unfetched(
     servers: FakeServers,
 ) -> None:
-    issuer_host = v4(192, 168, 0, 4)
+    issuer_host = "192.168.0.4"
     servers.resource_metadata["authorization_servers"] = [f"https://{issuer_host}"]
     servers.refused()
     assert issuer_host not in servers.hosts()
@@ -621,6 +635,21 @@ def test_no_request_starts_once_the_discovery_budget_is_spent(
     servers.refused()
     assert clock.now == 30.0
     assert [str(r.url) for r in servers.requests] == [RESOURCE, PRM_URL]
+
+
+def test_slow_lookups_count_against_the_discovery_budget(
+    servers: FakeServers,
+) -> None:
+    servers.lookup_seconds = 5.0
+    servers.refused()
+    assert servers.clock.now == 30.0
+    assert len(servers.requests) == 3
+
+
+def test_discovery_with_quick_lookups_still_succeeds(servers: FakeServers) -> None:
+    servers.lookup_seconds = 2.0
+    assert servers.discover().issuer == ISSUER
+    assert servers.clock.now < 30.0
 
 
 # --- failure hygiene -------------------------------------------------------------

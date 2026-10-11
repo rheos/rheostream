@@ -8,6 +8,8 @@ injected resolver, and every budget is measured on a fake monotonic clock.
 import gzip
 import json
 import socket
+import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 
 import httpx
@@ -20,31 +22,43 @@ PUBLIC = "2600::1"
 URL = "https://www.example.com/data"
 MARKER = "marker-7c1d0e5b-upstream-text"
 
-
-def v4(*octets: int) -> str:
-    """An IPv4 address from its octets. The repository's synthetic-content gate
-    allows dotted-quad text only for loopback and the documentation ranges, so the
-    other non-public ranges these tests need are spelled as octets."""
-    return ".".join(str(octet) for octet in octets)
-
-
 NON_PUBLIC = {
     "loopback-v4": "127.0.0.1",
     "loopback-v6": "::1",
-    "rfc1918-10": v4(10, 0, 0, 7),
-    "rfc1918-172": v4(172, 16, 4, 2),
-    "rfc1918-192": v4(192, 168, 1, 20),
-    "link-local-v4": v4(169, 254, 169, 254),
+    "rfc1918-10": "10.0.0.7",
+    "rfc1918-172": "172.16.4.2",
+    "rfc1918-192": "192.168.1.20",
+    "link-local-v4": "169.254.169.254",
     "link-local-v6": "fe80::1",
     "unique-local": "fd12:3456::1",
+    "site-local": "fec0::1",
     "unspecified-v4": "0.0.0.0",
     "unspecified-v6": "::",
-    "reserved": v4(240, 0, 0, 1),
+    "reserved": "240.0.0.1",
     "documentation-v4": "192.0.2.10",
     "documentation-v6": "2001:db8::10",
-    "multicast-v4": v4(224, 0, 0, 251),
+    "multicast-v4": "224.0.0.251",
     "multicast-v6": "ff02::1",
+    "mapped-private": "::ffff:10.0.0.7",
+    "mapped-multicast": "::ffff:224.0.0.251",
+    "compatible-loopback": "::127.0.0.1",
+    "compatible-private": "::10.0.0.7",
+    "nat64-loopback": "64:ff9b::127.0.0.1",
+    "nat64-private": "64:ff9b::169.254.169.254",
+    "6to4-loopback": "2002:7f00:1::1",
+    "6to4-private": "2002:a00:7::1",
+    # Python's special-purpose registry marks all of 2002::/16 non-global, so a 6to4
+    # address is refused even when the IPv4 address it carries is public.
+    "6to4-public": "2002:808:808::1",
 }
+
+WRAPPED_PUBLIC = {
+    "mapped": "::ffff:808:808",
+    "compatible": "::808:808",
+    "nat64": "64:ff9b::808:808",
+}
+"""IPv6 forms that wrap a public IPv4 address (in hex, so no public dotted quad
+appears here); they are only checked, never contacted."""
 
 
 class FakeClock:
@@ -174,9 +188,7 @@ def test_a_literal_ip_host_in_a_non_public_range_is_refused(address: str) -> Non
 
 def test_one_non_public_address_among_public_ones_is_refused() -> None:
     counting = Counting(ok)
-    exc = failure_of(
-        lambda: call(counting, resolver=lambda host: [PUBLIC, v4(10, 0, 0, 7)])
-    )
+    exc = failure_of(lambda: call(counting, resolver=lambda host: [PUBLIC, "10.0.0.7"]))
     assert exc.code == "endpoint_misconfigured"
     assert counting.requests == []
 
@@ -199,11 +211,94 @@ def test_an_unresolvable_host_is_refused(
     assert counting.requests == []
 
 
+def checked(host: str, resolver: Callable[[str], Sequence[str]]) -> None:
+    clock = FakeClock()
+    check_public(host, resolver, deadline=15.0, clock=clock)
+
+
 def test_check_public_accepts_public_addresses_and_literals() -> None:
-    check_public("www.example.com", public)
-    check_public(PUBLIC, never_called)
-    check_public(f"[{PUBLIC}]", never_called)
-    check_public("www.example.com", lambda host: [PUBLIC, "2600::2"])
+    checked("www.example.com", public)
+    checked(PUBLIC, never_called)
+    checked(f"[{PUBLIC}]", never_called)
+    checked("www.example.com", lambda host: [PUBLIC, "2600::2"])
+
+
+@pytest.mark.parametrize("address", WRAPPED_PUBLIC.values(), ids=WRAPPED_PUBLIC.keys())
+def test_ipv6_forms_wrapping_a_public_ipv4_address_are_accepted(address: str) -> None:
+    checked(address, never_called)
+    checked("www.example.com", resolving_to(address))
+
+
+# --- resolution inside the budget ------------------------------------------------
+
+
+def slow_lookup(clock: FakeClock, seconds: float) -> Callable[[str], Sequence[str]]:
+    def resolve(host: str) -> Sequence[str]:
+        clock.advance(seconds)
+        return [PUBLIC]
+
+    return resolve
+
+
+def test_resolution_counts_against_the_request_budget() -> None:
+    clock = FakeClock()
+    stream = Trickle(clock, 4.0)
+    counting = Counting(lambda request: httpx.Response(200, stream=stream))
+    exc = failure_of(
+        lambda: call(counting, budget=15.0, clock=clock, resolver=slow_lookup(clock, 5))
+    )
+    assert_content_free(exc, "timeout")
+    assert clock.now == 17.0
+    assert clock.now <= 15.0 + 5.0
+
+
+def test_a_lookup_that_spends_the_budget_sends_nothing() -> None:
+    clock = FakeClock()
+    counting = Counting(ok)
+    exc = failure_of(
+        lambda: call(
+            counting, budget=15.0, clock=clock, resolver=slow_lookup(clock, 15.0)
+        )
+    )
+    assert_content_free(exc, "timeout")
+    assert counting.requests == []
+
+
+def test_a_blocking_lookup_is_abandoned_when_the_budget_ends() -> None:
+    release = threading.Event()
+
+    def blocking(host: str) -> Sequence[str]:
+        release.wait(10.0)
+        return [PUBLIC]
+
+    counting = Counting(ok)
+    started = time.monotonic()
+    try:
+        with pytest.raises(EgressFailure) as caught:
+            bounded_request(
+                counting.client,
+                "GET",
+                URL,
+                budget=0.2,
+                cap=1024,
+                resolver=blocking,
+                clock=time.monotonic,
+            )
+    finally:
+        release.set()
+    assert time.monotonic() - started < 2.0
+    assert_content_free(caught.value, "timeout")
+    assert counting.requests == []
+
+
+def test_check_public_honours_its_deadline() -> None:
+    clock = FakeClock()
+    exc = failure_of(
+        lambda: check_public(
+            "www.example.com", slow_lookup(clock, 6.0), deadline=5.0, clock=clock
+        )
+    )
+    assert_content_free(exc, "timeout")
 
 
 def test_the_default_resolver_reads_getaddrinfo(
@@ -303,7 +398,7 @@ def test_a_spent_budget_sends_nothing(budget: float) -> None:
     assert counting.requests == []
 
 
-def test_every_request_carries_the_five_second_timeout_and_no_redirects() -> None:
+def test_every_request_carries_the_five_second_timeout() -> None:
     counting = Counting(ok)
     call(counting)
     (request,) = counting.requests
@@ -313,6 +408,27 @@ def test_every_request_carries_the_five_second_timeout_and_no_redirects() -> Non
         "write": 5.0,
         "pool": 5.0,
     }
+
+
+def test_every_request_asks_for_an_uncompressed_body() -> None:
+    counting = Counting(ok)
+    call(counting)
+    bounded_request(
+        counting.client,
+        "POST",
+        URL,
+        budget=15.0,
+        cap=1024,
+        resolver=public,
+        clock=FakeClock(),
+        headers={"accept-encoding": "gzip, br", "Content-Type": "application/json"},
+        content=b"{}",
+    )
+    assert [r.headers.get_list("accept-encoding") for r in counting.requests] == [
+        ["identity"],
+        ["identity"],
+    ]
+    assert counting.requests[1].headers["content-type"] == "application/json"
 
 
 def test_a_stalled_stream_ends_through_the_read_timeout() -> None:

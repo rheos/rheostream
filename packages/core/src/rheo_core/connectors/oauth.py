@@ -15,14 +15,16 @@ characters) is used, for the first-choice scope; any other outcome supplies no s
 and is not a failure, except a redirect, which is refused like every other redirect.
 The challenge's ``resource_metadata`` parameter is never fetched: the metadata
 locations are computed from the configured URL. Then the RFC 9728 protected-resource
-metadata, its first ``authorization_servers`` entry, and that issuer's RFC 8414
-metadata, whose ``issuer`` must equal the URL it was fetched for. Each request has a
-15 s budget (at most 20 s with the last 5 s read) and a 64 KiB cap; the whole
-discovery is cut at 30 s. Every failure is ``endpoint_misconfigured``. The metadata
-must advertise S256, the ``authorization_code`` and ``refresh_token`` grants, token
-auth method ``none`` and a ``registration_endpoint`` (the client identity comes only
-from registration); a missing ``revocation_endpoint`` is accepted. Every discovered
-URL must be ``https`` and resolve public.
+metadata, whose ``resource`` must equal the configured URL (RFC 9728 s3.3), its
+first ``authorization_servers`` entry, and that issuer's RFC 8414 metadata, whose
+``issuer`` must equal the URL it was fetched for. Each request has a 15 s budget (at
+most 20 s with the last 5 s read) and a 64 KiB cap; the whole discovery is cut at
+30 s, a deadline started before the first host lookup and checked again after the
+last endpoint's, so slow DNS counts too. Every failure is ``endpoint_misconfigured``.
+The metadata must advertise S256, the ``authorization_code`` and ``refresh_token``
+grants, token auth method ``none`` and a ``registration_endpoint`` (the client
+identity comes only from registration); a missing ``revocation_endpoint`` is
+accepted. Every discovered URL must be ``https`` and resolve public.
 
 **Scope.** The challenge's ``scope``, else the protected-resource
 ``scopes_supported``, else the authorization server's, else none. It is used only in
@@ -129,8 +131,11 @@ def _misconfigured() -> OAuthFailure:
     return OAuthFailure("endpoint_misconfigured")
 
 
-def _public_https(url: object, resolver: Resolver) -> str:
-    """``url`` itself when it is an ``https`` URL on a public host, else refused."""
+def _public_https(
+    url: object, resolver: Resolver, *, deadline: float, clock: Clock
+) -> str:
+    """``url`` itself when it is an ``https`` URL on a public host, resolved before
+    ``deadline``, else refused."""
     refused = True
     if isinstance(url, str):
         try:
@@ -138,7 +143,7 @@ def _public_https(url: object, resolver: Resolver) -> str:
             parts.port  # noqa: B018 - raises ValueError for a malformed port
             host = parts.hostname
             if parts.scheme == "https" and host:
-                egress.check_public(host, resolver)
+                egress.check_public(host, resolver, deadline=deadline, clock=clock)
                 refused = False
         except (ValueError, egress.EgressFailure):
             refused = True
@@ -309,8 +314,12 @@ def discover(
     transport: httpx.BaseTransport | None = None,
 ) -> Discovered:
     """Discover the authorization server for ``resource_url`` (module docstring)."""
-    resource_url = _public_https(resource_url, resolver)
     deadline = clock() + DISCOVERY_BUDGET_SECONDS
+
+    def checked(url: object) -> str:
+        return _public_https(url, resolver, deadline=deadline, clock=clock)
+
+    resource_url = checked(resource_url)
     with egress.open_client(transport) as client:
         probe = _request(
             client,
@@ -336,10 +345,12 @@ def discover(
             resolver=resolver,
             clock=clock,
         )
+        if resource_document.get("resource") != resource_url:
+            raise _misconfigured()
         servers = _strings(resource_document, "authorization_servers")
         if not servers:
             raise _misconfigured()
-        issuer = _public_https(servers[0], resolver)
+        issuer = checked(servers[0])
         resource_scope = _scopes(resource_document)
 
         server_document = _metadata(
@@ -365,21 +376,18 @@ def discover(
         raise _misconfigured()
     server_scope = _scopes(server_document)
     revocation = server_document.get("revocation_endpoint")
-    return Discovered(
+    discovered = Discovered(
         resource_url=resource_url,
         issuer=issuer,
-        authorization_endpoint=_public_https(
-            server_document.get("authorization_endpoint"), resolver
-        ),
-        token_endpoint=_public_https(server_document.get("token_endpoint"), resolver),
-        registration_endpoint=_public_https(
-            server_document.get("registration_endpoint"), resolver
-        ),
-        revocation_endpoint=(
-            None if revocation is None else _public_https(revocation, resolver)
-        ),
+        authorization_endpoint=checked(server_document.get("authorization_endpoint")),
+        token_endpoint=checked(server_document.get("token_endpoint")),
+        registration_endpoint=checked(server_document.get("registration_endpoint")),
+        revocation_endpoint=None if revocation is None else checked(revocation),
         scope=challenge_scope or resource_scope or server_scope,
     )
+    if clock() >= deadline:
+        raise _misconfigured()
+    return discovered
 
 
 def new_authorization(
