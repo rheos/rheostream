@@ -20,14 +20,15 @@ checks:
    `packages/web-contract/**`: an email address must resolve to an RFC 2606/6761
    reserved domain (`example.com`/`.org`/`.net` and any subdomain of them such as
    `mail.example.com`, anything under the reserved TLDs
-   `.example`/`.test`/`.invalid`, or `localhost`); an IPv4 literal must be loopback
-   (`127.0.0.0/8`), `0.0.0.0`, or an RFC 5737 documentation range (`192.0.2.0/24`,
-   `198.51.100.0/24`, `203.0.113.0/24`); a phone-number-shaped string (grouped
-   3-3-4 or `(3) 3-4` digits, compact E.164 `+…`, or a bare 10-digit North American
-   number — see `_PHONE`) is flagged outright, as is a rate-shaped string (a currency
-   amount, by symbol or by code on either side, followed by `/h`, `/hr`, `/hour`,
-   `per hour`, `an hour`, or `hourly` — see `_RATE`) — this repository is not the
-   place for either, synthetic or not.
+   `.example`/`.test`/`.invalid`, or `localhost`); an IPv4 literal must not be
+   globally routable (loopback, `0.0.0.0`, an RFC 5737 documentation range, RFC 1918,
+   link-local, shared, reserved or multicast; tests of the outbound public-address
+   check need these), so a public address is flagged; a phone-number-shaped string
+   (grouped 3-3-4 or `(3) 3-4` digits, compact E.164 `+…`, or a bare 10-digit North
+   American number — see `_PHONE`) is flagged outright, as is a rate-shaped string
+   (a currency amount, by symbol or by code on either side, followed by `/h`, `/hr`,
+   `/hour`, `per hour`, `an hour`, or `hourly` — see `_RATE`) — this repository is
+   not the place for either, synthetic or not.
 3. **Optional private denylist.** When the environment variable
    `RHEO_PRIVATE_DENYLIST` names a file outside the repository, each of that file's
    non-blank lines is also a forbidden substring, compared case-insensitively,
@@ -46,6 +47,7 @@ and only `main()` wires them together.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -122,16 +124,17 @@ def _domain_is_reserved(domain: str) -> bool:
 _IPV4 = re.compile(
     r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)"
 )
-_DOC_RANGE_PREFIXES = frozenset({(192, 0, 2), (198, 51, 100), (203, 0, 113)})
 
 
 def _ipv4_is_reserved(literal: str) -> bool:
-    octets = tuple(int(part) for part in literal.split("."))
-    if octets == (0, 0, 0, 0):
-        return True
-    if octets[0] == 127:
-        return True
-    return octets[:3] in _DOC_RANGE_PREFIXES
+    """Not globally routable: loopback, 0.0.0.0, the documentation ranges, RFC 1918,
+    link-local, shared, benchmarking, reserved and multicast (the same set the
+    outbound public-address check refuses). A public address stays flagged."""
+    try:
+        address = ipaddress.ip_address(literal)
+    except ValueError:
+        return False
+    return not address.is_global or address.is_multicast
 
 
 # Three phone shapes:
@@ -171,8 +174,7 @@ def check_content(pairs: Iterable[tuple[str, str]]) -> list[str]:
         for match in _IPV4.finditer(text):
             if not _ipv4_is_reserved(match.group(0)):
                 findings.append(
-                    f"{path}: IPv4 literal is not loopback/0.0.0.0/a documentation "
-                    f"range: {match.group(0)}"
+                    f"{path}: IPv4 literal is a public address: {match.group(0)}"
                 )
         if _PHONE.search(text):
             findings.append(f"{path}: phone-number-shaped string found")
@@ -326,6 +328,9 @@ def _self_test() -> str | None:
             '{"contact": "person@example.co.uk"}'
         ),
         "tests/fixtures/planted-ip.json": '{"host": "8.8.8.8"}',
+        "tests/fixtures/planted-ip-beside-private.json": (
+            '{"lan": "10.0.0.7", "host": "1.1.1.1"}'
+        ),
         "tests/fixtures/planted-phone.json": '{"phone": "555-555-0100"}',
         "tests/fixtures/planted-phone-paren.json": '{"phone": "(555) 555-0101"}',
         "tests/fixtures/planted-phone-e164.json": '{"phone": "+15555550102"}',
@@ -347,6 +352,11 @@ def _self_test() -> str | None:
         "tests/fixtures/clean.json": (
             '{"contact": "person@example.com", "host": "192.0.2.10", '
             '"note": "no phone or rate shape here"}'
+        ),
+        "tests/fixtures/clean-non-routable-ips.json": (
+            '{"a": "10.0.0.7", "b": "172.16.4.2", "c": "192.168.1.20", '
+            '"d": "169.254.169.254", "e": "240.0.0.1", "f": "224.0.0.251", '
+            '"g": "100.64.0.1", "h": "198.18.0.1", "i": "255.255.255.255"}'
         ),
         "tests/fixtures/clean-subdomains.json": (
             '{"a": "ops@mail.example.com", "b": "x@team.example.org", '
