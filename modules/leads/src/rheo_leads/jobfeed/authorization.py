@@ -66,6 +66,7 @@ _DETAILS: Final[dict[str, str]] = {
     "endpoint_misconfigured": "the job feed endpoint is not configured",
     "registration_failed": "client registration failed",
     "registration_unsupported": "client registration is not supported",
+    "record_stale": "the job feed changed; start again",
 }
 
 
@@ -204,6 +205,13 @@ def _start(
             lock(uow)
             if mode == "connect" and read_connection(uow.connection) is not None:
                 raise _refused("connection_exists")
+            if not client.registered and (
+                _stored_client(read_connection(uow.connection)) != client
+            ):
+                # The reused client changed while this call was discovering (a
+                # completed reconnect stored and retired clients): refuse the
+                # existing retry code rather than point at retired files.
+                raise _refused("record_stale")
             table = j.jobfeed_authorization
             # Only what this statement really deleted: a row a concurrent completion
             # already consumed is not returned, and its files are not touched.
@@ -306,11 +314,20 @@ def _reusable(
     """The stored client, exactly when it was registered against the freshly
     discovered issuer and registration endpoint for the current redirect URI."""
     if (
-        connection.client_id is None
-        or connection.client_auth_method is None
-        or connection.issuer != discovered.issuer
+        connection.issuer != discovered.issuer
         or connection.registration_endpoint != discovered.registration_endpoint
         or connection.client_redirect_uri != redirect
+    ):
+        return None
+    return _stored_client(connection)
+
+
+def _stored_client(connection: JobfeedConnection | None) -> _Client | None:
+    """The connection's stored client as a reused one, or ``None`` when it has none."""
+    if (
+        connection is None
+        or connection.client_id is None
+        or connection.client_auth_method is None
     ):
         return None
     return _Client(

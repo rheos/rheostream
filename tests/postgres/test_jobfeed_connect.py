@@ -440,6 +440,41 @@ def test_a_second_connect_replaces_the_first_and_discards_its_fresh_files(
     }
 
 
+def test_a_reused_client_replaced_during_discovery_refuses_and_keeps_files(
+    intake: Intake, root: Path, served: FakeAuthorizationServer
+) -> None:
+    """A reconnect decides to reuse the stored client before discovery; if another
+    completion stores a different client meanwhile, the start refuses instead of
+    pinning the retired client's files, and nothing it did not create is touched."""
+    collector = pinned_collector(intake, served, root=root, secrets=True)
+    stored = secret_files(root)
+    hold = Hold()
+    served.holds["discovery"] = hold
+    result: list[OperationOutcome] = []
+    worker = threading.Thread(
+        target=lambda: result.append(run(intake, collector.owner, RECONNECT))
+    )
+    worker.start()
+    try:
+        assert hold.entered.wait(timeout=30)
+        with open_unit_of_work(collector.owner) as uow:
+            uow.connection.execute(
+                update(j.jobfeed_connection).values(
+                    client_id="completed-client",
+                    client_secret_ref=None,
+                    registration_token_ref=None,
+                )
+            )
+            uow.commit()
+    finally:
+        hold.release.set()
+        worker.join(timeout=60)
+    refused(result[0], "record_stale")
+    assert served.registrations == []
+    assert pending(collector.owner) == []
+    assert secret_files(root) == stored
+
+
 def test_replacing_a_reused_clients_row_discards_nothing(
     intake: Intake, root: Path, served: FakeAuthorizationServer
 ) -> None:
