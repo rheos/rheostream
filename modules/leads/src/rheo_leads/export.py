@@ -29,13 +29,19 @@ from sqlalchemy import (
     select,
 )
 
+from rheo_leads.storage import jobfeed
 from rheo_leads.storage import pipeline as _pipeline  # noqa: F401
 from rheo_leads.storage import tables as t
 
 if TYPE_CHECKING:
     from rheo_core.exports.artifact import ExportSnapshot
 
-TABLES = tuple(t.metadata.sorted_tables)
+# Temporary: the job feed tables hold secret references and a pending PKCE verifier,
+# so they stay out of export and restore until the export format carries these
+# tables with those columns removed.
+TABLES = tuple(
+    table for table in t.metadata.sorted_tables if table not in jobfeed.TABLES
+)
 SECRET_COLUMNS = {"signing_secret_ref", "previous_secret_ref", "previous_valid_until"}
 
 

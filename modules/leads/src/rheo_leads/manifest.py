@@ -189,7 +189,7 @@ MANIFEST = ModuleManifest(
             read_connection=read_connection if transport == "webhook" else None,
             record_refusal=record_refusal if transport == "webhook" else None,
         )
-        for transport in ("webhook", "import", "manual")
+        for transport in ("webhook", "import", "manual", "poll")
     ),
     health_checks=(),
     contract_tests="modules/leads/tests",

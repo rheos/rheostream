@@ -33,21 +33,45 @@ JOBSEARCH_SETTING: Final = KeySpec(
     explicit_per_workspace=False,
     default=True,
 )
-SETTINGS: Final = (JOBSEARCH_SETTING,) + tuple(
+# The job feed's endpoint configuration, set by the operator. Empty means not
+# configured; no vendor host is a package default.
+JOBFEED_SETTINGS: Final = (
     KeySpec(
-        key=f"leads.intake.{name}",
-        type=ValueType.INT,
-        scope=Scope.WORKSPACE,
-        floor=Floor.MIN,
+        key="leads.jobfeed.resource_url",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
         explicit_per_workspace=False,
-        default=default,
-        minimum=1,
+        default="",
+    ),
+    KeySpec(
+        key="leads.jobfeed.job_hosts",
+        type=ValueType.STR_LIST,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=(),
+    ),
+)
+SETTINGS: Final = (
+    (JOBSEARCH_SETTING,)
+    + tuple(
+        KeySpec(
+            key=f"leads.intake.{name}",
+            type=ValueType.INT,
+            scope=Scope.WORKSPACE,
+            floor=Floor.MIN,
+            explicit_per_workspace=False,
+            default=default,
+            minimum=1,
+        )
+        for name, default in (
+            ("max_payload_bytes", 262144),
+            ("replay_window_seconds", 300),
+            ("health_write_interval_seconds", 60),
+            ("max_rotation_overlap_seconds", 3600),
+            ("max_import_rows", 10000),
+        )
     )
-    for name, default in (
-        ("max_payload_bytes", 262144),
-        ("replay_window_seconds", 300),
-        ("health_write_interval_seconds", 60),
-        ("max_rotation_overlap_seconds", 3600),
-        ("max_import_rows", 10000),
-    )
+    + JOBFEED_SETTINGS
 )

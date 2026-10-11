@@ -136,6 +136,16 @@ def accept_delivery(
             raise OperationRefused(
                 "connection_revoked", "signing generation unavailable"
             )
+    if connection["transport"] == "poll":
+        # Only this connection's own actor may deliver for it; no signing generation.
+        if (
+            ctx.actor.kind is not ActorKind.CONNECTION
+            or ctx.actor.id != connection_id
+            or ctx.entry is not Entry.INTAKE
+        ):
+            raise OperationRefused(
+                "role_not_permitted", "authenticated connection required"
+            )
     if connection["transport"] == "manual":
         if model_input.funnel_ref is None:
             raise OperationRefused("funnel_required", "choose a funnel")

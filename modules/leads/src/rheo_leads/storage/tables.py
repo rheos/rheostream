@@ -113,7 +113,7 @@ intake_connection = Table(
         ["leads.field_mapping.id", "leads.field_mapping.version"],
     ),
     CheckConstraint(
-        "transport IN ('webhook','import','manual')", name="connection_transport"
+        "transport IN ('webhook','import','manual','poll')", name="connection_transport"
     ),
     CheckConstraint(
         "state IN ('active','needs_credential','revoked')", name="connection_state"
