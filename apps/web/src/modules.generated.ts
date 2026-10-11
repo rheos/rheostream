@@ -33,6 +33,8 @@ export const MODULES = [
       { operation: "leads.followup.resolve", component: leadsWeb.components.ActionForm },
       { operation: "leads.jobfeed.connect", component: leadsWeb.components.ActionForm },
       { operation: "leads.jobfeed.reconnect", component: leadsWeb.components.ActionForm },
+      { operation: "leads.jobfeed.revoke", component: leadsWeb.components.ActionForm },
+      { operation: "leads.jobfeed.select_account", component: leadsWeb.components.ActionForm },
     ],
     searchProviders: [],
     readOperations: [
@@ -56,6 +58,8 @@ export const MODULES = [
       "leads.intake.capture",
       "leads.jobfeed.connect",
       "leads.jobfeed.reconnect",
+      "leads.jobfeed.revoke",
+      "leads.jobfeed.select_account",
       "leads.opportunity.add_note",
       "leads.opportunity.create_from_observation",
       "leads.opportunity.transition",

@@ -26,16 +26,22 @@ from postgres.test_leads_intake import Intake
 from rheo_contracts import Entry, RecordRef, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.factories import context_for_connection
-from rheo_core.connectors.oauth import Discovered, RegisteredClient
+from rheo_core.connectors import oauth
+from rheo_core.connectors.oauth import ClientAuth, Discovered, RegisteredClient
 from rheo_core.operations import dispatch
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.refs import uuid7
 from rheo_core.settings import deployment as settings_deployment
 from rheo_core.settings import resolver as settings_resolver
 from rheo_core.storage.routing import open_unit_of_work
+from rheo_core.work.schedules import ensure_module_schedule
 from rheo_leads.jobfeed import Dependencies, use_dependencies
 from rheo_leads.jobfeed.install import install_connection
+from rheo_leads.jobfeed.run import SCHEDULE_NAME
+from rheo_leads.pipeline_common import lock
 from rheo_leads.references import ref
+from rheo_leads.storage import jobfeed as j
+from sqlalchemy import insert, update
 
 # A global IPv6 literal, as the egress tests use: the provenance gate flags any
 # public IPv4 literal, and the outbound check refuses a non-public address.
@@ -325,8 +331,9 @@ class FakeAuthorizationServer:
     token and revocation endpoints, all behind one ``httpx.MockTransport``.
 
     Every request is kept in ``requests``. ``holds`` blocks the ``"discovery"``
-    (protected-resource metadata), ``"registration"`` or ``"token"`` request until
-    released. :meth:`authorize` stands in for the owner's consent and mints a code.
+    (protected-resource metadata), ``"registration"``, ``"token"`` or
+    ``"revocation"`` request until released. :meth:`authorize` stands in for the
+    owner's consent and mints a code.
     """
 
     resource_url: str = RESOURCE_URL
@@ -453,6 +460,7 @@ class FakeAuthorizationServer:
             return self.token(request)
         if request.method == "POST" and url == f"{self.issuer}/revoke":
             self.revocation_requests.append(request)
+            self._hold("revocation")
             return self.revoke(request)
         return httpx.Response(404)
 
@@ -489,6 +497,152 @@ def configure_connector(
         monkeypatch.delenv("RHEO__routing__identity__path", raising=False)
     else:
         monkeypatch.setenv("RHEO__routing__identity__path", identity_path)
+
+
+# --- a connected collector ------------------------------------------------------------
+
+CLIENT_SECRET = "client-secret-marker-4d1f9a62-7c3e-4b85-a0d2-9e6b1c8f5a37"
+REGISTRATION_TOKEN = "registration-token-marker-8e2c5b19-0f4a-4d73-b6e1-3a9d7c2f0b48"
+STORED_CLIENT_ID = "stored-client"
+
+
+@dataclass
+class ConnectedCollector(Collector):
+    """An installed collector holding a real refresh-token file. ``refresh_token``
+    is the fixture's marker value, kept for leak checks and for what a fake
+    revocation endpoint should receive."""
+
+    token_ref: str = field(repr=False, default="")
+    refresh_token: str = field(repr=False, default="")
+
+
+def connected_collector(
+    i: Intake,
+    server: FakeAuthorizationServer,
+    *,
+    auth_method: str = "none",
+    registration_token: bool = True,
+    report: dict[str, int] | None = None,
+    choices: Sequence[tuple[str, str | None]] = (),
+    **columns: Any,
+) -> ConnectedCollector:
+    """A connected collector as a completed authorization leaves it, built through
+    the real OAuth client against ``server`` (the requests it took are forgotten).
+
+    The stored client is a real registration with ``auth_method``: the secret
+    methods own a client-secret file, ``none`` owns none, and ``registration_token``
+    adds a registration-token file. The refresh token is a real file written by a
+    real code exchange, referenced at generation 1, and the schedule is enabled.
+    ``report`` sets report counts, ``choices`` the stored account choices as
+    ``(organization_id, label)`` in order, and ``columns`` any other connection
+    column (written last).
+    """
+    connection_id = uuid7()
+    redirect = oauth.redirect_uri("leads")
+    transport = httpx.MockTransport(server.handle)
+    clock = FakeClock()
+    extra: dict[str, Any] = {"token_endpoint_auth_method": auth_method}
+    if auth_method != "none":
+        extra["client_secret"] = CLIENT_SECRET
+    if registration_token:
+        extra["registration_access_token"] = REGISTRATION_TOKEN
+    endpoint = server.registration_endpoint
+    assert endpoint is not None
+    registration, server.registration = (
+        server.registration,
+        issued(STORED_CLIENT_ID, **extra),
+    )
+    try:
+        client = oauth.register(
+            endpoint,
+            redirect,
+            CLIENT_NAME,
+            workspace_id=i.workspace,
+            connection_id=connection_id,
+            resolver=FakeResolver(),
+            clock=clock.monotonic,
+            transport=transport,
+        )
+    finally:
+        server.registration = registration
+    discovered = server.discovered()
+    collector = install_collector(
+        i, client=client, endpoints=discovered, connection_id=connection_id
+    )
+    refresh_token = f"refresh-marker-{uuid4()}"
+    token, server.token = (
+        server.token,
+        answer(
+            200,
+            {
+                "token_type": "Bearer",
+                "access_token": f"access-marker-{uuid4()}",
+                "refresh_token": refresh_token,
+            },
+        ),
+    )
+    try:
+        reference, _access = oauth.exchange_code(
+            discovered.token_endpoint,
+            code=f"code-marker-{uuid4()}",
+            redirect_uri=redirect,
+            code_verifier="v" * 43,
+            resource=discovered.resource_url,
+            client=ClientAuth(
+                client_id=client.client_id,
+                auth_method=client.auth_method,
+                client_secret_ref=client.client_secret_ref,
+                secret_expires_at=client.secret_expires_at,
+            ),
+            workspace_id=i.workspace,
+            connection_id=connection_id,
+            resolver=FakeResolver(),
+            clock=clock.monotonic,
+            transport=transport,
+            now=clock.now(),
+        )
+    finally:
+        server.token = token
+    server.requests.clear()
+    server.registrations.clear()
+    server.token_requests.clear()
+    with open_unit_of_work(collector.owner) as uow:
+        lock(uow)
+        uow.connection.execute(
+            update(j.jobfeed_connection).values(
+                token_ref=reference,
+                credential_generation=1,
+                **(report or {}),
+                **columns,
+            )
+        )
+        for ordinal, (organization_id, label) in enumerate(choices):
+            uow.connection.execute(
+                insert(j.jobfeed_account_choice).values(
+                    connection_id=connection_id,
+                    organization_id=organization_id,
+                    label=label,
+                    ordinal=ordinal,
+                    seen_at=clock.now(),
+                )
+            )
+        ensure_module_schedule(
+            uow.connection,
+            module_id="leads",
+            name=SCHEDULE_NAME,
+            enabled=True,
+            due_at=clock.now(),
+        )
+        uow.commit()
+    return ConnectedCollector(
+        intake=collector.intake,
+        pipeline_id=collector.pipeline_id,
+        connection_id=collector.connection_id,
+        owner=collector.owner,
+        poll=collector.poll,
+        token_ref=reference,
+        refresh_token=refresh_token,
+    )
 
 
 # --- a basic fake MCP server ----------------------------------------------------------

@@ -1,4 +1,8 @@
-"""The intake service, manual capture tool operation, and owner health read."""
+"""The intake service, manual capture tool operation, and owner health read.
+
+The health read is owner-only and has no tool: it is the one place the job feed
+collector's account choices and selected organization id are readable.
+"""
 
 import json
 from collections.abc import Sequence
@@ -23,12 +27,19 @@ from sqlalchemy import select
 from rheo_leads.contracts import (
     AcceptDeliveryInput,
     AcceptedDelivery,
+    AccountChoice,
     CaptureInput,
+    CollectorHealth,
     ConnectionHealth,
     ConnectionInput,
 )
 from rheo_leads.events import CONSUMER_ID
 from rheo_leads.intake.accept import accept_delivery
+from rheo_leads.jobfeed.state import (
+    account_choices,
+    next_run_not_before,
+    read_connection,
+)
 from rheo_leads.references import identifier, ref
 from rheo_leads.storage import tables as t
 
@@ -109,6 +120,36 @@ def health(
             consumer_id=CONSUMER_ID,
             subject_refs=[ref("delivery_receipt", r) for r in receipts],
         ),
+        last_error=row["last_error"] if row else None,
+        last_error_at=row["last_error_at"] if row else None,
+        collector=_collector(uow, connection_id),
+    )
+
+
+def _collector(uow: UnitOfWork, connection_id: UUID) -> CollectorHealth | None:
+    """The collector object, for the job feed's own poll connection only. Built
+    field by field, so no secret reference, client column or endpoint can reach it."""
+    current = read_connection(uow.connection)
+    if current is None or current.connection_id != connection_id:
+        return None
+    return CollectorHealth(
+        authorization_state=current.authorization_state,
+        last_completed_at=current.last_completed_at,
+        next_run_not_before=next_run_not_before(current),
+        fetched=current.fetched,
+        imported=current.imported,
+        skipped_dup=current.skipped_dup,
+        refreshed=current.refreshed,
+        filtered=current.filtered,
+        skipped_untracked=current.skipped_untracked,
+        errors=current.errors,
+        detail_reads=current.detail_reads,
+        pages=current.pages,
+        organization_id=current.organization_id,
+        account_choices=[
+            AccountChoice(organization_id=organization_id, label=label)
+            for organization_id, label in account_choices(uow.connection, connection_id)
+        ],
     )
 
 

@@ -1,7 +1,7 @@
-"""The owner's job feed authorization operations: connect, reconnect and the
-completion the identity-host callback dispatches.
+"""The owner's job feed authorization operations: connect, reconnect, the
+completion the identity-host callback dispatches, revoke and account selection.
 
-All three are for an owner on a browser session only and have no tool. Connect and
+All five are for an owner on a browser session only and have no tool. Connect and
 reconnect each read
 what it needs in a short transaction that commits at once, then discovers the
 authorization server and registers (or, on a reconnect, reuses) the OAuth client
@@ -28,14 +28,23 @@ An ``invalid_client`` answer never leads to a registration here: a reused client
 cleared from the connection, which goes terminal; a fresh one is discarded. The
 dispatcher's transaction carries only its audit row and, for a provider error on a
 reconnect, the content-free health code, which retires nothing.
+
+``revoke`` ends the connection locally first, in a committed unit of its own that
+clears and captures the token reference under the lock, so a concurrent rotation
+can never leave a live token behind; only then does it revoke exactly that reference
+upstream as the stored client, and discard exactly that file. Once that unit has
+committed it never raises. ``select_account`` calls nothing upstream: it accepts
+only an organization id from the stored account choices.
 """
 
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Literal, cast, get_args
 from uuid import UUID
 
+from pydantic import Field
 from rheo_contracts import (
     ActorKind,
     AuditSpec,
@@ -53,6 +62,8 @@ from rheo_core.connectors.oauth import (
     Discovered,
     OAuthFailure,
     RegisteredClient,
+    Revocation,
+    RevocationOutcome,
 )
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
@@ -80,13 +91,20 @@ from rheo_leads.pipeline_common import JOBSEARCH_PRESET_ID, jobsearch_enabled, l
 from rheo_leads.references import identifier
 from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import pipeline as p
+from rheo_leads.storage import tables as t
+
+_log = logging.getLogger(__name__)
 
 MODULE_ID: Final = "leads"
 RESOURCE_URL_KEY: Final = "leads.jobfeed.resource_url"
 CLIENT_NAME_KEY: Final = "connectors.oauth_client.client_name"
 REGISTRATION_FAILED: Final = "registration_failed"
 AUTHORIZATION_REQUIRED: Final = "authorization_required"
+ACCOUNT_SELECTION_REQUIRED: Final = "account_selection_required"
+CLIENT_CLEAR_FAILED: Final = "client_clear_failed"
 COMPLETE_AUTHORIZATION: Final = "leads.jobfeed.complete_authorization"
+REVOKE: Final = "leads.jobfeed.revoke"
+SELECT_ACCOUNT: Final = "leads.jobfeed.select_account"
 _AUTH_METHODS: Final[frozenset[str]] = frozenset(get_args(ClientAuthMethod))
 
 # One fixed, content-free text per refusal code.
@@ -778,6 +796,261 @@ def complete_authorization(
     return _refusal(reason)
 
 
+# --- revoke ---------------------------------------------------------------------------
+
+
+class RevokeInput(Strict):
+    pass
+
+
+class Revoked(Strict):
+    """The connection always ends locally; ``upstream`` says what the revocation
+    endpoint did with the captured token."""
+
+    state: Literal["revoked"]
+    upstream: RevocationOutcome
+
+
+@dataclass(frozen=True)
+class _Ended:
+    """What revoke's local end cleared and captured under the lock: exactly the
+    reference to revoke and discard, and the stored client to authenticate as
+    (``None`` when the connection stores none)."""
+
+    connection_id: UUID
+    reference: str | None = field(repr=False)
+    revocation_endpoint: str | None
+    client: ClientAuth | None
+
+
+def _client_auth(connection: JobfeedConnection) -> ClientAuth | None:
+    """The stored client as the revocation request authenticates. The column's
+    CHECK constraint admits only the three supported methods; any other would be
+    rejected by the OAuth client before anything is sent."""
+    if connection.client_id is None or connection.client_auth_method is None:
+        return None
+    return ClientAuth(
+        client_id=connection.client_id,
+        auth_method=cast(ClientAuthMethod, connection.client_auth_method),
+        client_secret_ref=connection.client_secret_ref,
+        secret_expires_at=connection.client_secret_expires_at,
+    )
+
+
+def _end_locally(ctx: WorkspaceContext, now: datetime) -> _Ended:
+    """Step one, in a unit of this handler's own: under the lock, clear and capture
+    the reference and the stored client with a compare-and-set, mark the connection
+    revoked, disable the schedule and record ``authorization_required``.
+
+    Every refusal happens here, before anything changes. Once the unit has
+    committed the connection has ended locally, so a failure while it closes is not
+    raised: the captured reference is still revoked and discarded.
+    """
+    committed: _Ended | None = None
+    try:
+        with open_unit_of_work(ctx) as unit:
+            _require_capability(ctx, unit)
+            lock(unit)
+            current = read_connection(unit.connection, for_update=True)
+            if current is None:
+                raise _refused("not_found")
+            table = j.jobfeed_connection
+            cleared = unit.connection.execute(
+                update(table)
+                .where(
+                    table.c.connection_id == current.connection_id,
+                    table.c.token_ref.is_not_distinct_from(current.token_ref),
+                    table.c.credential_generation == current.credential_generation,
+                )
+                .values(
+                    authorization_state="revoked",
+                    token_ref=None,
+                    credential_generation=current.credential_generation + 1,
+                    updated_at=now,
+                )
+            )
+            if cleared.rowcount != 1:
+                # Unreachable while the row is locked: never revoke a reference
+                # this statement did not clear.
+                raise _refused("record_stale")
+            ensure_module_schedule(
+                unit.connection,
+                module_id=MODULE_ID,
+                name=SCHEDULE_NAME,
+                enabled=False,
+                due_at=now,
+            )
+            health_write(unit, current.connection_id, error=AUTHORIZATION_REQUIRED)
+            ended = _Ended(
+                connection_id=current.connection_id,
+                reference=current.token_ref,
+                revocation_endpoint=current.revocation_endpoint,
+                client=_client_auth(current),
+            )
+            unit.commit()
+            committed = ended
+    except Exception:
+        if committed is None:
+            raise
+        return committed
+    if committed is None:  # the unit either commits or raises
+        raise RuntimeError("revoke did not end the connection")
+    return committed
+
+
+def _revoke_upstream(ctx: WorkspaceContext, ended: _Ended, now: datetime) -> Revocation:
+    """Step two, with nothing of this handler's open: revoke exactly the captured
+    reference as the captured client. With no reference, or no stored client to
+    authenticate the request, nothing is sent. ``oauth.revoke`` never raises."""
+    if ended.reference is None or ended.client is None:
+        return Revocation("revocation_unavailable")
+    deps = dependencies()
+    return oauth.revoke(
+        ended.revocation_endpoint,
+        refresh_ref=ended.reference,
+        client=ended.client,
+        workspace_id=ctx.workspace_id,
+        connection_id=ended.connection_id,
+        resolver=deps.resolver,
+        clock=deps.clock,
+        transport=deps.transport,
+        now=now,
+    )
+
+
+def _clear_revoked_client(
+    ctx: WorkspaceContext, connection_id: UUID, client_id: str, now: datetime
+) -> None:
+    """The revocation endpoint rejected the stored client (or its secret had
+    expired or could not be read): clear it in a unit of this handler's own, so the
+    next reconnect registers, and discard its files only after that commits.
+
+    A compare-and-set on ``client_id``: a connection that has since stored another
+    client is left alone and nothing is discarded. The connection is already
+    revoked, so its state and schedule are not touched.
+    """
+    table = j.jobfeed_connection
+    retired: tuple[str | None, ...] = ()
+    committed = False
+    try:
+        with open_unit_of_work(ctx) as unit:
+            lock(unit)
+            current = read_connection(unit.connection, for_update=True)
+            if (
+                current is not None
+                and current.connection_id == connection_id
+                and current.client_id == client_id
+            ):
+                retired = (current.client_secret_ref, current.registration_token_ref)
+                unit.connection.execute(
+                    update(table)
+                    .where(table.c.connection_id == connection_id)
+                    .values(
+                        client_id=None,
+                        client_auth_method=None,
+                        client_redirect_uri=None,
+                        client_secret_expires_at=None,
+                        client_secret_ref=None,
+                        registration_token_ref=None,
+                        updated_at=now,
+                    )
+                )
+            unit.commit()
+            committed = True
+    except BaseException:
+        # Committed but failed while closing: the cleared files are unreferenced.
+        if committed:
+            _discard_files(*retired)
+        raise
+    _discard_files(*retired)
+
+
+def revoke(ctx: WorkspaceContext, uow: UnitOfWork, m: RevokeInput) -> Revoked:
+    """End the connection locally, then revoke and discard what that end captured
+    (see the module docstring). Never raises once the local end has committed: the
+    dispatcher then writes its one success audit row."""
+    _require_owner_browser(ctx)
+    now = dependencies().now()
+    ended = _end_locally(ctx, now)
+    revocation = _revoke_upstream(ctx, ended, now)
+    # Step three: the reference is no longer stored, so its file goes, best-effort.
+    if ended.reference is not None:
+        try:
+            oauth.discard(ended.reference)
+        except Exception:  # discard never raises; the local end stands regardless
+            _log.warning(oauth.SECRET_DISCARD_FAILED)
+    # Step four: a rejected client is cleared so the next reconnect registers.
+    if revocation.client_rejected and ended.client is not None:
+        try:
+            _clear_revoked_client(ctx, ended.connection_id, ended.client.client_id, now)
+        except Exception:  # only the fixed code: no reference, path or text
+            _log.warning(CLIENT_CLEAR_FAILED)
+    return Revoked(state="revoked", upstream=revocation.outcome)
+
+
+# --- account selection ----------------------------------------------------------------
+
+
+class SelectAccountInput(Strict):
+    organization_id: str = Field(min_length=1, max_length=255)
+
+
+class AccountSelected(Strict):
+    """The connection's authorization state after the selection."""
+
+    state: str
+
+
+def select_account(
+    ctx: WorkspaceContext, uow: UnitOfWork, m: SelectAccountInput
+) -> AccountSelected:
+    """Store an organization id from the stored account choices, on the
+    dispatcher's transaction. Calls nothing upstream and refreshes no token, so it
+    cannot race a run's single-use rotation. Refusal texts never carry the id."""
+    _require_owner_browser(ctx)
+    _require_capability(ctx, uow)
+    lock(uow)
+    current = read_connection(uow.connection, for_update=True)
+    if current is None:
+        raise _refused("not_found")
+    choice = j.jobfeed_account_choice
+    listed = uow.connection.execute(
+        select(choice.c.organization_id).where(
+            choice.c.connection_id == current.connection_id,
+            choice.c.organization_id == m.organization_id,
+        )
+    ).scalar_one_or_none()
+    if listed is None:
+        raise _refused("not_found")
+    now = dependencies().now()
+    table = j.jobfeed_connection
+    uow.connection.execute(
+        update(table)
+        .where(table.c.connection_id == current.connection_id)
+        .values(organization_id=listed, updated_at=now)
+    )
+    health = t.connection_health
+    uow.connection.execute(
+        update(health)
+        .where(
+            health.c.connection_id == current.connection_id,
+            health.c.last_error == ACCOUNT_SELECTION_REQUIRED,
+        )
+        .values(last_error=None, last_error_at=None)
+    )
+    # Due when the next run will really proceed: never inside the last claim's
+    # window. A connection that is not connected keeps its schedule off.
+    claimed = current.run_claimed_at
+    ensure_module_schedule(
+        uow.connection,
+        module_id=MODULE_ID,
+        name=SCHEDULE_NAME,
+        enabled=current.authorization_state == "connected",
+        due_at=now if claimed is None else max(now, claimed + RUN_CLAIM_WINDOW),
+    )
+    return AccountSelected(state=current.authorization_state)
+
+
 OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
     *(
         (
@@ -808,5 +1081,29 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
             audit=AuditSpec(subject_field=None),
         ),
         complete_authorization,
+    ),
+    (
+        OperationDeclaration(
+            name=REVOKE,
+            safety_class=SafetyClass.MUTATE,
+            roles=frozenset({Role.OWNER}),
+            input_model=RevokeInput,
+            output=Revoked,
+            idempotency=Idempotency.NONE,
+            audit=AuditSpec(subject_field=None),
+        ),
+        revoke,
+    ),
+    (
+        OperationDeclaration(
+            name=SELECT_ACCOUNT,
+            safety_class=SafetyClass.MUTATE,
+            roles=frozenset({Role.OWNER}),
+            input_model=SelectAccountInput,
+            output=AccountSelected,
+            idempotency=Idempotency.NONE,
+            audit=AuditSpec(subject_field=None),
+        ),
+        select_account,
     ),
 )

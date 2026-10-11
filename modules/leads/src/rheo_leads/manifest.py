@@ -207,6 +207,8 @@ MANIFEST = ModuleManifest(
                 "followup.resolve",
                 "jobfeed.connect",
                 "jobfeed.reconnect",
+                "jobfeed.revoke",
+                "jobfeed.select_account",
             )
         ),
     ),

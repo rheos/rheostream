@@ -87,6 +87,38 @@ def read_connection(
     return JobfeedConnection(**{name: row[name] for name in _FIELDS})
 
 
+def next_run_not_before(connection: JobfeedConnection) -> datetime | None:
+    """The earliest instant the next run may start: the later of the backoff's
+    ``not_before`` and the last claim plus :data:`RUN_CLAIM_WINDOW`, or ``None``
+    when neither applies."""
+    claimed = connection.run_claimed_at
+    bounds = [
+        bound
+        for bound in (
+            connection.not_before,
+            None if claimed is None else claimed + RUN_CLAIM_WINDOW,
+        )
+        if bound is not None
+    ]
+    return max(bounds) if bounds else None
+
+
+def account_choices(
+    conn: Connection, connection_id: UUID
+) -> list[tuple[str, str | None]]:
+    """The stored account choices as ``(organization_id, label)``, in received
+    order."""
+    table = j.jobfeed_account_choice
+    return [
+        (row.organization_id, row.label)
+        for row in conn.execute(
+            select(table.c.organization_id, table.c.label)
+            .where(table.c.connection_id == connection_id)
+            .order_by(table.c.ordinal)
+        )
+    ]
+
+
 def clear_collector_health(conn: Connection, connection_id: UUID) -> None:
     """Clear the connection's last error when it is one of the collector's codes."""
     conn.execute(
