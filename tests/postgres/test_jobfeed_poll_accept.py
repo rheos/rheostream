@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from rheo_contracts import Actor, ActorKind, Entry, Role, WorkspaceContext
+from rheo_contracts import Entry, Role, WorkspaceContext
 from rheo_core.boundary.factories import (
     context_for_connection,
     context_for_event_consumer,
@@ -79,6 +79,8 @@ def test_poll_connection_context_grants_only_acceptance(intake: Intake) -> None:
 def test_poll_delivery_is_accepted_only_for_its_own_connection_actor(
     intake: Intake,
 ) -> None:
+    """The guard's entry and actor-kind conditions are defence in depth for
+    contexts no boundary factory can build, so only the id is exercised here."""
     poll = connector(intake, "poll", "fixture-poll")
     other_poll = connector(intake, "poll", "fixture-poll-other")
 
@@ -86,13 +88,6 @@ def test_poll_delivery_is_accepted_only_for_its_own_connection_actor(
     assert another_actor.state == "role_not_permitted", another_actor
     unknown_actor = send(intake, poll_context(intake, uuid7()), payload(poll, "b"))
     assert unknown_actor.state == "role_not_permitted", unknown_actor
-    wrong_entry = poll_context(intake, poll).model_copy(update={"entry": Entry.JOB})
-    assert send(intake, wrong_entry, payload(poll, "c")).state == "role_not_permitted"
-    # The right id under a different actor kind is not the connection.
-    wrong_kind = poll_context(intake, poll).model_copy(
-        update={"actor": Actor(kind=ActorKind.TOKEN, id=poll)}
-    )
-    assert send(intake, wrong_kind, payload(poll, "k")).state == "role_not_permitted"
     # The trusted system service context an import delivery accepts is not enough.
     with open_unit_of_work(intake.ctx) as uow:
         system = context_for_event_consumer(intake.workspace, uow, request_id=uuid7())

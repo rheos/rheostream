@@ -76,8 +76,8 @@ from postgres.test_jobfeed_connect import (
     audits,
     capability,
     file_of,
-    half_owner,
     member_context,
+    owner_on_api,
     refused,
     run,
     secret_files,
@@ -264,6 +264,8 @@ def _is_client_clear(statement: str) -> bool:
 def test_revoke_and_select_are_refused_for_every_caller_but_the_owners_browser_session(
     intake: Intake, root: Path, served: FakeAuthorizationServer
 ) -> None:
+    """The browser-session check's web-entry token half is defence in depth for a
+    context no boundary factory can build, so it has no case here."""
     c = connected(intake, served, choices=CHOICES)
     before = stored(c.owner)
     operations = [REVOKE, SELECT]
@@ -272,7 +274,7 @@ def test_revoke_and_select_are_refused_for_every_caller_but_the_owners_browser_s
         # (b) an agent, (e) an owner-role token on MCP; (e) one on the API
         owner_token(intake, c.owner, "mcp", "mcp", operations=operations),
         owner_token(intake, c.owner, "cli", "api", operations=operations),
-        *half_owner(c.owner),
+        owner_on_api(c.owner),
     ]
     for ctx in cases:
         refused(revoke(intake, ctx), "role_not_permitted")

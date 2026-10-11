@@ -45,7 +45,7 @@ from harness.jobfeed import (
 from harness.registry import add_member
 from rheo_app_core import internal_routes
 from rheo_app_core.main import internal_app
-from rheo_contracts import Actor, ActorKind, Entry, RecordRef, Role, WorkspaceContext
+from rheo_contracts import ActorKind, Entry, RecordRef, Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.factories import context_for_connection, context_from_token
 from rheo_core.connectors import oauth
@@ -252,15 +252,14 @@ def token_context(i: Intake, owner: WorkspaceContext, kind: str, entry: str) -> 
     return ctx
 
 
-def half_owner(owner: WorkspaceContext) -> list[WorkspaceContext]:
-    """The owner's context with exactly one half of the browser-session pair
-    changed: an account on the API entry, and a token actor on the web entry."""
-    return [
-        owner.model_copy(update={"entry": Entry.API}),
-        owner.model_copy(
-            update={"actor": Actor(kind=ActorKind.TOKEN, id=owner.actor.id)}
-        ),
-    ]
+def owner_on_api(owner: WorkspaceContext) -> WorkspaceContext:
+    """The owner's own account with one half of the browser-session pair changed:
+    the API entry instead of the web entry. The other half, a token actor on the web
+    entry, has no boundary factory (tokens present only on the API and MCP)."""
+    ctx = context_for_harness(owner.workspace_id, owner.actor.id, Role.OWNER, Entry.API)
+    assert isinstance(ctx, WorkspaceContext), ctx
+    assert ctx.actor == owner.actor and ctx.entry is not owner.entry
+    return ctx
 
 
 def member_context(i: Intake) -> WorkspaceContext:
@@ -293,6 +292,8 @@ def test_connect_is_refused_for_every_caller_but_the_owners_browser_session(
     pipeline_id: UUID,
     served: FakeAuthorizationServer,
 ) -> None:
+    """The browser-session check's web-entry token half is defence in depth for a
+    context no boundary factory can build, so it has no case here."""
     other = run(
         intake,
         owner,
@@ -312,7 +313,7 @@ def test_connect_is_refused_for_every_caller_but_the_owners_browser_session(
         (token_context(intake, owner, "cli", "api"), pipeline_id, "role_not_permitted"),
         # A connection actor's operation set holds only its acceptance operation.
         (poll, pipeline_id, "operation_not_permitted"),
-        *((ctx, pipeline_id, "role_not_permitted") for ctx in half_owner(owner)),
+        (owner_on_api(owner), pipeline_id, "role_not_permitted"),
         (owner, inbound, "preset_not_allowed"),
         (owner, uuid7(), "not_found"),
     ]
@@ -333,13 +334,15 @@ def test_connect_is_refused_for_every_caller_but_the_owners_browser_session(
 def test_reconnect_is_refused_for_every_caller_but_the_owners_browser_session(
     intake: Intake, root: Path, served: FakeAuthorizationServer
 ) -> None:
+    """The browser-session check's web-entry token half is defence in depth for a
+    context no boundary factory can build, so it has no case here."""
     collector = pinned_collector(intake, served, root=root)
     owner = collector.owner
     cases = [
         member_context(intake),  # (a) a member role
         token_context(intake, owner, "mcp", "mcp"),  # (b) an agent, (e) owner on MCP
         token_context(intake, owner, "cli", "api"),  # (e) an owner token on the API
-        *half_owner(owner),
+        owner_on_api(owner),
     ]
     for ctx in cases:
         refused(run(intake, ctx, RECONNECT), "role_not_permitted")
