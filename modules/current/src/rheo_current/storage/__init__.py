@@ -1,0 +1,1 @@
+"""Current's owned tables."""

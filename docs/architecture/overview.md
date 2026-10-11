@@ -27,7 +27,7 @@ requirement that forces each of them.
                                  │
                     service registry (operations, classes, audit, outbox)
                                  │
-              modules: recallatron · relationships · leads · (current, later)
+              modules: recallatron · relationships · leads · current
                                  │
                  one Postgres database per workspace  +  control plane
                                  │
@@ -168,9 +168,10 @@ The scaffold's tree is the package layout; nothing new is invented.
 | `tests` | the behavioural suites | Contract, integration, acceptance, one directory per public phase. |
 | `examples` | synthetic fixtures | The synthetic funnel, demo workspace content. |
 
-Only part of this tree holds code today. `modules/recallatron` (phase two) is the one built
-module; `modules/leads` and `modules/relationships` (phase three), `modules/current` (phase five),
-`connectors`, and `channels` are placeholder distributions with an empty package.
+Only part of this tree holds code today. `modules/recallatron` (phase two),
+`modules/relationships` and `modules/leads` (phase three) and `modules/current` (phase five)
+are built modules; `connectors` and `channels` are placeholder distributions with an empty
+package.
 
 The core carries no import of any module: `rheo_core` and `rheo_contracts` list no module
 distribution as a dependency, and modules are discovered through the `rheo.modules` packaging
