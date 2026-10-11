@@ -1,5 +1,7 @@
 """The collector's own state rows."""
 
+import hashlib
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields
@@ -7,18 +9,38 @@ from datetime import datetime, timedelta
 from typing import Final
 from uuid import UUID
 
+from rheo_contracts import SafetyClass, WorkspaceContext
+from rheo_core.audit.records import insert_audit_record
 from rheo_core.refs.resolver import UnitOfWork
+from rheo_core.storage.routing import open_unit_of_work
+from rheo_core.work.schedules import ensure_module_schedule
 from sqlalchemy import Connection, Text, any_, cast, delete, func, select, update
 from sqlalchemy.dialects.postgresql import ARRAY, array, insert
 
+from rheo_leads.intake.accept import health_write
 from rheo_leads.jobfeed.normalize import EVENT_ID_SEPARATOR
+from rheo_leads.pipeline_common import lock
+from rheo_leads.references import ref
 from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import tables as t
 
+_log = logging.getLogger(__name__)
 _SEQUENCE = re.compile(r"[0-9]+")
+_MODULE_ID: Final = "leads"
+
+SCHEDULE_NAME: Final = "jobfeed_collect"
+"""The collector's schedule row, ``(leads, jobfeed_collect)``."""
 
 RUN_CLAIM_WINDOW: Final = timedelta(minutes=60)
 """How long a run's claim holds: no run starts before ``run_claimed_at`` plus this."""
+
+BACKOFF_BASE: Final = timedelta(hours=2)
+BACKOFF_CAP: Final = timedelta(hours=24)
+AUTHORIZATION_LOST: Final = "leads.jobfeed.authorization_lost"
+"""The terminal transition's audit operation name."""
+UNIT_CLOSE_FAILED: Final = "jobfeed_unit_close_failed"
+"""Logged, alone, when a short unit failed while closing after its commit."""
+_EMPTY_REQUEST_DIGEST: Final = hashlib.sha256(b"{}").digest()
 
 COLLECTOR_HEALTH_CODES: Final = frozenset(
     {
@@ -324,3 +346,255 @@ def take_pending(conn: Connection, state_hash: bytes) -> PendingAuthorization | 
     pending = PendingAuthorization(**{name: row[name] for name in _PENDING_FIELDS})
     conn.execute(delete(table).where(table.c.id == pending.id))
     return pending
+
+
+# --- a run's short units and its run-ending writes ------------------------------------
+
+
+@dataclass(frozen=True)
+class Claimed:
+    """What a won claim returned: the reference to refresh and the generation every
+    later guard of the run compares against."""
+
+    token_ref: str = field(repr=False)
+    generation: int
+
+
+def claim_run(
+    ctx: WorkspaceContext, *, connection_id: UUID, generation: int, now: datetime
+) -> Claimed | None:
+    """Claim the next run in a unit of its own that commits at once, or ``None``.
+
+    Only a connected connection whose last claim is older than
+    :data:`RUN_CLAIM_WINDOW` (or that was never claimed) is claimed, so two attempts
+    claim once and no run starts within the window of the previous start. The
+    connection must also still be at ``generation``, the one the caller read its
+    client with: a reconnect that stored new credentials in between is left for the
+    next run rather than refreshed as the client read before it.
+    """
+    table = j.jobfeed_connection
+    claimed = table.c.run_claimed_at
+    with open_unit_of_work(ctx) as unit:
+        row = unit.connection.execute(
+            update(table)
+            .where(
+                table.c.connection_id == connection_id,
+                table.c.authorization_state == "connected",
+                table.c.credential_generation == generation,
+                claimed.is_(None) | (claimed < now - RUN_CLAIM_WINDOW),
+            )
+            .values(run_claimed_at=now)
+            .returning(table.c.token_ref, table.c.credential_generation)
+        ).one_or_none()
+        unit.commit()
+    if row is None or row.token_ref is None:
+        return None
+    return Claimed(token_ref=row.token_ref, generation=row.credential_generation)
+
+
+def switch_token(
+    ctx: WorkspaceContext,
+    *,
+    connection_id: UUID,
+    old_ref: str,
+    new_ref: str,
+    generation: int,
+    now: datetime,
+) -> bool:
+    """The rotation's compare-and-set, in a unit of its own: whether it won.
+
+    It switches to ``new_ref`` only while the connection still references
+    ``old_ref`` at ``generation``; a revoke or reconnect that committed first makes
+    it lose. It raises only before its commit; once committed, a failure while the
+    unit closes is logged as a fixed code and the outcome still returned, so the
+    caller never retires a file the connection now references.
+    """
+    table = j.jobfeed_connection
+    won: bool | None = None
+    try:
+        with open_unit_of_work(ctx) as unit:
+            switched = unit.connection.execute(
+                update(table)
+                .where(
+                    table.c.connection_id == connection_id,
+                    table.c.token_ref == old_ref,
+                    table.c.credential_generation == generation,
+                )
+                .values(
+                    token_ref=new_ref,
+                    credential_generation=generation + 1,
+                    updated_at=now,
+                )
+            )
+            outcome = switched.rowcount == 1
+            unit.commit()
+            won = outcome
+    except Exception:
+        if won is None:
+            raise
+        _log.warning(UNIT_CLOSE_FAILED)
+    return bool(won)
+
+
+ClientFiles = tuple[str | None, str | None]
+
+
+def clear_rejected_client(
+    ctx: WorkspaceContext,
+    *,
+    connection_id: UUID,
+    client_id: str,
+    generation: int,
+    now: datetime,
+) -> ClientFiles | None:
+    """The token endpoint rejected the stored client during a run: clear every
+    client column in a unit of its own, under the lifecycle lock.
+
+    Only while the connection is still the one the run claimed (connected, at
+    ``generation``) and still stores ``client_id``; otherwise nothing changes and
+    ``None`` is returned. On success it returns the client's two file references,
+    for the caller to discard once this has committed; it raises only before its
+    commit.
+    """
+    table = j.jobfeed_connection
+    retired: ClientFiles | None = None
+    committed = False
+    try:
+        with open_unit_of_work(ctx) as unit:
+            lock(unit)
+            current = read_connection(unit.connection, for_update=True)
+            if (
+                current is None
+                or current.connection_id != connection_id
+                or current.authorization_state != "connected"
+                or current.credential_generation != generation
+                or current.client_id != client_id
+            ):
+                return None
+            unit.connection.execute(
+                update(table)
+                .where(table.c.connection_id == connection_id)
+                .values(
+                    client_id=None,
+                    client_auth_method=None,
+                    client_redirect_uri=None,
+                    client_secret_expires_at=None,
+                    client_secret_ref=None,
+                    registration_token_ref=None,
+                    updated_at=now,
+                )
+            )
+            files = (current.client_secret_ref, current.registration_token_ref)
+            unit.commit()
+            committed = True
+            retired = files
+    except Exception:
+        if not committed:
+            raise
+        _log.warning(UNIT_CLOSE_FAILED)
+    return retired
+
+
+def claimed_connection(
+    uow: UnitOfWork, *, connection_id: UUID, generation: int
+) -> JobfeedConnection | None:
+    """The guard every run-ending write passes first, on the caller's transaction:
+    the lifecycle lock, then the connection row locked, returned only while it is
+    still the one the run claimed (connected, at ``generation``). ``None`` means an
+    owner revoked or reconnected meanwhile, and the run writes nothing at all."""
+    lock(uow)
+    current = read_connection(uow.connection, for_update=True)
+    if (
+        current is None
+        or current.connection_id != connection_id
+        or current.authorization_state != "connected"
+        or current.credential_generation != generation
+    ):
+        return None
+    return current
+
+
+def backoff(failures: int, retry_after: int | None) -> timedelta:
+    """How long the next run waits after ``failures`` consecutive failures: the
+    larger of the base doubled per failure and Retry-After, each capped."""
+    exponent = min(max(failures, 1) - 1, 16)
+    doubled = min(BACKOFF_BASE * (1 << exponent), BACKOFF_CAP)
+    asked = min(timedelta(seconds=max(retry_after or 0, 0)), BACKOFF_CAP)
+    return max(doubled, asked)
+
+
+def write_transient(
+    uow: UnitOfWork,
+    current: JobfeedConnection,
+    *,
+    code: str,
+    now: datetime,
+    retry_after: int | None = None,
+) -> None:
+    """A failed run that may be retried later: the health code, one more
+    consecutive failure and the next run's earliest start."""
+    failures = current.consecutive_failures + 1
+    table = j.jobfeed_connection
+    uow.connection.execute(
+        update(table)
+        .where(table.c.connection_id == current.connection_id)
+        .values(
+            consecutive_failures=failures,
+            not_before=now + backoff(failures, retry_after),
+            updated_at=now,
+        )
+    )
+    health_write(uow, current.connection_id, error=code)
+
+
+def write_terminal(
+    uow: UnitOfWork,
+    current: JobfeedConnection,
+    conn_ctx: WorkspaceContext,
+    *,
+    now: datetime,
+) -> None:
+    """Authorization is lost: the connection needs a reconnect, its schedule goes
+    off, the health code is set and one content-free audit row is written as the
+    connection."""
+    table = j.jobfeed_connection
+    uow.connection.execute(
+        update(table)
+        .where(table.c.connection_id == current.connection_id)
+        .values(authorization_state="authorization_required", updated_at=now)
+    )
+    ensure_module_schedule(
+        uow.connection,
+        module_id=_MODULE_ID,
+        name=SCHEDULE_NAME,
+        enabled=False,
+        due_at=now,
+    )
+    health_write(uow, current.connection_id, error="authorization_required")
+    insert_audit_record(
+        uow.connection,
+        occurred_at=now,
+        actor_kind=conn_ctx.actor.kind.value,
+        actor_id=conn_ctx.actor.id,
+        entry=conn_ctx.entry.value,
+        operation_name=AUTHORIZATION_LOST,
+        safety_class=SafetyClass.MUTATE.value,
+        operation_id=None,
+        subject_ref=ref("intake_connection", current.connection_id),
+        request_digest=_EMPTY_REQUEST_DIGEST,
+        outcome="succeeded",
+    )
+
+
+def write_success(
+    uow: UnitOfWork, current: JobfeedConnection, *, now: datetime
+) -> None:
+    """A completed run: the backoff is reset and only the collector's own health
+    codes are cleared."""
+    table = j.jobfeed_connection
+    uow.connection.execute(
+        update(table)
+        .where(table.c.connection_id == current.connection_id)
+        .values(consecutive_failures=0, not_before=None, updated_at=now)
+    )
+    clear_collector_health(uow.connection, current.connection_id)

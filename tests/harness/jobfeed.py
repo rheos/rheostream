@@ -36,23 +36,35 @@ from rheo_core.refs import uuid7
 from rheo_core.settings import deployment as settings_deployment
 from rheo_core.settings import resolver as settings_resolver
 from rheo_core.storage.routing import open_unit_of_work
-from rheo_core.work.schedules import ensure_module_schedule
+from rheo_core.storage.work_index import DueWorkspace
+from rheo_core.storage.work_tables import job
+from rheo_core.work.kinds import JobKindRegistry
+from rheo_core.work.loop import VisitResult, visit_workspace
+from rheo_core.work.schedules import ensure_module_schedule, run_due_schedules
 from rheo_leads.jobfeed import Dependencies, delivery, use_dependencies
 from rheo_leads.jobfeed.collect import Sighting
 from rheo_leads.jobfeed.delivery import DeliveryResult
 from rheo_leads.jobfeed.install import install_connection
 from rheo_leads.jobfeed.normalize import NormalizedPosting
 from rheo_leads.jobfeed.presets import Purpose
-from rheo_leads.jobfeed.run import SCHEDULE_NAME
+from rheo_leads.jobfeed.run import (
+    COLLECT_JOB_KIND,
+    SCHEDULE_NAME,
+    CollectPayload,
+    collect_job,
+)
+from rheo_leads.manifest import MANIFEST
 from rheo_leads.pipeline_common import lock
 from rheo_leads.references import ref
 from rheo_leads.storage import jobfeed as j
+from sqlalchemy import Engine, insert, select, update
 from sqlalchemy import event as sa_event
-from sqlalchemy import insert, update
+from sqlalchemy.pool import Pool
 
 # A global IPv6 literal, as the egress tests use: the provenance gate flags any
 # public IPv4 literal, and the outbound check refuses a non-public address.
 PUBLIC_ADDRESS = "2600::1"
+PRIVATE_ADDRESS = "10.1.2.3"
 BASE = "https://www.example.com"
 ENDPOINTS = Discovered(
     resource_url=f"{BASE}/mcp",
@@ -111,6 +123,10 @@ class FakeResolver:
     def __call__(self, host: str) -> Sequence[str]:
         self.asked.append(host)
         return self.addresses.get(host, self.default)
+
+    def make_private(self, host: str) -> None:
+        """From now on ``host`` resolves to an RFC 1918 address only."""
+        self.addresses[host] = (PRIVATE_ADDRESS,)
 
 
 @contextmanager
@@ -481,8 +497,11 @@ def configure_connector(
     resource_url: str = RESOURCE_URL,
     client_name: str = CLIENT_NAME,
     routing_host: str = ROUTING_HOST,
+    job_hosts: str | None = None,
 ) -> None:
     """Deployment settings for the connector client and a fresh secret data root.
+    ``job_hosts`` (comma-separated) configures the collector's job hosts; left
+    ``None`` they stay unset, so a run stops before its claim.
 
     Call it after the intake fixture has installed its isolated settings registry:
     the environment layer checks ``RHEO__`` variables against its own registry
@@ -500,6 +519,10 @@ def configure_connector(
     monkeypatch.setenv("RHEO__routing__scheme", "https")
     monkeypatch.setenv("RHEO__routing__base_host", routing_host)
     monkeypatch.setenv("RHEO__routing__public_host", "")
+    if job_hosts is None:
+        monkeypatch.delenv("RHEO__leads__jobfeed__job_hosts", raising=False)
+    else:
+        monkeypatch.setenv("RHEO__leads__jobfeed__job_hosts", job_hosts)
     if identity_path is None:
         monkeypatch.delenv("RHEO__routing__identity__path", raising=False)
     else:
@@ -857,3 +880,138 @@ def serve(
         else combined(server, mcp),
     ) as deps:
         yield deps
+
+
+# --- scheduler ticks, worker visits and run interleavings -----------------------------
+
+COLLECT_OWNER = "jobfeed-run-test"
+
+
+def collect_kinds() -> JobKindRegistry:
+    """The Leads manifest's job kinds, as the worker registers them."""
+    kinds = JobKindRegistry()
+    for kind in MANIFEST.jobs:
+        kinds.register(kind.name, kind.input_model, kind.handler)
+    return kinds
+
+
+def tick(i: Intake, ctx: WorkspaceContext, clock: FakeClock) -> None:
+    """One scheduler tick alone (``run_due_schedules``) at the fake clock's instant:
+    due rows enqueue, nothing runs."""
+    with open_unit_of_work(ctx) as uow:
+        run_due_schedules(uow.connection, workspace_id=i.workspace, now=clock.now())
+        uow.commit()
+
+
+def visit(i: Intake, clock: FakeClock) -> VisitResult:
+    """One real worker visit on the fake clock: the scheduler tick, then the job
+    drain. The cancellation token the worker hands the handler runs on the same
+    clock."""
+    return visit_workspace(
+        DueWorkspace(workspace_id=i.workspace, observed_due_at=None),
+        kinds=collect_kinds(),
+        consumers=i.consumers,
+        backend=i.cluster.backend,
+        owner=COLLECT_OWNER,
+        clock=clock.now,
+        jitter=None,
+    )
+
+
+@dataclass(frozen=True)
+class JobState:
+    state: str
+    last_error: str | None
+    attempts: int
+    next_run_at: datetime
+
+
+def collect_jobs(ctx: WorkspaceContext) -> list[JobState]:
+    """Every collector job's final state, oldest first."""
+    with open_unit_of_work(ctx) as uow:
+        return [
+            JobState(row.state, row.last_error, row.attempts, row.next_run_at)
+            for row in uow.connection.execute(
+                select(job.c.state, job.c.last_error, job.c.attempts, job.c.next_run_at)
+                .where(job.c.kind == COLLECT_JOB_KIND)
+                .order_by(job.c.created_at, job.c.id)
+            )
+        ]
+
+
+def invoke(c: Collector, token: Any) -> None:
+    """The handler called directly, as the worker calls it: on a sealed view of one
+    work transaction, committed after it returns. ``token`` stands in for the
+    worker's cancellation token."""
+    with open_unit_of_work(c.owner) as uow:
+        collect_job(
+            HandlerUnitOfWork(uow, consumers=c.intake.consumers),
+            CollectPayload(workspace_id=c.intake.workspace),
+            token,
+        )
+        uow.commit()
+
+
+def grant_type(request: httpx.Request) -> str:
+    return parse_qs(request.content.decode("ascii")).get("grant_type", [""])[0]
+
+
+def refresh_requests(server: FakeAuthorizationServer) -> list[httpx.Request]:
+    """The token endpoint's refresh grants alone (a reconnect's code exchange is
+    not a refresh)."""
+    return [r for r in server.token_requests if grant_type(r) == "refresh_token"]
+
+
+def before(callback: Callable[[], None], responder: Responder) -> Responder:
+    """A token endpoint that runs ``callback`` just before it answers the first
+    refresh grant; every other request (a reconnect's own code exchange included)
+    goes straight to ``responder``."""
+    fired: list[bool] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if not fired and grant_type(request) == "refresh_token":
+            fired.append(True)
+            callback()
+        return responder(request)
+
+    return respond
+
+
+def _is_claim(statement: str) -> bool:
+    return (
+        statement.lstrip()
+        .upper()
+        .startswith("UPDATE LEADS.JOBFEED_CONNECTION SET RUN_CLAIMED_AT")
+    )
+
+
+@contextmanager
+def after_claim(callback: Callable[[], None]) -> Iterator[None]:
+    """Run ``callback`` once, after the run's claim unit has committed, before the
+    refresh: an owner operation then runs on connections of its own.
+
+    The claim's unit is recognised by its ``UPDATE ... SET run_claimed_at``
+    statement. Core's connection events offer no after-commit hook (``commit``
+    fires before the database commits), so the callback runs when that unit gives
+    its connection back to the pool, which happens only after the commit.
+    """
+    claimed: set[int] = set()
+    fired: list[bool] = []
+
+    def watch(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        if _is_claim(statement):
+            claimed.add(id(conn.connection.dbapi_connection))
+
+    def returned(dbapi_connection: Any, record: Any) -> None:
+        if not fired and id(dbapi_connection) in claimed:
+            fired.append(True)
+            callback()
+
+    sa_event.listen(Engine, "before_cursor_execute", watch)
+    sa_event.listen(Pool, "checkin", returned)
+    try:
+        yield
+    finally:
+        sa_event.remove(Engine, "before_cursor_execute", watch)
+        sa_event.remove(Pool, "checkin", returned)
+    assert fired, "the run never claimed"
