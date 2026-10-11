@@ -11,6 +11,7 @@ the file system. Owner operations that race a run go through the real dispatcher
 connections of their own.
 """
 
+import json
 import logging
 import threading
 from collections.abc import Callable, Iterator
@@ -25,6 +26,8 @@ import httpx
 import pytest
 from harness.jobfeed import (
     CLIENT_SECRET,
+    FEED_DESCRIPTION,
+    FEED_SNIPPET,
     ISSUER,
     ORGANIZATION,
     REGISTRATION_TOKEN,
@@ -48,33 +51,46 @@ from harness.jobfeed import (
     collect_jobs,
     configure_connector,
     connected_collector,
+    drain,
+    feed_row,
     grant_type,
     invoke,
     issued,
     jobsearch_pipeline,
     owner_web,
     raising,
+    rate_limited_tool,
     refresh_requests,
     serve,
     slow,
     tick,
     token_error,
     tool_result,
+    trickling,
     visit,
 )
+from rheo_app_worker.heartbeat import MAX_AGE_SECONDS
 from rheo_contracts import WorkspaceContext
 from rheo_core.deletion import WORKSPACE_LIFECYCLE_LOCK_KEY
 from rheo_core.events.consumers import HandlerUnitOfWork
 from rheo_core.storage.control_plane import set_workspace_state
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.routing import open_unit_of_work
-from rheo_core.storage.work_tables import audit_record, job
+from rheo_core.storage.work_tables import audit_record, job, schedule
 from rheo_core.work.cancellation import JobCancelled
 from rheo_leads.intake.accept import health_write
+from rheo_leads.jobfeed import delivery
 from rheo_leads.jobfeed.run import CollectPayload, JobfeedFailure, collect_job
-from rheo_leads.jobfeed.state import AUTHORIZATION_LOST, account_choices
+from rheo_leads.jobfeed.state import (
+    AUTHORIZATION_LOST,
+    SCHEDULE_NAME,
+    account_choices,
+)
+from rheo_leads.pipeline_evidence import COMPETITION_GROUP
 from rheo_leads.references import ref
-from sqlalchemy import Engine, event, select, text
+from rheo_leads.storage import pipeline as p
+from rheo_leads.storage import tables as t
+from sqlalchemy import Engine, event, select, text, update
 
 from postgres.test_jobfeed_authorization import (
     client_of,
@@ -87,7 +103,22 @@ from postgres.test_jobfeed_authorization import (
     set_connection,
     stored,
 )
-from postgres.test_jobfeed_connect import capability, file_of, run, secret_files
+from postgres.test_jobfeed_connect import (
+    capability,
+    file_of,
+    member_context,
+    run,
+    secret_files,
+)
+from postgres.test_jobfeed_delivery import (
+    competition,
+    event_ids,
+    opportunities,
+    party_count,
+    set_payload_limit,
+    states,
+)
+from postgres.test_jobfeed_revoke_select import collector_health, health_read
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
 
@@ -1831,3 +1862,734 @@ def test_no_token_or_organization_marker_reaches_a_job_log_audit_or_health(
         # The stored choices are a carried surface.
         assert choices_of(c)[0] == (ORG_MARKER, "Example Freelancer")
         assert last_error(c) == "account_selection_required"
+
+
+# --- collection, detail reads, deliveries and the report -----------------------------
+
+ALLOWED_CALLS = {
+    ("initialize", None, None),
+    ("notifications/initialized", None, None),
+    ("tools/call", "list_accounts", None),
+    ("tools/call", "find_jobs", "smart_search"),
+    ("tools/call", "find_jobs", "search"),
+    ("tools/call", "find_jobs", "get"),
+}
+SPACING = 5.3 - 1e-6
+
+
+def rows(first: int, count: int, **changes: Any) -> list[dict[str, object]]:
+    """``count`` feed rows numbered from ``first``."""
+    return [feed_row(first + n, **changes) for n in range(count)]
+
+
+def collected(c: ConnectedCollector, clock: FakeClock, hours: float = 0.0) -> None:
+    """One scheduled run through a real tick and worker visit, then the intake
+    consumer, so accepted deliveries become observations and opportunities."""
+    run_at(c, clock, hours)
+    processed(c)
+
+
+def processed(c: ConnectedCollector) -> None:
+    """Drain the intake consumer. Its visit runs on the real clock, so the
+    collector's schedule (on the fake clock, long due by then) is switched off
+    for it and restored after, leaving the fake-clock schedule as it was."""
+    leads_schedule = (schedule.c.module_id == "leads") & (
+        schedule.c.name == SCHEDULE_NAME
+    )
+    with open_unit_of_work(c.owner) as uow:
+        enabled = uow.connection.execute(
+            select(schedule.c.enabled).where(leads_schedule)
+        ).scalar_one()
+        uow.connection.execute(
+            update(schedule).where(leads_schedule).values(enabled=False)
+        )
+        uow.commit()
+    try:
+        # A visit handles a bounded batch; drain until nothing more is processed.
+        for _ in range(50):
+            observations = c.intake.count(t.observation)
+            drain(c.intake)
+            if c.intake.count(t.observation) == observations:
+                break
+    finally:
+        with open_unit_of_work(c.owner) as uow:
+            uow.connection.execute(
+                update(schedule).where(leads_schedule).values(enabled=enabled)
+            )
+            uow.commit()
+
+
+def report(c: ConnectedCollector) -> dict[str, Any]:
+    """The owner's health read of the collector: the nine counts and the rest."""
+    return collector_health(c.intake, c)
+
+
+COUNTS = (
+    "fetched",
+    "imported",
+    "skipped_dup",
+    "refreshed",
+    "filtered",
+    "skipped_untracked",
+    "errors",
+    "detail_reads",
+    "pages",
+)
+
+
+def counts(c: ConnectedCollector) -> dict[str, int]:
+    read = report(c)
+    return {name: read[name] for name in COUNTS}
+
+
+def bodies(c: ConnectedCollector) -> list[dict[str, Any]]:
+    """Every delivered body of the collector's connection, oldest first."""
+    with open_unit_of_work(c.owner) as uow:
+        return [
+            json.loads(row.body)
+            for row in uow.connection.execute(
+                select(t.delivery_payload.c.body)
+                .join(
+                    t.delivery_receipt,
+                    t.delivery_receipt.c.id == t.delivery_payload.c.receipt_id,
+                )
+                .where(t.delivery_receipt.c.connection_id == c.connection_id)
+                .order_by(t.delivery_receipt.c.received_at)
+            )
+        ]
+
+
+def gets(mcp: FakeMcpServer) -> list[str]:
+    return [
+        str(params.get("id"))
+        for action, params in mcp.find_jobs_calls()
+        if action == "get"
+    ]
+
+
+def searches(mcp: FakeMcpServer) -> list[tuple[str, dict[str, Any]]]:
+    return [(a, p) for a, p in mcp.find_jobs_calls() if a != "get"]
+
+
+def assert_paced(mcp: FakeMcpServer) -> None:
+    starts = mcp.find_jobs_starts()
+    assert starts, "no find_jobs call was timed"
+    for earlier, later in zip(starts, starts[1:], strict=False):
+        assert later - earlier >= SPACING, (earlier, later)
+
+
+def test_a_default_run_collects_reads_delivers_and_reports_within_its_bounds(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 30, AC 31, AC 37, AC 22, AC 51, FR 29: the fake offers more pages and
+    rows than any default allows; the run makes exactly the three default
+    searches (best match 1 page, most recent 5, the over-cap refresh 1 with
+    ``proposals_min`` 51 and no maximum), holds 70 rows, reads one detail per
+    eligible posting, paces every ``find_jobs`` start, calls nothing but the
+    allowed pairs, creates one opportunity per eligible posting and no party, and
+    reports the nine counts. A second identical run adds nothing and still
+    advances the completed check."""
+    c = connected_collector(intake, served)
+    mcp.clock = clock
+    mcp.feeds = {
+        "best_match": [rows(100, 10), rows(110, 10), rows(120, 10)],
+        "most_recent": [rows(200 + 10 * n, 10) for n in range(7)],
+        "search": [rows(900, 10, tier="50+"), rows(910, 10, tier="50+")],
+    }
+    parties = party_count(intake)
+    opportunities_before = intake.count(p.opportunity)
+    claimed_at = clock.now()
+    collected(c, clock)
+    quietly_succeeded(c)
+
+    assert set(mcp.counts) <= ALLOWED_CALLS
+    assert not set(mcp.names()) & {*WRITE_TOOLS, "tools/list"}
+    made = searches(mcp)
+    assert [(a, p.get("mode")) for a, p in made] == [
+        ("smart_search", "best_match"),
+        *[("smart_search", "most_recent")] * 5,
+        ("search", None),
+    ]
+    assert [p.get("cursor") for _, p in made] == [
+        None,
+        None,
+        *[f"most_recent-{n}" for n in range(1, 5)],
+        None,
+    ]
+    refresh = made[-1][1]
+    assert refresh["proposals_min"] == 51 and "proposals_max" not in refresh
+    eligible = [str(n) for n in [*range(100, 110), *range(200, 250)]]
+    assert sorted(gets(mcp)) == sorted(eligible)
+    assert_paced(mcp)
+    assert len(refresh_requests(served)) == 1
+
+    assert counts(c) == {
+        "fetched": 70,
+        "imported": 60,
+        "skipped_dup": 0,
+        "refreshed": 0,
+        "filtered": 10,
+        "skipped_untracked": 10,
+        "errors": 0,
+        "detail_reads": 60,
+        "pages": 7,
+    }
+    assert intake.count(p.opportunity) - opportunities_before == 60
+    assert party_count(intake) == parties
+    assert last_error(c) is None
+    first = report(c)
+    assert first["last_completed_at"] == clock.now()
+    assert first["next_run_not_before"] == claimed_at + timedelta(minutes=60)
+    assert first["authorization_state"] == "connected"
+    assert first["organization_id"] == ORGANIZATION
+    assert [choice["organization_id"] for choice in first["account_choices"]] == [
+        ORGANIZATION
+    ]
+    assert FEED_SNIPPET not in json.dumps(bodies(c))
+
+    receipts = intake.count(t.delivery_receipt)
+    observations = intake.count(t.observation)
+    collected(c, clock, hours=2)
+    assert counts(c) == {
+        "fetched": 70,
+        "imported": 0,
+        "skipped_dup": 60,
+        "refreshed": 0,
+        "filtered": 10,
+        "skipped_untracked": 10,
+        "errors": 0,
+        "detail_reads": 60,
+        "pages": 7,
+    }
+    assert intake.count(t.delivery_receipt) == receipts
+    assert intake.count(t.observation) == observations
+    assert report(c)["last_completed_at"] == clock.now() > first["last_completed_at"]
+    assert intake.count(p.opportunity) - opportunities_before == 60
+    quietly_succeeded(c, runs=2)
+
+
+def test_the_report_is_for_the_owner_alone_and_carries_no_secret_reference(
+    intake: Intake,
+    root: Path,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 51: a member is refused the read, and nothing a completed run reports
+    carries a secret reference or a secret."""
+    c = connected_collector(intake, served)
+    mcp.feeds = {"best_match": [rows(130, 2)]}
+    collected(c, clock)
+    assert report(c)["imported"] == 2
+    refused = health_read(intake, member_context(intake), c.connection_id)
+    assert not refused.ok
+    rendered = repr(report(c))
+    for marker in markers(root, c):
+        assert marker not in rendered
+
+
+def test_one_posting_seen_in_two_searches_is_read_and_delivered_once(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """I24, FR 39 end to end: the newer sighting's count wins, one ``get`` per
+    unique id, one delivery per posting per run."""
+    c = connected_collector(intake, served)
+    mcp.feeds = {
+        "best_match": [[feed_row(401), feed_row(402)]],
+        "most_recent": [[feed_row(401, proposals=7)]],
+    }
+    collected(c, clock)
+    assert sorted(gets(mcp)) == ["401", "402"]
+    assert len(event_ids(intake, "~02401")) == 1
+    assert competition(intake, "~02401")[0] == "7"
+    assert counts(c)["imported"] == 2 and counts(c)["fetched"] == 3
+
+
+def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 34, AC 37, AC 40, AC 46, I17: the first run creates an opportunity only
+    for the eligible posting whose detail read succeeded (not the applied, the
+    over-cap or the failed one). In the second, the tracked posting's detail
+    fails: its count still refreshes, its other fields and the stored description
+    stay, and nothing carries a description; an untracked posting whose detail
+    carried none creates nothing. Both runs complete as ``collection_partial``."""
+    c = connected_collector(intake, served)
+    mcp.feeds = {
+        "best_match": [
+            [
+                feed_row(301),
+                feed_row(302, applied=True),
+                feed_row(303, proposals=60),
+                feed_row(304),
+            ]
+        ]
+    }
+    mcp.details = {"304": answer(503)}
+    parties = party_count(intake)
+    collected(c, clock)
+    assert gets(mcp) == ["301", "304"]
+    assert counts(c) == {
+        "fetched": 4,
+        "imported": 1,
+        "skipped_dup": 0,
+        "refreshed": 0,
+        "filtered": 2,
+        "skipped_untracked": 3,
+        "errors": 1,
+        "detail_reads": 2,
+        "pages": 3,
+    }
+    assert last_error(c) == "collection_partial"
+    for posting_id in ("~02302", "~02303", "~02304"):
+        assert opportunities(intake, posting_id) == []
+    before = states(intake, "~02301")
+    assert competition(intake, "~02301")[0] == "10"
+    (created,) = bodies(c)
+    assert created["description"] == FEED_DESCRIPTION
+
+    mcp.feeds = {"best_match": [[feed_row(301, tier="10 to 15"), feed_row(305)]]}
+    mcp.details = {
+        "301": answer(503),
+        "305": tool_result({"status": "ok", "data": {}}),
+    }
+    collected(c, clock, hours=2)
+    assert counts(c) == {
+        "fetched": 2,
+        "imported": 0,
+        "skipped_dup": 0,
+        "refreshed": 1,
+        "filtered": 0,
+        "skipped_untracked": 1,
+        "errors": 2,
+        "detail_reads": 2,
+        "pages": 3,
+    }
+    assert last_error(c) == "collection_partial"
+    assert len(opportunities(intake, "~02301")) == 1
+    assert opportunities(intake, "~02305") == []
+    assert competition(intake, "~02301")[0] == "15"
+    after = states(intake, "~02301")
+    for target in set(before) | set(after):
+        if target not in COMPETITION_GROUP:
+            assert after.get(target) == before.get(target), target
+    refreshed_body = bodies(c)[-1]
+    assert refreshed_body["posting_id"] == "~02301"
+    assert "description" not in refreshed_body
+    assert FEED_SNIPPET not in json.dumps(bodies(c))
+    assert party_count(intake) == parties
+    stored_after = stored(c.owner)
+    assert stored_after.consecutive_failures == 0 and stored_after.not_before is None
+    quietly_succeeded(c, runs=2)
+
+
+def test_one_refused_delivery_of_three_costs_that_row_with_no_retry(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I25, FR 40 end to end, AC 59 for acceptance: an oversized posting is
+    refused by intake; the other two are delivered and committed with the run,
+    which reports one error and ``collection_partial``; each acceptance is
+    attempted exactly once."""
+    c = connected_collector(intake, served)
+    mcp.feeds = {
+        "best_match": [
+            [
+                feed_row(501),
+                feed_row(502, title="Example build " + "x" * 3000),
+                feed_row(503),
+            ]
+        ]
+    }
+    set_payload_limit(c, 2048)
+    attempts: list[str] = []
+    real = delivery.call_in_transaction
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        attempts.append(args[3]["source_event_id"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(delivery, "call_in_transaction", counting)
+    collected(c, clock)
+    assert len(attempts) == len(set(attempts)) == 3
+    assert counts(c)["imported"] == 2 and counts(c)["errors"] == 1
+    assert last_error(c) == "collection_partial"
+    assert event_ids(intake, "~02502") == []
+    assert len(opportunities(intake, "~02501")) == 1
+    assert len(opportunities(intake, "~02503")) == 1
+    quietly_succeeded(c)
+
+
+SEARCH_FAILURES: dict[str, Callable[[FakeClock], Responder]] = {
+    "http-429": lambda clock: answer(429),
+    "http-503": lambda clock: answer(503),
+    "timeout": lambda clock: slow(clock, 2.0),
+    "other-tool-error": lambda clock: tool_result(
+        {"error_code": "OTHER_ERROR"}, is_error=True
+    ),
+    "transport": lambda clock: raising(httpx.ConnectError("refused")),
+}
+
+
+@pytest.mark.parametrize("failure", SEARCH_FAILURES.values(), ids=SEARCH_FAILURES)
+def test_a_failed_search_is_not_retried_and_a_later_success_makes_it_partial(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    failure: Callable[[FakeClock], Responder],
+) -> None:
+    """AC 59, FR 18, FR 33: one failed best-match call is attempted exactly once;
+    the other searches still run, the run completes ``collection_partial`` with
+    no backoff, and the refresh was attempted once."""
+    c = connected_collector(intake, served)
+    mcp.clock = clock
+    mcp.queued["find_jobs:smart_search"] = [failure(clock)]
+    mcp.feeds = {"most_recent": [rows(600, 2)]}
+    collected(c, clock)
+    assert [p.get("mode") for _, p in searches(mcp)] == [
+        "best_match",
+        "most_recent",
+        None,
+    ]
+    assert_paced(mcp)
+    assert len(refresh_requests(served)) == 1
+    assert last_error(c) == "collection_partial"
+    after = stored(c.owner)
+    assert after.consecutive_failures == 0 and after.not_before is None
+    assert counts(c)["imported"] == 2
+    quietly_succeeded(c)
+
+
+@pytest.mark.parametrize("repeats", [1, 2])
+def test_only_a_sensitive_rate_limit_is_retried_once_after_five_and_a_half_seconds(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    repeats: int,
+) -> None:
+    """AC 59, I15: one ``SENSITIVE_RATE_LIMIT_EXCEEDED`` is retried once, at
+    least 5.5 s later; a second fails that call, and the run goes on partial."""
+    c = connected_collector(intake, served)
+    mcp.clock = clock
+    mcp.queued["find_jobs:smart_search"] = [rate_limited_tool()] * repeats
+    mcp.feeds = {"best_match": [rows(700, 1)]}
+    collected(c, clock)
+    made = searches(mcp)
+    assert [p.get("mode") for _, p in made] == [
+        "best_match",
+        "best_match",
+        "most_recent",
+        None,
+    ]
+    first, retry = mcp.find_jobs_starts()[:2]
+    assert retry - first >= 5.5 - 1e-6
+    assert_paced(mcp)
+    assert len(refresh_requests(served)) == 1
+    if repeats == 1:
+        assert last_error(c) is None
+        assert counts(c)["imported"] == 1
+    else:
+        assert last_error(c) == "collection_partial"
+        assert counts(c)["imported"] == 0
+    quietly_succeeded(c)
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(503, "upstream_unavailable"), (429, "upstream_rate_limited")],
+)
+def test_a_run_whose_every_page_call_failed_backs_off_and_reports_nothing(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    status: int,
+    code: str,
+) -> None:
+    """FR 33: a failure with no page succeeded is an upstream failure with the
+    backoff; no detail read, no delivery and no report."""
+    c = connected_collector(intake, served)
+    for name in ("find_jobs:smart_search", "find_jobs:search"):
+        mcp.script[name] = answer(status)
+    collected(c, clock)
+    assert len(searches(mcp)) == 3 and gets(mcp) == []
+    assert last_error(c) == code
+    after = stored(c.owner)
+    assert after.consecutive_failures == 1 and after.not_before is not None
+    assert after.last_completed_at is None
+    assert intake.count(t.delivery_receipt) == 0
+    quietly_succeeded(c)
+
+
+# --- timing, lease and occupancy ---------------------------------------------------
+
+
+@dataclass
+class TimedLease(LeaseModel):
+    """The lease model, also recording each checkpoint's monotonic instant and the
+    lease it left: ``(force, at, lease_until)``."""
+
+    timed: list[tuple[Any, float, Any]] = field(default_factory=list)
+    """``(force, at, lease_until)`` per checkpoint, and ``("start", at, None)``
+    for each call :func:`starting` saw begin."""
+
+    def checkpoint(self, now: Any = None, *, force: bool = False) -> None:
+        super().checkpoint(now, force=force)
+        self.timed.append((force, self.clock.monotonic(), self.lease_until))
+
+
+def starting(token: TimedLease, responder: Responder) -> Responder:
+    """``responder``, noting its start in the token's log first."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        token.timed.append(("start", token.clock.monotonic(), None))
+        return responder(request)
+
+    return respond
+
+
+def slow_details(mcp: FakeMcpServer, clock: FakeClock) -> None:
+    """A feed of 40 eligible postings whose detail reads are slow: the first stalls
+    after 48 s until the 5 s read timeout; every later one trickles a chunk every
+    4 s for ever."""
+    mcp.feeds = {"most_recent": [rows(800 + 10 * n, 10) for n in range(4)]}
+    mcp.queued["find_jobs:get"] = [trickling(clock, interval=4.0, chunks=12)]
+    mcp.script["find_jobs:get"] = trickling(clock, interval=4.0, chunks=10_000)
+
+
+def test_every_call_starts_with_a_full_lease_and_the_deadline_cuts_the_run(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 35, I13: on a fake clock with slow detail reads, every ``find_jobs`` call
+    starts right after a forced extension (after any pacing wait) and ends inside
+    the lease that extension took, within 55 s (a stalled final read included);
+    the ordinary checkpoint follows at once; no call starts with under 5 s of the
+    420 s deadline left; the cut run completes ``collection_partial``."""
+    c = connected_collector(intake, served)
+    mcp.clock = clock
+    slow_details(mcp, clock)
+    token = TimedLease(clock)
+    for name in ("find_jobs:smart_search", "find_jobs:search", "find_jobs:get"):
+        mcp.script[name] = starting(token, mcp.script.get(name) or mcp.default(name))
+    queued = mcp.queued["find_jobs:get"]
+    mcp.queued["find_jobs:get"] = [starting(token, r) for r in queued]
+    started = clock.monotonic()
+    invoke(c, token)
+    starts = mcp.find_jobs_starts()
+    assert len(gets(mcp)) >= 5
+    deadline = started + 420.0
+    # In order: each call's start sits right after the forced checkpoint that
+    # preceded it, and the ordinary checkpoint follows it at once.
+    wall_offset = clock.wall_at - timedelta(seconds=clock.monotonic())
+    for index, entry in enumerate(token.timed):
+        if entry[0] != "start":
+            continue
+        (forced, at, lease_until), (ordinary, after_at, _) = (
+            token.timed[index - 1],
+            token.timed[index + 1],
+        )
+        assert forced is True and ordinary is False
+        assert at == entry[1]
+        assert after_at - at <= 55.0
+        assert wall_offset + timedelta(seconds=after_at) <= lease_until
+        assert deadline - at >= 5.0
+    assert [e[1] for e in token.timed if e[0] == "start"] == starts
+    assert (
+        max(after - before for before, after in zip(starts, starts[1:], strict=False))
+        <= 56.0
+    )
+    assert clock.monotonic() - started <= 430.0
+    assert last_error(c) == "collection_partial"
+    after = stored(c.owner)
+    assert after.last_completed_at is not None
+    assert after.consecutive_failures == 0 and after.not_before is None
+
+
+def test_a_full_length_run_stays_inside_the_heartbeat_and_is_not_rerun_at_once(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 77, AC 35: through the real worker, a run cut by the deadline lasts at
+    most about 430 s of handler time, inside the 600 s heartbeat bound, completes
+    once, and the next visit a minute later makes no upstream call."""
+    c = connected_collector(intake, served)
+    slow_details(mcp, clock)
+    started = clock.monotonic()
+    visit(intake, clock)
+    elapsed = clock.monotonic() - started
+    assert 400.0 <= elapsed <= 430.0 < MAX_AGE_SECONDS
+    quietly_succeeded(c)
+    assert last_error(c) == "collection_partial"
+    requests = len(mcp.requests), len(served.requests)
+    clock.advance(60)
+    visit(intake, clock)
+    assert (len(mcp.requests), len(served.requests)) == requests
+
+
+# --- transaction shape -------------------------------------------------------------
+
+
+def test_no_leads_lock_or_write_is_held_during_a_slow_search(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 60, I14: while a search call is held open the work transaction is idle,
+    has written nothing and locks nothing in ``leads``; select_account and revoke
+    complete during the call, and the run then writes nothing."""
+    c = connected_collector(intake, served, choices=CHOICES)
+    mcp.feeds = {"best_match": [rows(150, 2)]}
+    hold = Hold()
+    mcp.holds["find_jobs:smart_search"] = hold
+    worker = threading.Thread(target=lambda: visit(intake, clock))
+    worker.start()
+    try:
+        assert hold.entered.wait(timeout=30), "the search never arrived"
+        shape = work_shape(c)
+        selected = run(intake, c.owner, SELECT, organization_id=ORGANIZATION)
+        assert selected.ok, selected
+        revoke(c)
+    finally:
+        hold.release.set()
+        worker.join(timeout=120)
+    shape.assert_inert()
+    quietly_succeeded(c)
+    after = stored(c.owner)
+    assert after.authorization_state == "revoked"
+    assert after.last_completed_at is None and after.fetched == 0
+    assert intake.count(t.delivery_receipt) == 0
+
+
+def test_no_statement_reaches_the_work_transaction_before_the_deliveries(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 60, I14: an SQL listener on the work connection sees its first statement
+    only after the run's last upstream request, and that statement is the
+    lifecycle lock."""
+    c = connected_collector(intake, served)
+    mcp.feeds = {"best_match": [rows(160, 2)]}
+    seen: list[tuple[int, str]] = []
+
+    def capture(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        seen.append((len(mcp.requests), statement))
+
+    with open_unit_of_work(c.owner) as uow:
+        event.listen(uow.connection, "before_cursor_execute", capture)
+        try:
+            collect_job(
+                HandlerUnitOfWork(uow, consumers=intake.consumers),
+                CollectPayload(workspace_id=intake.workspace),
+                NoToken(),
+            )
+        finally:
+            event.remove(uow.connection, "before_cursor_execute", capture)
+        uow.commit()
+    assert gets(mcp) == ["160", "161"]
+    assert seen, "the deliveries never reached the work transaction"
+    assert {requests for requests, _ in seen} == {len(mcp.requests)}
+    assert "pg_advisory_xact_lock" in seen[0][1]
+    assert counts(c)["imported"] == 2
+
+
+# --- the capability between pages, and resuming without a new consent -----------------
+
+
+def test_a_capability_turned_off_mid_run_stops_it_and_turning_it_on_resumes(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """Edge case 12, FR 14: the capability is turned off while the second most
+    recent page is answered; the next page is never requested and the run writes
+    nothing more (no detail read, delivery or report). Off, ticks enqueue nothing;
+    on again, the next due tick collects with no new consent."""
+    c = connected_collector(intake, served)
+    mcp.feeds = {"most_recent": [rows(170 + 10 * n, 10) for n in range(4)]}
+    default = mcp.default("find_jobs:smart_search")
+
+    def turning_off(request: httpx.Request) -> httpx.Response:
+        if arguments_of(request)["params"].get("cursor") == "most_recent-1":
+            capability(intake, c.owner, False)
+        return default(request)
+
+    mcp.script["find_jobs:smart_search"] = turning_off
+    claimed_at = clock.now()
+    run_at(c, clock)
+    assert [p.get("cursor") for _, p in searches(mcp)] == [None, None, "most_recent-1"]
+    assert gets(mcp) == []
+    after = stored(c.owner)
+    assert after.run_claimed_at == claimed_at
+    assert after.last_completed_at is None and after.fetched == 0
+    assert last_error(c) is None
+    assert intake.count(t.delivery_receipt) == 0
+    quietly_succeeded(c)
+
+    for hours in (2, 4):
+        clock.wall_at = claimed_at + timedelta(hours=hours)
+        tick(intake, c.owner, clock)
+    assert len(collect_jobs(c.owner)) == 1
+    del mcp.script["find_jobs:smart_search"]
+    capability(intake, c.owner, True)
+    collected(c, clock, hours=2)
+    quietly_succeeded(c, runs=2)
+    assert counts(c)["imported"] == 40
+    assert stored(c.owner).token_ref == c.token_ref
+    assert served.registrations == []
+    assert all(grant_type(r) == "refresh_token" for r in served.requests)
+
+
+def test_off_then_on_after_a_completed_run_collects_with_the_same_reference(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """AC 28 run half: after a completed run the capability is off for several
+    ticks (zero jobs, records still readable), then on; the next due tick runs to
+    completion with the same token reference, calls ``find_jobs`` and delivers,
+    with zero registration or authorization-endpoint requests."""
+    c = connected_collector(intake, served)
+    mcp.feeds = {"best_match": [rows(180, 1)]}
+    collected(c, clock)
+    assert len(opportunities(intake, "~02180")) == 1
+    capability(intake, c.owner, False)
+    for _ in range(3):
+        clock.advance(2 * HOUR)
+        tick(intake, c.owner, clock)
+    assert len(collect_jobs(c.owner)) == 1
+    assert len(opportunities(intake, "~02180")) == 1
+    capability(intake, c.owner, True)
+    mcp.feeds = {"best_match": [rows(180, 2)]}
+    searched = len(searches(mcp))
+    collected(c, clock, hours=2)
+    quietly_succeeded(c, runs=2)
+    assert len(searches(mcp)) == searched + 3
+    assert len(opportunities(intake, "~02181")) == 1
+    assert stored(c.owner).token_ref == c.token_ref
+    assert len(refresh_requests(served)) == 2
+    assert served.registrations == []
+    assert all(grant_type(r) == "refresh_token" for r in served.requests)
