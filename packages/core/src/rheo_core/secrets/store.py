@@ -1,5 +1,6 @@
-"""``SecretStore``: scoped resolution, immutable file creation, ``scope_for``, and the
-startup check of every ``secret://env/*`` reference the deployment settings name.
+"""``SecretStore``: scoped resolution, immutable file creation and discard,
+``scope_for``, and the startup check of every ``secret://env/*`` reference the
+deployment settings name.
 
 Scope constants belong to their components, not here: the storage component (C3)
 calls ``scope_for("storage", "secret://file/cluster/", "secret://env/RHEO_CLUSTER_DSN")``
@@ -57,6 +58,26 @@ class SecretStore:
         if ref.backend is not SecretBackend.FILE:
             raise SecretRefusal("secret_read_only", "environment secrets are read-only")
         self._files.create(ref.id, value.expose())
+
+    def discard(self, ref: SecretRef, scope: SecretScope) -> None:
+        """Remove one file value within an explicitly writable scope.
+
+        The guards run in the order ``create`` uses, before any filesystem access. A
+        value that is already absent is a successful no-op, so a retried discard is
+        safe. The owning connection decides when a superseded reference is no longer
+        needed; this removes exactly the one reference it is given.
+        """
+        if not isinstance(ref, SecretRef):
+            raise TypeError("discard() takes a SecretRef")
+        if not isinstance(scope, SecretScope):
+            raise TypeError("discard() requires a SecretScope")
+        if not scope.writable or not scope.permits(ref):
+            raise SecretRefusal(
+                SECRET_SCOPE_DENIED, "scope may not discard this secret"
+            )
+        if ref.backend is not SecretBackend.FILE:
+            raise SecretRefusal("secret_read_only", "environment secrets are read-only")
+        self._files.discard(ref.id)
 
     def resolve(self, ref: SecretRef, scope: SecretScope) -> SecretValue:
         """The value behind ``ref``, if ``scope`` permits it.

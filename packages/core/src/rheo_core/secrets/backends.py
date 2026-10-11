@@ -19,7 +19,7 @@ from rheo_core.secrets.refs import (
     SecretRefusal,
     is_slug_path,
 )
-from rheo_core.secrets.write import create_file_secret
+from rheo_core.secrets.write import create_file_secret, discard_file_secret
 
 # Any bit outside owner read/write: group, other, or owner-execute.
 _BEYOND_OWNER_RW = 0o177
@@ -41,6 +41,10 @@ class FileBackend:
     def create(self, ref_id: str, raw: bytes) -> None:
         """Create once, privately and atomically; never overwrite a reference."""
         create_file_secret(self.root, ref_id, raw)
+
+    def discard(self, ref_id: str) -> None:
+        """Remove one regular file without following symlinks; missing is a no-op."""
+        discard_file_secret(self.root, ref_id)
 
     def read(self, ref_id: str) -> bytes:
         if not is_slug_path(ref_id):

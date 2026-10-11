@@ -24,7 +24,7 @@ Self-tests itself on every run before scanning the real tree.
 `fixtures/` path segment has no entry in `tests/fixtures/provenance.json`, when an
 entry names a file that no longer exists or an `origin` other than `"synthetic"`, or
 when fixture/test/web-source content looks like a non-reserved email domain, a
-non-documentation IPv4 literal, a phone number, or an hourly rate. An optional local
+public (globally routable) IPv4 literal, a phone number, or an hourly rate. An optional local
 `RHEO_PRIVATE_DENYLIST` environment variable can point at a file outside the
 repository whose lines are also checked for, case-insensitively. Self-tests itself on
 every run before scanning the real tree.

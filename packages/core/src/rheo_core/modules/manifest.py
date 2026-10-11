@@ -72,7 +72,7 @@ from rheo_core.redaction.render import RecordLoader as _RecordLoader
 from rheo_core.redaction.tiers import SensitivityTier as SensitivityTier
 from rheo_core.redaction.tiers import restricted_fields
 from rheo_core.refs.resolver import RecordResolver
-from rheo_core.settings.schema import KeySpec
+from rheo_core.settings.schema import KeySpec, Scope, ValueType
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.work.kinds import JobHandler
 
@@ -764,7 +764,20 @@ class JobKind(BaseModel):
 
 
 class Schedule(BaseModel):
-    """A per-workspace schedule row created when the module is enabled."""
+    """A per-workspace schedule row created when the module is enabled.
+
+    ``interval_seconds`` and ``gate_setting`` are both optional and both inert when
+    left out, which is every schedule declared before they existed: the ticker
+    (``rheo_core.work.schedules.run_due_schedules``) then advances the row by one day
+    and enqueues on every due tick, exactly as it always has.
+
+    - ``interval_seconds`` replaces that day with this many seconds.
+    - ``gate_setting`` names a ``bool`` key in this module's own
+      ``configuration_schema``. The gate is open only when the workspace itself set
+      that key to true; a deployment or package default never opens it. While it is
+      closed a due tick enqueues nothing and still moves ``next_run_at`` forward by
+      the interval, so turning the key on again resumes on the next due tick.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -772,6 +785,8 @@ class Schedule(BaseModel):
     job_kind: str
     cron: str
     enabled_by_default: bool
+    interval_seconds: int | None = None
+    gate_setting: str | None = None
 
 
 class DeletionParticipant(BaseModel):
@@ -903,6 +918,72 @@ def check_name_prefixes(
             )
 
 
+def check_schedules(
+    *,
+    module_id: str,
+    schedules: Sequence[Schedule],
+    configuration_schema: Sequence[KeySpec],
+) -> None:
+    """The two optional schedule fields' rules. Raises ``ValueError``, fixed text.
+
+    - ``interval_seconds``, when set, is positive: a zero or negative interval would
+      make the row due again on the very tick that advanced it.
+    - ``gate_setting``, when set, sits under ``<module_id>.`` and names a ``bool``,
+      workspace-scope ``KeySpec`` in this manifest's own ``configuration_schema``. A
+      module cannot gate its schedule on another module's key, a key the module does
+      not declare would never be registered for the ticker to read, and a deployment-
+      or member-scope key has no workspace row, so the gate would never open.
+    """
+    keys = {spec.key: spec for spec in configuration_schema}
+    for schedule in schedules:
+        if schedule.interval_seconds is not None and schedule.interval_seconds <= 0:
+            raise ValueError("schedules: interval_seconds must be positive")
+        gate = schedule.gate_setting
+        if gate is None:
+            continue
+        if not gate.startswith(f"{module_id}."):
+            raise ValueError(
+                "schedules: gate_setting is outside the module's own settings namespace"
+            )
+        spec = keys.get(gate)
+        if spec is None or spec.type is not ValueType.BOOL:
+            raise ValueError(
+                "schedules: gate_setting must name a bool key declared in the "
+                "module's own configuration_schema"
+            )
+        if spec.scope is not Scope.WORKSPACE:
+            raise ValueError("schedules: gate_setting must name a workspace-scope key")
+
+
+_OWNER_ONLY: Final = frozenset({Role.OWNER})
+
+
+def check_authorization_completion(
+    name: str | None, *, declarations: Mapping[str, OperationDeclaration]
+) -> None:
+    """``authorization_completion``, when set, names an owner-only operation of this
+    module. Raises ``ValueError`` with fixed text.
+
+    ``declarations`` is this manifest's own operations by name, so naming another
+    module's operation fails the same way as naming one that does not exist. The
+    roles must be exactly the owner: the callback that dispatches it runs on the
+    owner's browser session, and a member able to complete an owner's authorization
+    would bind a credential the owner never approved.
+    """
+    if name is None:
+        return
+    declaration = declarations.get(name)
+    if declaration is None:
+        raise ValueError(
+            "authorization_completion must name one of the module's own operations"
+        )
+    if declaration.roles != _OWNER_ONLY:
+        raise ValueError(
+            "authorization_completion must name an operation declared for the "
+            "owner alone"
+        )
+
+
 def _audit_sink(value: object) -> object:
     """The duck check ``install_sink`` applies, as a pydantic validator.
 
@@ -957,6 +1038,11 @@ class ModuleManifest(BaseModel):
     contract_tests: str
     sensitivity: Sensitivity
     audit_sink: Annotated[AuditSink, PlainValidator(_audit_sink)] | None = None
+    authorization_completion: str | None = None
+    """The operation an external authorization callback dispatches, when the module
+    has one: one of this module's own operations, declared for the owner alone (see
+    :func:`check_authorization_completion`). ``None`` for every module without a
+    connector authorization flow."""
 
     @model_validator(mode="after")
     def _check_invariants(self) -> Self:
@@ -985,6 +1071,10 @@ class ModuleManifest(BaseModel):
         operations or record types. No registration re-checks them, because nothing
         registers a web contribution: ``rheo web compose`` reads it straight off the
         manifest.
+
+        **The schedule interval and gate rules and the authorization-completion rule**
+        (see :func:`check_schedules` and :func:`check_authorization_completion`) are
+        here for the same reason: each reads this manifest's own keys or operations.
         """
         module_id = self.module_id
         check_module_id(module_id)
@@ -1045,4 +1135,12 @@ class ModuleManifest(BaseModel):
                 },
                 record_types=frozenset(record.name for record in self.record_types),
             )
+        check_schedules(
+            module_id=module_id,
+            schedules=self.schedules,
+            configuration_schema=self.configuration_schema,
+        )
+        check_authorization_completion(
+            self.authorization_completion, declarations=declarations
+        )
         return self
