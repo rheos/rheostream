@@ -1,5 +1,5 @@
-"""Core's public OAuth client for a remote MCP resource: discovery and the
-authorization request.
+"""Core's public OAuth client for a remote MCP resource: discovery, the
+authorization request, client registration and the token operations.
 
 :func:`discover` reads the authorization server's configuration from the operator's
 resource URL; :func:`new_authorization` builds the PKCE pair, the state and the URL
@@ -65,6 +65,36 @@ secret (RFC 6749 s2.3.1) with no secret in the body; ``client_secret_post`` puts
 in the body. A secret whose stored expiry has passed, or that cannot be read, is
 never sent: either is the terminal ``client_rejected``.
 
+**Tokens.** :func:`exchange_code` and :func:`refresh` each send one form ``POST``
+to the pinned token endpoint, authenticated per the stored client, with a 15 s
+budget and a 16 KiB cap, and carry the pinned ``resource`` (RFC 8707); a refresh
+sends no ``scope``. Only a 200 JSON object with a ``bearer`` ``token_type`` (any
+case) and an ``access_token`` of visible ASCII is accepted. The exchange also needs
+a ``refresh_token`` (else ``no_refresh_token``, nothing written). A refresh token is
+written to a fresh leaf before its reference is returned; a refresh returns a new
+reference only when the token differs from the current one (constant-time compare),
+and a failed write is ``secret_write_failed`` with the current reference untouched.
+Retiring a superseded file is the caller's job, after its switch commits. A refresh
+whose current reference cannot be read is the terminal ``secret_unavailable`` with
+nothing sent. Mapping: a 400 or 401 ``invalid_client`` is the terminal
+``client_rejected``; ``invalid_grant`` and ``unauthorized_client`` are terminal
+under their own codes; 429 is ``rate_limited`` with a seconds-form ``Retry-After``
+as ``retry_after``; a timeout or transport error is ``unavailable``; a refused
+endpoint (redirect, non-public, not ``https``) is ``endpoint_misconfigured``; any
+other answer is ``exchange_failed`` or ``token_refresh_failed``. Only the terminal
+ones set ``terminal``. Nothing here registers a client or retries.
+
+**Revocation.** :func:`revoke` sends the refresh token (``token_type_hint``
+``refresh_token``, no ``resource``) to the pinned revocation endpoint, authenticated
+per the stored client, and reports a :class:`Revocation`: 200 is ``revoked``, no
+pinned endpoint is ``revocation_unavailable`` with nothing sent, anything else is
+``revocation_failed``, with ``client_rejected`` set for an ``invalid_client`` answer
+or a client secret that is expired or unreadable (then nothing is sent). It never
+raises; an unexpected exception is logged by its type name only.
+
+**Access token.** :class:`AccessToken` holds the access token for one run and gives
+its bytes only through :meth:`AccessToken.authorization_header`.
+
 **Failures.** :class:`OAuthFailure` carries fixed codes only; it is raised after the
 ``except`` block that recorded the code has ended, so ``__cause__`` and
 ``__context__`` are both ``None`` (the egress module's rule).
@@ -72,6 +102,7 @@ never sent: either is the terminal ``client_rejected``.
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -80,11 +111,13 @@ import time
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Final, Literal
+from typing import Any, Final, Literal, NoReturn, SupportsIndex, final
 from urllib.parse import quote, quote_plus, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 from rheo_core.connectors import credentials, egress
 from rheo_core.connectors.egress import Clock, EgressResponse, Resolver
@@ -98,6 +131,7 @@ from rheo_core.secrets import (
     SecretScope,
     SecretStore,
     SecretValue,
+    SecretValueNotSerialisable,
 )
 from rheo_core.settings import resolve
 from rheo_core.settings.schema import SettingsError
@@ -878,3 +912,424 @@ def apply_client_authentication(
     else:
         form["client_id"] = client.client_id
         form["client_secret"] = secret
+
+
+# --- the access token ---------------------------------------------------------------
+
+ACCESS_TOKEN_REDACTED: Final = "AccessToken(<redacted>)"
+
+
+def _refuse_serialising(value: object) -> NoReturn:
+    raise SecretValueNotSerialisable("AccessToken cannot be serialised")
+
+
+@final
+class AccessToken:
+    """An access token held in memory for one run.
+
+    ``repr``, ``str`` and every ``format`` spec are ``AccessToken(<redacted>)``; it
+    cannot be hashed, pickled, copied, subclassed or serialised (the
+    :class:`~rheo_core.secrets.SecretValue` rules), and its bytes leave only through
+    :meth:`authorization_header`, which the MCP session alone calls.
+    """
+
+    __slots__ = ("__value",)
+
+    def __init__(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise TypeError("AccessToken wraps a string")
+        self.__value: str = value
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        raise TypeError("AccessToken cannot be subclassed")
+
+    def authorization_header(self) -> str:
+        """The ``Authorization`` header value for the configured resource URL."""
+        return f"Bearer {self.__value}"
+
+    def __repr__(self) -> str:
+        return ACCESS_TOKEN_REDACTED
+
+    def __str__(self) -> str:
+        return ACCESS_TOKEN_REDACTED
+
+    def __format__(self, format_spec: str) -> str:
+        return ACCESS_TOKEN_REDACTED
+
+    def __hash__(self) -> int:
+        raise TypeError("AccessToken is unhashable")
+
+    def __reduce__(self) -> NoReturn:
+        _refuse_serialising(self)
+
+    def __reduce_ex__(self, protocol: SupportsIndex, /) -> NoReturn:
+        _refuse_serialising(self)
+
+    def __getstate__(self) -> NoReturn:
+        _refuse_serialising(self)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        return core_schema.is_instance_schema(
+            cls,
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                _refuse_serialising, when_used="always"
+            ),
+        )
+
+
+# --- token requests -------------------------------------------------------------------
+
+TOKEN_CAP_BYTES: Final = 16 * 1024
+REVOCATION_UNEXPECTED: Final = "revocation_unexpected_error %s"
+
+RevocationOutcome = Literal["revoked", "revocation_failed", "revocation_unavailable"]
+
+_ACCESS_TOKEN: Final = re.compile(r"[\x21-\x7e]+")
+_RETRY_AFTER: Final = re.compile(r"[0-9]+")
+_RETRY_AFTER_MAX: Final = 999_999_999
+_TERMINAL_ERRORS: Final[dict[str, OAuthCode]] = {
+    "invalid_client": "client_rejected",
+    "invalid_grant": "invalid_grant",
+    "unauthorized_client": "unauthorized_client",
+}
+_TOKEN_FORM: Final = {"Accept": "application/json"}
+
+
+@dataclass(frozen=True, slots=True)
+class Revocation:
+    """What :func:`revoke` reports; ``client_rejected`` tells the caller to clear
+    the stored client."""
+
+    outcome: RevocationOutcome
+    client_rejected: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _Tokens:
+    access: AccessToken
+    refresh: bytes | None = field(repr=False)
+
+
+def _json_object(body: bytes) -> dict[str, object] | None:
+    try:
+        document = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _error_code(response: EgressResponse) -> str | None:
+    """The RFC 6749 s5.2 ``error`` of a 400 or 401 JSON error response."""
+    if response.status not in (400, 401):
+        return None
+    document = _json_object(response.body)
+    error = None if document is None else document.get("error")
+    return error if isinstance(error, str) else None
+
+
+def _retry_after(headers: httpx.Headers) -> int | None:
+    """A seconds-form ``Retry-After``; ``None`` for a date or anything else."""
+    try:
+        value = headers.get("retry-after")
+    except (ValueError, LookupError):
+        return None
+    if value is None or not _RETRY_AFTER.fullmatch(value):
+        return None
+    return int(value) if len(value) <= 9 else _RETRY_AFTER_MAX
+
+
+def _token_error(response: EgressResponse, failed: OAuthCode) -> OAuthFailure:
+    """The failure for a token endpoint answer other than 200."""
+    if response.status == 429:
+        return OAuthFailure("rate_limited", retry_after=_retry_after(response.headers))
+    error = _error_code(response)
+    if error is not None and error in _TERMINAL_ERRORS:
+        return OAuthFailure(_TERMINAL_ERRORS[error], terminal=True)
+    return OAuthFailure(failed)
+
+
+def _judge_tokens(
+    response: EgressResponse, failed: OAuthCode, *, require_refresh: bool
+) -> _Tokens | OAuthFailure:
+    """The accepted tokens, or the failure; never raises."""
+    if response.status != 200:
+        return _token_error(response, failed)
+    document = _json_object(response.body)
+    if document is None:
+        return OAuthFailure(failed)
+    token_type = document.get("token_type")
+    access = document.get("access_token")
+    if (
+        not isinstance(token_type, str)
+        or token_type.lower() != "bearer"
+        or not isinstance(access, str)
+        or not _ACCESS_TOKEN.fullmatch(access)
+    ):
+        return OAuthFailure(failed)
+    refresh_token = _optional_secret(document, "refresh_token")
+    if isinstance(refresh_token, str):
+        return OAuthFailure(failed)
+    if require_refresh and refresh_token is None:
+        return OAuthFailure("no_refresh_token")
+    return _Tokens(access=AccessToken(access), refresh=refresh_token)
+
+
+def _egress_code(code: egress.EgressCode, failed: OAuthCode) -> OAuthCode:
+    if code == "endpoint_misconfigured":
+        return "endpoint_misconfigured"
+    if code == "too_large":
+        return failed
+    return "unavailable"
+
+
+def _post_form(
+    endpoint: str,
+    form: dict[str, str],
+    headers: dict[str, str],
+    *,
+    resolver: Resolver,
+    clock: Clock,
+    transport: httpx.BaseTransport | None,
+) -> EgressResponse | egress.EgressCode:
+    """One bounded form POST to a pinned endpoint; the response or the egress code."""
+    with egress.open_client(transport) as client:
+        try:
+            return egress.bounded_request(
+                client,
+                "POST",
+                endpoint,
+                budget=REQUEST_BUDGET_SECONDS,
+                cap=TOKEN_CAP_BYTES,
+                resolver=resolver,
+                clock=clock,
+                headers=headers,
+                data=form,
+            )
+        except egress.EgressFailure as failure:
+            return failure.code
+
+
+def _token_grant(
+    endpoint: object,
+    form: dict[str, str],
+    *,
+    client: ClientAuth,
+    now: datetime | None,
+    failed: OAuthCode,
+    require_refresh: bool,
+    resolver: Resolver,
+    clock: Clock,
+    transport: httpx.BaseTransport | None,
+) -> _Tokens:
+    """Authenticate ``form`` as ``client`` and post it to the token endpoint."""
+    if not isinstance(endpoint, str) or not isinstance(client, ClientAuth):
+        raise _misconfigured()
+    headers = dict(_TOKEN_FORM)
+    apply_client_authentication(
+        client, form, headers, now=now if now is not None else datetime.now(UTC)
+    )
+    response = _post_form(
+        endpoint, form, headers, resolver=resolver, clock=clock, transport=transport
+    )
+    if isinstance(response, str):
+        raise OAuthFailure(_egress_code(response, failed))
+    judged = _judge_tokens(response, failed, require_refresh=require_refresh)
+    if isinstance(judged, OAuthFailure):
+        raise judged
+    return judged
+
+
+def _read_refresh_token(ref: object, namespace: str) -> bytes | None:
+    """The refresh token behind ``ref`` in ``namespace``, or ``None``."""
+    if _reference_namespace(ref) != namespace or not isinstance(ref, str):
+        return None
+    value = credentials.store().resolve(
+        SecretRef.parse(ref), _scope(namespace, writable=False)
+    )
+    return value.expose()
+
+
+def _strings_or_refuse(*values: object) -> None:
+    if not all(isinstance(v, str) for v in values):
+        raise _misconfigured()
+
+
+def exchange_code(
+    token_endpoint: str,
+    *,
+    code: str,
+    redirect_uri: str,
+    code_verifier: str,
+    resource: str,
+    client: ClientAuth,
+    workspace_id: UUID,
+    connection_id: UUID,
+    resolver: Resolver = egress.default_resolver,
+    clock: Clock = time.monotonic,
+    transport: httpx.BaseTransport | None = None,
+    now: datetime | None = None,
+) -> tuple[str, AccessToken]:
+    """Exchange an authorization code at the pinned token endpoint (module
+    docstring); returns the new refresh token's reference and the access token."""
+    _connection_namespace(workspace_id, connection_id)
+    _strings_or_refuse(code, redirect_uri, code_verifier, resource)
+    tokens = _token_grant(
+        token_endpoint,
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+            "resource": resource,
+        },
+        client=client,
+        now=now,
+        failed="exchange_failed",
+        require_refresh=True,
+        resolver=resolver,
+        clock=clock,
+        transport=transport,
+    )
+    refs = _write_secrets((tokens.refresh,), workspace_id, connection_id)
+    if refs is None or refs[0] is None:
+        raise OAuthFailure("secret_write_failed")
+    return refs[0], tokens.access
+
+
+def refresh(
+    token_endpoint: str,
+    *,
+    refresh_ref: str,
+    resource: str,
+    client: ClientAuth,
+    workspace_id: UUID,
+    connection_id: UUID,
+    resolver: Resolver = egress.default_resolver,
+    clock: Clock = time.monotonic,
+    transport: httpx.BaseTransport | None = None,
+    now: datetime | None = None,
+) -> tuple[AccessToken, str | None]:
+    """Refresh at the pinned token endpoint (module docstring); returns the access
+    token and the rotated refresh token's reference, or ``None`` when it did not
+    rotate."""
+    namespace = _connection_namespace(workspace_id, connection_id)
+    _strings_or_refuse(resource)
+    current: bytes | None = None
+    current_text = ""
+    try:
+        current = _read_refresh_token(refresh_ref, namespace)
+        current_text = "" if current is None else current.decode("utf-8")
+    except Exception:  # a refusal's text names the path; the credential is gone
+        current = None
+    if current is None:
+        raise OAuthFailure("secret_unavailable", terminal=True)
+    tokens = _token_grant(
+        token_endpoint,
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": current_text,
+            "resource": resource,
+        },
+        client=client,
+        now=now,
+        failed="token_refresh_failed",
+        require_refresh=False,
+        resolver=resolver,
+        clock=clock,
+        transport=transport,
+    )
+    if tokens.refresh is None or hmac.compare_digest(tokens.refresh, current):
+        return tokens.access, None
+    refs = _write_secrets((tokens.refresh,), workspace_id, connection_id)
+    if refs is None or refs[0] is None:
+        raise OAuthFailure("secret_write_failed")
+    return tokens.access, refs[0]
+
+
+def _revoke(
+    endpoint: object,
+    refresh_ref: object,
+    client: ClientAuth,
+    workspace_id: UUID,
+    connection_id: UUID,
+    *,
+    now: datetime | None,
+    resolver: Resolver,
+    clock: Clock,
+    transport: httpx.BaseTransport | None,
+) -> Revocation:
+    if endpoint is None:
+        return Revocation("revocation_unavailable")
+    if (
+        not isinstance(endpoint, str)
+        or not isinstance(client, ClientAuth)
+        or not isinstance(workspace_id, UUID)
+        or not isinstance(connection_id, UUID)
+    ):
+        return Revocation("revocation_failed")
+    form: dict[str, str] = {}
+    headers = dict(_TOKEN_FORM)
+    rejected = False
+    try:
+        apply_client_authentication(
+            client, form, headers, now=now if now is not None else datetime.now(UTC)
+        )
+    except OAuthFailure:  # the expired or unreadable secret was never sent
+        rejected = True
+    if rejected:
+        return Revocation("revocation_failed", client_rejected=True)
+    token: str | None = None
+    try:
+        raw = _read_refresh_token(refresh_ref, _namespace(workspace_id, connection_id))
+        token = None if raw is None else raw.decode("utf-8")
+    except Exception:  # its text names the path; only the outcome leaves
+        token = None
+    if token is None:
+        return Revocation("revocation_failed")
+    form.update(token=token, token_type_hint="refresh_token")
+    response = _post_form(
+        endpoint, form, headers, resolver=resolver, clock=clock, transport=transport
+    )
+    if isinstance(response, str):
+        return Revocation("revocation_failed")
+    if response.status == 200:
+        return Revocation("revoked")
+    return Revocation(
+        "revocation_failed", client_rejected=_error_code(response) == "invalid_client"
+    )
+
+
+def revoke(
+    revocation_endpoint: str | None,
+    *,
+    refresh_ref: str,
+    client: ClientAuth,
+    workspace_id: UUID,
+    connection_id: UUID,
+    resolver: Resolver = egress.default_resolver,
+    clock: Clock = time.monotonic,
+    transport: httpx.BaseTransport | None = None,
+    now: datetime | None = None,
+) -> Revocation:
+    """Revoke one refresh token at the pinned revocation endpoint (RFC 7009,
+    module docstring). Never raises: its caller has already ended locally."""
+    unexpected: str | None = None
+    try:
+        return _revoke(
+            revocation_endpoint,
+            refresh_ref,
+            client,
+            workspace_id,
+            connection_id,
+            now=now,
+            resolver=resolver,
+            clock=clock,
+            transport=transport,
+        )
+    except Exception as error:  # anything at all ends as revocation_failed
+        unexpected = type(error).__name__
+    _log.warning(REVOCATION_UNEXPECTED, unexpected)
+    return Revocation("revocation_failed")
