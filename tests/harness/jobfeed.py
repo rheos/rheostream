@@ -7,11 +7,14 @@ module global is patched. The installed workspace reuses the Leads intake fixtur
 """
 
 import json
-from collections.abc import Iterator, Sequence
+import threading
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -24,6 +27,8 @@ from rheo_core.connectors.oauth import Discovered, RegisteredClient
 from rheo_core.operations import dispatch
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.refs import uuid7
+from rheo_core.settings import deployment as settings_deployment
+from rheo_core.settings import resolver as settings_resolver
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_leads.jobfeed import Dependencies, use_dependencies
 from rheo_leads.jobfeed.install import install_connection
@@ -151,18 +156,22 @@ def poll_context(i: Intake, connection_id: UUID) -> WorkspaceContext:
 
 
 def install_collector(
-    i: Intake, *, client: RegisteredClient | None = None
+    i: Intake,
+    *,
+    client: RegisteredClient | None = None,
+    endpoints: Discovered = ENDPOINTS,
+    connection_id: UUID | None = None,
 ) -> Collector:
     owner = owner_web(i)
     pipeline_id = jobsearch_pipeline(i, owner)
-    connection_id = uuid7()
+    connection_id = connection_id or uuid7()
     with open_unit_of_work(owner) as uow:
         install_connection(
             uow,
             owner,
             connection_id=connection_id,
             pipeline_id=pipeline_id,
-            endpoints=ENDPOINTS,
+            endpoints=endpoints,
             client=client or registered_client(),
         )
         uow.commit()
@@ -203,3 +212,242 @@ def deliver(
 def drain(i: Intake) -> None:
     """Run the intake consumer so accepted deliveries become observations."""
     i.visit()
+
+
+# --- a fake authorization server -----------------------------------------------------
+
+RESOURCE_URL = "https://mcp.example.com/mcp"
+ISSUER = "https://auth.example.com"
+CLIENT_NAME = "client-name-marker-3c9e7a51"
+ROUTING_HOST = "example.test"
+
+Responder = Callable[[httpx.Request], httpx.Response]
+
+
+@dataclass
+class Hold:
+    """Blocks one kind of request until released, telling the test it arrived."""
+
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+
+
+def answer(
+    status: int,
+    document: object = None,
+    *,
+    content: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> Responder:
+    """A fixed response: a JSON document, raw bytes, or an empty body."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if content is not None:
+            return httpx.Response(status, content=content, headers=headers)
+        if document is None:
+            return httpx.Response(status, headers=headers)
+        return httpx.Response(status, json=document, headers=headers)
+
+    return respond
+
+
+def issued(
+    client_id: str | None = None, *, status: int = 201, **extra: Any
+) -> Responder:
+    """A valid registration answer echoing the request's redirect URIs; ``extra``
+    adds members such as ``client_secret`` or ``token_endpoint_auth_method``."""
+    counter = iter(range(1, 1_000_000))
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent = json.loads(request.content)
+        document: dict[str, Any] = {
+            "client_id": client_id or f"issued-client-{next(counter):04d}",
+            "redirect_uris": sent["redirect_uris"],
+            "grant_types": ["authorization_code", "refresh_token"],
+        }
+        document.update(extra)
+        return httpx.Response(status, json=document)
+
+    return respond
+
+
+def redirected() -> Responder:
+    return answer(302, headers={"Location": f"{ISSUER}/elsewhere"})
+
+
+def oversized() -> Responder:
+    return answer(201, content=b'{"client_id":"' + b"x" * (17 * 1024) + b'"}')
+
+
+def malformed() -> Responder:
+    return answer(201, content=b"{not json")
+
+
+@dataclass
+class FakeAuthorizationServer:
+    """The probe, both metadata documents, a counting registration endpoint with
+    scriptable answers, the authorization endpoint, and counting, body-capturing
+    token and revocation endpoints, all behind one ``httpx.MockTransport``.
+
+    Every request is kept in ``requests``. ``holds`` blocks the ``"discovery"``
+    (protected-resource metadata) or ``"registration"`` request until released.
+    """
+
+    resource_url: str = RESOURCE_URL
+    issuer: str = ISSUER
+    registration_path: str | None = "/register"
+    revocation: bool = True
+    scope: str | None = "jobs:read"
+    registration: Responder = field(default_factory=issued)
+    token: Responder = field(
+        default_factory=lambda: answer(
+            200,
+            {
+                "token_type": "Bearer",
+                "access_token": "access-marker",
+                "refresh_token": "refresh-marker",
+            },
+        )
+    )
+    revoke: Responder = field(default_factory=lambda: answer(200))
+    holds: dict[str, Hold] = field(default_factory=dict)
+    requests: list[httpx.Request] = field(default_factory=list)
+    registrations: list[httpx.Request] = field(default_factory=list)
+    token_requests: list[httpx.Request] = field(default_factory=list)
+    revocation_requests: list[httpx.Request] = field(default_factory=list)
+
+    @property
+    def registration_endpoint(self) -> str | None:
+        # Independent of ``issuer``, so a test can change either one alone.
+        if self.registration_path is None:
+            return None
+        return f"{ISSUER}{self.registration_path}"
+
+    def discovered(self) -> Discovered:
+        """What discovery against this server pins."""
+        endpoint = self.registration_endpoint
+        assert endpoint is not None
+        return Discovered(
+            resource_url=self.resource_url,
+            issuer=self.issuer,
+            authorization_endpoint=f"{self.issuer}/authorize",
+            token_endpoint=f"{self.issuer}/token",
+            registration_endpoint=endpoint,
+            revocation_endpoint=f"{self.issuer}/revoke" if self.revocation else None,
+        )
+
+    def _origin(self, url: str) -> tuple[str, str]:
+        parts = urlsplit(url)
+        return f"{parts.scheme}://{parts.netloc}", parts.path.rstrip("/")
+
+    def server_metadata(self) -> dict[str, Any]:
+        document: dict[str, Any] = {
+            "issuer": self.issuer,
+            "authorization_endpoint": f"{self.issuer}/authorize",
+            "token_endpoint": f"{self.issuer}/token",
+            "code_challenge_methods_supported": ["S256"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_basic"],
+            "response_types_supported": ["code"],
+        }
+        if self.registration_endpoint is not None:
+            document["registration_endpoint"] = self.registration_endpoint
+        if self.revocation:
+            document["revocation_endpoint"] = f"{self.issuer}/revoke"
+        return document
+
+    def _hold(self, kind: str) -> None:
+        hold = self.holds.get(kind)
+        if hold is not None:
+            hold.entered.set()
+            assert hold.release.wait(timeout=60), f"{kind} was never released"
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        url = str(request.url.copy_with(query=None))
+        resource_origin, resource_path = self._origin(self.resource_url)
+        issuer_origin, issuer_path = self._origin(self.issuer)
+        if request.method == "POST" and url == self.resource_url:
+            challenge = "Bearer" + (f' scope="{self.scope}"' if self.scope else "")
+            return httpx.Response(401, headers={"WWW-Authenticate": challenge})
+        if (
+            url
+            == f"{resource_origin}/.well-known/oauth-protected-resource{resource_path}"
+        ):
+            self._hold("discovery")
+            return httpx.Response(
+                200,
+                json={
+                    "resource": self.resource_url,
+                    "authorization_servers": [self.issuer],
+                },
+            )
+        if (
+            url
+            == f"{issuer_origin}/.well-known/oauth-authorization-server{issuer_path}"
+        ):
+            return httpx.Response(200, json=self.server_metadata())
+        if request.method == "POST" and url == self.registration_endpoint:
+            self.registrations.append(request)
+            self._hold("registration")
+            return self.registration(request)
+        if url == f"{self.issuer}/authorize":
+            return httpx.Response(200)
+        if request.method == "POST" and url == f"{self.issuer}/token":
+            self.token_requests.append(request)
+            return self.token(request)
+        if request.method == "POST" and url == f"{self.issuer}/revoke":
+            self.revocation_requests.append(request)
+            return self.revoke(request)
+        return httpx.Response(404)
+
+
+def configure_connector(
+    monkeypatch: pytest.MonkeyPatch,
+    data_root: Path,
+    *,
+    enabled: bool = True,
+    identity_path: str | None = None,
+    resource_url: str = RESOURCE_URL,
+    client_name: str = CLIENT_NAME,
+    routing_host: str = ROUTING_HOST,
+) -> None:
+    """Deployment settings for the connector client and a fresh secret data root.
+
+    Call it after the intake fixture has installed its isolated settings registry:
+    the environment layer checks ``RHEO__`` variables against its own registry
+    reference, which this points at the same isolated one so the Leads keys count
+    as declared (in a deployment both are the one process-wide registry).
+    """
+    monkeypatch.setattr(settings_deployment, "REGISTRY", settings_resolver.REGISTRY)
+    secrets_dir = data_root / "secrets"
+    secrets_dir.mkdir(mode=0o700, exist_ok=True)
+    monkeypatch.setenv("RHEO_DATA_ROOT", str(data_root))
+    monkeypatch.setenv("RHEO__connectors__oauth_client__enabled", str(enabled).lower())
+    monkeypatch.setenv("RHEO__connectors__oauth_client__client_name", client_name)
+    monkeypatch.setenv("RHEO__leads__jobfeed__resource_url", resource_url)
+    monkeypatch.setenv("RHEO__routing__mode", "subdomain")
+    monkeypatch.setenv("RHEO__routing__scheme", "https")
+    monkeypatch.setenv("RHEO__routing__base_host", routing_host)
+    monkeypatch.setenv("RHEO__routing__public_host", "")
+    if identity_path is None:
+        monkeypatch.delenv("RHEO__routing__identity__path", raising=False)
+    else:
+        monkeypatch.setenv("RHEO__routing__identity__path", identity_path)
+
+
+@contextmanager
+def serve(
+    server: FakeAuthorizationServer,
+    *,
+    clock: FakeClock | None = None,
+    resolver: FakeResolver | None = None,
+) -> Iterator[Dependencies]:
+    """Install ``server`` with a fake resolver and fake clocks, through the
+    collector's dependency seam only."""
+    with fakes(
+        clock=clock,
+        resolver=resolver,
+        transport=httpx.MockTransport(server.handle),
+    ) as deps:
+        yield deps

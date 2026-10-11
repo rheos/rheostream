@@ -28,6 +28,7 @@ from rheo_leads.contracts import CaptureInput
 from rheo_leads.events import CONSUMER_ID, DELIVERY_RECEIVED, EVENTS
 from rheo_leads.export import export_records, import_records
 from rheo_leads.intake.process import process_delivery
+from rheo_leads.jobfeed.authorization import OPERATIONS as JOBFEED_OPERATIONS
 from rheo_leads.lifecycle import (
     authorize_delete,
     delete_owned,
@@ -75,7 +76,8 @@ MANIFEST = ModuleManifest(
     operations=OPERATIONS
     + PIPELINE_OPERATIONS
     + WEB_OPERATIONS
-    + CONNECTION_OPERATIONS,
+    + CONNECTION_OPERATIONS
+    + JOBFEED_OPERATIONS,
     tools=(
         *TOOLS,
         *CONNECTION_TOOLS,
@@ -174,6 +176,8 @@ MANIFEST = ModuleManifest(
                 "followup.draft",
                 "followup.schedule",
                 "followup.resolve",
+                "jobfeed.connect",
+                "jobfeed.reconnect",
             )
         ),
     ),
