@@ -86,8 +86,9 @@ from uuid import UUID
 
 import httpx
 
-from rheo_core.connectors import egress
+from rheo_core.connectors import credentials, egress
 from rheo_core.connectors.egress import Clock, EgressResponse, Resolver
+from rheo_core.modules.manifest import check_module_id
 from rheo_core.oauth.surface import SERVED_IDENTITY_PATH
 from rheo_core.refs import uuid7
 from rheo_core.routing import IDENTITY, RoutingConfig, url_for
@@ -100,7 +101,6 @@ from rheo_core.secrets import (
 )
 from rheo_core.settings import resolve
 from rheo_core.settings.schema import SettingsError
-from rheo_core.storage.data_root import resolve_data_root
 
 OAuthCode = Literal[
     "endpoint_misconfigured",
@@ -150,7 +150,6 @@ _AUTH_METHODS: Final[frozenset[str]] = frozenset(
 _SECRET_METHODS: Final[frozenset[str]] = frozenset(
     {"client_secret_basic", "client_secret_post"}
 )
-_MODULE_ID: Final = re.compile(r"[a-z][a-z0-9_]{0,31}")
 _PRINTABLE_ASCII: Final = re.compile(r"[\x20-\x7e]+")
 _UUID: Final = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _OAUTH_REFERENCE: Final = re.compile(
@@ -549,8 +548,13 @@ def _scope(namespace: str, *, writable: bool) -> SecretScope:
     return SecretStore.scope_for(_SCOPE_COMPONENT, namespace, writable=writable)
 
 
-def _store() -> SecretStore:
-    return SecretStore(resolve_data_root().path)
+def _connection_namespace(workspace_id: UUID, connection_id: UUID) -> str:
+    """The ``oauth/`` namespace for two ``UUID`` objects; anything else is refused
+    ``endpoint_misconfigured``, so no file is ever written under a name
+    :func:`discard` would not accept."""
+    if not isinstance(workspace_id, UUID) or not isinstance(connection_id, UUID):
+        raise _misconfigured()
+    return _namespace(workspace_id, connection_id)
 
 
 def _reference_namespace(ref: object) -> str | None:
@@ -563,8 +567,9 @@ def _reference_namespace(ref: object) -> str | None:
 
 
 def new_reference(workspace_id: UUID, connection_id: UUID) -> str:
-    """A fresh reference in the connection's ``oauth/`` namespace (a ``uuid7`` leaf)."""
-    return f"{_namespace(workspace_id, connection_id)}{uuid7()}"
+    """A fresh reference in the connection's ``oauth/`` namespace (a ``uuid7`` leaf).
+    Both ids must be ``UUID`` objects, else ``endpoint_misconfigured``."""
+    return f"{_connection_namespace(workspace_id, connection_id)}{uuid7()}"
 
 
 def discard(ref: str) -> None:
@@ -580,7 +585,9 @@ def discard(ref: str) -> None:
         return
     failed = False
     try:
-        _store().discard(SecretRef.parse(ref), _scope(namespace, writable=True))
+        credentials.store().discard(
+            SecretRef.parse(ref), _scope(namespace, writable=True)
+        )
     except Exception:  # best-effort: the caller's outcome stands whatever happens
         failed = True
     if failed:
@@ -612,11 +619,12 @@ def enabled() -> bool:
 def redirect_uri(module_id: str) -> str:
     """The callback URI registered for ``module_id``, from routing settings only."""
     routing = _configured_routing()
-    if (
-        routing is None
-        or not isinstance(module_id, str)
-        or not _MODULE_ID.fullmatch(module_id)
-    ):
+    valid = True
+    try:
+        check_module_id(module_id)
+    except ValueError:  # its message names the id; only the fixed code leaves
+        valid = False
+    if routing is None or not valid:
         raise _misconfigured()
     return url_for(routing, IDENTITY, f"/connector/{module_id}/callback")
 
@@ -742,8 +750,8 @@ def _write_secrets(
         ref = new_reference(workspace_id, connection_id)
         failed = False
         try:
-            namespace = _namespace(workspace_id, connection_id)
-            _store().create(
+            namespace = _connection_namespace(workspace_id, connection_id)
+            credentials.store().create(
                 SecretRef.parse(ref),
                 SecretValue(raw),
                 _scope(namespace, writable=True),
@@ -775,6 +783,8 @@ def register(
     """Register a client at the pinned endpoint, once (module docstring)."""
     if (
         not enabled()
+        or not isinstance(workspace_id, UUID)
+        or not isinstance(connection_id, UUID)
         or not isinstance(registration_endpoint, str)
         or not isinstance(redirect_uri, str)
         or not isinstance(client_name, str)
@@ -832,7 +842,7 @@ def _read_client_secret(ref: str | None) -> str | None:
     if namespace is None:
         return None
     try:
-        value = _store().resolve(
+        value = credentials.store().resolve(
             SecretRef.parse(ref), _scope(namespace, writable=False)
         )
         return value.expose().decode("utf-8")

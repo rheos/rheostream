@@ -635,6 +635,55 @@ class DiscardSpy:
         monkeypatch.setattr(SecretStore, "discard", spy)
 
 
+NON_UUID_IDS: dict[str, object] = {
+    "canonical string": str(WS),
+    "uppercase string": str(WS).upper(),
+    "unhyphenated hex": WS.hex,
+    "slug": "workspace",
+    "integer": WS.int,
+    "none": None,
+}
+
+
+@pytest.mark.parametrize("case", sorted(NON_UUID_IDS))
+@pytest.mark.parametrize("position", ["workspace", "connection"])
+def test_new_reference_refuses_an_id_that_is_not_a_uuid(
+    case: str, position: str
+) -> None:
+    bad = NON_UUID_IDS[case]
+    ids = (bad, CONN) if position == "workspace" else (WS, bad)
+    with pytest.raises(OAuthFailure) as caught:
+        new_reference(*ids)  # type: ignore[arg-type]
+    assert_content_free(caught.value, "endpoint_misconfigured")
+
+
+@pytest.mark.parametrize("case", sorted(NON_UUID_IDS))
+@pytest.mark.parametrize("position", ["workspace", "connection"])
+def test_register_refuses_an_id_that_is_not_a_uuid_before_any_request_or_write(
+    fake: FakeRegistration, root: Path, case: str, position: str
+) -> None:
+    bad = NON_UUID_IDS[case]
+    fake.respond = _json(
+        201,
+        accepted_document(client_secret=SECRET, registration_access_token=TOKEN),
+    )
+    ids = {"workspace_id": WS, "connection_id": CONN}
+    ids[f"{position}_id"] = bad  # type: ignore[assignment]
+    with pytest.raises(OAuthFailure) as caught:
+        register(
+            ENDPOINT,
+            REDIRECT,
+            CLIENT_NAME,
+            resolver=fake.resolve,
+            clock=fake.clock,
+            transport=httpx.MockTransport(fake.handle),
+            **ids,  # type: ignore[arg-type]
+        )
+    assert_content_free(caught.value, "endpoint_misconfigured")
+    assert fake.requests == []
+    assert stored_files(root) == []
+
+
 def test_new_reference_is_a_fresh_leaf_in_the_connection_namespace() -> None:
     first, second = new_reference(WS, CONN), new_reference(WS, CONN)
     prefix = f"secret://file/ws/{WS}/connection/{CONN}/oauth/"
@@ -745,7 +794,7 @@ def test_enabled_and_redirect_uri_follow_url_for(root: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "module_id", ["", "Leads", "leads/../x", "leads?x=1", "a" * 40]
+    "module_id", ["", "Leads", "leads/../x", "leads?x=1", "a" * 40, "core", None]
 )
 def test_redirect_uri_refuses_a_malformed_module_id(root: Path, module_id: str) -> None:
     with pytest.raises(OAuthFailure) as caught:
