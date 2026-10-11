@@ -660,6 +660,10 @@ def _write_connection(
         current = read_connection(unit.connection, for_update=True)
         if current is None or current.connection_id != pending.connection_id:
             raise _refused("not_found")
+        if not pending.client_registered and current.client_id != pending.client_id:
+            # The reused client was replaced or cleared since the start: the new
+            # token belongs to a client the connection no longer stores.
+            raise _refused("record_stale")
         retired.append(current.token_ref)
         values: dict[str, Any] = {
             **_endpoints(pending),

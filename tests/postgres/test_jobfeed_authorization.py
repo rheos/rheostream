@@ -1263,6 +1263,32 @@ def test_a_rejected_client_no_longer_stored_clears_nothing(
     assert due is not None and due["enabled"] is True
 
 
+def test_a_token_for_a_reused_client_no_longer_stored_is_refused_and_discarded(
+    intake: Intake,
+    owner: WorkspaceContext,
+    pipeline_id: UUID,
+    served: FakeAuthorizationServer,
+    root: Path,
+) -> None:
+    """The reused client changed between the start and the callback: the token the
+    exchange minted belongs to a client the connection no longer stores, so it is
+    refused ``record_stale``, its file discarded and the connection left alone."""
+    connected(intake, owner, served, pipeline_id)
+    params = restart(intake, owner, served)
+    (row,) = pending(owner)
+    assert row["client_registered"] is False
+    set_connection(owner, client_id="replaced-client")
+    changed = stored(owner)
+    files = secret_files(root)
+    outcome = complete(intake, owner, **params)
+    assert not outcome.ok and outcome.error is not None
+    assert outcome.error.error_code == "record_stale"
+    assert len(served.token_requests) == 2
+    assert stored(owner) == changed
+    assert secret_files(root) == files
+    assert pending(owner) == []
+
+
 def test_a_fresh_client_rejected_is_discarded_and_the_connection_kept(
     intake: Intake,
     owner: WorkspaceContext,
