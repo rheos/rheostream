@@ -377,50 +377,30 @@ export async function queue({ shell, query }: ScreenProps) {
       description="What is in motion, most urgent first. Snoozed items come back here on their own."
     >
       {counts ? (
-        <dl className={styles.summary} aria-label="Summary">
-          <div>
-            <dt>Active</dt>
-            <dd>
-              <a href={shell.href("queue")}>{counts.active}</a>
-            </dd>
-          </div>
-          <div>
-            <dt>Woke up</dt>
-            <dd>{counts.woke}</dd>
-          </div>
-          <div className={counts.overdue ? styles.summaryLate : undefined}>
-            <dt>Overdue</dt>
-            <dd>
-              <a href={shell.href("queue", { overdue: "1" })}>
-                {counts.overdue}
+        <ul className={styles.summary} aria-label="Summary">
+          {(
+            [
+              ["Active", counts.active, {}],
+              ["Woke up", counts.woke, {}],
+              ["Overdue", counts.overdue, { overdue: "1" }],
+              ["Blocked", counts.blocked, { blocked: "1" }],
+              ["Waiting", counts.byStatus.waiting, { status: "waiting" }],
+              ["Snoozed", counts.byStatus.snoozed, { status: "snoozed" }],
+            ] as const
+          ).map(([text, count, filter]) => (
+            <li
+              key={text}
+              className={
+                text === "Overdue" && count ? styles.summaryLate : undefined
+              }
+            >
+              <a href={shell.href("queue", filter)}>
+                <span className={styles.summaryLabel}>{text}</span>{" "}
+                <span className={styles.summaryCount}>{count}</span>
               </a>
-            </dd>
-          </div>
-          <div>
-            <dt>Blocked</dt>
-            <dd>
-              <a href={shell.href("queue", { blocked: "1" })}>
-                {counts.blocked}
-              </a>
-            </dd>
-          </div>
-          <div>
-            <dt>Waiting</dt>
-            <dd>
-              <a href={shell.href("queue", { status: "waiting" })}>
-                {counts.byStatus.waiting}
-              </a>
-            </dd>
-          </div>
-          <div>
-            <dt>Snoozed</dt>
-            <dd>
-              <a href={shell.href("queue", { status: "snoozed" })}>
-                {counts.byStatus.snoozed}
-              </a>
-            </dd>
-          </div>
-        </dl>
+            </li>
+          ))}
+        </ul>
       ) : null}
       {listResult.state !== "ok" ? (
         <Failure outcome={listResult} />
@@ -1203,15 +1183,15 @@ export async function project({ shell, query }: ScreenProps) {
       active="projects"
       title={record.title}
       description={
-        <>
+        <span className={styles.headerMeta}>
           <span className={styles.flag}>
             {PROJECT_STATUS_OPTIONS.find((o) => o.value === record.status)
               ?.label ?? record.status}
-          </span>{" "}
-          {countsText(record)}
-          {record.area ? `. ${areaLabel(labels, record.area)}` : ""}
-          {record.dueOn ? `. Due ${day(record.dueOn)}` : ""}
-        </>
+          </span>
+          <span>{countsText(record)}</span>
+          {record.area ? <span>{areaLabel(labels, record.area)}</span> : null}
+          {record.dueOn ? <span>Due {day(record.dueOn)}</span> : null}
+        </span>
       }
       action={false}
     >
@@ -1404,6 +1384,7 @@ export async function areas({ shell }: ScreenProps) {
                             value: a.label,
                             required: true,
                             maxLength: 80,
+                            hideLabel: true,
                           },
                         ]}
                         button="Rename"

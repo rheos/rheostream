@@ -38,6 +38,8 @@ export interface Field {
   /** An optional field the operation empties through its `clear` list. */
   clearable?: boolean;
   hint?: string;
+  /** Keep the label for assistive technology only, where the row already names it. */
+  hideLabel?: boolean;
 }
 
 /**
@@ -166,6 +168,8 @@ export function ActionForm({
   return (
     <form
       onSubmit={save}
+      // A submit that lands before hydration must not put typed text in a URL.
+      method="post"
       className={inline ? styles.inlineForm : styles.form}
       aria-busy={pending}
     >
@@ -184,7 +188,10 @@ export function ActionForm({
             setValues((before) => ({ ...before, [f.name]: value }));
           return (
             <div className={styles.field} key={f.name}>
-              <label htmlFor={fieldId}>
+              <label
+                htmlFor={fieldId}
+                className={f.hideLabel ? styles.visuallyHidden : undefined}
+              >
                 {f.label}
                 {f.required || f.type === "select" ? "" : " (optional)"}
               </label>
@@ -219,7 +226,10 @@ export function ActionForm({
             </div>
           );
         })}
-        <button type="submit" className={styles.primary}>
+        <button
+          type="submit"
+          className={inline ? styles.secondary : styles.primary}
+        >
           {pending ? "Saving…" : button}
         </button>
       </fieldset>

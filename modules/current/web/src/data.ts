@@ -400,7 +400,7 @@ export function refusalText(code: string, text: string): string {
     case "record_stale":
       return "This changed since the page loaded. Your entry is still here: reload to get the latest version, then save again.";
     case "dependency_cycle":
-      return "That would make a loop: the chosen item already waits on this one, directly or through other items.";
+      return "That would make a loop: these two items already depend on each other, directly or through other items.";
     case "transition_not_allowed":
       return "That status change is not allowed from where the item is now. Reload to see its current status.";
     case "snooze_invalid":

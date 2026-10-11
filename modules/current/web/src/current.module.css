@@ -148,28 +148,34 @@
 .summary {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--rs-space-2) var(--rs-space-6);
+  gap: var(--rs-space-2) var(--rs-space-3);
+  list-style: none;
   margin: 0 0 var(--rs-space-5);
+  padding: 0;
 }
-.summary > div {
+.summary a {
   display: grid;
   gap: var(--rs-space-1);
   min-width: calc(var(--rs-space-6) * 3);
+  padding: var(--rs-space-2) var(--rs-space-3);
+  border-radius: var(--rs-radius-sm);
+  color: var(--rs-color-ink);
+  text-decoration: none;
 }
-.summary dt {
+.summary a:hover {
+  background: var(--rs-color-surface-1);
+  text-decoration: none;
+}
+.summaryLabel {
   color: var(--rs-color-ink-dim);
   font-size: var(--rs-font-size-sm);
 }
-.summary dd {
-  margin: 0;
+.summaryCount {
   font-size: var(--rs-font-size-lg);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.summary dd a {
-  color: inherit;
-}
-.summaryLate dd {
+.summaryLate .summaryCount {
   color: var(--rs-color-danger);
 }
 .toolbar {
@@ -312,7 +318,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--rs-space-3) var(--rs-space-5);
-  align-items: center;
+  align-items: start;
   padding-block: var(--rs-space-4);
   border-bottom: var(--rs-size-hairline) solid var(--rs-color-hairline);
 }
@@ -446,6 +452,20 @@ a.rowTitle:hover {
 .flagLate,
 .late {
   color: var(--rs-color-danger);
+}
+.headerMeta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-1) var(--rs-space-3);
+}
+.visuallyHidden {
+  position: absolute;
+  width: var(--rs-size-hairline);
+  height: var(--rs-size-hairline);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .badges {
   display: inline-flex;
@@ -637,8 +657,14 @@ a.rowTitle:hover {
   .heading {
     font-size: var(--rs-font-size-xl);
   }
-  .toolbar > * {
-    flex: 1 1 calc(var(--rs-space-6) * 6);
+  .toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .toolbar > .grow,
+  .toolbar > .checks,
+  .toolbar > .toolbarActions {
+    grid-column: 1 / -1;
   }
   .row {
     grid-template-columns: 1fr;

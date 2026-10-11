@@ -123,7 +123,7 @@ describe("queue", () => {
     expect(html).toContain("Bills");
     expect(html).toContain("High");
     // The summary counts head the queue.
-    expect(html).toMatch(/<dt>Active<\/dt><dd><a[^>]*>6<\/a>/);
+    expect(html).toMatch(/<span[^>]*>Active<\/span> <span[^>]*>6<\/span>/);
     // Paging follows next_offset.
     expect(html).toContain("offset=25");
     // Quick actions per row: Done, Snooze, Wait for an open item.
