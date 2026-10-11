@@ -6,16 +6,19 @@ module global is patched. The installed workspace reuses the Leads intake fixtur
 (Relationships and Leads enabled) and its real dispatcher and worker.
 """
 
+import base64
+import hashlib
 import json
 import threading
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
-from uuid import UUID
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -284,13 +287,46 @@ def malformed() -> Responder:
 
 
 @dataclass
+class Tokens:
+    """A token endpoint that answers 200 with a bearer access token.
+
+    The authorization-code grant carries a fresh ``refresh-marker-<uuid>`` unless
+    ``refresh`` is false. A refresh grant carries a fresh one when ``rotating``, and
+    none otherwise. Every value issued is kept in ``issued`` for leak checks.
+    """
+
+    refresh: bool = True
+    rotating: bool = True
+    issued: list[str] = field(default_factory=list)
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode("ascii"))
+        grant = form.get("grant_type", [""])[0]
+        access = f"access-marker-{uuid4()}"
+        document: dict[str, Any] = {"token_type": "Bearer", "access_token": access}
+        self.issued.append(access)
+        if (grant == "authorization_code" and self.refresh) or (
+            grant == "refresh_token" and self.rotating
+        ):
+            document["refresh_token"] = f"refresh-marker-{uuid4()}"
+            self.issued.append(document["refresh_token"])
+        return httpx.Response(200, json=document)
+
+
+def token_error(error: str = "invalid_client", *, status: int = 400) -> Responder:
+    """An RFC 6749 s5.2 error answer from the token endpoint."""
+    return answer(status, {"error": error})
+
+
+@dataclass
 class FakeAuthorizationServer:
     """The probe, both metadata documents, a counting registration endpoint with
     scriptable answers, the authorization endpoint, and counting, body-capturing
     token and revocation endpoints, all behind one ``httpx.MockTransport``.
 
     Every request is kept in ``requests``. ``holds`` blocks the ``"discovery"``
-    (protected-resource metadata) or ``"registration"`` request until released.
+    (protected-resource metadata), ``"registration"`` or ``"token"`` request until
+    released. :meth:`authorize` stands in for the owner's consent and mints a code.
     """
 
     resource_url: str = RESOURCE_URL
@@ -315,6 +351,24 @@ class FakeAuthorizationServer:
     registrations: list[httpx.Request] = field(default_factory=list)
     token_requests: list[httpx.Request] = field(default_factory=list)
     revocation_requests: list[httpx.Request] = field(default_factory=list)
+    codes: dict[str, str] = field(default_factory=dict)
+
+    def authorize(self, authorization_url: str) -> tuple[str, str]:
+        """The owner's consent at the authorization endpoint: mint a code bound to
+        the URL's PKCE challenge; return the URL's state and the code."""
+        query = parse_qs(urlsplit(authorization_url).query)
+        code = f"code-marker-{uuid4()}"
+        self.codes[code] = query["code_challenge"][0]
+        return query["state"][0], code
+
+    def verifier_matches(self, request: httpx.Request) -> bool:
+        """Whether a code grant's verifier answers the challenge its code was
+        minted for (RFC 7636 S256)."""
+        form = parse_qs(request.content.decode("ascii"))
+        challenge = self.codes.get(form.get("code", [""])[0])
+        verifier = form.get("code_verifier", [""])[0].encode("ascii")
+        digest = hashlib.sha256(verifier).digest()
+        return challenge == base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
     @property
     def registration_endpoint(self) -> str | None:
@@ -395,6 +449,7 @@ class FakeAuthorizationServer:
             return httpx.Response(200)
         if request.method == "POST" and url == f"{self.issuer}/token":
             self.token_requests.append(request)
+            self._hold("token")
             return self.token(request)
         if request.method == "POST" and url == f"{self.issuer}/revoke":
             self.revocation_requests.append(request)
@@ -436,18 +491,91 @@ def configure_connector(
         monkeypatch.setenv("RHEO__routing__identity__path", identity_path)
 
 
+# --- a basic fake MCP server ----------------------------------------------------------
+
+McpKey = tuple[str, str | None, str | None]
+"""``(method, tool, action)`` of one JSON-RPC request; tool and action are ``None``
+when the request has none."""
+
+
+def _mcp_key(request: httpx.Request) -> McpKey:
+    try:
+        message = json.loads(request.content)
+    except ValueError:
+        return ("<unparsed>", None, None)
+    if not isinstance(message, dict):
+        return ("<unparsed>", None, None)
+    method = str(message.get("method"))
+    params = message.get("params")
+    params = params if isinstance(params, dict) else {}
+    tool = params.get("name")
+    arguments = params.get("arguments")
+    action = arguments.get("action") if isinstance(arguments, dict) else None
+    return (
+        method,
+        tool if isinstance(tool, str) else None,
+        action if isinstance(action, str) else None,
+    )
+
+
+@dataclass
+class FakeMcpServer:
+    """Counts every request it receives by method, tool and action, and answers from
+    ``script`` (keyed by method), else a JSON-RPC ``method not found`` error."""
+
+    resource_url: str = RESOURCE_URL
+    script: dict[str, Responder] = field(default_factory=dict)
+    requests: list[httpx.Request] = field(default_factory=list)
+    counts: Counter[McpKey] = field(default_factory=Counter)
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        key = _mcp_key(request)
+        self.counts[key] += 1
+        responder = self.script.get(key[0])
+        if responder is not None:
+            return responder(request)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32601, "message": "method not found"},
+            },
+        )
+
+
+def combined(
+    authorization: FakeAuthorizationServer, mcp: FakeMcpServer
+) -> httpx.MockTransport:
+    """One transport for both fakes: a request to the resource URL that carries an
+    ``Authorization`` header goes to the MCP server, everything else to the
+    authorization server (whose unauthenticated probe answers 401)."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url.copy_with(query=None))
+        if url == mcp.resource_url and "authorization" in request.headers:
+            return mcp.handle(request)
+        return authorization.handle(request)
+
+    return httpx.MockTransport(handle)
+
+
 @contextmanager
 def serve(
     server: FakeAuthorizationServer,
     *,
     clock: FakeClock | None = None,
     resolver: FakeResolver | None = None,
+    mcp: FakeMcpServer | None = None,
 ) -> Iterator[Dependencies]:
-    """Install ``server`` with a fake resolver and fake clocks, through the
-    collector's dependency seam only."""
+    """Install ``server`` (and ``mcp`` beside it, when given) with a fake resolver
+    and fake clocks, through the collector's dependency seam only."""
     with fakes(
         clock=clock,
         resolver=resolver,
-        transport=httpx.MockTransport(server.handle),
+        transport=httpx.MockTransport(server.handle)
+        if mcp is None
+        else combined(server, mcp),
     ) as deps:
         yield deps

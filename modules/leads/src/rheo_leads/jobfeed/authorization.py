@@ -1,6 +1,8 @@
-"""The owner's job feed authorization operations: connect and reconnect.
+"""The owner's job feed authorization operations: connect, reconnect and the
+completion the identity-host callback dispatches.
 
-Both are for an owner on a browser session only and have no tool. Each one reads
+All three are for an owner on a browser session only and have no tool. Connect and
+reconnect each read
 what it needs in a short transaction that commits at once, then discovers the
 authorization server and registers (or, on a reconnect, reuses) the OAuth client
 with no transaction of its own open and without touching the dispatcher's, and
@@ -15,11 +17,23 @@ Registration happens here and nowhere else, at most once per call and never
 retried. A first connect that fails at any point leaves no connection, health,
 pending or secret-file row; a reconnect whose registration fails records only the
 health code ``registration_failed`` on its connection.
+
+``complete_authorization`` consumes the pending row in a committed unit of its own
+first, then checks it with no network, then exchanges the code as the row's client
+with no transaction open, then installs or re-pins in a second unit of its own that
+commits before any file it retires (the old refresh token, a replaced client's
+secrets) is discarded. A failure before that commit discards the new token file and
+a freshly registered client's files instead, and nothing the connection references.
+An ``invalid_client`` answer never leads to a registration here: a reused client is
+cleared from the connection, which goes terminal; a fresh one is discarded. The
+dispatcher's transaction carries only its audit row and, for a provider error on a
+reconnect, the content-free health code, which retires nothing.
 """
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Final
+from typing import Any, Final, Literal, cast
 from uuid import UUID
 
 from rheo_contracts import (
@@ -33,19 +47,35 @@ from rheo_contracts import (
     WorkspaceContext,
 )
 from rheo_core.connectors import oauth
-from rheo_core.connectors.oauth import Discovered, OAuthFailure
+from rheo_core.connectors.oauth import (
+    ClientAuth,
+    ClientAuthMethod,
+    Discovered,
+    OAuthFailure,
+    RegisteredClient,
+)
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.settings import resolve
 from rheo_core.storage.routing import open_unit_of_work
-from sqlalchemy import delete, insert, select
+from rheo_core.work.schedules import ensure_module_schedule
+from sqlalchemy import delete, insert, select, update
 
 from rheo_leads.contracts import Strict
 from rheo_leads.intake.accept import health_write
 from rheo_leads.jobfeed import dependencies
-from rheo_leads.jobfeed.state import JobfeedConnection, read_connection
+from rheo_leads.jobfeed.install import install_connection
+from rheo_leads.jobfeed.run import SCHEDULE_NAME
+from rheo_leads.jobfeed.state import (
+    RUN_CLAIM_WINDOW,
+    JobfeedConnection,
+    PendingAuthorization,
+    clear_collector_health,
+    read_connection,
+    take_pending,
+)
 from rheo_leads.pipeline_common import JOBSEARCH_PRESET_ID, jobsearch_enabled, lock
 from rheo_leads.references import identifier
 from rheo_leads.storage import jobfeed as j
@@ -55,6 +85,8 @@ MODULE_ID: Final = "leads"
 RESOURCE_URL_KEY: Final = "leads.jobfeed.resource_url"
 CLIENT_NAME_KEY: Final = "connectors.oauth_client.client_name"
 REGISTRATION_FAILED: Final = "registration_failed"
+AUTHORIZATION_REQUIRED: Final = "authorization_required"
+COMPLETE_AUTHORIZATION: Final = "leads.jobfeed.complete_authorization"
 
 # One fixed, content-free text per refusal code.
 _DETAILS: Final[dict[str, str]] = {
@@ -81,6 +113,34 @@ class ReconnectInput(Strict):
 class AuthorizationStart(Strict):
     authorization_url: str
     expires_at: datetime
+
+
+CompletionReason = Literal[
+    "state_unknown",
+    "state_expired",
+    "account_mismatch",
+    "capability_disabled",
+    "provider_error",
+    "issuer_mismatch",
+    "exchange_failed",
+    "client_rejected",
+    "no_refresh_token",
+    "endpoint_misconfigured",
+]
+
+
+class CompleteInput(Strict):
+    """The four callback parameters; ``error_description`` is not one of them."""
+
+    state: str
+    code: str | None = None
+    error: str | None = None
+    iss: str | None = None
+
+
+class AuthorizationCompletion(Strict):
+    state: Literal["connected", "refused"]
+    reason: CompletionReason | None = None
 
 
 @dataclass(frozen=True)
@@ -374,21 +434,355 @@ def reconnect(
     )
 
 
-OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = tuple(
+# --- completion -----------------------------------------------------------------------
+
+_EXCHANGE_REASONS: Final[dict[str, CompletionReason]] = {
+    "no_refresh_token": "no_refresh_token",
+    "endpoint_misconfigured": "endpoint_misconfigured",
+    "client_rejected": "client_rejected",
+}
+
+
+def _refusal(reason: CompletionReason) -> AuthorizationCompletion:
+    return AuthorizationCompletion(state="refused", reason=reason)
+
+
+def _discard_fresh(pending: PendingAuthorization) -> None:
+    """Discard the pending client's files when its start registered it; a reused
+    client's files belong to the connection."""
+    if pending.client_registered:
+        _discard_files(pending.client_secret_ref, pending.registration_token_ref)
+
+
+def _consume(
+    ctx: WorkspaceContext, state: str
+) -> tuple[PendingAuthorization, bool] | None:
+    """Take the pending row for ``state`` and read the capability, committed before
+    the caller acts on either; ``None`` when no row has that state."""
+    state_hash = hashlib.sha256(state.encode("utf-8")).digest()
+    with open_unit_of_work(ctx) as short:
+        pending = take_pending(short.connection, state_hash)
+        if pending is None:
+            return None
+        enabled = jobsearch_enabled(ctx, short)
+        short.commit()
+    return pending, enabled
+
+
+def _check(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    pending: PendingAuthorization,
+    m: CompleteInput,
+    *,
+    enabled: bool,
+    now: datetime,
+) -> CompletionReason | None:
+    """The checks that need no network, in order; the first failing one's reason.
+
+    A provider error on a reconnect records the health code on the dispatcher's
+    transaction and nothing else: it retires no file and is never a terminal loss.
+    """
+    if pending.expires_at <= now:
+        return "state_expired"
+    if pending.account_id != ctx.actor.id:
+        return "account_mismatch"
+    if not enabled:
+        return "capability_disabled"
+    if m.error is not None:
+        if pending.mode == "reconnect":
+            current = read_connection(uow.connection)
+            if current is not None and current.connection_id == pending.connection_id:
+                health_write(uow, current.connection_id, error=AUTHORIZATION_REQUIRED)
+        return "provider_error"
+    if m.iss is not None and m.iss != pending.issuer:
+        return "issuer_mismatch"
+    if m.code is None:
+        return "exchange_failed"
+    return None
+
+
+@dataclass(frozen=True)
+class _NewToken:
+    """The reference to the refresh token the exchange just wrote."""
+
+    reference: str = field(repr=False)
+
+
+def _exchange(
+    ctx: WorkspaceContext, pending: PendingAuthorization, code: str, now: datetime
+) -> _NewToken | CompletionReason:
+    """Exchange the code as the pending row's client: the new refresh token's
+    reference, or the refusal reason. No failure text is ever kept."""
+    deps = dependencies()
+    client = ClientAuth(
+        client_id=pending.client_id,
+        auth_method=cast(ClientAuthMethod, pending.client_auth_method),
+        client_secret_ref=pending.client_secret_ref,
+        secret_expires_at=pending.client_secret_expires_at,
+    )
+    failed: str | None = None
+    try:
+        reference, _access = oauth.exchange_code(
+            pending.token_endpoint,
+            code=code,
+            redirect_uri=pending.redirect_uri,
+            code_verifier=pending.code_verifier,
+            resource=pending.resource_url,
+            client=client,
+            workspace_id=ctx.workspace_id,
+            connection_id=pending.connection_id,
+            resolver=deps.resolver,
+            clock=deps.clock,
+            transport=deps.transport,
+            now=now,
+        )
+    except OAuthFailure as failure:
+        failed = failure.code
+    if failed is not None:
+        return _EXCHANGE_REASONS.get(failed, "exchange_failed")
+    return _NewToken(reference)
+
+
+def _clear_rejected_client(
+    ctx: WorkspaceContext, pending: PendingAuthorization, now: datetime
+) -> None:
+    """The token endpoint rejected the connection's own stored client: clear it and
+    make the connection terminal, in a unit of this handler's own, and discard the
+    client's files only after that commits.
+
+    A compare-and-set on ``client_id``: a connection that has since stored another
+    client is left alone and nothing is discarded. No audit row is written here;
+    the dispatcher's one completion row stands.
+    """
+    table = j.jobfeed_connection
+    retired: tuple[str | None, ...] = ()
+    committed = False
+    try:
+        with open_unit_of_work(ctx) as unit:
+            lock(unit)
+            current = read_connection(unit.connection, for_update=True)
+            if (
+                current is not None
+                and current.connection_id == pending.connection_id
+                and current.client_id == pending.client_id
+            ):
+                retired = (current.client_secret_ref, current.registration_token_ref)
+                unit.connection.execute(
+                    update(table)
+                    .where(table.c.connection_id == current.connection_id)
+                    .values(
+                        client_id=None,
+                        client_auth_method=None,
+                        client_redirect_uri=None,
+                        client_secret_expires_at=None,
+                        client_secret_ref=None,
+                        registration_token_ref=None,
+                        authorization_state=AUTHORIZATION_REQUIRED,
+                        updated_at=now,
+                    )
+                )
+                ensure_module_schedule(
+                    unit.connection,
+                    module_id=MODULE_ID,
+                    name=SCHEDULE_NAME,
+                    enabled=False,
+                    due_at=now,
+                )
+                health_write(unit, current.connection_id, error=AUTHORIZATION_REQUIRED)
+            unit.commit()
+            committed = True
+    except BaseException:
+        # Committed but failed while closing: the cleared files are unreferenced.
+        if committed:
+            _discard_files(*retired)
+        raise
+    _discard_files(*retired)
+
+
+def _endpoints(pending: PendingAuthorization) -> dict[str, Any]:
+    return {
+        "resource_url": pending.resource_url,
+        "issuer": pending.issuer,
+        "authorization_endpoint": pending.authorization_endpoint,
+        "token_endpoint": pending.token_endpoint,
+        "registration_endpoint": pending.registration_endpoint,
+        "revocation_endpoint": pending.revocation_endpoint,
+    }
+
+
+def _client_columns(pending: PendingAuthorization) -> dict[str, Any]:
+    return {
+        "client_id": pending.client_id,
+        "client_auth_method": pending.client_auth_method,
+        "client_redirect_uri": pending.redirect_uri,
+        "client_secret_expires_at": pending.client_secret_expires_at,
+        "client_secret_ref": pending.client_secret_ref,
+        "registration_token_ref": pending.registration_token_ref,
+    }
+
+
+def _write_connection(
+    ctx: WorkspaceContext,
+    unit: UnitOfWork,
+    pending: PendingAuthorization,
+    reference: str,
+    now: datetime,
+) -> list[str | None]:
+    """Install or re-pin under the lifecycle lock and enable the schedule; the
+    files the write retires, to discard once it has committed."""
+    table = j.jobfeed_connection
+    lock(unit)
+    retired: list[str | None] = []
+    claimed: datetime | None = None
+    if pending.mode == "connect":
+        install_connection(
+            unit,
+            ctx,
+            connection_id=pending.connection_id,
+            pipeline_id=pending.pipeline_id,
+            endpoints=Discovered(**_endpoints(pending)),
+            client=RegisteredClient(
+                client_id=pending.client_id,
+                auth_method=cast(ClientAuthMethod, pending.client_auth_method),
+                redirect_uri=pending.redirect_uri,
+                secret_expires_at=pending.client_secret_expires_at,
+                client_secret_ref=pending.client_secret_ref,
+                registration_token_ref=pending.registration_token_ref,
+            ),
+        )
+        unit.connection.execute(
+            update(table)
+            .where(table.c.connection_id == pending.connection_id)
+            .values(token_ref=reference, credential_generation=1, updated_at=now)
+        )
+    else:
+        current = read_connection(unit.connection, for_update=True)
+        if current is None or current.connection_id != pending.connection_id:
+            raise _refused("not_found")
+        retired.append(current.token_ref)
+        values: dict[str, Any] = {
+            **_endpoints(pending),
+            "token_ref": reference,
+            "credential_generation": current.credential_generation + 1,
+            "consecutive_failures": 0,
+            "not_before": None,
+            "authorization_state": "connected",
+            "updated_at": now,
+        }
+        if pending.client_registered:
+            # The new client replaces the stored one, whose files then go.
+            retired += [current.client_secret_ref, current.registration_token_ref]
+            values.update(_client_columns(pending))
+        unit.connection.execute(
+            update(table)
+            .where(table.c.connection_id == current.connection_id)
+            .values(**values)
+        )
+        clear_collector_health(unit.connection, current.connection_id)
+        claimed = current.run_claimed_at
+    due = now if claimed is None else max(now, claimed + RUN_CLAIM_WINDOW)
+    ensure_module_schedule(
+        unit.connection,
+        module_id=MODULE_ID,
+        name=SCHEDULE_NAME,
+        enabled=True,
+        due_at=due,
+    )
+    return retired
+
+
+def _store(
+    ctx: WorkspaceContext, pending: PendingAuthorization, reference: str, now: datetime
+) -> AuthorizationCompletion:
+    """Commit the writes in a unit of this handler's own, then discard what they
+    retired. If the unit fails before its commit nothing it would have retired is
+    touched, and the new token file and a freshly registered client's files go."""
+    retired: list[str | None] = []
+    committed = False
+    try:
+        with open_unit_of_work(ctx) as unit:
+            retired = _write_connection(ctx, unit, pending, reference, now)
+            unit.commit()
+            committed = True
+    except BaseException as error:
+        if committed:
+            # The committed connection references the new files; the retired
+            # ones are unreferenced.
+            _discard_files(*retired)
+            raise
+        oauth.discard(reference)
+        _discard_fresh(pending)
+        if isinstance(error, OperationRefused) and error.state == "capability_disabled":
+            return _refusal("capability_disabled")
+        raise
+    _discard_files(*retired)
+    return AuthorizationCompletion(state="connected")
+
+
+def complete_authorization(
+    ctx: WorkspaceContext, uow: UnitOfWork, m: CompleteInput
+) -> AuthorizationCompletion:
+    """Finish the owner's authorization from the callback (see the module docstring).
+
+    The state is consumed first, in a committed unit of its own, so no later
+    refusal or failure can make it usable again. Every refusal from then on is a
+    ``refused`` result, so the dispatcher commits its one audit row normally.
+    """
+    _require_owner_browser(ctx)
+    consumed = _consume(ctx, m.state)
+    if consumed is None:
+        return _refusal("state_unknown")
+    pending, enabled = consumed
+    now = dependencies().now()
+    try:
+        exchanged: _NewToken | CompletionReason | None = _check(
+            ctx, uow, pending, m, enabled=enabled, now=now
+        )
+        if exchanged is None and m.code is not None:
+            exchanged = _exchange(ctx, pending, m.code, now)
+    except BaseException:
+        _discard_fresh(pending)
+        raise
+    if isinstance(exchanged, _NewToken):
+        return _store(ctx, pending, exchanged.reference, now)
+    reason: CompletionReason = exchanged or "exchange_failed"
+    if reason == "client_rejected" and not pending.client_registered:
+        _clear_rejected_client(ctx, pending, now)
+    else:
+        _discard_fresh(pending)
+    return _refusal(reason)
+
+
+OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
+    *(
+        (
+            OperationDeclaration(
+                name=f"leads.jobfeed.{name}",
+                safety_class=SafetyClass.MUTATE,
+                roles=frozenset({Role.OWNER}),
+                input_model=model,
+                output=AuthorizationStart,
+                idempotency=Idempotency.NONE,
+                audit=AuditSpec(subject_field=None),
+            ),
+            handler,
+        )
+        for name, model, handler in (
+            ("connect", ConnectInput, connect),
+            ("reconnect", ReconnectInput, reconnect),
+        )
+    ),
     (
         OperationDeclaration(
-            name=f"leads.jobfeed.{name}",
+            name=COMPLETE_AUTHORIZATION,
             safety_class=SafetyClass.MUTATE,
             roles=frozenset({Role.OWNER}),
-            input_model=model,
-            output=AuthorizationStart,
+            input_model=CompleteInput,
+            output=AuthorizationCompletion,
             idempotency=Idempotency.NONE,
             audit=AuditSpec(subject_field=None),
         ),
-        handler,
-    )
-    for name, model, handler in (
-        ("connect", ConnectInput, connect),
-        ("reconnect", ReconnectInput, reconnect),
-    )
+        complete_authorization,
+    ),
 )
