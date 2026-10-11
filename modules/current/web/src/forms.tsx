@@ -1,0 +1,546 @@
+"use client";
+import {
+  useId,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+  type FormEvent,
+} from "react";
+import type {
+  OperationOutcome,
+  ShellApi,
+} from "@rheo-stream/web-contract/screen";
+import {
+  SNOOZE_PICKS,
+  STATUS_LABEL,
+  allowedTargets,
+  areaKey,
+  customSnooze,
+  refusalText,
+  snoozeAt,
+  str,
+  type SnoozePick,
+  type Status,
+} from "./data";
+import styles from "./current.module.css";
+
+type Submit = NonNullable<ShellApi["submit"]>;
+
+export interface Field {
+  name: string;
+  label: string;
+  /** The stored value. On an update form only fields that differ from it are sent. */
+  value?: string;
+  required?: boolean;
+  maxLength?: number;
+  type?: "text" | "date" | "textarea" | "select";
+  options?: { value: string; label: string }[];
+  /** An optional field the operation empties through its `clear` list. */
+  clearable?: boolean;
+  hint?: string;
+}
+
+/**
+ * The operation input a form's values make, or null when an update changes nothing.
+ *
+ * A form whose `base` carries a `revision` is an update: a field is sent only when
+ * it differs from its stored `value`, and blanking a clearable field names it in
+ * `clear`, because Current reads a null or absent field as "leave it". A create
+ * form sends every field that is filled in and leaves the rest to the defaults.
+ */
+export function formInput(
+  operation: string,
+  base: Record<string, unknown>,
+  fields: readonly Field[],
+  submitted: Record<string, string>,
+): Record<string, unknown> | null {
+  const updating = "revision" in base;
+  const input: Record<string, unknown> = { ...base };
+  const clear: string[] = [];
+  let changed = false;
+  for (const field of fields) {
+    const value = submitted[field.name] ?? "";
+    const stored = field.value ?? "";
+    if (updating && value === stored) continue;
+    if (value.trim() === "") {
+      if (!updating) continue;
+      if (field.clearable) clear.push(field.name);
+      else if (!field.required) input[field.name] = "";
+      else continue;
+      changed = true;
+      continue;
+    }
+    input[field.name] = value;
+    changed = true;
+  }
+  if (clear.length) input.clear = clear;
+  if (operation === "current.area.create" && !input.key)
+    input.key = areaKey(str(input.label));
+  return updating && !changed ? null : input;
+}
+
+function createdRef(result: unknown): string {
+  if (typeof result !== "object" || result === null) return "";
+  const r = result as Record<string, unknown>;
+  const item = r.item as Record<string, unknown> | undefined;
+  return str(item?.ref) || str(r.ref);
+}
+
+export interface FormProps {
+  submit: Submit;
+  operation: string;
+  base?: Record<string, unknown>;
+  fields: Field[];
+  button: string;
+  /** Empty the fields after a successful save (new records, comments). */
+  reset?: boolean;
+  /** After a create, link to the new record: `?ref=` is appended. */
+  createdHref?: string;
+  createdLabel?: string;
+  /** Where "reload" goes when the record changed underneath the form. */
+  reloadHref?: string;
+  inline?: boolean;
+}
+export function ActionForm({
+  submit,
+  operation,
+  base = {},
+  fields,
+  button,
+  reset = false,
+  createdHref,
+  createdLabel = "Open it",
+  reloadHref,
+  inline = false,
+}: FormProps) {
+  const id = useId();
+  const [result, setResult] = useState<OperationOutcome | "unchanged" | null>(
+    null,
+  );
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      fields.map((f) => [
+        f.name,
+        f.value ??
+          (f.type === "select" && f.required
+            ? (f.options?.[0]?.value ?? "")
+            : ""),
+      ]),
+    ),
+  );
+  const [pending, startTransition] = useTransition();
+  function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const submitted = Object.fromEntries(
+      fields.map((f) => [f.name, String(form.get(f.name) ?? "")]),
+    );
+    const input = formInput(operation, base, fields, submitted);
+    if (input === null) {
+      setResult("unchanged");
+      return;
+    }
+    startTransition(async () => {
+      let outcome: OperationOutcome;
+      try {
+        outcome = await submit(operation, input);
+      } catch {
+        outcome = { state: "unavailable" };
+      }
+      setResult(outcome);
+      if (outcome.state === "ok" && reset)
+        setValues(
+          Object.fromEntries(
+            fields.map((f) => [
+              f.name,
+              f.type === "select" ? (submitted[f.name] ?? "") : "",
+            ]),
+          ),
+        );
+    });
+  }
+  const created =
+    result !== null && result !== "unchanged" && result.state === "ok"
+      ? createdRef(result.result)
+      : "";
+  return (
+    <form
+      onSubmit={save}
+      className={inline ? styles.inlineForm : styles.form}
+      aria-busy={pending}
+    >
+      <fieldset disabled={pending} className={styles.fieldset}>
+        {fields.map((f) => {
+          const fieldId = `${id}-${f.name}`;
+          const hintId = f.hint ? `${fieldId}-hint` : undefined;
+          const common = {
+            id: fieldId,
+            name: f.name,
+            value: values[f.name] ?? "",
+            required: f.required,
+            "aria-describedby": hintId,
+          };
+          const change = (value: string) =>
+            setValues((before) => ({ ...before, [f.name]: value }));
+          return (
+            <div className={styles.field} key={f.name}>
+              <label htmlFor={fieldId}>
+                {f.label}
+                {f.required || f.type === "select" ? "" : " (optional)"}
+              </label>
+              {f.type === "textarea" ? (
+                <textarea
+                  {...common}
+                  onChange={(e) => change(e.target.value)}
+                  maxLength={f.maxLength ?? 20000}
+                  rows={5}
+                />
+              ) : f.type === "select" ? (
+                <select {...common} onChange={(e) => change(e.target.value)}>
+                  {f.options?.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  {...common}
+                  type={f.type ?? "text"}
+                  onChange={(e) => change(e.target.value)}
+                  maxLength={f.type === "date" ? undefined : (f.maxLength ?? 500)}
+                />
+              )}
+              {f.hint ? (
+                <p id={hintId} className={styles.hint}>
+                  {f.hint}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+        <button type="submit" className={styles.primary}>
+          {pending ? "Saving…" : button}
+        </button>
+      </fieldset>
+      <div aria-live="polite" aria-atomic="true">
+        {result === "unchanged" ? (
+          <p className={styles.meta}>Nothing changed, so nothing was saved.</p>
+        ) : result?.state === "ok" ? (
+          <p className={styles.success}>
+            Saved.
+            {created && createdHref ? (
+              <>
+                {" "}
+                <a
+                  href={`${createdHref}?ref=${encodeURIComponent(created)}`}
+                >
+                  {createdLabel}
+                </a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        {result !== "unchanged" && result?.state === "refused" ? (
+          <p className={styles.error} role="alert">
+            {refusalText(result.code, result.text)}
+            {result.code === "record_stale" && reloadHref ? (
+              <>
+                {" "}
+                <a href={reloadHref}>Reload</a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        {result !== "unchanged" && result?.state === "unavailable" ? (
+          <p className={styles.error} role="alert">
+            We could not confirm the save. Check the record before retrying so
+            nothing is saved twice.
+          </p>
+        ) : null}
+      </div>
+    </form>
+  );
+}
+
+/** One button that submits a fixed input, for small reversible actions. */
+export function ActionButton({
+  submit,
+  operation,
+  input,
+  label,
+  description,
+}: {
+  submit: Submit;
+  operation: string;
+  input: Record<string, unknown>;
+  label: string;
+  /** The accessible name when the visible label alone is ambiguous in a list. */
+  description?: string;
+}) {
+  const [result, setResult] = useState<OperationOutcome | null>(null);
+  const [pending, startTransition] = useTransition();
+  function run() {
+    startTransition(async () => {
+      try {
+        setResult(await submit(operation, input));
+      } catch {
+        setResult({ state: "unavailable" });
+      }
+    });
+  }
+  return (
+    <span className={styles.buttonCell}>
+      <button
+        type="button"
+        className={styles.quiet}
+        onClick={run}
+        disabled={pending}
+        aria-busy={pending}
+        aria-label={description}
+      >
+        {pending ? "Saving…" : label}
+      </button>
+      {result?.state === "refused" ? (
+        <span className={styles.error} role="alert">
+          {refusalText(result.code, result.text)}
+        </span>
+      ) : null}
+      {result?.state === "unavailable" ? (
+        <span className={styles.error} role="alert">
+          Not confirmed. Reload to check.
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+const subscribe = () => () => {};
+/** False while rendering on the server and during hydration, true afterwards. */
+function useHydrated(): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => true,
+    () => false,
+  );
+}
+
+/**
+ * A moment shown in the viewer's own time zone. The server does not know it, so the
+ * server render shows UTC, labelled, and the browser replaces it once hydrated.
+ */
+export function LocalTime({ iso }: { iso: string }) {
+  const hydrated = useHydrated();
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.valueOf())) return null;
+  const text = hydrated
+    ? new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(d)
+    : `${new Intl.DateTimeFormat("en", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "UTC",
+      }).format(d)} UTC`;
+  return <time dateTime={iso}>{text}</time>;
+}
+
+function savedStatus(result: unknown): string {
+  const saved =
+    typeof result === "object" && result !== null
+      ? str((result as Record<string, unknown>).status)
+      : "";
+  return saved in STATUS_LABEL
+    ? `Status saved: ${STATUS_LABEL[saved as Status]}.`
+    : "Status saved.";
+}
+
+const VERB: Record<Status, string> = {
+  open: "Open",
+  waiting: "Wait",
+  snoozed: "Snooze",
+  done: "Done",
+};
+function verb(from: Status, to: Status): string {
+  if (to === "open") return from === "done" ? "Reopen" : "Back to open";
+  return VERB[to];
+}
+
+/**
+ * The status controls for one item: only the moves the service allows from its
+ * current status, so no button leads to a refusal by construction. Snoozing opens
+ * a picker whose quick picks are computed in the browser at the moment of the
+ * click, in the viewer's time zone.
+ */
+export function StatusActions({
+  submit,
+  itemRef,
+  revision,
+  status,
+  subject,
+  compact = false,
+  reloadHref,
+}: {
+  submit: Submit;
+  itemRef: string;
+  revision: number;
+  status: Status;
+  /** The item's title, for accessible names on repeated row controls. */
+  subject: string;
+  compact?: boolean;
+  reloadHref?: string;
+}) {
+  const id = useId();
+  const [result, setResult] = useState<OperationOutcome | null>(null);
+  const [pickerOpenedAt, setPickerOpenedAt] = useState<Date | null>(null);
+  const [custom, setCustom] = useState("");
+  const [customError, setCustomError] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const targets = allowedTargets(status);
+  // Waiting first, done last; the snooze toggle sits between them.
+  const order: Status[] = ["open", "waiting", "snoozed", "done"];
+  const moves = order.filter((s) => targets.includes(s));
+
+  function move(to: Status, until?: Date) {
+    setCustomError(false);
+    startTransition(async () => {
+      let outcome: OperationOutcome;
+      try {
+        outcome = await submit("current.item.set_status", {
+          ref: itemRef,
+          revision,
+          status: to,
+          snoozed_until: until ? until.toISOString() : null,
+        });
+      } catch {
+        outcome = { state: "unavailable" };
+      }
+      setResult(outcome);
+      if (outcome.state === "ok") {
+        setPickerOpenedAt(null);
+        setCustom("");
+      }
+    });
+  }
+  function pick(choice: SnoozePick) {
+    const until = snoozeAt(choice, new Date());
+    if (until) move("snoozed", until);
+  }
+  function snoozeCustom() {
+    const until = customSnooze(custom, new Date());
+    if (until) move("snoozed", until);
+    else setCustomError(true);
+  }
+  const named = (text: string) => (compact ? `${text}: ${subject}` : undefined);
+  const pickerId = `${id}-snooze`;
+  return (
+    <div
+      className={compact ? styles.rowActions : styles.statusActions}
+      aria-busy={pending}
+    >
+      <div className={styles.actionButtons}>
+        {moves.map((to) =>
+          to === "snoozed" ? (
+            <button
+              key={to}
+              type="button"
+              className={styles.quiet}
+              aria-expanded={pickerOpenedAt !== null}
+              aria-controls={pickerId}
+              aria-label={named(status === "snoozed" ? "Snooze again" : "Snooze")}
+              disabled={pending}
+              onClick={() =>
+                setPickerOpenedAt((open) => (open ? null : new Date()))
+              }
+            >
+              {status === "snoozed" ? "Snooze again" : "Snooze"}
+            </button>
+          ) : (
+            <button
+              key={to}
+              type="button"
+              className={to === "done" ? styles.done : styles.quiet}
+              aria-label={named(verb(status, to))}
+              disabled={pending}
+              onClick={() => move(to)}
+            >
+              {verb(status, to)}
+            </button>
+          ),
+        )}
+      </div>
+      {pickerOpenedAt ? (
+        <div
+          className={styles.picker}
+          id={pickerId}
+          role="group"
+          aria-label={`Snooze ${subject} until`}
+        >
+          <div className={styles.picks}>
+            {SNOOZE_PICKS.filter(
+              (p) => snoozeAt(p.id, pickerOpenedAt) !== null,
+            ).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={styles.pick}
+                disabled={pending}
+                onClick={() => pick(p.id)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div className={styles.customPick}>
+            <div className={styles.field}>
+              <label htmlFor={`${id}-custom`}>Or pick a date and time</label>
+              <input
+                id={`${id}-custom`}
+                type="datetime-local"
+                value={custom}
+                onChange={(e) => setCustom(e.target.value)}
+                aria-invalid={customError}
+                aria-describedby={customError ? `${id}-custom-error` : undefined}
+              />
+            </div>
+            <button
+              type="button"
+              className={styles.secondary}
+              disabled={pending || !custom}
+              onClick={snoozeCustom}
+            >
+              Snooze until then
+            </button>
+          </div>
+          {customError ? (
+            <p id={`${id}-custom-error`} className={styles.error} role="alert">
+              Choose a date and time in the future.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <div aria-live="polite" aria-atomic="true">
+        {result?.state === "ok" && !compact ? (
+          <p className={styles.success}>{savedStatus(result.result)}</p>
+        ) : null}
+        {result?.state === "refused" ? (
+          <p className={styles.error} role="alert">
+            {refusalText(result.code, result.text)}
+            {result.code === "record_stale" && reloadHref ? (
+              <>
+                {" "}
+                <a href={reloadHref}>Reload</a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        {result?.state === "unavailable" ? (
+          <p className={styles.error} role="alert">
+            We could not confirm the change. Reload to see the item&apos;s status.
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}

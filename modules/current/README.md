@@ -1,8 +1,9 @@
 # Current
 
 Work in motion: work items, projects, blocked-by dependencies and a workspace list of
-areas. Current requires no other module and runs without Leads. Its web screens arrive
-separately; everything below is reachable through operations and MCP today.
+areas. Current requires no other module and runs without Leads. Everything below is
+reachable through operations and MCP, and through the screens described under
+[Screens](#screens).
 
 Specialist modules own their specialist records and outcomes. Completing a work item
 does not establish that an external submission or business decision succeeded.
@@ -74,3 +75,31 @@ Events carry a reference and revision only: `current.item.created`,
 Export format 1 covers every table. Restore expects a freshly installed module: it
 replaces the seeded area list with the exported one and refuses if any other table
 holds rows.
+
+## Screens
+
+The web package is `modules/current/web` (`@rheo-stream/current-web`). It serves the
+`current` surface (`current.<base host>` in subdomain mode, `/current` in path mode)
+and adds one main-nav entry, Current. Routes are exact paths; a record travels as
+`?ref=` in the query string.
+
+| Path | Screen |
+| --- | --- |
+| `/` | Queue: summary counts, a Woke up section for expired snoozes, then active items by priority and last update. Filters for status, area, project, priority, overdue and blocked, full-text search and paging. Each row has Done, Snooze and Wait (or Back to open). |
+| `/item?ref=` | Item: details, notes, status controls, snooze picker, comments, blocked-by and blocking links, and origin. |
+| `/new` | New item. `?project=` preselects a project. |
+| `/projects`, `/project?ref=` | Projects with item counts by status; one project's items, with create and edit. |
+| `/areas` | Areas, owner only: add, rename, retire and restore. |
+
+Screens read through Current's own read operations and write through the shell's
+form path, which accepts only the `MUTATE` operations the manifest declares as forms.
+Deleting an item or project stays with `core.record.delete` and its per-action
+approval, so the screens have no delete button.
+
+Status buttons offer only the moves the service allows from the item's current
+status. Snooze quick picks (1 hour, this evening at 7pm, tomorrow at 9am, Saturday
+and Monday at 9am) are computed in the browser at the moment of the click, in the
+viewer's time zone; this evening is hidden after 7pm. Edits send only the fields that
+changed with the revision the page read; blanking an optional field names it in
+`clear`. A `record_stale` refusal keeps what was typed and offers a reload. Area order
+is the order areas were added: there is no reorder operation.
