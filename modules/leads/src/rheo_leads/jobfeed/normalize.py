@@ -43,6 +43,7 @@ POSTING_ID_PATTERN = re.compile(r"~02[0-9]+")
 EVENT_ID_SEPARATOR = "."
 # The token is taken loosely here and checked against POSTING_ID_PATTERN afterwards.
 _JOB_PATH = re.compile(r"/jobs/(?:[^/]+_)?(?P<token>~02[^/_]*)/?")
+_FEED_ID = re.compile(r"[0-9A-Za-z_~-]{1,64}")
 _AMOUNT = re.compile(r"\$([0-9,]+(?:\.[0-9]+)?)")
 _PAYMENT = {"VERIFIED": True, "NOT_VERIFIED": False}
 
@@ -193,6 +194,9 @@ class NormalizedPosting:
     search_ordinal: int
     # The raw band text when the row carried a known band, so "50+" is recognisable.
     count_band_label: str | None
+    # The feed row's own ``id``, which a detail read sends. Never delivered, never
+    # compared: ``to_body`` lists its keys explicitly and leaves it out.
+    feed_id: str | None = None
 
     def to_body(self) -> dict[str, str | int]:
         """The flat delivery body: unknown values are left out, never zero."""
@@ -234,6 +238,14 @@ def _optional_flag(value: bool | None) -> str | None:
 
 def _optional_time(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
+
+
+def _feed_id(value: object) -> str | None:
+    """The row's own id when it is a short plain token, else unknown. It goes back
+    upstream as an argument, so anything else is not sent."""
+    if type(value) is not str or _FEED_ID.fullmatch(value) is None:
+        return None
+    return value
 
 
 def _canonical_url(url: object, job_hosts: Sequence[str]) -> tuple[str, str] | None:
@@ -312,6 +324,7 @@ def normalize_row(
         purpose=purpose,
         search_ordinal=search_ordinal,
         count_band_label=band,
+        feed_id=_feed_id(row.get("id")),
     )
 
 

@@ -43,8 +43,9 @@ within 55 s.
 ``endpoint_misconfigured`` (not ``https``, a non-public host, any 3xx), ``protocol``
 (any other status, a malformed body, event stream or JSON-RPC envelope, including a
 JSON-RPC ``error``) and ``tool_error`` (a result with ``isError: true``; its
-``tool_code`` is the ``code`` of the first text block whose JSON has an upper-snake
-code of at most 64 characters, else ``None``; never the message). Like the egress
+``tool_code`` is the ``error_code`` (or, where that key is absent, the ``code``) of
+the first text block whose JSON has an upper-snake code of at most 64 characters,
+else ``None``; never the message). Like the egress
 and OAuth failures, ``str`` and ``repr`` are the code alone and each is raised
 outside any ``except`` block, so ``__cause__`` and ``__context__`` are ``None``.
 """
@@ -318,7 +319,14 @@ def _tool_code(result: dict[str, object]) -> str | None:
             document = json.loads(text)
         except (ValueError, RecursionError):
             continue
-        code = document.get("code") if isinstance(document, dict) else None
+        if not isinstance(document, dict):
+            continue
+        # Servers name the code ``error_code``; ``code`` is read only when that
+        # key is absent, so an unusable ``error_code`` never lets a second field
+        # stand in for it.
+        code = (
+            document["error_code"] if "error_code" in document else document.get("code")
+        )
         if isinstance(code, str) and _TOOL_CODE.fullmatch(code):
             return code
     return None

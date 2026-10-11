@@ -361,6 +361,60 @@ def test_wire_failures_are_attempted_once(
     assert mcp.methods().count(("tools/call", "find_jobs", "get")) == 1
 
 
+def tool_error_then(
+    errors: int, error: Mapping[str, object]
+) -> Callable[[dict[str, Any]], httpx.Response]:
+    """``errors`` ``isError`` results carrying ``error``, then a successful page."""
+    sent = iter(range(1_000))
+
+    def answer(body: dict[str, Any]) -> httpx.Response:
+        failed = next(sent) < errors
+        document: object = error if failed else {"status": "ok", "jobs": []}
+        result: dict[str, Any] = {
+            "content": [{"type": "text", "text": json.dumps(document)}]
+        }
+        if failed:
+            result["isError"] = True
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": body["id"], "result": result}
+        )
+
+    return answer
+
+
+SENSITIVE_ON_THE_WIRE = {"error_code": SENSITIVE_RATE_LIMIT, "reason": f"slow {ORG}"}
+
+
+def test_a_wire_sensitive_rate_limit_is_retried_exactly_once(rig: Rig) -> None:
+    mcp = CountingMcp(tool=tool_error_then(1, SENSITIVE_ON_THE_WIRE))
+    with real_upstream(mcp, rig) as upstream:
+        document = upstream.find_jobs("search", ORG, {"limit": 10})
+    assert document == {"status": "ok", "jobs": []}
+    assert mcp.methods().count(("tools/call", "find_jobs", "search")) == 2
+    assert rig.clock.slept == [pytest.approx(RETRY_SPACING)]
+
+
+def test_a_second_wire_sensitive_rate_limit_fails_after_two_attempts(
+    rig: Rig,
+) -> None:
+    mcp = CountingMcp(tool=tool_error_then(2, SENSITIVE_ON_THE_WIRE))
+    with real_upstream(mcp, rig) as upstream:
+        failure = raises(lambda: upstream.find_jobs("get", ORG, {"id": "1"}), Exception)
+    assert isinstance(failure, UpstreamFailure)
+    assert_content_free(failure, "rate_limited")
+    assert mcp.methods().count(("tools/call", "find_jobs", "get")) == 2
+
+
+def test_a_wire_tool_error_with_another_code_is_not_retried(rig: Rig) -> None:
+    other = {"error_code": "JOB_NOT_FOUND", "reason": f"missing {ORG}"}
+    mcp = CountingMcp(tool=tool_error_then(1, other))
+    with real_upstream(mcp, rig) as upstream:
+        failure = raises(lambda: upstream.find_jobs("get", ORG, {"id": "1"}), Exception)
+    assert isinstance(failure, UpstreamFailure)
+    assert_content_free(failure, "tool_error")
+    assert mcp.methods().count(("tools/call", "find_jobs", "get")) == 1
+
+
 # --- checkpoint ordering ---------------------------------------------------------
 
 

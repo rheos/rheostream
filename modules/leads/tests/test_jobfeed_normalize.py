@@ -611,3 +611,33 @@ def test_duplicate_detail_reads_never_restore_stale_client_metrics() -> None:
     # A second, thinner read keeps the first read's metrics.
     again = apply_detail(duplicate, detail(), HOSTS)
     assert again.client_spend == Decimal("600.00")
+
+
+# --- the feed row's own id ------------------------------------------------------------
+
+FEED_ID = "feedid-7c41e9"
+
+
+def test_the_feed_id_is_carried_but_never_delivered() -> None:
+    carried = apply_detail(posting(id=FEED_ID), detail(hire_rate_percent=40), HOSTS)
+    assert carried.feed_id == FEED_ID
+    body = carried.to_body()
+    assert "feed_id" not in body and "feed_id" not in BODY_KEYS
+    assert FEED_ID not in repr(body)
+    assert FEED_ID not in repr(carried.comparable_fields())
+    # The id never makes two otherwise equal sightings differ.
+    other = apply_detail(posting(id="feedid-0000"), detail(hire_rate_percent=40), HOSTS)
+    assert carried.comparable_fields() == other.comparable_fields()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "has space", "x" * 65, "dot.ted", 10001, True, ["10001"]],
+    ids=["missing", "empty", "space", "long", "dot", "integer", "bool", "list"],
+)
+def test_an_unusable_feed_id_is_left_unknown(value: object) -> None:
+    row = feed_row(id=value)
+    if value is None:
+        del row["id"]
+    result = normalize(row)
+    assert result is not None and result.feed_id is None

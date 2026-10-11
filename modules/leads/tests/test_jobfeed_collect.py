@@ -648,3 +648,28 @@ def test_a_terminal_failure_ends_the_reads() -> None:
         )
     assert caught.value.terminal and caught.value.__context__ is None
     assert len(r.session.calls) == 1
+
+
+# --- the id a detail read sends -------------------------------------------------
+
+
+def test_a_detail_read_sends_the_feed_rows_own_id() -> None:
+    r = run(details_answer())
+    r.details(
+        sightings(
+            posting(1801, ordinal=0, at=0, id="feed-7741"),
+            posting(1802, ordinal=0, at=0, id=None),
+        )
+    )
+    assert r.session.calls == [("get", {"id": "feed-7741"}), ("get", {"id": "1802"})]
+
+
+def test_a_merged_sighting_keeps_a_feed_id_from_any_row() -> None:
+    older = posting(1901, ordinal=0, at=0, id="feed-1901")
+    newer = posting(1901, ordinal=1, at=9, id=None)
+    (one,) = merge_sightings([older, newer])
+    assert one.posting.observed_at == newer.observed_at
+    assert one.posting.feed_id == "feed-1901"
+    r = run(details_answer())
+    r.details([one])
+    assert r.session.calls == [("get", {"id": "feed-1901"})]

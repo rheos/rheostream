@@ -826,8 +826,40 @@ def test_failure_code_mapping(
         (tool_result({"code": ORG}, is_error=True), None),
         (tool_result({"code": 429}, is_error=True), None),
         ({"isError": True}, None),
+        (
+            tool_result(
+                {"error_code": "SENSITIVE_RATE_LIMIT_EXCEEDED", "reason": ORG},
+                is_error=True,
+            ),
+            "SENSITIVE_RATE_LIMIT_EXCEEDED",
+        ),
+        (
+            tool_result(
+                {"error_code": "RATE_LIMITED", "code": "NOT_FOUND"}, is_error=True
+            ),
+            "RATE_LIMITED",
+        ),
+        (
+            tool_result({"error_code": ORG, "code": "NOT_FOUND"}, is_error=True),
+            None,
+        ),
+        (
+            tool_result({"error_code": None, "code": "NOT_FOUND"}, is_error=True),
+            None,
+        ),
     ],
-    ids=["code", "later-block", "no-code", "not-a-code", "number", "no-content"],
+    ids=[
+        "code",
+        "later-block",
+        "no-code",
+        "not-a-code",
+        "number",
+        "no-content",
+        "error-code",
+        "error-code-over-code",
+        "invalid-error-code-no-fallback",
+        "null-error-code-no-fallback",
+    ],
 )
 def test_a_tool_error_exposes_only_its_short_code(
     result: dict[str, object], tool_code: str | None

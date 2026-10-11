@@ -198,6 +198,8 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
                 replace(
                     preferred,
                     applied=any(row.applied for row in group),
+                    feed_id=preferred.feed_id
+                    or next((row.feed_id for row in group if row.feed_id), None),
                     purpose=(
                         "discover"
                         if any(row.purpose == "discover" for row in group)
@@ -218,9 +220,12 @@ def _eligible(posting: NormalizedPosting) -> bool:
     )
 
 
-def _detail_id(posting_id: str) -> str:
-    """The id a ``get`` takes: the posting token's digits after its ``~02``."""
-    return posting_id.removeprefix("~02")
+def _detail_id(posting: NormalizedPosting) -> str:
+    """The id a ``get`` takes: the feed row's own id, or, when the row carried
+    none, the posting token's digits after its ``~02``."""
+    if posting.feed_id is not None:
+        return posting.feed_id
+    return posting.posting_id.removeprefix("~02")
 
 
 def _described(
@@ -268,7 +273,7 @@ def read_details(
             if not cut and reads < max_reads:
                 try:
                     detail = upstream.find_jobs(
-                        "get", org_uid, {"id": _detail_id(key)}, deadline=deadline
+                        "get", org_uid, {"id": _detail_id(posting)}, deadline=deadline
                     )
                 except RunCut:
                     cut = True
