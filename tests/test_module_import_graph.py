@@ -339,3 +339,19 @@ def test_core_contracts_and_apps_do_not_depend_on_relationships() -> None:
         "tests/postgres/test_module_storage_ownership.py",
         "tests/test_module_import_graph.py",
     }
+
+
+def test_core_contracts_and_apps_do_not_depend_on_current() -> None:
+    # Current requires no other module and nothing outside its own tests names it.
+    actual = {
+        str(path.relative_to(_REPO_ROOT))
+        for top in _SCAN_DIRS
+        for path in (_REPO_ROOT / top).rglob("*.py")
+        if _mentions(path, "rheo_current", "modules/current")
+    }
+    assert actual == {
+        "tests/postgres/test_current_module.py",
+        # Planted foreign-storage imports exercise the existing module guard.
+        "tests/postgres/test_module_storage_ownership.py",
+        "tests/test_module_import_graph.py",
+    }

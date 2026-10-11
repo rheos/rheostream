@@ -1,8 +1,8 @@
 # Architecture tour
 
 rheoStream keeps workspace records in Postgres and lets web clients and agents
-operate on them through the same service boundary. The core and Recallatron are
-implemented; Leads, Current and Relationships are still stubs. See the
+operate on them through the same service boundary. The core, Recallatron,
+Relationships, Leads and Current are implemented; Current has no screens yet. See the
 [README status](../../README.md#status) for the current release position.
 
 This is a route through the code that exists today. The
