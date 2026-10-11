@@ -14,7 +14,8 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -28,6 +29,7 @@ from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.factories import context_for_connection
 from rheo_core.connectors import oauth
 from rheo_core.connectors.oauth import ClientAuth, Discovered, RegisteredClient
+from rheo_core.events.consumers import HandlerUnitOfWork
 from rheo_core.operations import dispatch
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.refs import uuid7
@@ -35,12 +37,17 @@ from rheo_core.settings import deployment as settings_deployment
 from rheo_core.settings import resolver as settings_resolver
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.schedules import ensure_module_schedule
-from rheo_leads.jobfeed import Dependencies, use_dependencies
+from rheo_leads.jobfeed import Dependencies, delivery, use_dependencies
+from rheo_leads.jobfeed.collect import Sighting
+from rheo_leads.jobfeed.delivery import DeliveryResult
 from rheo_leads.jobfeed.install import install_connection
+from rheo_leads.jobfeed.normalize import NormalizedPosting
+from rheo_leads.jobfeed.presets import Purpose
 from rheo_leads.jobfeed.run import SCHEDULE_NAME
 from rheo_leads.pipeline_common import lock
 from rheo_leads.references import ref
 from rheo_leads.storage import jobfeed as j
+from sqlalchemy import event as sa_event
 from sqlalchemy import insert, update
 
 # A global IPv6 literal, as the egress tests use: the provenance gate flags any
@@ -713,6 +720,123 @@ def combined(
         return authorization.handle(request)
 
     return httpx.MockTransport(handle)
+
+
+# --- sightings and the real delivery step ---------------------------------------------
+
+SIGHTED_AT = datetime(2026, 1, 5, 9, 0, tzinfo=UTC)
+FULL_DESCRIPTION = "Build an example data pipeline for a fictional retailer."
+
+
+def posting(
+    posting_id: str = "~02100",
+    *,
+    title: str = "Example posting",
+    description: str | None = None,
+    proposal_count: int | None = 5,
+    exact: bool | None = True,
+    band: str | None = None,
+    observed_at: datetime = SIGHTED_AT,
+    purpose: Purpose = "discover",
+    applied: bool = False,
+    verified: bool | None = True,
+    spend: str | None = "25000",
+    rating: str | None = "4.9",
+    reviews: int | None = 31,
+    hire_rate: str | None = None,
+    budget: tuple[str, str] | None = ("500", "1500"),
+) -> NormalizedPosting:
+    """A synthetic normalized posting, as ``normalize_row`` (and ``apply_detail``)
+    would produce it. A count also stamps the proposal observation time."""
+    return NormalizedPosting(
+        posting_id=posting_id,
+        title=title,
+        posting_url=f"https://www.example.com/jobs/{posting_id}",
+        description=description,
+        job_type="fixed",
+        budget_min=None if budget is None else Decimal(budget[0]),
+        budget_max=None if budget is None else Decimal(budget[1]),
+        proposal_count=proposal_count,
+        proposal_count_exact=exact if proposal_count is not None else None,
+        proposal_observed_at=observed_at if proposal_count is not None else None,
+        posted_on=date(2026, 1, 4),
+        client_payment_verified=verified,
+        client_spend=None if spend is None else Decimal(spend),
+        client_rating=None if rating is None else Decimal(rating),
+        client_reviews=reviews,
+        client_hire_rate=None if hire_rate is None else Decimal(hire_rate),
+        applied=applied,
+        observed_at=observed_at,
+        purpose=purpose,
+        search_ordinal=0,
+        count_band_label=band,
+        feed_id=f"feed{posting_id[3:]}",
+    )
+
+
+def discovered(posting_id: str = "~02100", **changes: Any) -> Sighting:
+    """A discovery sighting whose detail read succeeded: it carries the full
+    description and the detail-only hire rate."""
+    changes.setdefault("description", FULL_DESCRIPTION)
+    changes.setdefault("hire_rate", "0.8")
+    return Sighting(posting(posting_id, **changes), detail_ok=True)
+
+
+def refreshed(posting_id: str = "~02100", **changes: Any) -> Sighting:
+    """A refresh-only sighting: no detail read, so no description."""
+    changes.setdefault("purpose", "refresh_only")
+    return Sighting(posting(posting_id, **changes), detail_ok=False)
+
+
+def over_cap(posting_id: str = "~02100", **changes: Any) -> Sighting:
+    """A sighting from the over-cap refresh search: the "50+" band."""
+    changes.setdefault("proposal_count", 51)
+    changes.setdefault("exact", False)
+    changes.setdefault("band", "50+")
+    return refreshed(posting_id, **changes)
+
+
+@dataclass
+class DeliveryRun:
+    result: DeliveryResult
+    checkpoints: int
+    statements: list[str]
+
+
+def run_delivery(
+    c: Collector,
+    sightings: Sequence[Sighting],
+    *,
+    now: datetime | None = None,
+) -> DeliveryRun:
+    """Deliver ``sightings`` through the real ``deliver`` in one work transaction,
+    shaped as the run handler's Phase B: a sealed handler view of one unit of work,
+    the lifecycle lock taken first, the poll connection's own acceptance context, then
+    one commit. Every SQL statement the transaction executes is captured."""
+    checkpoints: list[None] = []
+    statements: list[str] = []
+
+    def capture(*args: Any) -> None:
+        statements.append(str(args[2]))
+
+    with open_unit_of_work(c.owner) as uow:
+        sa_event.listen(uow.connection, "before_cursor_execute", capture)
+        try:
+            handler = HandlerUnitOfWork(uow, consumers=c.intake.consumers)
+            lock(handler)
+            result = delivery.deliver(
+                handler,
+                c.poll,
+                connection_id=c.connection_id,
+                pipeline_id=c.pipeline_id,
+                sightings=sightings,
+                now=now or datetime.now(UTC),
+                checkpoint=lambda: checkpoints.append(None),
+            )
+        finally:
+            sa_event.remove(uow.connection, "before_cursor_execute", capture)
+        uow.commit()
+    return DeliveryRun(result, len(checkpoints), statements)
 
 
 @contextmanager

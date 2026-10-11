@@ -1,15 +1,21 @@
 """The collector's own state rows."""
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from typing import Final
 from uuid import UUID
 
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import Connection, delete, select, update
+from sqlalchemy import Connection, Text, any_, cast, delete, func, select, update
+from sqlalchemy.dialects.postgresql import ARRAY, array, insert
 
+from rheo_leads.jobfeed.normalize import EVENT_ID_SEPARATOR
 from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import tables as t
+
+_SEQUENCE = re.compile(r"[0-9]+")
 
 RUN_CLAIM_WINDOW: Final = timedelta(minutes=60)
 """How long a run's claim holds: no run starts before ``run_claimed_at`` plus this."""
@@ -135,6 +141,121 @@ def forget_posting(
     if connection_id is not None:
         statement = statement.where(j.jobfeed_posting.c.connection_id == connection_id)
     uow.connection.execute(statement)
+
+
+@dataclass(frozen=True)
+class StoredPosting:
+    """A posting's dedupe row: its last sequence number and stored field digests
+    (the text :func:`rheo_leads.jobfeed.delivery.format_digests` writes)."""
+
+    seq: int
+    field_digests: str
+
+
+def read_postings(
+    uow: UnitOfWork, *, connection_id: UUID, posting_ids: Sequence[str]
+) -> dict[str, StoredPosting]:
+    """The connection's dedupe rows for ``posting_ids``, by posting id; one read."""
+    if not posting_ids:
+        return {}
+    table = j.jobfeed_posting
+    return {
+        row.posting_id: StoredPosting(seq=row.seq, field_digests=row.field_digests)
+        for row in uow.connection.execute(
+            select(table.c.posting_id, table.c.seq, table.c.field_digests).where(
+                table.c.connection_id == connection_id,
+                table.c.posting_id.in_(sorted(set(posting_ids))),
+            )
+        )
+    }
+
+
+def _receipt_sequence(event_id: str) -> int | None:
+    """The integer second segment of a receipt's event id, or ``None``."""
+    parts = event_id.split(EVENT_ID_SEPARATOR)
+    if len(parts) < 2 or _SEQUENCE.fullmatch(parts[1]) is None:
+        return None
+    return int(parts[1])
+
+
+def next_seq(
+    uow: UnitOfWork, *, connection_id: UUID, posting_ids: Sequence[str]
+) -> dict[str, int]:
+    """The sequence number each posting's next delivery uses. Never one used before.
+
+    With a dedupe row it is the row's ``seq`` plus one. Without one (a posting never
+    delivered, or one whose row an approved erasure removed) it is one more than the
+    largest integer second segment among this connection's receipt event ids for that
+    posting, else 1: erasure leaves every receipt in place, so this sees every number
+    ever used. That fallback is one batched read of receipt identifiers only; no
+    payload, digest or other content is read.
+    """
+    wanted = sorted(set(posting_ids))
+    stored = read_postings(uow, connection_id=connection_id, posting_ids=wanted)
+    result = {posting_id: row.seq + 1 for posting_id, row in stored.items()}
+    missing = [posting_id for posting_id in wanted if posting_id not in stored]
+    if not missing:
+        return result
+    receipt = t.delivery_receipt
+    highest = dict.fromkeys(missing, 0)
+    found: list[str] = list(
+        uow.connection.execute(
+            select(receipt.c.source_event_id).where(
+                receipt.c.connection_id == connection_id,
+                func.split_part(receipt.c.source_event_id, EVENT_ID_SEPARATOR, 1)
+                == any_(cast(array(missing), ARRAY(Text))),
+            )
+        ).scalars()
+    )
+    for event_id in found:
+        posting_id = event_id.split(EVENT_ID_SEPARATOR, 1)[0]
+        sequence = _receipt_sequence(event_id)
+        if posting_id in highest and sequence is not None:
+            highest[posting_id] = max(highest[posting_id], sequence)
+    result.update({posting_id: top + 1 for posting_id, top in highest.items()})
+    return result
+
+
+def upsert_posting(
+    uow: UnitOfWork,
+    *,
+    connection_id: UUID,
+    posting_id: str,
+    seq: int,
+    merged_digests: str,
+    last_event_id: str,
+    now: datetime,
+    keep_digests: bool,
+) -> None:
+    """Record ``seq`` as the posting's last used number, in the caller's transaction.
+
+    ``keep_digests`` leaves an existing row's stored digests as they are (the number
+    is consumed but the content was not accepted); a new row then stores
+    ``merged_digests``, which the caller passes as the digests it already held.
+    """
+    table = j.jobfeed_posting
+    updates: dict[str, object] = {
+        "seq": seq,
+        "last_event_id": last_event_id,
+        "last_delivered_at": now,
+    }
+    if not keep_digests:
+        updates["field_digests"] = merged_digests
+    uow.connection.execute(
+        insert(table)
+        .values(
+            connection_id=connection_id,
+            posting_id=posting_id,
+            seq=seq,
+            field_digests=merged_digests,
+            last_event_id=last_event_id,
+            first_delivered_at=now,
+            last_delivered_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=[table.c.connection_id, table.c.posting_id], set_=updates
+        )
+    )
 
 
 def clear_collector_health(conn: Connection, connection_id: UUID) -> None:
