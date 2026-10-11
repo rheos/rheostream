@@ -52,6 +52,7 @@ from rheo_leads.jobfeed.state import (
     claim_run,
     claimed_connection,
     clear_rejected_client,
+    current_token,
     read_connection,
     switch_token,
     write_success,
@@ -135,9 +136,15 @@ class _Run:
     job_ctx: WorkspaceContext
     conn_ctx: WorkspaceContext
     connection: JobfeedConnection
-    client: ClientAuth
+    client: ClientAuth | None
     generation: int
     deadline: float = 0.0
+
+    def auth(self) -> ClientAuth:
+        """The stored client; a run reaches a request only with one."""
+        if self.client is None:
+            raise TypeError("the run has no stored client")
+        return self.client
 
 
 def session_phase(
@@ -208,26 +215,26 @@ def _collect(
     )
     if isinstance(conn_ctx, Refusal):
         return
-    client = _client(connection)
-    if (
-        not enabled
-        or connection.authorization_state != "connected"
-        or connection.token_ref is None
-        or client is None
-        or (connection.not_before is not None and now < connection.not_before)
-    ):
-        return
-    settings = resolve()
-    resource_url = settings.get_str(RESOURCE_URL_KEY)
-    if not resource_url or not settings.get_list(JOB_HOSTS_KEY):
+    if not enabled or connection.authorization_state != "connected":
         return
     run = _Run(
         job_ctx=job_ctx,
         conn_ctx=conn_ctx,
         connection=connection,
-        client=client,
+        client=_client(connection),
         generation=connection.credential_generation,
     )
+    if connection.token_ref is None or run.client is None:
+        # Connected but unable to authenticate (a cleared client whose terminal
+        # write never landed): make it terminal, so it does not stay connected.
+        _end(uow, run, Terminal())
+        return
+    if connection.not_before is not None and now < connection.not_before:
+        return
+    settings = resolve()
+    resource_url = settings.get_str(RESOURCE_URL_KEY)
+    if not resource_url or not settings.get_list(JOB_HOSTS_KEY):
+        return
     if resource_url != connection.resource_url:
         _end(uow, run, Transient(ENDPOINT_MISCONFIGURED), backoff=False)
         return
@@ -284,7 +291,7 @@ def _refresh(
             connection.token_endpoint,
             refresh_ref=current,
             resource=connection.resource_url,
-            client=run.client,
+            client=run.auth(),
             workspace_id=run.job_ctx.workspace_id,
             connection_id=connection.connection_id,
             resolver=deps.resolver,
@@ -335,33 +342,62 @@ def _rotate(token: CancellationToken, run: _Run, old: str, new: str) -> bool:
     so it is revoked once and its file discarded; the run ends writing nothing.
     A checkpoint that raises on the way stops neither the revocation nor the
     discard; it is raised once both are done.
+
+    Failed: the switch raised, and its commit may or may not have applied. What
+    the row references, re-read in a fresh unit, decides: a row that references
+    the new file took the switch, so the run goes on as won; otherwise the minted
+    token is revoked and its file discarded, the old file is discarded only when
+    the row no longer references it, and the failure is raised. If even the
+    re-read fails, nothing is discarded.
     """
     deps = dependencies()
-    connection = run.connection
+    connection_id = run.connection.connection_id
     try:
         won = switch_token(
             run.job_ctx,
-            connection_id=connection.connection_id,
+            connection_id=connection_id,
             old_ref=old,
             new_ref=new,
             generation=run.generation,
             now=deps.now(),
         )
-    except BaseException:
-        # Never committed: nothing references the new file.
-        oauth.discard(new)
-        raise
-    if won:
+    except Exception as error:
+        failure = error
+    else:
+        if won:
+            oauth.discard(old)
+            run.generation += 1
+            return True
+        _reraise(*_retire_minted(token, run, new))
+        return False
+    current = current_token(run.job_ctx, connection_id=connection_id)
+    if current is not None and current[0] == new:
         oauth.discard(old)
-        run.generation += 1
+        run.generation = current[1]
         return True
+    stops = _retire_minted(token, run, new)
+    if current is None or current[0] != old:
+        oauth.discard(old)
+    _reraise(failure, *stops)
+    return False
+
+
+def _retire_minted(
+    token: CancellationToken, run: _Run, new: str
+) -> tuple[Exception | None, ...]:
+    """Revoke a minted token nothing references, once, then discard its file:
+    a forced checkpoint before the call and the ordinary one after it. Neither
+    a raising checkpoint nor a failed revocation skips the discard; what they
+    raised is returned for the caller to raise afterwards."""
+    deps = dependencies()
+    connection = run.connection
     before_call = _checkpoint(token, force=True)
     failed: Exception | None = None
     try:
         oauth.revoke(
             connection.revocation_endpoint,
             refresh_ref=new,
-            client=run.client,
+            client=run.auth(),
             workspace_id=run.job_ctx.workspace_id,
             connection_id=connection.connection_id,
             resolver=deps.resolver,
@@ -373,8 +409,7 @@ def _rotate(token: CancellationToken, run: _Run, old: str, new: str) -> bool:
         failed = error
     after_call = _checkpoint(token)
     oauth.discard(new)
-    _reraise(before_call, failed, after_call)
-    return False
+    return (before_call, failed, after_call)
 
 
 def _end(
@@ -393,7 +428,7 @@ def _end(
         retired = clear_rejected_client(
             run.job_ctx,
             connection_id=connection_id,
-            client_id=run.client.client_id,
+            client_id=run.auth().client_id,
             generation=run.generation,
             now=deps.now(),
         )

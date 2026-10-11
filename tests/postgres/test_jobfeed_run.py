@@ -14,6 +14,7 @@ connections of their own.
 import logging
 import threading
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -36,6 +37,7 @@ from harness.jobfeed import (
     Responder,
     Tokens,
     after_claim,
+    after_step_one_read,
     answer,
     before,
     collect_jobs,
@@ -67,6 +69,7 @@ from rheo_leads.references import ref
 from sqlalchemy import Engine, event, select, text
 
 from postgres.test_jobfeed_authorization import (
+    client_of,
     collect_schedule,
     complete,
     connected,
@@ -592,6 +595,126 @@ def test_a_cancellation_in_the_lost_race_still_revokes_and_discards(
     assert after.token_ref is None and after.credential_generation == 2
 
 
+@contextmanager
+def failing_switch_commit(
+    *, applied: bool, reread_fails: bool = False
+) -> Iterator[None]:
+    """The rotation's compare-and-set unit fails. ``applied``: it fails as it
+    commits, after the database committed (through the driver connection
+    itself), so the caller sees a failure for a commit that took. Otherwise its
+    statement fails, so nothing is committed. ``reread_fails`` also fails the
+    run's fresh re-read of the token reference."""
+    pending: set[int] = set()
+
+    def watch(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        upper = statement.lstrip().upper()
+        if upper.startswith("UPDATE LEADS.JOBFEED_CONNECTION SET TOKEN_REF"):
+            if not applied:
+                raise InjectedFailure("switch failed")
+            pending.add(id(conn))
+        if reread_fails and upper.startswith(
+            "SELECT LEADS.JOBFEED_CONNECTION.TOKEN_REF"
+        ):
+            raise InjectedFailure("re-read failed")
+
+    def on_commit(conn: Any) -> None:
+        if id(conn) in pending:
+            pending.discard(id(conn))
+            conn.connection.dbapi_connection.commit()
+            raise InjectedFailure("commit outcome unknown")
+
+    event.listen(Engine, "before_cursor_execute", watch)
+    event.listen(Engine, "commit", on_commit)
+    try:
+        yield
+    finally:
+        event.remove(Engine, "before_cursor_execute", watch)
+        event.remove(Engine, "commit", on_commit)
+
+
+def test_a_switch_whose_commit_took_despite_an_error_goes_on_as_won(
+    intake: Intake, root: Path, served: FakeAuthorizationServer, clock: FakeClock
+) -> None:
+    """The compare-and-set committed but its commit reported a failure: the fresh
+    re-read finds the new reference, so the new file is kept, the old one retired
+    and the run completes on the new generation."""
+    c = connected_collector(intake, served, registration_token=False)
+    old_file = file_of(root, c.token_ref)
+    rotating = Tokens(rotating=True)
+    served.token = rotating
+    with failing_switch_commit(applied=True):
+        run_at(c, clock)
+    after = stored(c.owner)
+    assert after.token_ref is not None and after.token_ref != c.token_ref
+    assert after.credential_generation == 2
+    assert file_of(root, after.token_ref).read_text() == rotating.issued[-1]
+    assert not old_file.exists()
+    assert secret_files(root) == {file_of(root, after.token_ref)}
+    assert served.revocation_requests == []
+    assert last_error(c) is None
+    quietly_succeeded(c)
+
+
+def test_a_switch_that_failed_revokes_and_discards_the_minted_token(
+    intake: Intake, root: Path, served: FakeAuthorizationServer, clock: FakeClock
+) -> None:
+    """The compare-and-set never committed: the row still references the old
+    file, which stays; the minted token is revoked once and its file discarded;
+    the run fails with the fixed ``internal_error``."""
+    c = connected_collector(intake, served, registration_token=False)
+    old_file = file_of(root, c.token_ref)
+    rotating = Tokens(rotating=True)
+    served.token = rotating
+    with failing_switch_commit(applied=False):
+        run_at(c, clock)
+    assert revoked_tokens(served) == [rotating.issued[-1]]
+    after = stored(c.owner)
+    assert after.token_ref == c.token_ref and after.credential_generation == 1
+    assert old_file.read_text() == c.refresh_token
+    assert secret_files(root) == {old_file}
+    (attempt,) = collect_jobs(c.owner)
+    assert attempt.last_error == "internal_error" and attempt.attempts == 1
+
+
+def test_a_failed_reread_after_an_unknown_switch_discards_nothing(
+    intake: Intake, root: Path, served: FakeAuthorizationServer, clock: FakeClock
+) -> None:
+    """Neither file is discarded while what the row references is unknown."""
+    c = connected_collector(intake, served, registration_token=False)
+    served.token = Tokens(rotating=True)
+    with failing_switch_commit(applied=True, reread_fails=True):
+        run_at(c, clock)
+    after = stored(c.owner)
+    assert after.token_ref is not None and after.token_ref != c.token_ref
+    assert file_of(root, after.token_ref).exists()
+    assert file_of(root, c.token_ref).exists()
+    assert served.revocation_requests == []
+    (attempt,) = collect_jobs(c.owner)
+    assert attempt.last_error == "internal_error"
+
+
+def test_a_reconnect_between_the_first_read_and_the_claim_is_not_claimed(
+    intake: Intake, root: Path, served: FakeAuthorizationServer, clock: FakeClock
+) -> None:
+    """The claim's generation predicate: credentials stored after the run's first
+    read are never refreshed as the client that read saw."""
+    c = connected_collector(intake, served)
+    client_before = client_of(stored(c.owner))
+    served.token = Tokens()
+    with after_step_one_read(lambda: reconnect(c, served)):
+        run_at(c, clock)
+    assert refresh_requests(served) == []
+    after = stored(c.owner)
+    assert after.credential_generation == 2
+    assert after.token_ref is not None and after.token_ref != c.token_ref
+    assert file_of(root, after.token_ref).exists()
+    assert client_of(after) == client_before
+    assert after.run_claimed_at is None
+    assert after.authorization_state == "connected"
+    assert last_error(c) is None
+    quietly_succeeded(c)
+
+
 def test_a_revoke_that_wins_the_race_leaves_no_live_token(
     intake: Intake, root: Path, served: FakeAuthorizationServer, clock: FakeClock
 ) -> None:
@@ -704,6 +827,43 @@ def test_a_token_endpoint_that_turned_private_gets_no_byte(
     assert after.not_before == clock.now() + TWO_HOURS
     assert lost_audits(c.owner) == []
     quietly_succeeded(c)
+
+
+@pytest.mark.parametrize("missing", ["client", "token"])
+def test_a_connected_row_that_cannot_authenticate_becomes_terminal(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    missing: str,
+) -> None:
+    """A connected row with no client or no token reference (a cleared client
+    whose terminal write never landed) does not stay connected: the run makes it
+    terminal, once, without any request."""
+    c = connected_collector(intake, served)
+    if missing == "client":
+        set_connection(
+            c.owner,
+            client_id=None,
+            client_auth_method=None,
+            client_redirect_uri=None,
+            client_secret_ref=None,
+            registration_token_ref=None,
+        )
+    else:
+        set_connection(c.owner, token_ref=None)
+    run_at(c, clock)
+    assert served.requests == [] and mcp.requests == []
+    after = stored(c.owner)
+    assert after.authorization_state == "authorization_required"
+    assert after.credential_generation == 1
+    assert collect_schedule(c.owner)["enabled"] is False  # type: ignore[index]
+    assert last_error(c) == "authorization_required"
+    assert len(lost_audits(c.owner)) == 1
+    quietly_succeeded(c)
+    for _ in range(2):
+        run_at(c, clock, hours=2)
+    assert served.requests == [] and len(lost_audits(c.owner)) == 1
 
 
 def test_a_forced_run_of_a_restored_copy_calls_nothing(

@@ -436,6 +436,22 @@ def switch_token(
     return bool(won)
 
 
+def current_token(
+    ctx: WorkspaceContext, *, connection_id: UUID
+) -> tuple[str | None, int] | None:
+    """The connection's current ``(token_ref, credential_generation)``, read in a
+    fresh unit; ``None`` when the connection is gone."""
+    table = j.jobfeed_connection
+    with open_unit_of_work(ctx) as unit:
+        row = unit.connection.execute(
+            select(table.c.token_ref, table.c.credential_generation).where(
+                table.c.connection_id == connection_id
+            )
+        ).one_or_none()
+        unit.commit()
+    return None if row is None else (row.token_ref, row.credential_generation)
+
+
 ClientFiles = tuple[str | None, str | None]
 
 

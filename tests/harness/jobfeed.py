@@ -12,7 +12,7 @@ import json
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -985,25 +985,35 @@ def _is_claim(statement: str) -> bool:
     )
 
 
-@contextmanager
-def after_claim(callback: Callable[[], None]) -> Iterator[None]:
-    """Run ``callback`` once, after the run's claim unit has committed, before the
-    refresh: an owner operation then runs on connections of its own.
+def _is_step_one_read(statement: str) -> bool:
+    upper = statement.lstrip().upper()
+    return (
+        upper.startswith("SELECT LEADS.JOBFEED_CONNECTION.CONNECTION_ID")
+        and "FOR UPDATE" not in upper
+    )
 
-    The claim's unit is recognised by its ``UPDATE ... SET run_claimed_at``
-    statement. Core's connection events offer no after-commit hook (``commit``
-    fires before the database commits), so the callback runs when that unit gives
-    its connection back to the pool, which happens only after the commit.
+
+@contextmanager
+def _after_unit(
+    matches: Callable[[str], bool], callback: Callable[[], None], what: str
+) -> Iterator[None]:
+    """Run ``callback`` once, after the first unit that executed a statement
+    ``matches`` recognises has ended: an owner operation then runs on connections
+    of its own.
+
+    Core's connection events offer no after-commit hook (``commit`` fires before
+    the database commits), so the callback runs when that unit gives its
+    connection back to the pool, which happens only after its transaction ended.
     """
-    claimed: set[int] = set()
+    seen: set[int] = set()
     fired: list[bool] = []
 
     def watch(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
-        if _is_claim(statement):
-            claimed.add(id(conn.connection.dbapi_connection))
+        if not fired and matches(statement):
+            seen.add(id(conn.connection.dbapi_connection))
 
     def returned(dbapi_connection: Any, record: Any) -> None:
-        if not fired and id(dbapi_connection) in claimed:
+        if not fired and id(dbapi_connection) in seen:
             fired.append(True)
             callback()
 
@@ -1014,4 +1024,18 @@ def after_claim(callback: Callable[[], None]) -> Iterator[None]:
     finally:
         sa_event.remove(Engine, "before_cursor_execute", watch)
         sa_event.remove(Pool, "checkin", returned)
-    assert fired, "the run never claimed"
+    assert fired, f"the run never reached {what}"
+
+
+def after_claim(callback: Callable[[], None]) -> AbstractContextManager[None]:
+    """Run ``callback`` once, after the run's claim unit (its ``UPDATE ... SET
+    run_claimed_at``) has committed, before the refresh."""
+    return _after_unit(_is_claim, callback, "its claim")
+
+
+def after_step_one_read(
+    callback: Callable[[], None],
+) -> AbstractContextManager[None]:
+    """Run ``callback`` once, after the run's first short read of the connection
+    has ended, before the claim."""
+    return _after_unit(_is_step_one_read, callback, "its first read")
