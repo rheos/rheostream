@@ -12,8 +12,9 @@ host itself is unchanged: it still serves ``/healthz`` and whatever else it serv
 Path mode has one host, so ``/api/*`` is served on whatever host the request names,
 as the ``mcp`` surface is (``mcp_mount``).
 
-**The identity routes are mounted at ``routing.identity.path``.** ``auth_routes`` and
-``oauth_routes`` register their handlers under the declared default prefix
+**The identity routes are mounted at ``routing.identity.path``.** ``auth_routes``,
+``oauth_routes`` and ``connector_oauth_routes`` register their handlers under the
+declared default prefix
 (:data:`~rheo_core.oauth.surface.SERVED_IDENTITY_PATH`, ``/auth``), while
 ``url_for(IDENTITY, ...)`` and ``identity_path`` build every advertised URL under the
 configured one. With the default, nothing changes. With another prefix, this guard
@@ -21,7 +22,10 @@ rewrites ``<prefix>`` and ``<prefix>/...`` onto the served ``/auth`` paths (in a
 of the scope) and answers the served paths themselves 404, so the URLs core
 advertises are exactly the ones it answers, in both modes. The OAuth connector stays
 unconfigured under a non-default prefix (``rheo_core.oauth.surface``); its rewritten
-paths reach routes that 404 for that reason, as they did before.
+paths reach routes that 404 for that reason, as they did before. The connector OAuth
+client's callback (``connector_oauth_routes``) is the same: ``oauth.enabled()`` in
+``rheo_core.connectors`` is false under any other prefix, so its rewritten path 404s
+too, and it answers on the identity host only.
 
 An identity prefix that overlaps another route ``core`` answers (``/api``,
 ``/healthz``, ``/.well-known``, or the ``mcp`` surface's path in path mode) refuses
