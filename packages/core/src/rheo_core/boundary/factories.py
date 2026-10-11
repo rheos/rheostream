@@ -332,9 +332,11 @@ def context_for_scheduled_job(workspace_id: UUID) -> WorkspaceContext | Refusal:
     Actor ``system`` with no id, role ``service``, entry ``job``, no audience, no
     account, no bound purpose and an empty operation set: the same shape as
     :func:`context_for_evidence_recovery`, named for this use. Like
-    :func:`context_for_memory_expiry` it is a value and not an authority: it
-    dispatches nothing, and holding one grants only the routing a workspace id
-    already implies.
+    :func:`context_for_memory_expiry` it is a value and not an authority: it reaches
+    no dispatchable operation. It can still carry a ``publish``, which reads its
+    actor for the outbox row and its ``enabled_modules`` for the fan-out, so a
+    holder can open short units of work on this workspace and publish events from
+    them, and nothing else.
     """
     if not isinstance(workspace_id, UUID):
         raise TypeError("workspace_id must be a UUID")
