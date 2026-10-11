@@ -20,6 +20,8 @@ from typing import Any
 
 import pytest
 import yaml
+from rheo_core.modules import discovered, load_entry_point
+from rheo_core.modules.manifest import ModuleManifest
 from rheo_core.routing import (
     IDENTITY,
     MCP,
@@ -31,7 +33,6 @@ from rheo_core.routing import (
     url_for,
 )
 from rheo_core.settings import resolve
-from rheo_leads.manifest import MANIFEST as LEADS_MANIFEST
 from rheo_recallatron.manifest import MANIFEST as RECALLATRON_MANIFEST
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +141,17 @@ def _recallatron_surface_config() -> SurfaceConfig:
     return SurfaceConfig(host=web.host, path=web.path)
 
 
+def _installed_manifests() -> tuple[ModuleManifest, ...]:
+    """Every module the overlay's own ``modules.installed`` names, reached through its
+    ``rheo.modules`` entry point as the loader reaches it. Deriving the set from the
+    overlay means a module added there is held to the host-set test automatically."""
+    installed = ANCHOR["RHEO__modules__installed"].split(",")
+    by_id = {entry.name: entry for entry in discovered()}
+    missing = sorted(set(installed) - set(by_id))
+    assert not missing, f"the overlay installs undiscovered modules: {missing}"
+    return tuple(load_entry_point(by_id[module_id]) for module_id in installed)
+
+
 def _resolved_routing_config(monkeypatch: pytest.MonkeyPatch) -> RoutingConfig:
     monkeypatch.setenv("RHEO__routing__mode", ANCHOR["RHEO__routing__mode"])
     monkeypatch.setenv("RHEO__routing__scheme", ANCHOR["RHEO__routing__scheme"])
@@ -150,7 +162,7 @@ def _resolved_routing_config(monkeypatch: pytest.MonkeyPatch) -> RoutingConfig:
             manifest.module_id: SurfaceConfig(
                 host=manifest.web.surface.host, path=manifest.web.surface.path
             )
-            for manifest in (RECALLATRON_MANIFEST, LEADS_MANIFEST)
+            for manifest in _installed_manifests()
             if manifest.web is not None
         },
     )

@@ -66,7 +66,6 @@ def test_current_entry_point_and_independence() -> None:
     )
     assert found.load() is MANIFEST
     assert MANIFEST.dependencies == ()
-    assert MANIFEST.web is None
     assert MANIFEST.deletion_participants == ()
     assert MANIFEST.export.format_version == 1
     assert {e.type for e in MANIFEST.events} == {
@@ -74,6 +73,30 @@ def test_current_entry_point_and_independence() -> None:
         "current.item.completed",
         "current.item.reopened",
     }
+
+
+def test_current_web_surface_and_forms() -> None:
+    web = MANIFEST.web
+    assert web is not None
+    assert (web.surface.surface, web.surface.host, web.surface.path) == (
+        "current",
+        "current",
+        "/current",
+    )
+    assert web.package_name == "@rheo-stream/current-web"
+    assert [(r.id, r.path) for r in web.routes] == [
+        ("queue", "/"),
+        ("item", "/item"),
+        ("new", "/new"),
+        ("projects", "/projects"),
+        ("project", "/project"),
+        ("areas", "/areas"),
+    ]
+    # The screens submit every MUTATE operation and nothing else.
+    mutating = {
+        d.name for d, _ in MANIFEST.operations if d.safety_class is SafetyClass.MUTATE
+    }
+    assert {f.operation for f in web.forms} == mutating
 
 
 def test_current_declares_no_external_or_financial_operation() -> None:

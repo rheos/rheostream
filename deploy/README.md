@@ -160,10 +160,17 @@ The overlay is `deploy/compose.flagship.yaml`; every variable it interpolates is
 documented in `deploy/.env.flagship.example` (not re-listed here). The reference
 instance at `rheo.stream` runs this overlay under Coolify, with GitHub sign-in on.
 
-It routes five hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth` and
-`recall` (Recallatron's screens) reach `web` for everything except `/auth/*`,
-which core serves on all three of those hosts; `api` and `mcp` each reach `core`
-directly, over token auth. The apex host is not routed by this overlay.
+It routes seven hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth`, `recall`
+(Recallatron's screens), `leads` and `current` (the Current work queue) reach `web`
+for everything except `/auth/*`, which core serves on all five of those hosts;
+`api` and `mcp` each reach `core` directly, over token auth. The apex host is not
+routed by this overlay.
+
+A module host follows the modules the overlay installs (`RHEO__modules__installed`).
+Naming a module there loads its operations, tools and web surface into each process
+at start; it does not install the module in any workspace or run its migrations.
+Its screens appear only in a workspace where an owner has installed and enabled the
+module; elsewhere its pages answer 404.
 
 Recallatron's host was `recallatron` until issue #158. That name is now
 redirect-only: `recallatron.${RHEO_BASE_HOST}`, over https or plain http, gets a

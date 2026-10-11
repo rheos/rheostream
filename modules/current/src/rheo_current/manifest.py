@@ -7,9 +7,14 @@ from rheo_core.audit.core_sink import CORE_AUDIT_SINK
 from rheo_core.modules.manifest import (
     EventDeclaration,
     ExportDeclaration,
+    FormDeclaration,
     ModuleManifest,
+    NavigationEntry,
     RecordType,
     StorageDeclaration,
+    WebContribution,
+    WebRoute,
+    WebSurface,
 )
 
 from rheo_current.contracts import ItemEvent
@@ -70,7 +75,42 @@ MANIFEST = ModuleManifest(
         exporter=export_records,
         importer=import_records,
     ),
-    web=None,
+    web=WebContribution(
+        surface=WebSurface(surface="current", host="current", path="/current"),
+        package_name="@rheo-stream/current-web",
+        navigation=(NavigationEntry(id="current", label="Current", path="/"),),
+        # Exact paths only; a record travels as ?ref= in the query string.
+        routes=tuple(
+            WebRoute(id=name, path=path, screen=screen)
+            for name, path, screen in (
+                ("queue", "/", "queue"),
+                ("item", "/item", "item"),
+                ("new", "/new", "newItem"),
+                ("projects", "/projects", "projects"),
+                ("project", "/project", "project"),
+                ("areas", "/areas", "areas"),
+            )
+        ),
+        record_views=(),
+        search_providers=(),
+        # Every MUTATE operation the screens submit. Deletion stays with
+        # core.record.delete and its per-action approval, outside the form path.
+        forms=tuple(
+            FormDeclaration(operation="current." + name, component="ActionForm")
+            for name in (
+                "item.create",
+                "item.update",
+                "item.set_status",
+                "item.comment",
+                "dependency.add",
+                "dependency.remove",
+                "project.create",
+                "project.update",
+                "area.create",
+                "area.update",
+            )
+        ),
+    ),
     agent_guidance=None,
     secret_scopes=(),
     connector_bindings=(),
