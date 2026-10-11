@@ -1240,6 +1240,43 @@ def test_a_reused_client_rejected_is_cleared_and_the_connection_goes_terminal(
     assert stored(owner).client_id is not None
 
 
+def test_a_rejected_clients_files_are_discarded_only_after_the_clearing_commits(
+    intake: Intake,
+    owner: WorkspaceContext,
+    pipeline_id: UUID,
+    served: FakeAuthorizationServer,
+    root: Path,
+) -> None:
+    before = connected(intake, owner, served, pipeline_id)
+    files = client_files(root, before)
+    assert len(files) == 2
+    served.token = token_error("invalid_client")
+    params = restart(intake, owner, served)
+    clearing: set[int] = set()
+    at_commit: list[bool] = []
+
+    def watch(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        if statement.lstrip().upper().startswith("UPDATE LEADS.JOBFEED_CONNECTION"):
+            clearing.add(id(conn))
+
+    def on_commit(conn: Any) -> None:
+        if id(conn) in clearing:
+            clearing.discard(id(conn))
+            at_commit.append(all(f.exists() for f in files))
+
+    event.listen(Engine, "before_cursor_execute", watch)
+    event.listen(Engine, "commit", on_commit)
+    try:
+        outcome = complete(intake, owner, **params)
+    finally:
+        event.remove(Engine, "before_cursor_execute", watch)
+        event.remove(Engine, "commit", on_commit)
+    assert result(outcome) == ("refused", "client_rejected")
+    assert at_commit == [True]
+    assert not any(f.exists() for f in files)
+    assert stored(owner).client_id is None
+
+
 def test_a_rejected_client_no_longer_stored_clears_nothing(
     intake: Intake,
     owner: WorkspaceContext,

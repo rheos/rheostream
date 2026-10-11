@@ -33,7 +33,7 @@ reconnect, the content-free health code, which retires nothing.
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Final, Literal, cast
+from typing import Final, Literal, cast, get_args
 from uuid import UUID
 
 from rheo_contracts import (
@@ -87,6 +87,7 @@ CLIENT_NAME_KEY: Final = "connectors.oauth_client.client_name"
 REGISTRATION_FAILED: Final = "registration_failed"
 AUTHORIZATION_REQUIRED: Final = "authorization_required"
 COMPLETE_AUTHORIZATION: Final = "leads.jobfeed.complete_authorization"
+_AUTH_METHODS: Final[frozenset[str]] = frozenset(get_args(ClientAuthMethod))
 
 # One fixed, content-free text per refusal code.
 _DETAILS: Final[dict[str, str]] = {
@@ -502,6 +503,16 @@ def _check(
     return None
 
 
+def _auth_method(pending: PendingAuthorization) -> ClientAuthMethod:
+    """The pending row's client authentication method, checked against the three
+    the OAuth client supports. The column's CHECK constraint admits only those,
+    so the failure is unreachable; it keeps the narrowing honest."""
+    method = pending.client_auth_method
+    if method not in _AUTH_METHODS:
+        raise ValueError("unsupported client authentication method")
+    return cast(ClientAuthMethod, method)
+
+
 @dataclass(frozen=True)
 class _NewToken:
     """The reference to the refresh token the exchange just wrote."""
@@ -517,7 +528,7 @@ def _exchange(
     deps = dependencies()
     client = ClientAuth(
         client_id=pending.client_id,
-        auth_method=cast(ClientAuthMethod, pending.client_auth_method),
+        auth_method=_auth_method(pending),
         client_secret_ref=pending.client_secret_ref,
         secret_expires_at=pending.client_secret_expires_at,
     )
@@ -600,26 +611,28 @@ def _clear_rejected_client(
     _discard_files(*retired)
 
 
-def _endpoints(pending: PendingAuthorization) -> dict[str, Any]:
-    return {
-        "resource_url": pending.resource_url,
-        "issuer": pending.issuer,
-        "authorization_endpoint": pending.authorization_endpoint,
-        "token_endpoint": pending.token_endpoint,
-        "registration_endpoint": pending.registration_endpoint,
-        "revocation_endpoint": pending.revocation_endpoint,
-    }
+def _pinned(pending: PendingAuthorization) -> Discovered:
+    """The endpoints the start discovered and pinned on the pending row."""
+    return Discovered(
+        resource_url=pending.resource_url,
+        issuer=pending.issuer,
+        authorization_endpoint=pending.authorization_endpoint,
+        token_endpoint=pending.token_endpoint,
+        registration_endpoint=pending.registration_endpoint,
+        revocation_endpoint=pending.revocation_endpoint,
+    )
 
 
-def _client_columns(pending: PendingAuthorization) -> dict[str, Any]:
-    return {
-        "client_id": pending.client_id,
-        "client_auth_method": pending.client_auth_method,
-        "client_redirect_uri": pending.redirect_uri,
-        "client_secret_expires_at": pending.client_secret_expires_at,
-        "client_secret_ref": pending.client_secret_ref,
-        "registration_token_ref": pending.registration_token_ref,
-    }
+def _registered_client(pending: PendingAuthorization) -> RegisteredClient:
+    """The pending row's client as a registration result."""
+    return RegisteredClient(
+        client_id=pending.client_id,
+        auth_method=_auth_method(pending),
+        redirect_uri=pending.redirect_uri,
+        secret_expires_at=pending.client_secret_expires_at,
+        client_secret_ref=pending.client_secret_ref,
+        registration_token_ref=pending.registration_token_ref,
+    )
 
 
 def _write_connection(
@@ -641,15 +654,8 @@ def _write_connection(
             ctx,
             connection_id=pending.connection_id,
             pipeline_id=pending.pipeline_id,
-            endpoints=Discovered(**_endpoints(pending)),
-            client=RegisteredClient(
-                client_id=pending.client_id,
-                auth_method=cast(ClientAuthMethod, pending.client_auth_method),
-                redirect_uri=pending.redirect_uri,
-                secret_expires_at=pending.client_secret_expires_at,
-                client_secret_ref=pending.client_secret_ref,
-                registration_token_ref=pending.registration_token_ref,
-            ),
+            endpoints=_pinned(pending),
+            client=_registered_client(pending),
         )
         unit.connection.execute(
             update(table)
@@ -665,8 +671,14 @@ def _write_connection(
             # token belongs to a client the connection no longer stores.
             raise _refused("record_stale")
         retired.append(current.token_ref)
-        values: dict[str, Any] = {
-            **_endpoints(pending),
+        pinned = _pinned(pending)
+        values: dict[str, object] = {
+            "resource_url": pinned.resource_url,
+            "issuer": pinned.issuer,
+            "authorization_endpoint": pinned.authorization_endpoint,
+            "token_endpoint": pinned.token_endpoint,
+            "registration_endpoint": pinned.registration_endpoint,
+            "revocation_endpoint": pinned.revocation_endpoint,
             "token_ref": reference,
             "credential_generation": current.credential_generation + 1,
             "consecutive_failures": 0,
@@ -677,7 +689,15 @@ def _write_connection(
         if pending.client_registered:
             # The new client replaces the stored one, whose files then go.
             retired += [current.client_secret_ref, current.registration_token_ref]
-            values.update(_client_columns(pending))
+            client = _registered_client(pending)
+            values.update(
+                client_id=client.client_id,
+                client_auth_method=client.auth_method,
+                client_redirect_uri=client.redirect_uri,
+                client_secret_expires_at=client.secret_expires_at,
+                client_secret_ref=client.client_secret_ref,
+                registration_token_ref=client.registration_token_ref,
+            )
         unit.connection.execute(
             update(table)
             .where(table.c.connection_id == current.connection_id)
