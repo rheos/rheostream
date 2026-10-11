@@ -337,3 +337,91 @@ def test_transport_singleton_and_client_constraints(intake: Intake) -> None:
             .one()["consecutive_failures"]
             == 0
         )
+
+
+def test_export_leaves_out_the_job_feed_tables(intake: Intake) -> None:
+    """The temporary exclusion keeps references and the verifier out of export.
+
+    Export format 7 replaces the exclusion with an export that carries the job feed
+    tables minus their secret and client columns; this test changes with it.
+    """
+    from types import SimpleNamespace
+    from typing import cast
+
+    from rheo_core.exports.artifact import ExportSnapshot
+    from rheo_leads.export import export_records
+
+    secrets = {
+        "token_ref": "fixture-token-ref-7f3a",
+        "client_secret_ref": "fixture-client-secret-ref-7f3a",
+        "registration_token_ref": "fixture-registration-ref-7f3a",
+        "client_id": "fixture-client-id-7f3a",
+        "client_redirect_uri": "https://www.example.com/fixture-callback-7f3a",
+    }
+    verifier = "fixture-verifier-7f3a" + "v" * 65
+    pipeline = RecordRef.parse(ok(intake, "pipeline.create", name="Job examples").ref)
+    poll = connector(intake, "poll", "fixture-poll")
+    write(
+        intake,
+        collector_row(
+            poll,
+            pipeline.id,
+            authorization_state="connected",
+            client_auth_method="client_secret_post",
+            organization_id="fixture-org-7f3a",
+            **secrets,
+        ),
+    )
+    write(intake, authorization_row(poll, pipeline.id, b"\x03" * 32))
+    now = datetime.now(UTC)
+    write(
+        intake,
+        j.jobfeed_authorization.update().values(
+            code_verifier=verifier,
+            client_secret_ref="fixture-pending-secret-ref-7f3a",
+            registration_token_ref="fixture-pending-registration-ref-7f3a",
+        ),
+    )
+    write(
+        intake,
+        insert(j.jobfeed_posting).values(
+            connection_id=poll,
+            posting_id="fixture-posting-7f3a",
+            seq=1,
+            field_digests="title=0123456789abcdef",
+            last_event_id="fixture-event-7f3a",
+            first_delivered_at=now,
+            last_delivered_at=now,
+        ),
+    )
+    write(
+        intake,
+        insert(j.jobfeed_account_choice).values(
+            connection_id=poll,
+            organization_id="fixture-org-7f3a",
+            label="Example organization",
+            ordinal=0,
+            seen_at=now,
+        ),
+    )
+    with open_unit_of_work(intake.ctx) as uow:
+        for table in j.TABLES:
+            assert uow.connection.execute(select(table)).first() is not None, table
+        rows = export_records(
+            cast(ExportSnapshot, SimpleNamespace(connection=uow.connection))
+        )
+    record_types = {str(row["record_type"]) for row in rows}
+    # Positive control: the export ran and carried the poll connection itself.
+    assert "leads.intake_connection" in record_types
+    assert any(row.get("id") == poll for row in rows)
+    assert not {name for name in record_types if name.startswith("leads.jobfeed_")}
+    rendered = repr(rows)
+    for value in (
+        *secrets.values(),
+        verifier,
+        "fixture-pending-secret-ref-7f3a",
+        "fixture-pending-registration-ref-7f3a",
+        "fixture-posting-7f3a",
+        "fixture-org-7f3a",
+    ):
+        assert value not in rendered, value
