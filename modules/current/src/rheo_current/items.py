@@ -307,7 +307,13 @@ def listing(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemList) -> c.ItemP
     if data.due_before is not None:
         query = query.where(t.item.c.due_on <= data.due_before)
     if data.overdue is not None:
-        late = and_(t.item.c.status != "done", t.item.c.due_on < today)
+        # The null check keeps the predicate two-valued, so its negation keeps
+        # unfinished items that have no due date.
+        late = and_(
+            t.item.c.status != "done",
+            t.item.c.due_on.is_not(None),
+            t.item.c.due_on < today,
+        )
         query = query.where(late if data.overdue else ~late)
     if data.woke is not None:
         woke = and_(t.item.c.status == "snoozed", t.item.c.snoozed_until <= moment)

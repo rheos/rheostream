@@ -391,7 +391,11 @@ def test_comment_author_comes_from_the_actor(current: Current) -> None:
 
 def test_compare_and_set_and_clearing(current: Current) -> None:
     item = current.item("Due item", due_on="2020-01-01", priority="critical")
-    assert current.ok("item.list", overdue=True).items[0].ref == item.ref
+    undated = current.item("No due date")
+    assert [i.ref for i in current.ok("item.list", overdue=True).items] == [item.ref]
+    assert [i.ref for i in current.ok("item.list", overdue=False).items] == [
+        undated.ref
+    ]
     updated = current.ok(
         "item.update", ref=item.ref, revision=item.revision, clear=["due_on"]
     )

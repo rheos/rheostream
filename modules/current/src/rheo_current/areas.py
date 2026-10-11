@@ -7,6 +7,8 @@ reaches every item at once and a retired area stays readable on the items that
 carry it. Areas are retired, never deleted.
 """
 
+from typing import Any
+
 from rheo_contracts import WorkspaceContext
 from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import func, insert, select, update
@@ -28,11 +30,11 @@ DEFAULT_AREAS = (
 """Seeded by migration 0001; the migration holds its own frozen copy."""
 
 
-def output(row: dict[str, object]) -> c.Area:
+def output(row: dict[str, Any]) -> c.Area:
     return c.Area(
-        key=str(row["key"]),
-        label=str(row["label"]),
-        position=int(str(row["position"])),
+        key=row["key"],
+        label=row["label"],
+        position=row["position"],
         retired=row["retired_at"] is not None,
     )
 
