@@ -63,7 +63,8 @@ credentials to a token or revocation request: ``none`` puts ``client_id`` in the
 body; ``client_secret_basic`` sets HTTP Basic over the form-urlencoded client id and
 secret (RFC 6749 s2.3.1) with no secret in the body; ``client_secret_post`` puts both
 in the body. A secret whose stored expiry has passed, or that cannot be read, is
-never sent: either is the terminal ``client_rejected``.
+never sent: either is the terminal ``client_rejected``, and so is a naive expiry or
+``now`` (the comparison never raises).
 
 **Tokens.** :func:`exchange_code` and :func:`refresh` each send one form ``POST``
 to the pinned token endpoint, authenticated per the stored client, with a 15 s
@@ -101,6 +102,7 @@ its bytes only through :meth:`AccessToken.authorization_header`.
 """
 
 import base64
+import enum
 import hashlib
 import hmac
 import json
@@ -111,13 +113,11 @@ import time
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, Literal, NoReturn, SupportsIndex, final
+from typing import Final, Literal, final
 from urllib.parse import quote, quote_plus, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
-from pydantic import GetCoreSchemaHandler
-from pydantic_core import core_schema
 
 from rheo_core.connectors import credentials, egress
 from rheo_core.connectors.egress import Clock, EgressResponse, Resolver
@@ -126,12 +126,12 @@ from rheo_core.oauth.surface import SERVED_IDENTITY_PATH
 from rheo_core.refs import uuid7
 from rheo_core.routing import IDENTITY, RoutingConfig, url_for
 from rheo_core.secrets import (
+    OpaqueValue,
     SecretRef,
     SecretRefusal,
     SecretScope,
     SecretStore,
     SecretValue,
-    SecretValueNotSerialisable,
 )
 from rheo_core.settings import resolve
 from rheo_core.settings.schema import SettingsError
@@ -689,17 +689,26 @@ def _registration_body(redirect_uri: str, client_name: str) -> bytes:
     ).encode("ascii")
 
 
-def _optional_secret(document: dict[str, object], key: str) -> bytes | None | OAuthCode:
+class _Malformed(enum.Enum):
+    """The sentinel :func:`_optional_secret` returns for a member that is present
+    but not a usable string; each caller maps it to its own code."""
+
+    MEMBER = "malformed"
+
+
+def _optional_secret(
+    document: dict[str, object], key: str
+) -> bytes | None | _Malformed:
     """A string secret member as bytes; ``None`` when absent, null or empty."""
     value = document.get(key)
     if value is None or value == "":
         return None
     if not isinstance(value, str):
-        return "registration_failed"
+        return _Malformed.MEMBER
     try:
         return value.encode("utf-8")
     except UnicodeEncodeError:  # a lone surrogate from a JSON escape
-        return "registration_failed"
+        return _Malformed.MEMBER
 
 
 def _expiry(value: object) -> datetime | None | OAuthCode:
@@ -744,7 +753,7 @@ def _judge_registration(
     secret = _optional_secret(document, "client_secret")
     token = _optional_secret(document, "registration_access_token")
     expires_at = _expiry(document.get("client_secret_expires_at"))
-    if isinstance(secret, str) or isinstance(token, str):
+    if isinstance(secret, _Malformed) or isinstance(token, _Malformed):
         return "registration_failed"
     if isinstance(expires_at, str):
         return expires_at
@@ -884,6 +893,21 @@ def _read_client_secret(ref: str | None) -> str | None:
         return None
 
 
+def _aware(value: object) -> bool:
+    return isinstance(value, datetime) and value.utcoffset() is not None
+
+
+def _secret_current(expires_at: datetime | None, now: datetime) -> bool:
+    """Whether a client secret may still be sent: no expiry, or an expiry after
+    ``now``. A naive or non-datetime time on either side counts as expired, so a
+    comparison can never raise."""
+    if not _aware(now):
+        return False
+    if expires_at is None:
+        return True
+    return _aware(expires_at) and expires_at > now
+
+
 def apply_client_authentication(
     client: ClientAuth,
     form: MutableMapping[str, str],
@@ -898,8 +922,8 @@ def apply_client_authentication(
     if method == "none":
         form["client_id"] = client.client_id
         return
-    if method not in _SECRET_METHODS or (
-        client.secret_expires_at is not None and client.secret_expires_at <= now
+    if method not in _SECRET_METHODS or not _secret_current(
+        client.secret_expires_at, now
     ):
         raise OAuthFailure("client_rejected", terminal=True)
     secret = _read_client_secret(client.client_secret_ref)
@@ -919,65 +943,28 @@ def apply_client_authentication(
 ACCESS_TOKEN_REDACTED: Final = "AccessToken(<redacted>)"
 
 
-def _refuse_serialising(value: object) -> NoReturn:
-    raise SecretValueNotSerialisable("AccessToken cannot be serialised")
-
-
 @final
-class AccessToken:
+class AccessToken(OpaqueValue):
     """An access token held in memory for one run.
 
     ``repr``, ``str`` and every ``format`` spec are ``AccessToken(<redacted>)``; it
-    cannot be hashed, pickled, copied, subclassed or serialised (the
-    :class:`~rheo_core.secrets.SecretValue` rules), and its bytes leave only through
-    :meth:`authorization_header`, which the MCP session alone calls.
+    cannot be hashed, pickled, copied, subclassed or serialised (the guards of
+    :class:`~rheo_core.secrets.OpaqueValue`, shared with ``SecretValue``), and its
+    bytes leave only through :meth:`authorization_header`, which the MCP session
+    alone calls.
     """
 
     __slots__ = ("__value",)
+    _redacted = ACCESS_TOKEN_REDACTED
 
     def __init__(self, value: str) -> None:
         if not isinstance(value, str):
             raise TypeError("AccessToken wraps a string")
         self.__value: str = value
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        raise TypeError("AccessToken cannot be subclassed")
-
     def authorization_header(self) -> str:
         """The ``Authorization`` header value for the configured resource URL."""
         return f"Bearer {self.__value}"
-
-    def __repr__(self) -> str:
-        return ACCESS_TOKEN_REDACTED
-
-    def __str__(self) -> str:
-        return ACCESS_TOKEN_REDACTED
-
-    def __format__(self, format_spec: str) -> str:
-        return ACCESS_TOKEN_REDACTED
-
-    def __hash__(self) -> int:
-        raise TypeError("AccessToken is unhashable")
-
-    def __reduce__(self) -> NoReturn:
-        _refuse_serialising(self)
-
-    def __reduce_ex__(self, protocol: SupportsIndex, /) -> NoReturn:
-        _refuse_serialising(self)
-
-    def __getstate__(self) -> NoReturn:
-        _refuse_serialising(self)
-
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source: Any, handler: GetCoreSchemaHandler
-    ) -> core_schema.CoreSchema:
-        return core_schema.is_instance_schema(
-            cls,
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                _refuse_serialising, when_used="always"
-            ),
-        )
 
 
 # --- token requests -------------------------------------------------------------------
@@ -995,7 +982,7 @@ _TERMINAL_ERRORS: Final[dict[str, OAuthCode]] = {
     "invalid_grant": "invalid_grant",
     "unauthorized_client": "unauthorized_client",
 }
-_TOKEN_FORM: Final = {"Accept": "application/json"}
+_TOKEN_HEADERS: Final = {"Accept": "application/json"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1070,7 +1057,7 @@ def _judge_tokens(
     ):
         return OAuthFailure(failed)
     refresh_token = _optional_secret(document, "refresh_token")
-    if isinstance(refresh_token, str):
+    if isinstance(refresh_token, _Malformed):
         return OAuthFailure(failed)
     if require_refresh and refresh_token is None:
         return OAuthFailure("no_refresh_token")
@@ -1127,7 +1114,7 @@ def _token_grant(
     """Authenticate ``form`` as ``client`` and post it to the token endpoint."""
     if not isinstance(endpoint, str) or not isinstance(client, ClientAuth):
         raise _misconfigured()
-    headers = dict(_TOKEN_FORM)
+    headers = dict(_TOKEN_HEADERS)
     apply_client_authentication(
         client, form, headers, now=now if now is not None else datetime.now(UTC)
     )
@@ -1271,7 +1258,7 @@ def _revoke(
     ):
         return Revocation("revocation_failed")
     form: dict[str, str] = {}
-    headers = dict(_TOKEN_FORM)
+    headers = dict(_TOKEN_HEADERS)
     rejected = False
     try:
         apply_client_authentication(

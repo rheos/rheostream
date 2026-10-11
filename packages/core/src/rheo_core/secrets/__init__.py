@@ -43,6 +43,7 @@ from rheo_core.secrets.store import (
 )
 from rheo_core.secrets.value import (
     REDACTED,
+    OpaqueValue,
     SecretValue,
     SecretValueNotSerialisable,
     refuse_secret_values,
@@ -56,6 +57,7 @@ __all__ = [
     "SECRET_SCOPE_DENIED",
     "EnvBackend",
     "FileBackend",
+    "OpaqueValue",
     "SecretBackend",
     "SecretRef",
     "SecretRefusal",

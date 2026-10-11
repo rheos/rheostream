@@ -22,6 +22,8 @@ from uuid import UUID
 
 import httpx
 import pytest
+from pydantic import BaseModel, ConfigDict
+from pydantic_core import PydanticSerializationError
 from rheo_core.connectors.oauth import (
     AccessToken,
     ClientAuth,
@@ -32,7 +34,14 @@ from rheo_core.connectors.oauth import (
     refresh,
     revoke,
 )
-from rheo_core.secrets import SecretRef, SecretRefusal, SecretStore, SecretValue
+from rheo_core.secrets import (
+    SecretRef,
+    SecretRefusal,
+    SecretStore,
+    SecretValue,
+    SecretValueNotSerialisable,
+    refuse_secret_values,
+)
 
 PUBLIC = "2600::1"
 """A global unicast address; no test resolves or contacts it."""
@@ -635,6 +644,34 @@ def test_each_method_authenticates_every_token_and_revocation_request(
             assert str(request.url) in (TOKEN, REVOKE)
 
 
+NAIVE = {
+    "naive expiry": (datetime(2030, 1, 1), NOW),
+    "naive now": (NOW + timedelta(days=1), datetime(2026, 10, 10, 12)),
+    "both naive": (datetime(2030, 1, 1), datetime(2026, 10, 10, 12)),
+}
+
+
+@pytest.mark.parametrize("case", sorted(NAIVE))
+@pytest.mark.parametrize("method", ["client_secret_basic", "client_secret_post"])
+def test_a_naive_time_is_client_rejected_with_nothing_sent(
+    fake: FakeServer, method: str, case: str
+) -> None:
+    expires_at, now = NAIVE[case]
+    client = secret_client(method, expires_at=expires_at)
+    ref = stored(REFRESH)
+    for call in (
+        lambda: fake.exchange(client, now=now),
+        lambda: fake.refresh(ref, client, now=now),
+    ):
+        failure = failure_of(call)
+        assert_content_free(failure, "client_rejected")
+        assert failure.terminal is True
+    assert fake.revoke(ref, client, now=now) == Revocation(
+        "revocation_failed", client_rejected=True
+    )
+    assert fake.requests == []
+
+
 @pytest.mark.parametrize("method", ["client_secret_basic", "client_secret_post"])
 def test_an_expired_secret_is_never_sent(fake: FakeServer, method: str) -> None:
     client = secret_client(method, expires_at=NOW - timedelta(seconds=1))
@@ -1099,6 +1136,12 @@ def test_secret_store_failures_have_no_chain(
 # --- the access token holder ---------------------------------------------------------
 
 
+class TokenHolder(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    token: AccessToken
+
+
 def test_the_access_token_hides_its_bytes(fake: FakeServer) -> None:
     _, access = fake.exchange()
     for rendered in (repr(access), str(access), f"{access}", f"{access!r:>40}"):
@@ -1118,6 +1161,16 @@ def test_the_access_token_refuses_every_serialisation(fake: FakeServer) -> None:
         copy.deepcopy(access)
     with pytest.raises(TypeError):
         json.dumps({"token": access})
+    with pytest.raises(SecretValueNotSerialisable):
+        json.dumps({"token": access}, default=refuse_secret_values)
+    holder = TokenHolder(token=access)
+    for dump in (holder.model_dump, holder.model_dump_json):
+        with pytest.raises(PydanticSerializationError) as excinfo:
+            dump()
+        assert "SecretValueNotSerialisable" in str(excinfo.value)
+        assert ACCESS not in str(excinfo.value)
+    with pytest.raises(PydanticSerializationError):
+        holder.model_dump(mode="json")
     with pytest.raises(TypeError):
         hash(access)
     with pytest.raises(TypeError):
