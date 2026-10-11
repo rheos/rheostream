@@ -12,6 +12,14 @@ from sqlalchemy import delete, insert, select
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
+# Decided together from one observation, by recency rather than completeness: a
+# refresh sighting is thin by design, yet its count is the newest known one.
+COMPETITION_GROUP = (
+    "ext.jobsearch.proposal_count",
+    "ext.jobsearch.proposal_count_exact",
+    "ext.jobsearch.proposal_observed_at",
+)
+
 
 def fields(uow: UnitOfWork, record: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
@@ -54,7 +62,8 @@ def derive(uow: UnitOfWork, record: dict[str, Any]) -> dict[str, Any]:
     Replay occurrence order and replace only with evidence at least as complete
     and at least as authoritative. Stable event keys break equal-time ties.
     Explicit clears invalidate older evidence even when the correction is thin.
-    User-owned fields are never replayed.
+    User-owned fields are never replayed. The competition fields are the one
+    exception to the completeness rule; see ``_derive_competition``.
     """
     identifier = record["id"]
     specs = fields(uow, record)
@@ -100,21 +109,15 @@ def derive(uow: UnitOfWork, record: dict[str, Any]) -> dict[str, Any]:
                 # it poison later reconciliation or approved source erasure.
                 continue
         candidates.setdefault(target, []).append(r)
-    for target in set(current) | set(candidates):
-        old = current.get(target)
-        if old and (old["owner"] == "user" or old["orphaned"]):
+    _derive_competition(uow, identifier, current, candidates)
+    for target in (set(current) | set(candidates)) - set(COMPETITION_GROUP):
+        if _replayed_elsewhere(current.get(target)):
             continue
         values = candidates.get(target, [])
-        clears = [v for v in values if v["value_kind"] == "cleared"]
-        if clears:
-            cutoff = max(v["source_occurred_at"] for v in clears)
+        cutoff = _clear_cutoff(values)
+        if cutoff is not None:
             values = [v for v in values if v["source_occurred_at"] >= cutoff]
-        uow.connection.execute(
-            delete(p.opportunity_field_state).where(
-                p.opportunity_field_state.c.opportunity_id == identifier,
-                p.opportunity_field_state.c.target == target,
-            )
-        )
+        _replace(uow, identifier, target, None)
         if not values:
             continue
         ordered = sorted(
@@ -134,20 +137,7 @@ def derive(uow: UnitOfWork, record: dict[str, Any]) -> dict[str, Any]:
                 and candidate["priority"] >= winner["priority"]
             ):
                 winner = candidate
-        uow.connection.execute(
-            insert(p.opportunity_field_state).values(
-                opportunity_id=identifier,
-                target=target,
-                value_kind=winner["value_kind"],
-                value_text=winner["value_text"],
-                owner="source",
-                observation_id=winner["observation_id"],
-                occurred_at=winner["source_occurred_at"],
-                completeness=winner["completeness"],
-                priority=winner["priority"],
-                orphaned=False,
-            )
-        )
+        _replace(uow, identifier, target, winner)
     title = uow.connection.execute(
         select(p.opportunity_field_state.c.value_text).where(
             p.opportunity_field_state.c.opportunity_id == identifier,
@@ -155,6 +145,102 @@ def derive(uow: UnitOfWork, record: dict[str, Any]) -> dict[str, Any]:
         )
     ).scalar_one_or_none()
     return {"title": title or "Untitled inquiry"}
+
+
+def _replayed_elsewhere(old: dict[str, Any] | None) -> bool:
+    """User-owned and orphaned field states are never replayed from evidence."""
+    return bool(old and (old["owner"] == "user" or old["orphaned"]))
+
+
+def _clear_cutoff(values: list[dict[str, Any]]) -> Any:
+    """Explicit clears invalidate older evidence even when the correction is thin."""
+    clears = [v["source_occurred_at"] for v in values if v["value_kind"] == "cleared"]
+    return max(clears, default=None)
+
+
+def _replace(
+    uow: UnitOfWork, identifier: UUID, target: str, fact: dict[str, Any] | None
+) -> None:
+    uow.connection.execute(
+        delete(p.opportunity_field_state).where(
+            p.opportunity_field_state.c.opportunity_id == identifier,
+            p.opportunity_field_state.c.target == target,
+        )
+    )
+    if fact is None:
+        return
+    uow.connection.execute(
+        insert(p.opportunity_field_state).values(
+            opportunity_id=identifier,
+            target=target,
+            value_kind=fact["value_kind"],
+            value_text=fact["value_text"],
+            owner="source",
+            observation_id=fact["observation_id"],
+            occurred_at=fact["source_occurred_at"],
+            completeness=fact["completeness"],
+            priority=fact["priority"],
+            orphaned=False,
+        )
+    )
+
+
+def _derive_competition(
+    uow: UnitOfWork,
+    identifier: UUID,
+    current: dict[str, dict[str, Any]],
+    candidates: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Write the competition fields from the one observation with the newest count.
+
+    Only an observation carrying a count value is a candidate, so a sighting without
+    one can neither clear a known count nor move its observed-at. Exactness breaks
+    equal-time ties only, then the ordinary authority, completeness and stable event
+    keys. The exactness and observed-at facts come from the winner itself.
+    """
+    count, exact, _observed_at = COMPETITION_GROUP
+    own: dict[str, dict[Any, dict[str, Any]]] = {
+        target: {v["observation_id"]: v for v in candidates.get(target, [])}
+        for target in COMPETITION_GROUP
+    }
+    cutoffs = {
+        target: _clear_cutoff(candidates.get(target, []))
+        for target in COMPETITION_GROUP
+    }
+
+    def current_enough(fact: dict[str, Any], target: str) -> bool:
+        cutoff = cutoffs[target]
+        return cutoff is None or fact["source_occurred_at"] >= cutoff
+
+    def rank(fact: dict[str, Any]) -> tuple[Any, ...]:
+        flag = own[exact].get(fact["observation_id"])
+        return (
+            fact["source_occurred_at"],
+            flag is not None
+            and flag["value_kind"] == "value"
+            and flag["value_text"] == "true",
+            fact["priority"],
+            fact["completeness"],
+            fact["source_namespace"],
+            fact["source_event_id"],
+        )
+
+    winner = max(
+        (
+            v
+            for v in candidates.get(count, [])
+            if v["value_kind"] == "value" and current_enough(v, count)
+        ),
+        key=rank,
+        default=None,
+    )
+    for target in COMPETITION_GROUP:
+        if _replayed_elsewhere(current.get(target)):
+            continue
+        fact = None if winner is None else own[target].get(winner["observation_id"])
+        if fact is not None and not current_enough(fact, target):
+            fact = None
+        _replace(uow, identifier, target, fact)
 
 
 def user_field(
