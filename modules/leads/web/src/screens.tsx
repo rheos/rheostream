@@ -6,6 +6,7 @@ import type {
 } from "@rheo-stream/web-contract/screen";
 import { ActionForm, type FormProps } from "./action-form";
 import { JobFeedCollector, JobFeedConnect } from "./jobfeed-panel";
+import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import {
   data,
@@ -1082,7 +1083,7 @@ function ConnectionCard({
   pipelines,
   title,
   jobfeed = false,
-  finish = false,
+  finish,
 }: {
   shell: ShellApi;
   connection: Row;
@@ -1091,8 +1092,8 @@ function ConnectionCard({
   title?: string;
   /** Draw the collector's state and controls above the intake facts. */
   jobfeed?: boolean;
-  /** Offer to finish a pasted sign-in this owner started. */
-  finish?: boolean;
+  /** Present in the loopback redirect mode (see ``FinishState``). */
+  finish?: FinishState;
 }) {
   const status = outcome?.state === "ok" ? row(outcome.result) : {};
   const collector =
@@ -1214,7 +1215,8 @@ export async function connections({ shell }: ScreenProps) {
   const jobfeed = marker !== undefined;
   // Loopback mode only: the provider sends the browser to an address nothing
   // serves, so a pending sign-in this owner started is finished by pasting it.
-  const finish = marker?.loopback === true && marker.pending === true;
+  const finish: FinishState | undefined =
+    marker?.loopback === true ? { pending: marker.pending === true } : undefined;
   const connections = catalog.filter((r) => r.kind === "connection");
   const health = await Promise.all(
     connections.map((c) =>

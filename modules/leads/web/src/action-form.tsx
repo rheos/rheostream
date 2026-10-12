@@ -36,6 +36,9 @@ export interface FormProps {
    * a result whose ``field`` equals ``value`` shows as a refusal whose code is
    * the result's ``codeField``, through ``refusalCopy``. */
   refusedResult?: RefusedResult;
+  /** Called with what the form shows after each submission, for a client
+   * parent that must outlive a refresh of the screen. */
+  onResult?: (shown: Shown) => void;
 }
 export interface RefusedResult {
   field: string;
@@ -53,7 +56,7 @@ export function successCopy(okCopy: OkCopy | undefined, result: Row): string {
     ? (okCopy.copy[value] ?? okCopy.otherwise)
     : okCopy.otherwise;
 }
-type Shown = OperationOutcome | { state: "redirecting" };
+export type Shown = OperationOutcome | { state: "redirecting" };
 type PageLocation = Pick<Location, "assign" | "protocol" | "hostname">;
 /** The URL to open, or null. Only https, or http while the app itself is
  * served as plain http on localhost for development. */
@@ -166,6 +169,7 @@ export function ActionForm({
   okCopy,
   buttonClass = "primary",
   refusedResult,
+  onResult,
 }: FormProps) {
   const id = useId();
   const [result, setResult] = useState<Shown | null>(null);
@@ -202,6 +206,7 @@ export function ActionForm({
         refusedResult,
       );
       setResult(shown);
+      onResult?.(shown);
       if (shown.state === "ok")
         setValues(
           Object.fromEntries(

@@ -8,13 +8,19 @@ import { screens } from "./index";
 import { ActionForm, FormResult, settle } from "./action-form";
 import { JOBSEARCH_PRESET_ID } from "./data";
 import {
-  FINISH_REFUSALS,
   HEALTH_LABELS,
   REGISTRATION_REFUSALS,
   REVOKE_COPY,
   accountOptions,
   healthLabel,
 } from "./jobfeed-panel";
+import {
+  FINISH_REFUSALS,
+  FinishConnecting,
+  finishShown,
+} from "./finish-connecting";
+import { JobFeedCollector, JobFeedConnect } from "./jobfeed-panel";
+import { isValidElement, type ReactElement, type ReactNode } from "react";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
@@ -702,5 +708,86 @@ describe("finishing a pasted sign-in", () => {
         "state_unknown",
       ].sort(),
     );
+  });
+});
+
+/** The child-index path to the first element of ``type`` in an element tree,
+ * without rendering function components (a server refresh re-renders the tree,
+ * and React keeps a client component's state while its type and path hold). */
+function pathTo(node: ReactNode, type: unknown, at: number[] = []): number[] | null {
+  if (Array.isArray(node)) {
+    for (const [index, child] of node.entries()) {
+      const found = pathTo(child, type, [...at, index]);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isValidElement(node)) return null;
+  if (node.type === type) return at;
+  const children = (node as ReactElement<{ children?: ReactNode }>).props.children;
+  return children === undefined ? null : pathTo(children, type, [...at, -1]);
+}
+function finishProps(node: ReactNode): { pending: boolean } | null {
+  const path = pathTo(node, FinishConnecting);
+  if (!path) return null;
+  let current: ReactNode = node;
+  for (const index of path) {
+    current =
+      index === -1
+        ? (current as ReactElement<{ children?: ReactNode }>).props.children
+        : (current as ReactNode[])[index];
+  }
+  return (current as ReactElement<{ pending: boolean }>).props;
+}
+
+describe("a finished sign-in's answer survives the screen refresh", () => {
+  const submitting = shell({});
+  it("keeps the form once it has answered, after the sign-in stops pending", () => {
+    expect(finishShown(true, false)).toBe(true);
+    expect(finishShown(false, true)).toBe(true);
+    expect(finishShown(false, false)).toBe(false);
+  });
+  it("keeps the form's element at one place on the connect block either way", () => {
+    const before = JobFeedConnect({
+      shell: submitting,
+      pipelines: [jobs],
+      finish: { pending: true },
+    });
+    const after = JobFeedConnect({
+      shell: submitting,
+      pipelines: [jobs],
+      finish: { pending: false },
+    });
+    expect(pathTo(before, FinishConnecting)).not.toBeNull();
+    expect(pathTo(after, FinishConnecting)).toEqual(pathTo(before, FinishConnecting));
+    expect(finishProps(before)?.pending).toBe(true);
+    expect(finishProps(after)?.pending).toBe(false);
+    const identity = JobFeedConnect({ shell: submitting, pipelines: [jobs] });
+    expect(pathTo(identity, FinishConnecting)).toBeNull();
+  });
+  it("keeps the form's element at one place on the collector card either way", () => {
+    const collector = { authorization_state: "connected" };
+    const before = JobFeedCollector({
+      shell: submitting,
+      collector,
+      code: null,
+      finish: { pending: true },
+    });
+    // A declined reconnect changes the health code as the sign-in is consumed.
+    const after = JobFeedCollector({
+      shell: submitting,
+      collector,
+      code: "authorization_required",
+      finish: { pending: false },
+    });
+    expect(pathTo(before, FinishConnecting)).not.toBeNull();
+    expect(pathTo(after, FinishConnecting)).toEqual(pathTo(before, FinishConnecting));
+    expect(finishProps(after)?.pending).toBe(false);
+  });
+  it("renders nothing before any answer while no sign-in is pending", () => {
+    const html = renderToStaticMarkup(
+      <FinishConnecting submit={submitting.submit} pending={false} />,
+    );
+    expect(html).toBe("");
   });
 });
