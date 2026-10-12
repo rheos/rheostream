@@ -32,7 +32,10 @@ Surface (later callers read this module as built):
   it returns true the read ends there and the body so far is returned (an event
   stream that stays open after the answer the caller waits for).
 - :class:`EgressFailure`: the fixed codes ``endpoint_misconfigured``, ``timeout``,
-  ``too_large`` and ``unavailable`` (every transport or decoding error).
+  ``too_large`` and ``unavailable`` (every transport or decoding error). Its
+  ``detail`` names which check or transport error it was, from the fixed
+  :data:`EgressDetail` set, and ``status`` is the response status when headers had
+  arrived; both are for diagnostics (the MCP wire trace) and carry no upstream text.
 - :func:`retry_after_seconds`: a seconds-form ``Retry-After`` header, else
   ``None``; both callers' 429 handling reads it.
 - :data:`INITIALIZE_BODY`: the canonical JSON-RPC 2.0 ``initialize`` request bytes,
@@ -66,6 +69,25 @@ Resolver = Callable[[str], Sequence[str]]
 Clock = Callable[[], float]
 Stop = Callable[[httpx.Headers, bytes], bool]
 EgressCode = Literal["endpoint_misconfigured", "timeout", "too_large", "unavailable"]
+EgressDetail = Literal[
+    "not_https",
+    "not_public",
+    "lookup_failed",
+    "lookup_timeout",
+    "budget_spent",
+    "redirect",
+    "too_large",
+    "connect_timeout",
+    "read_timeout",
+    "write_timeout",
+    "pool_timeout",
+    "connect_error",
+    "read_error",
+    "write_error",
+    "remote_protocol_error",
+    "decoding_error",
+    "transport_error",
+]
 
 TIMEOUT: Final = httpx.Timeout(5.0)
 """Connect, read, write and pool, each 5 s: a stalled read ends 5 s after the last
@@ -93,10 +115,19 @@ INITIALIZE_BODY: Final[bytes] = json.dumps(
 class EgressFailure(Exception):
     """A refused or failed outbound request, carrying a fixed code only."""
 
-    def __init__(self, code: EgressCode, retry_after: int | None = None) -> None:
+    def __init__(
+        self,
+        code: EgressCode,
+        retry_after: int | None = None,
+        *,
+        detail: EgressDetail | None = None,
+        status: int | None = None,
+    ) -> None:
         super().__init__(code)
         self.code: EgressCode = code
         self.retry_after = retry_after
+        self.detail: EgressDetail | None = detail
+        self.status = status
 
     def __str__(self) -> str:
         return self.code
@@ -173,26 +204,26 @@ def _is_public(address: str) -> bool:
 
 def _resolve_within(
     host: str, resolver: Resolver, seconds: float
-) -> list[str] | EgressCode:
+) -> list[str] | EgressDetail:
     """Run the blocking ``resolver`` in a daemon thread for at most ``seconds``.
 
-    Returns the addresses, ``"timeout"``, or ``"endpoint_misconfigured"`` when the
+    Returns the addresses, ``"lookup_timeout"``, or ``"lookup_failed"`` when the
     lookup failed. An abandoned lookup keeps its thread until the resolver returns;
     it holds no lock and its result is discarded.
     """
-    outcome: list[list[str] | EgressCode] = []
+    outcome: list[list[str] | EgressDetail] = []
 
     def lookup() -> None:
         try:
             outcome.append(list(resolver(host)))
         except Exception:  # any resolver failure is a refusal
-            outcome.append("endpoint_misconfigured")
+            outcome.append("lookup_failed")
 
     worker = threading.Thread(target=lookup, name="egress-resolve", daemon=True)
     worker.start()
     worker.join(max(seconds, 0.0))
     if not outcome:
-        return "timeout"
+        return "lookup_timeout"
     return outcome[0]
 
 
@@ -202,24 +233,29 @@ def check_public(
     """Refuse unless ``host`` is public (see module), resolving it within the time
     left before ``deadline`` on ``clock``: ``timeout`` when the lookup outlasts it
     or the clock has passed it afterwards, ``endpoint_misconfigured`` otherwise."""
-    code: EgressCode | None = None
+    detail: EgressDetail | None = None
     literal = _literal_address(host)
     if literal is not None:
-        addresses: list[str] | EgressCode = [literal]
+        addresses: list[str] | EgressDetail = [literal]
     else:
         addresses = _resolve_within(host, resolver, deadline - clock())
     if isinstance(addresses, str):
-        code = addresses
+        detail = addresses
     elif clock() >= deadline:
-        code = "timeout"
+        detail = "budget_spent"
     else:
         try:
             if not addresses or not all(_is_public(a) for a in addresses):
-                code = "endpoint_misconfigured"
+                detail = "not_public"
         except (TypeError, ValueError):  # an address that does not parse
-            code = "endpoint_misconfigured"
-    if code is not None:
-        raise EgressFailure(code)
+            detail = "not_public"
+    if detail is not None:
+        code: EgressCode = (
+            "timeout"
+            if detail in ("lookup_timeout", "budget_spent")
+            else "endpoint_misconfigured"
+        )
+        raise EgressFailure(code, detail=detail)
 
 
 def open_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
@@ -256,8 +292,9 @@ def _stream(
     content: bytes | None,
     data: Mapping[str, str] | None,
     stop: Stop | None,
-) -> EgressResponse | EgressCode:
-    """Send and read under the budget; return the response or a failure code.
+) -> EgressResponse | tuple[EgressCode, EgressDetail, int]:
+    """Send and read under the budget; return the response or a failure code,
+    its detail and the response status.
 
     It never raises :class:`EgressFailure` itself, so the caller's ``except`` for
     transport errors cannot swallow one.
@@ -271,17 +308,18 @@ def _stream(
         timeout=TIMEOUT,
         follow_redirects=False,
     ) as response:
+        status = response.status_code
         if clock() >= deadline:
-            return "timeout"
-        if 300 <= response.status_code < 400:
-            return "endpoint_misconfigured"
+            return "timeout", "budget_spent", status
+        if 300 <= status < 400:
+            return "endpoint_misconfigured", "redirect", status
         body = bytearray()
         for chunk in response.iter_bytes():
             body += chunk
             if len(body) > cap:
-                return "too_large"
+                return "too_large", "too_large", status
             if clock() >= deadline:
-                return "timeout"
+                return "timeout", "budget_spent", status
             if stop is not None and stop(response.headers, chunk):
                 break
         return EgressResponse(
@@ -308,14 +346,14 @@ def bounded_request(
     """One bounded request (module docstring); raises :class:`EgressFailure`."""
     host = _https_host(url)
     if host is None:
-        raise EgressFailure("endpoint_misconfigured")
+        raise EgressFailure("endpoint_misconfigured", detail="not_https")
     deadline = clock() + budget
     if budget <= 0:
-        raise EgressFailure("timeout")
+        raise EgressFailure("timeout", detail="budget_spent")
     check_public(host, resolver, deadline=deadline, clock=clock)
     sent_headers = httpx.Headers(headers)
     sent_headers["Accept-Encoding"] = "identity"
-    outcome: EgressResponse | EgressCode
+    outcome: EgressResponse | tuple[EgressCode, EgressDetail, int | None]
     try:
         outcome = _stream(
             client,
@@ -329,10 +367,36 @@ def bounded_request(
             data=data,
             stop=stop,
         )
-    except httpx.TimeoutException:
-        outcome = "timeout"
-    except Exception:  # every transport or decoding error becomes one fixed code
-        outcome = "unavailable"
+    except httpx.TimeoutException as error:
+        outcome = "timeout", _timeout_detail(error), None
+    except Exception as error:  # every transport or decoding error: one fixed code
+        outcome = "unavailable", _transport_detail(error), None
     if isinstance(outcome, EgressResponse):
         return outcome
-    raise EgressFailure(outcome)
+    code, detail, status = outcome
+    raise EgressFailure(code, detail=detail, status=status)
+
+
+def _timeout_detail(error: httpx.TimeoutException) -> EgressDetail:
+    if isinstance(error, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(error, httpx.WriteTimeout):
+        return "write_timeout"
+    if isinstance(error, httpx.PoolTimeout):
+        return "pool_timeout"
+    return "read_timeout"
+
+
+def _transport_detail(error: Exception) -> EgressDetail:
+    """The kind of a transport error, by its class only (never its message)."""
+    kinds: tuple[tuple[type[Exception], EgressDetail], ...] = (
+        (httpx.ConnectError, "connect_error"),
+        (httpx.ReadError, "read_error"),
+        (httpx.WriteError, "write_error"),
+        (httpx.RemoteProtocolError, "remote_protocol_error"),
+        (httpx.DecodingError, "decoding_error"),
+    )
+    for kind, detail in kinds:
+        if isinstance(error, kind):
+            return detail
+    return "transport_error"

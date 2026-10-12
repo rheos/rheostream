@@ -940,6 +940,43 @@ every request. The check resolves the host and the HTTP client resolves it again
 it connects; that DNS-rebinding window is accepted, because the hosts are configured by
 the operator or discovered from them over `https`.
 
+### Wire trace
+
+When a run ends `upstream_unavailable` or `endpoint_misconfigured` and the cause is not
+obvious, turn on the MCP client's wire trace for a run or two. It is a deployment
+setting, off by default:
+
+```
+RHEO__connectors__mcp_client__trace=true
+```
+
+Set it on `worker` (the collector runs there) and restart it. Every MCP request the
+collector makes then logs one INFO line on the `rheo_core.connectors.mcp_trace` logger,
+in the worker's JSON log output:
+
+```
+mcp_trace method=initialize tool=- action=- status=200 egress=- content_type=text/event-stream session_id=true protocol=2025-06-18 rpc_error=- is_error=- tool_code=- events=1 bytes=412 outcome=ok
+```
+
+- `method` is the JSON-RPC method; for `tools/call`, `tool` and `action` are the tool
+  name and its `action` argument, both already on the allowlist.
+- `status` is the HTTP status. `egress` is set when the request failed before a usable
+  response: `timeout`, `too_large`, `unavailable` or `endpoint_misconfigured`, then a
+  fixed detail such as `connect_timeout`, `connect_error`, `redirect`, `not_public` or
+  `not_https`. `not_started` means too little of the run's deadline was left to send it.
+- `content_type` is the response media type without parameters (`other` if it is not a
+  plain `type/subtype`). `session_id` says whether an `Mcp-Session-Id` header came back,
+  never its value.
+- `protocol` is the `protocolVersion` the server returned to `initialize`, or `missing`
+  or `invalid`. `rpc_error` is a JSON-RPC `error.code`, as an integer. `is_error` and
+  `tool_code` describe a tool result that set `isError`.
+- `events` and `bytes` count the event-stream events and body bytes read.
+- `outcome` is `ok` or the code the client mapped the request to.
+
+The line carries no secrets: no header value other than the media type, no body or
+message text, no token, URL, organization id, cursor or posting data. Turn it off again
+when you have what you need; it adds a few lines per run and nothing else.
+
 ### Accepted residuals
 
 - Two changed sightings of a brand-new posting delivered in different runs before the
