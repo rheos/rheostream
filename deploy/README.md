@@ -621,25 +621,33 @@ owner connects. Owner-facing behaviour is summarized in the
 
 ### Settings
 
-All four are deployment settings. Set them in the environment of both `core` (connect,
+All six are deployment settings. Set them in the environment of both `core` (connect,
 reconnect, the callback) and `worker` (collection); a Coolify deployment attaches its
 `.env` to every service. Values below are placeholders.
 
 ```
 RHEO__connectors__oauth_client__enabled=true
 RHEO__connectors__oauth_client__client_name=Rheo Stream
+RHEO__connectors__oauth_client__redirect=identity
+RHEO__connectors__oauth_client__loopback_port=33419
 RHEO__leads__jobfeed__resource_url=https://mcp.example.com/mcp
 RHEO__leads__jobfeed__job_hosts=jobs.example.com
 ```
 
 - `connectors.oauth_client.enabled` (default `false`) is the operator switch. While it
-  is off, or while `routing.identity.path` is anything but the default `/auth`, client
-  registration, connect, reconnect and the callback are all closed: connect and
-  reconnect refuse `endpoint_misconfigured` before any request, and the callback route
-  answers 404. A deployment that has not opted in sends nothing to any registration
-  endpoint.
+  is off, client registration, connect, reconnect and the callback are all closed:
+  connect and reconnect refuse `endpoint_misconfigured` before any request, and the
+  callback route answers 404. The same holds in the `identity` redirect mode while
+  `routing.identity.path` is anything but the default `/auth`. A deployment that has
+  not opted in sends nothing to any registration endpoint.
 - `connectors.oauth_client.client_name` (default `Rheo Stream`) is the `client_name`
   sent in the registration request, and is used nowhere else.
+- `connectors.oauth_client.redirect` (default `identity`) picks where the provider
+  sends the owner's browser after consent: `identity` or `loopback` (see the next
+  section). Any other value refuses startup.
+- `connectors.oauth_client.loopback_port` (default `33419`, 1024 to 65535) is the port
+  in the loopback redirect URI. It is only part of that address: nothing listens on
+  it, on the server or on the owner's machine.
 - `leads.jobfeed.resource_url` is the provider's MCP resource URL. Empty (the default)
   leaves the job feed unconfigured: connect and reconnect refuse
   `endpoint_misconfigured`, and a scheduled run returns without writing anything.
@@ -654,9 +662,12 @@ for an existing connection only when the owner reconnects (see below).
 
 ### The callback and the redirect URI
 
-There is one route, on the identity host: `GET /auth/connector/leads/callback`. The
-redirect URI registered with the provider is built from the routing settings, never
-from request data:
+The redirect URI registered with the provider comes from settings, never from request
+data. There are two modes.
+
+**`identity` (the default).** The provider redirects to one route on the identity
+host, `GET /auth/connector/leads/callback`, and the URI is built from the routing
+settings:
 
 - subdomain mode: `https://auth.example.com/auth/connector/leads/callback`, with your
   `routing.base_host` in place of `example.com`;
@@ -668,6 +679,25 @@ on that host. It answers one of two fixed pages, "Job feed connected" or "Author
 could not be completed; start again from Leads", and never echoes provider text. There
 is no client metadata document to host: the client identity comes from dynamic
 registration, and nothing else is served under `/auth/connector`.
+
+**`loopback`.** Some providers accept dynamic registration only for loopback redirect
+URIs, the kind desktop apps use, and refuse the identity-host callback with
+`invalid_redirect_uri` (connect then ends with "The provider did not accept the
+registration"). In this mode the registered URI is exactly
+`http://127.0.0.1:<loopback_port>/callback`. After consent the provider sends the
+owner's browser there; nothing answers, so the browser shows a page that cannot be
+reached, but its address bar holds the `code` and `state`. The owner copies that
+address into the **Finish connecting** form on the Job feed card, and Leads reads it
+as strictly as the callback route reads a request: scheme `http`, host and port exactly
+`127.0.0.1:<loopback_port>`, path exactly `/callback`, no user information, no
+fragment, only `state`, `code`, `error` and `iss` (each at most 2048 characters and
+present at most once), and at most 4096 characters in all. The completion that follows
+is the callback's own: the single-use state bound to the owner and workspace, the issuer
+check and the PKCE code exchange with the same loopback URI. The pasted address is
+held only for the call: it is not stored, logged, audited (the audit row keeps a digest
+of the request), exported or shown back. The collector still runs on the server; only
+the one-time consent uses the loopback address. The identity-host callback route
+answers 404 in this mode, and `routing.identity.path` does not gate it.
 
 ### Client registration
 
@@ -686,9 +716,9 @@ registration. A missing revocation endpoint is accepted.
 - **Reuse.** A reconnect reuses the stored client while the freshly discovered issuer,
   the registration endpoint and the current redirect URI all equal the stored ones.
   Otherwise it registers a new client. Changing the identity host (for example a new
-  `routing.base_host`) therefore registers a new client at the owner's next reconnect.
-  The identity path cannot move: any value other than `/auth` turns the whole client
-  off.
+  `routing.base_host`), the redirect mode or the loopback port therefore registers a
+  new client at the owner's next reconnect. In the `identity` mode the identity path
+  cannot move: any value other than `/auth` turns the whole client off.
 - **Authentication method.** The registration response decides it: its
   `token_endpoint_auth_method` when present, else `none` without a client secret and
   `client_secret_basic` with one. `none`, `client_secret_basic` and
