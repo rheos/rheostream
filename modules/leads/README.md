@@ -102,6 +102,61 @@ Migration `0007_jobsearch_preset` seeds the **Job search** preset:
 
 Provider-specific parsing belongs to a source's mapping, never to core columns.
 
+## Job feed
+
+The job feed collects job postings from a provider's remote MCP server into one Job
+search pipeline. It needs the job search capability on, a Job search pipeline, and a
+host operator who has configured the provider and turned the connector client on (see
+[Job feed collector](../../deploy/README.md#job-feed-collector) for the operator
+side). Each workspace has at most one job feed connection.
+
+**What it collects.** Every two hours the worker runs three searches as your chosen
+account: best matches, the newest postings, and postings above 50 proposals. A posting
+with 50 or fewer proposals that you have not applied to is a discovery: the collector
+reads its full description and delivers it, and routing either attaches it to the
+opportunity that already holds that posting id or creates a new one. A posting no
+opportunity tracks is otherwise skipped. A tracked posting is delivered again only
+when one of its fields changed, so its proposal count, budget and client record stay
+current. Collected values fill the `ext.jobsearch.*` fields; no person or organization
+is created. Postings arrive through intake like any other source, so receipts,
+observations and processing work as described above.
+
+**Connections.** Open **Connections** in Leads. Before a connection exists, the Job
+feed block offers **Connect job feed** with a choice of Job search pipeline. Connecting
+sends you to the provider to sign in and consent, then back to a page that says "Job
+feed connected"; return to Leads from there. Once connected, the block shows the state,
+the last completed check, the earliest next check, health, the account, and the last
+run's counts under **Last run**. **Reconnect** and **Revoke access** are there too.
+These controls work only in your own browser session; there is no MCP tool for them.
+
+**Choosing an account.** Each run lists the accounts your login can act as. If exactly
+one is a freelancer account and none is chosen yet, it is used. Otherwise health shows
+**Choose an account** and the run collects nothing. Pick the freelancer account whose
+jobs the feed should collect; the next check is scheduled no earlier than 60 minutes
+after the last run started. The collector never falls back to another account: if the chosen
+one disappears, appears twice or stops being a freelancer account, the run stops and
+asks again. If no freelancer account is listed, reconnect with the login you use for
+job search.
+
+**Reconnecting.** Reconnect when the state reads "Authorization required" (the provider
+refused the stored authorization or rejected this app's registration) or after the
+operator changes the provider's address. A rejected registration is replaced at the
+next reconnect, once. If a reconnect's registration fails or you decline at the
+provider, a connected feed keeps collecting with its existing authorization, and health says the last
+reconnect did not finish.
+
+**Revoking.** **Revoke access** stops collection, ends this app's access here, and asks
+the provider to revoke the token. The result says whether the provider confirmed it.
+Collected opportunities are kept. It stays available while authorization is required.
+The card keeps showing the earlier state until you reload the page.
+
+**Close versus erase.** Closing an opportunity (moving it to hired, lost or passed)
+keeps the posting attached: later sightings refresh the closed opportunity and never
+open a new one. Erasing it removes the collector's memory of that posting, so a later
+sighting is collected again and, if the posting still qualifies as a discovery, creates
+a new opportunity. Erasing only an observation also removes that memory; the next
+sighting is delivered again and refreshes the opportunity that still tracks it.
+
 ## Dated next follow-up
 
 Each opportunity has at most one pending reminder, owned by Leads. Call

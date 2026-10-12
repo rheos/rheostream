@@ -208,6 +208,20 @@ same operation:
 | `import` | No route. The `leads.import.run` job hands each row to the import connector, which calls `leads.intake.accept_delivery` | The job's `system` actor, role `service` |
 | `manual` | No route. `leads.intake.capture` hands the form to the manual connector, which calls `leads.intake.accept_delivery` | The capturing account, in its own context |
 
+**Scheduled poll.** A fourth binding, `poll`, has no route. The job feed collector's
+scheduled job (`leads.jobfeed_collect`) fetches postings from a remote MCP server and,
+at the end of the run and on the job's own transaction, hands each one to
+`accept_delivery` with the narrow `WorkspaceContext` that `context_for_connection`
+builds from the binding: a `connection` actor whose id is the poll connection, role
+`service`, entry `intake`, and only `accept_delivery` in its operation set.
+`accept_delivery` refuses a `poll` connection's delivery `role_not_permitted` unless
+the actor is exactly that connection's own; there is no signing generation to check.
+The collector builds the source event id (`<posting id>.<sequence>.<body digest>`) and
+the connection owns its funnel and mapping, as for every non-manual transport.
+Migration `0009_jobfeed_collector` adds `poll` to the transport CHECK; it is additive,
+and the three existing values keep their meaning. Operator detail is in
+[Job feed collector](../../deploy/README.md#job-feed-collector).
+
 **Signed webhook.** Headers: `X-Rheo-Timestamp` (Unix seconds), `X-Rheo-Signature` (`v1=<hex
 HMAC-SHA256 of "<timestamp>.<body>">`), optional `X-Rheo-Event-Id`. The receiver runs these
 steps in this order, and stops at the first that fails:
