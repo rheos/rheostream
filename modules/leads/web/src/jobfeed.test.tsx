@@ -7,7 +7,13 @@ import type {
 import { screens } from "./index";
 import { ActionForm, FormResult, settle } from "./action-form";
 import { JOBSEARCH_PRESET_ID } from "./data";
-import { REGISTRATION_REFUSALS } from "./jobfeed-panel";
+import {
+  HEALTH_LABELS,
+  REGISTRATION_REFUSALS,
+  REVOKE_COPY,
+  accountOptions,
+  healthLabel,
+} from "./jobfeed-panel";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
@@ -280,5 +286,312 @@ describe("refusal copy", () => {
       for (const copy of Object.values(REGISTRATION_REFUSALS))
         expect(html).not.toContain(copy);
     }
+  });
+});
+
+const SECOND_ORGANIZATION_ID = "org-synthetic-41c0d2";
+const THIRD_ORGANIZATION_ID = "org-synthetic-9b77e1";
+const COUNTS = {
+  fetched: 41,
+  imported: 7,
+  skipped_dup: 30,
+  refreshed: 2,
+  filtered: 1,
+  skipped_untracked: 0,
+  errors: 1,
+  detail_reads: 6,
+  pages: 3,
+};
+function collectorPage(collector: Record<string, unknown>, code?: string) {
+  return page(
+    [services, jobs, ...ON, pollConnection],
+    ok({
+      last_accepted_at: "2026-01-02T00:00:00Z",
+      last_processed_at: "2026-01-02T00:00:00Z",
+      lag_seconds: 0,
+      unresolved_failures: 0,
+      failed_delivery_count: 0,
+      last_error: code ?? null,
+      collector: {
+        authorization_state: "connected",
+        last_completed_at: "2026-01-05T14:30:00Z",
+        next_run_not_before: "2026-01-05T15:00:00Z",
+        ...COUNTS,
+        organization_id: ORGANIZATION_ID,
+        account_choices: [
+          { organization_id: ORGANIZATION_ID, label: "Studio" },
+          { organization_id: SECOND_ORGANIZATION_ID, label: "Agency" },
+        ],
+        ...collector,
+      },
+    }),
+  );
+}
+const STATES: [string, Record<string, unknown>, string?][] = [
+  ["connected", {}],
+  ["connected, reconnect declined", {}, "authorization_required"],
+  ["connected, registration declined", {}, "registration_failed"],
+  ["authorization required", { authorization_state: "authorization_required" }],
+  ["revoked", { authorization_state: "revoked" }],
+  [
+    "account selection",
+    { organization_id: null },
+    "account_selection_required",
+  ],
+  [
+    "account selection, nothing listed",
+    { organization_id: null, account_choices: [] },
+    "account_selection_required",
+  ],
+];
+const status = (text: string) =>
+  new RegExp(`<span class="_status_\\w+">${text}</span>`);
+const forms = (html: string) =>
+  [...html.matchAll(/<form[\s\S]*?<\/form>/g)].map((m) => m[0]);
+const reconnect = (html: string) =>
+  forms(html).find((f) => f.includes(">Reconnect<")) ?? "";
+
+describe("job feed collector states", () => {
+  it("shows a connected feed's facts by account label, with run counts collapsed", async () => {
+    const html = block(await collectorPage({}));
+    expect(html).toContain("Connected");
+    expect(html).toContain("Jan 5, 2026, 2:30 PM UTC");
+    expect(html).toContain("Jan 5, 2026, 3:00 PM UTC");
+    expect(html).toContain("<dt>Account</dt><dd>Studio</dd>");
+    expect(html).toContain("<dt>Health</dt><dd>No problems</dd>");
+    const lastRun =
+      html.match(
+        /<details[^>]*><summary>Last run<\/summary>[\s\S]*?<\/details>/,
+      )?.[0] ?? "";
+    expect(lastRun).not.toMatch(/<details[^>]* open/);
+    expect(lastRun).toContain("<dt>Fetched</dt><dd>41</dd>");
+    expect(lastRun).toContain("<dt>Already collected</dt><dd>30</dd>");
+    expect(lastRun).toContain("<dt>Pages</dt><dd>3</dd>");
+    expect(lastRun.match(/<dt>/g)).toHaveLength(9);
+    expect(reconnect(html)).toMatch(/class="_secondary_\w+"/);
+    expect(html).toContain("<summary>Revoke access</summary>");
+    expect(html).not.toContain("did not finish");
+    expect(html).not.toContain("could not register");
+  });
+  it("falls back when nothing has run or is scheduled", async () => {
+    const html = block(
+      await collectorPage({
+        last_completed_at: null,
+        next_run_not_before: null,
+      }),
+    );
+    expect(html).toContain("<dt>Last completed check</dt><dd>Not yet</dd>");
+    expect(html).toContain(
+      "<dt>Next check not before</dt><dd>Not scheduled</dd>",
+    );
+  });
+  it("keeps a connected feed connected when a reconnect was declined", async () => {
+    const html = block(await collectorPage({}, "authorization_required"));
+    expect(html).toMatch(status("Connected"));
+    expect(html).toContain(
+      "The last reconnect did not finish. Collection continues with the existing authorization.",
+    );
+    expect(html).not.toContain("Authorization required");
+    expect(html).not.toContain("paused");
+    expect(reconnect(html)).toMatch(/class="_secondary_\w+"/);
+  });
+  it("keeps a connected feed connected when a reconnect could not register", async () => {
+    const html = block(await collectorPage({}, "registration_failed"));
+    expect(html).toMatch(status("Connected"));
+    expect(html).toContain(
+      "The last reconnect could not register with the provider. Collection continues with the existing authorization.",
+    );
+    expect(html).not.toContain("did not finish");
+    expect(reconnect(html)).toMatch(/class="_secondary_\w+"/);
+  });
+  it("pauses on lost authorization and makes Reconnect primary", async () => {
+    const html = block(
+      await collectorPage({ authorization_state: "authorization_required" }),
+    );
+    expect(html).toMatch(status("Authorization required"));
+    expect(html).toContain("Collection is paused until you reconnect.");
+    expect(reconnect(html)).toMatch(/class="_primary_\w+"/);
+  });
+  it("says a revoked feed keeps its opportunities and offers no revoke", async () => {
+    const html = block(await collectorPage({ authorization_state: "revoked" }));
+    expect(html).toMatch(status("Revoked: authorization required"));
+    expect(html).toContain("Opportunities it already collected are kept.");
+    expect(reconnect(html)).toMatch(/class="_primary_\w+"/);
+    expect(html).not.toContain("Revoke access");
+  });
+  it("offers the listed accounts in the order received", async () => {
+    const html = block(
+      await collectorPage(
+        {
+          organization_id: null,
+          account_choices: [
+            { organization_id: SECOND_ORGANIZATION_ID, label: "Agency" },
+            { organization_id: ORGANIZATION_ID, label: "Studio" },
+            { organization_id: THIRD_ORGANIZATION_ID, label: "Consulting" },
+          ],
+        },
+        "account_selection_required",
+      ),
+    );
+    expect(html).toContain("Choose a freelancer account");
+    expect(html).toContain("<dt>Account</dt><dd>Not selected</dd>");
+    const select =
+      forms(html).find((f) => f.includes('name="organization_id"')) ?? "";
+    expect(
+      [...select.matchAll(/<option value="([^"]*)"[^>]*>([^<]*)</g)].map(
+        (m) => [m[1], m[2]],
+      ),
+    ).toEqual([
+      [SECOND_ORGANIZATION_ID, "Agency"],
+      [ORGANIZATION_ID, "Studio"],
+      [THIRD_ORGANIZATION_ID, "Consulting"],
+    ]);
+    expect(select).toContain("Use this account");
+  });
+  it("tells two accounts with one label apart by the id's last 6 characters only", () => {
+    expect(
+      accountOptions([
+        { organization_id: ORGANIZATION_ID, label: "Studio" },
+        { organization_id: SECOND_ORGANIZATION_ID, label: "Studio" },
+        { organization_id: THIRD_ORGANIZATION_ID, label: "Agency" },
+      ]),
+    ).toEqual([
+      { value: ORGANIZATION_ID, label: "Studio (…7f3e9a)" },
+      { value: SECOND_ORGANIZATION_ID, label: "Studio (…41c0d2)" },
+      { value: THIRD_ORGANIZATION_ID, label: "Agency" },
+    ]);
+  });
+  it("offers Reconnect when no account was listed", async () => {
+    const html = block(
+      await collectorPage(
+        { organization_id: null, account_choices: [] },
+        "account_selection_required",
+      ),
+    );
+    expect(html).toContain("No freelancer account was listed.");
+    expect(html).not.toContain('name="organization_id"');
+    expect(reconnect(html)).toMatch(/class="_primary_\w+"/);
+  });
+  it("confirms an account choice with fixed copy", () => {
+    const html = renderToStaticMarkup(
+      <FormResult
+        result={ok({ state: "connected" })}
+        okCopy="Saved. The next check is scheduled."
+      />,
+    );
+    expect(html).toContain("Saved. The next check is scheduled.");
+    expect(html).not.toContain("connected");
+  });
+  it("keeps revoke behind a closed disclosure with its consequence", async () => {
+    const html = block(await collectorPage({}));
+    const disclosure =
+      html.match(
+        /<details[^>]*><summary>Revoke access<\/summary>[\s\S]*?<\/details>/,
+      )?.[0] ?? "";
+    expect(disclosure).not.toMatch(/<details[^>]* open/);
+    expect(disclosure).toContain("Revoking stops collection");
+    expect(disclosure).toContain("Opportunities already collected are kept.");
+    expect(disclosure).toContain(">Revoke access</button>");
+    expect(html.match(/>Revoke access<\/button>/g)).toHaveLength(1);
+  });
+  it.each([
+    ["revoked", "Access revoked. Collected opportunities are kept."],
+    [
+      "revocation_failed",
+      "Ended here; the provider did not confirm revocation.",
+    ],
+    [
+      "revocation_unavailable",
+      "Ended here; the provider offers no revocation.",
+    ],
+  ])("says what revoking did upstream: %s", (upstream, copy) => {
+    const html = renderToStaticMarkup(
+      <FormResult
+        result={ok({ state: "revoked", upstream })}
+        okCopy={REVOKE_COPY}
+      />,
+    );
+    expect(html).toContain(copy);
+    expect(html).not.toContain("Saved.");
+  });
+  it.each(Object.entries(HEALTH_LABELS))(
+    "labels the %s health code",
+    async (code, text) => {
+      expect(healthLabel(code)).toBe(text);
+      expect(text).not.toContain("_");
+      const html = block(await collectorPage({}, code));
+      expect(html).toContain(`<dt>Health</dt><dd>${text}</dd>`);
+      expect(visible(html)).not.toContain(code);
+    },
+  );
+  it("has exactly the eight collector health codes", () => {
+    expect(Object.keys(HEALTH_LABELS).sort()).toEqual([
+      "account_selection_required",
+      "authorization_required",
+      "collection_partial",
+      "endpoint_misconfigured",
+      "registration_failed",
+      "token_refresh_failed",
+      "upstream_rate_limited",
+      "upstream_unavailable",
+    ]);
+  });
+  it("falls back to the code's words for an unknown code", () => {
+    expect(healthLabel("delivery_backlog")).toBe("delivery backlog");
+    expect(healthLabel("toString")).toBe("toString");
+    expect(healthLabel(null)).toBe("No problems");
+  });
+  it("shows the existing failure and no collector controls when the health read fails", async () => {
+    const html = block(
+      await page([services, jobs, ...ON, pollConnection], {
+        state: "refused",
+        code: "forbidden",
+        text: "",
+      }),
+    );
+    expect(html).toContain("Could not load this view");
+    expect(html).not.toContain("Reconnect");
+  });
+  it("shows no collector controls with the capability off", async () => {
+    const html = await page([services, jobs, pollConnection], collectorHealth);
+    expect(html).toContain("<h2>Job feed</h2>");
+    expect(html).toContain("Last accepted");
+    for (const text of [
+      "Reconnect",
+      "Revoke access",
+      "leads.jobfeed",
+      "Last run",
+      "organization_id",
+    ])
+      expect(html).not.toContain(text);
+  });
+  it.each(STATES)(
+    "shows no identifier as visible text: %s",
+    async (_, collector, code) => {
+      const html = await collectorPage(collector, code);
+      const text = visible(block(html));
+      expect(text).toContain("Job feed");
+      expect(text).not.toMatch(UUID);
+      for (const id of [ORGANIZATION_ID, SECOND_ORGANIZATION_ID])
+        expect(visible(html)).not.toContain(id);
+    },
+  );
+  it("keeps organization ids to option values", async () => {
+    const html = block(
+      await collectorPage(
+        {
+          organization_id: null,
+          account_choices: [
+            { organization_id: ORGANIZATION_ID, label: "Studio" },
+            { organization_id: SECOND_ORGANIZATION_ID, label: "Studio" },
+          ],
+        },
+        "account_selection_required",
+      ),
+    );
+    const outside = html.replace(/<option value="[^"]*"/g, "<option");
+    expect(outside).not.toContain(ORGANIZATION_ID);
+    expect(outside).not.toContain(SECOND_ORGANIZATION_ID);
+    expect(visible(html)).toContain("Studio (…7f3e9a)");
   });
 });

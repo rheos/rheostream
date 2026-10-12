@@ -4,7 +4,7 @@ import type {
   OperationOutcome,
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
-import { row, str } from "./data";
+import { row, str, type Row } from "./data";
 import styles from "./leads.module.css";
 
 export interface Field {
@@ -27,6 +27,22 @@ export interface FormProps {
   redirectField?: string;
   /** Plain copy for known refusal codes, in place of the generic refused text. */
   refusalCopy?: Record<string, string>;
+  /** Fixed success copy in place of "Saved.": plain text, or text chosen by
+   * one result field's value. Plain data, so a server screen can pass it. */
+  okCopy?: OkCopy;
+  /** The submit button's weight; primary unless a screen says otherwise. */
+  buttonClass?: "primary" | "secondary";
+}
+export type OkCopy =
+  string | { field: string; copy: Record<string, string>; otherwise: string };
+/** The success line for a result: never the result's own text. */
+export function successCopy(okCopy: OkCopy | undefined, result: Row): string {
+  if (okCopy === undefined) return "Saved.";
+  if (typeof okCopy === "string") return okCopy;
+  const value = str(result[okCopy.field]);
+  return Object.hasOwn(okCopy.copy, value)
+    ? (okCopy.copy[value] ?? okCopy.otherwise)
+    : okCopy.otherwise;
 }
 type Shown = OperationOutcome | { state: "redirecting" };
 type PageLocation = Pick<Location, "assign" | "protocol" | "hostname">;
@@ -128,6 +144,8 @@ export function ActionForm({
   receiptHref,
   redirectField,
   refusalCopy,
+  okCopy,
+  buttonClass = "primary",
 }: FormProps) {
   const id = useId();
   const [result, setResult] = useState<Shown | null>(null);
@@ -221,7 +239,7 @@ export function ActionForm({
             )}
           </div>
         ))}
-        <button type="submit" className={styles.primary}>
+        <button type="submit" className={styles[buttonClass]}>
           {pending || redirecting
             ? redirectField
               ? "Opening authorization…"
@@ -233,6 +251,7 @@ export function ActionForm({
         result={result}
         receiptHref={receiptHref}
         refusalCopy={refusalCopy}
+        okCopy={okCopy}
       />
     </form>
   );
@@ -242,10 +261,12 @@ export function FormResult({
   result,
   receiptHref,
   refusalCopy,
+  okCopy,
 }: {
   result: Shown | null;
   receiptHref?: string;
   refusalCopy?: Record<string, string>;
+  okCopy?: OkCopy;
 }) {
   const receipt =
     result?.state === "ok" ? str(row(result.result).receipt_ref) : "";
@@ -262,7 +283,9 @@ export function FormResult({
       ) : null}
       {result?.state === "ok" ? (
         <p className={styles.success}>
-          {receipt ? "Inquiry received. Processing is queued." : "Saved."}
+          {receipt
+            ? "Inquiry received. Processing is queued."
+            : successCopy(okCopy, row(result.result))}
           {receipt && receiptHref ? (
             <>
               {" "}

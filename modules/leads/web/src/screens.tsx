@@ -5,7 +5,7 @@ import type {
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
 import { ActionForm, type FormProps } from "./action-form";
-import { JobFeedConnect } from "./jobfeed-panel";
+import { JobFeedCollector, JobFeedConnect } from "./jobfeed-panel";
 import { PasteCapture } from "./paste-capture";
 import {
   data,
@@ -1081,14 +1081,21 @@ function ConnectionCard({
   outcome,
   pipelines,
   title,
+  jobfeed = false,
 }: {
   shell: ShellApi;
   connection: Row;
   outcome: OperationOutcome | undefined;
   pipelines: Row[];
   title?: string;
+  /** Draw the collector's state and controls above the intake facts. */
+  jobfeed?: boolean;
 }) {
   const status = outcome?.state === "ok" ? row(outcome.result) : {};
+  const collector =
+    jobfeed && outcome?.state === "ok" && status.collector
+      ? row(status.collector)
+      : null;
   const rules = rows(connection.rules);
   const simple =
     rules.length <= 1 &&
@@ -1101,10 +1108,21 @@ function ConnectionCard({
   return (
     <section className={styles.section}>
       <h2>{title ?? str(connection.name)}</h2>
-      <p>
-        <span className={styles.status}>{label(connection.state)}</span> ·{" "}
-        {label(connection.transport)}
-      </p>
+      {collector ? (
+        <>
+          <JobFeedCollector
+            shell={shell}
+            collector={collector}
+            code={status.last_error}
+          />
+          <h3>Intake</h3>
+        </>
+      ) : (
+        <p>
+          <span className={styles.status}>{label(connection.state)}</span> ·{" "}
+          {label(connection.transport)}
+        </p>
+      )}
       {outcome?.state !== "ok" ? (
         outcome ? (
           <Failure outcome={outcome} />
@@ -1229,6 +1247,7 @@ export async function connections({ shell }: ScreenProps) {
                   outcome={health[collector]}
                   pipelines={pipelines}
                   title="Job feed"
+                  jobfeed
                 />
               ) : (
                 <JobFeedConnect shell={shell} pipelines={pipelines} />

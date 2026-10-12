@@ -36,6 +36,21 @@ export function date(value: unknown): string {
         timeZone: "UTC",
       }).format(d);
 }
+/** A moment to the minute, in UTC and labelled so, or the fallback. */
+export function moment(value: unknown, fallback: string): string {
+  const d = new Date(str(value));
+  return value == null || Number.isNaN(d.valueOf())
+    ? fallback
+    : new Intl.DateTimeFormat("en", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone: "UTC",
+        timeZoneName: "short",
+      }).format(d);
+}
 export function pageOffset(value: string | undefined): number {
   const n = Number(value ?? 0);
   return Number.isInteger(n) && n >= 0 && n <= 100000 ? n : 0;
