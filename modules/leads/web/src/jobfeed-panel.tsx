@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import type { ShellApi } from "@rheo-stream/web-contract/screen";
 import { ActionForm, type OkCopy } from "./action-form";
+import { FinishConnecting, type FinishState } from "./finish-connecting";
 import {
   JOBSEARCH_PRESET_ID,
   label,
@@ -30,9 +31,12 @@ export function jobSearchPipelines(pipelines: Row[]): Row[] {
 export function JobFeedConnect({
   shell,
   pipelines,
+  finish,
 }: {
   shell: ShellApi;
   pipelines: Row[];
+  /** Present in the loopback redirect mode (see ``FinishState``). */
+  finish?: FinishState;
 }) {
   const choices = jobSearchPipelines(pipelines);
   return (
@@ -70,6 +74,9 @@ export function JobFeedConnect({
       ) : (
         <p className={styles.meta}>Editing is unavailable in this view.</p>
       )}
+      {finish && shell.submit ? (
+        <FinishConnecting submit={shell.submit} pending={finish.pending} />
+      ) : null}
     </section>
   );
 }
@@ -149,10 +156,13 @@ export function JobFeedCollector({
   shell,
   collector,
   code,
+  finish,
 }: {
   shell: ShellApi;
   collector: Row;
   code: unknown;
+  /** Present in the loopback redirect mode (see ``FinishState``). */
+  finish?: FinishState;
 }) {
   const state = str(collector.authorization_state);
   const connected = state === "connected";
@@ -261,6 +271,9 @@ export function JobFeedCollector({
             buttonClass={reconnectPrimary ? "primary" : "secondary"}
             fields={[]}
           />
+          {finish ? (
+            <FinishConnecting submit={shell.submit} pending={finish.pending} />
+          ) : null}
           {state === "revoked" ? null : (
             <details className={styles.manualCapture}>
               <summary>Revoke access</summary>

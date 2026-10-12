@@ -1,7 +1,8 @@
 """The owner's job feed authorization operations: connect, reconnect, the
-completion the identity-host callback dispatches, revoke and account selection.
+completion the identity-host callback dispatches, the completion from a pasted
+loopback address, revoke and account selection.
 
-All five are for an owner on a browser session only and have no tool. Connect and
+All six are for an owner on a browser session only and have no tool. Connect and
 reconnect each read
 what it needs in a short transaction that commits at once, then discovers the
 authorization server and registers (or, on a reconnect, reuses) the OAuth client
@@ -28,6 +29,17 @@ An ``invalid_client`` answer never leads to a registration here: a reused client
 cleared from the connection, which goes terminal; a fresh one is discarded. The
 dispatcher's transaction carries only its audit row and, for a provider error on a
 reconnect, the content-free health code, which retires nothing.
+
+``complete_pasted`` is the same completion for the ``loopback`` redirect mode, where
+the provider sends the browser to ``http://127.0.0.1:<port>/callback``, which nothing
+serves: the owner pastes the address the browser shows, and
+``oauth.loopback_callback_parameters`` reads exactly the four callback parameters
+from it before ``complete_authorization``'s own path runs. An address that is not
+exactly the loopback redirect URI refuses ``address_invalid`` with nothing consumed.
+Its input is held only in memory: the operation is not idempotent and not long
+running, so the dispatcher stores no receipt and no operation record, its audit row
+keeps only the request digest, and no refusal carries the address or a value read
+from it.
 
 ``revoke`` ends the connection locally first, in a committed unit of its own that
 clears and captures the token reference under the lock, so a concurrent rotation
@@ -105,6 +117,7 @@ ACCOUNT_SELECTION_REQUIRED: Final = "account_selection_required"
 CLIENT_CLEAR_FAILED: Final = "client_clear_failed"
 REVOKE_LOCAL_END_CLOSE_FAILED: Final = "revoke_local_end_close_failed"
 COMPLETE_AUTHORIZATION: Final = "leads.jobfeed.complete_authorization"
+COMPLETE_PASTED: Final = "leads.jobfeed.complete_pasted"
 REVOKE: Final = "leads.jobfeed.revoke"
 SELECT_ACCOUNT: Final = "leads.jobfeed.select_account"
 _AUTH_METHODS: Final[frozenset[str]] = frozenset(get_args(ClientAuthMethod))
@@ -120,6 +133,7 @@ _DETAILS: Final[dict[str, str]] = {
     "registration_failed": "client registration failed",
     "registration_unsupported": "client registration is not supported",
     "record_stale": "the job feed changed; start again",
+    "address_invalid": "that is not the address the provider sent you back to",
 }
 
 
@@ -200,8 +214,8 @@ def _require_capability(ctx: WorkspaceContext, uow: UnitOfWork) -> None:
 
 def _configured_resource() -> tuple[str, str]:
     """The resource URL and the redirect URI, before any request is made. Refused
-    ``endpoint_misconfigured`` while the connector client is off, the identity path
-    is not the served one or the resource URL is unset."""
+    ``endpoint_misconfigured`` while the connector client is not configured (see
+    ``oauth.redirect_mode``) or the resource URL is unset."""
     resource_url = resolve().get_str(RESOURCE_URL_KEY)
     redirect: str | None = None
     try:
@@ -804,6 +818,36 @@ def complete_authorization(
     ``refused`` result, so the dispatcher commits its one audit row normally.
     """
     _require_owner_browser(ctx)
+    return _complete(ctx, uow, m)
+
+
+class PastedInput(Strict):
+    """The full address the owner's browser landed on. Its length is checked by
+    the handler, so an over-long paste refuses ``address_invalid`` like any other."""
+
+    address: str
+
+
+def complete_pasted(
+    ctx: WorkspaceContext, uow: UnitOfWork, m: PastedInput
+) -> AuthorizationCompletion:
+    """Finish the owner's authorization from a pasted loopback address (see the
+    module docstring). Refused ``endpoint_misconfigured`` unless the redirect mode
+    is ``loopback``, and ``address_invalid`` for any other address, both before
+    anything is read or consumed."""
+    _require_owner_browser(ctx)
+    if oauth.redirect_mode() != "loopback":
+        raise _refused("endpoint_misconfigured")
+    parameters = oauth.loopback_callback_parameters(m.address)
+    if parameters is None:
+        raise _refused("address_invalid")
+    return _complete(ctx, uow, CompleteInput(**parameters))
+
+
+def _complete(
+    ctx: WorkspaceContext, uow: UnitOfWork, m: CompleteInput
+) -> AuthorizationCompletion:
+    """The completion both entries share, after their own checks."""
     consumed = _consume(ctx, m.state)
     if consumed is None:
         return _refusal("state_unknown")
@@ -1096,6 +1140,18 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
             audit=AuditSpec(subject_field=None),
         ),
         complete_authorization,
+    ),
+    (
+        OperationDeclaration(
+            name=COMPLETE_PASTED,
+            safety_class=SafetyClass.MUTATE,
+            roles=frozenset({Role.OWNER}),
+            input_model=PastedInput,
+            output=AuthorizationCompletion,
+            idempotency=Idempotency.NONE,
+            audit=AuditSpec(subject_field=None),
+        ),
+        complete_pasted,
     ),
     (
         OperationDeclaration(

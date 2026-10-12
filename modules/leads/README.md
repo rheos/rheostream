@@ -129,6 +129,17 @@ the last completed check, the earliest next check, health, the account, and the 
 run's counts under **Last run**. **Reconnect** and **Revoke access** are there too.
 These controls work only in your own browser session; there is no MCP tool for them.
 
+**Finishing by pasting.** Some providers only send you back to an address on your own
+computer, and the host operator then sets the deployment to the loopback redirect. On
+such a deployment, after you approve at the provider your browser shows a page that
+cannot be reached; that is expected. Copy the full address from the address bar (it
+starts with `http://127.0.0.1`), come back to Connections, and paste it into
+**Finish connecting** on the Job feed card, then select the button. The form appears
+while a sign-in you started is waiting, for 10 minutes after you select Connect or
+Reconnect. A refused paste changes nothing and says why; an address that is not the
+one the provider sent you to can be pasted again, while an expired, declined or already
+used sign-in needs a fresh Connect or Reconnect. The address is used once and not kept.
+
 **Choosing an account.** Each run lists the accounts your login can act as. If exactly
 one is a freelancer account and none is chosen yet, it is used. Otherwise health shows
 **Choose an account** and the run collects nothing. Pick the freelancer account whose

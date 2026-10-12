@@ -14,6 +14,13 @@ import {
   accountOptions,
   healthLabel,
 } from "./jobfeed-panel";
+import {
+  FINISH_REFUSALS,
+  FinishConnecting,
+  finishShown,
+} from "./finish-connecting";
+import { JobFeedCollector, JobFeedConnect } from "./jobfeed-panel";
+import { isValidElement, type ReactElement, type ReactNode } from "react";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
@@ -602,5 +609,185 @@ describe("job feed collector states", () => {
     expect(outside).not.toContain(ORGANIZATION_ID);
     expect(outside).not.toContain(SECOND_ORGANIZATION_ID);
     expect(visible(html)).toContain("Studio (…7f3e9a)");
+  });
+});
+
+describe("finishing a pasted sign-in", () => {
+  const LOOPBACK_PENDING = [
+    { kind: "capability", name: "jobsearch" },
+    { kind: "jobfeed", loopback: true, pending: true },
+  ];
+  const finishes = (html: string) => html.includes("Finish connecting");
+  it("is offered only in loopback mode while this owner's sign-in is pending", async () => {
+    expect(finishes(block(await page([services, jobs, ...ON])))).toBe(false);
+    for (const marker of [
+      { kind: "jobfeed", loopback: true, pending: false },
+      { kind: "jobfeed", loopback: false, pending: true },
+      { kind: "jobfeed", loopback: "true", pending: "true" },
+    ]) {
+      const html = block(
+        await page([services, jobs, { kind: "capability", name: "jobsearch" }, marker]),
+      );
+      expect(finishes(html)).toBe(false);
+    }
+    const html = block(await page([services, jobs, ...LOOPBACK_PENDING]));
+    expect(finishes(html)).toBe(true);
+    expect(html).toContain("Connect job feed");
+  });
+  it("is offered on a connected feed's card for a pending reconnect", async () => {
+    const plain = await page(
+      [services, jobs, ...ON, pollConnection],
+      collectorHealth,
+    );
+    expect(finishes(block(plain))).toBe(false);
+    const html = block(
+      await page(
+        [services, jobs, ...LOOPBACK_PENDING, pollConnection],
+        collectorHealth,
+      ),
+    );
+    expect(finishes(html)).toBe(true);
+    expect(html).toContain("Reconnect");
+  });
+  it("asks for the address with plain help and no URL", async () => {
+    const html = block(await page([services, jobs, ...LOOPBACK_PENDING]));
+    expect(html).toContain("Address from your browser");
+    expect(html).toContain("a page that can&#x27;t be reached");
+    expect(html).toContain("Copy the full address from the address bar");
+    const input = html.match(/<input[^>]*name="address"[^>]*>/)?.[0] ?? "";
+    expect(input).toContain('type="text"');
+    expect(input).toContain("required");
+    expect(input).toMatch(/maxlength="4096"/i);
+    expect(html).toContain('aria-labelledby="jobfeed-finish-heading"');
+    expect(visible(html)).not.toContain("127.0.0.1");
+    expect(visible(html)).not.toMatch(UUID);
+  });
+  const refusedResult = { field: "state", value: "refused", codeField: "reason" };
+  it("shows a refused completion result as its fixed refusal copy", () => {
+    const location = { assign: vi.fn(), protocol: "https:", hostname: "leads.example.com" };
+    const shown = settle(
+      ok({ state: "refused", reason: "state_expired" }),
+      undefined,
+      location,
+      refusedResult,
+    );
+    expect(shown).toEqual({ state: "refused", code: "state_expired", text: "" });
+    const html = renderToStaticMarkup(
+      <FormResult result={shown} refusalCopy={FINISH_REFUSALS} />,
+    );
+    expect(html).toContain(FINISH_REFUSALS.state_expired);
+    expect(html).toContain('role="alert"');
+    const connected = ok({ state: "connected", reason: null });
+    expect(settle(connected, undefined, location, refusedResult)).toBe(connected);
+    expect(location.assign).not.toHaveBeenCalled();
+  });
+  it.each(Object.entries(FINISH_REFUSALS))("shows fixed copy for %s", (code, copy) => {
+    const html = renderToStaticMarkup(
+      <FormResult
+        result={{ state: "refused", code, text: "" }}
+        refusalCopy={FINISH_REFUSALS}
+      />,
+    );
+    expect(html).toContain(copy);
+  });
+  it("covers every completion refusal and the address check", () => {
+    expect(Object.keys(FINISH_REFUSALS).sort()).toEqual(
+      [
+        "account_mismatch",
+        "address_invalid",
+        "capability_disabled",
+        "client_rejected",
+        "endpoint_misconfigured",
+        "exchange_failed",
+        "issuer_mismatch",
+        "no_refresh_token",
+        "not_found",
+        "provider_error",
+        "record_stale",
+        "state_expired",
+        "state_unknown",
+      ].sort(),
+    );
+  });
+});
+
+/** The child-index path to the first element of ``type`` in an element tree,
+ * without rendering function components (a server refresh re-renders the tree,
+ * and React keeps a client component's state while its type and path hold). */
+function pathTo(node: ReactNode, type: unknown, at: number[] = []): number[] | null {
+  if (Array.isArray(node)) {
+    for (const [index, child] of node.entries()) {
+      const found = pathTo(child, type, [...at, index]);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isValidElement(node)) return null;
+  if (node.type === type) return at;
+  const children = (node as ReactElement<{ children?: ReactNode }>).props.children;
+  return children === undefined ? null : pathTo(children, type, [...at, -1]);
+}
+function finishProps(node: ReactNode): { pending: boolean } | null {
+  const path = pathTo(node, FinishConnecting);
+  if (!path) return null;
+  let current: ReactNode = node;
+  for (const index of path) {
+    current =
+      index === -1
+        ? (current as ReactElement<{ children?: ReactNode }>).props.children
+        : (current as ReactNode[])[index];
+  }
+  return (current as ReactElement<{ pending: boolean }>).props;
+}
+
+describe("a finished sign-in's answer survives the screen refresh", () => {
+  const submitting = shell({});
+  it("keeps the form once it has answered, after the sign-in stops pending", () => {
+    expect(finishShown(true, false)).toBe(true);
+    expect(finishShown(false, true)).toBe(true);
+    expect(finishShown(false, false)).toBe(false);
+  });
+  it("keeps the form's element at one place on the connect block either way", () => {
+    const before = JobFeedConnect({
+      shell: submitting,
+      pipelines: [jobs],
+      finish: { pending: true },
+    });
+    const after = JobFeedConnect({
+      shell: submitting,
+      pipelines: [jobs],
+      finish: { pending: false },
+    });
+    expect(pathTo(before, FinishConnecting)).not.toBeNull();
+    expect(pathTo(after, FinishConnecting)).toEqual(pathTo(before, FinishConnecting));
+    expect(finishProps(before)?.pending).toBe(true);
+    expect(finishProps(after)?.pending).toBe(false);
+    const identity = JobFeedConnect({ shell: submitting, pipelines: [jobs] });
+    expect(pathTo(identity, FinishConnecting)).toBeNull();
+  });
+  it("keeps the form's element at one place on the collector card either way", () => {
+    const collector = { authorization_state: "connected" };
+    const before = JobFeedCollector({
+      shell: submitting,
+      collector,
+      code: null,
+      finish: { pending: true },
+    });
+    // A declined reconnect changes the health code as the sign-in is consumed.
+    const after = JobFeedCollector({
+      shell: submitting,
+      collector,
+      code: "authorization_required",
+      finish: { pending: false },
+    });
+    expect(pathTo(before, FinishConnecting)).not.toBeNull();
+    expect(pathTo(after, FinishConnecting)).toEqual(pathTo(before, FinishConnecting));
+    expect(finishProps(after)?.pending).toBe(false);
+  });
+  it("renders nothing before any answer while no sign-in is pending", () => {
+    const html = renderToStaticMarkup(
+      <FinishConnecting submit={submitting.submit} pending={false} />,
+    );
+    expect(html).toBe("");
   });
 });

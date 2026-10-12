@@ -68,6 +68,7 @@ BASE_HOST = "example.test"
 MODES = ("subdomain", "path")
 ENABLED_ENV = "RHEO__connectors__oauth_client__enabled"
 IDENTITY_PATH_ENV = "RHEO__routing__identity__path"
+REDIRECT_ENV = "RHEO__connectors__oauth_client__redirect"
 HARNESS = "harness"
 PLAIN = "plain_probe"
 UNKNOWN = "absent_probe"
@@ -326,6 +327,40 @@ async def test_the_callback_is_an_unrouted_404_while_the_switch_is_off(
         assert HANDLER.ran == []
         # The control: the identical request, with only the switch turned on.
         monkeypatch.setenv(ENABLED_ENV, "true")
+        control = await client.get(
+            f"{_served_path(HARNESS)}?{urlencode(_marked())}",
+            headers=_headers(host, cookie),
+        )
+    _assert_page(control, connected=True)
+    assert [name for name, _ in dispatched] == [COMPLETE]
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_the_callback_is_404_in_the_loopback_redirect_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    harness_enabled: UUID,
+    owner_account_id: UUID,
+    mode: str,
+    dispatched: list[tuple[str, dict[str, Any]]],
+) -> None:
+    """No provider redirects here in loopback mode: the owner pastes the address
+    instead, so the route is closed even though the client is on."""
+    _set_mode(monkeypatch, mode)
+    monkeypatch.setenv(REDIRECT_ENV, "loopback")
+    assert oauth.enabled() and not oauth.callback_served()
+    host = _identity_host()
+    cookie = _session_cookie(owner_account_id, harness_enabled, host)
+    async with _wire(monkeypatch) as client:
+        unrouted = await _unrouted(client, host)
+        response = await client.get(
+            f"{_served_path(HARNESS)}?{urlencode(_marked())}",
+            headers=_headers(host, cookie),
+        )
+        _same_as_unrouted(response, unrouted)
+        assert dispatched == []
+        assert HANDLER.ran == []
+        # The control: the identical request in the identity mode.
+        monkeypatch.setenv(REDIRECT_ENV, "identity")
         control = await client.get(
             f"{_served_path(HARNESS)}?{urlencode(_marked())}",
             headers=_headers(host, cookie),

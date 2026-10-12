@@ -30,7 +30,8 @@ fifty-three, and issue #130 adds the two ``redaction.*`` keys the tier policy re
 ``automatic_memory.extraction.model_id``, for sixty-two. Issue #287 adds the eight
 ``identity.oauth.*`` keys, for seventy, issue #335 adds
 ``work.outbox_retention_days``, for seventy-one, and the job feed collector adds the
-two ``connectors.oauth_client.*`` keys, for seventy-three.
+two ``connectors.oauth_client.*`` keys, for seventy-three, and issue #355 adds the
+``connectors.oauth_client.redirect`` and ``.loopback_port`` keys, for seventy-five.
 ``api.cors_origins`` is still not declared here, for the reason this key was not
 until now: a key with no reader is machinery with no caller, and the registry/TOML
 identity check holds per merge SHA — every later chunk that adds a key adds it to
@@ -859,6 +860,30 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default="Rheo Stream",
+    ),
+    # Where the provider sends the owner's browser after consent. ``identity`` is the
+    # identity-host callback route; ``loopback`` registers
+    # ``http://127.0.0.1:<loopback_port>/callback`` for providers that accept only
+    # loopback redirect URIs, and the owner pastes the address the browser lands on
+    # back into the module. The port is only part of that URI: nothing listens on it.
+    KeySpec(
+        key="connectors.oauth_client.redirect",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="identity",
+        choices=("identity", "loopback"),
+    ),
+    KeySpec(
+        key="connectors.oauth_client.loopback_port",
+        type=ValueType.INT,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=33419,
+        minimum=1024,
+        maximum=65535,
     ),
     # Same empty-string reasoning as the GitHub client secret above: the real
     # ``secret://env/RHEO_INTERNAL_SECRET`` reference is 11's deployment concern.

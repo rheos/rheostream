@@ -70,7 +70,7 @@ def test_catalog_jobfeed_row_appears_only_while_job_search_is_on(
 
     assert rows("jobfeed") == []
     jobsearch(True)
-    assert rows("jobfeed") == [{"kind": "jobfeed"}]
+    assert rows("jobfeed") == [{"kind": "jobfeed", "loopback": False, "pending": False}]
     # The panel offers only Job search pipelines, so pipeline rows carry the preset.
     pipelines = rows("pipeline")
     assert pipelines and all("preset_id" in row for row in pipelines)

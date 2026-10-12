@@ -9,12 +9,15 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
+from rheo_core.connectors import oauth
 from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import select
 
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
+from rheo_leads.jobfeed import dependencies
 from rheo_leads.references import identifier, ref
+from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
@@ -51,7 +54,7 @@ def catalog(ctx: WorkspaceContext, uow: UnitOfWork, m: c.Empty) -> c.ItemsOutput
         items.append({"kind": "capability", "name": "jobsearch"})
         # The job feed controls' marker only: its state comes from the owner-only
         # health read, so this row carries no connection data or organization id.
-        items.append({"kind": "jobfeed"})
+        items.append(_jobfeed_marker(ctx, uow))
     if ctx.role is Role.OWNER:
         # Explicit projection excludes signing handles and identity policy.
         columns = [
@@ -97,6 +100,29 @@ def catalog(ctx: WorkspaceContext, uow: UnitOfWork, m: c.Empty) -> c.ItemsOutput
                 }
             )
     return c.ItemsOutput(items=items)
+
+
+def _jobfeed_marker(ctx: WorkspaceContext, uow: UnitOfWork) -> dict[str, object]:
+    """Whether the deployment uses the loopback redirect, and (for an owner only)
+    whether this account has an unexpired pending authorization to finish by
+    pasting. A row pinned to another redirect URI (started before the operator
+    changed the mode or the port) does not count: no paste could ever match it.
+    Two booleans: nothing of the pending row itself."""
+    loopback = oauth.redirect_mode() == "loopback"
+    pending = False
+    if loopback and ctx.role is Role.OWNER:
+        table = j.jobfeed_authorization
+        pending = (
+            uow.connection.execute(
+                select(table.c.id).where(
+                    table.c.account_id == ctx.actor.id,
+                    table.c.expires_at > dependencies().now(),
+                    table.c.redirect_uri == oauth.loopback_redirect_uri(),
+                )
+            ).first()
+            is not None
+        )
+    return {"kind": "jobfeed", "loopback": loopback, "pending": pending}
 
 
 def receipt(ctx: WorkspaceContext, uow: UnitOfWork, m: ReceiptInput) -> c.RecordOutput:
