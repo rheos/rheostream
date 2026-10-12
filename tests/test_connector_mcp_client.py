@@ -1396,10 +1396,11 @@ def test_a_long_plain_text_4xx_is_cut_to_the_limit(
     trace_on: pytest.LogCaptureFixture,
 ) -> None:
     fake = marked_fake()
-    fake.tool = lambda r: httpx.Response(400, text="x" * 500)
+    fake.tool = lambda r: httpx.Response(400, text="no such thing " * 40)
     assert run_to_tool(fake) is not None
     *_, tool = traced(trace_on)
-    assert tool["error_text"] == '"' + "x" * mcp_client.ERROR_TEXT_LIMIT + '"'
+    expected = ("no such thing " * 40)[: mcp_client.ERROR_TEXT_LIMIT]
+    assert tool["error_text"] == '"' + expected + '"'
 
 
 @pytest.mark.parametrize(
@@ -1422,3 +1423,26 @@ def test_other_error_bodies_are_never_recorded(
     assert run_to_tool(fake) is not None
     for line in traced(trace_on):
         assert line["error_text"] == "-"
+
+
+@pytest.mark.parametrize(
+    "echo",
+    [
+        lambda: "Bearer " + ACCESS,
+        lambda: ACCESS,
+        lambda: "session " + SESSION,
+        lambda: "ref abcdefghijklmnopqrstuvwxyz0123",
+    ],
+    ids=["header", "token", "session", "long-run"],
+)
+def test_a_plain_text_error_echoing_a_credential_is_redacted(
+    trace_on: pytest.LogCaptureFixture, echo: Callable[[], str]
+) -> None:
+    fake = marked_fake()
+    text = "Rejected: " + echo()
+    fake.tool = lambda r: httpx.Response(400, text=text)
+    assert run_to_tool(fake) is not None
+    *_, tool = traced(trace_on)
+    assert mcp_client.REDACTED in tool["error_text"]
+    assert tool["error_text"].startswith('"Rejected:')
+    assert "abcdefghijklmnopqrstuvwxyz0123" not in tool["error_text"]

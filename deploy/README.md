@@ -975,7 +975,8 @@ mcp_trace method=initialize tool=- action=- status=200 egress=- content_type=tex
 - `events` and `bytes` count the event-stream events and body bytes read.
 - `outcome` is `ok` or the code the client mapped the request to.
 - `error_text` is the server's own short message when it answers 4xx with
-  `text/plain`: at most 120 printable characters, quoted. Every other response logs `-`;
+  `text/plain`: at most 120 printable characters, quoted, with the request's token,
+  session id and any long token-shaped run replaced by `[redacted]`. Every other response logs `-`;
   JSON and event-stream bodies are never recorded.
 
 The line carries no secrets: no header value other than the media type, no body or

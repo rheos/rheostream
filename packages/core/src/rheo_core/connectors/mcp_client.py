@@ -527,6 +527,23 @@ class _Trace:
         )
 
 
+_TOKEN_RUN: Final = re.compile(r"[A-Za-z0-9._~+/=-]{24,}")
+"""A run long enough to be a credential; the trace never records one."""
+REDACTED: Final = "[redacted]"
+
+
+def _redact(text: str, secrets: tuple[str | None, ...]) -> str:
+    """``text`` with every known secret, every part of one, and any long
+    token-shaped run replaced."""
+    for secret in secrets:
+        if not secret:
+            continue
+        for part in {secret, *secret.split()}:
+            if len(part) >= 8:
+                text = text.replace(part, REDACTED)
+    return _TOKEN_RUN.sub(REDACTED, text)
+
+
 def _error_text(body: bytes) -> str:
     """The first characters of a short plain-text error, printable ASCII only."""
     text = body[: ERROR_TEXT_LIMIT * 4].decode("utf-8", errors="replace")
@@ -733,6 +750,11 @@ class McpSession:
         if not isinstance(outcome, EgressResponse):
             raise McpFailure(outcome)
         trace.response(outcome)
+        if trace.error_text is not None:
+            trace.error_text = _redact(
+                trace.error_text,
+                (headers["Authorization"], self._session_id),
+            )
         failed = _status_failure(outcome)
         if failed is not None:
             raise failed
