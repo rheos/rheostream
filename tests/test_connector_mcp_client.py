@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
-from rheo_core.connectors import egress
+from rheo_core.connectors import egress, mcp_client
 from rheo_core.connectors.mcp_client import (
     McpFailure,
     McpSession,
@@ -947,3 +947,420 @@ def test_every_failure_code_is_content_free() -> None:
         "tool_error",
     }
     assert repr(AccessToken(ACCESS)) == "AccessToken(<redacted>)"
+
+
+# --- the wire trace -------------------------------------------------------------
+
+TRACE_ENV = "RHEO__connectors__mcp_client__trace"
+CURSOR = "cursor-marker-4e7b1d92-0c3a-4f86-a5d1-9b2e7c4f0a63"
+BODY = "body-marker-2d9f6a13-8e4c-4b70-91f2-5a3c7e0d6b84"
+SESSION = "session-marker-7c1e5b30-9a2d-4f64-8b07-3e6d1f9a2c55"
+TRACE_MARKERS = (ACCESS, ORG, CURSOR, BODY, SESSION)
+SEARCH = {"action": "search", "organization_id": ORG, "cursor": CURSOR, "q": BODY}
+
+
+def traced(caplog: pytest.LogCaptureFixture) -> list[dict[str, str]]:
+    """The trace lines, parsed, after checking each carries no marker."""
+    lines: list[dict[str, str]] = []
+    for record in caplog.records:
+        formatted = logging.Formatter("%(message)s").format(record)
+        text = formatted + (record.exc_text or "") + repr(record.args)
+        for marker in TRACE_MARKERS:
+            assert marker not in text
+        if record.name != mcp_client.TRACE_LOGGER:
+            continue
+        assert "example" not in text  # no URL, not even the host
+        assert record.levelno == logging.INFO
+        head, *pairs = record.getMessage().split(" ")
+        assert head == "mcp_trace"
+        lines.append(dict(pair.split("=", 1) for pair in pairs))
+    return lines
+
+
+@pytest.fixture
+def trace_on(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> pytest.LogCaptureFixture:
+    monkeypatch.setenv(TRACE_ENV, "true")
+    caplog.set_level(logging.DEBUG)
+    return caplog
+
+
+def marked_fake() -> FakeMcp:
+    fake = FakeMcp()
+    fake.session_id = SESSION
+    return fake
+
+
+def run_to_tool(fake: FakeMcp) -> McpFailure | None:
+    with fake.session() as session:
+        ready(session)
+        try:
+            session.call_tool("find_jobs", SEARCH)
+        except McpFailure as failure:
+            return failure
+    return None
+
+
+def test_the_trace_is_off_by_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.delenv(TRACE_ENV, raising=False)
+    caplog.set_level(logging.DEBUG)
+    fake = marked_fake()
+    fake.tool = lambda r: httpx.Response(500, text=BODY)
+    assert run_to_tool(fake) is not None
+    with fake.session(deadline=1.0) as session:
+        mcp_failure(session.initialize)
+    assert traced(caplog) == []
+    assert not [r for r in caplog.records if r.name == mcp_client.TRACE_LOGGER]
+
+
+def test_a_successful_json_session_logs_one_line_per_request(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    fake.tool = lambda r: httpx.Response(
+        200, json=rpc(_body(r)["id"], tool_result({"jobs": [BODY]}))
+    )
+    assert run_to_tool(fake) is None
+    init, notify, tool = traced(trace_on)
+    assert init == {
+        "method": "initialize",
+        "tool": "-",
+        "action": "-",
+        "status": "200",
+        "egress": "-",
+        "content_type": "application/json",
+        "session_id": "true",
+        "protocol": "2025-06-18",
+        "rpc_error": "-",
+        "is_error": "-",
+        "tool_code": "-",
+        "events": "-",
+        "bytes": init["bytes"],
+        "outcome": "ok",
+    }
+    assert int(init["bytes"]) > 0
+    assert notify["method"] == "notifications/initialized"
+    assert (notify["status"], notify["content_type"], notify["outcome"]) == (
+        "202",
+        "-",
+        "ok",
+    )
+    assert (notify["session_id"], notify["bytes"], notify["protocol"]) == (
+        "false",
+        "0",
+        "-",
+    )
+    assert (tool["method"], tool["tool"], tool["action"]) == (
+        "tools/call",
+        "find_jobs",
+        "search",
+    )
+    assert (tool["status"], tool["is_error"], tool["outcome"]) == ("200", "false", "ok")
+
+
+def test_a_tool_without_an_action_logs_none(trace_on: pytest.LogCaptureFixture) -> None:
+    fake = marked_fake()
+    with fake.session() as session:
+        ready(session)
+        session.call_tool("list_accounts", {})
+    assert traced(trace_on)[-1]["action"] == "-"
+
+
+def test_an_event_stream_answer_logs_its_event_and_byte_counts(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    progress = {"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}
+    chunks = (
+        b": keepalive\n\n",
+        sse_message(progress),
+        sse_message(rpc(2, tool_result({"jobs": [BODY]}))),
+    )
+    fake.tool = lambda r: event_stream(*chunks)
+    assert run_to_tool(fake) is None
+    tool = traced(trace_on)[-1]
+    assert tool["content_type"] == "text/event-stream"
+    assert (tool["events"], tool["bytes"]) == ("2", str(sum(map(len, chunks))))
+    assert tool["outcome"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome"),
+    [
+        (401, "unauthorized"),
+        (404, "protocol"),
+        (429, "rate_limited"),
+        (500, "unavailable"),
+    ],
+)
+def test_a_failing_status_logs_the_status_and_the_mapped_code(
+    trace_on: pytest.LogCaptureFixture, status: int, outcome: str
+) -> None:
+    fake = marked_fake()
+    fake.tool = lambda r: httpx.Response(
+        status,
+        text=f"<html>{BODY} {ORG}</html>",
+        headers={"Content-Type": "text/html; charset=utf-8", "Mcp-Session-Id": SESSION},
+    )
+    failure = run_to_tool(fake)
+    assert failure is not None and failure.code == outcome
+    assert_content_free(failure, outcome)
+    tool = traced(trace_on)[-1]
+    assert (tool["status"], tool["content_type"], tool["session_id"]) == (
+        str(status),
+        "text/html",
+        "true",
+    )
+    assert (tool["egress"], tool["rpc_error"], tool["outcome"]) == ("-", "-", outcome)
+
+
+@pytest.mark.parametrize("code", [-32601, -32602])
+def test_a_json_rpc_error_on_initialize_logs_its_code(
+    trace_on: pytest.LogCaptureFixture, code: int
+) -> None:
+    fake = marked_fake()
+    error = {"code": code, "message": BODY, "data": {"org": ORG}}
+    fake.initialize = lambda r: httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "error": error}
+    )
+    with fake.session() as session:
+        assert_content_free(mcp_failure(session.initialize), "protocol")
+    (init,) = traced(trace_on)
+    assert (init["rpc_error"], init["protocol"], init["outcome"]) == (
+        str(code),
+        "-",
+        "protocol",
+    )
+
+
+def test_a_json_rpc_error_on_a_tool_call_in_an_event_stream_logs_its_code(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    error = {"jsonrpc": "2.0", "id": 2, "error": {"code": -32602, "message": BODY}}
+    fake.tool = lambda r: event_stream(sse_message(error))
+    failure = run_to_tool(fake)
+    assert failure is not None and failure.code == "protocol"
+    tool = traced(trace_on)[-1]
+    assert (tool["rpc_error"], tool["events"], tool["outcome"]) == (
+        "-32602",
+        "1",
+        "protocol",
+    )
+
+
+def test_a_non_integer_json_rpc_error_code_is_not_logged(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    error = {"code": BODY, "message": BODY}
+    fake.initialize = lambda r: httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "error": error}
+    )
+    with fake.session() as session:
+        mcp_failure(session.initialize)
+    assert traced(trace_on)[0]["rpc_error"] == "-"
+
+
+def test_a_tool_error_result_logs_is_error_and_its_code(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    document = {"error_code": "ORG_NOT_FOUND", "message": BODY, "org": ORG}
+    fake.tool = lambda r: httpx.Response(
+        200, json=rpc(2, tool_result(document, is_error=True))
+    )
+    failure = run_to_tool(fake)
+    assert failure is not None and failure.tool_code == "ORG_NOT_FOUND"
+    tool = traced(trace_on)[-1]
+    assert (tool["is_error"], tool["tool_code"], tool["outcome"]) == (
+        "true",
+        "ORG_NOT_FOUND",
+        "tool_error",
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "logged"),
+    [
+        ({"capabilities": {}}, "missing"),
+        ({"protocolVersion": f"{BODY} 2025"}, "invalid"),
+        ({"protocolVersion": 20250618}, "invalid"),
+        ({"protocolVersion": "2025-03-26"}, "2025-03-26"),
+    ],
+    ids=["missing", "not-a-version", "not-a-string", "older"],
+)
+def test_initialize_logs_the_returned_protocol_version(
+    trace_on: pytest.LogCaptureFixture, result: dict[str, object], logged: str
+) -> None:
+    fake = marked_fake()
+    fake.initialize = lambda r: httpx.Response(200, json=rpc(1, result))
+    with fake.session() as session:
+        if logged in ("missing", "invalid"):
+            mcp_failure(session.initialize)
+        else:
+            session.initialize()
+    (init,) = traced(trace_on)
+    assert init["protocol"] == logged
+    assert init["outcome"] == ("protocol" if logged in ("missing", "invalid") else "ok")
+
+
+@pytest.mark.parametrize(
+    ("answer", "status", "content_type", "outcome"),
+    [
+        (lambda r: httpx.Response(202), "202", "-", "ok"),
+        (
+            lambda r: httpx.Response(200, json={"note": BODY}),
+            "200",
+            "application/json",
+            "ok",
+        ),
+        (
+            lambda r: httpx.Response(400, json={"error": BODY}),
+            "400",
+            "application/json",
+            "protocol",
+        ),
+        (lambda r: httpx.Response(404, text=BODY), "404", "text/plain", "protocol"),
+    ],
+    ids=["202", "200", "400", "404"],
+)
+def test_the_notification_logs_its_status(
+    trace_on: pytest.LogCaptureFixture,
+    answer: Handler,
+    status: str,
+    content_type: str,
+    outcome: str,
+) -> None:
+    fake = marked_fake()
+    fake.notify = answer
+    with fake.session() as session:
+        session.initialize()
+        if outcome == "ok":
+            session.notify_initialized()
+        else:
+            mcp_failure(session.notify_initialized)
+    _, notify = traced(trace_on)
+    assert notify["method"] == "notifications/initialized"
+    assert (notify["status"], notify["content_type"], notify["outcome"]) == (
+        status,
+        content_type,
+        outcome,
+    )
+
+
+def test_an_unusual_content_type_logs_as_other(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    fake.tool = lambda r: httpx.Response(
+        200, content=BODY.encode(), headers={"Content-Type": f"{BODY} {ORG}"}
+    )
+    run_to_tool(fake)
+    assert traced(trace_on)[-1]["content_type"] == "other"
+
+
+@pytest.mark.parametrize(
+    ("handler", "logged", "status", "outcome"),
+    [
+        (
+            _raises(httpx.ConnectTimeout(ORG)),
+            "timeout/connect_timeout",
+            "-",
+            "unavailable",
+        ),
+        (_raises(httpx.ReadTimeout(ORG)), "timeout/read_timeout", "-", "unavailable"),
+        (
+            _raises(httpx.ConnectError(ORG)),
+            "unavailable/connect_error",
+            "-",
+            "unavailable",
+        ),
+        (
+            _raises(httpx.RemoteProtocolError(ORG)),
+            "unavailable/remote_protocol_error",
+            "-",
+            "unavailable",
+        ),
+        (
+            lambda r: httpx.Response(
+                302, headers={"Location": f"https://{ORG}.example.net"}
+            ),
+            "endpoint_misconfigured/redirect",
+            "302",
+            "endpoint_misconfigured",
+        ),
+        (
+            lambda r: httpx.Response(
+                200, content=b"x" * (mcp_client.RESPONSE_CAP_BYTES + 1)
+            ),
+            "too_large/too_large",
+            "200",
+            "unavailable",
+        ),
+    ],
+    ids=[
+        "connect-timeout",
+        "read-timeout",
+        "connect",
+        "protocol-error",
+        "redirect",
+        "too-large",
+    ],
+)
+def test_an_egress_failure_logs_its_code_and_detail(
+    trace_on: pytest.LogCaptureFixture,
+    handler: Handler,
+    logged: str,
+    status: str,
+    outcome: str,
+) -> None:
+    fake = marked_fake()
+    fake.tool = handler
+    failure = run_to_tool(fake)
+    assert failure is not None
+    assert_content_free(failure, outcome)
+    tool = traced(trace_on)[-1]
+    assert (tool["egress"], tool["status"], tool["outcome"]) == (
+        logged,
+        status,
+        outcome,
+    )
+    assert (tool["content_type"], tool["bytes"]) == ("-", "-")
+
+
+def test_a_non_public_host_logs_before_anything_is_sent(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    fake.addresses["mcp.example.com"] = "10.1.2.3"
+    with fake.session() as session:
+        assert_content_free(mcp_failure(session.initialize), "endpoint_misconfigured")
+    assert fake.requests == []
+    (init,) = traced(trace_on)
+    assert init["egress"] == "endpoint_misconfigured/not_public"
+
+
+def test_a_request_with_too_little_time_left_logs_not_started(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    with fake.session(deadline=1.0) as session:
+        mcp_failure(session.initialize)
+    (init,) = traced(trace_on)
+    assert (init["egress"], init["outcome"]) == ("not_started", "unavailable")
+
+
+def test_refused_and_out_of_order_calls_log_nothing(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    with fake.session() as session:
+        with pytest.raises(ToolRefused):
+            session.call_tool("submit_proposal", {"cover_letter": BODY})
+        mcp_failure(lambda: session.call_tool("find_jobs", SEARCH))
+        mcp_failure(session.notify_initialized)
+    assert traced(trace_on) == []

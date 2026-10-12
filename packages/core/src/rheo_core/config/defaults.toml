@@ -20,7 +20,7 @@
 # identity.oauth.* keys, for seventy; issue #335 adds work.outbox_retention_days, for
 # seventy-one; the job feed collector adds the two connectors.oauth_client.* keys, for
 # seventy-three; issue #355 adds connectors.oauth_client.redirect and .loopback_port,
-# for seventy-five. Harness
+# for seventy-five; issue #360 adds connectors.mcp_client.trace, for seventy-six. Harness
 # keys (tests/harness/) are registry-only by design and never appear here.
 
 profile = "development"
@@ -114,6 +114,13 @@ enabled = false
 client_name = "rheoStream"
 redirect = "identity"
 loopback_port = 33419
+
+# The MCP client's wire trace. Off by default. When true, every MCP request logs one
+# INFO line of wire metadata (method, status, content type, codes, counts) on the
+# rheo_core.connectors.mcp_trace logger; no header value other than the content type,
+# and never a body, token or URL.
+[connectors.mcp_client]
+trace = false
 
 # The internal listener's shared-secret reference (08). Empty by package default for
 # the same reason as the GitHub client secret above; 11 wires the real

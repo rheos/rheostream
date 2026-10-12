@@ -692,3 +692,115 @@ def test_retry_after_reads_seconds_before_capping(
     header: str, seconds: int | None
 ) -> None:
     assert egress.retry_after_seconds(httpx.Headers({"Retry-After": header})) == seconds
+
+
+# --- the failure detail ---------------------------------------------------------
+
+
+def _refusing(host: str) -> Sequence[str]:
+    raise socket.gaierror(MARKER)
+
+
+def _raising(exc: Exception) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    ("make", "code", "detail", "status"),
+    [
+        (
+            lambda: call(Counting(ok), f"http://www.example.com/{MARKER}"),
+            "endpoint_misconfigured",
+            "not_https",
+            None,
+        ),
+        (
+            lambda: call(Counting(ok), resolver=lambda h: ["10.0.0.7"]),
+            "endpoint_misconfigured",
+            "not_public",
+            None,
+        ),
+        (
+            lambda: call(Counting(ok), resolver=_refusing),
+            "endpoint_misconfigured",
+            "lookup_failed",
+            None,
+        ),
+        (lambda: call(Counting(ok), budget=0.0), "timeout", "budget_spent", None),
+        (
+            lambda: call(
+                Counting(lambda r: httpx.Response(307, headers={"Location": URL}))
+            ),
+            "endpoint_misconfigured",
+            "redirect",
+            307,
+        ),
+        (
+            lambda: call(
+                Counting(lambda r: httpx.Response(200, content=b"x" * 11)), cap=10
+            ),
+            "too_large",
+            "too_large",
+            200,
+        ),
+        (
+            lambda: call(Counting(_raising(httpx.ConnectTimeout(MARKER)))),
+            "timeout",
+            "connect_timeout",
+            None,
+        ),
+        (
+            lambda: call(Counting(_raising(httpx.ReadTimeout(MARKER)))),
+            "timeout",
+            "read_timeout",
+            None,
+        ),
+        (
+            lambda: call(Counting(_raising(httpx.ConnectError(MARKER)))),
+            "unavailable",
+            "connect_error",
+            None,
+        ),
+        (
+            lambda: call(Counting(_raising(httpx.ReadError(MARKER)))),
+            "unavailable",
+            "read_error",
+            None,
+        ),
+        (
+            lambda: call(Counting(_raising(httpx.RemoteProtocolError(MARKER)))),
+            "unavailable",
+            "remote_protocol_error",
+            None,
+        ),
+        (
+            lambda: call(Counting(_raising(RuntimeError(MARKER)))),
+            "unavailable",
+            "transport_error",
+            None,
+        ),
+    ],
+    ids=[
+        "not-https",
+        "not-public",
+        "lookup-failed",
+        "budget",
+        "redirect",
+        "too-large",
+        "connect-timeout",
+        "read-timeout",
+        "connect-error",
+        "read-error",
+        "protocol-error",
+        "other",
+    ],
+)
+def test_a_failure_names_a_fixed_detail_and_any_status(
+    make: Callable[[], object], code: str, detail: str, status: int | None
+) -> None:
+    exc = failure_of(make)
+    assert_content_free(exc, code)
+    assert (exc.detail, exc.status) == (detail, status)

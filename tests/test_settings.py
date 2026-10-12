@@ -121,6 +121,7 @@ PRODUCTION_KEYS = {
     "connectors.oauth_client.client_name": "rheoStream",
     "connectors.oauth_client.redirect": "identity",
     "connectors.oauth_client.loopback_port": 33419,
+    "connectors.mcp_client.trace": False,
     "internal.secret_ref": "",
     "work.due_reconcile_seconds": 900,
     "work.max_attempts": 8,

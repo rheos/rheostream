@@ -48,9 +48,27 @@ the first text block whose JSON has an upper-snake code of at most 64 characters
 else ``None``; never the message). Like the egress
 and OAuth failures, ``str`` and ``repr`` are the code alone and each is raised
 outside any ``except`` block, so ``__cause__`` and ``__context__`` are ``None``.
+
+**Wire trace.** With the deployment setting ``connectors.mcp_client.trace`` on (read
+when the session is built), every request that was attempted logs exactly one INFO
+line on the ``rheo_core.connectors.mcp_trace`` logger once it ends, in the fixed
+form of :data:`TRACE_FORMAT`; ``-`` marks a field that does not apply. The fields
+are only: the JSON-RPC method; for ``tools/call`` the tool name and its ``action``
+(both already passed the policy); the HTTP status; the egress code and detail when
+the request failed in egress (or ``not_started`` when too little time was left to
+send it); the response media type (no parameters; ``other`` when it is not a plain
+token pair); whether an ``Mcp-Session-Id`` header came back; on ``initialize`` the
+``protocolVersion`` the server returned when it matches the version pattern, else
+``missing`` or ``invalid``; a JSON-RPC ``error.code`` (an integer only); for a tool
+result whether ``isError`` was true and its tool code; the number of event-stream
+events and of body bytes read; and the code the request ended with (``ok`` or the
+:class:`McpFailure` code). Never a header value other than the media type, a body,
+a message, the token, an argument other than ``action``, or the URL. A call the
+policy refuses or one out of order sends nothing and logs nothing.
 """
 
 import json
+import logging
 import re
 import time
 from collections.abc import Iterable, Iterator, Mapping
@@ -62,6 +80,7 @@ import httpx
 from rheo_core.connectors import egress
 from rheo_core.connectors.egress import Clock, EgressResponse, Resolver
 from rheo_core.connectors.oauth import AccessToken
+from rheo_core.settings import resolve
 
 McpCode = Literal[
     "unauthorized",
@@ -89,6 +108,18 @@ _SESSION_ID: Final = re.compile(r"[\x21-\x7e]{1,1024}")
 _PROTOCOL_VERSION: Final = re.compile(r"[0-9A-Za-z._-]{1,32}")
 _TOOL_CODE: Final = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 """An upper-snake error code; anything else (a sentence, an identifier) is not one."""
+TRACE_KEY: Final = "connectors.mcp_client.trace"
+TRACE_LOGGER: Final = "rheo_core.connectors.mcp_trace"
+TRACE_FORMAT: Final = (
+    "mcp_trace method=%s tool=%s action=%s status=%s egress=%s content_type=%s "
+    "session_id=%s protocol=%s rpc_error=%s is_error=%s tool_code=%s events=%s "
+    "bytes=%s outcome=%s"
+)
+_trace_log: Final = logging.getLogger(TRACE_LOGGER)
+_MEDIA_TOKEN: Final = re.compile(
+    r"[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}"
+)
+_RPC_CODE_RANGE: Final = range(-(2**31), 2**31)
 _EGRESS: Final[dict[egress.EgressCode, McpCode]] = {
     "endpoint_misconfigured": "endpoint_misconfigured",
     "timeout": "unavailable",
@@ -224,7 +255,15 @@ class _EventReader:
     # which sees each chunk after the cap and budget checks; it never reads the
     # finished body, so a change to how egress calls ``stop`` changes this reader.
 
-    __slots__ = ("_data", "_event", "_pending", "_request_id", "_started", "found")
+    __slots__ = (
+        "_data",
+        "_event",
+        "_pending",
+        "_request_id",
+        "_started",
+        "events",
+        "found",
+    )
 
     def __init__(self, request_id: int) -> None:
         self._request_id = request_id
@@ -232,6 +271,8 @@ class _EventReader:
         self._started = False
         self._event = ""
         self._data: list[str] = []
+        self.events = 0
+        """Events dispatched so far (any type, data present); for the trace."""
         # The response, ``False`` once the stream is malformed, else ``None``.
         self.found: dict[str, object] | None | Literal[False] = None
 
@@ -290,7 +331,10 @@ class _EventReader:
     def _dispatch(self) -> None:
         data, event = "\n".join(self._data), self._event
         self._data, self._event = [], ""
-        if not data or event not in ("", "message"):
+        if not data:
+            return
+        self.events += 1
+        if event not in ("", "message"):
             return
         try:
             document = json.loads(data)
@@ -377,6 +421,113 @@ def _status_failure(response: EgressResponse) -> McpFailure | None:
     return None
 
 
+def _traced_media(headers: httpx.Headers) -> str:
+    media = _media_type(headers)
+    if not media:
+        return "-"
+    return media if _MEDIA_TOKEN.fullmatch(media) else "other"
+
+
+def _rpc_error_code(message: dict[str, object] | None) -> int | None:
+    error = None if message is None else message.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if type(code) is int and code in _RPC_CODE_RANGE else None
+
+
+class _Trace:
+    """The wire metadata of one request, logged once when the request ends (module
+    docstring). Every field holds a fixed code, a number, a boolean or a value that
+    passed a pattern or the tool policy; nothing else is ever assigned."""
+
+    __slots__ = (
+        "action",
+        "body_bytes",
+        "content_type",
+        "egress",
+        "enabled",
+        "events",
+        "is_error",
+        "method",
+        "protocol",
+        "rpc_error",
+        "session_id",
+        "status",
+        "tool",
+        "tool_code",
+    )
+
+    def __init__(
+        self,
+        enabled: bool,
+        method: str,
+        tool: str | None = None,
+        action: str | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self.method = method
+        self.tool = tool
+        self.action = action
+        self.status: int | None = None
+        self.egress: str | None = None
+        self.content_type: str | None = None
+        self.session_id: bool | None = None
+        self.protocol: str | None = None
+        self.rpc_error: int | None = None
+        self.is_error: bool | None = None
+        self.tool_code: str | None = None
+        self.events: int | None = None
+        self.body_bytes: int | None = None
+
+    def response(self, response: EgressResponse) -> None:
+        self.status = response.status
+        self.content_type = _traced_media(response.headers)
+        self.session_id = _header(response.headers, "mcp-session-id") is not None
+        self.body_bytes = len(response.body)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if not self.enabled:
+            return
+        if exc is None:
+            outcome = "ok"
+        elif isinstance(exc, McpFailure):
+            outcome = exc.code
+        else:
+            outcome = "aborted"
+        _trace_log.info(
+            TRACE_FORMAT,
+            self.method,
+            _field(self.tool),
+            _field(self.action),
+            _field(self.status),
+            _field(self.egress),
+            _field(self.content_type),
+            _field(self.session_id),
+            _field(self.protocol),
+            _field(self.rpc_error),
+            _field(self.is_error),
+            _field(self.tool_code),
+            _field(self.events),
+            _field(self.body_bytes),
+            outcome,
+        )
+
+
+def _field(value: str | int | bool | None) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 SessionState = Literal["new", "initialized", "ready"]
 
 
@@ -410,6 +561,7 @@ class McpSession:
         self._session_id: str | None = None
         self._protocol_version: str | None = None
         self._next_id = egress.INITIALIZE_REQUEST_ID + 1
+        self._trace = resolve().get_bool(TRACE_KEY)
 
     def __enter__(self) -> Self:
         if self._client is None:
@@ -429,17 +581,27 @@ class McpSession:
     def initialize(self) -> None:
         """Send ``initialize``; record the session id and protocol version."""
         self._require("new")
-        response, result = self._exchange(
-            egress.INITIALIZE_BODY, egress.INITIALIZE_REQUEST_ID
-        )
-        version = result.get("protocolVersion")
-        session_id = _header(response.headers, "mcp-session-id")
-        if (
-            not isinstance(version, str)
-            or not _PROTOCOL_VERSION.fullmatch(version)
-            or (session_id is not None and not _SESSION_ID.fullmatch(session_id))
-        ):
-            raise McpFailure("protocol")
+        with _Trace(self._trace, "initialize") as trace:
+            response, result = self._exchange(
+                egress.INITIALIZE_BODY, egress.INITIALIZE_REQUEST_ID, trace
+            )
+            version = result.get("protocolVersion")
+            valid = isinstance(version, str) and bool(
+                _PROTOCOL_VERSION.fullmatch(version)
+            )
+            if "protocolVersion" not in result:
+                trace.protocol = "missing"
+            else:
+                trace.protocol = (
+                    version if valid and isinstance(version, str) else "invalid"
+                )
+            session_id = _header(response.headers, "mcp-session-id")
+            if (
+                not isinstance(version, str)
+                or not valid
+                or (session_id is not None and not _SESSION_ID.fullmatch(session_id))
+            ):
+                raise McpFailure("protocol")
         self._protocol_version = version
         self._session_id = session_id
         self._state = "initialized"
@@ -447,7 +609,8 @@ class McpSession:
     def notify_initialized(self) -> None:
         """Send the ``notifications/initialized`` notification."""
         self._require("initialized")
-        self._send(NOTIFY_INITIALIZED_BODY, stop=lambda headers, chunk: True)
+        with _Trace(self._trace, "notifications/initialized") as trace:
+            self._send(NOTIFY_INITIALIZED_BODY, trace, stop=lambda headers, chunk: True)
         self._state = "ready"
 
     def call_tool(
@@ -474,9 +637,20 @@ class McpSession:
             request_id,
             params,
         )
-        _, result = self._exchange(body, request_id)
-        if result.get("isError") is True:
-            raise McpFailure("tool_error", tool_code=_tool_code(result))
+        # Both passed the policy: the name is an allowed tool and the action, when
+        # there is one, is in that tool's set.
+        action = snapshot.get("action") if snapshot is not None else None
+        with _Trace(
+            self._trace,
+            "tools/call",
+            tool=name,
+            action=action if type(action) is str else None,
+        ) as trace:
+            _, result = self._exchange(body, request_id, trace)
+            trace.is_error = result.get("isError") is True
+            if trace.is_error:
+                trace.tool_code = _tool_code(result)
+                raise McpFailure("tool_error", tool_code=trace.tool_code)
         return result
 
     def _require(self, state: SessionState) -> None:
@@ -484,7 +658,7 @@ class McpSession:
             raise McpFailure("protocol")
 
     def _exchange(
-        self, body: bytes, request_id: int
+        self, body: bytes, request_id: int, trace: _Trace
     ) -> tuple[EgressResponse, dict[str, object]]:
         """Send one request and return its JSON-RPC ``result`` object."""
         reader = _EventReader(request_id)
@@ -492,23 +666,26 @@ class McpSession:
         def stop(headers: httpx.Headers, chunk: bytes) -> bool:
             return _media_type(headers) == _EVENT_STREAM and reader.feed(chunk)
 
-        response = self._send(body, stop=stop)
+        response = self._send(body, trace, stop=stop)
         media = _media_type(response.headers)
         message: dict[str, object] | None = None
         if media == _JSON:
             message = _json_message(response.body, request_id)
         elif media == _EVENT_STREAM:
             message = reader.finish()
+            trace.events = reader.events
+        trace.rpc_error = _rpc_error_code(message)
         result = None if message is None else message.get("result")
         if not isinstance(result, dict):
             raise McpFailure("protocol")
         return response, result
 
-    def _send(self, body: bytes, *, stop: egress.Stop) -> EgressResponse:
+    def _send(self, body: bytes, trace: _Trace, *, stop: egress.Stop) -> EgressResponse:
         """One bounded POST to the resource URL; a 2xx response or a failure."""
         client = self._client
         remaining = self._deadline - self._monotonic()
         if client is None or remaining < MINIMUM_START_SECONDS:
+            trace.egress = "not_started"
             raise McpFailure("unavailable")
         headers = {
             "Content-Type": _JSON,
@@ -535,8 +712,13 @@ class McpSession:
             )
         except egress.EgressFailure as failure:
             outcome = _EGRESS[failure.code]
+            trace.egress = failure.code
+            if failure.detail is not None:
+                trace.egress += "/" + failure.detail
+            trace.status = failure.status
         if not isinstance(outcome, EgressResponse):
             raise McpFailure(outcome)
+        trace.response(outcome)
         failed = _status_failure(outcome)
         if failed is not None:
             raise failed

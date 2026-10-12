@@ -31,7 +31,8 @@ fifty-three, and issue #130 adds the two ``redaction.*`` keys the tier policy re
 ``identity.oauth.*`` keys, for seventy, issue #335 adds
 ``work.outbox_retention_days``, for seventy-one, and the job feed collector adds the
 two ``connectors.oauth_client.*`` keys, for seventy-three, and issue #355 adds the
-``connectors.oauth_client.redirect`` and ``.loopback_port`` keys, for seventy-five.
+``connectors.oauth_client.redirect`` and ``.loopback_port`` keys, for seventy-five,
+and issue #360 adds ``connectors.mcp_client.trace``, for seventy-six.
 ``api.cors_origins`` is still not declared here, for the reason this key was not
 until now: a key with no reader is machinery with no caller, and the registry/TOML
 identity check holds per merge SHA — every later chunk that adds a key adds it to
@@ -884,6 +885,18 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         default=33419,
         minimum=1024,
         maximum=65535,
+    ),
+    # --- connectors.mcp_client ------------------------------------------------------
+    # The MCP client's wire trace, for diagnosing a provider's set-up failures. Off by
+    # default; when on, each request logs one line of non-secret wire metadata
+    # (``rheo_core/connectors/mcp_client.py``).
+    KeySpec(
+        key="connectors.mcp_client.trace",
+        type=ValueType.BOOL,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=False,
     ),
     # Same empty-string reasoning as the GitHub client secret above: the real
     # ``secret://env/RHEO_INTERNAL_SECRET`` reference is 11's deployment concern.
