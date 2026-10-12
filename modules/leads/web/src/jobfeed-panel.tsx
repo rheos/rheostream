@@ -160,6 +160,9 @@ export function JobFeedCollector({
   const selected = options.find(
     (o) => o.value && o.value === str(collector.organization_id),
   );
+  // On a connected feed this code means a reconnect was declined, not that
+  // collection stopped; the terminal state comes from authorization_state.
+  const declined = connected && str(code) === "authorization_required";
   const choosing = connected && str(code) === "account_selection_required";
   const reconnectPrimary = !connected || (choosing && !choices.length);
   return (
@@ -167,7 +170,7 @@ export function JobFeedCollector({
       <p>
         <span className={styles.status}>{STATUS[state] ?? label(state)}</span>
       </p>
-      {connected && str(code) === "authorization_required" ? (
+      {declined ? (
         <p className={styles.meta}>
           The last reconnect did not finish. Collection continues with the
           existing authorization.
@@ -187,29 +190,12 @@ export function JobFeedCollector({
           Collection has stopped. Opportunities it already collected are kept.
         </p>
       ) : null}
-      <dl className={styles.facts}>
-        <dt>Last completed check</dt>
-        <dd>{moment(collector.last_completed_at, "Not yet")}</dd>
-        <dt>Next check not before</dt>
-        <dd>{moment(collector.next_run_not_before, "Not scheduled")}</dd>
-        <dt>Health</dt>
-        <dd>{healthLabel(code)}</dd>
-        <dt>Account</dt>
-        <dd>{selected ? selected.label : "Not selected"}</dd>
-      </dl>
-      <details className={styles.evidence}>
-        <summary>Last run</summary>
-        <dl className={styles.facts}>
-          {RUN_COUNTS.map(([key, text]) => (
-            <Fragment key={key}>
-              <dt>{text}</dt>
-              <dd>{str(collector[key]) || "0"}</dd>
-            </Fragment>
-          ))}
-        </dl>
-      </details>
       {choosing ? (
-        <div role="group" aria-labelledby="jobfeed-account-heading">
+        <div
+          role="group"
+          aria-labelledby="jobfeed-account-heading"
+          className={styles.evidence}
+        >
           <h3 id="jobfeed-account-heading">Choose a freelancer account</h3>
           {choices.length ? (
             <>
@@ -240,6 +226,29 @@ export function JobFeedCollector({
           )}
         </div>
       ) : null}
+      <dl className={styles.facts}>
+        <dt>Last completed check</dt>
+        <dd>{moment(collector.last_completed_at, "Not yet")}</dd>
+        <dt>Next check not before</dt>
+        <dd>{moment(collector.next_run_not_before, "Not scheduled")}</dd>
+        <dt>Health</dt>
+        <dd>
+          {declined ? "Last reconnect did not finish" : healthLabel(code)}
+        </dd>
+        <dt>Account</dt>
+        <dd>{selected ? selected.label : "Not selected"}</dd>
+      </dl>
+      <details className={styles.evidence}>
+        <summary>Last run</summary>
+        <dl className={styles.facts}>
+          {RUN_COUNTS.map(([key, text]) => (
+            <Fragment key={key}>
+              <dt>{text}</dt>
+              <dd>{str(collector[key]) || "0"}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      </details>
       {shell.submit ? (
         <>
           <ActionForm

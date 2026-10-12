@@ -392,6 +392,9 @@ describe("job feed collector states", () => {
       "The last reconnect did not finish. Collection continues with the existing authorization.",
     );
     expect(html).not.toContain("Authorization required");
+    expect(html).toContain(
+      "<dt>Health</dt><dd>Last reconnect did not finish</dd>",
+    );
     expect(html).not.toContain("paused");
     expect(reconnect(html)).toMatch(/class="_secondary_\w+"/);
   });
@@ -519,7 +522,12 @@ describe("job feed collector states", () => {
     async (code, text) => {
       expect(healthLabel(code)).toBe(text);
       expect(text).not.toContain("_");
-      const html = block(await collectorPage({}, code));
+      // A connected feed reads this code as a declined reconnect instead.
+      const collector =
+        code === "authorization_required"
+          ? { authorization_state: "authorization_required" }
+          : {};
+      const html = block(await collectorPage(collector, code));
       expect(html).toContain(`<dt>Health</dt><dd>${text}</dd>`);
       expect(visible(html)).not.toContain(code);
     },
