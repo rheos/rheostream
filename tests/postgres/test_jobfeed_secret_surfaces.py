@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote_plus
+from urllib.parse import parse_qs, unquote_plus, urlencode
 from uuid import UUID, uuid4
 
 import httpx
@@ -1214,3 +1214,120 @@ def test_a_forced_internal_failure_carrying_markers_surfaces_only_its_code(
         secrets=[c.refresh_token],
         errors=[failure],
     )
+
+
+# --- the loopback redirect mode: the pasted address (issue #355) ----------------------
+
+PASTED = "leads.jobfeed.complete_pasted"
+
+
+def pasted_address(params: dict[str, str], **extra: str) -> str:
+    """The address the owner's browser lands on after consent in loopback mode."""
+    query = urlencode({**params, **extra})
+    return f"{oauth.loopback_redirect_uri()}?{query}"
+
+
+def test_no_pasted_address_or_code_reaches_any_surface_in_loopback_mode(
+    intake: Intake,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    logs: Capture,
+) -> None:
+    """The pasted address and its code are swept as secrets through a loopback
+    connect, its completion, a replay, refused pastes carrying markers, a run, a
+    declined reconnect and a completed one."""
+    configure_connector(monkeypatch, tmp_path, job_hosts=JOB_HOST, redirect="loopback")
+    clock = FakeClock()
+    up = Upstream("client_secret_basic")
+    server = FakeAuthorizationServer(registration=up.register, token=up.token)
+    mcp = FakeMcpServer(
+        accounts=[account(up.org)], feeds={"best_match": [[feed_row(150)]]}
+    )
+    leaks = Leaks(organizations={up.org})
+    leaks.references.update({str(tmp_path), str(tmp_path / "secrets")})
+    sweep = Sweep(intake, tmp_path, logs, leaks)
+
+    def issued_now() -> None:
+        leaks.secrets.update(up.tokens.issued)
+        leaks.secrets.update(up.client_secrets)
+        leaks.secrets.update(up.registration_tokens)
+        leaks.secrets.update(server.codes)
+
+    def consented(outcome: OperationOutcome, **extra: str) -> str:
+        params = authorize(server, outcome)
+        address = pasted_address(params, **extra)
+        leaks.secrets.update({address, params["code"]})
+        issued_now()
+        return address
+
+    with serve(server, clock=clock, resolver=FakeResolver(), mcp=mcp):
+        owner = owner_web(intake)
+        pipeline_id = jobsearch_pipeline(intake, owner)
+        connected = sweep.op(owner, CONNECT, pipeline_ref=ref("pipeline", pipeline_id))
+        address = consented(connected, extra=marker("ignored-parameter"))
+        sweep.check("loopback connect", owner)
+
+        # Refused pastes that carry the live code and markers: nothing consumed.
+        wrong = address.replace("127.0.0.1", "localhost", 1)
+        long = f"{address}&pad={marker('pad') * 120}"
+        for refused_address in (wrong, f"{address}#{marker('fragment')}", long):
+            leaks.secrets.add(refused_address)
+            outcome = sweep.op(owner, PASTED, address=refused_address)
+            assert not outcome.ok and outcome.error is not None, outcome
+            assert outcome.error.error_code == "address_invalid", outcome
+        assert len(pending(owner)) == 1
+        sweep.check("refused pastes", owner)
+
+        completed = sweep.op(owner, PASTED, address=address)
+        assert completed.ok and completed.result.state == "connected", completed  # type: ignore[union-attr]
+        issued_now()
+        replay = sweep.op(owner, PASTED, address=address)
+        assert replay.ok and replay.result.state == "refused", replay  # type: ignore[union-attr]
+        assert [
+            parse_qs(r.content.decode("ascii"))["redirect_uri"]
+            for r in server.token_requests
+        ] == [[oauth.loopback_redirect_uri()]]
+        sweep.check("loopback complete", owner)
+
+        connection_id = stored(owner).connection_id
+        clock.advance(0)
+        visit(intake, clock)
+        processed(
+            ConnectedCollector(
+                intake=intake,
+                pipeline_id=pipeline_id,
+                connection_id=connection_id,
+                owner=owner,
+                poll=owner,
+            )
+        )
+        issued_now()
+        assert stored(owner).organization_id == up.org
+        sweep.check("loopback run", owner)
+
+        # A declined reconnect whose address carries a provider description marker.
+        declined = sweep.op(owner, RECONNECT)
+        assert declined.ok, declined
+        state, _code = server.authorize(declined.result.authorization_url)  # type: ignore[union-attr]
+        issued_now()
+        description = marker("error-description")
+        refusal = pasted_address(
+            {"state": state, "error": "access_denied"}, error_description=description
+        )
+        leaks.secrets.update({refusal, description})
+        outcome = sweep.op(owner, PASTED, address=refusal)
+        assert outcome.ok and outcome.result.reason == "provider_error", outcome  # type: ignore[union-attr]
+        sweep.check("declined loopback reconnect", owner)
+
+        again = consented(sweep.op(owner, RECONNECT))
+        outcome = sweep.op(owner, PASTED, address=again)
+        assert outcome.ok and outcome.result.state == "connected", outcome  # type: ignore[union-attr]
+        issued_now()
+        sweep.check("loopback reconnect", owner)
+
+    # The codes went to the token endpoint and nowhere else.
+    for request in [*server.requests, *mcp.requests]:
+        raw = request_text(request)
+        for code in server.codes:
+            if code in raw:
+                assert url_of(request) == TOKEN_ENDPOINT, url_of(request)

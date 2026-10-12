@@ -535,7 +535,9 @@ def configure_connector(
     monkeypatch.setenv("RHEO__connectors__oauth_client__client_name", client_name)
     monkeypatch.setenv("RHEO__connectors__oauth_client__redirect", redirect)
     if loopback_port is None:
-        monkeypatch.delenv("RHEO__connectors__oauth_client__loopback_port", raising=False)
+        monkeypatch.delenv(
+            "RHEO__connectors__oauth_client__loopback_port", raising=False
+        )
     else:
         monkeypatch.setenv(
             "RHEO__connectors__oauth_client__loopback_port", str(loopback_port)
