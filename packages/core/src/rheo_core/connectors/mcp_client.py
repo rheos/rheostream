@@ -538,7 +538,8 @@ def _redact(text: str, secrets: tuple[str | None, ...]) -> str:
     for secret in secrets:
         if not secret:
             continue
-        for part in {secret, *secret.split()}:
+        text = text.replace(secret, REDACTED)
+        for part in secret.split():
             if len(part) >= 8:
                 text = text.replace(part, REDACTED)
     return _TOKEN_RUN.sub(REDACTED, text)
@@ -548,7 +549,8 @@ def _error_text(body: bytes) -> str:
     """The first characters of a short plain-text error, printable ASCII only."""
     text = body[: ERROR_TEXT_LIMIT * 4].decode("utf-8", errors="replace")
     kept = "".join(c if " " <= c <= "~" else " " for c in text)
-    return " ".join(kept.split())[:ERROR_TEXT_LIMIT]
+    # Not cut to the limit yet: credentials are redacted first, then it is cut.
+    return " ".join(kept.split())
 
 
 def _field(value: str | int | bool | None) -> str:
@@ -754,7 +756,7 @@ class McpSession:
             trace.error_text = _redact(
                 trace.error_text,
                 (headers["Authorization"], self._session_id),
-            )
+            )[:ERROR_TEXT_LIMIT]
         failed = _status_failure(outcome)
         if failed is not None:
             raise failed

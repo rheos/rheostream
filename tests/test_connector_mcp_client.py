@@ -1446,3 +1446,27 @@ def test_a_plain_text_error_echoing_a_credential_is_redacted(
     assert mcp_client.REDACTED in tool["error_text"]
     assert tool["error_text"].startswith('"Rejected:')
     assert "abcdefghijklmnopqrstuvwxyz0123" not in tool["error_text"]
+
+
+def test_a_short_session_id_echoed_in_an_error_is_redacted(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = FakeMcp()
+    fake.session_id = "s3x7q9"
+    fake.tool = lambda r: httpx.Response(400, text="Unknown session s3x7q9 here")
+    assert run_to_tool(fake) is not None
+    *_, tool = traced(trace_on)
+    assert "s3x7q9" not in tool["error_text"]
+    assert mcp_client.REDACTED in tool["error_text"]
+
+
+def test_a_credential_across_the_cut_is_redacted_before_cutting(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    lead = "a " * ((mcp_client.ERROR_TEXT_LIMIT - 10) // 2)
+    fake.tool = lambda r: httpx.Response(400, text=lead + ACCESS)
+    assert run_to_tool(fake) is not None
+    *_, tool = traced(trace_on)
+    assert ACCESS[:6] not in tool["error_text"]
+    assert len(json.loads(tool["error_text"])) <= mcp_client.ERROR_TEXT_LIMIT
