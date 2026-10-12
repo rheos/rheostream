@@ -117,7 +117,8 @@ loopback_port = 33419
 
 # The MCP client's wire trace. Off by default. When true, every MCP request logs one
 # INFO line of wire metadata (method, status, content type, codes, counts) on the
-# rheo_core.connectors.mcp_trace logger; never a header value, body, token or URL.
+# rheo_core.connectors.mcp_trace logger; no header value other than the content type,
+# and never a body, token or URL.
 [connectors.mcp_client]
 trace = false
 
