@@ -1,7 +1,8 @@
 """The secret store and ``secret://`` reference resolution (A4, FR-13, guardrail 14).
 
 A file-backed store with an environment-variable backend, both behind
-``SecretStore.resolve(ref, scope) -> SecretValue``. A ``SecretScope`` is constructed
+``SecretStore.resolve(ref, scope) -> SecretValue``, with ``create`` and ``discard``
+of file values under an explicitly writable scope. A ``SecretScope`` is constructed
 by ``SecretStore.scope_for(component, *prefixes)``; a component built without one has
 no way to resolve anything. The sentinel in ``scope.py`` and the AST scans stop
 *accidental* construction, and that is their ceiling: Python has no private state, so
@@ -42,6 +43,7 @@ from rheo_core.secrets.store import (
 )
 from rheo_core.secrets.value import (
     REDACTED,
+    OpaqueValue,
     SecretValue,
     SecretValueNotSerialisable,
     refuse_secret_values,
@@ -55,6 +57,7 @@ __all__ = [
     "SECRET_SCOPE_DENIED",
     "EnvBackend",
     "FileBackend",
+    "OpaqueValue",
     "SecretBackend",
     "SecretRef",
     "SecretRefusal",

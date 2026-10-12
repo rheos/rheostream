@@ -10,10 +10,15 @@ raises :class:`SecretValueNotSerialisable`, and pydantic serialisation of a mode
 holding one raises through a core-schema serializer that does the same (pydantic wraps
 it in ``PydanticSerializationError``, whose message names this class and carries no
 bytes).
+
+Those guards live on :class:`OpaqueValue`, the base of every in-memory holder of
+secret material (``SecretValue`` here, the connector access token in core's OAuth
+client), so a fix to one reaches all of them. A direct subclass of ``OpaqueValue``
+sets its redacted text and its own slot; nothing can subclass it further.
 """
 
 import hmac
-from typing import Any, Final, NoReturn, SupportsIndex, final
+from typing import Any, ClassVar, Final, NoReturn, SupportsIndex, final
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
@@ -22,47 +27,39 @@ REDACTED: Final = "SecretValue(<redacted>)"
 
 
 class SecretValueNotSerialisable(TypeError):
-    """Raised by every encoder hook that meets a ``SecretValue``."""
+    """Raised by every encoder hook that meets an ``OpaqueValue``."""
 
 
 def _refuse(value: object) -> NoReturn:
     raise SecretValueNotSerialisable(
-        "SecretValue cannot be serialised; use expose() inside the presenting component"
+        f"{type(value).__name__} cannot be serialised; read it only inside the "
+        "presenting component"
     )
 
 
-@final
-class SecretValue:
-    __slots__ = ("__raw",)
+class OpaqueValue:
+    """Redacted rendering and refused hashing, pickling, copying and serialisation
+    for a holder of secret material. Direct subclasses only."""
 
-    def __init__(self, raw: bytes | bytearray) -> None:
-        if not isinstance(raw, bytes | bytearray):
-            raise TypeError("SecretValue wraps bytes")
-        self.__raw: bytes = bytes(raw)
+    __slots__ = ()
+    _redacted: ClassVar[str] = "OpaqueValue(<redacted>)"
 
     def __init_subclass__(cls, **kwargs: object) -> None:
-        raise TypeError("SecretValue cannot be subclassed")
-
-    def expose(self) -> bytes:
-        """The secret bytes, the only route to them; for the presenting component."""
-        return self.__raw
+        if OpaqueValue not in cls.__bases__:
+            raise TypeError(f"{cls.__bases__[0].__name__} cannot be subclassed")
+        super().__init_subclass__(**kwargs)
 
     def __repr__(self) -> str:
-        return REDACTED
+        return self._redacted
 
     def __str__(self) -> str:
-        return REDACTED
+        return self._redacted
 
     def __format__(self, format_spec: str) -> str:
-        return REDACTED
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, SecretValue):
-            return NotImplemented
-        return hmac.compare_digest(self.__raw, other.__raw)
+        return self._redacted
 
     def __hash__(self) -> int:
-        raise TypeError("SecretValue is unhashable")
+        raise TypeError(f"{type(self).__name__} is unhashable")
 
     def __reduce__(self) -> NoReturn:
         _refuse(self)
@@ -86,8 +83,31 @@ class SecretValue:
         )
 
 
+@final
+class SecretValue(OpaqueValue):
+    __slots__ = ("__raw",)
+    _redacted = REDACTED
+
+    def __init__(self, raw: bytes | bytearray) -> None:
+        if not isinstance(raw, bytes | bytearray):
+            raise TypeError("SecretValue wraps bytes")
+        self.__raw: bytes = bytes(raw)
+
+    def expose(self) -> bytes:
+        """The secret bytes, the only route to them; for the presenting component."""
+        return self.__raw
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SecretValue):
+            return NotImplemented
+        return hmac.compare_digest(self.__raw, other.__raw)
+
+    # Defining ``__eq__`` would otherwise reset ``__hash__`` to ``None``.
+    __hash__ = OpaqueValue.__hash__
+
+
 def refuse_secret_values(obj: object) -> NoReturn:
-    """A ``json.dumps(default=)`` hook: a ``SecretValue`` raises; anything else too."""
-    if isinstance(obj, SecretValue):
+    """A ``json.dumps(default=)`` hook: an ``OpaqueValue`` raises; anything else too."""
+    if isinstance(obj, OpaqueValue):
         _refuse(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")

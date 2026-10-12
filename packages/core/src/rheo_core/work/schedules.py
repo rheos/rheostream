@@ -2,8 +2,12 @@
 
 ``run_due_schedules`` is the one-function insertion ``loop.visit_workspace`` calls
 after it acquires a workspace engine. It does not parse stored cron expressions:
-release-one cadence is ``next_run_at + 1 day``. Every enqueue carries
+the cadence is ``now + 1 day`` unless the module's ``Schedule`` declaration names an
+``interval_seconds``, and a declared ``gate_setting`` the workspace has not turned on
+skips the enqueue (:func:`run_due_schedules`). Every enqueue carries
 ``RetentionSweepPayload.workspace_id`` from the visit, never an empty dict.
+:func:`ensure_module_schedule` writes a declared row for a module whose own lifecycle,
+rather than module enable, turns its schedule on and off.
 
 ``run_retention_sweep`` reads that id from the payload (``HandlerUnitOfWork`` has
 no workspace slot), deletes expired ``core.runtime_transcript`` rows, purges settled
@@ -30,7 +34,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -42,14 +46,21 @@ from rheo_core.audit.tool_telemetry import (
 )
 from rheo_core.boundary.context import Refusal
 from rheo_core.settings import resolve
-from rheo_core.settings.storage_source import PostgresOverrideSource
+from rheo_core.settings.storage_source import (
+    PostgresOverrideSource,
+    TransactionBoundOverrideSource,
+)
 from rheo_core.storage import work_tables as t
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.data_root import Purpose, workspace_dir_for
+from rheo_core.storage.repositories import insert_schedule_if_absent
 from rheo_core.storage.runtime_tables import runtime_transcript
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import LEASED, QUEUED, enqueue_job
 from rheo_core.work.scheduled_authority import CATCH_UP_JOB_KIND, sealed_execution
+
+if TYPE_CHECKING:
+    from rheo_core.modules.manifest import Schedule
 
 RETENTION_SWEEP: Final = "core.retention_sweep"
 _CLI_CONFIG_DIR: Final = "claude-cli"
@@ -238,11 +249,55 @@ def _claim_catch_up_row(conn: Connection, schedule_id: UUID, now: datetime) -> b
     )
 
 
+def _declared_schedule(module_id: str, name: str) -> Schedule | None:
+    """The loaded manifest's declaration of ``(module_id, name)``, or ``None``.
+
+    ``None`` covers a row whose module this process did not load and a row no module
+    declares, such as the core's own ``core.retention_sweep``; the ticker treats both
+    exactly as it treated every row before declarations were read.
+    """
+    # Deferred, for the cycle run_retention_sweep's imports name: rheo_core.modules
+    # imports rheo_core.work (manifest.py's JobHandler), which imports this module.
+    from rheo_core.modules import loaded_manifests
+
+    manifest = loaded_manifests().get(module_id)
+    if manifest is None:
+        return None
+    for schedule in manifest.schedules:
+        if schedule.name == name:
+            return schedule
+    return None
+
+
+def _gate_open(conn: Connection, *, workspace_id: UUID, key: str) -> bool:
+    """Whether this workspace itself set the ``bool`` key ``key`` to true.
+
+    The same rule as the job-search capability's reader in Leads: a value that came
+    from the package default or the deployment layer does not count, because the
+    gate is an opt-in a workspace makes. Read on the visit's own connection, so the
+    answer is the one this transaction sees.
+    """
+    settings = resolve(
+        workspace_id=workspace_id,
+        source=TransactionBoundOverrideSource(conn, workspace_id=workspace_id),
+    )
+    return settings.set_by_workspace(key) and settings.get_bool(key)
+
+
 def run_due_schedules(conn: Connection, *, workspace_id: UUID, now: datetime) -> None:
-    """Enqueue each due enabled schedule and advance it by one day. Does not commit.
+    """Enqueue each due enabled schedule; advance it by its interval. Does not commit.
 
     ``workspace_id`` is keyword-only beside ``now`` and is dumped onto every job
     as ``str(workspace_id)``. Stored ``cron`` is ignored. Does not enqueue ``{}``.
+
+    **The interval and the gate come from the module's declaration**, looked up by
+    ``(module_id, name)`` in the loaded manifests. A row with no declaration, or a
+    declaration that sets neither field, advances one day and enqueues on every due
+    tick, which is every schedule declared before the fields existed. A declared
+    ``interval_seconds`` replaces the day. A declared ``gate_setting`` that this
+    workspace has not itself set to true skips the enqueue for this tick and still
+    advances ``next_run_at`` by the interval; ``last_run_at`` stays where the last
+    real run left it.
 
     **One kind takes two extra steps and the rest take none.** For
     :data:`~rheo_core.work.scheduled_authority.CATCH_UP_JOB_KIND` the row is claimed
@@ -266,6 +321,23 @@ def run_due_schedules(conn: Connection, *, workspace_id: UUID, now: datetime) ->
             or _unfinished_job_exists(conn, kind)
         ):
             continue
+        declared = _declared_schedule(str(row.module_id), str(row.name))
+        interval = _DAY
+        if declared is not None and declared.interval_seconds is not None:
+            interval = timedelta(seconds=declared.interval_seconds)
+        if (
+            declared is not None
+            and declared.gate_setting is not None
+            and not _gate_open(
+                conn, workspace_id=workspace_id, key=declared.gate_setting
+            )
+        ):
+            conn.execute(
+                update(t.schedule)
+                .where(t.schedule.c.id == row.id)
+                .values(next_run_at=now + interval)
+            )
+            continue
         enqueue_job(
             conn,
             kind=kind,
@@ -276,8 +348,74 @@ def run_due_schedules(conn: Connection, *, workspace_id: UUID, now: datetime) ->
         conn.execute(
             update(t.schedule)
             .where(t.schedule.c.id == row.id)
-            .values(last_run_at=now, next_run_at=now + _DAY)
+            .values(last_run_at=now, next_run_at=now + interval)
         )
+
+
+class ScheduleUndeclared(LookupError):
+    """``ensure_module_schedule`` was asked for a schedule no loaded module declares."""
+
+
+class ScheduleEnabledByDefault(ValueError):
+    """``ensure_module_schedule`` was asked for a schedule module enable writes."""
+
+
+_UNDECLARED: Final = "no loaded module declares this schedule"
+_ENABLED_BY_DEFAULT: Final = (
+    "this schedule is declared enabled_by_default; module enable owns its row"
+)
+
+
+def ensure_module_schedule(
+    conn: Connection,
+    *,
+    module_id: str,
+    name: str,
+    enabled: bool,
+    due_at: datetime,
+) -> None:
+    """Make the declared ``(module_id, name)`` row exist, enabled or not, due at
+    ``due_at``. Does not commit.
+
+    **Only for a schedule declared ``enabled_by_default=False``**, which module enable
+    skips: the module's own lifecycle turns the row on and off instead, and a workspace
+    whose module was enabled before the schedule was declared gets its row here. A
+    declaration with ``enabled_by_default=True`` is refused with
+    :class:`ScheduleEnabledByDefault`: module enable writes that row under the module
+    state row lock, which the lock serializing this function does not order, so two
+    writers could each find the row absent. The row is
+    written through ``insert_schedule_if_absent`` from the declaration's job kind and
+    cron, and then its ``enabled`` and ``next_run_at`` are set on the one row this
+    names. No other schedule row is read or written.
+
+    **The caller serializes it.** ``insert_schedule_if_absent`` reads absence rather
+    than relying on a unique index, so two concurrent first calls for one workspace
+    could write two rows; a caller holds the workspace lifecycle lock (or another
+    lock that orders such calls) around this, as module enable holds its module row.
+
+    Raises :class:`ScheduleUndeclared` when no loaded manifest declares the pair, and
+    :class:`ScheduleEnabledByDefault` for an ``enabled_by_default`` declaration; both
+    before anything is written.
+    """
+    declared = _declared_schedule(module_id, name)
+    if declared is None:
+        raise ScheduleUndeclared(_UNDECLARED)
+    if declared.enabled_by_default:
+        raise ScheduleEnabledByDefault(_ENABLED_BY_DEFAULT)
+    insert_schedule_if_absent(
+        conn,
+        module_id=module_id,
+        name=name,
+        job_kind=declared.job_kind,
+        cron=declared.cron,
+        enabled=enabled,
+        next_run_at=due_at,
+    )
+    conn.execute(
+        update(t.schedule)
+        .where(t.schedule.c.module_id == module_id, t.schedule.c.name == name)
+        .values(enabled=enabled, next_run_at=due_at)
+    )
 
 
 def rearm_catch_up_schedule(

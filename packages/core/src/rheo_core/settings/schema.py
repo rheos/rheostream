@@ -28,8 +28,9 @@ fifty-three, and issue #130 adds the two ``redaction.*`` keys the tier policy re
 (``rheo_core/redaction/policy.py``), for fifty-five. Run 1a4 adds the six
 ``automatic_memory.*`` keys, for sixty-one, and run 1a4b adds
 ``automatic_memory.extraction.model_id``, for sixty-two. Issue #287 adds the eight
-``identity.oauth.*`` keys, for seventy, and issue #335 adds
-``work.outbox_retention_days``, for seventy-one.
+``identity.oauth.*`` keys, for seventy, issue #335 adds
+``work.outbox_retention_days``, for seventy-one, and the job feed collector adds the
+two ``connectors.oauth_client.*`` keys, for seventy-three.
 ``api.cors_origins`` is still not declared here, for the reason this key was not
 until now: a key with no reader is machinery with no caller, and the registry/TOML
 identity check holds per merge SHA — every later chunk that adds a key adds it to
@@ -835,6 +836,29 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         explicit_per_workspace=False,
         default=60,
         minimum=15,
+    ),
+    # --- connectors.oauth_client ----------------------------------------------------
+    # The operator switch for the connector OAuth client, the client side of OAuth
+    # that a module's connector uses to reach an external service (the reverse of the
+    # identity.oauth server above). Off by default. While it is off, dynamic client
+    # registration, connect, reconnect and the callback route all stay closed, so a
+    # deployment that has not opted in sends nothing to any registration endpoint.
+    # ``client_name`` is only the ``client_name`` sent in the registration request.
+    KeySpec(
+        key="connectors.oauth_client.enabled",
+        type=ValueType.BOOL,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=False,
+    ),
+    KeySpec(
+        key="connectors.oauth_client.client_name",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="Rheo Stream",
     ),
     # Same empty-string reasoning as the GitHub client secret above: the real
     # ``secret://env/RHEO_INTERNAL_SECRET`` reference is 11's deployment concern.

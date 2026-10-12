@@ -3,6 +3,7 @@
 Open every directory without following symlinks and retain its descriptor. Write
 and fsync a private staging file before an atomic, no-replace hard link publishes
 it. The final directory fsync makes publication durable before success returns.
+Discard walks the same way and unlinks one regular file; it never replaces a value.
 The configured data root and its ancestors belong to the operator; processes with
 the same OS identity remain outside this protection boundary.
 """
@@ -16,6 +17,7 @@ from pathlib import Path
 from rheo_core.secrets.refs import (
     SECRET_PERMISSIONS,
     SECRET_REF_MALFORMED,
+    SECRET_WRITE_FAILED,
     SecretRefusal,
     is_slug_path,
 )
@@ -91,3 +93,44 @@ def create_file_secret(root: Path, ref_id: str, raw: bytes) -> None:
         raise SecretRefusal(
             "secret_write_failed", "could not safely persist the new secret"
         ) from None
+
+
+def discard_file_secret(root: Path, ref_id: str) -> None:
+    """Remove one published value, refusing unsafe paths with content-free failures.
+
+    The same descriptor walk as creation, without creating anything: a symlinked or
+    non-directory component, or a directory that is not this user's 0700, is
+    refused. A leaf that is not a regular file is refused and left in place. A
+    missing leaf or directory is already discarded, so it succeeds without change.
+    The parent directory is fsynced after the unlink so removal is durable.
+    """
+    if not is_slug_path(ref_id):
+        raise SecretRefusal(SECRET_REF_MALFORMED, "file secret id is not a slug path")
+    parts = ref_id.split("/")
+    leaf = parts[-1]
+    with ExitStack() as stack:
+        try:
+            parent = _directory(stack, root)
+            for part in parts[:-1]:
+                parent = _directory(stack, part, parent)
+            info = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        except OSError:
+            raise SecretRefusal(
+                SECRET_PERMISSIONS, "secret path is not a private directory"
+            ) from None
+        if not stat.S_ISREG(info.st_mode):
+            raise SecretRefusal(
+                SECRET_PERMISSIONS, "secret reference is not a regular file"
+            )
+        try:
+            try:
+                os.unlink(leaf, dir_fd=parent)
+            except FileNotFoundError:
+                return
+            os.fsync(parent)
+        except OSError:
+            raise SecretRefusal(
+                SECRET_WRITE_FAILED, "could not safely discard the secret"
+            ) from None

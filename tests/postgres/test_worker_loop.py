@@ -86,7 +86,7 @@ from rheo_core.storage.work_index import DueWorkspace, workspaces_with_due_work
 from rheo_core.storage.work_index_tables import workspace_work_due
 from rheo_core.storage.work_tables import job, schedule
 from rheo_core.work import loop as loop_module
-from rheo_core.work.cancellation import CancellationToken
+from rheo_core.work.cancellation import CancellationToken, JobCancelled, JobLeaseLost
 from rheo_core.work.jobs import (
     acquire_lease,
     enqueue,
@@ -920,6 +920,109 @@ def test_a_cancellation_landing_after_the_last_checkpoint_still_ends_cancelled(
     assert row.state == "cancelled", "not succeeded: the flag was set before the write"
     assert row.finished_at == now
     assert _notes(engine) == ()
+
+
+def test_a_forced_checkpoint_extends_inside_the_throttle_window_and_still_observes(
+    cluster: ClusterSession, workspace: UUID, engine: Engine, now: datetime
+) -> None:
+    """``checkpoint(force=True)`` skips the heartbeat throttle: inside the window it
+    extends the lease where a plain call does not, and it still raises on a
+    cancellation or a lost lease that the throttled call in the same window misses."""
+    window = timedelta(seconds=loop_module.HEARTBEAT_SECONDS)
+    step = window / 4
+    seen: list[object] = []
+
+    def _attempt(token: CancellationToken, *, force: bool) -> str:
+        try:
+            token.checkpoint(force=force)
+        except (JobCancelled, JobLeaseLost) as raised:
+            return type(raised).__name__
+        return "returned"
+
+    # Extension: first call extends, a plain call inside the window does not, a
+    # forced call in the same window does.
+    extending = AdvancingClock(now)
+    extending_job = _put(engine, now=now)
+
+    def extends_when_forced(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        first = extending.advance(timedelta(seconds=1))
+        token.checkpoint()
+        seen.append(_live_lease(engine).lease_until - first)
+        extending.advance(step)
+        token.checkpoint()
+        seen.append(_live_lease(engine).lease_until - first)
+        forced = extending.advance(step)
+        token.checkpoint(force=True)
+        seen.append(_live_lease(engine).lease_until - forced)
+
+    _visit_on(
+        workspace,
+        kinds=_registry(extends_when_forced),
+        backend=cluster.backend,
+        clock=extending,
+    )
+    lease = timedelta(seconds=LEASE_SECONDS)
+    assert seen == [lease, lease, lease], seen
+    assert _read(engine, extending_job).state == "succeeded"
+
+    # Cancellation inside the window: the plain call misses it, the forced call raises.
+    seen.clear()
+    cancelling = AdvancingClock(now + timedelta(minutes=1))
+    cancelled_job = _put(engine, now=cancelling())
+
+    def cancelled_inside_the_window(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        token.checkpoint()
+        with engine.begin() as conn:
+            assert request_cancellation(conn, cancelled_job, now=cancelling()) == (
+                "leased"
+            )
+        cancelling.advance(step)
+        seen.append(_attempt(token, force=False))
+        cancelling.advance(step)
+        seen.append(_attempt(token, force=True))
+
+    _visit_on(
+        workspace,
+        kinds=_registry(cancelled_inside_the_window),
+        backend=cluster.backend,
+        clock=cancelling,
+    )
+    assert seen == ["returned", "JobCancelled"], seen
+    assert _read(engine, cancelled_job).state == "cancelled"
+
+    # Lease loss inside the window: the plain call misses it, the forced call raises.
+    seen.clear()
+    stealing = AdvancingClock(now + timedelta(minutes=2))
+    stolen_job = _put(engine, now=stealing())
+
+    def loses_its_lease_inside_the_window(
+        uow: HandlerUnitOfWork, payload: NotePayload, token: CancellationToken
+    ) -> None:
+        token.checkpoint()
+        stolen_at = stealing() + timedelta(seconds=LEASE_SECONDS + 1)
+        with engine.begin() as conn:
+            taken = acquire_lease(
+                conn, owner=THIEF, now=stolen_at, lease_seconds=LEASE_SECONDS
+            )
+            assert taken is not None and taken.id == stolen_job
+        stealing.advance(step)
+        seen.append(_attempt(token, force=False))
+        stealing.advance(step)
+        seen.append(_attempt(token, force=True))
+
+    _visit_on(
+        workspace,
+        kinds=_registry(loses_its_lease_inside_the_window),
+        backend=cluster.backend,
+        clock=stealing,
+    )
+    assert seen == ["returned", "JobLeaseLost"], seen
+    row = _read(engine, stolen_job)
+    assert row.state == "leased" and row.lease_owner == THIEF
 
 
 def test_a_cancellation_never_observed_by_the_handler_ends_cancelled_not_queued(

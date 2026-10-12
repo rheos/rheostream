@@ -5,6 +5,7 @@ import type {
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
 import { ActionForm, type FormProps } from "./action-form";
+import { JobFeedCollector, JobFeedConnect } from "./jobfeed-panel";
 import { PasteCapture } from "./paste-capture";
 import {
   data,
@@ -1074,6 +1075,122 @@ export async function detail({ shell, query }: ScreenProps) {
     </Frame>
   );
 }
+function ConnectionCard({
+  shell,
+  connection,
+  outcome,
+  pipelines,
+  title,
+  jobfeed = false,
+}: {
+  shell: ShellApi;
+  connection: Row;
+  outcome: OperationOutcome | undefined;
+  pipelines: Row[];
+  title?: string;
+  /** Draw the collector's state and controls above the intake facts. */
+  jobfeed?: boolean;
+}) {
+  const status = outcome?.state === "ok" ? row(outcome.result) : {};
+  const collector =
+    jobfeed && outcome?.state === "ok" && status.collector
+      ? row(status.collector)
+      : null;
+  const rules = rows(connection.rules);
+  const simple =
+    rules.length <= 1 &&
+    rules.every(
+      (r) =>
+        !rows(r.conditions).length &&
+        r.enabled === true &&
+        ["record_only", "create_opportunity"].includes(str(r.action)),
+    );
+  return (
+    <section className={styles.section}>
+      <h2>{title ?? str(connection.name)}</h2>
+      {collector ? (
+        <>
+          <JobFeedCollector
+            shell={shell}
+            collector={collector}
+            code={status.last_error}
+          />
+          <h3>Intake</h3>
+        </>
+      ) : (
+        <p>
+          <span className={styles.status}>{label(connection.state)}</span> ·{" "}
+          {label(connection.transport)}
+        </p>
+      )}
+      {outcome?.state !== "ok" ? (
+        outcome ? (
+          <Failure outcome={outcome} />
+        ) : null
+      ) : (
+        <dl className={styles.facts}>
+          <dt>Last accepted</dt>
+          <dd>{date(status.last_accepted_at)}</dd>
+          <dt>Last processed</dt>
+          <dd>{date(status.last_processed_at)}</dd>
+          <dt>Processing lag</dt>
+          <dd>{str(status.lag_seconds)} seconds</dd>
+          <dt>Unresolved failures</dt>
+          <dd>{str(status.unresolved_failures)}</dd>
+          <dt>Failed deliveries</dt>
+          <dd>{str(status.failed_delivery_count)}</dd>
+        </dl>
+      )}
+      <h3>Routing</h3>
+      {rules.length ? (
+        rules.map((rule) => (
+          <p key={str(rule.id)}>
+            {label(rule.action)}
+            {rule.pipeline_id
+              ? ` → ${str(pipelines.find((p) => p.id === rule.pipeline_id)?.name) || "Unavailable pipeline"}`
+              : ""}
+            {rows(rule.conditions).length
+              ? ` · ${rows(rule.conditions).length} conditions`
+              : ""}
+          </p>
+        ))
+      ) : (
+        <p>Record inquiries without creating opportunities.</p>
+      )}
+      {simple ? (
+        <Form
+          shell={shell}
+          operation="leads.connection.set_routing"
+          base={{
+            connection_id: connection.id,
+            expected_rule_ids: rules.map((r) => str(r.id)),
+          }}
+          button="Save routing"
+          fields={[
+            {
+              name: "pipeline_id",
+              label: "Create opportunities in",
+              type: "select",
+              value: str(rules[0]?.pipeline_id),
+              options: [
+                { value: "", label: "Record only" },
+                ...pipelines.map((p) => ({
+                  value: str(p.id),
+                  label: str(p.name),
+                })),
+              ],
+            },
+          ]}
+        />
+      ) : (
+        <p className={styles.meta}>
+          This connection uses advanced routing. Manage its ordered rules
+          through the configured client.
+        </p>
+      )}
+    </section>
+  );
+}
 export async function connections({ shell }: ScreenProps) {
   if (shell.role !== "owner")
     return (
@@ -1087,12 +1204,18 @@ export async function connections({ shell }: ScreenProps) {
   const jobsearch = catalog.some(
     (r) => r.kind === "capability" && r.name === "jobsearch",
   );
+  // The job feed block and its controls exist only while the catalog carries
+  // this row; without it the collector's connection keeps its generic card.
+  const jobfeed = catalog.some((r) => r.kind === "jobfeed");
   const connections = catalog.filter((r) => r.kind === "connection");
   const health = await Promise.all(
     connections.map((c) =>
       read(shell, "leads.connection.health", { connection_ref: c.ref }),
     ),
   );
+  const collector = jobfeed
+    ? connections.findIndex((c) => c.transport === "poll")
+    : -1;
   return (
     <Frame
       shell={shell}
@@ -1105,97 +1228,31 @@ export async function connections({ shell }: ScreenProps) {
       ) : (
         <div className={styles.columns}>
           <div>
-            {connections.map((connection, index) => {
-              const outcome = health[index],
-                status = outcome?.state === "ok" ? row(outcome.result) : {};
-              const rules = rows(connection.rules);
-              const simple =
-                rules.length <= 1 &&
-                rules.every(
-                  (r) =>
-                    !rows(r.conditions).length &&
-                    r.enabled === true &&
-                    ["record_only", "create_opportunity"].includes(
-                      str(r.action),
-                    ),
-                );
-              return (
-                <section className={styles.section} key={str(connection.id)}>
-                  <h2>{str(connection.name)}</h2>
-                  <p>
-                    <span className={styles.status}>
-                      {label(connection.state)}
-                    </span>{" "}
-                    · {label(connection.transport)}
-                  </p>
-                  {outcome?.state !== "ok" ? (
-                    outcome ? (
-                      <Failure outcome={outcome} />
-                    ) : null
-                  ) : (
-                    <dl className={styles.facts}>
-                      <dt>Last accepted</dt>
-                      <dd>{date(status.last_accepted_at)}</dd>
-                      <dt>Last processed</dt>
-                      <dd>{date(status.last_processed_at)}</dd>
-                      <dt>Processing lag</dt>
-                      <dd>{str(status.lag_seconds)} seconds</dd>
-                      <dt>Unresolved failures</dt>
-                      <dd>{str(status.unresolved_failures)}</dd>
-                      <dt>Failed deliveries</dt>
-                      <dd>{str(status.failed_delivery_count)}</dd>
-                    </dl>
-                  )}
-                  <h3>Routing</h3>
-                  {rules.length ? (
-                    rules.map((rule) => (
-                      <p key={str(rule.id)}>
-                        {label(rule.action)}
-                        {rule.pipeline_id
-                          ? ` → ${str(pipelines.find((p) => p.id === rule.pipeline_id)?.name) || "Unavailable pipeline"}`
-                          : ""}
-                        {rows(rule.conditions).length
-                          ? ` · ${rows(rule.conditions).length} conditions`
-                          : ""}
-                      </p>
-                    ))
-                  ) : (
-                    <p>Record inquiries without creating opportunities.</p>
-                  )}
-                  {simple ? (
-                    <Form
-                      shell={shell}
-                      operation="leads.connection.set_routing"
-                      base={{
-                        connection_id: connection.id,
-                        expected_rule_ids: rules.map((r) => str(r.id)),
-                      }}
-                      button="Save routing"
-                      fields={[
-                        {
-                          name: "pipeline_id",
-                          label: "Create opportunities in",
-                          type: "select",
-                          value: str(rules[0]?.pipeline_id),
-                          options: [
-                            { value: "", label: "Record only" },
-                            ...pipelines.map((p) => ({
-                              value: str(p.id),
-                              label: str(p.name),
-                            })),
-                          ],
-                        },
-                      ]}
-                    />
-                  ) : (
-                    <p className={styles.meta}>
-                      This connection uses advanced routing. Manage its ordered
-                      rules through the configured client.
-                    </p>
-                  )}
-                </section>
-              );
-            })}
+            {connections.map((connection, index) =>
+              index === collector ? null : (
+                <ConnectionCard
+                  key={str(connection.id)}
+                  shell={shell}
+                  connection={connection}
+                  outcome={health[index]}
+                  pipelines={pipelines}
+                />
+              ),
+            )}
+            {jobfeed ? (
+              collector >= 0 ? (
+                <ConnectionCard
+                  shell={shell}
+                  connection={connections[collector] ?? {}}
+                  outcome={health[collector]}
+                  pipelines={pipelines}
+                  title="Job feed"
+                  jobfeed
+                />
+              ) : (
+                <JobFeedConnect shell={shell} pipelines={pipelines} />
+              )
+            ) : null}
           </div>
           <section className={styles.section}>
             <h2>Pipelines</h2>

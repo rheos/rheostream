@@ -36,6 +36,7 @@ from rheo_core.modules.manifest import (
     NavigationEntry,
     RecordType,
     RecordView,
+    Schedule,
     SearchProvider,
     SensitivityTier,
     StorageDeclaration,
@@ -75,7 +76,9 @@ RATIFIED_FIELDS = (
 """The twenty-three names ``docs/architecture/module-contract.md``'s manifest table
 ratifies, in its own order."""
 
-OPTIONAL_FIELDS = frozenset({"web", "agent_guidance", "audit_sink"})
+OPTIONAL_FIELDS = frozenset(
+    {"web", "agent_guidance", "audit_sink", "authorization_completion"}
+)
 
 DEFERRED_COLLECTIONS = (
     "record_types",
@@ -192,8 +195,13 @@ def test_an_omitted_field_is_refused_by_name(omitted: str) -> None:
 
 
 def test_the_model_carries_the_ratified_fields_plus_audit_sink() -> None:
-    assert set(ModuleManifest.model_fields) == {*RATIFIED_FIELDS, "audit_sink"}
-    assert len(ModuleManifest.model_fields) == 24
+    """Plus ``authorization_completion``, the optional connector-callback field."""
+    assert set(ModuleManifest.model_fields) == {
+        *RATIFIED_FIELDS,
+        "audit_sink",
+        "authorization_completion",
+    }
+    assert len(ModuleManifest.model_fields) == 25
 
 
 def test_only_web_agent_guidance_and_audit_sink_are_optional() -> None:
@@ -773,3 +781,168 @@ def test_packaging_is_a_declared_dependency_of_rheo_core() -> None:
     declared = {Requirement(entry).name for entry in project["dependencies"]}
     assert "alembic" in declared
     assert "packaging" in declared
+
+
+# --- schedules: the interval and the opt-in gate --------------------------------------
+
+_GATE_KEY = f"{MODULE_ID}.capabilities.collect"
+
+
+def _bool_key(key: str, scope: Scope = Scope.WORKSPACE) -> KeySpec:
+    return KeySpec(
+        key=key,
+        type=ValueType.BOOL,
+        scope=scope,
+        floor=None,
+        explicit_per_workspace=False,
+        default=True,
+    )
+
+
+def _schedule(**overrides: object) -> Schedule:
+    fields: dict[str, object] = {
+        "name": "collect",
+        "job_kind": f"{MODULE_ID}.collect",
+        "cron": "0 */2 * * *",
+        "enabled_by_default": False,
+    }
+    fields.update(overrides)
+    return Schedule(**fields)
+
+
+def _schedule_manifest(schedule: Schedule, *keys: KeySpec) -> ModuleManifest:
+    return ModuleManifest(**_fields(schedules=(schedule,), configuration_schema=keys))
+
+
+def test_a_schedule_declares_neither_interval_nor_gate_by_default() -> None:
+    """Both fields are optional and default to ``None``, which the ticker reads as
+    today's one day, ungated."""
+    schedule = _schedule()
+    assert schedule.interval_seconds is None
+    assert schedule.gate_setting is None
+    assert _schedule_manifest(schedule).schedules == (schedule,)
+
+
+def test_a_gated_interval_schedule_on_the_module_s_own_bool_key_is_accepted() -> None:
+    schedule = _schedule(interval_seconds=7200, gate_setting=_GATE_KEY)
+    manifest = _schedule_manifest(schedule, _bool_key(_GATE_KEY))
+    assert manifest.schedules[0].interval_seconds == 7200
+    assert manifest.schedules[0].gate_setting == _GATE_KEY
+
+
+SCHEDULE_REFUSALS: dict[str, tuple[Schedule, tuple[KeySpec, ...], str]] = {
+    "zero interval": (
+        _schedule(interval_seconds=0),
+        (),
+        "interval_seconds must be positive",
+    ),
+    "negative interval": (
+        _schedule(interval_seconds=-60),
+        (),
+        "interval_seconds must be positive",
+    ),
+    "gate outside the namespace": (
+        _schedule(gate_setting="somewhere_else.capabilities.collect"),
+        (_bool_key(_GATE_KEY),),
+        "gate_setting is outside the module's own settings namespace",
+    ),
+    "gate not a bool": (
+        _schedule(gate_setting=f"{MODULE_ID}.retention"),
+        (_key_spec(f"{MODULE_ID}.retention"),),
+        "gate_setting must name a bool key",
+    ),
+    "gate not declared": (
+        _schedule(gate_setting=_GATE_KEY),
+        (),
+        "gate_setting must name a bool key",
+    ),
+    "gate deployment scope": (
+        _schedule(gate_setting=_GATE_KEY),
+        (_bool_key(_GATE_KEY, Scope.DEPLOYMENT),),
+        "gate_setting must name a workspace-scope key",
+    ),
+    "gate member scope": (
+        _schedule(gate_setting=_GATE_KEY),
+        (_bool_key(_GATE_KEY, Scope.MEMBER),),
+        "gate_setting must name a workspace-scope key",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(SCHEDULE_REFUSALS))
+def test_each_schedule_rule_refuses_with_its_fixed_message(case: str) -> None:
+    schedule, keys, message = SCHEDULE_REFUSALS[case]
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        _schedule_manifest(schedule, *keys)
+    assert message in str(excinfo.value)
+
+
+# --- authorization_completion ---------------------------------------------------------
+
+COMPLETE_OPERATION = f"{MODULE_ID}.connection.complete"
+
+
+def _owned_operation(name: str, roles: frozenset[Role]) -> OperationDeclaration:
+    return OperationDeclaration(
+        name=name,
+        safety_class=SafetyClass.MUTATE,
+        roles=roles,
+        input_model=_ProbeInput,
+        output=_ProbeOutput,
+        idempotency=Idempotency.NONE,
+        audit=AuditSpec(subject_field=None),
+    )
+
+
+def _completion_manifest(
+    completion: str | None, roles: frozenset[Role]
+) -> ModuleManifest:
+    return ModuleManifest(
+        **_fields(
+            operations=((_owned_operation(COMPLETE_OPERATION, roles), _probe_handler),),
+            authorization_completion=completion,
+        )
+    )
+
+
+def test_no_authorization_completion_is_allowed() -> None:
+    assert ModuleManifest(**_fields()).authorization_completion is None
+
+
+def test_an_owner_only_own_operation_is_accepted_as_the_completion() -> None:
+    manifest = _completion_manifest(COMPLETE_OPERATION, frozenset({Role.OWNER}))
+    assert manifest.authorization_completion == COMPLETE_OPERATION
+
+
+COMPLETION_REFUSALS: dict[str, tuple[str, frozenset[Role], str]] = {
+    "another module's operation": (
+        "somewhere_else.connection.complete",
+        frozenset({Role.OWNER}),
+        "must name one of the module's own operations",
+    ),
+    "owner and member": (
+        COMPLETE_OPERATION,
+        frozenset({Role.OWNER, Role.MEMBER}),
+        "declared for the owner alone",
+    ),
+    "member only": (
+        COMPLETE_OPERATION,
+        frozenset({Role.MEMBER}),
+        "declared for the owner alone",
+    ),
+    "owner and service": (
+        COMPLETE_OPERATION,
+        frozenset({Role.OWNER, Role.SERVICE}),
+        "declared for the owner alone",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(COMPLETION_REFUSALS))
+def test_each_authorization_completion_rule_refuses_with_its_fixed_message(
+    case: str,
+) -> None:
+    completion, roles, message = COMPLETION_REFUSALS[case]
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        _completion_manifest(completion, roles)
+    assert message in str(excinfo.value)

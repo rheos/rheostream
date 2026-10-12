@@ -49,6 +49,9 @@ def catalog(ctx: WorkspaceContext, uow: UnitOfWork, m: c.Empty) -> c.ItemsOutput
     # Present only when on, so a workspace without job search receives nothing of it.
     if h.jobsearch_enabled(ctx, uow):
         items.append({"kind": "capability", "name": "jobsearch"})
+        # The job feed controls' marker only: its state comes from the owner-only
+        # health read, so this row carries no connection data or organization id.
+        items.append({"kind": "jobfeed"})
     if ctx.role is Role.OWNER:
         # Explicit projection excludes signing handles and identity policy.
         columns = [

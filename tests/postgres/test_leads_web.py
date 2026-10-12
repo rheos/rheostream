@@ -53,6 +53,32 @@ def test_catalog_never_exposes_connection_credentials_and_member_gets_no_setting
         )
 
 
+def test_catalog_jobfeed_row_appears_only_while_job_search_is_on(
+    intake: Intake,
+) -> None:
+    """The row is a bare marker: no connection data and no organization id."""
+    ok(intake, "pipeline.create", name="Inbound examples")
+
+    def rows(kind: str) -> list[dict[str, object]]:
+        return [r for r in ok(intake, "ui.catalog").items if r["kind"] == kind]
+
+    def jobsearch(value: bool) -> None:
+        outcome = intake.call(
+            "core.settings.set", key="leads.capabilities.jobsearch", value=value
+        )
+        assert outcome.ok, outcome
+
+    assert rows("jobfeed") == []
+    jobsearch(True)
+    assert rows("jobfeed") == [{"kind": "jobfeed"}]
+    # The panel offers only Job search pipelines, so pipeline rows carry the preset.
+    pipelines = rows("pipeline")
+    assert pipelines and all("preset_id" in row for row in pipelines)
+    jobsearch(False)
+    assert rows("jobfeed") == []
+    assert rows("capability") == []
+
+
 def test_receipt_progress_links_and_pinned_transitions(intake: Intake) -> None:
     setup(intake)
     accepted = intake.accept(

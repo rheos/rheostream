@@ -11,16 +11,18 @@ from rheo_core.modules.manifest import (
     Dependency,
     ExportDeclaration,
     FormDeclaration,
+    JobKind,
     ModuleManifest,
     NavigationEntry,
     RecordType,
+    Schedule,
     StorageDeclaration,
     WebContribution,
     WebRoute,
     WebSurface,
 )
 
-from rheo_leads.configuration import SETTINGS
+from rheo_leads.configuration import JOBSEARCH_KEY, SETTINGS
 from rheo_leads.connections import OPERATIONS as CONNECTION_OPERATIONS
 from rheo_leads.connections import TOOLS as CONNECTION_TOOLS
 from rheo_leads.connections import read_connection, record_refusal
@@ -28,6 +30,15 @@ from rheo_leads.contracts import CaptureInput
 from rheo_leads.events import CONSUMER_ID, DELIVERY_RECEIVED, EVENTS
 from rheo_leads.export import export_records, import_records
 from rheo_leads.intake.process import process_delivery
+from rheo_leads.jobfeed.authorization import COMPLETE_AUTHORIZATION
+from rheo_leads.jobfeed.authorization import OPERATIONS as JOBFEED_OPERATIONS
+from rheo_leads.jobfeed.run import (
+    COLLECT_JOB_KIND,
+    COLLECT_MAX_ATTEMPTS,
+    SCHEDULE_NAME,
+    CollectPayload,
+    collect_job,
+)
 from rheo_leads.lifecycle import (
     authorize_delete,
     delete_owned,
@@ -75,7 +86,8 @@ MANIFEST = ModuleManifest(
     operations=OPERATIONS
     + PIPELINE_OPERATIONS
     + WEB_OPERATIONS
-    + CONNECTION_OPERATIONS,
+    + CONNECTION_OPERATIONS
+    + JOBFEED_OPERATIONS,
     tools=(
         *TOOLS,
         *CONNECTION_TOOLS,
@@ -126,8 +138,27 @@ MANIFEST = ModuleManifest(
             ),
         ),
     ),
-    jobs=(),
-    schedules=(),
+    jobs=(
+        JobKind(
+            name=COLLECT_JOB_KIND,
+            input_model=CollectPayload,
+            handler=collect_job,
+            max_attempts=COLLECT_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
+    ),
+    # Off by default: module enable writes no row; a completed authorization
+    # enables it, and the ticker enqueues only while job search is on.
+    schedules=(
+        Schedule(
+            name=SCHEDULE_NAME,
+            job_kind=COLLECT_JOB_KIND,
+            cron="0 */2 * * *",
+            enabled_by_default=False,
+            interval_seconds=7200,
+            gate_setting=JOBSEARCH_KEY,
+        ),
+    ),
     resolvers=tuple((name, resolve_record) for name in RECORD_TABLES),
     deletion_participants=(
         DeletionParticipant(
@@ -138,7 +169,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=6,
+        format_version=7,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,
@@ -174,10 +205,15 @@ MANIFEST = ModuleManifest(
                 "followup.draft",
                 "followup.schedule",
                 "followup.resolve",
+                "jobfeed.connect",
+                "jobfeed.reconnect",
+                "jobfeed.revoke",
+                "jobfeed.select_account",
             )
         ),
     ),
     agent_guidance=None,
+    authorization_completion=COMPLETE_AUTHORIZATION,
     secret_scopes=(),
     connector_bindings=tuple(
         ConnectorBinding(
@@ -189,7 +225,7 @@ MANIFEST = ModuleManifest(
             read_connection=read_connection if transport == "webhook" else None,
             record_refusal=record_refusal if transport == "webhook" else None,
         )
-        for transport in ("webhook", "import", "manual")
+        for transport in ("webhook", "import", "manual", "poll")
     ),
     health_checks=(),
     contract_tests="modules/leads/tests",

@@ -1,11 +1,12 @@
 """Intake steps 4–6: source-authenticated party identity and explicit routing."""
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from rheo_contracts import WorkspaceContext
 from rheo_core.operations.transaction import call_in_transaction
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import select, update
+from sqlalchemy import RowMapping, select, update
 
 from rheo_leads import pipeline_common as h
 from rheo_leads.references import ref
@@ -57,6 +58,37 @@ def resolve_party(
     )
 
 
+def tracked_opportunity(
+    uow: UnitOfWork, *, pipeline_id: UUID, field: str, value: str
+) -> RowMapping | None:
+    """The newest opportunity in ``pipeline_id`` whose ``field`` holds ``value``
+    (value kind ``value``, not orphaned), or ``None``: the ``attach_by_field`` lookup.
+
+    Open or closed: a posting already passed on is refreshed, not reopened as a new
+    lead.
+    """
+    return (
+        uow.connection.execute(
+            select(p.opportunity)
+            .join(
+                p.opportunity_field_state,
+                p.opportunity_field_state.c.opportunity_id == p.opportunity.c.id,
+            )
+            .where(
+                p.opportunity.c.pipeline_id == pipeline_id,
+                p.opportunity_field_state.c.target == field,
+                p.opportunity_field_state.c.value_kind == "value",
+                p.opportunity_field_state.c.value_text == value,
+                p.opportunity_field_state.c.orphaned.is_(False),
+            )
+            .order_by(p.opportunity.c.created_at.desc(), p.opportunity.c.id.desc())
+            .limit(1)
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+
 def route(ctx: WorkspaceContext, uow: UnitOfWork, state: "DeliveryState") -> None:
     assert state.observation_id is not None
     obs = h.observation(uow, state.observation_id)
@@ -103,30 +135,11 @@ def route(ctx: WorkspaceContext, uow: UnitOfWork, state: "DeliveryState") -> Non
                 # Nothing to match on, and a blank id must never join unrelated
                 # sightings: fall through like a rule whose conditions failed.
                 continue
-            # Open or closed: a posting already passed on is refreshed, not reopened
-            # as a new lead.
-            target = (
-                uow.connection.execute(
-                    select(p.opportunity)
-                    .join(
-                        p.opportunity_field_state,
-                        p.opportunity_field_state.c.opportunity_id
-                        == p.opportunity.c.id,
-                    )
-                    .where(
-                        p.opportunity.c.pipeline_id == rule["pipeline_id"],
-                        p.opportunity_field_state.c.target == rule["match_field"],
-                        p.opportunity_field_state.c.value_kind == "value",
-                        p.opportunity_field_state.c.value_text == key,
-                        p.opportunity_field_state.c.orphaned.is_(False),
-                    )
-                    .order_by(
-                        p.opportunity.c.created_at.desc(), p.opportunity.c.id.desc()
-                    )
-                    .limit(1)
-                )
-                .mappings()
-                .one_or_none()
+            target = tracked_opportunity(
+                uow,
+                pipeline_id=rule["pipeline_id"],
+                field=rule["match_field"],
+                value=key,
             )
             if target:
                 _attach(ctx, uow, target, obs["id"], decision)

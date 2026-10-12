@@ -608,3 +608,340 @@ backup if intentionally crossing the migration boundary (with the write-loss
 consequences described under rollback). Deployment does not create website keys or
 connect source traffic. Owners create connections and the host operator hands a key
 to the website server using the [private-file export](../modules/leads/README.md#signed-website-intake).
+
+## Job feed collector
+
+The Leads module can collect job postings from a job feed provider's remote MCP server
+into a Job search pipeline. Each connected workspace has at most one collector
+connection. It signs in to the provider as an OAuth client, with an owner's one-time
+consent, and the worker polls the provider every two hours with the access that consent
+grants. Nothing reaches the provider until the operator turns the client on and an
+owner connects. Owner-facing behaviour is summarized in the
+[Leads README](../modules/leads/README.md#job-feed).
+
+### Settings
+
+All four are deployment settings. Set them in the environment of both `core` (connect,
+reconnect, the callback) and `worker` (collection); a Coolify deployment attaches its
+`.env` to every service. Values below are placeholders.
+
+```
+RHEO__connectors__oauth_client__enabled=true
+RHEO__connectors__oauth_client__client_name=Rheo Stream
+RHEO__leads__jobfeed__resource_url=https://mcp.example.com/mcp
+RHEO__leads__jobfeed__job_hosts=jobs.example.com
+```
+
+- `connectors.oauth_client.enabled` (default `false`) is the operator switch. While it
+  is off, or while `routing.identity.path` is anything but the default `/auth`, client
+  registration, connect, reconnect and the callback are all closed: connect and
+  reconnect refuse `endpoint_misconfigured` before any request, and the callback route
+  answers 404. A deployment that has not opted in sends nothing to any registration
+  endpoint.
+- `connectors.oauth_client.client_name` (default `Rheo Stream`) is the `client_name`
+  sent in the registration request, and is used nowhere else.
+- `leads.jobfeed.resource_url` is the provider's MCP resource URL. Empty (the default)
+  leaves the job feed unconfigured: connect and reconnect refuse
+  `endpoint_misconfigured`, and a scheduled run returns without writing anything.
+- `leads.jobfeed.job_hosts` is a comma-separated list of host names that posting URLs
+  must use. A row whose URL is not `https` on one of these hosts is counted as an
+  error and dropped; stored posting URLs are rebuilt on the first host in the list.
+  Empty (the default) also stops a run before it starts.
+
+Environment changes take effect when `core` and `worker` restart. The connection pins
+the endpoints it discovered at connect time, so a changed `resource_url` takes effect
+for an existing connection only when the owner reconnects (see below).
+
+### The callback and the redirect URI
+
+There is one route, on the identity host: `GET /auth/connector/leads/callback`. The
+redirect URI registered with the provider is built from the routing settings, never
+from request data:
+
+- subdomain mode: `https://auth.example.com/auth/connector/leads/callback`, with your
+  `routing.base_host` in place of `example.com`;
+- path mode: `https://example.com/auth/connector/leads/callback`, on the one public host.
+
+The route reads only `state`, `code`, `error` and `iss`, each at most 2048 characters
+and present at most once, and authenticates only by the owner's existing session cookie
+on that host. It answers one of two fixed pages, "Job feed connected" or "Authorization
+could not be completed; start again from Leads", and never echoes provider text. There
+is no client metadata document to host: the client identity comes from dynamic
+registration, and nothing else is served under `/auth/connector`.
+
+### Client registration
+
+The provider's authorization server must advertise a registration endpoint. Discovery
+reads the protected-resource metadata at the configured URL, its first authorization
+server, and that server's metadata, which must support S256 PKCE, the
+`authorization_code` and `refresh_token` grants, token endpoint auth method `none`, and
+registration. A missing revocation endpoint is accepted.
+
+- **When it registers.** Only inside an owner's connect or reconnect, after discovery
+  and before the authorization URL is built. One request per owner action, never
+  retried, and never from a worker run. A first connect always registers.
+- **The request.** One JSON `POST` with no `Authorization` header and exactly five
+  fields: the one redirect URI, the two grant types, `response_types` `code`,
+  `token_endpoint_auth_method` `none` and `client_name`.
+- **Reuse.** A reconnect reuses the stored client while the freshly discovered issuer,
+  the registration endpoint and the current redirect URI all equal the stored ones.
+  Otherwise it registers a new client. Changing the identity host (for example a new
+  `routing.base_host`) therefore registers a new client at the owner's next reconnect.
+  The identity path cannot move: any value other than `/auth` turns the whole client
+  off.
+- **Authentication method.** The registration response decides it: its
+  `token_endpoint_auth_method` when present, else `none` without a client secret and
+  `client_secret_basic` with one. `none`, `client_secret_basic` and
+  `client_secret_post` are supported. A client secret and a registration access token,
+  when issued, are stored as files (see Revoking); the registration access token is
+  never used.
+- **A rejected client.** An `invalid_client` answer from the token endpoint to the
+  stored client, at a refresh or a reconnect's code exchange, or a stored client secret whose expiry has passed or which cannot be read, makes the
+  connection terminal (`authorization_required`) and clears the stored client. Nothing
+  registers automatically after that. The owner's next reconnect registers exactly once.
+- **Restore.** An export never carries the registered client, so a restored connection
+  has none and the owner's reconnect registers a new one.
+- **Accumulation.** This code never deletes a registration at the provider. Replaced
+  clients, clients from abandoned connect attempts and clients left behind by a restore
+  stay registered there, unused.
+
+Refusals an owner can see from connect or reconnect:
+
+| Code | Meaning |
+| --- | --- |
+| `registration_failed` | The provider did not accept the registration: a status other than 200 or 201, a timeout, a body over 16 KiB, a malformed body or `client_id`, an echoed redirect URI that differs, or echoed grant types missing one of the two. Nothing is stored. |
+| `registration_unsupported` | The provider issued a client this code cannot use: an authentication method outside the three supported ones, or a secret-based method with no secret. Nothing is stored. |
+| `endpoint_misconfigured` | The client is off, the resource URL is unset, discovery failed, or the registration endpoint redirected or does not resolve to a public `https` address. In the first three cases nothing is sent to the registration endpoint. |
+
+`client_rejected` is not a registration refusal. It is the provider rejecting an
+already registered client (an `invalid_client` answer, or a stored secret that has
+expired or cannot be read). A stored client rejected at the code exchange or at a
+scheduled refresh is cleared and the connection goes terminal; one rejected at a revoke
+is cleared and the connection stays revoked; a client the same connect or reconnect had
+just registered is discarded. A failed registration on a
+reconnect records `registration_failed` on the connection's health and changes nothing
+else: an existing authorization keeps collecting.
+
+### Connecting for the first time
+
+1. Deploy with the settings above, then run the Leads module upgrade that adds
+   `0009_jobfeed_collector` (see [Upgrading installed modules](#upgrading-installed-modules)).
+   Deployment registers nothing and connects nothing.
+2. An owner turns the workspace capability on: `core.settings.set` with
+   `leads.capabilities.jobsearch` `true`. An operator value of `false` vetoes it for
+   every workspace.
+3. The owner creates a pipeline from the Job search preset, opens **Connections** in
+   Leads, chooses that pipeline and selects **Connect job feed**.
+4. The owner signs in at the provider and consents. This one-time consent is the owner's
+   own action at the provider's site; no part of this deployment performs it.
+
+The authorization request expires after 10 minutes and its state is single-use and
+bound to the owner's account. A first connect that fails at any step leaves no
+connection, no health row, no pending authorization and no secret file.
+
+Check these on the first real connect, because no test can:
+
+- the provider accepted the registration (no `registration_failed` or
+  `registration_unsupported`) and the redirect URI it was given;
+- the browser came back to the callback and showed "Job feed connected";
+- which authentication method the provider issued, and whether it issued a client
+  secret or an expiring client. The method is the `client_auth_method` column of
+  `leads.jobfeed_connection` in the workspace database (one row per workspace); the
+  secret itself is never shown.
+
+### Choosing an account
+
+At the start of every run the collector asks the provider which accounts the login can
+act as and stores that list as the account choices. It then selects the account
+without any fallback:
+
+- with an account stored, it uses that account only when it is listed exactly once and
+  is a freelancer account;
+- with none stored, it uses the only freelancer account, and stores it;
+- otherwise the run ends with `account_selection_required` and makes no search.
+
+A stored account that is missing from the list, listed twice, or no longer a freelancer
+account stops the run; it is never swapped for another account. The health code is
+written alone, with no backoff. The owner picks an account from the stored choices on
+**Connections**; that calls nothing at the provider and makes the next run due no
+earlier than the last run's start plus 60 minutes. The selected account id and the
+choices are visible only to the owner's browser session.
+
+### Reconnecting
+
+**Reconnect** on **Connections** starts a new authorization for the existing
+connection. On completion it re-pins the endpoints from fresh discovery, stores the new
+refresh token, resets the backoff and clears the collector's health codes, and makes
+the next run due no earlier than the last run's start plus 60 minutes. It is the only
+way to pick up a changed `leads.jobfeed.resource_url`: until then each scheduled run
+sees that the setting no longer matches the pinned URL, records
+`endpoint_misconfigured` on health with no backoff, and does not run.
+
+If the provider returns an error on a reconnect's callback (the owner declined, for
+example), the connection is left as it was. A connected feed keeps collecting with its
+existing authorization, and health shows `authorization_required` as a note that the
+reconnect did not finish.
+
+### Revoking
+
+**Revoke access** on **Connections** ends the connection locally first: the token
+reference is cleared, the state becomes `revoked`, the schedule is turned off and
+health records `authorization_required`. Then it revokes that refresh token at the
+provider's revocation endpoint, as the stored client, and deletes the token file. The
+result reports `revoked`, `revocation_failed`, or `revocation_unavailable` when the
+provider advertised no revocation endpoint (nothing is sent). The local end stands in
+every case. If the provider rejects the client, the stored client is cleared so the
+next reconnect registers a new one. Revoke stays available while the connection needs authorization. Opportunities
+already collected are kept.
+
+The owner's revoke needs the workspace capability on; with it off, revoke is refused
+`capability_disabled`. To cut access while the capability is off, the host operator
+removes the refresh-token file. Secret files live under the data root at
+`secrets/ws/<workspace>/connection/<connection>/oauth/`. The token file is the leaf
+named in `token_ref` of `leads.jobfeed_connection`; a client secret and a registration
+access token, if the provider issued them, are other files in the same directory.
+Removing the file revokes nothing at the provider. What happens next:
+
+- when the capability is turned back on, the next run finds the file gone, makes no
+  request, and moves the connection to `authorization_required` with its schedule off;
+- an in-app revoke after that still ends the connection locally and reports
+  `revocation_failed`, because there is no token left to send (or
+  `revocation_unavailable` when no revocation endpoint is pinned);
+- the owner reconnects to collect again.
+
+### Health and the run report
+
+The owner reads the connection through `leads.connection.health`, which the
+**Connections** panel shows. Besides intake's own fields it carries a `collector`
+object for the job feed connection: `authorization_state` (`connected`,
+`authorization_required` or `revoked`), `last_completed_at`, `next_run_not_before`, the
+selected account and the account choices, and the last completed run's nine counts:
+
+| Count | What it counts |
+| --- | --- |
+| `fetched` | Search rows received, valid or not, before overlapping sightings are merged. |
+| `imported` | Deliveries accepted for postings no opportunity tracks yet. Opportunities are created when the worker processes them. |
+| `refreshed` | Deliveries accepted for postings an opportunity already tracks. |
+| `skipped_dup` | Sightings with no change since the last delivery, plus deliveries intake already held. |
+| `filtered` | Sightings marked applied or with more than 50 proposals. They still refresh an opportunity that tracks them. |
+| `skipped_untracked` | Sightings that are not new discoveries and that no opportunity tracks. |
+| `errors` | Invalid rows, discovery postings whose detail read failed or was not made, and deliveries intake refused or recorded as conflicts. |
+| `detail_reads` | Detail requests made, at most 60 a run. |
+| `pages` | Search pages requested. |
+
+`next_run_not_before` is the later of the backoff's earliest start and the last run's
+start plus 60 minutes, or empty when neither applies.
+
+The collector writes nine health codes to `last_error`:
+
+| Code | Meaning |
+| --- | --- |
+| `authorization_required` | The connection needs a reconnect: the refresh token was refused or is missing, the provider rotated the refresh token and the new one could not be written (the old one is presumed spent), the provider refused the access token, the client was rejected, or the owner revoked. On a connected feed it means only that a reconnect did not finish. |
+| `token_refresh_failed` | The refresh failed in a way that may pass. Backoff applies. |
+| `refresh_token_unsaved` | The provider rotated the refresh token and the new one was written, but switching the connection to it failed twice. The connection keeps the old token, which a provider that rotates on use has already spent, so the next run may end `authorization_required`. The new token is neither revoked nor deleted. Backoff applies. |
+| `account_selection_required` | The owner must choose an account. No backoff. |
+| `upstream_unavailable` | The provider was unreachable, failed, or answered in an unexpected shape. Backoff applies. |
+| `upstream_rate_limited` | The provider rate-limited the run. Backoff applies, at least as long as its `Retry-After` up to the 24-hour cap. |
+| `collection_partial` | The run finished, but a page, a detail read or a delivery failed, or the deadline cut it short. Also written alone when the deadline cut a run before collection began. |
+| `endpoint_misconfigured` | An endpoint redirected or does not resolve to a public `https` address (backoff applies), or the configured resource URL no longer matches the pinned one (no backoff until the owner reconnects). |
+| `registration_failed` | A reconnect's registration failed. Collection continues if the connection is connected. |
+
+A completed run without a partial result clears the collector's own codes and leaves
+intake's alone.
+
+### Schedule, limits and backoff
+
+- **Schedule.** The collector's schedule runs every two hours, on the hour. A completed
+  authorization turns it on; a terminal loss or a revoke turns it off. The ticker
+  enqueues a run only for a workspace whose capability is on.
+- **Claim spacing.** Each run claims the connection before it calls the provider. No
+  run starts earlier than the previous claim plus exactly 60 minutes, so a retried or
+  duplicated job claims once.
+- **One run.** One token refresh, never retried; the MCP session set-up; the account
+  check; three searches (one page of best matches, up to five pages of the newest
+  postings, one page of postings above 50 proposals), at most 80 rows in all; one
+  detail read for each discovered posting that has 50 or fewer proposals and is not
+  marked applied, at most 60; then the deliveries and the report, committed together.
+- **Deadline and pacing.** A run has 420 seconds from its claim. Search and detail
+  requests start at least 5.3 seconds apart, and none starts with too little of the
+  deadline left; a cut run completes as `collection_partial`. Each MCP request has a
+  50-second budget and each token, revocation or discovery request 15 seconds; a
+  stalled read can add 5 seconds to either. Discovery as a whole is cut at 30 seconds.
+- **Retries.** A search or detail request that the provider refuses with its
+  sensitive-rate-limit tool error is retried once, at least 5.5 seconds later. A second
+  refusal counts as rate limited. Nothing else is retried within a run.
+- **Backoff.** A run that fails before any search page succeeds (the refresh, the
+  session set-up, the account list, or every search request) records the failure code
+  and waits: 2 hours after the first consecutive failure, doubling to a 24-hour cap. A
+  provider `Retry-After` in seconds is honoured up to the same cap. Search pages that
+  arrive but fail the collector's own checks do not back off; the run still completes
+  as `collection_partial`. A completed run resets the backoff.
+- **The capability turned off.** The ticker stops enqueuing, a run that starts finds it
+  off and writes nothing, and a running run re-reads it between search pages (not
+  between detail reads or deliveries) and, finding it off, stops and writes nothing
+  more. Turning it back on resumes at the next scheduled tick; the connection and its
+  authorization are untouched.
+
+### Worker and database requirements
+
+- **`idle_in_transaction_session_timeout`** must be unset (zero) or at least 480
+  seconds for the worker's database sessions, whether it is set on the server, the
+  database or the role. A run holds the worker's transaction
+  open, idle, while it talks to the provider, for up to its 420-second deadline plus
+  the final writes.
+- **Module upgrades.** A `rheo module upgrade` attempted while a run holds the
+  workspace's module execution lock is refused `upgrade_busy`. Retry it after the run.
+- **Occupancy.** One worker runs each collection inline: up to about 7 minutes every 2
+  hours for each connected workspace. Other jobs and outbox deliveries on that worker
+  wait behind it. A core migration that needs the tables the run's readiness check read
+  waits for the run to finish. About 16 connected workspaces would keep one worker busy
+  full time.
+- **Deploys.** A deploy stops the worker. A run still going when the 10-second stop
+  grace period ends is killed and its deliveries roll back; the committed claim keeps
+  the next run at least 60 minutes after that run started.
+
+### Outbound requests
+
+Every request to the resource URL, the discovery documents, the registration, token
+and revocation endpoints goes over `https` only, follows no redirects, and goes only to
+a host whose every resolved address is public. The rule applies to configured and
+discovered endpoints alike, including the registration endpoint, and is checked before
+every request. The check resolves the host and the HTTP client resolves it again when
+it connects; that DNS-rebinding window is accepted, because the hosts are configured by
+the operator or discovered from them over `https`.
+
+### Accepted residuals
+
+- Two changed sightings of a brand-new posting delivered in different runs before the
+  first is processed can create two opportunities, because processing is asynchronous
+  and each delivery looks for a tracking opportunity when it is accepted.
+- Erasure does not block re-collection. Erasing a collected observation or opportunity
+  removes the posting's dedupe memory, so the next sighting, changed or not, is treated
+  as never delivered. It is delivered under a fresh sequence number when an opportunity
+  still tracks the posting or the posting qualifies as a discovery, and when the
+  opportunity is gone a new one is created. Closing an
+  opportunity, unlike erasing it, keeps the posting attached: later sightings refresh
+  the closed opportunity.
+- A rotated refresh token whose switch failed twice (`refresh_token_unsaved`) stays on
+  disk, unreferenced, under the connection's `oauth/` directory. Revoking it could kill
+  the provider's whole grant, so the collector leaves it; nothing removes it later. The
+  host operator may delete it: it is any leaf there that `token_ref`, `client_secret_ref`
+  and `registration_token_ref` do not name.
+- No MCP tool exists for connect, reconnect, the callback completion, revoke, account
+  selection or the health read. They work only for the owner on a browser session.
+
+### Unknown until the first live connection
+
+These depend on the provider and cannot be settled before an owner's first real
+consent:
+
+- whether the provider accepts a plain public-client registration (method `none`, no
+  initial access token) and which redirect URI rules it applies;
+- whether it issues a client secret or an expiring client anyway;
+- refresh-token lifetime and whether it rotates on use, which decides how often the
+  owner must reconnect;
+- whether the `resource` parameter is required or rejected;
+- the current shapes of the account-list and job-search responses;
+- whether the discovery probe's 401 challenge carries a scope;
+- the provider's rate limit values, against which the 5.3-second pacing and the
+  420-second deadline are unproven.

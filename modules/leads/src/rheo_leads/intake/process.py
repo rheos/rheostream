@@ -22,11 +22,13 @@ from rheo_leads.intake.mapping import (
     apply_mapping,
     resolve_identity,
 )
-from rheo_leads.pipeline_common import lock
+from rheo_leads.pipeline_common import JOBSEARCH_PRESET_ID, lock
 from rheo_leads.pipeline_intake import resolve_party, route
 from rheo_leads.references import identifier, ref
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
+
+JOBSEARCH_TARGET_PREFIX = "ext.jobsearch."
 
 
 @dataclass
@@ -63,6 +65,22 @@ def recheck_connection(
         )
         if generation is None or (generation != current and not previous_valid):
             raise DeliveryRefused("connection_revoked")
+
+
+def routes_to_jobsearch(uow: UnitOfWork, connection_id: UUID) -> bool:
+    """Whether any enabled routing rule of the connection targets a Job search
+    pipeline."""
+    found = uow.connection.execute(
+        select(p.routing_rule.c.id)
+        .join(p.pipeline, p.pipeline.c.id == p.routing_rule.c.pipeline_id)
+        .where(
+            p.routing_rule.c.connection_id == connection_id,
+            p.routing_rule.c.enabled.is_(True),
+            p.pipeline.c.preset_id == JOBSEARCH_PRESET_ID,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    return found is not None
 
 
 def apply_pinned_mapping(
@@ -111,6 +129,14 @@ def apply_pinned_mapping(
     extension_targets = frozenset(
         uow.connection.execute(select(p.preset_field.c.target).distinct()).scalars()
     )
+    # Job search targets go only to a connection that routes into a Job search
+    # pipeline; the capability flag is not consulted, so stored records stay readable.
+    if not routes_to_jobsearch(uow, UUID(str(receipt["connection_id"]))):
+        extension_targets = frozenset(
+            target
+            for target in extension_targets
+            if not target.startswith(JOBSEARCH_TARGET_PREFIX)
+        )
     try:
         state.facts = apply_mapping(
             rules,

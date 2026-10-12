@@ -70,7 +70,7 @@ class CancellationToken:
         self._clock = clock
         self._extended_at: datetime | None = None
 
-    def checkpoint(self, now: datetime | None = None) -> None:
+    def checkpoint(self, now: datetime | None = None, *, force: bool = False) -> None:
         """Extend the lease and observe the cancellation flag.
 
         ``now`` defaults to the captured clock, which is what lets a handler signature
@@ -86,10 +86,20 @@ class CancellationToken:
         last-extension time starts unset, so the **first** checkpoint after the acquire
         always round-trips and a handler that checkpoints once still sees a
         cancellation.
+
+        **``force=True`` skips the throttle and always extends.** A handler about to
+        make one long blocking call passes it, so the lease it starts that call
+        with is a full ``lease_seconds`` rather than whatever a throttled checkpoint
+        left. A forced call observes cancellation and lease loss exactly as the
+        throttled path does.
         """
         at = self._clock() if now is None else now
         last = self._extended_at
-        if last is not None and at - last < timedelta(seconds=self._heartbeat_seconds):
+        if (
+            not force
+            and last is not None
+            and at - last < timedelta(seconds=self._heartbeat_seconds)
+        ):
             return
         with self._engine.begin() as conn:
             cancel_requested = extend_lease(
