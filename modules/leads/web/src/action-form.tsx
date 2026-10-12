@@ -23,6 +23,49 @@ export interface FormProps {
   fields: Field[];
   button: string;
   receiptHref?: string;
+  /** On success, open the URL in this result field instead of saying "Saved." */
+  redirectField?: string;
+  /** Plain copy for known refusal codes, in place of the generic refused text. */
+  refusalCopy?: Record<string, string>;
+}
+type Shown = OperationOutcome | { state: "redirecting" };
+type PageLocation = Pick<Location, "assign" | "protocol" | "hostname">;
+/** The URL to open, or null. Only https, or http while the app itself is
+ * served as plain http on localhost for development. */
+export function safeRedirect(
+  value: string,
+  location: PageLocation,
+): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol === "https:") return url.href;
+  if (
+    url.protocol === "http:" &&
+    location.protocol === "http:" &&
+    location.hostname === "localhost"
+  )
+    return url.href;
+  return null;
+}
+/** Navigates for a redirecting form's success; an unsafe or missing URL reads
+ * as a refusal with no text, so the generic refused message shows. */
+export function settle(
+  outcome: OperationOutcome,
+  redirectField: string | undefined,
+  location: PageLocation,
+): Shown {
+  if (!redirectField || outcome.state !== "ok") return outcome;
+  const target = safeRedirect(
+    str(row(outcome.result)[redirectField]),
+    location,
+  );
+  if (!target) return { state: "refused", code: "redirect_refused", text: "" };
+  location.assign(target);
+  return { state: "redirecting" };
 }
 export function formInput(
   operation: string,
@@ -83,9 +126,11 @@ export function ActionForm({
   fields,
   button,
   receiptHref,
+  redirectField,
+  refusalCopy,
 }: FormProps) {
   const id = useId();
-  const [result, setResult] = useState<OperationOutcome | null>(null);
+  const [result, setResult] = useState<Shown | null>(null);
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       fields.map((field) => [
@@ -112,8 +157,9 @@ export function ActionForm({
       } catch {
         outcome = { state: "unavailable" };
       }
-      setResult(outcome);
-      if (outcome.state === "ok")
+      const shown = settle(outcome, redirectField, window.location);
+      setResult(shown);
+      if (shown.state === "ok")
         setValues(
           Object.fromEntries(
             fields.map((field) => [
@@ -128,11 +174,10 @@ export function ActionForm({
   }
   const update = (name: string, value: string) =>
     setValues((before) => ({ ...before, [name]: value }));
-  const receipt =
-    result?.state === "ok" ? str(row(result.result).receipt_ref) : "";
+  const redirecting = result?.state === "redirecting";
   return (
     <form onSubmit={save} className={styles.form}>
-      <fieldset disabled={pending} className={styles.fieldset}>
+      <fieldset disabled={pending || redirecting} className={styles.fieldset}>
         {fields.map((field) => (
           <div className={styles.field} key={field.name}>
             <label htmlFor={`${id}-${field.name}`}>
@@ -177,38 +222,73 @@ export function ActionForm({
           </div>
         ))}
         <button type="submit" className={styles.primary}>
-          {pending ? "Saving…" : button}
+          {pending || redirecting
+            ? redirectField
+              ? "Opening authorization…"
+              : "Saving…"
+            : button}
         </button>
       </fieldset>
-      <div aria-live="polite" aria-atomic="true">
-        {result?.state === "ok" ? (
-          <p className={styles.success}>
-            {receipt ? "Inquiry received. Processing is queued." : "Saved."}
-            {receipt && receiptHref ? (
-              <>
-                {" "}
-                <a href={`${receiptHref}?ref=${encodeURIComponent(receipt)}`}>
-                  Check processing and open the opportunity
-                </a>
-              </>
-            ) : null}
-          </p>
-        ) : null}
-        {result?.state === "refused" ? (
-          <p className={styles.error} role="alert">
-            {result.code === "record_stale"
+      <FormResult
+        result={result}
+        receiptHref={receiptHref}
+        refusalCopy={refusalCopy}
+      />
+    </form>
+  );
+}
+/** The live region under a form. It renders fixed copy only, never a URL. */
+export function FormResult({
+  result,
+  receiptHref,
+  refusalCopy,
+}: {
+  result: Shown | null;
+  receiptHref?: string;
+  refusalCopy?: Record<string, string>;
+}) {
+  const receipt =
+    result?.state === "ok" ? str(row(result.result).receipt_ref) : "";
+  const mapped =
+    result?.state === "refused" && refusalCopy
+      ? Object.hasOwn(refusalCopy, result.code)
+        ? refusalCopy[result.code]
+        : undefined
+      : undefined;
+  return (
+    <div aria-live="polite" aria-atomic="true">
+      {result?.state === "redirecting" ? (
+        <p className={styles.meta}>Opening authorization…</p>
+      ) : null}
+      {result?.state === "ok" ? (
+        <p className={styles.success}>
+          {receipt ? "Inquiry received. Processing is queued." : "Saved."}
+          {receipt && receiptHref ? (
+            <>
+              {" "}
+              <a href={`${receiptHref}?ref=${encodeURIComponent(receipt)}`}>
+                Check processing and open the opportunity
+              </a>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {result?.state === "refused" ? (
+        <p className={styles.error} role="alert">
+          {mapped
+            ? mapped
+            : result.code === "record_stale"
               ? "This record changed. Your entry is still here; copy it before reloading, then try saving again."
               : result.text ||
                 "The change was refused. Check your access and try again."}
-          </p>
-        ) : null}
-        {result?.state === "unavailable" ? (
-          <p className={styles.error} role="alert">
-            We could not confirm the save. Check the record before retrying to
-            avoid a duplicate.
-          </p>
-        ) : null}
-      </div>
-    </form>
+        </p>
+      ) : null}
+      {result?.state === "unavailable" ? (
+        <p className={styles.error} role="alert">
+          We could not confirm the save. Check the record before retrying to
+          avoid a duplicate.
+        </p>
+      ) : null}
+    </div>
   );
 }
