@@ -1082,6 +1082,7 @@ function ConnectionCard({
   pipelines,
   title,
   jobfeed = false,
+  finish = false,
 }: {
   shell: ShellApi;
   connection: Row;
@@ -1090,6 +1091,8 @@ function ConnectionCard({
   title?: string;
   /** Draw the collector's state and controls above the intake facts. */
   jobfeed?: boolean;
+  /** Offer to finish a pasted sign-in this owner started. */
+  finish?: boolean;
 }) {
   const status = outcome?.state === "ok" ? row(outcome.result) : {};
   const collector =
@@ -1114,6 +1117,7 @@ function ConnectionCard({
             shell={shell}
             collector={collector}
             code={status.last_error}
+            finish={finish}
           />
           <h3>Intake</h3>
         </>
@@ -1206,7 +1210,11 @@ export async function connections({ shell }: ScreenProps) {
   );
   // The job feed block and its controls exist only while the catalog carries
   // this row; without it the collector's connection keeps its generic card.
-  const jobfeed = catalog.some((r) => r.kind === "jobfeed");
+  const marker = catalog.find((r) => r.kind === "jobfeed");
+  const jobfeed = marker !== undefined;
+  // Loopback mode only: the provider sends the browser to an address nothing
+  // serves, so a pending sign-in this owner started is finished by pasting it.
+  const finish = marker?.loopback === true && marker.pending === true;
   const connections = catalog.filter((r) => r.kind === "connection");
   const health = await Promise.all(
     connections.map((c) =>
@@ -1248,9 +1256,14 @@ export async function connections({ shell }: ScreenProps) {
                   pipelines={pipelines}
                   title="Job feed"
                   jobfeed
+                  finish={finish}
                 />
               ) : (
-                <JobFeedConnect shell={shell} pipelines={pipelines} />
+                <JobFeedConnect
+                  shell={shell}
+                  pipelines={pipelines}
+                  finish={finish}
+                />
               )
             ) : null}
           </div>

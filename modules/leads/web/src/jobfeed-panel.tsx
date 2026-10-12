@@ -21,6 +21,72 @@ export const REGISTRATION_REFUSALS: Record<string, string> = {
     "Job search is not set up on this deployment. Ask the host operator to check configuration.",
 };
 
+/** Fixed copy for every refusal finishing a pasted sign-in can return. */
+export const FINISH_REFUSALS: Record<string, string> = {
+  address_invalid:
+    "That is not the address the provider sent you to. Copy the whole address from the address bar, starting with http, and paste it again.",
+  state_unknown:
+    "This sign-in was already used or replaced by a newer one. Connect again.",
+  state_expired:
+    "This sign-in expired. Connect again and paste the new address within 10 minutes.",
+  provider_error:
+    "The provider did not grant access. Nothing changed. Connect again to retry.",
+  account_mismatch:
+    "Another owner started this sign-in. Connect again from your own session.",
+  capability_disabled: "Job search is off for this workspace.",
+  issuer_mismatch:
+    "The address came from a different provider. Nothing changed. Connect again.",
+  exchange_failed:
+    "The provider did not finish the sign-in. Nothing changed. Connect again.",
+  no_refresh_token:
+    "The provider did not grant lasting access. Nothing changed. Connect again.",
+  client_rejected:
+    "The provider no longer accepts the registration for this app. Connect again.",
+  endpoint_misconfigured:
+    "Job search is not set up on this deployment. Ask the host operator to check configuration.",
+  record_stale: "The job feed changed meanwhile. Connect again.",
+  not_found: "The job feed changed meanwhile. Connect again.",
+};
+
+/** The form that finishes a sign-in in the loopback redirect mode: the provider
+ * sends the browser to an address nothing serves, and the owner pastes it here. */
+export function FinishConnecting({
+  submit,
+}: {
+  submit: NonNullable<ShellApi["submit"]>;
+}) {
+  return (
+    <div
+      role="group"
+      aria-labelledby="jobfeed-finish-heading"
+      className={styles.evidence}
+    >
+      <h3 id="jobfeed-finish-heading">Finish connecting</h3>
+      <p>
+        After you approve, your browser shows a page that can&apos;t be reached.
+        Copy the full address from the address bar, come back to this page and
+        paste it here.
+      </p>
+      <ActionForm
+        submit={submit}
+        operation="leads.jobfeed.complete_pasted"
+        button="Finish connecting"
+        okCopy="Job feed connected. Reload the page to see its status."
+        refusalCopy={FINISH_REFUSALS}
+        refusedResult={{ field: "state", value: "refused", codeField: "reason" }}
+        fields={[
+          {
+            name: "address",
+            label: "Address from your browser",
+            required: true,
+            maxLength: 4096,
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
 /** Pipelines on the Job search preset, matched by preset id, never by name. */
 export function jobSearchPipelines(pipelines: Row[]): Row[] {
   return pipelines.filter((p) => str(p.preset_id) === JOBSEARCH_PRESET_ID);
@@ -30,9 +96,12 @@ export function jobSearchPipelines(pipelines: Row[]): Row[] {
 export function JobFeedConnect({
   shell,
   pipelines,
+  finish = false,
 }: {
   shell: ShellApi;
   pipelines: Row[];
+  /** A sign-in this owner started waits for its pasted address. */
+  finish?: boolean;
 }) {
   const choices = jobSearchPipelines(pipelines);
   return (
@@ -70,6 +139,7 @@ export function JobFeedConnect({
       ) : (
         <p className={styles.meta}>Editing is unavailable in this view.</p>
       )}
+      {finish && shell.submit ? <FinishConnecting submit={shell.submit} /> : null}
     </section>
   );
 }
@@ -149,10 +219,13 @@ export function JobFeedCollector({
   shell,
   collector,
   code,
+  finish = false,
 }: {
   shell: ShellApi;
   collector: Row;
   code: unknown;
+  /** A reconnect this owner started waits for its pasted address. */
+  finish?: boolean;
 }) {
   const state = str(collector.authorization_state);
   const connected = state === "connected";
@@ -261,6 +334,7 @@ export function JobFeedCollector({
             buttonClass={reconnectPrimary ? "primary" : "secondary"}
             fields={[]}
           />
+          {finish ? <FinishConnecting submit={shell.submit} /> : null}
           {state === "revoked" ? null : (
             <details className={styles.manualCapture}>
               <summary>Revoke access</summary>

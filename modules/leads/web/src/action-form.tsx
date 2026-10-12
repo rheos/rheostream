@@ -32,6 +32,15 @@ export interface FormProps {
   okCopy?: OkCopy;
   /** The submit button's weight; primary unless a screen says otherwise. */
   buttonClass?: "primary" | "secondary";
+  /** An operation that answers a refusal as a result (so its own writes commit):
+   * a result whose ``field`` equals ``value`` shows as a refusal whose code is
+   * the result's ``codeField``, through ``refusalCopy``. */
+  refusedResult?: RefusedResult;
+}
+export interface RefusedResult {
+  field: string;
+  value: string;
+  codeField: string;
 }
 export type OkCopy =
   string | { field: string; copy: Record<string, string>; otherwise: string };
@@ -73,7 +82,17 @@ export function settle(
   outcome: OperationOutcome,
   redirectField: string | undefined,
   location: PageLocation,
+  refusedResult?: RefusedResult,
 ): Shown {
+  if (refusedResult && outcome.state === "ok") {
+    const result = row(outcome.result);
+    if (str(result[refusedResult.field]) === refusedResult.value)
+      return {
+        state: "refused",
+        code: str(result[refusedResult.codeField]),
+        text: "",
+      };
+  }
   if (!redirectField || outcome.state !== "ok") return outcome;
   const target = safeRedirect(
     str(row(outcome.result)[redirectField]),
@@ -146,6 +165,7 @@ export function ActionForm({
   refusalCopy,
   okCopy,
   buttonClass = "primary",
+  refusedResult,
 }: FormProps) {
   const id = useId();
   const [result, setResult] = useState<Shown | null>(null);
@@ -175,7 +195,12 @@ export function ActionForm({
       } catch {
         outcome = { state: "unavailable" };
       }
-      const shown = settle(outcome, redirectField, window.location);
+      const shown = settle(
+        outcome,
+        redirectField,
+        window.location,
+        refusedResult,
+      );
       setResult(shown);
       if (shown.state === "ok")
         setValues(
