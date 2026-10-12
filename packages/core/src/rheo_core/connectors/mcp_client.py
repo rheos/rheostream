@@ -113,8 +113,10 @@ TRACE_LOGGER: Final = "rheo_core.connectors.mcp_trace"
 TRACE_FORMAT: Final = (
     "mcp_trace method=%s tool=%s action=%s status=%s egress=%s content_type=%s "
     "session_id=%s protocol=%s rpc_error=%s is_error=%s tool_code=%s events=%s "
-    "bytes=%s outcome=%s"
+    "bytes=%s outcome=%s error_text=%s"
 )
+ERROR_TEXT_LIMIT: Final = 120
+"""The most characters of a 4xx ``text/plain`` body the trace records."""
 _trace_log: Final = logging.getLogger(TRACE_LOGGER)
 _MEDIA_TOKEN: Final = re.compile(
     r"[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}"
@@ -445,6 +447,7 @@ class _Trace:
         "content_type",
         "egress",
         "enabled",
+        "error_text",
         "events",
         "is_error",
         "method",
@@ -477,12 +480,15 @@ class _Trace:
         self.tool_code: str | None = None
         self.events: int | None = None
         self.body_bytes: int | None = None
+        self.error_text: str | None = None
 
     def response(self, response: EgressResponse) -> None:
         self.status = response.status
         self.content_type = _traced_media(response.headers)
         self.session_id = _header(response.headers, "mcp-session-id") is not None
         self.body_bytes = len(response.body)
+        if 400 <= response.status < 500 and self.content_type == "text/plain":
+            self.error_text = _error_text(response.body)
 
     def __enter__(self) -> Self:
         return self
@@ -517,7 +523,15 @@ class _Trace:
             _field(self.events),
             _field(self.body_bytes),
             outcome,
+            "-" if self.error_text is None else json.dumps(self.error_text),
         )
+
+
+def _error_text(body: bytes) -> str:
+    """The first characters of a short plain-text error, printable ASCII only."""
+    text = body[: ERROR_TEXT_LIMIT * 4].decode("utf-8", errors="replace")
+    kept = "".join(c if " " <= c <= "~" else " " for c in text)
+    return " ".join(kept.split())[:ERROR_TEXT_LIMIT]
 
 
 def _field(value: str | int | bool | None) -> str:
