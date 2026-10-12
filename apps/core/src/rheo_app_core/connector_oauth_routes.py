@@ -9,16 +9,19 @@ There is no client document: the client identity comes from dynamic registration
 so nothing else is served under ``/connector``.
 
 **404 unless configured, and on the identity host.** :func:`_configured` asks
-``oauth.enabled()`` on every request (the operator switch
-``connectors.oauth_client.enabled`` and ``routing.identity.path`` equal to the served
-prefix) and, in subdomain mode, compares the request's host with the identity host,
-the rule ``oauth_routes`` applies. Otherwise the answer is the 404 an unrouted path
-gets, so a deployment that has not opted in shows no trace of the callback.
+``oauth.callback_served()`` on every request (the operator switch
+``connectors.oauth_client.enabled``, the redirect mode ``identity`` and
+``routing.identity.path`` equal to the served prefix) and, in subdomain mode,
+compares the request's host with the identity host, the rule ``oauth_routes``
+applies. Otherwise the answer is the 404 an unrouted path gets, so a deployment that
+has not opted in shows no trace of the callback. In the ``loopback`` redirect mode no
+provider redirects here (the owner pastes the address back into the module instead),
+so the route answers 404 there too.
 
 **The route path.** Registered under :data:`SERVED_IDENTITY_PATH`, as
 ``oauth_routes`` registers its paths; ``surface_guard`` maps a relocated identity
-prefix onto it, and ``oauth.enabled()`` is false under any other prefix, so the
-route and the registered redirect URI always agree.
+prefix onto it, and ``oauth.callback_served()`` is false under any other prefix, so
+the route and the registered redirect URI always agree.
 
 **What is read.** Only ``state``, ``code``, ``error`` and ``iss`` from the query,
 each at most :data:`MAX_PARAMETER_LENGTH` characters and present at most once; any
@@ -66,10 +69,10 @@ router = APIRouter()
 _ROUTE_PREFIX: Final = SERVED_IDENTITY_PATH
 CALLBACK_PATH: Final = f"{_ROUTE_PREFIX}/connector/{{module_id}}/callback"
 
-CALLBACK_PARAMETERS: Final = ("state", "code", "error", "iss")
+CALLBACK_PARAMETERS: Final = oauth.CALLBACK_PARAMETERS
 """The only query parameters the callback reads."""
 
-MAX_PARAMETER_LENGTH: Final = 2048
+MAX_PARAMETER_LENGTH: Final = oauth.MAX_CALLBACK_PARAMETER_LENGTH
 """The longest value accepted for any one of :data:`CALLBACK_PARAMETERS`. A state
 is 43 characters and an issuer is a URL; a provider's authorization code is well
 under this."""
@@ -124,7 +127,7 @@ def _refused() -> Response:
 def _configured(request: Request) -> bool:
     """Whether the connector client is configured and (subdomain mode) this request
     is on the identity host. Path mode has one host, so any host is it."""
-    if not oauth.enabled():
+    if not oauth.callback_served():
         return False
     config = routing_config()
     if config.mode is RoutingMode.PATH:

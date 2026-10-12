@@ -30,13 +30,21 @@ accepted. Every discovered URL must be ``https`` and resolve public.
 ``scopes_supported``, else the authorization server's, else none. It is used only in
 the authorization URL.
 
-**Operator switch.** :func:`enabled` is true only when
+**Operator switch and redirect mode.** ``connectors.oauth_client.redirect`` picks
+where the provider sends the owner's browser back to. ``identity`` (the default) is
+the identity-host callback route: :func:`enabled` is then true only when
 ``connectors.oauth_client.enabled`` is on and ``routing.identity.path`` is the served
 identity prefix (:data:`rheo_core.oauth.surface.SERVED_IDENTITY_PATH`), the only
-prefix the callback route answers under. Otherwise :func:`redirect_uri` and
-:func:`register` refuse ``endpoint_misconfigured`` before any request.
-:func:`redirect_uri` is built by ``url_for`` from the routing settings alone, never
-from request data.
+prefix that route answers under, and :func:`redirect_uri` is built by ``url_for``
+from the routing settings. ``loopback`` is for providers that register only loopback
+redirect URIs: the URI is exactly ``http://127.0.0.1:<port>/callback`` with the
+operator's ``connectors.oauth_client.loopback_port``, nothing listens there, and the
+owner pastes the address the browser lands on back into the module
+(:func:`loopback_callback_parameters` reads it). That mode reaches no route of this
+deployment, so the identity path does not gate it. Either way the URI comes from
+settings alone, never from request data, and while :func:`enabled` is false
+:func:`redirect_uri` and :func:`register` refuse ``endpoint_misconfigured`` before
+any request. :func:`callback_served` says whether the identity-host route answers.
 
 **Registration (RFC 7591).** :func:`register` sends exactly one ``POST`` of
 ``application/json`` with no ``Authorization`` header to the pinned registration
@@ -118,7 +126,14 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, final
-from urllib.parse import quote, quote_plus, urlencode, urlsplit, urlunsplit
+from urllib.parse import (
+    parse_qsl,
+    quote,
+    quote_plus,
+    urlencode,
+    urlsplit,
+    urlunsplit,
+)
 from uuid import UUID
 
 import httpx
@@ -175,6 +190,16 @@ _QUOTED_PAIR: Final = re.compile(r"\\(.)")
 ClientAuthMethod = Literal["none", "client_secret_basic", "client_secret_post"]
 
 ENABLED_KEY: Final = "connectors.oauth_client.enabled"
+REDIRECT_KEY: Final = "connectors.oauth_client.redirect"
+LOOPBACK_PORT_KEY: Final = "connectors.oauth_client.loopback_port"
+LOOPBACK_HOST: Final = "127.0.0.1"
+LOOPBACK_PATH: Final = "/callback"
+RedirectMode = Literal["identity", "loopback"]
+CALLBACK_PARAMETERS: Final = ("state", "code", "error", "iss")
+"""The only callback parameters ever read, from the route or a pasted address."""
+MAX_CALLBACK_PARAMETER_LENGTH: Final = 2048
+"""The longest value accepted for any one of :data:`CALLBACK_PARAMETERS`."""
+MAX_PASTED_ADDRESS_LENGTH: Final = 4096
 REGISTRATION_CAP_BYTES: Final = 16 * 1024
 CLIENT_ID_MAX_LENGTH: Final = 255
 GRANT_TYPES: Final = ("authorization_code", "refresh_token")
@@ -635,36 +660,103 @@ def discard(ref: str) -> None:
 # --- the operator switch and the redirect URI -------------------------------------
 
 
-def _configured_routing() -> RoutingConfig | None:
-    """The routing configuration when the connector client is configured."""
+def redirect_mode() -> RedirectMode | None:
+    """The configured redirect mode, or ``None`` while the client is not configured
+    (switched off, or identity mode under an identity path the route does not serve)."""
     settings = resolve()
     if not settings.get_bool(ENABLED_KEY):
         return None
+    if settings.get_str(REDIRECT_KEY) == "loopback":
+        return "loopback"
     try:
         routing = RoutingConfig.from_settings(settings)
     except (SettingsError, ValueError):
         return None
     if routing.surfaces.identity.path != SERVED_IDENTITY_PATH:
         return None
-    return routing
+    return "identity"
 
 
 def enabled() -> bool:
     """Whether the connector OAuth client is configured (module docstring)."""
-    return _configured_routing() is not None
+    return redirect_mode() is not None
+
+
+def callback_served() -> bool:
+    """Whether the identity-host callback route answers: identity mode only."""
+    return redirect_mode() == "identity"
+
+
+def loopback_redirect_uri() -> str:
+    """``http://127.0.0.1:<port>/callback`` for the configured port. The one place
+    the loopback URI is built; the port's range is held by its settings key."""
+    port = resolve().get_int(LOOPBACK_PORT_KEY)
+    return f"http://{LOOPBACK_HOST}:{port}{LOOPBACK_PATH}"
 
 
 def redirect_uri(module_id: str) -> str:
-    """The callback URI registered for ``module_id``, from routing settings only."""
-    routing = _configured_routing()
+    """The redirect URI registered for ``module_id``, from settings only."""
+    mode = redirect_mode()
     valid = True
     try:
         check_module_id(module_id)
     except ValueError:  # its message names the id; only the fixed code leaves
         valid = False
-    if routing is None or not valid:
+    if mode is None or not valid:
         raise _misconfigured()
-    return url_for(routing, IDENTITY, f"/connector/{module_id}/callback")
+    if mode == "loopback":
+        return loopback_redirect_uri()
+    return url_for(
+        RoutingConfig.from_settings(resolve()),
+        IDENTITY,
+        f"/connector/{module_id}/callback",
+    )
+
+
+def loopback_callback_parameters(address: object) -> dict[str, str] | None:
+    """The callback parameters of an address the owner pasted, or ``None`` unless it
+    is exactly the loopback redirect URI plus a query.
+
+    Surrounding whitespace is ignored. The scheme must be ``http``, the authority
+    exactly ``127.0.0.1:<configured port>`` (so no user information, no other host
+    spelling and no default port), the path exactly ``/callback``; a fragment
+    (even an empty ``#``) refuses. Only :data:`CALLBACK_PARAMETERS` are read, each
+    at most once and at most :data:`MAX_CALLBACK_PARAMETER_LENGTH` characters, as
+    the route reads them; every other parameter is ignored. ``state`` and one of
+    ``code`` or ``error`` must be present. Never raises, and nothing about the
+    address leaves this function but the parameters.
+    """
+    if not isinstance(address, str) or len(address) > MAX_PASTED_ADDRESS_LENGTH:
+        return None
+    text = address.strip()
+    found: dict[str, str] = {}
+    valid = False
+    try:
+        parts = urlsplit(text)
+        expected = f"{LOOPBACK_HOST}:{resolve().get_int(LOOPBACK_PORT_KEY)}"
+        if (
+            "#" not in text
+            and parts.scheme == "http"
+            and parts.netloc == expected
+            and parts.path == LOOPBACK_PATH
+        ):
+            valid = True
+            for name, value in parse_qsl(
+                parts.query, keep_blank_values=True, max_num_fields=256
+            ):
+                if name not in CALLBACK_PARAMETERS:
+                    continue
+                if name in found or len(value) > MAX_CALLBACK_PARAMETER_LENGTH:
+                    valid = False
+                    break
+                found[name] = value
+    except (ValueError, SettingsError):  # the parser's text quotes the address
+        valid = False
+    if not valid or "state" not in found:
+        return None
+    if "code" not in found and "error" not in found:
+        return None
+    return found
 
 
 # --- registration -----------------------------------------------------------------

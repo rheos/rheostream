@@ -1135,7 +1135,7 @@ def test_no_tool_exists_for_the_five_operations_in_either_capability_state(
 
     on = listed()
     assert "leads_capture" in on  # positive control: the listing does list tools
-    assert catalog_rows("jobfeed") == [{"kind": "jobfeed"}]
+    assert catalog_rows("jobfeed") == [{"kind": "jobfeed", "loopback": False, "pending": False}]
 
     capability(intake, c.owner, False)
     assert listed() == on
@@ -1145,7 +1145,7 @@ def test_no_tool_exists_for_the_five_operations_in_either_capability_state(
 
     capability(intake, c.owner, True)
     assert listed() == on
-    assert catalog_rows("jobfeed") == [{"kind": "jobfeed"}]
+    assert catalog_rows("jobfeed") == [{"kind": "jobfeed", "loopback": False, "pending": False}]
     declared = {
         tool.operation
         for tool in visible_tools(

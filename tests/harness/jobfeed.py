@@ -513,8 +513,12 @@ def configure_connector(
     client_name: str = CLIENT_NAME,
     routing_host: str = ROUTING_HOST,
     job_hosts: str | None = None,
+    redirect: str = "identity",
+    loopback_port: int | None = None,
 ) -> None:
     """Deployment settings for the connector client and a fresh secret data root.
+    ``redirect`` is the redirect mode; ``loopback_port`` left ``None`` keeps the
+    package default port.
     ``job_hosts`` (comma-separated) configures the collector's job hosts; left
     ``None`` they stay unset, so a run stops before its claim.
 
@@ -529,6 +533,13 @@ def configure_connector(
     monkeypatch.setenv("RHEO_DATA_ROOT", str(data_root))
     monkeypatch.setenv("RHEO__connectors__oauth_client__enabled", str(enabled).lower())
     monkeypatch.setenv("RHEO__connectors__oauth_client__client_name", client_name)
+    monkeypatch.setenv("RHEO__connectors__oauth_client__redirect", redirect)
+    if loopback_port is None:
+        monkeypatch.delenv("RHEO__connectors__oauth_client__loopback_port", raising=False)
+    else:
+        monkeypatch.setenv(
+            "RHEO__connectors__oauth_client__loopback_port", str(loopback_port)
+        )
     monkeypatch.setenv("RHEO__leads__jobfeed__resource_url", resource_url)
     monkeypatch.setenv("RHEO__routing__mode", "subdomain")
     monkeypatch.setenv("RHEO__routing__scheme", "https")

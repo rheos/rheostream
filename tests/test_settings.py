@@ -119,6 +119,8 @@ PRODUCTION_KEYS = {
     "identity.oauth.abandoned_client_minutes": 60,
     "connectors.oauth_client.enabled": False,
     "connectors.oauth_client.client_name": "Rheo Stream",
+    "connectors.oauth_client.redirect": "identity",
+    "connectors.oauth_client.loopback_port": 33419,
     "internal.secret_ref": "",
     "work.due_reconcile_seconds": 900,
     "work.max_attempts": 8,
