@@ -105,7 +105,9 @@ def catalog(ctx: WorkspaceContext, uow: UnitOfWork, m: c.Empty) -> c.ItemsOutput
 def _jobfeed_marker(ctx: WorkspaceContext, uow: UnitOfWork) -> dict[str, object]:
     """Whether the deployment uses the loopback redirect, and (for an owner only)
     whether this account has an unexpired pending authorization to finish by
-    pasting. Two booleans: nothing of the pending row itself."""
+    pasting. A row pinned to another redirect URI (started before the operator
+    changed the mode or the port) does not count: no paste could ever match it.
+    Two booleans: nothing of the pending row itself."""
     loopback = oauth.redirect_mode() == "loopback"
     pending = False
     if loopback and ctx.role is Role.OWNER:
@@ -115,6 +117,7 @@ def _jobfeed_marker(ctx: WorkspaceContext, uow: UnitOfWork) -> dict[str, object]
                 select(table.c.id).where(
                     table.c.account_id == ctx.actor.id,
                     table.c.expires_at > dependencies().now(),
+                    table.c.redirect_uri == oauth.loopback_redirect_uri(),
                 )
             ).first()
             is not None

@@ -445,3 +445,50 @@ def test_identity_mode_still_registers_the_identity_callback(
         "connected",
         None,
     )
+
+
+def test_a_pending_sign_in_for_another_redirect_uri_is_not_offered(
+    intake: Intake,
+    owner: WorkspaceContext,
+    pipeline_id: UUID,
+    served: FakeAuthorizationServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the operator moves the loopback port, a sign-in pinned to the old URI
+    could never be finished by any paste, so the card no longer offers it."""
+    address = consent(served, connect(intake, owner, pipeline_id))
+    assert jobfeed_marker(intake, owner)["pending"] is True
+    monkeypatch.setenv("RHEO__connectors__oauth_client__loopback_port", "40123")
+    assert jobfeed_marker(intake, owner) == {
+        "kind": "jobfeed",
+        "loopback": True,
+        "pending": False,
+    }
+    refused(paste(intake, owner, address), "address_invalid")
+    monkeypatch.delenv("RHEO__connectors__oauth_client__loopback_port")
+    assert jobfeed_marker(intake, owner)["pending"] is True
+
+
+def test_a_pending_identity_mode_sign_in_is_not_offered_in_loopback_mode(
+    intake: Intake,
+    owner: WorkspaceContext,
+    pipeline_id: UUID,
+    served: FakeAuthorizationServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RHEO__connectors__oauth_client__redirect", "identity")
+    served.registration = issued()
+    started = connect(intake, owner, pipeline_id)
+    assert started.ok, started
+    (row,) = pending(owner)
+    assert urlsplit(row["redirect_uri"]).scheme == "https"
+    monkeypatch.setenv("RHEO__connectors__oauth_client__redirect", "loopback")
+    assert jobfeed_marker(intake, owner) == {
+        "kind": "jobfeed",
+        "loopback": True,
+        "pending": False,
+    }
+    # The control: a loopback sign-in started now is offered.
+    served.registration = loopback_only()
+    consent(served, connect(intake, owner, pipeline_id))
+    assert jobfeed_marker(intake, owner)["pending"] is True
