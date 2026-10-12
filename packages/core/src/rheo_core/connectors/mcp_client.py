@@ -547,7 +547,7 @@ def _redact(text: str, secrets: tuple[str | None, ...]) -> str:
 
 def _error_text(body: bytes) -> str:
     """The first characters of a short plain-text error, printable ASCII only."""
-    text = body[: ERROR_TEXT_LIMIT * 4].decode("utf-8", errors="replace")
+    text = body.decode("utf-8", errors="replace")
     kept = "".join(c if " " <= c <= "~" else " " for c in text)
     # Not cut to the limit yet: credentials are redacted first, then it is cut.
     return " ".join(kept.split())
