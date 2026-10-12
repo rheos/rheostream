@@ -200,6 +200,7 @@ CALLBACK_PARAMETERS: Final = ("state", "code", "error", "iss")
 MAX_CALLBACK_PARAMETER_LENGTH: Final = 2048
 """The longest value accepted for any one of :data:`CALLBACK_PARAMETERS`."""
 MAX_PASTED_ADDRESS_LENGTH: Final = 4096
+_CONTROL: Final = re.compile(r"[\x00-\x1f\x7f]")
 REGISTRATION_CAP_BYTES: Final = 16 * 1024
 CLIENT_ID_MAX_LENGTH: Final = 255
 GRANT_TYPES: Final = ("authorization_code", "refresh_token")
@@ -717,9 +718,11 @@ def loopback_callback_parameters(address: object) -> dict[str, str] | None:
     """The callback parameters of an address the owner pasted, or ``None`` unless it
     is exactly the loopback redirect URI plus a query.
 
-    Surrounding whitespace is ignored. The scheme must be ``http``, the authority
-    exactly ``127.0.0.1:<configured port>`` (so no user information, no other host
-    spelling and no default port), the path exactly ``/callback``; a fragment
+    Surrounding whitespace is ignored; any ASCII control character left inside
+    (code points 0 to 31 and 127, so tabs and line breaks too) refuses, because
+    ``urlsplit`` would silently drop some of them. The scheme must be ``http``, the
+    authority exactly ``127.0.0.1:<configured port>`` (so no user information, no
+    other host spelling and no default port), the path exactly ``/callback``; a fragment
     (even an empty ``#``) refuses. Only :data:`CALLBACK_PARAMETERS` are read, each
     at most once and at most :data:`MAX_CALLBACK_PARAMETER_LENGTH` characters, as
     the route reads them; every other parameter is ignored. ``state`` and one of
@@ -729,6 +732,8 @@ def loopback_callback_parameters(address: object) -> dict[str, str] | None:
     if not isinstance(address, str) or len(address) > MAX_PASTED_ADDRESS_LENGTH:
         return None
     text = address.strip()
+    if _CONTROL.search(text):
+        return None
     found: dict[str, str] = {}
     valid = False
     try:

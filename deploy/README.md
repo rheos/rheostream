@@ -690,7 +690,7 @@ reached, but its address bar holds the `code` and `state`. The owner copies that
 address into the **Finish connecting** form on the Job feed card, and Leads reads it
 as strictly as the callback route reads a request: scheme `http`, host and port exactly
 `127.0.0.1:<loopback_port>`, path exactly `/callback`, no user information, no
-fragment, only `state`, `code`, `error` and `iss` (each at most 2048 characters and
+fragment, no control characters such as tabs or line breaks inside it, only `state`, `code`, `error` and `iss` (each at most 2048 characters and
 present at most once), and at most 4096 characters in all. The completion that follows
 is the callback's own: the single-use state bound to the owner and workspace, the issuer
 check and the PKCE code exchange with the same loopback URI. The pasted address is

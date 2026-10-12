@@ -298,3 +298,39 @@ def test_the_port_check_follows_the_operator_port(
     assert oauth.loopback_callback_parameters(address()) is None
     moved = address(base="http://127.0.0.1:40123/callback")
     assert oauth.loopback_callback_parameters(moved) == {"state": STATE, "code": CODE}
+
+
+@pytest.mark.parametrize(
+    "pasted",
+    [
+        "http://127.0.0.1:33\n419/callback?state=S&code=C",
+        "http://127.0.0.1:33419/call\tback?state=S&code=C",
+        "http://127.0.0.1:33419/callback\r?state=S&code=C",
+        "http://127.0.0.1:33419/callback?state=S&code=C\nmore",
+        "http://127.0.0.1:33419/callback?state=S&code=C\x00",
+        "http://127.0.0.1:33419/call\x01back?state=S&code=C",
+        "ht\x1btp://127.0.0.1:33419/callback?state=S&code=C",
+        "http://127.0.0.1:33419/callback?state=S&code=C\x7f",
+    ],
+    ids=[
+        "newline",
+        "tab",
+        "carriage return",
+        "newline in query",
+        "nul",
+        "soh",
+        "escape",
+        "delete",
+    ],
+)
+def test_an_embedded_control_character_is_refused(loopback: Path, pasted: str) -> None:
+    """``urlsplit`` drops tabs and line breaks, so without this check these would
+    read as the loopback URI."""
+    assert oauth.loopback_callback_parameters(pasted) is None
+
+
+def test_surrounding_line_breaks_and_tabs_are_still_trimmed(loopback: Path) -> None:
+    assert oauth.loopback_callback_parameters(f"\t{address()}\r\n") == {
+        "state": STATE,
+        "code": CODE,
+    }
