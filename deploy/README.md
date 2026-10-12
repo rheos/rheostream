@@ -835,7 +835,10 @@ Secret files live under the data root at
 `secrets/ws/<workspace>/connection/<connection>/oauth/`. The token file is the leaf
 named in `token_ref` of `leads.jobfeed_connection`; a client secret and a registration
 access token, if the provider issued them, are other files in the same directory.
-Revoke deletes the token file, so nobody needs to remove it by hand.
+Revoke normally deletes the token file, so nobody needs to remove it by hand. The
+deletion is best effort: if it fails, the file stays after revoke returns, and if the
+upstream revocation also failed the token may still be usable at the provider. In that
+case, check that no `token_ref` names the leaf and remove it from the directory above.
 
 ### Health and the run report
 
