@@ -824,20 +824,18 @@ every case. If the provider rejects the client, the stored client is cleared so 
 next reconnect registers a new one. Revoke stays available while the connection needs authorization. Opportunities
 already collected are kept.
 
-The owner's revoke needs the workspace capability on; with it off, revoke is refused
-`capability_disabled`. To cut access while the capability is off, the host operator
-removes the refresh-token file. Secret files live under the data root at
+Revoke does not need the workspace capability. With job search turned off, the
+**Connections** card for a connection that is not yet revoked offers only **Revoke
+access**, and the operation behaves exactly as it does with the capability on: the same
+local end, the same upstream revocation as the stored client, the same file deletion
+and result. Connect, reconnect, account selection and collection stay off until the
+capability is turned back on.
+
+Secret files live under the data root at
 `secrets/ws/<workspace>/connection/<connection>/oauth/`. The token file is the leaf
 named in `token_ref` of `leads.jobfeed_connection`; a client secret and a registration
 access token, if the provider issued them, are other files in the same directory.
-Removing the file revokes nothing at the provider. What happens next:
-
-- when the capability is turned back on, the next run finds the file gone, makes no
-  request, and moves the connection to `authorization_required` with its schedule off;
-- an in-app revoke after that still ends the connection locally and reports
-  `revocation_failed`, because there is no token left to send (or
-  `revocation_unavailable` when no revocation endpoint is pinned);
-- the owner reconnects to collect again.
+Revoke deletes the token file, so nobody needs to remove it by hand.
 
 ### Health and the run report
 
@@ -910,7 +908,8 @@ intake's alone.
   off and writes nothing, and a running run re-reads it between search pages (not
   between detail reads or deliveries) and, finding it off, stops and writes nothing
   more. Turning it back on resumes at the next scheduled tick; the connection and its
-  authorization are untouched.
+  authorization are untouched. The owner can still revoke while it is off (see
+  Revoking).
 
 ### Worker and database requirements
 

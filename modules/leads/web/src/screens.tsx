@@ -5,7 +5,11 @@ import type {
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
 import { ActionForm, type FormProps } from "./action-form";
-import { JobFeedCollector, JobFeedConnect } from "./jobfeed-panel";
+import {
+  JobFeedCollector,
+  JobFeedConnect,
+  JobFeedRevokeOnly,
+} from "./jobfeed-panel";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import {
@@ -1083,6 +1087,7 @@ function ConnectionCard({
   pipelines,
   title,
   jobfeed = false,
+  revokeOnly = false,
   finish,
 }: {
   shell: ShellApi;
@@ -1092,6 +1097,8 @@ function ConnectionCard({
   title?: string;
   /** Draw the collector's state and controls above the intake facts. */
   jobfeed?: boolean;
+  /** Job search is off: draw only the job feed's revoke above the intake facts. */
+  revokeOnly?: boolean;
   /** Present in the loopback redirect mode (see ``FinishState``). */
   finish?: FinishState;
 }) {
@@ -1112,6 +1119,12 @@ function ConnectionCard({
   return (
     <section className={styles.section}>
       <h2>{title ?? str(connection.name)}</h2>
+      {revokeOnly ? (
+        <>
+          <JobFeedRevokeOnly shell={shell} />
+          <h3>Intake</h3>
+        </>
+      ) : null}
       {collector ? (
         <>
           <JobFeedCollector
@@ -1213,10 +1226,14 @@ export async function connections({ shell }: ScreenProps) {
   // this row; without it the collector's connection keeps its generic card.
   const marker = catalog.find((r) => r.kind === "jobfeed");
   const jobfeed = marker !== undefined;
+  // Job search is off but a connection is not revoked yet: revoke only.
+  const revokeOnly = marker?.revoke_only === true;
   // Loopback mode only: the provider sends the browser to an address nothing
   // serves, so a pending sign-in this owner started is finished by pasting it.
   const finish: FinishState | undefined =
-    marker?.loopback === true ? { pending: marker.pending === true } : undefined;
+    !revokeOnly && marker?.loopback === true
+      ? { pending: marker.pending === true }
+      : undefined;
   const connections = catalog.filter((r) => r.kind === "connection");
   const health = await Promise.all(
     connections.map((c) =>
@@ -1257,9 +1274,15 @@ export async function connections({ shell }: ScreenProps) {
                   outcome={health[collector]}
                   pipelines={pipelines}
                   title="Job feed"
-                  jobfeed
+                  jobfeed={!revokeOnly}
+                  revokeOnly={revokeOnly}
                   finish={finish}
                 />
+              ) : revokeOnly ? (
+                <section className={styles.section}>
+                  <h2>Job feed</h2>
+                  <JobFeedRevokeOnly shell={shell} />
+                </section>
               ) : (
                 <JobFeedConnect
                   shell={shell}

@@ -75,6 +75,7 @@ def test_catalog_jobfeed_row_appears_only_while_job_search_is_on(
     pipelines = rows("pipeline")
     assert pipelines and all("preset_id" in row for row in pipelines)
     jobsearch(False)
+    # Off with no job feed connection: no marker, not even the revoke-only one.
     assert rows("jobfeed") == []
     assert rows("capability") == []
 

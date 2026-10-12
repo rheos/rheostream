@@ -159,7 +159,9 @@ reconnect did not finish.
 
 **Revoking.** **Revoke access** stops collection, ends this app's access here, and asks
 the provider to revoke the token. The result says whether the provider confirmed it.
-Collected opportunities are kept. It stays available while authorization is required.
+Collected opportunities are kept. It stays available while authorization is required,
+and while job search is turned off: the Job feed card then says collection is paused
+and offers **Revoke access** and nothing else.
 The card keeps showing the earlier state until you reload the page.
 
 **Close versus erase.** Closing an opportunity (moving it to hired, lost or passed)

@@ -45,8 +45,10 @@ from it.
 clears and captures the token reference under the lock, so a concurrent rotation
 can never leave a live token behind; only then does it revoke exactly that reference
 upstream as the stored client, and discard exactly that file. Once that unit has
-committed it never raises. ``select_account`` calls nothing upstream: it accepts
-only an organization id from the stored account choices.
+committed it never raises. It is the one operation here that does not need the
+job-search capability: turning the capability off must not keep a credential live.
+``select_account`` calls nothing upstream: it accepts only an organization id from
+the stored account choices.
 """
 
 import hashlib
@@ -920,14 +922,14 @@ def _end_locally(ctx: WorkspaceContext, now: datetime) -> _Ended:
     the reference and the stored client with a compare-and-set, mark the connection
     revoked, disable the schedule and record ``authorization_required``.
 
-    Every refusal happens here, before anything changes. Once the unit has
+    Every refusal happens here, before anything changes. The capability is not
+    checked: revoke works the same with job search on or off. Once the unit has
     committed the connection has ended locally, so a failure while it closes is not
     raised: the captured reference is still revoked and discarded.
     """
     committed: _Ended | None = None
     try:
         with open_unit_of_work(ctx) as unit:
-            _require_capability(ctx, unit)
             lock(unit)
             current = read_connection(unit.connection, for_update=True)
             if current is None:

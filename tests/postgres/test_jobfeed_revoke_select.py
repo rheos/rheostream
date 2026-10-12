@@ -282,9 +282,9 @@ def test_revoke_and_select_are_refused_for_every_caller_but_the_owners_browser_s
     # (b) a connection actor: its operation set holds only its acceptance operation.
     refused(revoke(intake, c.poll), "operation_not_permitted")
     refused(select_account(intake, c.poll, ORG_ONE), "operation_not_permitted")
-    # (c) the capability off: the owner cannot revoke in-app.
+    # (c) the capability off: the owner cannot select an account (revoke still
+    # works off; see the capability-off revoke test).
     capability(intake, c.owner, False)
-    refused(revoke(intake, c.owner), "capability_disabled")
     refused(select_account(intake, c.owner, ORG_ONE), "capability_disabled")
     assert served.requests == []
     assert stored(c.owner) == before
@@ -1099,6 +1099,129 @@ def test_revoke_and_select_each_write_one_audit_row_without_secrets(
         assert marker not in rendered
 
 
+# --- revoke with the capability off ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method", ["none", "client_secret_basic", "client_secret_post"]
+)
+def test_revoke_with_the_capability_off_behaves_as_with_it_on(
+    intake: Intake, root: Path, served: FakeAuthorizationServer, method: str
+) -> None:
+    """Turning job search off never keeps a credential live: the owner's revoke
+    ends locally, revokes upstream once as the stored client, discards the file and
+    writes its one audit row, exactly as with the capability on."""
+    c = connected(intake, served, auth_method=method)
+    token_file = file_of(root, c.token_ref)
+    files = client_files(root, stored(c.owner))
+    markers = secret_markers(root, c)
+    capability(intake, c.owner, False)
+
+    assert upstream(revoke(intake, c.owner)) == "revoked"
+
+    (request,) = served.revocation_requests
+    sent = form(request)
+    assert sent["token"] == [c.refresh_token]
+    assert sent["token_type_hint"] == ["refresh_token"]
+    authorization_header = request.headers.get("authorization")
+    if method == "none":
+        assert sent["client_id"] == [STORED_CLIENT_ID]
+        assert authorization_header is None and "client_secret" not in sent
+    elif method == "client_secret_basic":
+        pair = f"{quote_plus(STORED_CLIENT_ID)}:{quote_plus(CLIENT_SECRET)}"
+        expected = base64.b64encode(pair.encode()).decode()
+        assert authorization_header == f"Basic {expected}"
+        assert "client_id" not in sent and "client_secret" not in sent
+    else:
+        assert sent["client_id"] == [STORED_CLIENT_ID]
+        assert sent["client_secret"] == [CLIENT_SECRET]
+        assert authorization_header is None
+    assert served.registrations == [] and served.token_requests == []
+    assert not token_file.exists()
+    after = stored(c.owner)
+    assert after.authorization_state == "revoked"
+    assert after.token_ref is None and after.credential_generation == 2
+    # A normal revoke keeps the stored client and its files.
+    assert after.client_id == STORED_CLIENT_ID
+    assert client_files(root, after) == files and all(f.exists() for f in files)
+    schedule = collect_schedule(c.owner)
+    assert schedule is not None and schedule["enabled"] is False
+    recorded = health(c.owner, c.connection_id)
+    assert recorded is not None and recorded["last_error"] == "authorization_required"
+    (row,) = audits(c.owner, REVOKE)
+    assert row["outcome"] == "succeeded" and row["subject_ref"] is None
+    assert row["actor_kind"] == "account" and row["entry"] == "web"
+    for marker in markers:
+        assert marker not in repr(row)
+
+
+def test_only_revoke_works_with_the_capability_off(
+    intake: Intake, root: Path, served: FakeAuthorizationServer
+) -> None:
+    """Connect, reconnect, account selection and completion stay refused while off,
+    before and after the revoke; only the revoke itself reaches the provider."""
+    c = connected(intake, served, choices=CHOICES)
+    # A reconnect started while on, so a completion has a pending row to consume.
+    params = restart(intake, c.owner, served)
+    served.requests.clear()
+    capability(intake, c.owner, False)
+
+    def all_refused() -> None:
+        refused(connect_to(intake, c), "capability_disabled")
+        refused(run(intake, c.owner, RECONNECT), "capability_disabled")
+        refused(select_account(intake, c.owner, ORG_ONE), "capability_disabled")
+
+    all_refused()
+    assert served.requests == []
+    assert upstream(revoke(intake, c.owner)) == "revoked"
+    assert len(served.revocation_requests) == 1
+    all_refused()
+    assert result(complete(intake, c.owner, **params)) == (
+        "refused",
+        "capability_disabled",
+    )
+    assert len(served.requests) == 1
+    after = stored(c.owner)
+    assert after.authorization_state == "revoked" and after.organization_id is None
+    schedule = collect_schedule(c.owner)
+    assert schedule is not None and schedule["enabled"] is False
+
+
+def connect_to(i: Intake, c: ConnectedCollector) -> OperationOutcome:
+    return run(i, c.owner, CONNECT, pipeline_ref=ref("pipeline", c.pipeline_id))
+
+
+def test_the_catalog_marker_in_each_capability_and_connection_state(
+    intake: Intake, served: FakeAuthorizationServer
+) -> None:
+    """On, the marker is the controls' marker; off, an owner gets a revoke-only
+    marker while a connection is not revoked, and nothing once it is; a member
+    never gets the revoke-only marker."""
+    c = connected(intake, served)
+    member = member_context(intake)
+
+    def markers(ctx: WorkspaceContext) -> list[dict[str, Any]]:
+        outcome = run(intake, ctx, "leads.ui.catalog")
+        assert outcome.ok, outcome
+        return [r for r in outcome.result.items if r["kind"] == "jobfeed"]  # type: ignore[union-attr]
+
+    on = [{"kind": "jobfeed", "loopback": False, "pending": False}]
+    assert markers(c.owner) == on  # on + connected
+    assert markers(member) == on
+    capability(intake, c.owner, False)
+    assert markers(c.owner) == [{"kind": "jobfeed", "revoke_only": True}]
+    assert markers(member) == []
+    # Authorization required is not revoked: revoke stays offered.
+    set_connection(c.owner, authorization_state="authorization_required")
+    assert markers(c.owner) == [{"kind": "jobfeed", "revoke_only": True}]
+    set_connection(c.owner, authorization_state="connected")
+    assert upstream(revoke(intake, c.owner)) == "revoked"
+    assert markers(c.owner) == []  # off + revoked
+    assert markers(member) == []
+    capability(intake, c.owner, True)
+    assert markers(c.owner) == on  # on + revoked: reconnect is offered
+
+
 # --- AC 27, FR 24: no tool in either state; the catalog row only while on ----------
 
 
@@ -1141,8 +1264,7 @@ def test_no_tool_exists_for_the_five_operations_in_either_capability_state(
 
     capability(intake, c.owner, False)
     assert listed() == on
-    assert catalog_rows("jobfeed") == []
-    refused(revoke(intake, c.owner), "capability_disabled")
+    assert catalog_rows("jobfeed") == [{"kind": "jobfeed", "revoke_only": True}]
     refused(select_account(intake, c.owner, ORG_ONE), "capability_disabled")
 
     capability(intake, c.owner, True)
