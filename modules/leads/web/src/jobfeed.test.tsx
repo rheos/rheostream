@@ -532,12 +532,13 @@ describe("job feed collector states", () => {
       expect(visible(html)).not.toContain(code);
     },
   );
-  it("has exactly the eight collector health codes", () => {
+  it("has exactly the nine collector health codes", () => {
     expect(Object.keys(HEALTH_LABELS).sort()).toEqual([
       "account_selection_required",
       "authorization_required",
       "collection_partial",
       "endpoint_misconfigured",
+      "refresh_token_unsaved",
       "registration_failed",
       "token_refresh_failed",
       "upstream_rate_limited",

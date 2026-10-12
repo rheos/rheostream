@@ -46,6 +46,7 @@ COLLECTOR_HEALTH_CODES: Final = frozenset(
     {
         "authorization_required",
         "token_refresh_failed",
+        "refresh_token_unsaved",
         "account_selection_required",
         "upstream_unavailable",
         "upstream_rate_limited",

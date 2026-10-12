@@ -14,8 +14,12 @@ The steps: read the connection and decide whether to run; claim the run; refresh
 the access token once, as the stored client, with a forced lease extension before
 the call. A rotated refresh token is switched by compare-and-set before the old file
 is discarded; a lost compare-and-set (a revoke or reconnect won) revokes the freshly
-minted token and discards its file. A terminal answer makes the connection need a
-reconnect; a rejected client is also cleared, and the worker never registers one.
+minted token and discards its file. A compare-and-set that fails is retried once;
+if that fails too, the minted token is kept on disk, never revoked, and the run ends
+``refresh_token_unsaved`` (:func:`_rotate`). A rotated token whose file could not be
+written leaves the stored one presumed dead, so that is terminal. A terminal answer
+makes the connection need a reconnect; a rejected client is also cleared, and the
+worker never registers one.
 
 Then the MCP session: ``initialize``, the ``initialized`` notification and
 ``list_accounts``, each between a forced and an ordinary checkpoint. The fresh
@@ -123,6 +127,8 @@ UPSTREAM_RATE_LIMITED: Final = "upstream_rate_limited"
 UPSTREAM_UNAVAILABLE: Final = "upstream_unavailable"
 ACCOUNT_SELECTION_REQUIRED: Final = "account_selection_required"
 COLLECTION_PARTIAL: Final = "collection_partial"
+REFRESH_TOKEN_UNSAVED: Final = "refresh_token_unsaved"
+TOKEN_SWITCH_FAILED_LOG: Final = "jobfeed_token_switch_failed %s"
 
 
 class CollectPayload(BaseModel):
@@ -505,6 +511,10 @@ def _collect(
 def _failed(failure: OAuthFailure) -> Outcome:
     if failure.terminal:
         return Terminal(client_rejected=failure.code == "client_rejected")
+    if failure.code == "secret_write_failed":
+        # A refresh raises it only after the provider rotated: the stored token
+        # was spent on this refresh and is presumed dead, and the new one is lost.
+        return Terminal()
     if failure.code == ENDPOINT_MISCONFIGURED:
         return Transient(ENDPOINT_MISCONFIGURED)
     if failure.code == "rate_limited":
@@ -549,7 +559,7 @@ def _refresh(
         if rotated is not None:
             oauth.discard(rotated)
         raise TypeError("refresh returned no access token")
-    goes_on = rotated is None or _rotate(token, run, current, rotated)
+    goes_on = rotated is None or _rotate(uow, token, run, current, rotated)
     _reraise(stopped)
     return access if goes_on else None
 
@@ -571,7 +581,9 @@ def _reraise(*raised: Exception | None) -> None:
             raise error
 
 
-def _rotate(token: CancellationToken, run: _Run, old: str, new: str) -> bool:
+def _rotate(
+    uow: HandlerUnitOfWork, token: CancellationToken, run: _Run, old: str, new: str
+) -> bool:
     """Switch to the rotated reference; whether the run goes on.
 
     Won: the old file goes only after the switch committed, and the run's guard
@@ -581,16 +593,24 @@ def _rotate(token: CancellationToken, run: _Run, old: str, new: str) -> bool:
     discard; it is raised once both are done.
 
     Failed: the switch raised, and its commit may or may not have applied. What
-    the row references, re-read in a fresh unit, decides: a row that references
-    the new file took the switch, so the run goes on as won; otherwise the minted
-    token is revoked and its file discarded, the old file is discarded only when
-    the row no longer references it, and the failure is raised. If even the
-    re-read fails, nothing is discarded.
+    the row references, re-read in a fresh unit, decides. The new file: the switch
+    took, and the run goes on as won. The old file at the run's generation: nothing
+    moved, so the switch is tried once more in a fresh unit, and its answer counts
+    as the first one's would have. Anything else (a revoke or reconnect won): the
+    minted token is revoked and its file discarded, the old file is discarded only
+    when the row no longer references it, and the failure is raised.
+
+    Stranded: the retry raised too, or the re-read did. A provider that rotates on
+    use has already spent the old token, so revoking the new one could leave the
+    connection holding nothing that works. The minted file is kept and nothing is
+    revoked or discarded; the run ends ``refresh_token_unsaved`` through
+    :func:`_end`, whose guard writes nothing if the switch did take after all.
     """
     deps = dependencies()
     connection_id = run.connection.connection_id
-    try:
-        won = switch_token(
+
+    def switch() -> bool:
+        return switch_token(
             run.job_ctx,
             connection_id=connection_id,
             old_ref=old,
@@ -598,24 +618,49 @@ def _rotate(token: CancellationToken, run: _Run, old: str, new: str) -> bool:
             generation=run.generation,
             now=deps.now(),
         )
+
+    def won() -> bool:
+        oauth.discard(old)
+        run.generation += 1
+        return True
+
+    try:
+        switched = switch()
     except Exception as error:
         failure = error
     else:
-        if won:
-            oauth.discard(old)
-            run.generation += 1
-            return True
+        if switched:
+            return won()
         _reraise(*_retire_minted(token, run, new))
         return False
-    current = current_token(run.job_ctx, connection_id=connection_id)
+    try:
+        current = current_token(run.job_ctx, connection_id=connection_id)
+    except Exception:
+        return _stranded(uow, run, failure)
     if current is not None and current[0] == new:
         oauth.discard(old)
         run.generation = current[1]
         return True
+    if current == (old, run.generation):
+        try:
+            switched = switch()
+        except Exception:
+            return _stranded(uow, run, failure)
+        if switched:
+            return won()
+        _reraise(*_retire_minted(token, run, new))
+        return False
     stops = _retire_minted(token, run, new)
     if current is None or current[0] != old:
         oauth.discard(old)
     _reraise(failure, *stops)
+    return False
+
+
+def _stranded(uow: HandlerUnitOfWork, run: _Run, failure: Exception) -> bool:
+    """End a run whose rotated token could not be switched to, keeping its file."""
+    _log.warning(TOKEN_SWITCH_FAILED_LOG, type(failure).__name__)
+    _end(uow, run, Transient(REFRESH_TOKEN_UNSAVED))
     return False
 
 

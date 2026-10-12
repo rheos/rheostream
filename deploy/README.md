@@ -832,12 +832,13 @@ selected account and the account choices, and the last completed run's nine coun
 `next_run_not_before` is the later of the backoff's earliest start and the last run's
 start plus 60 minutes, or empty when neither applies.
 
-The collector writes eight health codes to `last_error`:
+The collector writes nine health codes to `last_error`:
 
 | Code | Meaning |
 | --- | --- |
-| `authorization_required` | The connection needs a reconnect: the refresh token was refused or is missing, the provider refused the access token, the client was rejected, or the owner revoked. On a connected feed it means only that a reconnect did not finish. |
+| `authorization_required` | The connection needs a reconnect: the refresh token was refused or is missing, the provider rotated the refresh token and the new one could not be written (the old one is presumed spent), the provider refused the access token, the client was rejected, or the owner revoked. On a connected feed it means only that a reconnect did not finish. |
 | `token_refresh_failed` | The refresh failed in a way that may pass. Backoff applies. |
+| `refresh_token_unsaved` | The provider rotated the refresh token and the new one was written, but switching the connection to it failed twice. The connection keeps the old token, which a provider that rotates on use has already spent, so the next run may end `authorization_required`. The new token is neither revoked nor deleted. Backoff applies. |
 | `account_selection_required` | The owner must choose an account. No backoff. |
 | `upstream_unavailable` | The provider was unreachable, failed, or answered in an unexpected shape. Backoff applies. |
 | `upstream_rate_limited` | The provider rate-limited the run. Backoff applies, at least as long as its `Retry-After` up to the 24-hour cap. |
@@ -921,6 +922,11 @@ the operator or discovered from them over `https`.
   opportunity is gone a new one is created. Closing an
   opportunity, unlike erasing it, keeps the posting attached: later sightings refresh
   the closed opportunity.
+- A rotated refresh token whose switch failed twice (`refresh_token_unsaved`) stays on
+  disk, unreferenced, under the connection's `oauth/` directory. Revoking it could kill
+  the provider's whole grant, so the collector leaves it; nothing removes it later. The
+  host operator may delete it: it is any leaf there that `token_ref`, `client_secret_ref`
+  and `registration_token_ref` do not name.
 - No MCP tool exists for connect, reconnect, the callback completion, revoke, account
   selection or the health read. They work only for the owner on a browser session.
 

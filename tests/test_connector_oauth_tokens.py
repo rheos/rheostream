@@ -521,6 +521,21 @@ def test_a_failed_exchange_write_leaves_no_file(
     assert stored_files(root) == []
 
 
+@pytest.mark.parametrize("same", [True, False], ids=["same-token", "no-token"])
+def test_a_refresh_that_did_not_rotate_never_fails_to_write(
+    fake: FakeServer, root: Path, monkeypatch: pytest.MonkeyPatch, same: bool
+) -> None:
+    """A refresh's ``secret_write_failed`` is reachable only after a rotation: with
+    no new refresh token there is nothing to write, even on a broken store."""
+    ref = stored(REFRESH)
+    calls = _failing_create(monkeypatch, _write_errors(root)["refusal"])
+    fake.token = _json(200, token_document(refresh_token=REFRESH if same else None))
+    _, rotated = fake.refresh(ref)
+    assert rotated is None
+    assert calls == []
+    assert stored_files(root) == [file_for(root, ref)]
+
+
 def test_a_discard_failure_after_a_failed_write_is_swallowed_and_logged(
     fake: FakeServer,
     root: Path,

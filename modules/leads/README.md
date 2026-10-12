@@ -139,7 +139,8 @@ asks again. If no freelancer account is listed, reconnect with the login you use
 job search.
 
 **Reconnecting.** Reconnect when the state reads "Authorization required" (the provider
-refused the stored authorization or rejected this app's registration) or after the
+refused the stored authorization, renewed it in a way that could not be saved, or
+rejected this app's registration) or after the
 operator changes the provider's address. A rejected registration is replaced at the
 next reconnect, once. If a reconnect's registration fails or you decline at the
 provider, a connected feed keeps collecting with its existing authorization, and health says the last

@@ -75,7 +75,11 @@ a ``refresh_token`` (else ``no_refresh_token``, nothing written). A refresh toke
 written to a fresh leaf before its reference is returned; a refresh returns a new
 reference only when the token differs from the current one (constant-time compare),
 and a failed write is ``secret_write_failed`` with the current reference untouched.
-Retiring a superseded file is the caller's job, after its switch commits. A refresh
+A refresh that writes nothing cannot fail to write, so its ``secret_write_failed``
+always means the provider answered with a different refresh token; a provider that
+rotates on use has already spent the current one. Whether that is terminal is the
+caller's call. Retiring a superseded file is the caller's job, after its switch
+commits. A refresh
 whose current reference cannot be read is the terminal ``secret_unavailable`` with
 nothing sent. Mapping: a 400 or 401 ``invalid_client`` is the terminal
 ``client_rejected``; ``invalid_grant`` and ``unauthorized_client`` are terminal

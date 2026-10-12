@@ -78,6 +78,7 @@ export function JobFeedConnect({
 export const HEALTH_LABELS: Record<string, string> = {
   authorization_required: "Reconnect needed",
   token_refresh_failed: "Could not renew access",
+  refresh_token_unsaved: "Renewed access not saved",
   account_selection_required: "Choose an account",
   upstream_unavailable: "Provider unavailable",
   upstream_rate_limited: "Provider rate limit",

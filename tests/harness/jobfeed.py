@@ -322,15 +322,28 @@ class Tokens:
     The authorization-code grant carries a fresh ``refresh-marker-<uuid>`` unless
     ``refresh`` is false. A refresh grant carries a fresh one when ``rotating``, and
     none otherwise. Every value issued is kept in ``issued`` for leak checks.
+
+    ``reject_superseded`` (by default, whether ``rotating``) models a provider that
+    rotates on use: a refresh token that a rotating refresh grant was answered for
+    is spent, and presenting it again is a 400 ``invalid_grant``. It is spent
+    whether or not the caller stored the replacement.
     """
 
     refresh: bool = True
     rotating: bool = True
+    reject_superseded: bool | None = None
     issued: list[str] = field(default_factory=list)
+    superseded: set[str] = field(default_factory=set)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         form = parse_qs(request.content.decode("ascii"))
         grant = form.get("grant_type", [""])[0]
+        presented = form.get("refresh_token", [""])[0]
+        rejects = self.reject_superseded
+        if rejects is None:
+            rejects = self.rotating
+        if grant == "refresh_token" and rejects and presented in self.superseded:
+            return httpx.Response(400, json={"error": "invalid_grant"})
         access = f"access-marker-{uuid4()}"
         document: dict[str, Any] = {"token_type": "Bearer", "access_token": access}
         self.issued.append(access)
@@ -339,6 +352,8 @@ class Tokens:
         ):
             document["refresh_token"] = f"refresh-marker-{uuid4()}"
             self.issued.append(document["refresh_token"])
+            if grant == "refresh_token":
+                self.superseded.add(presented)
         return httpx.Response(200, json=document)
 
 
