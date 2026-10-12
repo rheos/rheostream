@@ -49,12 +49,16 @@ def catalog(ctx: WorkspaceContext, uow: UnitOfWork, m: c.Empty) -> c.ItemsOutput
             ).mappings()
         ]
         items.append({"kind": "pipeline", **dict(row), "stages": stages})
-    # Present only when on, so a workspace without job search receives nothing of it.
+    # Present only when on, except the owner's revoke-only marker below.
     if h.jobsearch_enabled(ctx, uow):
         items.append({"kind": "capability", "name": "jobsearch"})
         # The job feed controls' marker only: its state comes from the owner-only
         # health read, so this row carries no connection data or organization id.
         items.append(_jobfeed_marker(ctx, uow))
+    elif ctx.role is Role.OWNER and _revocable(uow):
+        # Off, an owner can still revoke a connection that is not revoked yet, so
+        # the marker offers that and nothing else; members never receive it.
+        items.append({"kind": "jobfeed", "revoke_only": True})
     if ctx.role is Role.OWNER:
         # Explicit projection excludes signing handles and identity policy.
         columns = [
@@ -100,6 +104,19 @@ def catalog(ctx: WorkspaceContext, uow: UnitOfWork, m: c.Empty) -> c.ItemsOutput
                 }
             )
     return c.ItemsOutput(items=items)
+
+
+def _revocable(uow: UnitOfWork) -> bool:
+    """Whether a job feed connection exists and is not already revoked."""
+    table = j.jobfeed_connection
+    return (
+        uow.connection.execute(
+            select(table.c.connection_id).where(
+                table.c.authorization_state != "revoked"
+            )
+        ).first()
+        is not None
+    )
 
 
 def _jobfeed_marker(ctx: WorkspaceContext, uow: UnitOfWork) -> dict[str, object]:

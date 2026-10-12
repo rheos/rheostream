@@ -274,24 +274,44 @@ export function JobFeedCollector({
           {finish ? (
             <FinishConnecting submit={shell.submit} pending={finish.pending} />
           ) : null}
-          {state === "revoked" ? null : (
-            <details className={styles.manualCapture}>
-              <summary>Revoke access</summary>
-              <p>
-                Revoking stops collection and ends this app&apos;s access to the
-                job feed. Opportunities already collected are kept.
-              </p>
-              <ActionForm
-                submit={shell.submit}
-                operation="leads.jobfeed.revoke"
-                button="Revoke access"
-                okCopy={REVOKE_COPY}
-                buttonClass="secondary"
-                fields={[]}
-              />
-            </details>
-          )}
+          {state === "revoked" ? null : <RevokeAccess submit={shell.submit} />}
         </>
+      ) : (
+        <p className={styles.meta}>Editing is unavailable in this view.</p>
+      )}
+    </>
+  );
+}
+
+/** Revoke behind a closed disclosure that states its consequence. */
+function RevokeAccess({ submit }: { submit: NonNullable<ShellApi["submit"]> }) {
+  return (
+    <details className={styles.manualCapture}>
+      <summary>Revoke access</summary>
+      <p>
+        Revoking stops collection and ends this app&apos;s access to the job
+        feed. Opportunities already collected are kept.
+      </p>
+      <ActionForm
+        submit={submit}
+        operation="leads.jobfeed.revoke"
+        button="Revoke access"
+        okCopy={REVOKE_COPY}
+        buttonClass="secondary"
+        fields={[]}
+      />
+    </details>
+  );
+}
+
+/** The job feed with job search turned off and a connection not yet revoked:
+ * revoke is the only control, so a feature turned off never keeps access live. */
+export function JobFeedRevokeOnly({ shell }: { shell: ShellApi }) {
+  return (
+    <>
+      <p>Job search is turned off, so collection is paused.</p>
+      {shell.submit ? (
+        <RevokeAccess submit={shell.submit} />
       ) : (
         <p className={styles.meta}>Editing is unavailable in this view.</p>
       )}

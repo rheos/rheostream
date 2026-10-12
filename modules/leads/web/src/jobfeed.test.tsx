@@ -612,6 +612,82 @@ describe("job feed collector states", () => {
   });
 });
 
+describe("job feed with job search turned off", () => {
+  // The catalog's marker while off and a connection is not revoked yet. The
+  // loopback fields are never sent with it; here they prove they are ignored.
+  const OFF = { kind: "jobfeed", revoke_only: true } as const;
+  const OFF_LOOPBACK = { ...OFF, loopback: true, pending: true };
+  const choosing = ok({
+    last_accepted_at: "2026-01-02T00:00:00Z",
+    last_error: "account_selection_required",
+    collector: {
+      authorization_state: "connected",
+      organization_id: null,
+      account_choices: [{ organization_id: ORGANIZATION_ID, label: "Studio" }],
+    },
+  });
+  function revokeOnly(html: string) {
+    expect(html.match(/<h2>Job feed<\/h2>/g)).toHaveLength(1);
+    expect(html).toContain(
+      "<p>Job search is turned off, so collection is paused.</p>",
+    );
+    const disclosure =
+      html.match(
+        /<details[^>]*><summary>Revoke access<\/summary>[\s\S]*?<\/details>/,
+      )?.[0] ?? "";
+    expect(disclosure).not.toMatch(/<details[^>]* open/);
+    expect(disclosure).toContain("Revoking stops collection");
+    expect(html.match(/>Revoke access<\/button>/g)).toHaveLength(1);
+    // The one form on the card is revoke's (the collector's routing is advanced).
+    expect(forms(block(html))).toHaveLength(1);
+    for (const text of [
+      "Connect job feed",
+      'name="pipeline_ref"',
+      "Reconnect",
+      "Finish connecting",
+      'name="address"',
+      "Choose a freelancer account",
+      'name="organization_id"',
+      "Use this account",
+      "Last run",
+      "Last completed check",
+      'value="job_search"',
+    ])
+      expect(html).not.toContain(text);
+    expect(visible(html)).not.toContain(ORGANIZATION_ID);
+  }
+  it("offers only revoke on the collector's card", async () => {
+    for (const marker of [OFF, OFF_LOOPBACK]) {
+      const html = await page([services, jobs, marker, pollConnection], choosing);
+      revokeOnly(html);
+      // The intake facts and routing of the connection stay, as for any card.
+      expect(block(html)).toContain("<h3>Intake</h3>");
+      expect(block(html)).toContain("Last accepted");
+      expect(block(html)).toContain("advanced routing");
+    }
+  });
+  it("offers only revoke even before the collector's intake row is listed", async () => {
+    revokeOnly(await page([services, jobs, OFF_LOOPBACK]));
+  });
+  it("renders nothing of the job feed without the marker", async () => {
+    // Off with no connection, or one already revoked: the catalog sends no marker.
+    const none = await page([services, jobs]);
+    expect(none).not.toContain("Job feed");
+    expect(none).not.toContain("leads.jobfeed");
+    const revoked = await page([services, jobs, pollConnection], collectorHealth);
+    expect(revoked).not.toContain("Revoke access");
+    expect(revoked).not.toContain("collection is paused");
+  });
+  it("shows a member nothing of it", async () => {
+    const member = { ...shell({ "leads.ui.catalog": ok({ items: [OFF] }) }), role: "member" };
+    const html = renderToStaticMarkup(
+      await screens.connections({ shell: member, query: {} }),
+    );
+    expect(html).not.toContain("Revoke access");
+    expect(html).not.toContain("Job feed");
+  });
+});
+
 describe("finishing a pasted sign-in", () => {
   const LOOPBACK_PENDING = [
     { kind: "capability", name: "jobsearch" },
