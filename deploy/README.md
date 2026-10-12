@@ -627,7 +627,7 @@ reconnect, the callback) and `worker` (collection); a Coolify deployment attache
 
 ```
 RHEO__connectors__oauth_client__enabled=true
-RHEO__connectors__oauth_client__client_name=Rheo Stream
+RHEO__connectors__oauth_client__client_name=rheoStream
 RHEO__connectors__oauth_client__redirect=identity
 RHEO__connectors__oauth_client__loopback_port=33419
 RHEO__leads__jobfeed__resource_url=https://mcp.example.com/mcp
@@ -640,7 +640,7 @@ RHEO__leads__jobfeed__job_hosts=jobs.example.com
   callback route answers 404. The same holds in the `identity` redirect mode while
   `routing.identity.path` is anything but the default `/auth`. A deployment that has
   not opted in sends nothing to any registration endpoint.
-- `connectors.oauth_client.client_name` (default `Rheo Stream`) is the `client_name`
+- `connectors.oauth_client.client_name` (default `rheoStream`) is the `client_name`
   sent in the registration request, and is used nowhere else.
 - `connectors.oauth_client.redirect` (default `identity`) picks where the provider
   sends the owner's browser after consent: `identity` or `loopback` (see the next

@@ -72,7 +72,7 @@ TIMEOUT: Final = httpx.Timeout(5.0)
 chunk, which is what bounds a request to its budget plus one read."""
 
 MCP_PROTOCOL_VERSION: Final = "2025-06-18"
-CLIENT_NAME: Final = "Rheo Stream"
+CLIENT_NAME: Final = "rheoStream"
 INITIALIZE_REQUEST_ID: Final = 1
 
 INITIALIZE_BODY: Final[bytes] = json.dumps(

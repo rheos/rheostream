@@ -669,7 +669,7 @@ def test_the_initialize_body_is_one_json_rpc_initialize_request() -> None:
     params = message["params"]
     assert isinstance(params["protocolVersion"], str) and params["protocolVersion"]
     assert params["capabilities"] == {}
-    assert params["clientInfo"]["name"] == "Rheo Stream"
+    assert params["clientInfo"]["name"] == "rheoStream"
     assert set(message) == {"jsonrpc", "id", "method", "params"}
 
 

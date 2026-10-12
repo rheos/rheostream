@@ -111,7 +111,7 @@ abandoned_client_minutes = 60
 # only loopback redirect URIs; the owner pastes the address back into the module).
 [connectors.oauth_client]
 enabled = false
-client_name = "Rheo Stream"
+client_name = "rheoStream"
 redirect = "identity"
 loopback_port = 33419
 
