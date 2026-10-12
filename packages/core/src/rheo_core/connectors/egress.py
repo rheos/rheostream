@@ -125,7 +125,8 @@ def retry_after_seconds(headers: httpx.Headers) -> int | None:
         return None
     if value is None or not _RETRY_AFTER.fullmatch(value):
         return None
-    return int(value) if len(value) <= 9 else _RETRY_AFTER_MAX
+    digits = value.lstrip("0") or "0"
+    return int(digits) if len(digits) <= 9 else _RETRY_AFTER_MAX
 
 
 def default_resolver(host: str) -> Sequence[str]:

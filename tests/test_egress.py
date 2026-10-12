@@ -671,3 +671,24 @@ def test_the_initialize_body_is_one_json_rpc_initialize_request() -> None:
     assert params["capabilities"] == {}
     assert params["clientInfo"]["name"] == "Rheo Stream"
     assert set(message) == {"jsonrpc", "id", "method", "params"}
+
+
+@pytest.mark.parametrize(
+    ("header", "seconds"),
+    [
+        ("30", 30),
+        ("0", 0),
+        ("0000000001", 1),
+        ("000000000000000", 0),
+        ("999999999", 999_999_999),
+        ("1000000000", 999_999_999),
+        ("00001000000000", 999_999_999),
+        ("Wed, 21 Oct 2026 07:28:00 GMT", None),
+        ("-5", None),
+        ("", None),
+    ],
+)
+def test_retry_after_reads_seconds_before_capping(
+    header: str, seconds: int | None
+) -> None:
+    assert egress.retry_after_seconds(httpx.Headers({"Retry-After": header})) == seconds
