@@ -433,9 +433,9 @@ def test_an_identical_reload_is_not_a_replacement(
 
 
 def test_the_shipped_recallatron_manifest_passes_the_prefix_rule() -> None:
-    """Recallatron is the one shipped module with a ``rheo.modules`` entry point
-    (``relationships``, ``leads`` and ``current`` publish none), and it declares tools
-    and job kinds, so it is the manifest the new rule has to admit."""
+    """Recallatron declares both tools and job kinds, so it is the shipped manifest
+    the rule has to admit on both counts (``relationships``, ``leads`` and
+    ``current`` declare tools but no job kinds)."""
     from rheo_recallatron import MANIFEST
 
     check_name_prefixes(

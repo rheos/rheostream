@@ -525,10 +525,11 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 | `recallatron.rheo.stream` | Permanent redirect to the same path and query on `recall.` | Reverse-proxy configuration in `deploy/compose.flagship.yaml`. Not an application host: nothing the application generates links to it (issue #158). |
 
 **What the flagship serves today.** Run 0d deployed the reference instance with
-`deploy/compose.flagship.yaml` (PR #144). It routes `circuit.`, `auth.`, `recall.`, `api.` and
-`mcp.`, plus the `recallatron.` and `app.` redirects. `leads.`, `current.` and `relationships.`
-have no module behind them yet, so the overlay routes none of them; `docs.` is not configured
-either. The apex serves the project page from elsewhere.
+`deploy/compose.flagship.yaml` (PR #144). It routes `circuit.`, `auth.`, `recall.`, `leads.`,
+`current.`, `api.` and `mcp.`, plus the `recallatron.` and `app.` redirects. Relationships has no
+web surface, so `relationships.` is not routed; `docs.` is not configured either. A routed module
+host shows a module's screens only in a workspace that has installed and enabled that module. The
+apex serves the project page from elsewhere.
 
 Subdomain mode needs wildcard DNS (`*.rheo.stream` to the proxy) and a wildcard certificate for
 one label; the proxy terminates TLS for every host in the table. Single-host path mode needs one

@@ -51,7 +51,7 @@ retried is idempotent on a unique index it already has
 `handoff.state` and `result_ref` from the operation record and displays the work's state through
 the record resolver, never a second editable copy. If a preset then needs to name a destination,
 a `preset_handoff(preset_id, version, destination_ref)` table arrives in the same Leads
-migration; release one ships neither. Completing a task publishes `current.task.completed`,
+migration; release one ships neither. Completing a work item publishes `current.item.completed`,
 which no other module may treat as a domain outcome.
 
 **A CI assertion changes here.** Criterion 18's production-profile check asserts, through phase

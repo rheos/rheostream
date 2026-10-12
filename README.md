@@ -22,8 +22,9 @@ The core, worker, shell, Recallatron, module install/enable and Claude CLI adapt
 are implemented. Relationships owns shared party identity; Leads supports durable
 intake, configurable opportunity pipelines, permissions and tracked handoffs through
 operations and MCP. Their UI and authenticated intake transports remain separate
-work. Current, connectors, channels, packs and module disable/remove/purge are
-unimplemented. Modules are trusted code,
+work. Current tracks work items, projects, dependencies and areas through operations
+and MCP; its screens are next. Connectors, channels, packs and module
+disable/remove/purge are unimplemented. Modules are trusted code,
 not sandboxed plugins. Job enqueue spans two databases without a shared transaction:
 a crash between writes can delay discovery until reconciliation. The
 [architecture tour](docs/architecture/code-tour.md) documents recovery and its limits.
@@ -94,7 +95,7 @@ MiniLM-L6-v2) that need no credential or network call. The flagship runs the loc
 embedding provider. Read-only screens cover browse, search, item detail and possible
 duplicates.
 
-**Not built yet.** Leads, Current and Relationships are stubs. Module disable, remove and
+**Not built yet.** Current has no screens yet. Module disable, remove and
 purge are designed but not built. Enqueueing a job still spans two databases (the job row
 in the workspace database, its due mark in the control database), so a crash between them
 leaves the job waiting for the reconcile pass. `connectors/`, `channels/` and `packs/` mark

@@ -225,7 +225,7 @@ The release-one operations and their roles are listed in the document that owns 
 | `core.workspace.export`, `.digest` | mutate, long-running; read | owner, operator |
 | `core.workspace.restore` | mutate, long-running | owner, operator. A restore into a workspace the control plane does not yet know goes through the operator CLI, `rheo workspace restore <artifact>`, which provisions the artifact's recorded workspace |
 | `core.runtime.run` | mutate, long-running | owner, member, operator ([runtime](runtime-and-mcp.md#runtime-contract-version-1)) |
-| `core.record.delete` | destructive | the record type's `delete_roles`: owner, member for `recallatron.memory`; owner for `leads.observation`, `leads.opportunity`, `relationships.party` once phase three ships them |
+| `core.record.delete` | destructive | the record type's `delete_roles`: owner, member for `recallatron.memory`; owner for `leads.observation`, `leads.opportunity`, `relationships.party`, `current.item`, `current.project` |
 
 Registration rules the core enforces at startup (criterion 18, criterion 14, criterion 6):
 
@@ -589,9 +589,9 @@ never installed. Structurally that holds because:
 - The composition root reads `modules.installed` from configuration. The absence proof compares
   two configurations node by node: Recallatron remains installed on disk while the setting is
   empty, then a detached checkout removes the distribution before syncing and running the same
-  phase-one demonstrators. `relationships`, `leads`, and `current` are placeholder
-  distributions that publish no `rheo.modules` entry point, so naming them would be equivalent
-  to naming no installed module here.
+  phase-one demonstrators. `relationships`, `leads` and `current` publish `rheo.modules` entry
+  points, but `modules.installed` names none of them in that comparison, so the loader admits
+  none and the phase-one demonstrators run with no domain module present.
 - `leads`, once phase three builds it, declares `recallatron` as an optional dependency and
   calls it only through `ctx.enabled_modules` checks around a registered operation name, never
   an import.

@@ -2,7 +2,14 @@
 name = "rheo-current"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = ["rheo-core", "rheo-contracts"]
+
+[project.entry-points."rheo.modules"]
+current = "rheo_current:MANIFEST"
+
+[tool.uv.sources]
+rheo-core = { workspace = true }
+rheo-contracts = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
