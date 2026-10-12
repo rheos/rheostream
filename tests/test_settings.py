@@ -118,7 +118,7 @@ PRODUCTION_KEYS = {
     "identity.oauth.registrations_per_source_per_hour": 30,
     "identity.oauth.abandoned_client_minutes": 60,
     "connectors.oauth_client.enabled": False,
-    "connectors.oauth_client.client_name": "Rheo Stream",
+    "connectors.oauth_client.client_name": "rheoStream",
     "connectors.oauth_client.redirect": "identity",
     "connectors.oauth_client.loopback_port": 33419,
     "internal.secret_ref": "",

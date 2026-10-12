@@ -859,7 +859,7 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         scope=Scope.DEPLOYMENT,
         floor=None,
         explicit_per_workspace=False,
-        default="Rheo Stream",
+        default="rheoStream",
     ),
     # Where the provider sends the owner's browser after consent. ``identity`` is the
     # identity-host callback route; ``loopback`` registers
