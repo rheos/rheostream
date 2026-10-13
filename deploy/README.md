@@ -957,7 +957,7 @@ collector makes then logs one INFO line on the `rheo_core.connectors.mcp_trace` 
 in the worker's JSON log output:
 
 ```
-mcp_trace method=initialize tool=- action=- status=200 egress=- content_type=text/event-stream session_id=true protocol=2025-06-18 rpc_error=- is_error=- tool_code=- events=1 bytes=412 outcome=ok
+mcp_trace method=initialize tool=- action=- status=200 egress=- content_type=text/event-stream session_id=true protocol=2025-06-18 rpc_error=- is_error=- tool_code=- events=1 bytes=412 outcome=ok error_text=-
 ```
 
 - `method` is the JSON-RPC method; for `tools/call`, `tool` and `action` are the tool
@@ -974,9 +974,13 @@ mcp_trace method=initialize tool=- action=- status=200 egress=- content_type=tex
   `tool_code` describe a tool result that set `isError`.
 - `events` and `bytes` count the event-stream events and body bytes read.
 - `outcome` is `ok` or the code the client mapped the request to.
+- `error_text` is the server's own short message when it answers 4xx with
+  `text/plain`: at most 120 printable characters, quoted, with the request's token,
+  session id and any long token-shaped run replaced by `[redacted]`. Every other response logs `-`;
+  JSON and event-stream bodies are never recorded.
 
 The line carries no secrets: no header value other than the media type, no body or
-message text, no token, URL, organization id, cursor or posting data. Turn it off again
+message text beyond that short plain-text error, no token, URL, organization id, cursor or posting data. Turn it off again
 when you have what you need; it adds a few lines per run and nothing else.
 
 ### Accepted residuals

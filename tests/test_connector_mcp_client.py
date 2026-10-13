@@ -971,9 +971,12 @@ def traced(caplog: pytest.LogCaptureFixture) -> list[dict[str, str]]:
             continue
         assert "example" not in text  # no URL, not even the host
         assert record.levelno == logging.INFO
-        head, *pairs = record.getMessage().split(" ")
+        message, error_text = record.getMessage().split(" error_text=", 1)
+        head, *pairs = message.split(" ")
         assert head == "mcp_trace"
-        lines.append(dict(pair.split("=", 1) for pair in pairs))
+        line = dict(pair.split("=", 1) for pair in pairs)
+        line["error_text"] = error_text
+        lines.append(line)
     return lines
 
 
@@ -1040,6 +1043,7 @@ def test_a_successful_json_session_logs_one_line_per_request(
         "events": "-",
         "bytes": init["bytes"],
         "outcome": "ok",
+        "error_text": "-",
     }
     assert int(init["bytes"]) > 0
     assert notify["method"] == "notifications/initialized"
@@ -1224,7 +1228,12 @@ def test_initialize_logs_the_returned_protocol_version(
             "application/json",
             "protocol",
         ),
-        (lambda r: httpx.Response(404, text=BODY), "404", "text/plain", "protocol"),
+        (
+            lambda r: httpx.Response(404, text="Not Found"),
+            "404",
+            "text/plain",
+            "protocol",
+        ),
     ],
     ids=["202", "200", "400", "404"],
 )
@@ -1364,3 +1373,100 @@ def test_refused_and_out_of_order_calls_log_nothing(
         mcp_failure(lambda: session.call_tool("find_jobs", SEARCH))
         mcp_failure(session.notify_initialized)
     assert traced(trace_on) == []
+
+
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_a_short_plain_text_4xx_records_its_text(
+    trace_on: pytest.LogCaptureFixture, status: int
+) -> None:
+    fake = marked_fake()
+    fake.tool = lambda r: httpx.Response(
+        status,
+        text="Bad request:\tunknown\nfield \x01 here",
+        headers={"content-type": "text/plain; charset=utf-8"},
+    )
+    failure = run_to_tool(fake)
+    assert failure is not None and failure.code == "protocol"
+    *_, tool = traced(trace_on)
+    assert tool["status"] == str(status)
+    assert tool["error_text"] == '"Bad request: unknown field here"'
+
+
+def test_a_long_plain_text_4xx_is_cut_to_the_limit(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    fake.tool = lambda r: httpx.Response(400, text="no such thing " * 40)
+    assert run_to_tool(fake) is not None
+    *_, tool = traced(trace_on)
+    expected = ("no such thing " * 40)[: mcp_client.ERROR_TEXT_LIMIT]
+    assert tool["error_text"] == '"' + expected + '"'
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        lambda r: httpx.Response(400, json={"error": "nope"}),
+        lambda r: httpx.Response(500, text="server broke"),
+        lambda r: httpx.Response(
+            400, text="data: x\n\n", headers={"content-type": "text/event-stream"}
+        ),
+    ],
+    ids=["json-4xx", "plain-5xx", "event-stream-4xx"],
+)
+def test_other_error_bodies_are_never_recorded(
+    trace_on: pytest.LogCaptureFixture,
+    response: Callable[[httpx.Request], httpx.Response],
+) -> None:
+    fake = marked_fake()
+    fake.tool = response
+    assert run_to_tool(fake) is not None
+    for line in traced(trace_on):
+        assert line["error_text"] == "-"
+
+
+@pytest.mark.parametrize(
+    "echo",
+    [
+        lambda: "Bearer " + ACCESS,
+        lambda: ACCESS,
+        lambda: "session " + SESSION,
+        lambda: "ref abcdefghijklmnopqrstuvwxyz0123",
+    ],
+    ids=["header", "token", "session", "long-run"],
+)
+def test_a_plain_text_error_echoing_a_credential_is_redacted(
+    trace_on: pytest.LogCaptureFixture, echo: Callable[[], str]
+) -> None:
+    fake = marked_fake()
+    text = "Rejected: " + echo()
+    fake.tool = lambda r: httpx.Response(400, text=text)
+    assert run_to_tool(fake) is not None
+    *_, tool = traced(trace_on)
+    assert mcp_client.REDACTED in tool["error_text"]
+    assert tool["error_text"].startswith('"Rejected:')
+    assert "abcdefghijklmnopqrstuvwxyz0123" not in tool["error_text"]
+
+
+def test_a_short_session_id_echoed_in_an_error_is_redacted(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = FakeMcp()
+    fake.session_id = "s3x7q9"
+    fake.tool = lambda r: httpx.Response(400, text="Unknown session s3x7q9 here")
+    assert run_to_tool(fake) is not None
+    *_, tool = traced(trace_on)
+    assert "s3x7q9" not in tool["error_text"]
+    assert mcp_client.REDACTED in tool["error_text"]
+
+
+def test_a_credential_across_the_cut_is_redacted_before_cutting(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    lead = "a " * ((mcp_client.ERROR_TEXT_LIMIT - 10) // 2)
+    fake.tool = lambda r: httpx.Response(400, text=lead + ACCESS)
+    assert run_to_tool(fake) is not None
+    *_, tool = traced(trace_on)
+    assert ACCESS[:6] not in tool["error_text"]
+    assert len(json.loads(tool["error_text"])) <= mcp_client.ERROR_TEXT_LIMIT
