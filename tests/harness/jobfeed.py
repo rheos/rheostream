@@ -980,8 +980,15 @@ class FakeMcpServer:
         return [
             (str(arguments_of(r).get("action")), dict(arguments_of(r).get("params")))
             for r in self.requests
-            if script_name(_mcp_key(r)).startswith("find_jobs")
+            if script_name(self._logical_key(r)).startswith("find_jobs")
         ]
+
+    def _logical_key(self, request: httpx.Request) -> McpKey:
+        """The request's key with the configured tool prefix removed."""
+        method, tool, action = _mcp_key(request)
+        if tool is not None and self.tool_prefix:
+            tool = tool.removeprefix(self.tool_prefix)
+        return (method, tool, action)
 
     def find_jobs_starts(self) -> list[float]:
         return [at for name, at in self.starts if name.startswith("find_jobs")]
