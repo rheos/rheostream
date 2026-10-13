@@ -37,7 +37,9 @@ allowlist is a one-line change to `_ALLOWED_BARE` here, which is the review poin
 
 - a free reference to `fetch`, `XMLHttpRequest`, `WebSocket`, `WebSocketStream`,
   `EventSource`, `WebTransport`, `RTCPeerConnection`, `Worker`, `SharedWorker`,
-  `importScripts`, `navigator` or `cookieStore`, including `(0, fetch)`;
+  `importScripts`, `navigator` or `cookieStore`, including `(0, fetch)`. The one
+  exception is a call to `navigator.clipboard.writeText(…)`, which a copy button
+  needs and which sends and reads nothing;
 - a free reference to `process` (so `process.env`, `const { env } = process`,
   `{ ...process }`);
 - `globalThis`, `eval` and `Function`, which reach any of the above by computed name;
@@ -182,6 +184,9 @@ _FORBIDDEN_FREE = {
     "__proto__": "reaches a prototype (__proto__)",
     "dangerouslySetInnerHTML": "injects raw HTML, which can carry a script",
 }
+# The one navigator call a module may make: writing text the user asked to copy.
+# It sends nothing anywhere and reads nothing back, unlike sendBeacon or readText.
+_CLIPBOARD_WRITE = re.compile(r"\s*\.\s*clipboard\s*\.\s*writeText\s*\(")
 # Names that hold the global object. Each may still be a local's name, so a plain
 # member access to an unlisted name (`window.items`) passes; see _code_findings.
 _GLOBAL_OBJECTS = ("window", "self", "global", "top", "parent", "frames", "opener")
@@ -353,6 +358,8 @@ def _code_findings(relative: str, keep: str, code: str) -> list[str]:
 
     for name, reason in _FORBIDDEN_FREE.items():
         for match in re.finditer(r"(?<![\w$])" + re.escape(name) + r"(?![\w$])", code):
+            if name == "navigator" and _CLIPBOARD_WRITE.match(code, match.end()):
+                continue  # `navigator.clipboard.writeText(text)` for a copy button
             if _free(code, match.start()):
                 add(match.start(), reason)
 
@@ -676,6 +683,8 @@ _PLANTED = {
     "websocket.ts": "export const w = (u: string) => new WebSocket(u);\n",
     "eventsource.ts": "export const e = (u: string) => new EventSource(u);\n",
     "beacon.ts": "export const b = (u: string) => navigator.sendBeacon(u, '');\n",
+    "clipboard-read.ts": "export const r = () => navigator.clipboard.readText();\n",
+    "clipboard-alias.ts": "const c = navigator.clipboard;\nexport default c;\n",
     "process-env.ts": "export const secret = process.env.RHEO_INTERNAL_SECRET;\n",
     "process-destructure.ts": "const { env } = process;\nexport default env;\n",
     "document-cookie.ts": "export const c = () => document.cookie;\n",
@@ -799,6 +808,9 @@ _NEAR_MISSES = {
         "};\n"
     ),
     "relative-ok.ts": 'export { helper } from "./helpers/index";\n',
+    "copy-button.ts": (
+        "export const copy = (t: string) => navigator.clipboard.writeText(t);\n"
+    ),
     # A class constructor, layout keys and type members named like globals, a
     # ternary-free annotation, and timers given a function.
     "shapes.tsx": (

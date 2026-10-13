@@ -57,6 +57,7 @@ export function pageOffset(value: string | undefined): number {
 }
 const READS = [
   "leads.ui.catalog",
+  "leads.ui.queue",
   "leads.opportunity.list",
   "leads.opportunity.get",
   "leads.qualification.list",

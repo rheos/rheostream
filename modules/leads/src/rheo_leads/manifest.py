@@ -178,10 +178,12 @@ MANIFEST = ModuleManifest(
         surface=WebSurface(surface="leads", host="leads", path="/leads"),
         package_name="@rheo-stream/leads-web",
         navigation=(NavigationEntry(id="leads", label="Leads", path="/"),),
+        # The job queue is the landing screen; the opportunity table moved below it.
         routes=tuple(
             WebRoute(id=name, path=path, screen=name)
             for name, path in (
-                ("list", "/"),
+                ("queue", "/"),
+                ("list", "/opportunities"),
                 ("board", "/board"),
                 ("detail", "/detail"),
                 ("capture", "/capture"),

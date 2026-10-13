@@ -334,3 +334,11 @@
   min-height: var(--rs-size-control);
   color: var(--rs-color-ink-dim);
 }
+.srOnly {
+  position: absolute;
+  width: var(--rs-size-hairline);
+  height: var(--rs-size-hairline);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

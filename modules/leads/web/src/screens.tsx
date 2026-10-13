@@ -9,12 +9,15 @@ import {
   JobFeedCollector,
   JobFeedConnect,
   JobFeedRevokeOnly,
+  jobSearchPipelines,
 } from "./jobfeed-panel";
+import { JobHeader, JobQueue, type Choice } from "./queue-view";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import {
   data,
   date,
+  JOBSEARCH_PRESET_ID,
   items,
   label,
   pageOffset,
@@ -27,6 +30,7 @@ import {
 import styles from "./leads.module.css";
 
 const NAV = [
+  ["queue", "Job queue"],
   ["list", "Opportunities"],
   ["board", "Pipeline"],
   ["capture", "Capture inquiry"],
@@ -37,27 +41,32 @@ function Frame({
   active,
   title,
   description,
+  bare = false,
   children,
 }: {
   shell: ShellApi;
   active: string;
   title: string;
   description?: string;
+  /** The children draw their own heading below the navigation. */
+  bare?: boolean;
   children: ReactNode;
 }) {
   return (
     <section className={styles.surface}>
-      <header className={styles.header}>
-        <div>
-          <h1 className={styles.heading}>{title}</h1>
-          {description ? <p className={styles.intro}>{description}</p> : null}
-        </div>
-        {active === "list" || active === "board" ? (
-          <a className={styles.primary} href={shell.href("capture")}>
-            Capture inquiry
-          </a>
-        ) : null}
-      </header>
+      {bare ? null : (
+        <header className={styles.header}>
+          <div>
+            <h1 className={styles.heading}>{title}</h1>
+            {description ? <p className={styles.intro}>{description}</p> : null}
+          </div>
+          {active === "list" || active === "board" ? (
+            <a className={styles.primary} href={shell.href("capture")}>
+              Capture inquiry
+            </a>
+          ) : null}
+        </header>
+      )}
       <nav className={styles.nav} aria-label="Leads">
         {NAV.filter(
           ([id]) => id !== "connections" || shell.role === "owner",
@@ -423,6 +432,142 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
     </Frame>
   );
 }
+/** How many cards one queue load may carry. */
+export const QUEUE_LIMIT = 100;
+/** The pipeline and stage selections a queue URL asks for, checked against the
+ * catalog: an unknown value falls back to the default rather than erroring. */
+export function queueScope(catalog: Row[], query: ScreenProps["query"]) {
+  const pipelines = catalog.filter((r) => r.kind === "pipeline");
+  const jobs = jobSearchPipelines(pipelines);
+  const others = pipelines.filter((p) => !jobs.includes(p));
+  const option = (p: Row): Choice => ({ value: str(p.id), label: str(p.name) });
+  const pipelineChoices: Choice[] = [
+    ...(jobs.length > 1 ? [{ value: "jobs", label: "All job search" }] : []),
+    ...jobs.map(option),
+    ...others.map(option),
+    { value: "all", label: "All pipelines" },
+  ];
+  const fallback =
+    jobs.length === 1 ? str(jobs[0]?.id) : jobs.length > 1 ? "jobs" : "all";
+  const asked = query.pipeline ?? "";
+  const pipeline = pipelineChoices.some((c) => c.value === asked)
+    ? asked
+    : fallback;
+  const scoped =
+    pipeline === "jobs"
+      ? jobs
+      : pipeline === "all"
+        ? pipelines
+        : pipelines.filter((p) => str(p.id) === pipeline);
+  const seen = new Map<string, string>();
+  for (const p of scoped)
+    for (const s of rows(p.stages))
+      if (!seen.has(str(s.stage_id)))
+        seen.set(str(s.stage_id), str(s.label) || label(s.stage_id));
+  const stageChoices: Choice[] = [
+    { value: "", label: "Open stages" },
+    ...[...seen].map(([value, text]) => ({ value, label: text })),
+    { value: "all", label: "All stages" },
+  ];
+  const stage = stageChoices.some((c) => c.value === query.stage)
+    ? (query.stage ?? "")
+    : "";
+  const jobsOnly = scoped.length > 0 && scoped.every((p) => jobs.includes(p));
+  return {
+    pipelines,
+    jobs,
+    scoped,
+    pipelineChoices,
+    stageChoices,
+    pipeline,
+    stage,
+    fallback,
+    jobsOnly,
+    input: {
+      pipeline_id: pipeline === "jobs" || pipeline === "all" ? null : pipeline,
+      jobsearch_only: pipeline === "jobs",
+      stage_id: stage === "" || stage === "all" ? null : stage,
+      include_closed: stage === "all",
+      limit: QUEUE_LIMIT,
+    },
+  };
+}
+export async function queue({ shell, query }: ScreenProps) {
+  const catalogResult = await read(shell, "leads.ui.catalog");
+  const scope = queueScope(items(catalogResult), query);
+  const result =
+    catalogResult.state === "ok"
+      ? await read(shell, "leads.ui.queue", scope.input)
+      : null;
+  const records = result ? items(result) : [];
+  const hrefs = Object.fromEntries(
+    records.map((r) => [str(r.id), shell.href("detail", { ref: str(r.ref) })]),
+  );
+  const names =
+    scope.scoped.length > 1
+      ? Object.fromEntries(scope.scoped.map((p) => [str(p.id), str(p.name)]))
+      : undefined;
+  const nothingYet = scope.jobs.length ? (
+    <p>
+      No jobs yet. New postings arrive from the job feed
+      {shell.role === "owner" ? (
+        <>
+          {" "}
+          once it is connected in{" "}
+          <a href={shell.href("connections")}>Connections</a>.
+        </>
+      ) : (
+        " once a workspace owner connects it."
+      )}
+    </p>
+  ) : (
+    <p>
+      No open opportunities yet.{" "}
+      {shell.role === "owner" ? (
+        <>
+          Create a pipeline with the Job search preset in{" "}
+          <a href={shell.href("connections")}>Connections</a>, or{" "}
+          <a href={shell.href("capture")}>capture an inquiry</a>.
+        </>
+      ) : (
+        <a href={shell.href("capture")}>Capture an inquiry</a>
+      )}
+    </p>
+  );
+  return (
+    <Frame shell={shell} active="queue" title="Job queue" bare>
+      {catalogResult.state !== "ok" ? (
+        <>
+          <h1 className={styles.srOnly}>Job queue</h1>
+          <Failure outcome={catalogResult} />
+        </>
+      ) : result && result.state !== "ok" ? (
+        <>
+          <h1 className={styles.srOnly}>Job queue</h1>
+          <Failure outcome={result} />
+        </>
+      ) : (
+        <JobQueue
+          items={records}
+          now={Date.now()}
+          pipelines={scope.pipelineChoices}
+          stages={scope.stageChoices}
+          pipeline={scope.pipeline}
+          stage={scope.stage}
+          explicit={query.pipeline !== undefined || query.stage !== undefined}
+          filtered={scope.pipeline !== scope.fallback || scope.stage !== ""}
+          action={shell.href("queue")}
+          hrefs={hrefs}
+          pipelineNames={names}
+          noun={scope.jobsOnly ? ["job", "jobs"] : ["opportunity", "opportunities"]}
+          limited={records.length >= QUEUE_LIMIT}
+          nothingYet={nothingYet}
+          submit={shell.submit}
+        />
+      )}
+    </Frame>
+  );
+}
 export async function capture({ shell }: ScreenProps) {
   const result = await read(shell, "leads.ui.catalog"),
     catalog = items(result);
@@ -594,6 +739,12 @@ export async function detail({ shell, query }: ScreenProps) {
     result.state === "ok"
       ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
       : null;
+  // A job-search opportunity gets the job header: its card projection, read once.
+  const jobResult =
+    result.state === "ok" && record.preset_id === JOBSEARCH_PRESET_ID
+      ? await read(shell, "leads.ui.queue", { ref: envelope.ref })
+      : null;
+  const job = jobResult ? items(jobResult)[0] : undefined;
   const ratingOptions = [
     { value: "needs_information", label: "Needs information" },
     { value: "high", label: "High" },
@@ -610,7 +761,9 @@ export async function detail({ shell, query }: ScreenProps) {
           ? `${str(row(record.stage).label)} · Updated ${date(record.updated_at)}`
           : undefined
       }
+      bare={job !== undefined}
     >
+      {job ? <JobHeader item={job} now={Date.now()} /> : null}
       {result.state !== "ok" ? (
         <Failure outcome={result} />
       ) : (

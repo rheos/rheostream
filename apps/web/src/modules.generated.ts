@@ -61,7 +61,8 @@ export const MODULES = [
       { id: "leads", label: "Leads", path: "/", roles: ["member", "owner"] },
     ],
     routes: [
-      { id: "list", path: "/", screen: leadsWeb.screens.list },
+      { id: "queue", path: "/", screen: leadsWeb.screens.queue },
+      { id: "list", path: "/opportunities", screen: leadsWeb.screens.list },
       { id: "board", path: "/board", screen: leadsWeb.screens.board },
       { id: "detail", path: "/detail", screen: leadsWeb.screens.detail },
       { id: "capture", path: "/capture", screen: leadsWeb.screens.capture },
@@ -100,6 +101,7 @@ export const MODULES = [
       "leads.pipeline.list",
       "leads.qualification.list",
       "leads.ui.catalog",
+      "leads.ui.queue",
     ],
     submitOperations: [
       "leads.connection.set_routing",
