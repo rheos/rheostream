@@ -12,6 +12,7 @@ import {
   jobSearchPipelines,
 } from "./jobfeed-panel";
 import { JobHeader, JobQueue, type Choice } from "./queue-view";
+import type { Sort } from "./queue";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import {
@@ -465,14 +466,22 @@ export function queueScope(catalog: Row[], query: ScreenProps["query"]) {
       if (!seen.has(str(s.stage_id)))
         seen.set(str(s.stage_id), str(s.label) || label(s.stage_id));
   const stageChoices: Choice[] = [
-    { value: "", label: "Open stages" },
+    { value: "open", label: "Open stages" },
     ...[...seen].map(([value, text]) => ({ value, label: text })),
     { value: "all", label: "All stages" },
   ];
-  const stage = stageChoices.some((c) => c.value === query.stage)
-    ? (query.stage ?? "")
-    : "";
   const jobsOnly = scoped.length > 0 && scoped.every((p) => jobs.includes(p));
+  // Job search opens on its first open stage (the untriaged postings), the way
+  // the triage list opened on its new ones; anything else opens on open stages.
+  const firstOpen = jobsOnly
+    ? rows(scoped[0]?.stages).find((s) => s.kind === "open")
+    : undefined;
+  const defaultStage = firstOpen ? str(firstOpen.stage_id) : "open";
+  const stage = stageChoices.some((c) => c.value === query.stage)
+    ? (query.stage ?? defaultStage)
+    : defaultStage;
+  const hideFull = query.full !== "show";
+  const sort: Sort = query.sort === "newest" ? "newest" : "score";
   return {
     pipelines,
     jobs,
@@ -481,13 +490,18 @@ export function queueScope(catalog: Row[], query: ScreenProps["query"]) {
     stageChoices,
     pipeline,
     stage,
+    defaultStage,
+    hideFull,
+    sort,
     fallback,
     jobsOnly,
     input: {
       pipeline_id: pipeline === "jobs" || pipeline === "all" ? null : pipeline,
       jobsearch_only: pipeline === "jobs",
-      stage_id: stage === "" || stage === "all" ? null : stage,
+      stage_id: stage === "open" || stage === "all" ? null : stage,
       include_closed: stage === "all",
+      sort,
+      hide_full: hideFull,
       limit: QUEUE_LIMIT,
     },
   };
@@ -500,6 +514,18 @@ export async function queue({ shell, query }: ScreenProps) {
       ? await read(shell, "leads.ui.queue", scope.input)
       : null;
   const records = result ? items(result) : [];
+  // An empty view with the chip on may only be hiding crowded postings: one
+  // cheap look says which empty state is true.
+  const hiddenOnly =
+    result?.state === "ok" && !records.length && scope.hideFull
+      ? items(
+          await read(shell, "leads.ui.queue", {
+            ...scope.input,
+            hide_full: false,
+            limit: 1,
+          }),
+        ).length > 0
+      : false;
   const hrefs = Object.fromEntries(
     records.map((r) => [str(r.id), shell.href("detail", { ref: str(r.ref) })]),
   );
@@ -554,8 +580,16 @@ export async function queue({ shell, query }: ScreenProps) {
           stages={scope.stageChoices}
           pipeline={scope.pipeline}
           stage={scope.stage}
-          explicit={query.pipeline !== undefined || query.stage !== undefined}
-          filtered={scope.pipeline !== scope.fallback || scope.stage !== ""}
+          hideFull={scope.hideFull}
+          sort={scope.sort}
+          explicit={["pipeline", "stage", "full", "sort"].some(
+            (name) => query[name] !== undefined,
+          )}
+          filtered={
+            scope.pipeline !== scope.fallback ||
+            scope.stage !== scope.defaultStage
+          }
+          hiddenOnly={hiddenOnly}
           action={shell.href("queue")}
           hrefs={hrefs}
           pipelineNames={names}

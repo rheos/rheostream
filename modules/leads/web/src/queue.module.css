@@ -85,7 +85,7 @@
   overflow-wrap: anywhere;
 }
 .card:hover {
-  border-color: var(--rs-color-control-border);
+  border-color: color-mix(in srgb, var(--rs-color-accent) 45%, transparent);
 }
 .detail {
   margin-bottom: var(--rs-space-6);
@@ -153,9 +153,10 @@
   min-width: calc(var(--rs-space-6) + var(--rs-space-1) / 2);
   height: calc(var(--rs-space-6) + var(--rs-space-1) / 2);
   padding: 0 var(--rs-space-2);
-  border: var(--rs-size-hairline) solid currentColor;
+  border: var(--rs-size-hairline) solid
+    color-mix(in srgb, currentColor 30%, transparent);
   border-radius: var(--rs-radius-lg);
-  background: var(--rs-color-surface-2);
+  background: color-mix(in srgb, currentColor 15%, transparent);
 }
 .scoreValue {
   font-size: var(--rs-font-size-sm);
@@ -172,6 +173,9 @@
 .score_low {
   color: var(--rs-color-danger);
 }
+.score_dim {
+  color: var(--rs-color-ink-dim);
+}
 .meta {
   display: flex;
   flex-wrap: wrap;
@@ -186,7 +190,7 @@
   color: var(--rs-color-ink-dim);
 }
 .overdue {
-  color: var(--rs-color-warning);
+  color: var(--rs-color-danger);
   font-weight: 600;
 }
 .reason {
@@ -194,6 +198,13 @@
   font-size: var(--rs-font-size-sm);
   font-style: italic;
   color: var(--rs-color-ink-dim);
+}
+.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
 }
 .preview {
   display: block;
@@ -213,6 +224,18 @@
   align-items: center;
   justify-content: flex-end;
   gap: var(--rs-space-2);
+}
+.stageSelect {
+  background: var(--rs-color-control-bg);
+  color: var(--rs-color-ink);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-md);
+  height: calc(var(--rs-space-6) - var(--rs-space-1) / 2);
+  padding: 0 var(--rs-space-2);
+  font: inherit;
+  font-size: var(--rs-font-size-sm);
+  cursor: pointer;
+  max-width: calc(var(--rs-space-6) * 6);
 }
 .iconButton {
   display: inline-flex;
@@ -332,11 +355,15 @@
 @media (pointer: coarse) {
   .chip,
   .select select,
+  .stageSelect,
   .iconButton {
     min-height: var(--rs-size-control);
   }
   .iconButton {
     min-width: var(--rs-size-control);
+  }
+  .stageSelect {
+    height: auto;
   }
 }
 @media (prefers-reduced-motion: no-preference) {

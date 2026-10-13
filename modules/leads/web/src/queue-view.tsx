@@ -7,9 +7,9 @@ import {
   type ReactNode,
 } from "react";
 import type { ShellApi } from "@rheo-stream/web-contract/screen";
-import { date, JOBSEARCH_PRESET_ID, row, str, type Row } from "./data";
+import { date, JOBSEARCH_PRESET_ID, row, rows, str, type Row } from "./data";
 import {
-  afterDismiss,
+  afterMove,
   age,
   fitFor,
   followupFor,
@@ -29,7 +29,6 @@ import {
   shortId,
   SORTS,
   sourceLabel,
-  visible,
   PREFS_KEY,
   type Prefs,
   type Sort,
@@ -255,26 +254,39 @@ function FollowupLine({ item, now }: { item: Row; now: number }) {
   );
 }
 
+export interface Move {
+  stage_id: string;
+  label: string;
+  kind: string;
+}
+
 function Card({
   item,
   href,
   now,
   pipeline,
   error,
-  onDismiss,
+  onMove,
 }: {
   item: Row;
   href: string;
   now: number;
   pipeline?: string;
   error?: string;
-  onDismiss?: (item: Row) => void;
+  onMove?: (item: Row, to: Move) => void;
 }) {
   const fields = row(item.fields);
   const title = str(item.title) || "Untitled opportunity";
   const posting = postingUrl(fields);
   const summary = str(row(item.assessment).summary);
   const target = row(item.dismiss);
+  const next = rows(item.transitions).map(
+    (m): Move => ({
+      stage_id: str(m.stage_id),
+      label: str(m.label),
+      kind: str(m.kind),
+    }),
+  );
   return (
     <article className={styles.card}>
       <div className={styles.cardHeader}>
@@ -288,13 +300,37 @@ function Card({
       </div>
       <Meta item={item} now={now} />
       <FollowupLine item={item} now={now} />
-      {summary ? <p className={styles.reason}>{summary}</p> : null}
+      {summary ? (
+        <p className={`${styles.reason} ${styles.clamped}`} title={summary}>
+          {summary}
+        </p>
+      ) : null}
       {item.preview ? (
         <a href={href} className={styles.preview}>
           {str(item.preview)}
         </a>
       ) : null}
       <div className={styles.actions}>
+        {onMove && next.length ? (
+          <select
+            className={styles.stageSelect}
+            aria-label={`Stage for ${title}`}
+            value={str(item.stage_id)}
+            onChange={(e) => {
+              const to = next.find((m) => m.stage_id === e.target.value);
+              if (to) onMove(item, to);
+            }}
+          >
+            <option value={str(item.stage_id)}>
+              {str(item.stage_label) || str(item.stage_id)}
+            </option>
+            {next.map((m) => (
+              <option key={m.stage_id} value={m.stage_id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        ) : null}
         {posting ? (
           <a
             className={styles.iconButton}
@@ -307,14 +343,20 @@ function Card({
             <OpenIcon />
           </a>
         ) : null}
-        <CopyButton text={shortId(item.id)} label="Copy short ID" />
-        {onDismiss && target.stage_id ? (
+        <CopyButton text={str(item.id)} label="Copy opportunity ID" />
+        {onMove && target.stage_id ? (
           <button
             type="button"
             className={`${styles.iconButton} ${styles.danger}`}
             aria-label={`Dismiss ${title} (move to ${str(target.label)})`}
             title={`Dismiss: move to ${str(target.label)}`}
-            onClick={() => onDismiss(item)}
+            onClick={() =>
+              onMove(item, {
+                stage_id: str(target.stage_id),
+                label: str(target.label),
+                kind: "terminal",
+              })
+            }
           >
             <svg
               width="15"
@@ -350,22 +392,61 @@ export interface QueueProps {
   /** The effective selections (the URL's, or the defaults). */
   pipeline: string;
   stage: string;
-  /** Whether the URL named a pipeline or stage; if not, saved ones apply. */
+  hideFull: boolean;
+  sort: Sort;
+  /** Whether the URL named any control; if not, saved choices apply. */
   explicit: boolean;
-  /** The GET target for the pipeline and stage selects. */
+  /** The GET target the controls submit to. */
   action: string;
   hrefs: Record<string, string>;
   /** Pipeline names per id, given only when several pipelines are shown. */
   pipelineNames?: Record<string, string>;
   /** Count wording: jobs when only job-search pipelines are shown. */
   noun: [string, string];
-  /** The server's first answer had as many items as it may send. */
+  /** The server's answer had as many items as it may send. */
   limited: boolean;
   /** A pipeline or stage other than the defaults is selected. */
   filtered: boolean;
+  /** Nothing is shown, but postings over the proposal cap exist here. */
+  hiddenOnly: boolean;
   /** Shown when the default view has nothing at all. */
   nothingYet: ReactNode;
   submit?: Submit;
+}
+
+/** The saved choices to open a bare queue URL with, or null to stay put. Saved
+ * values the current catalog no longer offers fall back to the defaults, so a
+ * removed pipeline never redirects again on every visit. */
+export function savedView(
+  last: Prefs,
+  props: Pick<
+    QueueProps,
+    "pipeline" | "stage" | "hideFull" | "sort" | "pipelines" | "stages"
+  >,
+): Record<string, string> | null {
+  const pipeline = props.pipelines.some((p) => p.value === last.pipeline)
+    ? last.pipeline
+    : props.pipeline;
+  // The stage list belongs to the current pipeline; a stage saved for another
+  // pipeline is left for the server to check against that one.
+  const stage =
+    pipeline === props.pipeline &&
+    !props.stages.some((s) => s.value === last.stage)
+      ? props.stage
+      : last.stage;
+  if (
+    pipeline === props.pipeline &&
+    stage === props.stage &&
+    last.hideFull === props.hideFull &&
+    last.sort === props.sort
+  )
+    return null;
+  return {
+    pipeline,
+    stage,
+    full: last.hideFull ? "hide" : "show",
+    sort: last.sort,
+  };
 }
 
 /** The job queue: heading with a live count, the controls, and the cards. */
@@ -374,49 +455,54 @@ export function JobQueue(props: QueueProps) {
   const saved = parsePrefs(
     useSyncExternalStore(subscribe, savedText, () => null),
   );
-  const { hideFull, sort } = saved;
   const [errors, setErrors] = useState<Record<string, string>>({});
   const form = useRef<HTMLFormElement>(null);
-  // Only a choice made in the controls is saved; a default is never pinned.
-  const prefs = (changes: Partial<Prefs>): Prefs => ({ ...saved, ...changes });
+  const full = useRef<HTMLInputElement>(null);
+  const current: Prefs = {
+    pipeline: props.pipeline,
+    stage: props.stage,
+    hideFull: props.hideFull,
+    sort: props.sort,
+  };
 
   useEffect(() => {
-    // A bare queue URL opens the pipeline and stage chosen last time.
-    if (props.explicit || !form.current) return;
-    const last = parsePrefs(savedText());
-    const pipeline = last.pipeline || props.pipeline;
-    const stage = last.stage;
-    if (pipeline === props.pipeline && stage === props.stage) return;
+    // A bare queue URL opens the view chosen last time, once a choice exists.
+    if (props.explicit || !form.current || savedText() === null) return;
+    const view = savedView(parsePrefs(savedText()), props);
+    if (!view) return;
     const url = new URL(form.current.action);
-    url.searchParams.set("pipeline", pipeline);
-    url.searchParams.set("stage", stage);
+    for (const [name, value] of Object.entries(view))
+      url.searchParams.set(name, value);
     window.location.replace(url.href);
     // Runs once: the saved view is applied on arrival, not on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** Saves the choice and reloads the view with it; the server filters and
+   * sorts, so the count and the first page always agree with the controls. */
   function choose(changes: Partial<Prefs>) {
-    remember(prefs(changes));
-    if (changes.pipeline !== undefined || changes.stage !== undefined)
-      form.current?.requestSubmit();
+    // The whole view the controls now show is saved, so a bare URL reopens it.
+    remember({ ...saved, ...current, ...changes });
+    if (changes.hideFull !== undefined && full.current)
+      full.current.value = changes.hideFull ? "hide" : "show";
+    form.current?.requestSubmit();
   }
 
-  async function dismiss(item: Row) {
+  async function move(item: Row, to: Move) {
     const submit = props.submit;
     const id = str(item.id);
-    const target = row(item.dismiss);
-    if (!submit || !target.stage_id) return;
+    if (!submit) return;
     const before = items;
     setErrors((current) =>
       Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)),
     );
-    setItems((current) => afterDismiss(current, id, props.stage));
+    setItems((current) => afterMove(current, id, to, props.stage));
     let outcome;
     try {
       outcome = await submit("leads.opportunity.transition", {
         ref: item.ref,
         revision: item.revision,
-        to_stage_id: target.stage_id,
+        to_stage_id: to.stage_id,
       });
     } catch {
       outcome = { state: "unavailable" as const };
@@ -432,7 +518,7 @@ export function JobQueue(props: QueueProps) {
       );
       return;
     }
-    // Put back only this card, where it was, so another dismiss in flight keeps
+    // Put back only this card, where it was, so another move in flight keeps
     // its own optimistic state.
     const index = before.findIndex((each) => str(each.id) === id);
     setItems((current) => {
@@ -444,20 +530,18 @@ export function JobQueue(props: QueueProps) {
       ...current,
       [id]:
         outcome.state === "refused" && outcome.code === "record_stale"
-          ? "This changed since the page loaded. Reload to dismiss it."
-          : "Could not dismiss. Try again.",
+          ? "This changed since the page loaded. Reload to change its stage."
+          : `Could not move it to ${to.label}. Try again.`,
     }));
   }
 
-  const shown = visible(items, hideFull, sort);
-  const hidden = items.length - shown.length;
   const [one, many] = props.noun;
   return (
     <div className={styles.queue}>
       <div className={styles.heading}>
         <h1 className={styles.headingTitle}>Job queue</h1>
         <span className={styles.count} aria-live="polite">
-          {shown.length} {shown.length === 1 ? one : many}
+          {items.length} {items.length === 1 ? one : many}
         </span>
       </div>
       <form
@@ -467,6 +551,12 @@ export function JobQueue(props: QueueProps) {
         method="get"
         aria-label="Job queue filters"
       >
+        <input
+          ref={full}
+          type="hidden"
+          name="full"
+          defaultValue={props.hideFull ? "hide" : "show"}
+        />
         <div className={styles.controlGroup}>
           <label className={styles.select}>
             <span>Pipeline</span>
@@ -500,16 +590,17 @@ export function JobQueue(props: QueueProps) {
         <div className={`${styles.controlGroup} ${styles.controlRight}`}>
           <button
             type="button"
-            className={`${styles.chip}${hideFull ? ` ${styles.chipOn}` : ""}`}
-            aria-pressed={hideFull}
-            onClick={() => choose({ hideFull: !hideFull })}
+            className={`${styles.chip}${props.hideFull ? ` ${styles.chipOn}` : ""}`}
+            aria-pressed={props.hideFull}
+            onClick={() => choose({ hideFull: !props.hideFull })}
           >
             Hide 50+ proposals
           </button>
           <label className={styles.select}>
             <span>Sort</span>
             <select
-              value={sort}
+              name="sort"
+              value={props.sort}
               onChange={(e) => choose({ sort: e.target.value as Sort })}
             >
               {SORTS.map((s) => (
@@ -523,30 +614,26 @@ export function JobQueue(props: QueueProps) {
       </form>
       {!items.length ? (
         <div className={styles.empty}>
-          {props.filtered ? (
+          {props.hiddenOnly ? (
+            <p>
+              Every job here has 50+ proposals.{" "}
+              <button
+                type="button"
+                className={styles.linkButton}
+                onClick={() => choose({ hideFull: false })}
+              >
+                Show them
+              </button>
+            </p>
+          ) : props.filtered ? (
             <p>Nothing matches these filters. Try another pipeline or stage.</p>
           ) : (
             props.nothingYet
           )}
         </div>
-      ) : !shown.length ? (
-        <div className={styles.empty}>
-          <p>
-            {hidden === 1
-              ? "The one job here has 50+ proposals."
-              : `All ${hidden} jobs here have 50+ proposals.`}{" "}
-            <button
-              type="button"
-              className={styles.linkButton}
-              onClick={() => choose({ hideFull: false })}
-            >
-              Show them
-            </button>
-          </p>
-        </div>
       ) : (
         <>
-          {shown.map((item) => (
+          {items.map((item) => (
             <Card
               key={str(item.id)}
               item={item}
@@ -554,18 +641,13 @@ export function JobQueue(props: QueueProps) {
               now={props.now}
               pipeline={props.pipelineNames?.[str(item.pipeline_id)]}
               error={errors[str(item.id)]}
-              onDismiss={props.submit ? dismiss : undefined}
+              onMove={props.submit ? move : undefined}
             />
           ))}
-          {hidden > 0 ? (
-            <p className={styles.footnote}>
-              {hidden} hidden with 50+ proposals.
-            </p>
-          ) : null}
           {props.limited ? (
             <p className={styles.footnote}>
-              Showing the newest {props.items.length}. Narrow the pipeline or
-              stage to see older ones.
+              Showing the first {props.items.length}. Narrow the pipeline or
+              stage to see the rest.
             </p>
           ) : null}
         </>
@@ -596,7 +678,11 @@ export function JobHeader({ item, now }: { item: Row; now: number }) {
           </h1>
           <Badges item={item} />
           <div className={styles.idRow}>
-            <CopyButton text={id} label="Copy short ID" className={styles.idChip}>
+            <CopyButton
+              text={str(item.id)}
+              label={`Copy the full ID (short ID ${id})`}
+              className={styles.idChip}
+            >
               <span className={styles.idLabel}>ID</span>
               <span className={styles.idValue}>{id}</span>
             </CopyButton>

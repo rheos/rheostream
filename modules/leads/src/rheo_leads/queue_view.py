@@ -2,13 +2,15 @@
 
 Each item carries what a queue card shows and nothing else: the opportunity's own
 columns, its stage, the Job search extension fields and the start of the original
-message, the latest assessment's ratings and first line, the pending follow-up,
+message, the latest assessment's ratings and explanation, the pending follow-up,
 whether notes or drafts exist, the source transport, the linked party's display
-name, and the closed stage a dismiss would move it to. Contact points, notes,
+name, the stages it may move to next, and the closed stage a dismiss would move
+it to. Sorting by fit and hiding crowded postings happen here, before the limit,
+so the first page is the right one. Contact points, notes,
 draft bodies and full messages stay behind ``leads.opportunity.get``.
 """
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import Field
@@ -21,7 +23,7 @@ from rheo_contracts import (
 )
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import and_, select
+from sqlalchemy import Integer, and_, case, cast, exists, select
 
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
@@ -46,21 +48,29 @@ CARD_FIELDS = (
     "client_reviews",
 )
 PREVIEW_CHARS = 240
-SUMMARY_CHARS = 280
+SUMMARY_CHARS = 800
+# Above this many proposals a posting is crowded (the web client's MAX_PROPOSALS).
+MAX_PROPOSALS = 50
+# Fit ratings by sort weight, higher first; an unassessed opportunity sorts last.
+FIT_RANK = {"high": 4, "medium": 3, "needs_information": 2, "low": 1}
 # A dismiss closes the opportunity as not pursued; a lost outcome is the fallback
 # for stages that cannot be disqualified any more.
 DISMISS_OUTCOMES = ("disqualified", "lost")
 
 
 class QueueInput(c.Strict):
-    """Without ``ref``: newest first, open stages unless a stage or closed ones are
-    asked for. With ``ref``: that one opportunity, whatever its stage."""
+    """Without ``ref``: open stages unless a stage or closed ones are asked for,
+    by latest fit then newest (``sort="score"``) or newest only, optionally without
+    postings above the proposal cap. With ``ref``: that one opportunity, whatever
+    its stage or count."""
 
     ref: c.OpportunityRef | None = None
     pipeline_id: UUID | None = None
     jobsearch_only: bool = False
     stage_id: str | None = Field(default=None, min_length=1, max_length=128)
     include_closed: bool = False
+    sort: Literal["score", "newest"] = "newest"
+    hide_full: bool = False
     limit: int = Field(default=100, ge=1, le=200)
 
 
@@ -71,13 +81,14 @@ def _preview(text: str | None, limit: int) -> str | None:
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
-def _first_line(text: str | None) -> str | None:
+def _summary(text: str | None) -> str | None:
+    """The whole explanation as one paragraph, capped; the card clamps it."""
     if not text:
         return None
-    for line in text.splitlines():
-        if line.strip():
-            return _preview(line, SUMMARY_CHARS)
-    return None
+    return _preview(
+        " ".join(line.strip() for line in text.split("\n") if line.strip()),
+        SUMMARY_CHARS,
+    )
 
 
 def _party(
@@ -122,11 +133,14 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
             q = q.where(o.c.stage_id == m.stage_id)
         elif not m.include_closed:
             q = q.where(s.c.kind == "open")
+        if m.hide_full:
+            q = q.where(~_over_cap(o.c.id))
+    order = [o.c.created_at.desc(), o.c.id.desc()]
+    if m.sort == "score":
+        order.insert(0, _fit_rank(o.c.id).desc())
     records = [
         dict(r)
-        for r in uow.connection.execute(
-            q.order_by(o.c.created_at.desc(), o.c.id.desc()).limit(m.limit)
-        ).mappings()
+        for r in uow.connection.execute(q.order_by(*order).limit(m.limit)).mappings()
     ]
     if m.ref is not None and not records:
         raise OperationRefused("not_found", "opportunity not found")
@@ -193,7 +207,11 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
         )
     ).mappings():
         parties.setdefault(r["opportunity_id"], r["party_ref"])
-    dismiss = _dismiss_targets(uow, records)
+    moves = _transitions(uow, records)
+
+    def key(record: dict[str, Any]) -> tuple[UUID, int, str]:
+        return (record["preset_id"], record["preset_version"], record["stage_id"])
+
     items = []
     for record in records:
         identifier = record["id"]
@@ -228,26 +246,59 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                     "urgency": assessment["urgency"],
                     "evidence_completeness": assessment["evidence_completeness"],
                     "uncertainty": assessment["uncertainty"],
-                    "summary": _first_line(assessment["explanation"]),
+                    "summary": _summary(assessment["explanation"]),
                     "created_at": assessment["created_at"],
                 },
                 "followup": followups.get(identifier),
                 "has_draft": identifier in drafts,
                 "has_notes": identifier in notes,
                 "party": None if reference is None else _party(ctx, uow, reference),
-                "dismiss": dismiss.get(
-                    (record["preset_id"], record["preset_version"], record["stage_id"])
-                ),
+                "transitions": moves.get(key(record), {}).get("next", []),
+                "dismiss": moves.get(key(record), {}).get("dismiss"),
             }
         )
     return c.ItemsOutput(items=items)
 
 
-def _dismiss_targets(
+def _fit_rank(opportunity_id: Any) -> Any:
+    """The latest assessment's fit as a sort weight, 0 when unassessed."""
+    qual = p.qualification
+    latest = (
+        select(qual.c.fit)
+        .where(qual.c.opportunity_id == opportunity_id)
+        .order_by(
+            qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    return case(*((latest == fit, rank) for fit, rank in FIT_RANK.items()), else_=0)
+
+
+def _over_cap(opportunity_id: Any) -> Any:
+    """A whole-number proposal count above the cap, band or exact."""
+    state = p.opportunity_field_state
+    count = case(
+        (
+            state.c.value_text.regexp_match("^[0-9]{1,9}$"),
+            cast(state.c.value_text, Integer),
+        ),
+        else_=0,
+    )
+    return exists().where(
+        state.c.opportunity_id == opportunity_id,
+        state.c.target == EXTENSION + "proposal_count",
+        state.c.value_kind == "value",
+        count > MAX_PROPOSALS,
+    )
+
+
+def _transitions(
     uow: UnitOfWork, records: list[dict[str, Any]]
-) -> dict[tuple[UUID, int, str], dict[str, str]]:
-    """Per pinned (preset, version, stage): the closed stage a dismiss moves to,
-    a disqualifying one before a lost one, or nothing when neither is allowed."""
+) -> dict[tuple[UUID, int, str], dict[str, Any]]:
+    """Per pinned (preset, version, stage): the stages it may move to next, in
+    stage order, and the closed stage a dismiss moves to (a disqualifying one before
+    a lost one, or none when neither is allowed)."""
     keys = {(r["preset_id"], r["preset_version"]) for r in records}
     if not keys:
         return {}
@@ -259,6 +310,7 @@ def _dismiss_targets(
             tr.c.from_stage_id,
             s.c.stage_id,
             s.c.label,
+            s.c.kind,
             s.c.outcome,
         )
         .join(
@@ -269,28 +321,26 @@ def _dismiss_targets(
                 s.c.stage_id == tr.c.to_stage_id,
             ),
         )
-        .where(
-            s.c.kind == "terminal",
-            s.c.outcome.in_(DISMISS_OUTCOMES),
-            tr.c.preset_id.in_({k[0] for k in keys}),
-        )
+        .where(tr.c.preset_id.in_({k[0] for k in keys}))
+        .order_by(s.c.ordinal, s.c.stage_id)
     ).mappings()
-    best: dict[tuple[UUID, int, str], dict[str, Any]] = {}
+    found: dict[tuple[UUID, int, str], dict[str, Any]] = {}
     for r in rows:
-        key = (r["preset_id"], r["version"], r["from_stage_id"])
         if (r["preset_id"], r["version"]) not in keys:
             continue
-        current = best.get(key)
-        rank = DISMISS_OUTCOMES.index(r["outcome"])
-        if (
-            current is None
-            or rank < current["rank"]
-            or (rank == current["rank"] and r["stage_id"] < current["stage_id"])
-        ):
-            best[key] = {"rank": rank, "stage_id": r["stage_id"], "label": r["label"]}
-    return {
-        key: {"stage_id": v["stage_id"], "label": v["label"]} for key, v in best.items()
-    }
+        entry = found.setdefault(
+            (r["preset_id"], r["version"], r["from_stage_id"]),
+            {"next": [], "dismiss": None, "rank": len(DISMISS_OUTCOMES)},
+        )
+        entry["next"].append(
+            {"stage_id": r["stage_id"], "label": r["label"], "kind": r["kind"]}
+        )
+        if r["kind"] == "terminal" and r["outcome"] in DISMISS_OUTCOMES:
+            rank = DISMISS_OUTCOMES.index(r["outcome"])
+            if rank < entry["rank"]:
+                entry["rank"] = rank
+                entry["dismiss"] = {"stage_id": r["stage_id"], "label": r["label"]}
+    return found
 
 
 OPERATIONS = (

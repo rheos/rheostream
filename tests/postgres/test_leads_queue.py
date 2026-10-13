@@ -7,7 +7,7 @@ from harness.registry import add_member
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.storage.routing import open_unit_of_work
-from rheo_leads.queue_view import PREVIEW_CHARS, QueueInput, queue
+from rheo_leads.queue_view import PREVIEW_CHARS, SUMMARY_CHARS, QueueInput, queue
 from rheo_leads.storage import tables as t
 from sqlalchemy import insert, select
 
@@ -114,6 +114,16 @@ def test_cards_carry_full_and_sparse_facts(intake: Intake) -> None:
     assert full["stage_id"] == "review" and full["stage_kind"] == "open"
     assert full["stage_label"] == "Review"
     assert full["dismiss"] == {"stage_id": "passed", "label": "Passed"}
+    assert [m["stage_id"] for m in full["transitions"]] == [
+        "qualified",
+        "lost",
+        "passed",
+    ]
+    assert full["transitions"][0] == {
+        "stage_id": "qualified",
+        "label": "Qualified",
+        "kind": "open",
+    }
     assert isinstance(full["source"], str) and full["source"]
     assert sparse["fields"] == {} and sparse["preview"] is None
     for card in (full, sparse):
@@ -148,7 +158,7 @@ def test_assessment_followup_notes_and_draft_extras(intake: Intake) -> None:
             "urgency": "low",
             "evidence_completeness": "medium",
             "uncertainty": "low",
-            "explanation": "\nStrong match for the stack.\nSecond line stays out.",
+            "explanation": "\nStrong match for the stack.\n\nSecond line stays in.",
             "author": "human",
         },
     )
@@ -173,7 +183,9 @@ def test_assessment_followup_notes_and_draft_extras(intake: Intake) -> None:
     )
     card = cards(intake, pipeline_id=pipeline)["Assessed posting"]
     assert card["assessment"]["fit"] == "high"
-    assert card["assessment"]["summary"] == "Strong match for the stack."
+    assert card["assessment"]["summary"] == (
+        "Strong match for the stack. Second line stays in."
+    )
     assert str(card["followup"]["due_on"]) == "2026-10-20"
     assert card["followup"]["action"] == "Check the reply"
     assert card["has_notes"] is True and card["has_draft"] is True
@@ -238,3 +250,60 @@ def test_member_reads_the_queue_and_dismiss_follows_the_stage(intake: Intake) ->
     with open_unit_of_work(ctx) as uow:
         titles = [r["title"] for r in queue(ctx, uow, QueueInput()).items]
     assert titles == ["Applied posting"]
+
+
+def assess(
+    i: Intake, reference: str, fit: str, explanation: str = "Synthetic."
+) -> None:
+    current = ok(i, "opportunity.get", ref=reference)
+    ok(
+        i,
+        "qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Job fit",
+        assessment={
+            "fit": fit,
+            "intent": "medium",
+            "urgency": "low",
+            "evidence_completeness": "medium",
+            "uncertainty": "low",
+            "explanation": explanation,
+            "author": "human",
+        },
+    )
+
+
+def test_score_sort_and_cap_filter_apply_before_the_limit(intake: Intake) -> None:
+    """An older high-fit posting heads the first page, and crowded postings are
+    left out before the limit, so neither depends on the newest rows alone."""
+    setup(intake)
+    job_pipeline(intake)
+    capture(intake, "old", {"subject": "Older high fit"})
+    capture(intake, "low", {"subject": "Low fit", "proposal_count": "10"})
+    capture(intake, "crowd", {"subject": "Crowded", "proposal_count": "51"})
+    capture(intake, "new", {"subject": "Newest unassessed"})
+    titles = cards(intake)
+    assess(intake, titles["Older high fit"]["ref"], "high", "A " + "long " * 300)
+    assess(intake, titles["Low fit"]["ref"], "low")
+    assess(intake, titles["Crowded"]["ref"], "high")
+
+    def order(**query: Any) -> list[str]:
+        return [r["title"] for r in ok(intake, "ui.queue", **query).items]
+
+    assert order(limit=2) == ["Newest unassessed", "Crowded"]
+    assert order(limit=2, sort="score") == ["Crowded", "Older high fit"]
+    assert order(limit=2, sort="score", hide_full=True) == [
+        "Older high fit",
+        "Low fit",
+    ]
+    assert order(sort="score", hide_full=True) == [
+        "Older high fit",
+        "Low fit",
+        "Newest unassessed",
+    ]
+    assert len(order(hide_full=True)) == 3
+    crowded = titles["Crowded"]["ref"]
+    assert order(ref=crowded, hide_full=True) == ["Crowded"], "a ref ignores filters"
+    summary = cards(intake)["Older high fit"]["assessment"]["summary"]
+    assert len(summary) == SUMMARY_CHARS + 1 and summary.endswith("…")

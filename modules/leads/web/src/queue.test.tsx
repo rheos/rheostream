@@ -27,9 +27,14 @@ import {
   shortId,
   sourceLabel,
   stageMatches,
-  visible,
+  afterMove,
 } from "./queue";
-import { JobHeader, JobQueue, type QueueProps } from "./queue-view";
+import {
+  JobHeader,
+  JobQueue,
+  savedView,
+  type QueueProps,
+} from "./queue-view";
 import { queueScope } from "./screens";
 
 const NOW = Date.parse("2026-10-12T12:00:00Z");
@@ -65,6 +70,10 @@ const full: Row = {
   has_draft: true,
   has_notes: true,
   party: { kind: "organization", name: "Example Studio" },
+  transitions: [
+    { stage_id: "qualified", label: "Qualified", kind: "open" },
+    { stage_id: "passed", label: "Passed", kind: "terminal" },
+  ],
   dismiss: { stage_id: "passed", label: "Passed" },
 };
 const sparse: Row = {
@@ -88,13 +97,6 @@ const sparse: Row = {
   party: null,
   dismiss: { stage_id: "passed", label: "Passed" },
 };
-const crowded: Row = {
-  ...sparse,
-  id: "01a133b6-0000-7000-8000-0000000000ff",
-  title: "Crowded example",
-  fields: { proposal_count: "51" },
-  assessment: { fit: "medium", summary: "" },
-};
 
 function props(overrides: Partial<QueueProps> = {}): QueueProps {
   return {
@@ -105,13 +107,17 @@ function props(overrides: Partial<QueueProps> = {}): QueueProps {
       { value: "all", label: "All pipelines" },
     ],
     stages: [
-      { value: "", label: "Open stages" },
+      { value: "open", label: "Open stages" },
+      { value: "review", label: "Review" },
       { value: "all", label: "All stages" },
     ],
     pipeline: "jobs",
-    stage: "",
+    stage: "review",
+    hideFull: true,
+    sort: "score",
     explicit: false,
     filtered: false,
+    hiddenOnly: false,
     action: "/leads/queue",
     hrefs: {},
     noun: ["job", "jobs"],
@@ -211,7 +217,7 @@ describe("fit pill", () => {
   it.each([
     ["high", "High", "high", "Pursue", "Pursue: fit high"],
     ["medium", "Med", "mid", "Review", "Review: fit medium"],
-    ["needs_information", "?", "mid", "Review", "Review: fit needs information"],
+    ["needs_information", "?", "dim", "Review", "Review: fit needs information"],
     ["low", "Low", "low", "Skip", "Skip: fit low"],
   ])("%s shows %s in the %s band", (fit, mark, band, verdict, description) => {
     expect(fitFor({ fit })).toMatchObject({ mark, band, verdict, description });
@@ -300,19 +306,34 @@ describe("filters, sorting and saved preferences", () => {
     expect(loadPrefs(broken)).toEqual(DEFAULT_PREFS);
     expect(() => savePrefs(broken, DEFAULT_PREFS)).not.toThrow();
   });
-  it("hides crowded postings and sorts by fit, then newest", () => {
-    const low = { ...sparse, id: "low", assessment: { fit: "low" } };
-    const items = [sparse, crowded, low, full];
-    expect(visible(items, true, "score").map((i) => i.id)).toEqual([
-      full.id,
-      "low",
-      sparse.id,
-    ]);
-    expect(visible(items, false, "score")[1]?.id).toBe(crowded.id);
-    expect(visible(items, false, "newest").map((i) => i.id)[0]).toBe(full.id);
+  it("reopens a bare URL with saved choices the catalog still offers", () => {
+    const base = {
+      pipeline: "jobs",
+      stage: "review",
+      hideFull: true,
+      sort: "score" as const,
+      pipelines: props().pipelines,
+      stages: props().stages,
+    };
+    expect(savedView({ ...DEFAULT_PREFS, stage: "review" }, base)).toBeNull();
+    expect(
+      savedView({ ...DEFAULT_PREFS, stage: "open", sort: "newest" }, base),
+    ).toEqual({ pipeline: "jobs", stage: "open", full: "hide", sort: "newest" });
+    // A removed pipeline and a stage the pipeline lacks fall back, so nothing
+    // redirects again on the next visit.
+    expect(
+      savedView(
+        { ...DEFAULT_PREFS, pipeline: "gone", stage: "nope", hideFull: true },
+        base,
+      ),
+    ).toBeNull();
+    expect(
+      savedView({ ...DEFAULT_PREFS, pipeline: "all", stage: "triage" }, base),
+    ).toEqual({ pipeline: "all", stage: "triage", full: "hide", sort: "score" });
   });
   it("keeps a dismissed card only where the stage filter still covers it", () => {
     expect(afterDismiss([full, sparse], str(full.id), "")).toEqual([sparse]);
+    expect(afterDismiss([full, sparse], str(full.id), "open")).toEqual([sparse]);
     const all = afterDismiss([full, sparse], str(full.id), "all");
     expect(all[0]).toMatchObject({
       stage_id: "passed",
@@ -323,6 +344,24 @@ describe("filters, sorting and saved preferences", () => {
     expect(afterDismiss([full], str(full.id), "passed")).toHaveLength(1);
     expect(afterDismiss([full], str(full.id), "review")).toHaveLength(0);
     expect(stageMatches("", "review", "open")).toBe(true);
+    expect(stageMatches("open", "passed", "terminal")).toBe(false);
+  });
+  it("moves a card through the stage select in step with the filter", () => {
+    const qualified = { stage_id: "qualified", label: "Qualified", kind: "open" };
+    const open = afterMove([full], str(full.id), qualified, "open");
+    expect(open[0]).toMatchObject({
+      stage_id: "qualified",
+      stage_label: "Qualified",
+      stage_kind: "open",
+      transitions: [],
+      dismiss: null,
+    });
+    expect(afterMove([full], str(full.id), qualified, "review")).toEqual([]);
+    expect(afterMove([full], str(full.id), qualified, "qualified")).toHaveLength(1);
+    expect(afterMove([full, sparse], "other", qualified, "review")).toEqual([
+      full,
+      sparse,
+    ]);
   });
 });
 function str(value: unknown): string {
@@ -351,8 +390,9 @@ describe("queue rendering", () => {
       "Follow up",
       "Strong synthetic match.",
       "A short synthetic description.",
+      'aria-label="Stage for Example data service"',
       'aria-label="Open the posting"',
-      'aria-label="Copy short ID"',
+      'aria-label="Copy opportunity ID"',
       "Dismiss Example data service (move to Passed)",
     ];
     let at = -1;
@@ -392,20 +432,35 @@ describe("queue rendering", () => {
     );
     expect(render()).not.toContain(">Job leads</span>");
   });
-  it("starts with Hide 50+ on and says how many it hid", () => {
-    const html = render({ items: [full, crowded] });
+  it("draws the controls from the server's view and offers the next stages", () => {
+    const html = render({ submit: vi.fn() });
     expect(html).toContain('aria-pressed="true"');
-    expect(html).not.toContain("Crowded example");
-    expect(html).toContain("1 hidden with 50+ proposals.");
+    expect(html).toContain('name="full" value="hide"');
+    expect(html).toMatch(/<option value="review" selected="">Review<\/option>/);
+    expect(html).toMatch(/<option value="score" selected="">Score<\/option>/);
+    expect(html).toMatch(
+      /aria-label="Stage for Example data service"><option value="review" selected="">Review<\/option><option value="qualified">Qualified<\/option><option value="passed">Passed<\/option>/,
+    );
+    expect(render({ hideFull: false, sort: "newest" })).toContain(
+      'name="full" value="show"',
+    );
+    // Read-only hosts get neither the stage select nor dismiss.
+    const quiet = render();
+    expect(quiet).not.toContain("Stage for");
+    expect(quiet).not.toContain("Dismiss");
+  });
+  it("says when the list stops at the limit", () => {
+    expect(render({ limited: true })).toContain("Showing the first 2.");
+    expect(render()).not.toContain("Showing the first");
   });
   it("has three empty states", () => {
     expect(render({ items: [] })).toContain("Nothing yet here.");
     expect(render({ items: [], filtered: true, explicit: true })).toContain(
       "Nothing matches these filters",
     );
-    expect(render({ items: [crowded] })).toContain(
-      "The one job here has 50+ proposals.",
-    );
+    const crowdedOnly = render({ items: [], hiddenOnly: true, filtered: true });
+    expect(crowdedOnly).toContain("Every job here has 50+ proposals.");
+    expect(crowdedOnly).toContain("Show them");
   });
   it("draws the detail header with the ID chip and the over-cap alert", () => {
     const html = renderToStaticMarkup(
@@ -416,6 +471,7 @@ describe("queue rendering", () => {
     );
     expect(html).toMatch(/<h1[^>]*><a href="https:\/\/jobs\.example\.com/);
     expect(html).toContain(shortId(full.id));
+    expect(html).toContain(`Copy the full ID (short ID ${shortId(full.id)})`);
     expect(html).toContain("Payment verified");
     expect(html).toContain('role="alert"');
     expect(html).toContain("Over 50 proposals");
@@ -449,8 +505,8 @@ const catalog = [
     name: "Job leads",
     preset_id: JOBSEARCH_PRESET_ID,
     stages: [
-      { stage_id: "review", label: "Review" },
-      { stage_id: "passed", label: "Passed" },
+      { stage_id: "review", label: "Review", kind: "open" },
+      { stage_id: "passed", label: "Passed", kind: "terminal" },
     ],
   },
   {
@@ -469,7 +525,7 @@ describe("queue screen", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it("opens on the job-search pipeline, open stages, newest 100", async () => {
+  it("opens on the job-search pipeline's first open stage, by score, 50+ hidden", async () => {
     const api = shell({
       "leads.ui.catalog": ok({ items: catalog }),
       "leads.ui.queue": ok({ items: [full] }),
@@ -484,8 +540,10 @@ describe("queue screen", () => {
         {
           pipeline_id: JOBS_ID,
           jobsearch_only: false,
-          stage_id: null,
+          stage_id: "review",
           include_closed: false,
+          sort: "score",
+          hide_full: true,
           limit: 100,
         },
       ],
@@ -502,7 +560,7 @@ describe("queue screen", () => {
       "All pipelines",
     ]);
     expect(scope.stageChoices.map((c) => c.value)).toEqual([
-      "",
+      "open",
       "review",
       "passed",
       "triage",
@@ -515,7 +573,11 @@ describe("queue screen", () => {
     expect(scope.jobsOnly).toBe(false);
     const unknown = queueScope(catalog, { pipeline: "gone", stage: "nope" });
     expect(unknown.pipeline).toBe(JOBS_ID);
-    expect(unknown.stage).toBe("");
+    expect(unknown.stage).toBe("review");
+    expect(queueScope(catalog, { pipeline: "all" }).stage).toBe("open");
+    expect(
+      queueScope(catalog, { stage: "open", full: "show", sort: "newest" }).input,
+    ).toMatchObject({ stage_id: null, hide_full: false, sort: "newest" });
     const two = queueScope(
       [...catalog, { ...catalog[0], id: "01a133b6-b2ea-7928-ace7-000000000002", name: "More jobs" }],
       {},
@@ -579,7 +641,7 @@ describe("queue screen", () => {
     expect(api.call).toHaveBeenCalledWith("leads.ui.queue", {
       ref: "leads.opportunity:x",
     });
-    expect(html).toContain("Copy short ID");
+    expect(html).toContain("Copy the full ID");
     expect(html.match(/<h1/g)).toHaveLength(1);
     const plain = shell({
       "leads.opportunity.get": ok({
@@ -593,6 +655,6 @@ describe("queue screen", () => {
     expect(plain.call.mock.calls.map(([name]) => name)).not.toContain(
       "leads.ui.queue",
     );
-    expect(other).not.toContain("Copy short ID");
+    expect(other).not.toContain("Copy the full ID");
   });
 });

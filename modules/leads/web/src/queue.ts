@@ -109,7 +109,7 @@ export function sourceLabel(source: unknown): string | null {
   return value ? (labels[value] ?? value) : null;
 }
 
-export type FitBand = "high" | "mid" | "low";
+export type FitBand = "high" | "mid" | "low" | "dim";
 export interface Fit {
   /** What the pill shows: a short rating, never a number nobody gave. */
   mark: string;
@@ -124,7 +124,7 @@ export interface Fit {
 const FITS: Record<string, Omit<Fit, "description">> = {
   high: { mark: "High", band: "high", verdict: "Pursue", rank: 4 },
   medium: { mark: "Med", band: "mid", verdict: "Review", rank: 3 },
-  needs_information: { mark: "?", band: "mid", verdict: "Review", rank: 2 },
+  needs_information: { mark: "?", band: "dim", verdict: "Review", rank: 2 },
   low: { mark: "Low", band: "low", verdict: "Skip", rank: 1 },
 };
 /** The pill for an assessment's fit rating, or null when there is no
@@ -200,7 +200,8 @@ export const SORTS: readonly { value: Sort; label: string }[] = [
 export interface Prefs {
   /** "" is the default scope: the job-search pipelines. */
   pipeline: string;
-  /** "" is open stages, "all" every stage, else one stage id. */
+  /** "" is the pipeline's default (a job-search pipeline's first open stage,
+   * else open stages), "open" open stages, "all" every stage, else a stage id. */
   stage: string;
   hideFull: boolean;
   sort: Sort;
@@ -258,20 +259,6 @@ export function savePrefs(store: Store | null | undefined, prefs: Prefs): string
   return text;
 }
 
-/** Cards after the client-side chip and sort, newest first within a fit. */
-export function visible(items: Row[], hideFull: boolean, sort: Sort): Row[] {
-  const kept = hideFull ? items.filter((i) => !overCap(row(i.fields))) : items;
-  const time = (i: Row) => new Date(str(i.created_at)).getTime() || 0;
-  return [...kept].sort((a, b) => {
-    if (sort === "score") {
-      const diff =
-        (fitFor(b.assessment)?.rank ?? 0) - (fitFor(a.assessment)?.rank ?? 0);
-      if (diff) return diff;
-    }
-    return time(b) - time(a);
-  });
-}
-
 /** Whether a stage still belongs in the view the stage filter asks for. */
 export function stageMatches(
   stage: string,
@@ -279,23 +266,46 @@ export function stageMatches(
   kind: string,
 ): boolean {
   if (stage === "all") return true;
-  if (stage === "") return kind === "open";
+  if (stage === "" || stage === "open") return kind === "open";
   return stage === stageId;
 }
 
-/** The list after a dismiss: the card moves to its closed stage, and leaves
- * the list when the stage filter no longer covers it. */
-export function afterDismiss(items: Row[], id: string, stage: string): Row[] {
+export interface StageMove {
+  stage_id: string;
+  label: string;
+  kind: string;
+}
+/** The list after a stage change: the card takes its new stage, and leaves the
+ * list when the stage filter no longer covers it. Its next moves are unknown
+ * until the page reloads, so they are cleared rather than guessed. */
+export function afterMove(
+  items: Row[],
+  id: string,
+  to: StageMove,
+  stage: string,
+): Row[] {
   return items.flatMap((item) => {
     if (str(item.id) !== id) return [item];
-    const to = row(item.dismiss);
     const moved = {
       ...item,
       stage_id: to.stage_id,
       stage_label: to.label,
-      stage_kind: "terminal",
+      stage_kind: to.kind,
+      transitions: [],
       dismiss: null,
     };
-    return stageMatches(stage, str(to.stage_id), "terminal") ? [moved] : [];
+    return stageMatches(stage, to.stage_id, to.kind) ? [moved] : [];
   });
+}
+
+/** A dismiss is a move to the card's closed dismiss stage. */
+export function afterDismiss(items: Row[], id: string, stage: string): Row[] {
+  const item = items.find((each) => str(each.id) === id);
+  const to = row(item?.dismiss);
+  return afterMove(
+    items,
+    id,
+    { stage_id: str(to.stage_id), label: str(to.label), kind: "terminal" },
+    stage,
+  );
 }
