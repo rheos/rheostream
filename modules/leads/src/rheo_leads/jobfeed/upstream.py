@@ -26,12 +26,13 @@ Failures are :class:`UpstreamFailure` with a fixed code, or :class:`RunCut`. The
 ``str`` and ``repr`` are the code alone, and each is raised outside any ``except``
 block, so ``__cause__`` and ``__context__`` are ``None``: no message, body or
 organization id reaches an exception. :class:`~rheo_core.connectors.mcp_client.
-ToolRefused` (a call outside :data:`READ_ONLY_POLICY`) and the token's own
+ToolRefused` (a call outside :func:`read_only_policy`) and the token's own
 ``JobCancelled``/``JobLeaseLost`` pass through unchanged.
 """
 
 import json
 import math
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
@@ -45,11 +46,23 @@ from rheo_core.connectors.mcp_client import (
 
 from rheo_leads.jobfeed.presets import Action
 
-READ_ONLY_POLICY: Final = ToolPolicy(
-    {"list_accounts": None, "find_jobs": {"smart_search", "search", "get"}}
-)
-"""The only tools and actions the collector may call; the session refuses anything
-else before a byte is sent."""
+LIST_ACCOUNTS: Final = "list_accounts"
+FIND_JOBS: Final = "find_jobs"
+TOOL_PREFIX: Final = re.compile(r"[A-Za-z0-9_-]{0,64}")
+"""What the ``leads.jobfeed.tool_prefix`` setting may hold; anything else is a
+misconfigured endpoint."""
+
+
+def read_only_policy(prefix: str = "") -> ToolPolicy:
+    """The only tools and actions the collector may call, named on the wire with
+    ``prefix`` in front; the session refuses anything else before a byte is sent."""
+    return ToolPolicy(
+        {LIST_ACCOUNTS: None, FIND_JOBS: {"smart_search", "search", "get"}},
+        prefix=prefix,
+    )
+
+
+READ_ONLY_POLICY: Final = read_only_policy()
 
 START_SECONDS: Final = MINIMUM_START_SECONDS + 0.5
 """The least time a ``find_jobs`` call may start with. The session refuses a call
@@ -197,7 +210,8 @@ class Upstream:
 
     Entering enters ``session`` (which sends nothing) and then makes the two set-up
     calls; leaving exits the session. ``deadline`` is the run's absolute instant on
-    ``monotonic``.
+    ``monotonic``. ``tool_prefix`` goes in front of each tool name sent; the
+    session's policy must be :func:`read_only_policy` with the same prefix.
     """
 
     def __init__(
@@ -208,8 +222,11 @@ class Upstream:
         deadline: float,
         monotonic: Callable[[], float],
         sleep: Callable[[float], None],
+        tool_prefix: str = "",
     ) -> None:
         self._session = session
+        self._list_accounts = tool_prefix + LIST_ACCOUNTS
+        self._find_jobs = tool_prefix + FIND_JOBS
         self._token = token
         self._deadline = deadline
         self._monotonic = monotonic
@@ -239,7 +256,7 @@ class Upstream:
     def list_accounts(self) -> tuple[Account, ...]:
         """The accounts the connected login can act as."""
         result = self._raise(
-            self._checkpointed(lambda: self._session.call_tool("list_accounts", {}))
+            self._checkpointed(lambda: self._session.call_tool(self._list_accounts, {}))
         )
         document = _document(result)
         accounts = None if document is None else _accounts(document)
@@ -263,7 +280,8 @@ class Upstream:
         while True:
             self._pace(cutoff)
             outcome = self._checkpointed(
-                lambda: self._session.call_tool("find_jobs", arguments), cutoff=cutoff
+                lambda: self._session.call_tool(self._find_jobs, arguments),
+                cutoff=cutoff,
             )
             if (
                 isinstance(outcome, McpFailure)

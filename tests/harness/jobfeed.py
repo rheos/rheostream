@@ -970,6 +970,10 @@ class FakeMcpServer:
     requests: list[httpx.Request] = field(default_factory=list)
     counts: Counter[McpKey] = field(default_factory=Counter)
     starts: list[tuple[str, float]] = field(default_factory=list)
+    tool_prefix: str = ""
+    """With a prefix, tools are named with it: a ``tools/call`` of any other name
+    gets the plain-text 400 a live provider sends, and a prefixed one is answered
+    (and scripted, held and counted) under its name without the prefix."""
 
     def find_jobs_calls(self) -> list[tuple[str, dict[str, Any]]]:
         """Every ``find_jobs`` request's ``(action, params)``, in arrival order."""
@@ -1038,6 +1042,15 @@ class FakeMcpServer:
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         key = _mcp_key(request)
+        method, tool, action = key
+        if self.tool_prefix and method == "tools/call" and tool is not None:
+            if not tool.startswith(self.tool_prefix):
+                return httpx.Response(
+                    400,
+                    headers={"Content-Type": "text/plain; charset=utf-8"},
+                    text=f"invalid tool name {tool}: invalid resource name: {tool}",
+                )
+            key = (method, tool.removeprefix(self.tool_prefix), action)
         self.counts[key] += 1
         name = script_name(key)
         if self.clock is not None:

@@ -154,11 +154,17 @@ class FakeMcp:
         self.lookups.append(host)
         return [self.addresses.get(host, PUBLIC)]
 
-    def session(self, *, deadline: float = 420.0, url: str = RESOURCE) -> McpSession:
+    def session(
+        self,
+        *,
+        deadline: float = 420.0,
+        url: str = RESOURCE,
+        policy: ToolPolicy = POLICY,
+    ) -> McpSession:
         return McpSession(
             url,
             AccessToken(ACCESS),
-            POLICY,
+            policy,
             deadline=deadline,
             transport=httpx.MockTransport(self.handle),
             resolver=self.resolve,
@@ -319,6 +325,47 @@ def test_a_policy_is_frozen_and_required() -> None:
             {"list_accounts": None},  # type: ignore[arg-type]
             deadline=420.0,
         )
+
+
+PREFIXED = ToolPolicy(
+    {"list_accounts": None, "find_jobs": {"smart_search", "search", "get"}},
+    prefix="acme__",
+)
+
+
+def test_a_prefixed_policy_names_its_tools_with_the_prefix() -> None:
+    assert dict(PREFIXED) == {
+        "acme__list_accounts": None,
+        "acme__find_jobs": frozenset({"smart_search", "search", "get"}),
+    }
+    assert PREFIXED.refusal("acme__find_jobs", {"action": "get"}) is None
+    assert PREFIXED.refusal("acme__list_accounts", {}) is None
+    assert PREFIXED.logical("acme__find_jobs") == "find_jobs"
+    with pytest.raises(TypeError):
+        ToolPolicy({"list_accounts": None}, prefix=b"acme__")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "code"),
+    [
+        ("find_jobs", {"action": "search"}, "tool_not_allowed"),
+        ("list_accounts", {}, "tool_not_allowed"),
+        ("acme__send_message", {"action": "search"}, "tool_not_allowed"),
+        ("other__find_jobs", {"action": "search"}, "tool_not_allowed"),
+        ("acme__find_jobs", {"action": "apply"}, "action_not_allowed"),
+        ("acme__list_accounts", {"action": "get"}, "action_not_allowed"),
+    ],
+)
+def test_a_prefixed_policy_refuses_bare_and_other_names_and_actions(
+    name: str, arguments: dict[str, object], code: str
+) -> None:
+    fake = FakeMcp()
+    with fake.session(policy=PREFIXED) as session:
+        ready(session)
+        with pytest.raises(ToolRefused) as caught:
+            session.call_tool(name, arguments)
+    assert_content_free(caught.value, code)
+    assert fake.methods() == ["initialize", "notifications/initialized"]
 
 
 # --- one request per method ---------------------------------------------------
@@ -1071,6 +1118,19 @@ def test_a_tool_without_an_action_logs_none(trace_on: pytest.LogCaptureFixture) 
         ready(session)
         session.call_tool("list_accounts", {})
     assert traced(trace_on)[-1]["action"] == "-"
+
+
+def test_a_prefixed_tool_is_sent_prefixed_and_traced_by_its_logical_name(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    with fake.session(policy=PREFIXED) as session:
+        ready(session)
+        session.call_tool("acme__find_jobs", SEARCH)
+    assert _body(fake.requests[-1])["params"]["name"] == "acme__find_jobs"
+    tool = traced(trace_on)[-1]
+    assert (tool["tool"], tool["action"]) == ("find_jobs", "search")
+    assert not [r for r in trace_on.records if "acme" in r.getMessage()]
 
 
 def test_an_event_stream_answer_logs_its_event_and_byte_counts(

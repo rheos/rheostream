@@ -995,6 +995,79 @@ def test_a_changed_resource_url_makes_no_request_and_records_misconfigured(
     quietly_succeeded(c)
 
 
+TOOL_PREFIX_ENV = "RHEO__leads__jobfeed__tool_prefix"
+
+
+def tool_names(mcp: FakeMcpServer) -> list[str]:
+    """The tool name of every ``tools/call`` exactly as it was sent."""
+    return [
+        body["params"]["name"]
+        for body in (json.loads(r.content) for r in mcp.requests)
+        if body.get("method") == "tools/call"
+    ]
+
+
+def test_a_tool_prefix_sends_the_prefixed_names_and_the_run_succeeds(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TOOL_PREFIX_ENV, "acme__")
+    mcp.tool_prefix = "acme__"
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    names = tool_names(mcp)
+    assert names[0] == "acme__list_accounts"
+    assert names.count("acme__list_accounts") == 1
+    assert set(names[1:]) == {"acme__find_jobs"}
+    assert last_error(c) is None
+    quietly_succeeded(c)
+
+
+def test_bare_names_against_a_prefixed_provider_stop_at_the_first_call(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure the setting exists for: no prefix set, the provider answers the
+    bare name with a plain-text 400."""
+    monkeypatch.delenv(TOOL_PREFIX_ENV, raising=False)
+    mcp.tool_prefix = "acme__"
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    assert tool_names(mcp) == ["list_accounts"]
+    assert last_error(c) == "upstream_unavailable"
+    quietly_succeeded(c)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["acme.", "acme__/", "ac me__", "acm\u00e9__", "a" * 65],
+    ids=["dot", "slash", "space", "non-ascii", "too-long"],
+)
+def test_an_invalid_tool_prefix_makes_no_request_and_records_misconfigured(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    prefix: str,
+) -> None:
+    c = connected_collector(intake, served)
+    monkeypatch.setenv(TOOL_PREFIX_ENV, prefix)
+    run_at(c, clock)
+    assert served.requests == [] and mcp.requests == []
+    assert last_error(c) == "endpoint_misconfigured"
+    after = stored(c.owner)
+    assert after.authorization_state == "connected"
+    assert after.run_claimed_at is None
+    quietly_succeeded(c)
+
+
 def test_a_token_endpoint_that_turned_private_gets_no_byte(
     intake: Intake,
     served: FakeAuthorizationServer,

@@ -22,6 +22,7 @@ from rheo_leads.jobfeed.upstream import (
     RunCut,
     Upstream,
     UpstreamFailure,
+    read_only_policy,
 )
 
 # The specified values, written out so a change to the module's constants fails.
@@ -211,6 +212,9 @@ class CountingMcp:
 
     tool: Callable[[dict[str, Any]], httpx.Response] | None = None
     requests: list[httpx.Request] = field(default_factory=list)
+    prefix: str = ""
+    """The prefix this server names its tools with; with one set, any other name
+    is answered the way a live provider answers an unknown tool name."""
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -227,9 +231,13 @@ class CountingMcp:
             )
         if body["method"] == "notifications/initialized":
             return httpx.Response(202)
+        name = body["params"]["name"]
+        if self.prefix:
+            if not name.startswith(self.prefix):
+                return unknown_tool(name)
+            name = name.removeprefix(self.prefix)
         if self.tool is not None:
             return self.tool(body)
-        name = body["params"]["name"]
         document: dict[str, Any] = (
             {"accounts": [{"org_uid": ORG, "role": "TALENT", "name": "Freelancer"}]}
             if name == "list_accounts"
@@ -254,13 +262,26 @@ class CountingMcp:
         return found
 
 
+def unknown_tool(name: str) -> httpx.Response:
+    return httpx.Response(
+        400,
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+        text=f"invalid tool name {name}: invalid resource name: {name}",
+    )
+
+
 def real_upstream(
-    mcp: CountingMcp, rig: Rig, *, deadline: float = DEADLINE
+    mcp: CountingMcp,
+    rig: Rig,
+    *,
+    deadline: float = DEADLINE,
+    prefix: str = "",
+    policy_prefix: str | None = None,
 ) -> Upstream:
     session = McpSession(
         RESOURCE,
         AccessToken(ACCESS),
-        READ_ONLY_POLICY,
+        read_only_policy(prefix if policy_prefix is None else policy_prefix),
         deadline=deadline,
         transport=httpx.MockTransport(mcp.handle),
         resolver=lambda host: [PUBLIC],
@@ -272,6 +293,7 @@ def real_upstream(
         deadline=deadline,
         monotonic=rig.clock.monotonic,
         sleep=rig.clock.sleep,
+        tool_prefix=prefix,
     )
 
 
@@ -323,6 +345,75 @@ def test_read_only_policy_refuses_before_any_send(
         refused = raises(lambda: call(upstream), ToolRefused)
     assert str(refused) in {"tool_not_allowed", "action_not_allowed"}
     assert len(mcp.requests) == sent_before == 2
+
+
+# --- a provider that names its tools with a prefix -----------------------------
+
+
+def test_a_prefixed_policy_is_the_allowlist_under_the_prefix() -> None:
+    assert dict(read_only_policy("acme__")) == {
+        "acme__list_accounts": None,
+        "acme__find_jobs": frozenset({"smart_search", "search", "get"}),
+    }
+
+
+def test_a_prefix_puts_the_prefixed_names_on_the_wire(rig: Rig) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        accounts = upstream.list_accounts()
+        upstream.find_jobs("search", ORG, {"limit": 10})
+    assert accounts == (Account(ORG, "Freelancer", is_talent=True),)
+    assert mcp.methods()[2:] == [
+        ("tools/call", "acme__list_accounts", None),
+        ("tools/call", "acme__find_jobs", "search"),
+    ]
+    assert json.loads(mcp.requests[2].content)["params"] == {
+        "name": "acme__list_accounts",
+        "arguments": {},
+    }
+    assert json.loads(mcp.requests[3].content)["params"]["arguments"] == {
+        "action": "search",
+        "org_uid": ORG,
+        "params": {"limit": 10},
+    }
+
+
+def test_bare_names_against_a_prefixed_provider_fail_as_it_answers(rig: Rig) -> None:
+    """The live failure the prefix exists for: a bare name gets a plain-text 400."""
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig) as upstream:
+        failure = raises(lambda: upstream.list_accounts(), UpstreamFailure)
+    assert_content_free(failure, "protocol")
+    assert mcp.methods()[2:] == [("tools/call", "list_accounts", None)]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda u: u._session.call_tool("list_accounts", {}),
+        lambda u: u._session.call_tool("find_jobs", {"action": "search"}),
+        lambda u: u._session.call_tool("acme__submit_proposal", {"job": "~0212"}),
+        lambda u: u.find_jobs("apply", ORG, {}),
+        lambda u: u._session.call_tool("acme__list_accounts", {"action": "get"}),
+    ],
+    ids=["bare-accounts", "bare-find", "other-tool", "apply", "accounts-action"],
+)
+def test_a_prefixed_policy_refuses_before_any_send(
+    rig: Rig, call: Callable[[Any], object]
+) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        refused = raises(lambda: call(upstream), ToolRefused)
+    assert str(refused) in {"tool_not_allowed", "action_not_allowed"}
+    assert len(mcp.requests) == 2
+
+
+def test_a_prefix_the_policy_does_not_carry_is_refused(rig: Rig) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__", policy_prefix="") as upstream:
+        refused = raises(lambda: upstream.list_accounts(), ToolRefused)
+    assert str(refused) == "tool_not_allowed"
+    assert len(mcp.requests) == 2
 
 
 def test_refused_credential_is_terminal_and_content_free(rig: Rig) -> None:

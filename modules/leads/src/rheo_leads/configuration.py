@@ -52,6 +52,16 @@ JOBFEED_SETTINGS: Final = (
         explicit_per_workspace=False,
         default=(),
     ),
+    # Put in front of each tool name the collector calls, for a provider that
+    # names its tools with a prefix. The run checks its shape.
+    KeySpec(
+        key="leads.jobfeed.tool_prefix",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
 )
 SETTINGS: Final = (
     (JOBSEARCH_SETTING,)
