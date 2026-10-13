@@ -621,7 +621,7 @@ owner connects. Owner-facing behaviour is summarized in the
 
 ### Settings
 
-All six are deployment settings. Set them in the environment of both `core` (connect,
+All seven are deployment settings. Set them in the environment of both `core` (connect,
 reconnect, the callback) and `worker` (collection); a Coolify deployment attaches its
 `.env` to every service. Values below are placeholders.
 
@@ -632,6 +632,7 @@ RHEO__connectors__oauth_client__redirect=identity
 RHEO__connectors__oauth_client__loopback_port=33419
 RHEO__leads__jobfeed__resource_url=https://mcp.example.com/mcp
 RHEO__leads__jobfeed__job_hosts=jobs.example.com
+RHEO__leads__jobfeed__tool_prefix=acme__
 ```
 
 - `connectors.oauth_client.enabled` (default `false`) is the operator switch. While it
@@ -655,6 +656,11 @@ RHEO__leads__jobfeed__job_hosts=jobs.example.com
   must use. A row whose URL is not `https` on one of these hosts is counted as an
   error and dropped; stored posting URLs are rebuilt on the first host in the list.
   Empty (the default) also stops a run before it starts.
+- `leads.jobfeed.tool_prefix` (default empty) goes in front of each tool name a run
+  calls, so `acme__` sends `acme__list_accounts` and `acme__find_jobs`. A provider may
+  name its tools with a prefix; set this to match what its `tools/list` or a working
+  client uses. Letters, digits, `_` and `-` only, at most 64; any other value makes a
+  run record `endpoint_misconfigured` before it sends anything.
 
 Environment changes take effect when `core` and `worker` restart. The connection pins
 the endpoints it discovered at connect time, so a changed `resource_url` takes effect

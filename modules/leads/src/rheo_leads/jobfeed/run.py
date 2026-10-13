@@ -101,11 +101,12 @@ from rheo_leads.jobfeed.state import (
     write_transient,
 )
 from rheo_leads.jobfeed.upstream import (
-    READ_ONLY_POLICY,
+    TOOL_PREFIX,
     Account,
     RunCut,
     Upstream,
     UpstreamFailure,
+    read_only_policy,
 )
 from rheo_leads.pipeline_common import jobsearch_enabled
 
@@ -118,6 +119,7 @@ RUN_DEADLINE_SECONDS: Final = 420.0
 """The whole run's budget on the monotonic clock, started at the claim."""
 RESOURCE_URL_KEY: Final = "leads.jobfeed.resource_url"
 JOB_HOSTS_KEY: Final = "leads.jobfeed.job_hosts"
+TOOL_PREFIX_KEY: Final = "leads.jobfeed.tool_prefix"
 INTERNAL_ERROR: Final = "internal_error"
 INTERNAL_ERROR_LOG: Final = "jobfeed_internal_error %s"
 
@@ -198,6 +200,7 @@ class _Run:
     client: ClientAuth | None
     generation: int
     deadline: float = 0.0
+    tool_prefix: str = ""
 
     def auth(self) -> ClientAuth:
         """The stored client; a run reaches a request only with one."""
@@ -288,7 +291,7 @@ def session_phase(
     session = McpSession(
         run.connection.resource_url,
         access,
-        READ_ONLY_POLICY,
+        read_only_policy(run.tool_prefix),
         deadline=run.deadline,
         transport=deps.transport,
         resolver=deps.resolver,
@@ -304,6 +307,7 @@ def session_phase(
             deadline=run.deadline,
             monotonic=deps.clock,
             sleep=deps.sleep,
+            tool_prefix=run.tool_prefix,
         ) as upstream:
             selection = _select(run, upstream.list_accounts())
             if isinstance(selection, str):
@@ -486,9 +490,13 @@ def _collect(
     resource_url = settings.get_str(RESOURCE_URL_KEY)
     if not resource_url or not settings.get_list(JOB_HOSTS_KEY):
         return
-    if resource_url != connection.resource_url:
+    tool_prefix = settings.get_str(TOOL_PREFIX_KEY)
+    if resource_url != connection.resource_url or not TOOL_PREFIX.fullmatch(
+        tool_prefix
+    ):
         _end(uow, run, Transient(ENDPOINT_MISCONFIGURED), backoff=False)
         return
+    run.tool_prefix = tool_prefix
     # Step 2: the claim.
     claimed = claim_run(
         job_ctx,

@@ -53,18 +53,19 @@ outside any ``except`` block, so ``__cause__`` and ``__context__`` are ``None``.
 when the session is built), every request that was attempted logs exactly one INFO
 line on the ``rheo_core.connectors.mcp_trace`` logger once it ends, in the fixed
 form of :data:`TRACE_FORMAT`; ``-`` marks a field that does not apply. The fields
-are only: the JSON-RPC method; for ``tools/call`` the tool name and its ``action``
-(both already passed the policy); the HTTP status; the egress code and detail when
-the request failed in egress (or ``not_started`` when too little time was left to
-send it); the response media type (no parameters; ``other`` when it is not a plain
-token pair); whether an ``Mcp-Session-Id`` header came back; on ``initialize`` the
-``protocolVersion`` the server returned when it matches the version pattern, else
-``missing`` or ``invalid``; a JSON-RPC ``error.code`` (an integer only); for a tool
-result whether ``isError`` was true and its tool code; the number of event-stream
-events and of body bytes read; and the code the request ended with (``ok`` or the
-:class:`McpFailure` code). Never a header value other than the media type, a body,
-a message, the token, an argument other than ``action``, or the URL. A call the
-policy refuses or one out of order sends nothing and logs nothing.
+are only: the JSON-RPC method; for ``tools/call`` the tool name, without the
+policy's prefix, and its ``action`` (both already passed the policy); the HTTP
+status; the egress code and detail when the request failed in egress (or
+``not_started`` when too little time was left to send it); the response media type
+(no parameters; ``other`` when it is not a plain token pair); whether an
+``Mcp-Session-Id`` header came back; on ``initialize`` the ``protocolVersion`` the
+server returned when it matches the version pattern, else ``missing`` or
+``invalid``; a JSON-RPC ``error.code`` (an integer only); for a tool result whether
+``isError`` was true and its tool code; the number of event-stream events and of
+body bytes read; and the code the request ended with (``ok`` or the
+:class:`McpFailure` code). Never a header value other than the media type, a body, a
+message, the token, an argument other than ``action``, or the URL. A call the policy
+refuses or one out of order sends nothing and logs nothing.
 """
 
 import json
@@ -169,15 +170,25 @@ class ToolRefused(Exception):
 @final
 class ToolPolicy(Mapping[str, frozenset[str] | None]):
     """A frozen map from tool name to its allowed ``action`` values; ``None`` means
-    the tool takes no ``action`` argument."""
+    the tool takes no ``action`` argument.
 
-    __slots__ = ("_tools",)
+    ``prefix`` is put in front of every name given: the map's keys, and the only
+    names the policy allows, are the names on the wire. :meth:`logical` takes the
+    prefix off again, for the trace."""
 
-    def __init__(self, tools: Mapping[str, Iterable[str] | None]) -> None:
+    __slots__ = ("_prefix", "_tools")
+
+    def __init__(
+        self, tools: Mapping[str, Iterable[str] | None], *, prefix: str = ""
+    ) -> None:
+        if type(prefix) is not str:
+            raise TypeError("a tool prefix is a string")
+        self._prefix = prefix
         frozen: dict[str, frozenset[str] | None] = {}
-        for name, actions in tools.items():
-            if not isinstance(name, str):
+        for logical, actions in tools.items():
+            if not isinstance(logical, str):
                 raise TypeError("tool names are strings")
+            name = prefix + logical
             if actions is None:
                 frozen[name] = None
                 continue
@@ -197,6 +208,10 @@ class ToolPolicy(Mapping[str, frozenset[str] | None]):
 
     def __len__(self) -> int:
         return len(self._tools)
+
+    def logical(self, name: str) -> str:
+        """``name`` without the policy's prefix; meant for an allowed name."""
+        return name.removeprefix(self._prefix)
 
     def refusal(self, name: object, arguments: object) -> RefusalCode | None:
         """Why ``name`` with ``arguments`` is not allowed, or ``None``. The name and
@@ -671,12 +686,13 @@ class McpSession:
             params,
         )
         # Both passed the policy: the name is an allowed tool and the action, when
-        # there is one, is in that tool's set.
+        # there is one, is in that tool's set. The trace names the tool without the
+        # policy's prefix.
         action = snapshot.get("action") if snapshot is not None else None
         with _Trace(
             self._trace,
             "tools/call",
-            tool=name,
+            tool=self._policy.logical(name),
             action=action if type(action) is str else None,
         ) as trace:
             _, result = self._exchange(body, request_id, trace)
