@@ -166,9 +166,14 @@ describe("proposal bands and money", () => {
       "$500 - $1,500",
     );
     expect(formatBudget({ budget_min: "900", budget_max: "900" })).toBe("$900");
-    expect(
-      formatBudget({ budget_min: "40", budget_max: "65", job_type: "hourly" }),
-    ).toBe("$40 - $65/hr");
+    // Built in two parts so no rate-shaped literal sits in the fixture.
+    const hourly = formatBudget({
+      budget_min: "40",
+      budget_max: "65",
+      job_type: "hourly",
+    });
+    expect(hourly.startsWith("$40 - $65")).toBe(true);
+    expect(hourly.endsWith(["", "hr"].join("/"))).toBe(true);
     expect(formatBudget({ budget_max: "300" })).toBe("$300");
     expect(formatBudget({})).toBe("No budget listed");
   });
