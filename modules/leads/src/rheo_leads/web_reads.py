@@ -16,6 +16,7 @@ from sqlalchemy import select
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
 from rheo_leads.jobfeed import dependencies
+from rheo_leads.queue_view import OPERATIONS as QUEUE_OPERATIONS
 from rheo_leads.references import identifier, ref
 from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import pipeline as p
@@ -195,4 +196,4 @@ OPERATIONS = (
         ),
         receipt,
     ),
-)
+) + QUEUE_OPERATIONS
