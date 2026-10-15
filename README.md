@@ -1,7 +1,8 @@
 # rheoStream
 
-rheoStream runs agent-accessible workspace operations, background jobs and
-persistent memory through a self-hostable FastAPI core, MCP facade and Next.js shell.
+rheoStream is an open framework for agent-assisted work. It runs agent-accessible
+workspace operations, background jobs and persistent memory through a FastAPI core,
+MCP facade and Next.js shell.
 
 ## Mechanisms you can inspect
 
