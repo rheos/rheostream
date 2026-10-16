@@ -1,4 +1,5 @@
 {
   "apps/web/src/theme/fonts/geist-latin-wght-normal.woff2": "the vendored Geist web font, a compressed binary; the licence beside it (OFL.txt) is text and is still searched",
-  "apps/web/src/theme/fonts/sora-latin-wght-normal.woff2": "Vendored Sora Latin variable font from @fontsource-variable/sora 5.3.0; the adjacent Sora-OFL.txt license remains searchable."
+  "apps/web/src/theme/fonts/sora-latin-wght-normal.woff2": "Vendored Sora Latin variable font from @fontsource-variable/sora 5.3.0; the adjacent Sora-OFL.txt license remains searchable.",
+  "docs/media/explainer-plate-iii.jpg": "README thumbnail for the explainer video, a JPEG still of plate III; the README text beside it is searched"
 }
