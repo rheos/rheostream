@@ -8,6 +8,14 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR cancels that PR's run still in progress (#379): 31 runs,
+# about 1,000 billed minutes in the first half of October, finished for commits
+# nobody would merge. Main is keyed by SHA and never cancelled, because Deploy
+# flagship only deploys a commit whose push run completed successfully.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   repository-checks:
     name: Repository checks
