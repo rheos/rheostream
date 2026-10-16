@@ -56,11 +56,14 @@ from rheo_core.evidence.extract import NOOP_EVIDENCE, DigestBatch
 from rheo_core.evidence.providers import (
     FAKE_PROVIDER,
     PROVIDERS,
+    ExtractionDeferred,
     FakeExtractionProvider,
     providers,
 )
 from rheo_core.evidence.record import NewEvidence, record_evidence
 from rheo_core.evidence.service import (
+    EXTRACTION_DEFER,
+    EXTRACTION_DEFERRED_LOG,
     EXTRACTION_FAILED_LOG,
     EXTRACTION_MAX_ATTEMPTS,
     MAX_UNITS_PER_JOB_KEY,
@@ -151,7 +154,28 @@ class _FailingFor:
         return self._fake.extract(batch)
 
 
-def _install(monkeypatch: pytest.MonkeyPatch, provider: _FailingFor) -> _FailingFor:
+class _LimitedFor:
+    """A provider whose account is over its usage limit for any batch holding
+    :data:`FAILING_MARKER` (#376), and that answers like the ``fake`` otherwise."""
+
+    def __init__(self) -> None:
+        self.calls: list[DigestBatch] = []
+        self._fake = FakeExtractionProvider()
+
+    @property
+    def name(self) -> str:
+        return FAKE_PROVIDER
+
+    def extract(self, batch: DigestBatch) -> Mapping[str, object]:
+        self.calls.append(batch)
+        if any(FAILING_MARKER in item.text for item in batch.items):
+            raise ExtractionDeferred("usage_limited")
+        return self._fake.extract(batch)
+
+
+def _install[P: (_FailingFor, _LimitedFor)](
+    monkeypatch: pytest.MonkeyPatch, provider: P
+) -> P:
     providers()  # the built-ins first, so the swap is undone onto them
     monkeypatch.setitem(PROVIDERS, FAKE_PROVIDER, provider)
     return provider
@@ -933,6 +957,56 @@ def test_a_failing_partition_backs_off_and_never_blocks_another(
         assert all(FAILING_MARKER in t for t in texts) or not any(
             FAILING_MARKER in t for t in texts
         )
+
+
+def test_a_usage_limit_defers_without_counting_and_never_gaps(
+    monkeypatch: pytest.MonkeyPatch,
+    recording: EvidenceWorkspace,
+    caplog: pytest.LogCaptureFixture,
+    now: datetime,
+) -> None:
+    """#376: a limit that outlasts every back-off step leaves the evidence pending,
+    its attempt count untouched, and logs the deferral by its fixed code."""
+    provider = _install(monkeypatch, _LimitedFor())
+    limited = _record(
+        recording,
+        recording.context(ContextPurpose.INTERNAL_ANALYSIS),
+        [f"First {FAILING_MARKER} turn.", f"Second {FAILING_MARKER} turn."],
+        at=now - timedelta(minutes=10),
+    )
+
+    at = now
+    with caplog.at_level(logging.WARNING, logger=LOG_NAME):
+        for _ in range(EXTRACTION_MAX_ATTEMPTS + 2):
+            batch = _drain(recording, now=at)
+            assert batch.units == ()
+            assert batch.follow_up_at == at + EXTRACTION_DEFER
+            for record in limited:
+                row = _row(recording, record)
+                assert row.state == STATE_PENDING and row.settled_at is None
+                assert row.extraction_attempts == 0
+                assert row.retry_after == at + EXTRACTION_DEFER
+            # Still waiting just before the deferral ends: no provider call.
+            calls = len(provider.calls)
+            assert _drain(recording, now=at + EXTRACTION_DEFER / 2).units == ()
+            assert len(provider.calls) == calls
+            at += EXTRACTION_DEFER
+
+    assert len(provider.calls) == EXTRACTION_MAX_ATTEMPTS + 2
+    lines = [r for r in caplog.records if r.getMessage() == EXTRACTION_DEFERRED_LOG]
+    assert len(lines) == EXTRACTION_MAX_ATTEMPTS + 2
+    for line in lines:
+        assert getattr(line, "failure_kind", None) == "usage_limited"
+        assert getattr(line, "unit_count", None) == 2
+        assert FAILING_MARKER not in repr(vars(line))
+    assert not [r for r in caplog.records if r.getMessage() == EXTRACTION_FAILED_LOG]
+
+    # Once the limit lifts, the same evidence extracts and settles.
+    monkeypatch.setitem(PROVIDERS, FAKE_PROVIDER, FakeExtractionProvider())
+    batch = _drain(recording, now=at)
+    assert len(batch.units) == 2
+    for record in limited:
+        assert _row(recording, record).state == STATE_SETTLED
 
 
 def test_a_past_retry_after_on_a_claimed_row_schedules_no_follow_up(

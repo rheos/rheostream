@@ -114,6 +114,23 @@ _DENIED_STUB = """#!/usr/bin/env python3
 print('{"type": "result", "is_error": true, "result": "tool_denied"}')
 """
 
+# The executable's own shape when the subscription's limit refuses the run (#376):
+# ``subtype`` says success, the prose names the limit, the status is 429.
+_USAGE_LIMIT_STUB = """#!/usr/bin/env python3
+print(
+    '{"type": "result", "subtype": "success", "is_error": true, '
+    '"api_error_status": 429, '
+    '"result": "You have hit your weekly limit, resets 1am (UTC)"}'
+)
+"""
+
+_SERVER_ERROR_STUB = """#!/usr/bin/env python3
+print(
+    '{"type": "result", "is_error": true, "api_error_status": 500, '
+    '"result": "API Error: 500"}'
+)
+"""
+
 
 def _write_stub(path: Path, body: str) -> Path:
     path.write_text(body)
@@ -868,6 +885,23 @@ def test_tool_denied_maps_to_tool_denied(
     )
     assert event.type == "failure"
     assert event.kind.value == "tool_denied"
+
+
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [(_USAGE_LIMIT_STUB, "usage_limited"), (_SERVER_ERROR_STUB, "runtime_error")],
+)
+def test_a_429_error_result_maps_to_usage_limited_and_no_other_status_does(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str, kind: str
+) -> None:
+    stub = _write_stub(tmp_path / "claude-stub", body)
+    seed = _fill_seed(tmp_path / "seed")
+    _configure(monkeypatch, tmp_path, executable=stub, seed=seed)
+    event = drain_until_terminal(
+        ClaudeCliRuntime().start(_request(), spawn=_spawn(tmp_path))
+    )
+    assert event.type == "failure"
+    assert event.kind.value == kind
 
 
 def test_exit_without_result_is_stream_truncated(

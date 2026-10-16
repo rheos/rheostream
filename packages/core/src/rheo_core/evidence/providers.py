@@ -23,7 +23,10 @@ stand-in. ``TEST_PROFILE`` is imported inside the registering function: its home
 here at module level would put all of that on this package's import path.
 
 **A transient fault raises.** A provider signals a fault it may recover from by raising
-any exception; the caller owns retry and backoff.
+any exception; the caller owns retry and backoff. One raise means something else:
+:class:`ExtractionDeferred` says the provider cannot run at all for now, for a reason
+the evidence did not cause (a usage limit), so the caller waits without counting an
+attempt against the evidence (#376).
 """
 
 import threading
@@ -40,6 +43,15 @@ FAKE_PROVIDER: Final = "fake"
 FAKE_EXTRACTION_MARKER: Final = "[fake-extract]"
 """The fixed marker :class:`FakeExtractionProvider` answers to: an item whose text
 contains it yields a candidate, and anything else yields ``null``."""
+
+
+class ExtractionDeferred(Exception):
+    """The provider cannot run now, whatever the batch holds; ``kind`` names why in a
+    fixed word. Raised by a provider, never with evidence text in it."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
 
 
 class ExtractionProvider(Protocol):

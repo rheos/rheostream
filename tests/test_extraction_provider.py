@@ -43,6 +43,7 @@ from rheo_core.evidence.extract import (
     digest,
     extraction_response_schema,
 )
+from rheo_core.evidence.providers import ExtractionDeferred
 from rheo_core.runtime import AdapterRegistry
 from rheo_core.runtime.extraction import (
     ADAPTER_UNAVAILABLE,
@@ -429,6 +430,23 @@ def test_every_run_without_a_structured_result_raises(
 
     assert raised.value.kind == kind
     # Content-free: the adapter's own detail text never rides on the exception.
+    assert "quoted text" not in str(raised.value)
+    _served(adapter, popen)
+    assert not _throwaway_root(adapter).exists()
+
+
+def test_a_usage_limit_raises_a_deferral_not_a_failure(
+    tokens: _Tokens, popen: PopenGuard
+) -> None:
+    """#376: the evidence did not cause it, so the drain must not count it."""
+    adapter = ScriptedAdapter(
+        [FailureEvent(kind=FailureKind.USAGE_LIMITED, detail="quoted text")]
+    )
+    with pytest.raises(ExtractionDeferred) as raised:
+        _provider(adapter, tokens).extract(_batch())
+
+    assert raised.value.kind == "usage_limited"
+    assert not isinstance(raised.value, ExtractionRunFailed)
     assert "quoted text" not in str(raised.value)
     _served(adapter, popen)
     assert not _throwaway_root(adapter).exists()

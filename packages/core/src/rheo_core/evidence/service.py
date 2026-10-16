@@ -40,6 +40,13 @@ counts the attempt and backs off on the job substrate's schedule, or settles
 then succeeds, so the counts commit, and because ``extraction_attempts`` leads the
 anchor order the next drain takes another partition first.
 
+**A deferral is not a failure (#376).** A provider that raises
+:class:`~rheo_core.evidence.providers.ExtractionDeferred` (its account's usage limit
+refused the run) says nothing about the evidence. Every unit in the batch waits
+:data:`EXTRACTION_DEFER` without counting an attempt, so a limit that lasts days never
+turns pending evidence into gaps; a unit whose source expires while it waits still
+settles ``gap/expired_pending`` at step 1.
+
 **Workspace-wide acceptance checks run before the model call (#217).** A claim's
 extraction commits only with the drain that runs it, so a fault that rolls the whole
 drain back (no audit sink for the accepting module, no usable retention policy) would
@@ -55,9 +62,10 @@ native key or anything a provider said.
 """
 
 import logging
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
@@ -86,7 +94,7 @@ from rheo_core.evidence.local_authority import (
     LOCAL_PRODUCER_KIND,
     LocalEvidenceAuthority,
 )
-from rheo_core.evidence.providers import resolve_provider
+from rheo_core.evidence.providers import ExtractionDeferred, resolve_provider
 from rheo_core.log_config import content_free_extra
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -116,6 +124,16 @@ Only the first four back-off steps are ever used: 5, 20, 80 and 320 seconds."""
 MAX_UNITS_PER_JOB_KEY: Final = "automatic_memory.max_units_per_job"
 
 EXTRACTION_FAILED_LOG: Final = "evidence_extraction_failed"
+
+EXTRACTION_DEFER: Final = timedelta(minutes=15)
+"""How long a deferred batch's units wait before a drain tries them again. One cheap
+refused call per partition per wait while a usage limit lasts."""
+
+EXTRACTION_DEFERRED_LOG: Final = "evidence_extraction_deferred"
+
+_FAILURE_KIND: Final = re.compile(r"[a-z_]{1,40}")
+"""A fixed failure code a provider exception may carry as ``kind``; the logs keep it
+only when it has this shape, so no message text can ride along."""
 
 ACCEPTANCE_FAILED_LOG: Final = "evidence_acceptance_failed"
 """The warning :func:`defer_unit` logs when it settles a unit ``gap/acceptance_failed``
@@ -404,6 +422,20 @@ def _back_off(
             )
 
 
+def _defer(uow: UnitOfWork, rows: Sequence[Any], *, now: datetime) -> None:
+    """Make every row wait :data:`EXTRACTION_DEFER`, its attempt count untouched."""
+    uow.connection.execute(
+        update(evidence_unit)
+        .where(evidence_unit.c.id.in_([row.id for row in rows]))
+        .values(retry_after=now + EXTRACTION_DEFER)
+    )
+
+
+def _failure_kind(exc: Exception) -> str | None:
+    kind = getattr(exc, "kind", None)
+    return kind if isinstance(kind, str) and _FAILURE_KIND.fullmatch(kind) else None
+
+
 def claim_units(
     uow: HandlerUnitOfWork,
     *,
@@ -520,14 +552,30 @@ def claim_units(
         ),
     )
     failure: str | None = None
+    failure_kind: str | None = None
+    deferred: str | None = None
     candidates: dict[str, SanitizedEvidence] = {}
     try:
         provider = resolve_provider()
         if provider is None:
             raise _ExtractionProviderMissing
         candidates = validate_extraction(batch, provider.extract(batch))
+    except ExtractionDeferred as exc:
+        deferred = _failure_kind(exc) or "deferred"
     except Exception as exc:  # any provider fault is contained to this partition
         failure = type(exc).__name__
+        failure_kind = _failure_kind(exc)
+    if deferred is not None:
+        _defer(uow, [row for row, _ in verified], now=now)
+        logger.warning(
+            EXTRACTION_DEFERRED_LOG,
+            extra=content_free_extra(
+                {"failure_kind": deferred, "unit_count": len(verified)}
+            ),
+        )
+        return ClaimedBatch(
+            units=(), follow_up_at=_follow_up_at(uow, now=now, taken=taken, more=more)
+        )
     if failure is not None:
         _back_off(
             uow,
@@ -535,11 +583,16 @@ def claim_units(
             final_outcome=OUTCOME_EXTRACTION_FAILED,
             now=now,
         )
-        # The type name and a count only: a provider may fill a message with text.
+        # The type name, a fixed failure code when the exception carries one, and a
+        # count only: a provider may fill a message with text.
         logger.warning(
             EXTRACTION_FAILED_LOG,
             extra=content_free_extra(
-                {"error_type": failure, "unit_count": len(verified)}
+                {
+                    "error_type": failure,
+                    "failure_kind": failure_kind or "-",
+                    "unit_count": len(verified),
+                }
             ),
         )
         return ClaimedBatch(

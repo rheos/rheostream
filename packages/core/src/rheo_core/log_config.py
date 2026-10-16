@@ -171,6 +171,7 @@ def attach_access_redaction() -> None:
 ALLOWED_EXTRA_FIELDS: Final = frozenset(
     {
         "error_type",
+        "failure_kind",
         "unit_count",
         "operation_id",
         "evidence_id",
@@ -184,7 +185,9 @@ ALLOWED_EXTRA_FIELDS: Final = frozenset(
 acceptance: "a check that nothing in a field can carry evidence text ... perhaps
 with an allowlist of field names"). Adding a field here is a deliberate, reviewed
 decision that the new name can only ever hold a type name, a count or an id —
-never a native key, a record body or anything a provider said. ``extra_dropped`` is
+never a native key, a record body or anything a provider said. ``failure_kind`` holds
+a fixed lower-snake failure code, checked against a pattern at its one call site
+(``evidence/service.py``). ``extra_dropped`` is
 the one field :func:`content_free_extra` itself writes, never a call site."""
 
 _MAX_FIELD_LENGTH: Final = 100

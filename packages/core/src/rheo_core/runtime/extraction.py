@@ -49,6 +49,7 @@ from rheo_contracts import (
     AudienceKind,
     CancelledEvent,
     FailureEvent,
+    FailureKind,
     FinalOutputEvent,
     RuntimeHandle,
     RuntimeLimits,
@@ -58,7 +59,7 @@ from rheo_contracts import (
 from rheo_contracts.source_units import MemoryKind
 
 from rheo_core.evidence.extract import DigestBatch, extraction_response_schema
-from rheo_core.evidence.providers import register_provider
+from rheo_core.evidence.providers import ExtractionDeferred, register_provider
 from rheo_core.refs import uuid7
 from rheo_core.routing.config import MCP, RoutingConfig
 from rheo_core.routing.url_for import url_for
@@ -323,6 +324,9 @@ class ClaudeCliExtractionProvider:
                     raise ExtractionRunFailed(NO_STRUCTURED_RESULT)
                 return structured
             if isinstance(event, FailureEvent):
+                if event.kind is FailureKind.USAGE_LIMITED:
+                    # Not the evidence's fault: the drain waits without counting it.
+                    raise ExtractionDeferred(event.kind.value)
                 raise ExtractionRunFailed(event.kind.value)
             if isinstance(event, CancelledEvent):
                 raise ExtractionRunFailed(RUN_CANCELLED)
