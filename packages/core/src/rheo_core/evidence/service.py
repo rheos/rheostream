@@ -62,7 +62,6 @@ native key or anything a provider said.
 """
 
 import logging
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -94,7 +93,11 @@ from rheo_core.evidence.local_authority import (
     LOCAL_PRODUCER_KIND,
     LocalEvidenceAuthority,
 )
-from rheo_core.evidence.providers import ExtractionDeferred, resolve_provider
+from rheo_core.evidence.providers import (
+    FAILURE_KINDS,
+    ExtractionDeferred,
+    resolve_provider,
+)
 from rheo_core.log_config import content_free_extra
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -131,9 +134,6 @@ refused call per partition per wait while a usage limit lasts."""
 
 EXTRACTION_DEFERRED_LOG: Final = "evidence_extraction_deferred"
 
-_FAILURE_KIND: Final = re.compile(r"[a-z_]{1,40}")
-"""A fixed failure code a provider exception may carry as ``kind``; the logs keep it
-only when it has this shape, so no message text can ride along."""
 
 ACCEPTANCE_FAILED_LOG: Final = "evidence_acceptance_failed"
 """The warning :func:`defer_unit` logs when it settles a unit ``gap/acceptance_failed``
@@ -432,8 +432,10 @@ def _defer(uow: UnitOfWork, rows: Sequence[Any], *, now: datetime) -> None:
 
 
 def _failure_kind(exc: Exception) -> str | None:
+    """``exc``'s ``kind`` when it is one of the fixed :data:`FAILURE_KINDS`, else
+    ``None``: a provider could put any text there, so only a known code is logged."""
     kind = getattr(exc, "kind", None)
-    return kind if isinstance(kind, str) and _FAILURE_KIND.fullmatch(kind) else None
+    return kind if isinstance(kind, str) and kind in FAILURE_KINDS else None
 
 
 def claim_units(

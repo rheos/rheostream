@@ -37,6 +37,7 @@ from rheo_contracts import (
     UsageKind,
 )
 from rheo_core.evidence import providers
+from rheo_core.evidence import service as evidence_service
 from rheo_core.evidence.extract import (
     DigestBatch,
     ExtractionScope,
@@ -51,6 +52,7 @@ from rheo_core.runtime.extraction import (
     EXTRACTION_INSTRUCTION,
     NO_STRUCTURED_RESULT,
     PROVIDER_NAME,
+    SCOPE_MISSING,
     STREAM_TRUNCATED,
     TOKEN_REVOKE_FAILED,
     ClaudeCliExtractionProvider,
@@ -601,3 +603,26 @@ def test_the_runtimes_import_scan_flags_a_real_import(tmp_path: Path) -> None:
     assert _runtimes_imports(tmp_path) == {
         "probe.py": ["rheo_runtimes", "rheo_runtimes.claude_cli"]
     }
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        SCOPE_MISSING,
+        ADAPTER_UNAVAILABLE,
+        NO_STRUCTURED_RESULT,
+        STREAM_TRUNCATED,
+        TOKEN_REVOKE_FAILED,
+        *(kind.value for kind in FailureKind),
+    ],
+)
+def test_every_fixed_code_the_provider_raises_is_loggable(kind: str) -> None:
+    assert evidence_service._failure_kind(ExtractionRunFailed(kind)) == kind
+
+
+@pytest.mark.parametrize("kind", ["my_private_note", "usage limited", "", None, 7])
+def test_a_kind_outside_the_fixed_codes_is_never_logged(kind: object) -> None:
+    """#378 review: a code-shaped word can still be evidence, so only known codes."""
+    exc = RuntimeError("x")
+    exc.kind = kind  # type: ignore[attr-defined]
+    assert evidence_service._failure_kind(exc) is None

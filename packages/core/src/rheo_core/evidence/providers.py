@@ -33,6 +33,8 @@ import threading
 from collections.abc import Mapping
 from typing import Final, Protocol
 
+from rheo_contracts import FailureKind
+
 from rheo_core.evidence.extract import DigestBatch
 from rheo_core.settings import current_profile, resolve
 
@@ -43,6 +45,34 @@ FAKE_PROVIDER: Final = "fake"
 FAKE_EXTRACTION_MARKER: Final = "[fake-extract]"
 """The fixed marker :class:`FakeExtractionProvider` answers to: an item whose text
 contains it yields a candidate, and anything else yields ``null``."""
+
+
+SCOPE_MISSING: Final = "scope_missing"
+ADAPTER_UNAVAILABLE: Final = "adapter_unavailable"
+DEADLINE_EXCEEDED: Final = "deadline_exceeded"
+STREAM_TRUNCATED: Final = "stream_truncated"
+NO_STRUCTURED_RESULT: Final = "no_structured_result"
+RUN_CANCELLED: Final = "cancelled"
+APPROVAL_REQUESTED: Final = "approval_required"
+TOKEN_REVOKE_FAILED: Final = "token_revoke_failed"
+
+FAILURE_KINDS: Final = frozenset(
+    {
+        SCOPE_MISSING,
+        ADAPTER_UNAVAILABLE,
+        DEADLINE_EXCEEDED,
+        STREAM_TRUNCATED,
+        NO_STRUCTURED_RESULT,
+        RUN_CANCELLED,
+        APPROVAL_REQUESTED,
+        TOKEN_REVOKE_FAILED,
+    }
+    | {kind.value for kind in FailureKind}
+)
+"""Every fixed code a provider exception may carry as ``kind``: the provider's own
+codes above and the runtime's failure kinds. Defined here, not in a provider, so the
+eligible-evidence service can log a provider's ``kind`` only when it is one of these
+(#376); anything else is never logged, whatever its shape."""
 
 
 class ExtractionDeferred(Exception):

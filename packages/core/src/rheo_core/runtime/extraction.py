@@ -59,7 +59,18 @@ from rheo_contracts import (
 from rheo_contracts.source_units import MemoryKind
 
 from rheo_core.evidence.extract import DigestBatch, extraction_response_schema
-from rheo_core.evidence.providers import ExtractionDeferred, register_provider
+from rheo_core.evidence.providers import (
+    ADAPTER_UNAVAILABLE,
+    APPROVAL_REQUESTED,
+    DEADLINE_EXCEEDED,
+    NO_STRUCTURED_RESULT,
+    RUN_CANCELLED,
+    SCOPE_MISSING,
+    STREAM_TRUNCATED,
+    TOKEN_REVOKE_FAILED,
+    ExtractionDeferred,
+    register_provider,
+)
 from rheo_core.refs import uuid7
 from rheo_core.routing.config import MCP, RoutingConfig
 from rheo_core.routing.url_for import url_for
@@ -83,15 +94,6 @@ PROVIDER_NAME: Final = "claude_cli"
 MODEL_ID_KEY: Final = "automatic_memory.extraction.model_id"
 EXTRACT_SUBDIR: Final = "extract"
 THROWAWAY_DIR_MODE: Final = 0o700
-
-SCOPE_MISSING: Final = "scope_missing"
-ADAPTER_UNAVAILABLE: Final = "adapter_unavailable"
-DEADLINE_EXCEEDED: Final = "deadline_exceeded"
-STREAM_TRUNCATED: Final = "stream_truncated"
-NO_STRUCTURED_RESULT: Final = "no_structured_result"
-RUN_CANCELLED: Final = "cancelled"
-APPROVAL_REQUESTED: Final = "approval_required"
-TOKEN_REVOKE_FAILED: Final = "token_revoke_failed"
 
 EXTRACTION_INSTRUCTION: Final = (
     "The passages below were written by one person while working with an "
