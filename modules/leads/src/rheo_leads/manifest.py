@@ -52,6 +52,15 @@ from rheo_leads.pipeline_contracts import DeleteInput
 from rheo_leads.pipeline_operations import OPERATIONS as PIPELINE_OPERATIONS
 from rheo_leads.pipeline_operations import TOOLS
 from rheo_leads.resolvers import RECORD_TABLES, resolve_record
+from rheo_leads.scoring.job import (
+    SCORE_INTERVAL_SECONDS,
+    SCORE_JOB_KIND,
+    SCORE_JOB_MAX_ATTEMPTS,
+    ScorePayload,
+    score_job,
+)
+from rheo_leads.scoring.profile import OPERATIONS as SCORING_OPERATIONS
+from rheo_leads.scoring.profile import SCHEDULE_NAME as SCORE_SCHEDULE_NAME
 from rheo_leads.web_reads import OPERATIONS as WEB_OPERATIONS
 
 MANIFEST = ModuleManifest(
@@ -89,7 +98,8 @@ MANIFEST = ModuleManifest(
     + WEB_OPERATIONS
     + CONNECTION_OPERATIONS
     + JOBFEED_OPERATIONS
-    + JOBPASTE_OPERATIONS,
+    + JOBPASTE_OPERATIONS
+    + SCORING_OPERATIONS,
     tools=(
         *TOOLS,
         *CONNECTION_TOOLS,
@@ -148,6 +158,13 @@ MANIFEST = ModuleManifest(
             max_attempts=COLLECT_MAX_ATTEMPTS,
             cancellable=False,
         ),
+        JobKind(
+            name=SCORE_JOB_KIND,
+            input_model=ScorePayload,
+            handler=score_job,
+            max_attempts=SCORE_JOB_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
     ),
     # Off by default: module enable writes no row; a completed authorization
     # enables it, and the ticker enqueues only while job search is on.
@@ -158,6 +175,15 @@ MANIFEST = ModuleManifest(
             cron="0 */2 * * *",
             enabled_by_default=False,
             interval_seconds=7200,
+            gate_setting=JOBSEARCH_KEY,
+        ),
+        # Off until the owner sets a job-search profile, which turns it on.
+        Schedule(
+            name=SCORE_SCHEDULE_NAME,
+            job_kind=SCORE_JOB_KIND,
+            cron="*/30 * * * *",
+            enabled_by_default=False,
+            interval_seconds=SCORE_INTERVAL_SECONDS,
             gate_setting=JOBSEARCH_KEY,
         ),
     ),
@@ -171,7 +197,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=7,
+        format_version=8,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,

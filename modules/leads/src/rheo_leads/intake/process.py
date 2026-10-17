@@ -25,6 +25,7 @@ from rheo_leads.intake.mapping import (
 from rheo_leads.pipeline_common import JOBSEARCH_PRESET_ID, lock
 from rheo_leads.pipeline_intake import resolve_party, route
 from rheo_leads.references import identifier, ref
+from rheo_leads.scoring.job import profile_set, queue_sweep
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
@@ -309,6 +310,9 @@ def _process(uow: HandlerUnitOfWork, envelope: EventEnvelope) -> None:
         .values(state="processed", processed_at=now)
     )
     health_write(uow, connection["id"], processed=now)
+    # A job reaching a Job search pipeline is scored once a profile is set.
+    if routes_to_jobsearch(uow, connection["id"]) and profile_set(uow):
+        queue_sweep(uow, ctx.workspace_id, now=now)
     publish_event(
         ctx,
         uow,

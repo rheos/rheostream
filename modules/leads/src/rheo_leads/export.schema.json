@@ -2249,6 +2249,18 @@
               "type": "null"
             }
           ]
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -2272,7 +2284,8 @@
         "created_by_kind",
         "created_by_id",
         "created_at",
-        "evidence_digest"
+        "evidence_digest",
+        "score"
       ],
       "additionalProperties": false
     },
@@ -2617,6 +2630,122 @@
         "label",
         "ordinal",
         "seen_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.jobsearch_profile"
+        },
+        "singleton": {
+          "type": "boolean"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "policy": {
+          "type": "object"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "scoring_account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "updated_by_kind": {
+          "type": "string"
+        },
+        "updated_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "singleton",
+        "profile",
+        "policy",
+        "version",
+        "scoring_account_id",
+        "updated_by_kind",
+        "updated_by_id",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.job_score_state"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "input_digest": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "scored",
+            "failed"
+          ]
+        },
+        "attempts": {
+          "type": "integer"
+        },
+        "retry_after": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "opportunity_id",
+        "input_digest",
+        "state",
+        "attempts",
+        "retry_after",
+        "failure_kind",
+        "updated_at"
       ],
       "additionalProperties": false
     }

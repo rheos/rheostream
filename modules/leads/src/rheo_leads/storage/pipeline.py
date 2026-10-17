@@ -321,6 +321,11 @@ qualification = child(
     col("created_by_id", Uuid, nullable=True),
     col("created_at", DateTime(timezone=True)),
     col("evidence_digest", nullable=True),
+    # 1-100 from the job scorer; null for every other assessment.
+    col("score", Integer, nullable=True),
+)
+qualification.append_constraint(
+    CheckConstraint("score BETWEEN 1 AND 100", name="qualification_score")
 )
 draft = child(
     "draft",
