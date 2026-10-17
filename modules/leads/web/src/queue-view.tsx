@@ -661,7 +661,11 @@ export function JobHeader({ item, now }: { item: Row; now: number }) {
   const fields = row(item.fields);
   const title = str(item.title) || "Untitled opportunity";
   const posting = postingUrl(fields);
-  const summary = str(row(item.assessment).summary);
+  const assessment = row(item.assessment);
+  const summary = str(assessment.summary);
+  const reasons = Array.isArray(assessment.reasons)
+    ? assessment.reasons.map(str).filter(Boolean)
+    : [];
   const id = shortId(item.id);
   return (
     <div className={styles.detail}>
@@ -698,7 +702,18 @@ export function JobHeader({ item, now }: { item: Row; now: number }) {
         </div>
       ) : null}
       <FollowupLine item={item} now={now} />
-      {summary ? <p className={styles.reason}>{summary}</p> : null}
+      {reasons.length > 1 ? (
+        <section className={styles.reasons} aria-label="Why this score">
+          <p className={styles.reasonLead}>{reasons[0]}</p>
+          <ul>
+            {reasons.slice(1).map((reason, index) => (
+              <li key={index}>{reason}</li>
+            ))}
+          </ul>
+        </section>
+      ) : summary ? (
+        <p className={styles.reason}>{summary}</p>
+      ) : null}
     </div>
   );
 }

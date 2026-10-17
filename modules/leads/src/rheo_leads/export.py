@@ -1,11 +1,14 @@
-"""Version-seven intake, pipeline and job feed snapshot; restore preserves identities.
+"""Version-eight intake, pipeline, job feed and job scoring snapshot; restore preserves
+identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. The job feed connection is exported
 without its token reference, its registered client, its run claim and its backoff,
 and the pending authorization is never exported; a restored collector needs the
-owner to reconnect, which registers a fresh client. Restore replaces only the fresh
-seed; existing intake records cause a refusal, never a destructive merge.
+owner to reconnect, which registers a fresh client. The job-search profile and each
+job's scoring state are exported whole; a restored scoring schedule stays off until
+the owner sets the profile again. Restore replaces only the fresh seed; existing
+intake records cause a refusal, never a destructive merge.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -36,6 +39,7 @@ from sqlalchemy import (
 
 from rheo_leads.storage import jobfeed
 from rheo_leads.storage import pipeline as _pipeline  # noqa: F401
+from rheo_leads.storage import scoring as _scoring  # noqa: F401
 from rheo_leads.storage import tables as t
 
 if TYPE_CHECKING:
@@ -66,6 +70,8 @@ OMITTED_COLUMNS = {
         }
     )
 }
+# Columns added after an earlier format, filled when an older row set lacks them.
+ADDED_COLUMNS: Mapping[str, Mapping[str, object]] = {"qualification": {"score": None}}
 RESTORED_COLLECTOR: Mapping[str, object] = {
     "authorization_state": "authorization_required",
     "token_ref": None,
@@ -115,6 +121,7 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
         for row in rows:
             table = by_type[str(row["record_type"])]
             columns = _columns(table)
+            row = {**ADDED_COLUMNS.get(table.name, {}), **row}
             if set(row) != {"record_type", *(column.name for column in columns)}:
                 raise ValueError
             values: dict[str, Any] = {}

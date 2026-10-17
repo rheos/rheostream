@@ -63,6 +63,27 @@ JOBFEED_SETTINGS: Final = (
         default="",
     ),
 )
+# Job scoring: the model the scorer asks (empty leaves the CLI's default), and how
+# many jobs one sweep scores before a follow-up sweep takes over.
+SCORING_SETTINGS: Final = (
+    KeySpec(
+        key="leads.scoring.model_id",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
+    KeySpec(
+        key="leads.scoring.max_per_run",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=10,
+        minimum=1,
+    ),
+)
 SETTINGS: Final = (
     (JOBSEARCH_SETTING,)
     + tuple(
@@ -84,4 +105,5 @@ SETTINGS: Final = (
         )
     )
     + JOBFEED_SETTINGS
+    + SCORING_SETTINGS
 )
