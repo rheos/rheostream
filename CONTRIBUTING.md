@@ -11,6 +11,12 @@ Create a dedicated branch and linked draft pull request before implementation.
 Describe the resulting behavior, run relevant checks, and complete review before
 merging through GitHub. Keep proposals distinguishable from accepted decisions.
 
+CI runs only the quick checks while a pull request is a draft; the Python tests,
+Criterion 31 and the absence proof start when it is marked ready for review, and
+the required `Python checks` comes from that run. So mark the PR ready, wait for
+it (`gh pr checks <number> --required --watch`), then merge. A merge refused for
+pending checks means wait, never `--admin`.
+
 Preserve the architecture boundaries when contributing:
 
 - Keep profession-specific behavior in modules and domain packs. Core services
