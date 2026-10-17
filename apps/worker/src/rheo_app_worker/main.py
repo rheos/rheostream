@@ -49,6 +49,7 @@ from rheo_core.runtime import (
     make_run_runtime_job,
 )
 from rheo_core.runtime.extraction import register_claude_cli_extraction
+from rheo_core.runtime.oneshot import register_oneshot_adapters
 from rheo_core.settings import resolve
 from rheo_core.storage.postgres import get_backend, reset_backend
 from rheo_core.work.kinds import JobKindRegistry
@@ -176,6 +177,8 @@ def main() -> None:
     # Here rather than beside ``ADAPTERS.register`` at module level: registering reads
     # the deployment profile, and a bare import of this module must resolve nothing.
     register_claude_cli_extraction(ADAPTERS)
+    # The same adapters for a module job's one-shot structured run (job scoring).
+    register_oneshot_adapters(ADAPTERS)
     register_modules()
     backend = get_backend()
     stop = threading.Event()

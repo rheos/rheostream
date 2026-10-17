@@ -32,60 +32,53 @@ string from the adapter.
 """
 
 import json
-import os
-import shutil
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import Final, get_args
 from uuid import UUID
 
-from rheo_contracts import (
-    Actor,
-    ActorKind,
-    AdapterSpawn,
-    ApprovalRequiredEvent,
-    Audience,
-    AudienceKind,
-    CancelledEvent,
-    FailureEvent,
-    FailureKind,
-    FinalOutputEvent,
-    RuntimeHandle,
-    RuntimeLimits,
-    RuntimeRequest,
-    StructuredOutput,
-)
 from rheo_contracts.source_units import MemoryKind
 
 from rheo_core.evidence.extract import DigestBatch, extraction_response_schema
+
+# The failure words are the evidence package's; the runner raises the same values.
 from rheo_core.evidence.providers import (
-    ADAPTER_UNAVAILABLE,
-    APPROVAL_REQUESTED,
-    DEADLINE_EXCEEDED,
-    NO_STRUCTURED_RESULT,
-    RUN_CANCELLED,
+    ADAPTER_UNAVAILABLE as ADAPTER_UNAVAILABLE,
+)
+from rheo_core.evidence.providers import (
+    APPROVAL_REQUESTED as APPROVAL_REQUESTED,
+)
+from rheo_core.evidence.providers import (
+    DEADLINE_EXCEEDED as DEADLINE_EXCEEDED,
+)
+from rheo_core.evidence.providers import (
+    NO_STRUCTURED_RESULT as NO_STRUCTURED_RESULT,
+)
+from rheo_core.evidence.providers import (
+    RUN_CANCELLED as RUN_CANCELLED,
+)
+from rheo_core.evidence.providers import (
     SCOPE_MISSING,
-    STREAM_TRUNCATED,
-    TOKEN_REVOKE_FAILED,
     ExtractionDeferred,
     register_provider,
 )
-from rheo_core.refs import uuid7
-from rheo_core.routing.config import MCP, RoutingConfig
-from rheo_core.routing.url_for import url_for
-from rheo_core.runtime.operations import (
-    ACCOUNT_BOUND_CREDENTIAL_KINDS,
-    CREDENTIAL_SLOT,
-    HARD_DEADLINE_SECONDS,
-    build_runtime_request,
+from rheo_core.evidence.providers import (
+    STREAM_TRUNCATED as STREAM_TRUNCATED,
+)
+from rheo_core.evidence.providers import (
+    TOKEN_REVOKE_FAILED as TOKEN_REVOKE_FAILED,
+)
+from rheo_core.runtime.oneshot import (
+    OneShotCredentialNotOwned,
+    OneShotDeferred,
+    OneShotFailed,
+    OneShotRunner,
+    revoke_run_token,
+    utc_now,
+    workspace_settings,
 )
 from rheo_core.runtime.registry import AdapterRegistry
-from rheo_core.settings import ResolvedSettings, resolve
-from rheo_core.settings.storage_source import PostgresOverrideSource
-from rheo_core.storage.control_plane import delete_access_token
-from rheo_core.storage.data_root import Purpose, workspace_dir_for
-from rheo_core.storage.postgres import get_backend
+from rheo_core.settings import ResolvedSettings
 from rheo_core.tokens.issue import issue_runtime_token
 
 PROVIDER_NAME: Final = "claude_cli"
@@ -93,7 +86,6 @@ PROVIDER_NAME: Final = "claude_cli"
 
 MODEL_ID_KEY: Final = "automatic_memory.extraction.model_id"
 EXTRACT_SUBDIR: Final = "extract"
-THROWAWAY_DIR_MODE: Final = 0o700
 
 EXTRACTION_INSTRUCTION: Final = (
     "The passages below were written by one person while working with an "
@@ -131,20 +123,6 @@ class ExtractionRunFailed(Exception):
         self.kind = kind
 
 
-def _workspace_settings(workspace_id: UUID) -> ResolvedSettings:
-    """The workspace's resolved settings, read the way the runtime job reads them."""
-    return resolve(workspace_id=workspace_id, source=PostgresOverrideSource())
-
-
-def _revoke_run_token(token_id: UUID) -> None:
-    with get_backend().control_engine.begin() as connection:
-        delete_access_token(connection, token_id)
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
 def _task(batch: DigestBatch) -> str:
     """The instruction, the mention kinds when there are any, then the items as JSON.
 
@@ -164,6 +142,10 @@ class ClaudeCliExtractionProvider:
     """``claude_cli``: one batch, one tool-less run of the registry's ``claude_cli``
     adapter in a throwaway directory, its structured result returned unvalidated.
 
+    The run itself is :class:`~rheo_core.runtime.oneshot.OneShotRunner`'s; this class
+    adds the batch's scope checks, the task and the schema, and maps the runner's
+    failures onto the extraction ones the drain contains.
+
     ``settings_for``, ``issue_token``, ``revoke_token`` and ``clock`` default to the
     production readers; a test replaces them to run without a cluster or to move the
     clock past the deadline.
@@ -173,16 +155,18 @@ class ClaudeCliExtractionProvider:
         self,
         adapters: AdapterRegistry,
         *,
-        settings_for: Callable[[UUID], ResolvedSettings] = _workspace_settings,
+        settings_for: Callable[[UUID], ResolvedSettings] = workspace_settings,
         issue_token: Callable[..., tuple[UUID, str]] = issue_runtime_token,
-        revoke_token: Callable[[UUID], None] = _revoke_run_token,
-        clock: Callable[[], datetime] = _now,
+        revoke_token: Callable[[UUID], None] = revoke_run_token,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
-        self._adapters = adapters
-        self._settings_for = settings_for
-        self._issue_token = issue_token
-        self._revoke_token = revoke_token
-        self._clock = clock
+        self._runner = OneShotRunner(
+            adapters,
+            settings_for=settings_for,
+            issue_token=issue_token,
+            revoke_token=revoke_token,
+            clock=clock,
+        )
 
     @property
     def name(self) -> str:
@@ -192,155 +176,35 @@ class ClaudeCliExtractionProvider:
         scope = batch.scope
         if scope is None:
             raise ExtractionRunFailed(SCOPE_MISSING)
-        # Only ever the registered adapter: never a fallback built here, so a process
-        # whose registry holds none (the core process) cannot spawn anything. First,
-        # so that process also reads no settings, mints no token and makes no
-        # directory.
-        adapter = self._adapters.lookup(PROVIDER_NAME)
-        if adapter is None:
-            raise ExtractionRunFailed(ADAPTER_UNAVAILABLE)
-        settings = self._settings_for(scope.workspace_id)
-        # The runtime's own single-account-login rule, in the shape the runtime job
-        # enforces it (``runtime/operations.py``): a login credential serves only the
-        # account it is bound to, and so does an ``oauth_token`` minted from that
-        # subscription. Before the adapter starts and before any token.
-        if (
-            settings.get_str("runtime.claude_cli.credential_kind")
-            in ACCOUNT_BOUND_CREDENTIAL_KINDS
-        ):
-            wanted = settings.get_str("runtime.claude_cli.credential_account_id")
-            if str(scope.account_id) != wanted:
-                raise ExtractionCredentialNotOwned(
-                    "the batch's account does not own the login"
-                )
-
-        deadline = min(
-            settings.get_int("runtime.max_deadline_seconds"), HARD_DEADLINE_SECONDS
-        )
-        model_override = settings.get_str(MODEL_ID_KEY).strip() or None
-        request = self._request(batch, deadline=deadline, model_id=model_override)
-
-        started_at = self._clock()
-        deadline_at = started_at + timedelta(seconds=deadline)
-        # Per call, never the workspace's shared ``claude-cli`` directory: the CLI
-        # writes its session transcript (the evidence text) under its configuration
-        # directory, and the shared one is kept for the transcript retention window.
-        root = (
-            workspace_dir_for(scope.workspace_id, Purpose.SCRATCH)
-            / EXTRACT_SUBDIR
-            / str(uuid7())
-        )
-        token_id: UUID | None = None
-        handle: RuntimeHandle | None = None
+        failed: str | None = None
+        deferred: str | None = None
+        not_owned = False
         try:
-            token_id, run_token = self._issue_token(
-                account_id=scope.account_id,
+            return self._runner.run(
                 workspace_id=scope.workspace_id,
-                purpose=scope.purpose.value,
-                expires_at=deadline_at,
-                operations=[],
+                account_id=scope.account_id,
+                purpose=scope.purpose,
+                task=_task(batch),
+                json_schema=extraction_response_schema(),
+                model_id_key=MODEL_ID_KEY,
+                scratch_subdir=EXTRACT_SUBDIR,
             )
-            root.mkdir(mode=THROWAWAY_DIR_MODE, parents=True)
-            os.chmod(root, THROWAWAY_DIR_MODE)
-            work_dir = root / "work"
-            work_dir.mkdir(mode=THROWAWAY_DIR_MODE)
-            # Not created: the adapter's ``start`` prepares it, copying the login seed
-            # only into a configuration directory that does not exist yet.
-            config_dir = root / "config"
-            spawn = AdapterSpawn(
-                mcp_url=url_for(RoutingConfig.from_settings(resolve()), MCP, "/"),
-                run_token=run_token,
-                work_dir=str(work_dir),
-                config_dir=str(config_dir),
-                native_handle=None,
-                model_override=model_override,
-                disable_builtin_tools=True,
+        except OneShotDeferred as exc:
+            deferred = exc.kind
+        except OneShotFailed as exc:
+            failed = exc.kind
+        except OneShotCredentialNotOwned:
+            not_owned = True
+        # Raised outside the ``except`` blocks, so nothing is chained to them.
+        if deferred is not None:
+            # Not the evidence's fault: the drain waits without counting it.
+            raise ExtractionDeferred(deferred)
+        if not_owned:
+            raise ExtractionCredentialNotOwned(
+                "the batch's account does not own the login"
             )
-            handle = adapter.start(request, spawn=spawn)
-            return self._await_result(handle, deadline_at=deadline_at)
-        finally:
-            revoke_failed = False
-            try:
-                if handle is not None and not handle.finished():
-                    handle.cancel()
-                if token_id is not None:
-                    try:
-                        self._revoke_token(token_id)
-                    except Exception:
-                        revoke_failed = True
-            finally:
-                # Its own ``finally``: whatever the cancel or the revoke does, the
-                # throwaway directory goes. The CLI's transcript under ``config/`` is
-                # the evidence text, and nothing else ever sweeps this directory.
-                _remove_tree(root)
-            if revoke_failed:
-                # Raised outside the ``except`` block, so the revoke error (whose text
-                # may quote the database's own detail) is not on ``__context__``.
-                raise ExtractionRunFailed(TOKEN_REVOKE_FAILED)
-
-    def _request(
-        self, batch: DigestBatch, *, deadline: int, model_id: str | None
-    ) -> RuntimeRequest:
-        scope = batch.scope
-        assert scope is not None  # checked by the caller
-        return build_runtime_request(
-            operation_id=uuid7(),
-            # The drain, not a person, starts this run; the speaker's account is on
-            # the run token, and the output is read only by the validator.
-            actor=Actor(kind=ActorKind.SYSTEM, id=None),
-            workspace_id=scope.workspace_id,
-            audience=Audience(kind=AudienceKind.JOB, id=None),
-            purpose=scope.purpose,
-            task=_task(batch),
-            context_items=[],
-            permitted_tools=[],
-            output=StructuredOutput(json_schema=extraction_response_schema()),
-            requirements=[],
-            limits=RuntimeLimits(
-                deadline_seconds=deadline,
-                max_iterations=1,
-                max_output_bytes=RuntimeLimits.DEFAULT_MAX_OUTPUT_BYTES,
-            ),
-            continuation=None,
-            credential_slot=CREDENTIAL_SLOT,
-            runtime_id=PROVIDER_NAME,
-            model_id=model_id or "",
-        )
-
-    def _await_result(
-        self, handle: RuntimeHandle, *, deadline_at: datetime
-    ) -> Mapping[str, object]:
-        """Poll to a terminal event; the structured mapping, or a raise."""
-        while True:
-            if self._clock() >= deadline_at and not handle.finished():
-                handle.cancel()
-                raise ExtractionRunFailed(DEADLINE_EXCEEDED)
-            event = handle.poll()
-            if event is None:
-                if handle.finished():
-                    raise ExtractionRunFailed(STREAM_TRUNCATED)
-                continue
-            if isinstance(event, FinalOutputEvent):
-                structured = event.structured
-                if not isinstance(structured, dict):
-                    raise ExtractionRunFailed(NO_STRUCTURED_RESULT)
-                return structured
-            if isinstance(event, FailureEvent):
-                if event.kind is FailureKind.USAGE_LIMITED:
-                    # Not the evidence's fault: the drain waits without counting it.
-                    raise ExtractionDeferred(event.kind.value)
-                raise ExtractionRunFailed(event.kind.value)
-            if isinstance(event, CancelledEvent):
-                raise ExtractionRunFailed(RUN_CANCELLED)
-            if isinstance(event, ApprovalRequiredEvent):
-                # Nothing is permitted, so no approval request can be legitimate.
-                raise ExtractionRunFailed(APPROVAL_REQUESTED)
-            # Progress, tool-call, tool-result and usage events carry no result.
-
-
-def _remove_tree(root: Path) -> None:
-    if root.exists():
-        shutil.rmtree(root, ignore_errors=True)
+        assert failed is not None
+        raise ExtractionRunFailed(failed)
 
 
 def register_claude_cli_extraction(adapters: AdapterRegistry) -> None:
