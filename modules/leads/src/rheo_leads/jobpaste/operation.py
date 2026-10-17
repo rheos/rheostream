@@ -1,4 +1,4 @@
-"""``leads.jobsearch.paste``: pasted jobs become intake deliveries.
+"""``leads.jobfeed.paste``: pasted jobs become intake deliveries.
 
 A copied search-results page or one full posting is parsed (:mod:`.parse`) into the
 job feed's body shape and accepted through ``leads.intake.accept_delivery`` on the
@@ -207,7 +207,7 @@ def paste(ctx: WorkspaceContext, uow: UnitOfWork, m: PasteJobsInput) -> PastedJo
 
 
 PASTE_DECLARATION = OperationDeclaration(
-    name="leads.jobsearch.paste",
+    name="leads.jobfeed.paste",
     safety_class=SafetyClass.MUTATE,
     roles=frozenset({Role.OWNER, Role.MEMBER}),
     input_model=PasteJobsInput,

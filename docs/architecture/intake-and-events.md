@@ -222,7 +222,7 @@ Migration `0009_jobfeed_collector` adds `poll` to the transport CHECK; it is add
 and the three existing values keep their meaning. Operator detail is in
 [Job feed collector](../../deploy/README.md#job-feed-collector).
 
-**Job paste.** `leads.jobsearch.paste` (owner or member, job search on) takes a Job
+**Job paste.** `leads.jobfeed.paste` (owner or member, job search on) takes a Job
 search pipeline and either a copied search-results page or one full posting with its
 link. Each job it recognises becomes a body in the job feed's shape, keyed by the
 `~02` posting id in its link on a configured job host. The pipeline's own job paste

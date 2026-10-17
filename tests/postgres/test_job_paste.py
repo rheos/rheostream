@@ -65,7 +65,7 @@ def paste(c: Collector, kind: str, content: str, **extra: Any) -> Any:
     return call(
         c.intake,
         c.owner,
-        "leads.jobsearch.paste",
+        "leads.jobfeed.paste",
         pipeline_ref=ref("pipeline", c.pipeline_id),
         kind=kind,
         content=content,
@@ -78,7 +78,7 @@ def refused(c: Collector, **payload: Any) -> str:
 
     outcome = dispatch(
         c.owner,
-        "leads.jobsearch.paste",
+        "leads.jobfeed.paste",
         {"pipeline_ref": ref("pipeline", c.pipeline_id), **payload},
         registry=c.intake.surfaces.operations,
         consumers=c.intake.consumers,
@@ -235,7 +235,7 @@ def test_paste_refuses_a_pipeline_that_is_not_job_search(
 
     outcome = dispatch(
         collector.owner,
-        "leads.jobsearch.paste",
+        "leads.jobfeed.paste",
         {"pipeline_ref": services.ref, "kind": "search_page", "content": SEARCH_PAGE},
         registry=collector.intake.surfaces.operations,
         consumers=collector.intake.consumers,

@@ -95,7 +95,7 @@ export function JobPaste({
     setProblem("");
     startTransition(async () => {
       try {
-        setOutcome(await submit("leads.jobsearch.paste", input));
+        setOutcome(await submit("leads.jobfeed.paste", input));
       } catch {
         setOutcome({ state: "unavailable" });
       }
