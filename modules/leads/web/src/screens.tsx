@@ -1067,6 +1067,12 @@ export async function detail({ shell, query }: ScreenProps) {
                 <>
                   <p className={styles.note}>{str(qualification.objective)}</p>
                   <dl className={styles.facts}>
+                    {typeof qualification.score === "number" ? (
+                      <div>
+                        <dt>Score</dt>
+                        <dd>{qualification.score} of 100</dd>
+                      </div>
+                    ) : null}
                     {[
                       "fit",
                       "intent",

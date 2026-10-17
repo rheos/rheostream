@@ -111,7 +111,8 @@ export function sourceLabel(source: unknown): string | null {
 
 export type FitBand = "high" | "mid" | "low" | "dim";
 export interface Fit {
-  /** What the pill shows: a short rating, never a number nobody gave. */
+  /** What the pill shows: the 1-100 score when one was given, else a short
+   * rating. Never a number nobody gave. */
   mark: string;
   band: FitBand;
   /** The decision word, from the same table as the band so they never disagree. */
@@ -127,14 +128,33 @@ const FITS: Record<string, Omit<Fit, "description">> = {
   needs_information: { mark: "?", band: "dim", verdict: "Review", rank: 2 },
   low: { mark: "Low", band: "low", verdict: "Skip", rank: 1 },
 };
-/** The pill for an assessment's fit rating, or null when there is no
- * assessment (or its rating is unknown): nothing is invented. */
+/** A recorded 1-100 score, or null when the assessment carries none. */
+export function scoreOf(assessment: unknown): number | null {
+  const score = row(assessment).score;
+  return typeof score === "number" &&
+    Number.isInteger(score) &&
+    score >= 1 &&
+    score <= 100
+    ? score
+    : null;
+}
+/** The pill for an assessment: its score when it has one, else its fit rating;
+ * null when there is no assessment (or its rating is unknown): nothing is
+ * invented. The band always follows the fit, which the score decided. */
 export function fitFor(assessment: unknown): Fit | null {
   const fit = str(row(assessment).fit);
   const entry = assessment == null ? undefined : FITS[fit];
   if (!entry) return null;
   const said =
     fit === "needs_information" ? "fit needs information" : `fit ${fit}`;
+  const score = scoreOf(assessment);
+  if (score !== null) {
+    return {
+      ...entry,
+      mark: String(score),
+      description: `${entry.verdict}: scored ${score} of 100, ${said}`,
+    };
+  }
   return { ...entry, description: `${entry.verdict}: ${said}` };
 }
 
