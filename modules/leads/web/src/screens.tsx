@@ -16,10 +16,11 @@ import type { Sort } from "./queue";
 import { postingUrl } from "./queue";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
-import { JobPaste, pipelineRef } from "./job-paste";
+import { JobPaste } from "./job-paste";
 import {
   data,
   date,
+  pipelineRef,
   JOBSEARCH_PRESET_ID,
   items,
   label,

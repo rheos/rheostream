@@ -14,10 +14,6 @@ export type PipelineChoice = { value: string; label: string };
 export const PAGE_LIMIT = 2_000_000;
 export const POSTING_LIMIT = 16_000;
 
-export function pipelineRef(id: string): string {
-  return `leads.pipeline:${id}`;
-}
-
 /** The operation input for one paste, or the reason it cannot be sent yet. */
 export function pasteInput(
   kind: PasteKind,

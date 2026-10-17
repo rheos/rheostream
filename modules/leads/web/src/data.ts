@@ -77,3 +77,8 @@ export function read(
 /** The Job search preset's seeded id, from
  * rheo_leads/pipeline_common.py:JOBSEARCH_PRESET_ID (stable, set by migration). */
 export const JOBSEARCH_PRESET_ID = "019bf0b0-0000-7000-8000-000000000002";
+/** A pipeline's record reference. Here, not in a client module, because server
+ * screens call it while rendering. */
+export function pipelineRef(id: string): string {
+  return `leads.pipeline:${id}`;
+}

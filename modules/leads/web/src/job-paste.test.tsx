@@ -5,14 +5,13 @@ import type {
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
 import { screens } from "./index";
-import { JOBSEARCH_PRESET_ID } from "./data";
+import { JOBSEARCH_PRESET_ID, pipelineRef } from "./data";
 import {
   JobPaste,
   PAGE_LIMIT,
   POSTING_LIMIT,
   pasteInput,
   pasteSummary,
-  pipelineRef,
 } from "./job-paste";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
