@@ -177,8 +177,9 @@ def set_profile(ctx: WorkspaceContext, uow: UnitOfWork, m: ProfileSet) -> Profil
         enabled=True,
         due_at=now,
     )
-    from rheo_leads.scoring.job import queue_sweep
+    from rheo_leads.scoring.job import queue_sweep, repend_unscored
 
+    repend_unscored(uow, now=now)
     queue_sweep(uow, ctx.workspace_id, now=now)
     return _state(row, with_text=False)
 

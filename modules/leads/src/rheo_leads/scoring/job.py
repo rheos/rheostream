@@ -16,14 +16,20 @@ window) in a short unit that commits at once; decide tier 1; ask the model when 
 qualification in another short unit. No unit is open while the model runs, and the
 cancellation token's heartbeat keeps the lease.
 
-**Failures are explicit.** A usage limit (``OneShotDeferred``) gives the attempt back
-and makes the job wait :data:`USAGE_DEFER`; the sweep stops there, because the limit
-applies to every job. Any other failure, an invalid answer included, waits the job
-substrate's backoff, and the fifth attempt records a ``needs_information``
-assessment that says scoring failed. A job never simply disappears from the queue.
+**Failures are explicit.** A failure that is the account's or the deployment's (a
+usage limit, a missing or refused login, no executable or adapter, a crashed or
+timed-out run) gives the attempt back and makes every waiting job wait
+:data:`USAGE_DEFER`; the sweep stops there. Only a failure that says something about
+the job or the answer (:data:`JOB_FAILURES`) counts: it waits the job substrate's
+backoff, and the fifth attempt records a ``needs_information`` assessment that says
+scoring failed. Setting the profile again puts failed and unscored jobs back in line
+(:func:`repend_unscored`). A job never simply disappears from the queue.
 
-**Content-free.** Log lines carry counts and fixed failure words. The profile text
-reaches the model's stdin and nothing else: no log line, exception or audit row.
+**Content-free.** Log lines carry counts and fixed failure words, and a database
+error leaves as a fixed word. The profile text reaches the model's stdin, and a
+score's reasons quote what they cite from it (project names and recorded experience
+boundaries) on the qualification record, which workspace members can read. No log
+line, exception or audit row carries it.
 """
 
 import hashlib
@@ -36,7 +42,7 @@ from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_for_scheduled_job
@@ -59,7 +65,9 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, exists, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import StatementError
 
 from rheo_leads import pipeline_common as h
 from rheo_leads.references import ref
@@ -81,8 +89,11 @@ SCRATCH_SUBDIR: Final = "jobscore"
 SCORE_ATTEMPTS: Final = 5
 """The attempt that records a failed assessment instead of backing off again."""
 USAGE_DEFER: Final = timedelta(minutes=15)
-CLAIM_WINDOW: Final = timedelta(minutes=15)
-"""How long a claimed job is held; a sweep that died mid-run frees it after this."""
+CLAIM_MARGIN: Final = timedelta(minutes=5)
+"""A claimed job is held for the run's deadline plus this; a sweep that died
+mid-run frees it after that, and no live run can outlast its claim."""
+DEADLINE_KEY: Final = "runtime.max_deadline_seconds"
+HARD_DEADLINE_SECONDS: Final = 3600
 RUN_BUDGET: Final = timedelta(minutes=5)
 """No new claim starts once a sweep has run this long; a follow-up sweep goes on."""
 TRIGGER_GRANULARITY: Final = timedelta(minutes=1)
@@ -98,6 +109,22 @@ ACCOUNT_LOG: Final = "job_scoring_account_unavailable"
 CREDENTIAL_NOT_OWNED: Final = "credential_not_owned"
 ASSESSMENT_INVALID: Final = "assessment_invalid"
 USAGE_LIMITED: Final = "usage_limited"
+# The failures that say something about the job or the answer, and so count an
+# attempt. Every other failure (a usage limit, a missing or refused login, an
+# executable or adapter that is not there, a crashed or timed-out run) is the
+# account's or the deployment's, and pauses scoring without counting anything.
+JOB_FAILURES: Final = frozenset(
+    {
+        "output_invalid",
+        "no_structured_result",
+        "iteration_limit",
+        "approval_required",
+        "tool_denied",
+        ASSESSMENT_INVALID,
+    }
+)
+STORAGE_FAILED: Final = "job_scoring_storage_failed"
+PROFILE_INVALID_LOG: Final = "job_scoring_profile_invalid"
 
 # The inputs a score depends on, by target. Competition and client metrics are
 # bucketed (:func:`_bucket`), so a re-sighting that moves them a little does not
@@ -164,7 +191,8 @@ class Outcome:
     uncertainty: str = "high"
     completeness: str = "needs_information"
     model: bool = False
-    deferred: bool = False
+    deferred: str | None = None
+    """Why scoring paused for every job: no attempt is counted."""
     failure: str | None = None
 
 
@@ -323,16 +351,14 @@ def refresh(uow: UnitOfWork, *, cap: int, now: datetime) -> int:
             "failure_kind": None,
             "updated_at": now,
         }
-        if identifier in known:
-            uow.connection.execute(
-                update(s.job_score_state)
-                .where(s.job_score_state.c.opportunity_id == identifier)
-                .values(**values)
+        # An upsert, so a sweep running beside this one cannot collide on a new row.
+        uow.connection.execute(
+            pg_insert(s.job_score_state)
+            .values(opportunity_id=identifier, **values)
+            .on_conflict_do_update(
+                index_elements=[s.job_score_state.c.opportunity_id], set_=values
             )
-        else:
-            uow.connection.execute(
-                insert(s.job_score_state).values(opportunity_id=identifier, **values)
-            )
+        )
         changed += 1
     return changed
 
@@ -345,9 +371,9 @@ def _claimable(now: datetime) -> Any:
     )
 
 
-def claim(uow: UnitOfWork, *, now: datetime) -> Claimed | None:
-    """Count an attempt on the newest claimable job and hold it; ``None`` when
-    nothing is claimable."""
+def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | None:
+    """Count an attempt on the newest claimable job and hold it for ``window``;
+    ``None`` when nothing is claimable."""
     state, o = s.job_score_state, p.opportunity
     open_ids = _open_jobs().with_only_columns(o.c.id)
     row = (
@@ -368,7 +394,7 @@ def claim(uow: UnitOfWork, *, now: datetime) -> Claimed | None:
     uow.connection.execute(
         update(state)
         .where(state.c.opportunity_id == row["opportunity_id"])
-        .values(attempts=attempts, retry_after=now + CLAIM_WINDOW, updated_at=now)
+        .values(attempts=attempts, retry_after=now + window, updated_at=now)
     )
     record = h.row(uow, o, row["opportunity_id"])
     rubric = (
@@ -454,7 +480,7 @@ def assess(
     if job.description is None:
         return _undescribed(job)
     if runner is None:
-        return Outcome(failure=ADAPTER_UNAVAILABLE)
+        return Outcome(deferred=ADAPTER_UNAVAILABLE)
     text = tier2.source_text(job)
     catalog = tier2.evidence_catalog(profile.profile, profile.policy)
     failure: str | None = None
@@ -476,13 +502,15 @@ def assess(
             heartbeat=heartbeat,
         )
     except OneShotDeferred:
-        return Outcome(deferred=True)
+        return Outcome(deferred=USAGE_LIMITED)
     except OneShotFailed as exc:
         failure = exc.kind
     except OneShotCredentialNotOwned:
         failure = CREDENTIAL_NOT_OWNED
     if failure is not None:
-        return Outcome(failure=failure)
+        if failure in JOB_FAILURES:
+            return Outcome(failure=failure)
+        return Outcome(deferred=failure)
     try:
         rendered = tier2.render_assessment(answer, text, catalog, job)
     except ValueError:
@@ -533,7 +561,7 @@ def record(
     if current is None or current.input_digest != claimed.digest:
         return False
     if outcome.deferred:
-        # The limit is the account's, so every claimable job waits with this one,
+        # The cause is the account's, so every claimable job waits with this one,
         # and only this one had an attempt counted to give back.
         uow.connection.execute(
             update(state)
@@ -545,7 +573,7 @@ def record(
             .where((state.c.opportunity_id == claimed.opportunity_id) | _claimable(now))
             .values(
                 retry_after=now + USAGE_DEFER,
-                failure_kind=USAGE_LIMITED,
+                failure_kind=outcome.deferred,
                 updated_at=now,
             )
         )
@@ -621,6 +649,28 @@ def record(
     return True
 
 
+def repend_unscored(uow: UnitOfWork, *, now: datetime) -> None:
+    """After the profile changes: every job that failed, or that has no model score
+    yet (held by the filters, or waiting for its description), goes back to
+    pending, so the new thresholds and evidence apply. Scored jobs keep their score
+    until their posting changes."""
+    state, qual = s.job_score_state, p.qualification
+    scored = exists().where(
+        qual.c.opportunity_id == state.c.opportunity_id, qual.c.score.is_not(None)
+    )
+    uow.connection.execute(
+        update(state)
+        .where((state.c.state == "failed") | ~scored)
+        .values(
+            state="pending",
+            attempts=0,
+            retry_after=None,
+            failure_kind=None,
+            updated_at=now,
+        )
+    )
+
+
 def follow_up_at(uow: UnitOfWork, *, now: datetime) -> datetime | None:
     """When the next sweep is needed: now while claimable work is left, else the
     earliest wait; ``None`` when nothing is pending."""
@@ -651,9 +701,24 @@ def _account_ready(workspace_id: UUID, account_id: UUID) -> bool:
 def score_job(
     uow: HandlerUnitOfWork, payload: BaseModel, token: CancellationToken
 ) -> None:
-    """One sweep (module docstring). Expected failures never raise."""
+    """One sweep (module docstring). Expected failures never raise.
+
+    A database error is re-raised as a fixed word with nothing chained: the
+    driver's message can quote bound parameters, and an explanation is one."""
     if not isinstance(payload, ScorePayload):
         raise TypeError(f"expected a ScorePayload, got {type(payload).__name__}")
+    escaped = False
+    try:
+        _sweep(uow, payload, token)
+    except StatementError:
+        escaped = True
+    if escaped:
+        raise RuntimeError(STORAGE_FAILED)
+
+
+def _sweep(
+    uow: HandlerUnitOfWork, payload: ScorePayload, token: CancellationToken
+) -> None:
     token.checkpoint()
     ctx = context_for_scheduled_job(payload.workspace_id)
     if isinstance(ctx, Refusal):
@@ -662,7 +727,12 @@ def score_job(
     now = hooks.clock()
     with open_unit_of_work(ctx) as short:
         enabled = h.jobsearch_enabled(ctx, short)
-        profile = read_profile(short) if enabled else None
+        try:
+            profile = read_profile(short) if enabled else None
+        except ValidationError:
+            # Its text would quote the policy; the owner sets the profile again.
+            profile = None
+            _log.warning(PROFILE_INVALID_LOG)
         if profile is not None:
             refresh(short, cap=profile.policy.tier1.max_proposals, now=now)
         settings = resolve(
@@ -670,6 +740,12 @@ def score_job(
             source=TransactionBoundOverrideSource(short, workspace_id=ctx.workspace_id),
         )
         budget = settings.get_int(MAX_PER_RUN_KEY)
+        window = (
+            timedelta(
+                seconds=min(settings.get_int(DEADLINE_KEY), HARD_DEADLINE_SECONDS)
+            )
+            + CLAIM_MARGIN
+        )
         short.commit()
     if profile is None:
         return
@@ -685,7 +761,7 @@ def score_job(
         if now - started >= RUN_BUDGET:
             break
         with open_unit_of_work(ctx) as short:
-            claimed = claim(short, now=now)
+            claimed = claim(short, now=now, window=window)
             short.commit()
         if claimed is None:
             break
@@ -713,7 +789,8 @@ def score_job(
         if outcome.deferred:
             counts["deferred"] += 1
             _log.warning(
-                DEFERRED_LOG, extra=content_free_extra({"failure_kind": USAGE_LIMITED})
+                DEFERRED_LOG,
+                extra=content_free_extra({"failure_kind": outcome.deferred}),
             )
             break
         if outcome.failure is not None:

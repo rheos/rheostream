@@ -10,7 +10,11 @@ from uuid import UUID
 
 import pytest
 from jsonschema import Draft202012Validator
-from rheo_core.runtime.oneshot import OneShotDeferred, OneShotFailed
+from rheo_core.runtime.oneshot import (
+    OneShotCredentialNotOwned,
+    OneShotDeferred,
+    OneShotFailed,
+)
 from rheo_leads.scoring import tier2
 from rheo_leads.scoring.job import (
     ASSESSMENT_INVALID,
@@ -470,10 +474,31 @@ def test_a_job_without_its_description_needs_information() -> None:
 
 def test_a_usage_limit_defers_and_other_failures_count() -> None:
     deferred, _ = run(FakeRunner(error=OneShotDeferred("usage_limited")), established())
-    assert deferred.deferred and deferred.failure is None
+    assert deferred.deferred == "usage_limited" and deferred.failure is None
     failed, _ = run(FakeRunner(error=OneShotFailed("output_invalid")), established())
     assert failed.failure == "output_invalid" and not failed.deferred
     invalid, _ = run(FakeRunner(answer(score=42)), established())
     assert invalid.failure == ASSESSMENT_INVALID
     missing, _ = run(None, established())
-    assert missing.failure == "adapter_unavailable"
+    assert missing.deferred == "adapter_unavailable" and missing.failure is None
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "credential_invalid",
+        "executable_unavailable",
+        "runtime_error",
+        "deadline_exceeded",
+    ],
+)
+def test_an_account_or_deployment_failure_pauses_instead_of_counting(
+    kind: str,
+) -> None:
+    paused, _ = run(FakeRunner(error=OneShotFailed(kind)), established())
+    assert paused.deferred == kind and paused.failure is None
+
+
+def test_a_login_owned_by_another_account_pauses() -> None:
+    paused, _ = run(FakeRunner(error=OneShotCredentialNotOwned("x")), established())
+    assert paused.deferred == "credential_not_owned"

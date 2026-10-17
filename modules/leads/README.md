@@ -210,13 +210,20 @@ each delivery into a Job search pipeline, and when the profile is set. It scores
 `leads.scoring.max_per_run` jobs (default 10), newest first, and queues a follow-up
 while more wait. A job is scored again when its title, description, price or payment
 status changes, or when its proposal count, spend, rating, reviews or hire rate moves
-into another bracket; a profile change does not rescore existing jobs.
+into another bracket; a profile change does not rescore jobs that already have a score.
 `leads.scoring.model_id` picks the model (empty uses the CLI's default).
 
-**Failures.** A usage limit on the model login makes every waiting job wait 15 minutes
-without spending an attempt. Any other failure, an answer outside the contract
-included, retries with backoff; the fifth attempt records a **needs information**
-assessment saying scoring failed, and the job is tried again when the posting changes.
+**Failures.** A failure of the model login or the deployment (a usage limit, an
+expired or refused login, a missing executable, a crashed or timed-out run) makes
+every waiting job wait 15 minutes without spending an attempt. A failure about the job
+itself, such as an answer outside the contract, retries with backoff; the fifth
+attempt records a **needs information** assessment saying scoring failed, and the job
+is tried again when the posting changes. Setting the profile again re-queues failed
+jobs and every job without a score yet, so changed thresholds apply to held jobs.
+
+**Who sees what.** The profile itself is owner-only. A score's reasons name the
+projects and quote the recorded experience boundaries they cite, and those reasons
+sit on the job's qualification record, which every workspace member can read.
 
 ## Dated next follow-up
 

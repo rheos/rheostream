@@ -370,6 +370,54 @@ def test_failures_back_off_then_record_that_scoring_failed(scored: Scoring) -> N
     assert scored.state("~02100")["state"] == "failed"
 
 
+def test_a_broken_login_pauses_every_job_and_a_profile_set_requeues_failures(
+    scored: Scoring,
+) -> None:
+    for posting in ("~02100", "~02101"):
+        scored.paste(posting, FULL.format(title=posting, what="pipeline", activity=""))
+    scored.model(failure(FailureKind.CREDENTIAL_INVALID))
+    scored.set_profile()
+    now = datetime.now(UTC)
+    for minute in range(6):
+        scored.sweep(now + minute * (scoring.USAGE_DEFER + timedelta(seconds=1)))
+    for posting in ("~02100", "~02101"):
+        waiting = scored.state(posting)
+        assert (waiting["state"], waiting["attempts"]) == ("pending", 0)
+        assert waiting["failure_kind"] == "credential_invalid"
+        assert scored.assessments(posting) == []
+
+    # A job-specific failure exhausts its attempts; setting the profile again
+    # puts it back in line, and it is scored once the model answers.
+    scored.model(failure(FailureKind.OUTPUT_INVALID))
+    at = datetime.now(UTC) + timedelta(hours=2)
+    for _ in range(scoring.SCORE_ATTEMPTS * 2):
+        scored.sweep(at)
+        at += timedelta(hours=1)
+    assert scored.state("~02100")["state"] == "failed"
+    scored.model(final(7))
+    scored.set_profile()
+    assert scored.state("~02100")["state"] == "pending"
+    scored.sweep(at)
+    assert scored.assessments("~02100")[-1]["score"] == 70
+
+
+def test_a_profile_change_reapplies_the_filters_to_held_jobs(scored: Scoring) -> None:
+    scored.paste(
+        "~02200",
+        FULL.format(title="Crowded job", what="app", activity="Proposals: 50+"),
+    )
+    scored.model(final(6))
+    scored.set_profile()
+    scored.sweep()
+    assert [a["fit"] for a in scored.assessments("~02200")] == ["low"]
+    scored.set_profile(tier1={"max_proposals": 100})
+    scored.sweep()
+    assert [(a["fit"], a["score"]) for a in scored.assessments("~02200")] == [
+        ("low", None),
+        ("medium", 60),
+    ]
+
+
 def test_a_changed_description_is_rescored_and_an_unchanged_one_is_not(
     scored: Scoring,
 ) -> None:

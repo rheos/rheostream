@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from pydantic import ValidationError
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import (
@@ -37,9 +38,10 @@ from sqlalchemy import (
     select,
 )
 
+from rheo_leads.scoring.profile import ScoringPolicy
 from rheo_leads.storage import jobfeed
 from rheo_leads.storage import pipeline as _pipeline  # noqa: F401
-from rheo_leads.storage import scoring as _scoring  # noqa: F401
+from rheo_leads.storage import scoring as _scoring
 from rheo_leads.storage import tables as t
 
 if TYPE_CHECKING:
@@ -70,8 +72,6 @@ OMITTED_COLUMNS = {
         }
     )
 }
-# Columns added after an earlier format, filled when an older row set lacks them.
-ADDED_COLUMNS: Mapping[str, Mapping[str, object]] = {"qualification": {"score": None}}
 RESTORED_COLLECTOR: Mapping[str, object] = {
     "authorization_state": "authorization_required",
     "token_ref": None,
@@ -121,7 +121,6 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
         for row in rows:
             table = by_type[str(row["record_type"])]
             columns = _columns(table)
-            row = {**ADDED_COLUMNS.get(table.name, {}), **row}
             if set(row) != {"record_type", *(column.name for column in columns)}:
                 raise ValueError
             values: dict[str, Any] = {}
@@ -170,11 +169,15 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
                 and values["state"] == "active"
             ):
                 values["state"] = "needs_credential"
+            if table is _scoring.jobsearch_profile:
+                # The scorer reads the policy whole, so a malformed one is refused
+                # here rather than stalling scoring after the restore.
+                ScoringPolicy.model_validate(values["policy"])
             if table is jobfeed.jobfeed_connection:
                 # No token, no client, no claim, no backoff: the owner reconnects.
                 values.update(RESTORED_COLLECTOR)
             grouped[table.name].append(values)
-    except (KeyError, ValueError, TypeError, InvalidOperation):
+    except (KeyError, ValueError, TypeError, InvalidOperation, ValidationError):
         raise OperationRefused("artifact_invalid", "invalid Leads intake row") from None
     connections = grouped["intake_connection"]
     if (
