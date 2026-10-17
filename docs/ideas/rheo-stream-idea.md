@@ -1926,6 +1926,19 @@ The following changes are recorded here.
     cleanup and per-reference deletion evidence; existing single-record owners keep
     their return shape. These implement R4/A16 rather than rewriting outside references.
 
+20. **The job-search regression's thin source is a job feed sighting.** Recorded on
+    2026-10-17 against issue #381. The phase-four scenario names an email alert, a
+    copied search result and a full posting. Email-alert intake was retired before the
+    phase landed, because the official job feed delivers both thin refresh sightings
+    and full postings. So the regression test uses a feed sighting, a pasted
+    search-results page and a pasted full posting of one posting. The convergence rule
+    is unchanged: attach by the posting id, then derive each field from every linked
+    observation. A paste arrives through its pipeline's own manual job paste
+    connection, created on first use, so the person pasting stays the recorded actor.
+    Migration `0010_job_paste` drops the one-manual-connection index for it; capture,
+    webhook creation and export find the seeded connection by its `manual_capture`
+    namespace instead.
+
 ### Website intake implementation clarification (2026-10-09)
 
 Signed website event identity comes from the signed body (`event_id`) or its exact-byte

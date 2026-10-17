@@ -213,6 +213,7 @@ MANIFEST = ModuleManifest(
                 "jobfeed.reconnect",
                 "jobfeed.complete_pasted",
                 "jobfeed.revoke",
+                "jobsearch.paste",
                 "jobfeed.select_account",
             )
         ),

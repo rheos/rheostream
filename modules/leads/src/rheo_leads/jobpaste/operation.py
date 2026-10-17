@@ -10,12 +10,14 @@ field from every linked observation.
 
 The person pasting is the actor: the connection's transport is ``manual``, which
 takes the caller's own context and a funnel per delivery. Each delivery's event id
-is ``paste.<posting_id>.<body digest>``, so pasting identical content again is a
-duplicate delivery rather than a second observation.
+is ``paste.<posting_id>.<body digest>``, the digest leaving out both observation
+times. Pasting identical content again finds that receipt and counts a duplicate
+without delivering: the same id with new times would otherwise reach intake as a
+conflicting delivery.
 """
 
 from datetime import UTC, datetime
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from rheo_contracts import (
@@ -78,6 +80,16 @@ def _paste_connection(uow: UnitOfWork, pipeline_id: UUID) -> tuple[UUID, UUID] |
         .limit(1)
     ).one_or_none()
     return None if found is None else (found.id, found.funnel_id)
+
+
+def _received(uow: UnitOfWork, connection_id: UUID, event_id: str) -> Any | None:
+    """The receipt this connection already holds under ``event_id``, if any."""
+    return uow.connection.execute(
+        select(t.delivery_receipt.c.id, t.delivery_receipt.c.state_detail).where(
+            t.delivery_receipt.c.connection_id == connection_id,
+            t.delivery_receipt.c.source_event_id == event_id,
+        )
+    ).one_or_none()
 
 
 def _install(
@@ -146,6 +158,7 @@ def paste(ctx: WorkspaceContext, uow: UnitOfWork, m: PasteJobsInput) -> PastedJo
     now = datetime.now(UTC)
     parsed = _parsed(m, job_hosts, now)
     receipts: list[str] = []
+    warnings = list(parsed.warnings)
     accepted = duplicate = 0
     if parsed.jobs:
         lock(uow)
@@ -158,6 +171,16 @@ def paste(ctx: WorkspaceContext, uow: UnitOfWork, m: PasteJobsInput) -> PastedJo
             event_id = EVENT_ID_SEPARATOR.join(
                 (EVENT_PREFIX, job.posting_id, canonical_body_digest(body))
             )
+            earlier = _received(uow, connection_id, event_id)
+            if earlier is not None:
+                duplicate += 1
+                receipts.append(ref("delivery_receipt", earlier.id))
+                if earlier.state_detail == "observation_deleted":
+                    warnings.append(
+                        f"{job.posting_url} was pasted and then deleted before; "
+                        "this paste was not recorded"
+                    )
+                continue
             answer = accept_delivery(
                 ctx,
                 uow,
@@ -178,7 +201,7 @@ def paste(ctx: WorkspaceContext, uow: UnitOfWork, m: PasteJobsInput) -> PastedJo
         accepted=accepted,
         duplicate=duplicate,
         skipped=parsed.skipped,
-        warnings=list(parsed.warnings),
+        warnings=warnings,
         receipt_refs=receipts,
     )
 

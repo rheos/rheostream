@@ -33,7 +33,7 @@ All in the `leads` schema. Every table has `id uuid` (UUIDv7) unless noted.
 | --- | --- | --- |
 | `funnel` | `name text`, `description text`, `created_at`, `archived_at null` | Acquisition context: a site, an event, a referral programme. |
 | `campaign` | `funnel_id`, `name text`, `created_at`, `archived_at null` | Optional refinement of a funnel. |
-| `intake_connection` | `name`, `transport text`, `source_namespace text unique`, `mapping_id`, `mapping_version integer`, `funnel_id null`, `campaign_id null`, `priority integer`, `subject_authenticated boolean`, `email_verified boolean`, `signing_secret_ref text null`, `signing_key_generation integer`, `previous_secret_ref text null`, `previous_valid_until timestamptz null`, `state text`, `created_at`, `revoked_at null` | `transport` in `webhook`, `import`, `manual`. `state` in `active`, `needs_credential`, `revoked`. `source_namespace` is a URI (`urn:rheo:connection:<uuid>`) used as the CloudEvents `source`. `funnel_id` is null only on the `manual` connection, where each capture names its funnel (check constraint). `subject_authenticated` and `email_verified` are the operator's declaration of what this source proves, which R4 needs. `signing_key_generation` starts at 1 and increments on every rotation; it is the only rotation mechanism (see [transports](#transports)). |
+| `intake_connection` | `name`, `transport text`, `source_namespace text unique`, `mapping_id`, `mapping_version integer`, `funnel_id null`, `campaign_id null`, `priority integer`, `subject_authenticated boolean`, `email_verified boolean`, `signing_secret_ref text null`, `signing_key_generation integer`, `previous_secret_ref text null`, `previous_valid_until timestamptz null`, `state text`, `created_at`, `revoked_at null` | `transport` in `webhook`, `import`, `manual`. `state` in `active`, `needs_credential`, `revoked`. `source_namespace` is a URI (`urn:rheo:connection:<uuid>`) used as the CloudEvents `source`. `funnel_id` may be null only on a `manual` connection, where each capture names its funnel (check constraint); the seeded one has none. `subject_authenticated` and `email_verified` are the operator's declaration of what this source proves, which R4 needs. `signing_key_generation` starts at 1 and increments on every rotation; it is the only rotation mechanism (see [transports](#transports)). |
 | `connection_health` | `connection_id pk`, `last_accepted_at`, `last_processed_at`, `pending_count`, `unresolved_failures integer`, `last_error text null`, `last_error_at timestamptz null`, `last_unauthenticated_write_at timestamptz null`, `lag_seconds integer` | Maintained by the intake worker; read by `leads.connection.health` (FR 38). `last_error_at` is set by every path that records a failure. `last_unauthenticated_write_at` is written by the webhook receiver alone and is what bounds its pre-authentication write ([transports](#transports)); it is a separate column precisely so an authenticated path's write can never suppress the receiver's, which criterion 42 requires to be visible. The operation's `failed_delivery_count` is **not** a column here: it is computed at read time from `core.work.failures` ([retry](#events-and-the-outbox-fr-15)), so there is no second counter that could disagree with the delivery table. |
 | `field_mapping` | `id`, `version integer`, `name`, `source_kind text`, `state text` | `source_kind` in `json`, `csv`. Primary key `(id, version)`. Versions are immutable once a receipt pins them. |
 | `field_mapping_identity` | `mapping_id`, `version`, `event_id_path`, `occurred_at_path`, `subject_id_path null`, `verified_email_path null` | Where identity lives in a payload. Paths are JSON Pointers for JSON, column names for CSV. |
@@ -222,6 +222,19 @@ Migration `0009_jobfeed_collector` adds `poll` to the transport CHECK; it is add
 and the three existing values keep their meaning. Operator detail is in
 [Job feed collector](../../deploy/README.md#job-feed-collector).
 
+**Job paste.** `leads.jobsearch.paste` (owner or member, job search on) takes a Job
+search pipeline and either a copied search-results page or one full posting with its
+link. Each job it recognises becomes a body in the job feed's shape, keyed by the
+`~02` posting id in its link on a configured job host. The pipeline's own job paste
+connection carries it: a `manual` connection created on first use, with its own funnel,
+a copy of the job feed mapping named `job_paste`, priority 100, and the job feed's
+routing (attach by `ext.jobsearch.posting_id`, else create). The caller is the actor,
+as for any manual capture. The source event id is `paste.<posting id>.<body digest>`,
+the digest leaving out both observation times; a paste whose id the connection already
+holds counts as a duplicate and is not sent again. Because matching is per pipeline, a
+paste converges on the opportunity the job feed or an earlier paste created. A tile's
+text is a snippet and never becomes a description; only a full posting supplies one.
+
 **Signed webhook.** Headers: `X-Rheo-Timestamp` (Unix seconds), `X-Rheo-Signature` (`v1=<hex
 HMAC-SHA256 of "<timestamp>.<body>">`), optional `X-Rheo-Event-Id`. The receiver runs these
 steps in this order, and stops at the first that fails:
@@ -315,7 +328,8 @@ A file whose columns do not match the mapping version's rules is refused whole, 
 missing column, before any row is accepted (criterion 39).
 
 **Manual capture.** A form on the Leads surface and the `leads_capture` tool. Each workspace has
-one connection with `transport = manual`, created at Leads enable with `funnel_id` null,
+one seeded capture connection with `transport = manual` and `source_namespace`
+`manual_capture`, created at Leads enable with `funnel_id` null,
 `priority` 100, both evidence flags false, and the package mapping `manual_capture` version 1,
 also written at enable: its identity paths are `/event_id` and `/occurred_at`, and its rules map
 each core fact name to the JSON Pointer of the same name in the capture body (`/person.email`
