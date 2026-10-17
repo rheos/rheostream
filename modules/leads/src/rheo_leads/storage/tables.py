@@ -15,7 +15,6 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
-    text,
 )
 
 metadata = MetaData(schema="leads")
@@ -125,12 +124,10 @@ intake_connection = Table(
         "campaign_id IS NULL OR funnel_id IS NOT NULL", name="campaign_needs_funnel"
     ),
 )
-Index(
-    "one_manual_connection",
-    intake_connection.c.transport,
-    unique=True,
-    postgresql_where=text("transport = 'manual'"),
-)
+MANUAL_CAPTURE_NAMESPACE = "manual_capture"
+"""The seeded manual connection's ``source_namespace``. Job search pipelines may own
+further manual (paste) connections since ``0010_job_paste``, so capture, webhook
+creation and export find the seeded one by this, never by its transport."""
 connection_health = Table(
     "connection_health",
     metadata,

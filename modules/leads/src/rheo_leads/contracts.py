@@ -1,6 +1,7 @@
 """Strict wire shapes for receipt acceptance and manual capture."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
@@ -29,6 +30,32 @@ class CaptureInput(Strict):
 class AcceptedDelivery(Strict):
     receipt_ref: str
     outcome: str
+
+
+PASTE_PAGE_LIMIT = 2_000_000
+"""The longest copied search-results page accepted, in characters. A job list of a
+few dozen tiles is well under it."""
+
+
+class PasteJobsInput(Strict):
+    pipeline_ref: str
+    # A copied search-results page (its HTML), or one full posting's copied text.
+    kind: Literal["search_page", "posting"]
+    content: str = Field(min_length=1, max_length=PASTE_PAGE_LIMIT)
+    # Required for a posting: its link carries the posting id.
+    posting_url: str | None = Field(default=None, max_length=2048)
+
+
+class PastedJobs(Strict):
+    found: int
+    """Jobs recognised with a usable posting link."""
+    accepted: int
+    duplicate: int
+    """Already received with exactly this content; nothing new was recorded."""
+    skipped: int
+    """Recognised but left out: no usable posting link or title."""
+    warnings: list[str]
+    receipt_refs: list[str]
 
 
 class ConnectionInput(Strict):

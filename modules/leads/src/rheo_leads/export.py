@@ -170,9 +170,16 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
     except (KeyError, ValueError, TypeError, InvalidOperation):
         raise OperationRefused("artifact_invalid", "invalid Leads intake row") from None
     connections = grouped["intake_connection"]
-    if sum(row["transport"] == "manual" for row in connections) != 1:
+    if (
+        sum(
+            row["transport"] == "manual"
+            and row["source_namespace"] == t.MANUAL_CAPTURE_NAMESPACE
+            for row in connections
+        )
+        != 1
+    ):
         raise OperationRefused(
-            "artifact_invalid", "exactly one manual connection is required"
+            "artifact_invalid", "exactly one manual capture connection is required"
         )
     # The deletion participant locates the retained receipt after owner deletion.
     if any(row["id"] != row["receipt_id"] for row in grouped["observation"]):

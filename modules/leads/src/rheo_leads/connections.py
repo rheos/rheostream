@@ -117,7 +117,7 @@ def create(
     mapping = (
         uow.connection.execute(
             select(t.intake_connection).where(
-                t.intake_connection.c.transport == "manual",
+                t.intake_connection.c.source_namespace == t.MANUAL_CAPTURE_NAMESPACE,
             )
         )
         .mappings()

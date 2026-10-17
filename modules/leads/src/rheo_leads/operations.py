@@ -50,7 +50,7 @@ def capture(
 ) -> AcceptedDelivery:
     connection_id = uow.connection.execute(
         select(t.intake_connection.c.id).where(
-            t.intake_connection.c.transport == "manual"
+            t.intake_connection.c.source_namespace == t.MANUAL_CAPTURE_NAMESPACE
         )
     ).scalar_one_or_none()
     if connection_id is None:
