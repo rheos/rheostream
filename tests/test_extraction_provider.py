@@ -37,12 +37,14 @@ from rheo_contracts import (
     UsageKind,
 )
 from rheo_core.evidence import providers
+from rheo_core.evidence import service as evidence_service
 from rheo_core.evidence.extract import (
     DigestBatch,
     ExtractionScope,
     digest,
     extraction_response_schema,
 )
+from rheo_core.evidence.providers import ExtractionDeferred
 from rheo_core.runtime import AdapterRegistry
 from rheo_core.runtime.extraction import (
     ADAPTER_UNAVAILABLE,
@@ -50,6 +52,7 @@ from rheo_core.runtime.extraction import (
     EXTRACTION_INSTRUCTION,
     NO_STRUCTURED_RESULT,
     PROVIDER_NAME,
+    SCOPE_MISSING,
     STREAM_TRUNCATED,
     TOKEN_REVOKE_FAILED,
     ClaudeCliExtractionProvider,
@@ -434,6 +437,23 @@ def test_every_run_without_a_structured_result_raises(
     assert not _throwaway_root(adapter).exists()
 
 
+def test_a_usage_limit_raises_a_deferral_not_a_failure(
+    tokens: _Tokens, popen: PopenGuard
+) -> None:
+    """#376: the evidence did not cause it, so the drain must not count it."""
+    adapter = ScriptedAdapter(
+        [FailureEvent(kind=FailureKind.USAGE_LIMITED, detail="quoted text")]
+    )
+    with pytest.raises(ExtractionDeferred) as raised:
+        _provider(adapter, tokens).extract(_batch())
+
+    assert raised.value.kind == "usage_limited"
+    assert not isinstance(raised.value, ExtractionRunFailed)
+    assert "quoted text" not in str(raised.value)
+    _served(adapter, popen)
+    assert not _throwaway_root(adapter).exists()
+
+
 def test_the_deadline_cancels_the_run_and_raises(
     tokens: _Tokens, popen: PopenGuard
 ) -> None:
@@ -583,3 +603,26 @@ def test_the_runtimes_import_scan_flags_a_real_import(tmp_path: Path) -> None:
     assert _runtimes_imports(tmp_path) == {
         "probe.py": ["rheo_runtimes", "rheo_runtimes.claude_cli"]
     }
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        SCOPE_MISSING,
+        ADAPTER_UNAVAILABLE,
+        NO_STRUCTURED_RESULT,
+        STREAM_TRUNCATED,
+        TOKEN_REVOKE_FAILED,
+        *(kind.value for kind in FailureKind),
+    ],
+)
+def test_every_fixed_code_the_provider_raises_is_loggable(kind: str) -> None:
+    assert evidence_service._failure_kind(ExtractionRunFailed(kind)) == kind
+
+
+@pytest.mark.parametrize("kind", ["my_private_note", "usage limited", "", None, 7])
+def test_a_kind_outside_the_fixed_codes_is_never_logged(kind: object) -> None:
+    """#378 review: a code-shaped word can still be evidence, so only known codes."""
+    exc = RuntimeError("x")
+    exc.kind = kind  # type: ignore[attr-defined]
+    assert evidence_service._failure_kind(exc) is None

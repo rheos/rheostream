@@ -169,6 +169,9 @@ class FailureKind(StrEnum):
     STREAM_TRUNCATED = "stream_truncated"
     OUTPUT_INVALID = "output_invalid"
     ITERATION_LIMIT = "iteration_limit"
+    USAGE_LIMITED = "usage_limited"
+    """The provider refused the run for the account's usage limit (#376). Nothing
+    about the request caused it, and the same request can succeed once it resets."""
     RUNTIME_ERROR = "runtime_error"
 
 

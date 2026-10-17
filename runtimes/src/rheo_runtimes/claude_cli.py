@@ -228,7 +228,9 @@ class ClaudeCliHandle:
             # Before the terminal event, so the core records it before the loop ends.
             self._pending.append(usage)
         if payload.get("is_error"):
-            self._pending.append(_error_result(payload.get("result")))
+            self._pending.append(
+                _error_result(payload.get("result"), payload.get("api_error_status"))
+            )
             return
         self._pending.extend(self._success_events(payload.get("result")))
 
@@ -300,7 +302,18 @@ def _usage_event(payload: Mapping[str, object]) -> UsageEvent | None:
     )
 
 
-def _error_result(result: object) -> FailureEvent:
+USAGE_LIMIT_STATUS: Final = 429
+"""The ``api_error_status`` the executable reports when the subscription's usage limit
+(or the API's rate limit) refused the run. Its ``result`` is prose ("You've hit your
+weekly limit ..."), so only the status is read."""
+
+
+def _error_result(result: object, api_status: object = None) -> FailureEvent:
+    if type(api_status) is int and api_status == USAGE_LIMIT_STATUS:
+        return FailureEvent(
+            kind=FailureKind.USAGE_LIMITED,
+            detail="the executable reported a usage limit",
+        )
     if result == "authentication_failed":
         return FailureEvent(
             kind=FailureKind.CREDENTIAL_INVALID,
