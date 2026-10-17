@@ -814,7 +814,10 @@ def _sweep(
             counts["scored"] += 1
         else:
             counts["held"] += 1
-    _log.info(SCORED_LOG, extra=content_free_extra(counts))
+    # The total only: the content-free allowlist names a count, not a breakdown.
+    _log.info(
+        SCORED_LOG, extra=content_free_extra({"unit_count": sum(counts.values())})
+    )
     now = hooks.clock()
     due = follow_up_at(uow, now=now)
     if due is not None:
