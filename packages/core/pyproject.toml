@@ -11,7 +11,7 @@ dependencies = [
     # from 2026 onward" and drag the lock backwards every year rather than guard a
     # major. This phase uses only SpecifierSet and InvalidSpecifier.
     "packaging>=24",
-    "pydantic>=2,<3",
+    "pydantic>=2.14.1,<3",
     "httpx>=0.27,<1",
     "zstandard>=0.23,<1",
     # Architecture § A13: "JSON Schema validation uses the locked jsonschema package;
