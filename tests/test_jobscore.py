@@ -163,7 +163,9 @@ def test_facts_read_the_extension_fields() -> None:
 
 
 def test_the_prompt_holds_rules_profile_contract_then_the_posting() -> None:
-    job = established(budget_min=Decimal(25), budget_max=Decimal(40), job_type="hourly")
+    job = established(
+        budget_min=Decimal(9999998), budget_max=Decimal(9999999), job_type="hourly"
+    )
     task = tier2.build_task(job, profile=PROFILE, policy=POLICY, new_client=False)
     rules = task.index("Evaluate this opportunity")
     profile = task.index("Candidate factual evidence:\nExample career facts.")
@@ -172,7 +174,8 @@ def test_the_prompt_holds_rules_profile_contract_then_the_posting() -> None:
     assert rules < profile < contract < posting
     assert "Upwork note." in task and "Other note." not in task
     assert "min_client_spend" not in task and "tier1" not in task
-    assert "Rate: $25-$40/hr (HOURLY rate, not a project total)" in task
+    assert "Rate: $9999998-$9999999" in task
+    assert "(HOURLY rate, not a project total)" in task
     assert "Competing proposals: 10 to 15 (Upwork's own band" in task
     assert '"client_review_count": 12' in task
     assert "NEW CLIENT" not in task
@@ -204,7 +207,6 @@ def test_competition_reads_as_the_band(changes: dict[str, Any], line: str) -> No
     ("changes", "line"),
     [
         ({"budget_max": Decimal(1500), "job_type": "fixed"}, "Budget: $1500 (fixed"),
-        ({"budget_max": Decimal(60)}, "Rate: up to $60/hr"),
         ({"budget_max": Decimal(900)}, "Budget: $900 (fixed"),
         ({}, None),
     ],
@@ -214,6 +216,12 @@ def test_the_budget_line_tells_a_rate_from_a_total(
 ) -> None:
     found = tier2.budget_line(established(**changes))
     assert found == line or (line is not None and found and line in found)
+
+
+def test_a_small_untyped_top_end_reads_as_an_hourly_rate() -> None:
+    line = tier2.budget_line(established(budget_max=Decimal(60)))
+    assert line is not None and line.startswith("Rate: up to $60")
+    assert "(HOURLY rate, not a project total)" in line
 
 
 def test_the_prompt_version_names_the_fixed_text() -> None:

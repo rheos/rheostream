@@ -1,4 +1,4 @@
-"""The workspace's job-search profile: ``leads.jobprofile.set`` and ``leads.jobprofile.get``.
+"""The job-search profile: ``leads.jobprofile.set`` and ``leads.jobprofile.get``.
 
 The profile is the candidate's own evidence (career, skills, portfolio) as plain text,
 and the policy says how to judge a job against it: goals, exclusions, preferences,

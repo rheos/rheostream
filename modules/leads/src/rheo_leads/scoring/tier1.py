@@ -88,7 +88,7 @@ class JobFacts:
         )
 
     @property
-    def is_upwork(self) -> bool:
+    def on_default_platform(self) -> bool:
         return self.platform in (None, UPWORK)
 
 
@@ -115,7 +115,7 @@ def _percent(value: Decimal) -> str:
 
 def run_tier1(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
     """The filters for one job, each failing clause as a sentence the owner reads."""
-    if not job.is_upwork:
+    if not job.on_default_platform:
         return Tier1Result()
     over_cap = (
         job.proposal_count is not None and job.proposal_count > policy.max_proposals
