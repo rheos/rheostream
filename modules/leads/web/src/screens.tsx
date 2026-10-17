@@ -13,8 +13,10 @@ import {
 } from "./jobfeed-panel";
 import { JobHeader, JobQueue, type Choice } from "./queue-view";
 import type { Sort } from "./queue";
+import { postingUrl } from "./queue";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
+import { JobPaste, pipelineRef } from "./job-paste";
 import {
   data,
   date,
@@ -599,6 +601,19 @@ export async function queue({ shell, query }: ScreenProps) {
           submit={shell.submit}
         />
       )}
+      {catalogResult.state === "ok" && scope.jobs.length && shell.submit ? (
+        <details className={styles.manualCapture}>
+          <summary>Paste jobs</summary>
+          <JobPaste
+            submit={shell.submit}
+            pipelines={[
+              // The pipeline in view first, so a paste lands where you are looking.
+              ...scope.jobs.filter((p) => str(p.id) === scope.pipeline),
+              ...scope.jobs.filter((p) => str(p.id) !== scope.pipeline),
+            ].map((p) => ({ value: pipelineRef(str(p.id)), label: str(p.name) }))}
+          />
+        </details>
+      ) : null}
     </Frame>
   );
 }
@@ -847,6 +862,22 @@ export async function detail({ shell, query }: ScreenProps) {
               ))}
               {!evidence.length ? (
                 <p>No source observations are linked.</p>
+              ) : null}
+              {job && shell.submit ? (
+                <details className={styles.manualCapture}>
+                  <summary>Paste the full posting</summary>
+                  <JobPaste
+                    submit={shell.submit}
+                    kinds={["posting"]}
+                    pipelines={[
+                      {
+                        value: pipelineRef(str(job.pipeline_id)),
+                        label: "This pipeline",
+                      },
+                    ]}
+                    postingUrl={postingUrl(row(job.fields)) ?? ""}
+                  />
+                </details>
               ) : null}
             </section>
             <section className={styles.section}>

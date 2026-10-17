@@ -39,6 +39,7 @@ from rheo_leads.jobfeed.run import (
     CollectPayload,
     collect_job,
 )
+from rheo_leads.jobpaste.operation import OPERATIONS as JOBPASTE_OPERATIONS
 from rheo_leads.lifecycle import (
     authorize_delete,
     delete_owned,
@@ -87,7 +88,8 @@ MANIFEST = ModuleManifest(
     + PIPELINE_OPERATIONS
     + WEB_OPERATIONS
     + CONNECTION_OPERATIONS
-    + JOBFEED_OPERATIONS,
+    + JOBFEED_OPERATIONS
+    + JOBPASTE_OPERATIONS,
     tools=(
         *TOOLS,
         *CONNECTION_TOOLS,
@@ -211,6 +213,7 @@ MANIFEST = ModuleManifest(
                 "jobfeed.reconnect",
                 "jobfeed.complete_pasted",
                 "jobfeed.revoke",
+                "jobfeed.paste",
                 "jobfeed.select_account",
             )
         ),

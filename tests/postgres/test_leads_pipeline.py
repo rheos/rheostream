@@ -1239,6 +1239,15 @@ JOBSEARCH_TABLES = (
 )
 
 
+def _undo_0010(connection: Any) -> None:
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX one_manual_connection ON leads.intake_connection "
+            "(transport) WHERE transport = 'manual'"
+        )
+    )
+
+
 def _undo_0009(connection: Any) -> None:
     for table in (
         "jobfeed_account_choice",
@@ -1292,6 +1301,7 @@ def _undo_0005(connection: Any) -> None:
 # Newest first. Each step undoes one frozen Leads migration on a disposable
 # workspace that started at head, so a test can rebuild an exact predecessor.
 LEADS_REVISIONS = (
+    ("0010_job_paste", _undo_0010),
     ("0009_jobfeed_collector", _undo_0009),
     ("0008_attach_by_field", _undo_0008),
     ("0007_jobsearch_preset", _undo_0007),
@@ -1520,6 +1530,7 @@ def test_attach_by_field_survives_frozen_upgrade(intake: Intake) -> None:
     setup(intake)
     with open_unit_of_work(intake.ctx) as uow:
         assert rewind_leads(uow.connection, "0007_jobsearch_preset") == (
+            "0010_job_paste",
             "0009_jobfeed_collector",
             "0008_attach_by_field",
         )

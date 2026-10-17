@@ -7,6 +7,7 @@ this module (migrations and export restore are the others), so the rule that gua
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from rheo_contracts import WorkspaceContext
@@ -28,6 +29,11 @@ MAPPING_VERSION = 1
 POSTING_ID = JOBSEARCH_TARGET_PREFIX + "posting_id"
 # The const value is the Job search preset's existing platform enum value.
 PLATFORM = "upwork"
+# Ordinal order: attach a repeat sighting by posting id, else create.
+ROUTING: tuple[tuple[str, str | None], ...] = (
+    ("attach_by_field", POSTING_ID),
+    ("create_opportunity", None),
+)
 
 
 @dataclass(frozen=True)
@@ -146,64 +152,19 @@ def install_connection(
     lock(uow)
     if read_connection(uow.connection) is not None:
         raise OperationRefused("connection_exists", "the job feed is already connected")
-    # Ordinal order: attach a repeat sighting by posting id, else create.
-    routing: tuple[tuple[str, str | None], ...] = (
-        ("attach_by_field", POSTING_ID),
-        ("create_opportunity", None),
-    )
     check_mapping_targets(
         uow,
         ctx,
         connection_id=connection_id,
         targets=[rule.target for rule in RULES],
         pending_rules=[RuleTarget(enabled=True, pipeline_id=pipeline_id)]
-        * len(routing),
+        * len(ROUTING),
     )
     now = dependencies().now()
-    funnel_id, mapping_id = uuid7(), uuid7()
-    uow.connection.execute(
-        insert(t.funnel).values(
-            id=funnel_id,
-            name="Job feed",
-            description="Postings collected by the job feed",
-            created_at=now,
-        )
+    funnel_id = write_funnel(
+        uow, name="Job feed", description="Postings collected by the job feed", now=now
     )
-    uow.connection.execute(
-        insert(t.field_mapping).values(
-            id=mapping_id,
-            version=MAPPING_VERSION,
-            name="job_feed",
-            source_kind="json",
-            state="active",
-        )
-    )
-    uow.connection.execute(
-        insert(t.field_mapping_identity).values(
-            mapping_id=mapping_id,
-            version=MAPPING_VERSION,
-            event_id_path=None,
-            occurred_at_path="/observed_at",
-            subject_id_path=None,
-            verified_email_path=None,
-        )
-    )
-    uow.connection.execute(
-        insert(t.field_mapping_rule),
-        [
-            {
-                "mapping_id": mapping_id,
-                "version": MAPPING_VERSION,
-                "target": rule.target,
-                "source_path": rule.source_path,
-                "transform": rule.transform,
-                "transform_arg": rule.transform_arg,
-                "required": rule.required,
-                "clear_on_null": False,
-            }
-            for rule in RULES
-        ],
-    )
+    mapping_id = write_job_mapping(uow, name="job_feed")
     uow.connection.execute(
         insert(t.intake_connection).values(
             id=connection_id,
@@ -247,7 +208,72 @@ def install_connection(
             updated_at=now,
         )
     )
-    for ordinal, (action, match_field) in enumerate(routing):
+    write_job_routing(uow, connection_id=connection_id, pipeline_id=pipeline_id)
+
+
+def write_funnel(
+    uow: UnitOfWork, *, name: str, description: str, now: datetime
+) -> UUID:
+    """A new funnel a job connection owns; its id."""
+    funnel_id = uuid7()
+    uow.connection.execute(
+        insert(t.funnel).values(
+            id=funnel_id, name=name, description=description, created_at=now
+        )
+    )
+    return funnel_id
+
+
+def write_job_mapping(uow: UnitOfWork, *, name: str) -> UUID:
+    """A new active copy of the job mapping (:data:`RULES`) under ``name``; its id.
+
+    The job feed and the job paste connections read the same flat body, so they
+    share these rules; ``name`` (``job_feed`` or ``job_paste``) tells them apart.
+    """
+    mapping_id = uuid7()
+    uow.connection.execute(
+        insert(t.field_mapping).values(
+            id=mapping_id,
+            version=MAPPING_VERSION,
+            name=name,
+            source_kind="json",
+            state="active",
+        )
+    )
+    uow.connection.execute(
+        insert(t.field_mapping_identity).values(
+            mapping_id=mapping_id,
+            version=MAPPING_VERSION,
+            event_id_path=None,
+            occurred_at_path="/observed_at",
+            subject_id_path=None,
+            verified_email_path=None,
+        )
+    )
+    uow.connection.execute(
+        insert(t.field_mapping_rule),
+        [
+            {
+                "mapping_id": mapping_id,
+                "version": MAPPING_VERSION,
+                "target": rule.target,
+                "source_path": rule.source_path,
+                "transform": rule.transform,
+                "transform_arg": rule.transform_arg,
+                "required": rule.required,
+                "clear_on_null": False,
+            }
+            for rule in RULES
+        ],
+    )
+    return mapping_id
+
+
+def write_job_routing(
+    uow: UnitOfWork, *, connection_id: UUID, pipeline_id: UUID
+) -> None:
+    """Attach a repeat sighting by posting id, else create; both into the pipeline."""
+    for ordinal, (action, match_field) in enumerate(ROUTING):
         uow.connection.execute(
             insert(p.routing_rule).values(
                 id=uuid7(),
