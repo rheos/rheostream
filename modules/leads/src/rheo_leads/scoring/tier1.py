@@ -40,6 +40,12 @@ def _integer(value: str | None) -> int | None:
     return int(number)
 
 
+def _rating(value: str | None) -> Decimal | None:
+    """A client rating; 0 is the feed's placeholder for no rating yet, so unknown."""
+    rating = _decimal(value)
+    return None if rating == 0 else rating
+
+
 def _flag(value: str | None) -> bool | None:
     return {"true": True, "false": False}.get(value or "")
 
@@ -82,7 +88,7 @@ class JobFacts:
             proposal_count_exact=_flag(ext("proposal_count_exact")),
             payment_verified=_flag(ext("client_payment_verified")),
             client_spend=_decimal(ext("client_spend")),
-            client_rating=_decimal(ext("client_rating")),
+            client_rating=_rating(ext("client_rating")),
             client_reviews=_integer(ext("client_reviews")),
             client_hire_rate=_decimal(ext("client_hire_rate")),
         )

@@ -99,6 +99,22 @@ def test_an_unknown_value_never_fails(unknown: str) -> None:
     assert run_tier1(established(**{unknown: None}), Tier1Policy()).passed
 
 
+def test_a_zero_rating_is_no_rating() -> None:
+    job = JobFacts.from_fields(
+        "Example",
+        {
+            EXTENSION + "client_rating": "0",
+            EXTENSION + "client_reviews": "0",
+            EXTENSION + "client_payment_verified": "true",
+        },
+    )
+    assert job.client_rating is None
+    assert run_tier1(job, Tier1Policy()).passed
+    rated = JobFacts.from_fields("Example", {EXTENSION + "client_rating": "3.9"})
+    assert rated.client_rating == Decimal("3.9")
+    assert not run_tier1(rated, Tier1Policy()).passed
+
+
 def test_unknown_payment_passes_as_a_soft_clause() -> None:
     result = run_tier1(established(payment_verified=None), Tier1Policy())
     assert result.passed
