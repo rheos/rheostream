@@ -115,6 +115,25 @@ def test_a_zero_rating_is_no_rating() -> None:
     assert not run_tier1(rated, Tier1Policy()).passed
 
 
+def test_a_zero_hire_rate_without_reviews_is_no_hire_rate() -> None:
+    empty = JobFacts.from_fields(
+        "Example",
+        {
+            EXTENSION + "client_hire_rate": "0",
+            EXTENSION + "client_reviews": "0",
+            EXTENSION + "client_payment_verified": "true",
+        },
+    )
+    assert empty.client_hire_rate is None
+    assert run_tier1(empty, Tier1Policy()).passed
+    reviewed = JobFacts.from_fields(
+        "Example",
+        {EXTENSION + "client_hire_rate": "0", EXTENSION + "client_reviews": "4"},
+    )
+    assert reviewed.client_hire_rate == Decimal(0)
+    assert not run_tier1(reviewed, Tier1Policy()).passed
+
+
 def test_unknown_payment_passes_as_a_soft_clause() -> None:
     result = run_tier1(established(payment_verified=None), Tier1Policy())
     assert result.passed
