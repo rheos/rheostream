@@ -190,7 +190,7 @@ set it, on that owner's model login.
 client needs a verified payment method, at least $500 spent, a rating of 4.5 or more
 and a hire rate of 40% or more; a new client (no spend and no reviews, both known)
 needs only the payment method; more than 50 proposals holds any job back. An unknown
-value never fails a clause, and a rating of 0 (no rating yet) is unknown. A job held back is recorded as fit **low** with the
+value never fails a clause, a rating of 0 (no rating yet) is unknown, and so is a 0% hire rate from a client with no reviews. A job held back is recorded as fit **low** with the
 failing clauses as its reasons, and no score. Unknown payment is a condition to
 confirm, not a failure.
 

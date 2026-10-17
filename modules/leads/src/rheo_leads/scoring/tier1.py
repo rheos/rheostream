@@ -77,6 +77,12 @@ class JobFacts:
 
         description = fields.get("message")
         job_type = ext("job_type")
+        reviews = _integer(ext("client_reviews"))
+        hire_rate = _decimal(ext("client_hire_rate"))
+        if hire_rate == 0 and reviews == 0:
+            # An empty client record reports 0% for a client with no history,
+            # which is no hire rate at all, not a client who never hires.
+            hire_rate = None
         return cls(
             title=title,
             description=description if description and description.strip() else None,
@@ -89,8 +95,8 @@ class JobFacts:
             payment_verified=_flag(ext("client_payment_verified")),
             client_spend=_decimal(ext("client_spend")),
             client_rating=_rating(ext("client_rating")),
-            client_reviews=_integer(ext("client_reviews")),
-            client_hire_rate=_decimal(ext("client_hire_rate")),
+            client_reviews=reviews,
+            client_hire_rate=hire_rate,
         )
 
     @property
