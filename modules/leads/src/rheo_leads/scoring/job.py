@@ -65,7 +65,7 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
-from sqlalchemy import and_, exists, func, insert, select, update
+from sqlalchemy import and_, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import StatementError
 
@@ -650,17 +650,26 @@ def record(
 
 
 def repend_unscored(uow: UnitOfWork, *, now: datetime) -> None:
-    """After the profile changes: every job that failed, or that has no model score
-    yet (held by the filters, or waiting for its description), goes back to
+    """After the profile changes: every job that failed, or whose current assessment
+    has no model score (held by the filters, or waiting for its description), goes
+    back to
     pending, so the new thresholds and evidence apply. Scored jobs keep their score
     until their posting changes."""
     state, qual = s.job_score_state, p.qualification
-    scored = exists().where(
-        qual.c.opportunity_id == state.c.opportunity_id, qual.c.score.is_not(None)
+    # The current assessment's score, ordered as the queue picks the latest; an
+    # older score does not count once a later assessment held the job back.
+    latest_score = (
+        select(qual.c.score)
+        .where(qual.c.opportunity_id == state.c.opportunity_id)
+        .order_by(
+            qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
+        )
+        .limit(1)
+        .scalar_subquery()
     )
     uow.connection.execute(
         update(state)
-        .where((state.c.state == "failed") | ~scored)
+        .where((state.c.state == "failed") | latest_score.is_(None))
         .values(
             state="pending",
             attempts=0,

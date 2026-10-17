@@ -418,6 +418,27 @@ def test_a_profile_change_reapplies_the_filters_to_held_jobs(scored: Scoring) ->
     ]
 
 
+def test_a_job_held_after_an_earlier_score_is_requeued_by_a_profile_change(
+    scored: Scoring,
+) -> None:
+    text = FULL.format(title="Job", what="pipeline", activity="")
+    scored.paste("~02100", text)
+    scored.model(final(8))
+    scored.set_profile()
+    scored.sweep()
+    # The competition rises past the cap: the next sweep holds the job back.
+    scored.paste("~02100", text + "\n\nProposals: 50+")
+    scored.sweep()
+    assert [(a["fit"], a["score"]) for a in scored.assessments("~02100")] == [
+        ("high", 80),
+        ("low", None),
+    ]
+    scored.set_profile(tier1={"max_proposals": 100})
+    assert scored.state("~02100")["state"] == "pending"
+    scored.sweep()
+    assert scored.assessments("~02100")[-1]["score"] == 80
+
+
 def test_a_changed_description_is_rescored_and_an_unchanged_one_is_not(
     scored: Scoring,
 ) -> None:
