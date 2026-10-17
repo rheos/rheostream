@@ -222,6 +222,21 @@ describe("fit pill", () => {
   ])("%s shows %s in the %s band", (fit, mark, band, verdict, description) => {
     expect(fitFor({ fit })).toMatchObject({ mark, band, verdict, description });
   });
+  it("shows the score when one was recorded, in its fit's band", () => {
+    expect(fitFor({ fit: "high", score: 80 })).toMatchObject({
+      mark: "80",
+      band: "high",
+      description: "Pursue: scored 80 of 100, fit high",
+    });
+    expect(fitFor({ fit: "medium", score: 70 })).toMatchObject({
+      mark: "70",
+      band: "mid",
+    });
+    // A held job has a fit and no score; a malformed score is not shown.
+    expect(fitFor({ fit: "low", score: null })).toMatchObject({ mark: "Low" });
+    expect(fitFor({ fit: "low", score: 450 })).toMatchObject({ mark: "Low" });
+    expect(fitFor({ fit: "low", score: "40" })).toMatchObject({ mark: "Low" });
+  });
   it("invents nothing without an assessment", () => {
     expect(fitFor(null)).toBeNull();
     expect(fitFor(undefined)).toBeNull();
@@ -478,6 +493,35 @@ describe("queue rendering", () => {
     const quiet = renderToStaticMarkup(<JobHeader item={sparse} now={NOW} />);
     expect(quiet).not.toContain('role="alert"');
     expect(quiet).not.toContain("Payment verified");
+  });
+  it("lists the score's reasons under the verdict line", () => {
+    const html = renderToStaticMarkup(
+      <JobHeader
+        item={{
+          ...full,
+          assessment: {
+            fit: "high",
+            score: 80,
+            summary: "Fit: strong. Economics: favorable. Clarify scope.",
+            reasons: [
+              "Fit: strong. Economics: favorable.",
+              "Candidate evidence to review: Example pipeline.",
+              "Clarify scope and acceptance criteria.",
+            ],
+          },
+        }}
+        now={NOW}
+      />,
+    );
+    expect(html).toContain('aria-label="Why this score"');
+    expect(html).toContain(">80<");
+    expect(html).toMatch(/<p[^>]*>Fit: strong\. Economics: favorable\.<\/p>/);
+    expect(html).toContain("<li>Candidate evidence to review: Example pipeline.</li>");
+    expect(html).toContain("<li>Clarify scope and acceptance criteria.</li>");
+    // Without reasons the one-paragraph summary still shows.
+    const plain = renderToStaticMarkup(<JobHeader item={full} now={NOW} />);
+    expect(plain).not.toContain("Why this score");
+    expect(plain).toContain("Strong synthetic match.");
   });
 });
 function row(value: unknown): Row {

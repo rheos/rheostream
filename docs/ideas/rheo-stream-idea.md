@@ -1939,6 +1939,19 @@ The following changes are recorded here.
     webhook creation and export find the seeded connection by its `manual_capture`
     namespace instead.
 
+21. **Job scores run 1 to 100, from a profile kept as workspace data.** Recorded on
+    2026-10-17 against issue #383. Each workspace's job-search profile (the
+    candidate's evidence and a scoring policy) is Leads data set by an owner
+    operation and exported with Leads; it never ships in the repository. Tier 1
+    applies the client filters, where an unknown value never fails a clause; tier 2
+    is one tool-less model run under a fixed response contract. The model answers 1
+    to 10 for now and the stored score is ten times that, a 1-100 scale with room for
+    finer judgement later. The fit band is derived: 80 to 100 high, 60 to 79 medium,
+    below 60 low. A tier-1 hold is low with its reasons, a missing description is
+    needs information, and a usage limit defers a job without counting an attempt.
+    Migration `0011_job_scoring` adds the nullable score and the profile and scoring
+    state tables.
+
 ### Website intake implementation clarification (2026-10-09)
 
 Signed website event identity comes from the signed body (`event_id`) or its exact-byte

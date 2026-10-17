@@ -1,11 +1,14 @@
-"""Version-seven intake, pipeline and job feed snapshot; restore preserves identities.
+"""Version-eight intake, pipeline, job feed and job scoring snapshot; restore preserves
+identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. The job feed connection is exported
 without its token reference, its registered client, its run claim and its backoff,
 and the pending authorization is never exported; a restored collector needs the
-owner to reconnect, which registers a fresh client. Restore replaces only the fresh
-seed; existing intake records cause a refusal, never a destructive merge.
+owner to reconnect, which registers a fresh client. The job-search profile and each
+job's scoring state are exported whole; a restored scoring schedule stays off until
+the owner sets the profile again. Restore replaces only the fresh seed; existing
+intake records cause a refusal, never a destructive merge.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -14,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from pydantic import ValidationError
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import (
@@ -34,8 +38,10 @@ from sqlalchemy import (
     select,
 )
 
+from rheo_leads.scoring.profile import ScoringPolicy
 from rheo_leads.storage import jobfeed
 from rheo_leads.storage import pipeline as _pipeline  # noqa: F401
+from rheo_leads.storage import scoring as _scoring
 from rheo_leads.storage import tables as t
 
 if TYPE_CHECKING:
@@ -163,11 +169,15 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
                 and values["state"] == "active"
             ):
                 values["state"] = "needs_credential"
+            if table is _scoring.jobsearch_profile:
+                # The scorer reads the policy whole, so a malformed one is refused
+                # here rather than stalling scoring after the restore.
+                ScoringPolicy.model_validate(values["policy"])
             if table is jobfeed.jobfeed_connection:
                 # No token, no client, no claim, no backoff: the owner reconnects.
                 values.update(RESTORED_COLLECTOR)
             grouped[table.name].append(values)
-    except (KeyError, ValueError, TypeError, InvalidOperation):
+    except (KeyError, ValueError, TypeError, InvalidOperation, ValidationError):
         raise OperationRefused("artifact_invalid", "invalid Leads intake row") from None
     connections = grouped["intake_connection"]
     if (

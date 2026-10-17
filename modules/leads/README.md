@@ -171,6 +171,60 @@ sighting is collected again and, if the posting still qualifies as a discovery, 
 a new opportunity. Erasing only an observation also removes that memory; the next
 sighting is delivered again and refreshes the opportunity that still tracks it.
 
+## Job scoring
+
+Every open opportunity in a Job search pipeline gets a score you can triage by: the
+job queue's pill shows it, and the queue's **Score** sort ranks by it.
+
+**The profile.** Scoring starts once an owner sets the workspace's job-search profile
+with `leads.jobprofile.set`: the candidate's evidence as plain text (career, skills,
+and an optional `Portfolio:` section with one `- Name: text` paragraph per project)
+and a scoring policy (goals, exclusions, preferences, economics, known gaps,
+per-platform notes, and the tier-1 thresholds). The profile is the workspace's own
+data. No package ships one, it is exported with Leads, and no log line or audit record
+carries its text. `leads.jobprofile.get` returns it to an owner. Setting it again
+bumps its version and turns the scoring schedule on. The scorer runs as the owner who
+set it, on that owner's model login.
+
+**Tier 1** applies the client filters before any model is asked: an established
+client needs a verified payment method, at least $500 spent, a rating of 4.5 or more
+and a hire rate of 40% or more; a new client (no spend and no reviews, both known)
+needs only the payment method; more than 50 proposals holds any job back. An unknown
+value never fails a clause. A job held back is recorded as fit **low** with the
+failing clauses as its reasons, and no score. Unknown payment is a condition to
+confirm, not a failure.
+
+**Tier 2** asks the model, through the `claude_cli` runtime with no tools, to judge
+the posting against the profile under a fixed response contract: it picks candidate
+evidence, numbered excerpts of the posting, recorded experience boundaries and fixed
+review conditions by ID, and the explanation is written from the sources those IDs
+name, never from model prose. The posting is untrusted evidence. The model answers 1
+to 10 and the stored score is ten times that, so scores run 10 to 100. The fit band
+follows the score: 80 to 100 high, 60 to 79 medium, below 60 low. A job whose full
+description is missing is recorded as **needs information** with a pointer to paste
+the full posting, and is scored once one arrives. Each score is a qualification record
+with its model and prompt versions.
+
+**When it runs.** A worker sweep (`leads.jobsearch_score`) runs every 30 minutes, after
+each delivery into a Job search pipeline, and when the profile is set. It scores up to
+`leads.scoring.max_per_run` jobs (default 10), newest first, and queues a follow-up
+while more wait. A job is scored again when its title, description, price or payment
+status changes, or when its proposal count, spend, rating, reviews or hire rate moves
+into another bracket; a profile change does not rescore jobs that already have a score.
+`leads.scoring.model_id` picks the model (empty uses the CLI's default).
+
+**Failures.** A failure of the model login or the deployment (a usage limit, an
+expired or refused login, a missing executable, a crashed or timed-out run) makes
+every waiting job wait 15 minutes without spending an attempt. A failure about the job
+itself, such as an answer outside the contract, retries with backoff; the fifth
+attempt records a **needs information** assessment saying scoring failed, and the job
+is tried again when the posting changes. Setting the profile again re-queues failed
+jobs and every job without a score yet, so changed thresholds apply to held jobs.
+
+**Who sees what.** The profile itself is owner-only. A score's reasons name the
+projects and quote the recorded experience boundaries they cite, and those reasons
+sit on the job's qualification record, which every workspace member can read.
+
 ## Dated next follow-up
 
 Each opportunity has at most one pending reminder, owned by Leads. Call

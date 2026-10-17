@@ -199,6 +199,24 @@
   font-style: italic;
   color: var(--rs-color-ink-dim);
 }
+.reasons {
+  margin: 0 0 var(--rs-space-3);
+  max-width: 70ch;
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+.reasons ul {
+  margin: 0;
+  padding-left: var(--rs-space-4);
+}
+.reasons li + li {
+  margin-top: var(--rs-space-1);
+}
+.reasonLead {
+  margin: 0 0 var(--rs-space-1);
+  font-weight: 600;
+  color: var(--rs-color-ink);
+}
 .clamped {
   display: -webkit-box;
   -webkit-box-orient: vertical;

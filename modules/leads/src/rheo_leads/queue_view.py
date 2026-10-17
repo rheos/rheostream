@@ -5,7 +5,8 @@ columns, its stage, the Job search extension fields and the start of the origina
 message, the latest assessment's ratings and explanation, the pending follow-up,
 whether notes or drafts exist, the source transport, the linked party's display
 name, the stages it may move to next, and the closed stage a dismiss would move
-it to. Sorting by fit and hiding crowded postings happen here, before the limit,
+it to. Sorting by score (then fit) and hiding crowded postings happen here, before
+the limit,
 so the first page is the right one. Contact points, notes,
 draft bodies and full messages stay behind ``leads.opportunity.get``.
 """
@@ -49,6 +50,9 @@ CARD_FIELDS = (
 )
 PREVIEW_CHARS = 240
 SUMMARY_CHARS = 800
+# The explanation's lines, for the job detail's list of reasons.
+MAX_REASONS = 12
+REASON_CHARS = 600
 # Above this many proposals a posting is crowded (the web client's MAX_PROPOSALS).
 MAX_PROPOSALS = 50
 # Fit ratings by sort weight, higher first; an unassessed opportunity sorts last.
@@ -60,9 +64,9 @@ DISMISS_OUTCOMES = ("disqualified", "lost")
 
 class QueueInput(c.Strict):
     """Without ``ref``: open stages unless a stage or closed ones are asked for,
-    by latest fit then newest (``sort="score"``) or newest only, optionally without
-    postings above the proposal cap. With ``ref``: that one opportunity, whatever
-    its stage or count."""
+    by latest score, then fit, then newest (``sort="score"``) or newest only,
+    optionally without postings above the proposal cap. With ``ref``: that one
+    opportunity, whatever its stage or count."""
 
     ref: c.OpportunityRef | None = None
     pipeline_id: UUID | None = None
@@ -89,6 +93,15 @@ def _summary(text: str | None) -> str | None:
         " ".join(line.strip() for line in text.split("\n") if line.strip()),
         SUMMARY_CHARS,
     )
+
+
+def _reasons(text: str | None) -> list[str]:
+    """The explanation's non-empty lines, each capped, at most ``MAX_REASONS``."""
+    lines = [line.strip() for line in (text or "").split("\n") if line.strip()]
+    return [
+        line if len(line) <= REASON_CHARS else line[:REASON_CHARS].rstrip() + "…"
+        for line in lines[:MAX_REASONS]
+    ]
 
 
 def _party(
@@ -137,7 +150,10 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
             q = q.where(~_over_cap(o.c.id))
     order = [o.c.created_at.desc(), o.c.id.desc()]
     if m.sort == "score":
-        order.insert(0, _fit_rank(o.c.id).desc())
+        order[:0] = [
+            _latest_score(o.c.id).desc().nulls_last(),
+            _fit_rank(o.c.id).desc(),
+        ]
     records = [
         dict(r)
         for r in uow.connection.execute(q.order_by(*order).limit(m.limit)).mappings()
@@ -242,11 +258,13 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                 if assessment is None
                 else {
                     "fit": assessment["fit"],
+                    "score": assessment["score"],
                     "intent": assessment["intent"],
                     "urgency": assessment["urgency"],
                     "evidence_completeness": assessment["evidence_completeness"],
                     "uncertainty": assessment["uncertainty"],
                     "summary": _summary(assessment["explanation"]),
+                    "reasons": _reasons(assessment["explanation"]),
                     "created_at": assessment["created_at"],
                 },
                 "followup": followups.get(identifier),
@@ -260,11 +278,11 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
     return c.ItemsOutput(items=items)
 
 
-def _fit_rank(opportunity_id: Any) -> Any:
-    """The latest assessment's fit as a sort weight, 0 when unassessed."""
+def _latest(column: Any, opportunity_id: Any) -> Any:
+    """``column`` of the opportunity's latest assessment, as a scalar subquery."""
     qual = p.qualification
-    latest = (
-        select(qual.c.fit)
+    return (
+        select(column)
         .where(qual.c.opportunity_id == opportunity_id)
         .order_by(
             qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
@@ -272,6 +290,16 @@ def _fit_rank(opportunity_id: Any) -> Any:
         .limit(1)
         .scalar_subquery()
     )
+
+
+def _latest_score(opportunity_id: Any) -> Any:
+    """The latest assessment's 1-100 score; null when it has none."""
+    return _latest(p.qualification.c.score, opportunity_id)
+
+
+def _fit_rank(opportunity_id: Any) -> Any:
+    """The latest assessment's fit as a sort weight, 0 when unassessed."""
+    latest = _latest(p.qualification.c.fit, opportunity_id)
     return case(*((latest == fit, rank) for fit, rank in FIT_RANK.items()), else_=0)
 
 
