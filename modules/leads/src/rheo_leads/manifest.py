@@ -52,11 +52,13 @@ from rheo_leads.pipeline_contracts import DeleteInput
 from rheo_leads.pipeline_operations import OPERATIONS as PIPELINE_OPERATIONS
 from rheo_leads.pipeline_operations import TOOLS
 from rheo_leads.proposals.job import (
+    PROPOSE_INTERVAL_SECONDS,
     PROPOSE_JOB_KIND,
     PROPOSE_JOB_MAX_ATTEMPTS,
     ProposePayload,
     propose_job,
 )
+from rheo_leads.proposals.job import SCHEDULE_NAME as PROPOSE_SCHEDULE_NAME
 from rheo_leads.proposals.operations import OPERATIONS as PROPOSAL_OPERATIONS
 from rheo_leads.proposals.profile import OPERATIONS as PROPOSAL_PROFILE_OPERATIONS
 from rheo_leads.resolvers import RECORD_TABLES, resolve_record
@@ -201,6 +203,15 @@ MANIFEST = ModuleManifest(
             cron="*/30 * * * *",
             enabled_by_default=False,
             interval_seconds=SCORE_INTERVAL_SECONDS,
+            gate_setting=JOBSEARCH_KEY,
+        ),
+        # The drafting chain's safety net; off until a proposal profile is set.
+        Schedule(
+            name=PROPOSE_SCHEDULE_NAME,
+            job_kind=PROPOSE_JOB_KIND,
+            cron="*/30 * * * *",
+            enabled_by_default=False,
+            interval_seconds=PROPOSE_INTERVAL_SECONDS,
             gate_setting=JOBSEARCH_KEY,
         ),
     ),

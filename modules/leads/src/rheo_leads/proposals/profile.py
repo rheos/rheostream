@@ -10,7 +10,8 @@ Leads. Nothing in this package ships a profile, and no log line or audit record 
 its text.
 
 The owner who sets it is the account whose model login drafts proposals, the same
-rule the scoring profile follows.
+rule the scoring profile follows. Setting it turns the drafting schedule on, the
+sweep's safety net for a chain a disabled capability or a dead job broke.
 """
 
 from datetime import UTC, datetime
@@ -28,10 +29,12 @@ from rheo_contracts import (
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import UnitOfWork
+from rheo_core.work.schedules import ensure_module_schedule
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from rheo_leads import pipeline_common as h
+from rheo_leads.configuration import MODULE_ID
 from rheo_leads.pipeline_contracts import Empty, Strict
 from rheo_leads.storage import proposals as s
 
@@ -141,14 +144,25 @@ def set_proposal_profile(
     if account is None:
         raise OperationRefused("account_required", "an owner account sets the profile")
     h.lock(uow)
+    now = datetime.now(UTC)
     values = {
         "profile": m.profile,
         "policy": m.policy.model_dump(mode="json"),
         "drafting_account_id": account,
         "updated_by_kind": ctx.actor.kind.value,
         "updated_by_id": ctx.actor.id,
-        "updated_at": datetime.now(UTC),
+        "updated_at": now,
     }
+    # The lifecycle lock is held, which orders this against module enable.
+    from rheo_leads.proposals.job import SCHEDULE_NAME
+
+    ensure_module_schedule(
+        uow.connection,
+        module_id=MODULE_ID,
+        name=SCHEDULE_NAME,
+        enabled=True,
+        due_at=now,
+    )
     table = s.proposal_profile
     statement = insert(table).values(singleton=True, version=1, **values)
     row = (

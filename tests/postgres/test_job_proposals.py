@@ -35,7 +35,7 @@ from rheo_core.runtime.oneshot import OneShotRunner
 from rheo_core.runtime.registry import AdapterRegistry
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
-from rheo_core.storage.work_tables import job
+from rheo_core.storage.work_tables import job, schedule
 from rheo_leads.proposals import job as proposing
 from rheo_leads.proposals.job import PROPOSE_JOB_KIND, ProposePayload, propose_job
 from rheo_leads.references import ref
@@ -259,6 +259,10 @@ def test_the_profile_operation_stores_the_policy_and_never_echoes_the_text(
     assert first.profile_chars == len(PROFILE)
     second = drafting.set_profile(writing_notes=["A changed note."])
     assert second.version == 2
+    (row,) = rows(
+        drafting.i, select(schedule).where(schedule.c.name == "jobsearch_propose")
+    )
+    assert row["enabled"] is True
     got = drafting.op("leads.proposalprofile.get")
     assert got.profile == PROFILE
     assert got.policy.writing_notes == ["A changed note."]
@@ -449,8 +453,11 @@ def test_a_usage_limit_waits_without_spending_an_attempt(drafting: Drafting) -> 
         assert row["retry_after"] == now + proposing.USAGE_DEFER
     # One model call, then the sweep stopped and queued its follow-up.
     assert drafting.model.roles == ["analysis"]
+    due = now + proposing.USAGE_DEFER
+    # Rounded up to the sweep's ten-second granularity.
     assert any(
-        r["next_run_at"] == now + proposing.USAGE_DEFER for r in sweeps(drafting.i)
+        due <= r["next_run_at"] < due + timedelta(seconds=10)
+        for r in sweeps(drafting.i)
     )
     drafting.model.override = None
     drafting.sweep(now + proposing.USAGE_DEFER + timedelta(seconds=1))
@@ -539,3 +546,80 @@ def test_losing_the_posting_evidence_removes_the_proposal(drafting: Drafting) ->
     # A proposal quotes the posting, so it does not outlive the evidence.
     assert rows(drafting.i, select(s.job_proposal)) == []
     assert rows(drafting.i, select(s.proposal_section)) == []
+
+
+def test_a_claim_from_an_earlier_request_never_lands_on_a_newer_one(
+    drafting: Drafting,
+) -> None:
+    drafting.set_profile()
+    opportunity = drafting.paste("~025991")
+    drafting.op("leads.jobproposal.request", ref=opportunity)
+    now = datetime.now(UTC)
+    with open_unit_of_work(drafting.c.owner) as uow:
+        first = proposing.claim(uow, now=now, window=timedelta(minutes=10))
+        uow.commit()
+    drafting.op("leads.jobproposal.delete", ref=opportunity)
+    drafting.op("leads.jobproposal.request", ref=opportunity, questions="New?")
+    with open_unit_of_work(drafting.c.owner) as uow:
+        second = proposing.claim(uow, now=now, window=timedelta(minutes=10))
+        uow.commit()
+    assert first is not None and second is not None
+    # Same attempt count, different request: only the newer claim is current.
+    assert first.attempts == second.attempts == 1
+    with open_unit_of_work(drafting.c.owner) as uow:
+        assert proposing._current(uow, first) is None
+        assert proposing._current(uow, second) is not None
+
+
+def test_a_crashed_run_counts_and_a_lapsed_claim_stops_at_the_attempt_cap(
+    drafting: Drafting,
+) -> None:
+    drafting.set_profile()
+    opportunity = drafting.paste("~025992")
+    drafting.op("leads.jobproposal.request", ref=opportunity)
+    drafting.model.override = failure(FailureKind.RUNTIME_ERROR)
+    drafting.sweep()
+    row = drafting.row(opportunity)
+    assert (row["state"], row["attempts"], row["failure_kind"]) == (
+        "queued",
+        1,
+        "runtime_error",
+    )
+    # A worker that dies every time: claims lapse until the attempts are spent.
+    when = row["retry_after"] + timedelta(seconds=1)
+    for _ in range(proposing.DRAFT_ATTEMPTS - 1):
+        with open_unit_of_work(drafting.c.owner) as uow:
+            assert proposing.claim(uow, now=when, window=timedelta(minutes=1))
+            uow.commit()
+        when += timedelta(minutes=2)
+    with open_unit_of_work(drafting.c.owner) as uow:
+        assert proposing.claim(uow, now=when, window=timedelta(minutes=1)) is None
+        uow.commit()
+    row = drafting.row(opportunity)
+    assert (row["state"], row["failure_kind"]) == ("failed", "claim_lapsed")
+
+
+def test_a_lapsed_draft_can_be_requested_again(drafting: Drafting) -> None:
+    drafting.set_profile()
+    opportunity = drafting.paste("~025993")
+    drafting.op("leads.jobproposal.request", ref=opportunity)
+    past = datetime.now(UTC) - timedelta(hours=1)
+    with open_unit_of_work(drafting.c.owner) as uow:
+        assert proposing.claim(uow, now=past, window=timedelta(minutes=10))
+        uow.commit()
+    again = drafting.op("leads.jobproposal.request", ref=opportunity)
+    assert (again.state, again.attempts) == ("queued", 0)
+
+
+def test_removing_answers_counts_as_a_hand_edit(drafting: Drafting) -> None:
+    drafting.set_profile()
+    opportunity = drafting.paste("~025994")
+    drafting.op("leads.jobproposal.request", ref=opportunity)
+    drafting.sweep()
+    fewer = drafting.op(
+        "leads.jobproposal.update", ref=opportunity, draft=LETTER + "\n\n---\n"
+    )
+    assert len(fewer.sections) == 1 and fewer.edited is True
+    assert drafting.refused("leads.jobproposal.request", ref=opportunity) == (
+        "draft_edited"
+    )

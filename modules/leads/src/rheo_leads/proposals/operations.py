@@ -262,7 +262,15 @@ def request(ctx: WorkspaceContext, uow: UnitOfWork, m: RequestInput) -> Proposal
         raise OperationRefused("profile_required", "set a proposal profile first")
     identifier = record["id"]
     row = _row(uow, identifier, lock=True)
-    if row is not None and row["state"] in BUSY:
+    now = _now()
+    # A drafting claim whose window lapsed has no live holder, so it may be replaced.
+    lapsed = (
+        row is not None
+        and row["state"] == "drafting"
+        and row["retry_after"] is not None
+        and row["retry_after"] <= now
+    )
+    if row is not None and row["state"] in BUSY and not lapsed:
         raise OperationRefused("draft_in_progress", "a draft is already being prepared")
     if (
         row is not None
@@ -274,7 +282,6 @@ def request(ctx: WorkspaceContext, uow: UnitOfWork, m: RequestInput) -> Proposal
             "a section was edited since the last draft; request with force to "
             "replace it",
         )
-    now = _now()
     questions = row["questions"] if row is not None else None
     if m.questions is not None:
         questions = m.questions.strip() or None
@@ -369,8 +376,17 @@ def update_draft(
     if not letter_only:
         answers = [x for x in existing if x["kind"] == "answer"]
         keep = parsed.answers
-        for old in answers[len(keep) :]:
+        surplus = answers[len(keep) :]
+        for old in surplus:
             uow.connection.execute(delete(section).where(section.c.id == old["id"]))
+        if surplus:
+            # Removing answers is a hand edit too: stamp the letter so a regenerate
+            # asks for force.
+            uow.connection.execute(
+                update(section)
+                .where(section.c.id == cover["id"])
+                .values(updated_at=now)
+            )
         for i, item in enumerate(keep, start=1):
             question = item.question or UNLABELLED
             if i <= len(answers):

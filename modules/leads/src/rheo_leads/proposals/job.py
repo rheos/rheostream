@@ -1,8 +1,10 @@
 """The drafting sweep, ``leads.jobsearch_propose``: every queued proposal is drafted.
 
 **What triggers a sweep.** A draft request (``leads.jobproposal.request``) queues one
-due at once, and a sweep that leaves work waiting queues its own follow-up for when
-that work is due. A sweep with nothing to do reads one small table and ends.
+due at once, a sweep that leaves work waiting queues its own follow-up for when that
+work is due, and a schedule (every 30 minutes while job search is on, turned on by
+setting the proposal profile) picks up anything a broken chain left behind. A sweep
+with nothing to do reads one small table and ends.
 
 **What it does.** One queued proposal at a time, oldest request first: claim it (count
 the attempt, mark it ``drafting`` and hold it for the claim window) in a short unit
@@ -10,12 +12,14 @@ that commits at once; run the pipeline (:mod:`.pipeline`), each stage written as
 proposal's progress in its own short unit, which also renews the claim; record the
 sections and findings in another short unit. No unit is open while a model runs, and
 the cancellation token's heartbeat keeps the job's lease. A worker that dies mid-draft
-leaves a claim that lapses, and the next sweep takes the proposal again.
+leaves a claim that lapses, and the next sweep takes the proposal again, until its
+attempts are spent.
 
 **Failures are explicit.** A failure that is the account's or the deployment's (a usage
 limit, a missing or refused login, no executable or adapter, a crashed run) gives the
-attempt back and makes every queued proposal wait :data:`USAGE_DEFER`. An unusable
-answer, or a run that outlived its deadline, counts: the proposal waits the job
+attempt back and makes every queued proposal wait :data:`USAGE_DEFER`
+(:data:`DEFERRING`). Every other failure counts, an unusable answer, a crashed or
+truncated run and a run past its deadline included: the proposal waits the job
 substrate's backoff, and the third attempt marks it ``failed`` with the reason, which
 the owner sees and can request again. A proposal never simply disappears.
 
@@ -42,7 +46,7 @@ from rheo_core.log_config import content_free_extra
 from rheo_core.refs import uuid7
 from rheo_core.runtime.oneshot import (
     ADAPTER_UNAVAILABLE,
-    DEADLINE_EXCEEDED,
+    TOKEN_REVOKE_FAILED,
     OneShotCredentialNotOwned,
     OneShotDeferred,
     OneShotFailed,
@@ -73,7 +77,6 @@ from rheo_leads.proposals.pipeline import (
     Role as AskRole,
 )
 from rheo_leads.proposals.profile import StoredProposalProfile, read_proposal_profile
-from rheo_leads.scoring.job import JOB_FAILURES
 from rheo_leads.scoring.tier1 import EXTENSION
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import proposals as s
@@ -116,9 +119,25 @@ PROFILE_INVALID_LOG: Final = "job_proposal_profile_invalid"
 PROFILE_MISSING: Final = "profile_missing"
 ACCOUNT_UNAVAILABLE: Final = "account_unavailable"
 NO_DESCRIPTION: Final = "description_missing"
-# A run that outlived its deadline counts here: a long letter on a slow model is
-# this draft's problem, and deferring it would retry it every quarter hour forever.
-COUNTED: Final = JOB_FAILURES | {DEADLINE_EXCEEDED}
+CLAIM_LAPSED: Final = "claim_lapsed"
+SCHEDULE_NAME: Final = "jobsearch_propose"
+PROPOSE_INTERVAL_SECONDS: Final = 1800
+# Sweeps due within the same ten seconds share one job.
+TRIGGER_GRANULARITY_SECONDS: Final = 10
+# The failures that are the account's or the deployment's: nothing about the draft
+# caused them, so the draft waits without counting an attempt. Every other failure,
+# a crashed or truncated run and a run past its deadline included, counts: a cause
+# the input can trigger would otherwise retry, and spend the shared limit, forever.
+DEFERRING: Final = frozenset(
+    {
+        "usage_limited",
+        "credential_invalid",
+        "credential_not_owned",
+        "executable_unavailable",
+        ADAPTER_UNAVAILABLE,
+        TOKEN_REVOKE_FAILED,
+    }
+)
 
 
 class ProposePayload(BaseModel):
@@ -136,6 +155,9 @@ class Claimed:
     title: str
     fields: Mapping[str, str]
     questions: str | None
+    # Which request this claim answers: a delete and a new request reset the
+    # attempt count, so the count alone cannot tell two requests apart.
+    requested_at: datetime
 
 
 class _Deferred(Exception):
@@ -166,14 +188,21 @@ HOOKS = Hooks()
 def queue_sweep(
     uow: UnitOfWork, *, workspace_id: UUID, now: datetime, at: datetime | None = None
 ) -> None:
-    """Enqueue one sweep due at ``at`` (default now), on the caller's transaction."""
+    """Enqueue one sweep due at ``at`` (default now), rounded up to the next ten
+    seconds so a burst of requests shares one job, on the caller's transaction."""
+    due = at or now
+    step = TRIGGER_GRANULARITY_SECONDS
+    seconds = due.second + due.microsecond / 1e6
+    due = due.replace(second=0, microsecond=0) + timedelta(
+        seconds=-(-seconds // step) * step
+    )
     enqueue_job(
         uow.connection,
         kind=PROPOSE_JOB_KIND,
         payload={"workspace_id": str(workspace_id)},
         now=now,
         max_attempts=PROPOSE_JOB_MAX_ATTEMPTS,
-        next_run_at=at or now,
+        next_run_at=due,
         dedupe=True,
     )
     if isinstance(uow, HandlerUnitOfWork):
@@ -207,12 +236,37 @@ def _fields(uow: UnitOfWork, identifier: UUID) -> dict[str, str]:
 
 
 def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | None:
-    """Count an attempt on the oldest claimable proposal and hold it for ``window``."""
+    """Count an attempt on the oldest claimable proposal and hold it for ``window``.
+
+    A lapsed claim on a proposal that has used its attempts is marked failed instead
+    of taken again: a worker that dies mid-draft every time would otherwise re-spend
+    the model calls forever."""
     state, o = s.job_proposal, p.opportunity
+    uow.connection.execute(
+        update(state)
+        .where(
+            state.c.state == "drafting",
+            state.c.retry_after <= now,
+            state.c.attempts >= DRAFT_ATTEMPTS,
+        )
+        .values(
+            state="failed",
+            stage=None,
+            step=None,
+            total=None,
+            retry_after=None,
+            failure_kind=CLAIM_LAPSED,
+            updated_at=now,
+        )
+    )
     row = (
         uow.connection.execute(
             select(
-                state.c.opportunity_id, state.c.attempts, state.c.questions, o.c.title
+                state.c.opportunity_id,
+                state.c.attempts,
+                state.c.questions,
+                state.c.requested_at,
+                o.c.title,
             )
             .join(o, o.c.id == state.c.opportunity_id)
             .where(_claimable(now))
@@ -246,6 +300,18 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
         title=row["title"],
         fields=_fields(uow, row["opportunity_id"]),
         questions=row["questions"],
+        requested_at=row["requested_at"],
+    )
+
+
+def _mine(claimed: Claimed) -> Any:
+    """Still this sweep's claim: drafting, for the same request, the same attempt."""
+    state = s.job_proposal
+    return and_(
+        state.c.opportunity_id == claimed.opportunity_id,
+        state.c.state == "drafting",
+        state.c.requested_at == claimed.requested_at,
+        state.c.attempts == claimed.attempts,
     )
 
 
@@ -255,9 +321,7 @@ def _current(uow: UnitOfWork, claimed: Claimed) -> Any:
     return uow.connection.execute(
         select(state.c.opportunity_id)
         .where(
-            state.c.opportunity_id == claimed.opportunity_id,
-            state.c.state == "drafting",
-            state.c.attempts == claimed.attempts,
+            _mine(claimed),
         )
         .with_for_update()
     ).one_or_none()
@@ -277,9 +341,7 @@ def progress(
     uow.connection.execute(
         update(state)
         .where(
-            state.c.opportunity_id == claimed.opportunity_id,
-            state.c.state == "drafting",
-            state.c.attempts == claimed.attempts,
+            _mine(claimed),
         )
         .values(
             stage=stage,
@@ -288,6 +350,16 @@ def progress(
             retry_after=now + window,
             updated_at=now,
         )
+    )
+
+
+def renew(
+    uow: UnitOfWork, claimed: Claimed, *, now: datetime, window: timedelta
+) -> None:
+    """Hold the claim for another window, before each model call."""
+    state = s.job_proposal
+    uow.connection.execute(
+        update(state).where(_mine(claimed)).values(retry_after=now + window)
     )
 
 
@@ -384,7 +456,9 @@ def record_wait(uow: UnitOfWork, claimed: Claimed, *, kind: str, now: datetime) 
         .where(
             state.c.state == "queued",
             or_(
-                state.c.retry_after.is_(None), state.c.retry_after <= now + USAGE_DEFER
+                state.c.opportunity_id == claimed.opportunity_id,
+                state.c.retry_after.is_(None),
+                state.c.retry_after <= now + USAGE_DEFER,
             ),
         )
         .values(retry_after=now + USAGE_DEFER, failure_kind=kind, updated_at=now)
@@ -459,10 +533,13 @@ def _asker(
     workspace_id: UUID,
     account_id: UUID,
     heartbeat: Callable[[], None],
+    before: Callable[[], None],
 ) -> Any:
     def ask(
         role: AskRole, task: str, schema: Mapping[str, Any]
     ) -> Mapping[str, object]:
+        # One stage can make three calls; each renews the claim first.
+        before()
         try:
             return runner.run(
                 workspace_id=workspace_id,
@@ -479,9 +556,9 @@ def _asker(
         except OneShotCredentialNotOwned:
             raise _Deferred("credential_not_owned") from None
         except OneShotFailed as exc:
-            if exc.kind in COUNTED:
-                raise AnswerUnusable(exc.kind) from None
-            raise _Deferred(exc.kind) from None
+            if exc.kind in DEFERRING:
+                raise _Deferred(exc.kind) from None
+            raise AnswerUnusable(exc.kind) from None
 
     return ask
 
@@ -624,11 +701,18 @@ def _draft_one(
             progress(short, claimed, stage, step, total, now=now, window=window)
             short.commit()
 
+    def hold() -> None:
+        token.checkpoint(force=True)
+        with open_unit_of_work(ctx) as short:
+            renew(short, claimed, now=HOOKS.clock(), window=window)
+            short.commit()
+
     ask = _asker(
         runner,
         workspace_id=workspace_id,
         account_id=profile.drafting_account_id,
         heartbeat=token.checkpoint,
+        before=hold,
     )
     try:
         return generate(job, profile, ask, report)
