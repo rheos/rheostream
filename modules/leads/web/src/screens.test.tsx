@@ -7,7 +7,7 @@ import type {
 import { screens } from "./index";
 import { formInput } from "./action-form";
 import { pageOffset } from "./data";
-import { assessmentStale, phoneDisplay, value } from "./screens";
+import { assessmentStale, fieldLabel, fieldValue, phoneDisplay, value } from "./screens";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const opportunity = {
@@ -524,3 +524,28 @@ describe("opportunity value", () => {
     ).toMatch(/^CAD\s85\.50 · hourly rate$/);
   });
 });
+
+describe("record fields as a person reads them", () => {
+  it("names fields without their storage path", () => {
+    expect(fieldLabel("ext.jobsearch.client_hire_rate")).toBe("Client hire rate");
+    expect(fieldLabel("ext.jobsearch.posted_on")).toBe("Posted");
+    expect(fieldLabel("ext.other.some_new_field")).toBe("Some new field");
+    expect(fieldLabel("message")).toBe("Original message");
+    expect(fieldLabel("person.email")).toBe("Email");
+  });
+  it("shows flags, money, rates, dates and enums in words", () => {
+    expect(fieldValue("ext.jobsearch.applied", "false")).toBe("No");
+    expect(fieldValue("ext.jobsearch.client_payment_verified", "true")).toBe("Yes");
+    expect(fieldValue("ext.jobsearch.client_spend", "245384.48")).toBe("$245,384.48");
+    expect(fieldValue("ext.jobsearch.client_hire_rate", "0.68")).toBe("68%");
+    expect(fieldValue("ext.jobsearch.proposal_observed_at", "2026-10-15T08:13:14.717540+00:00")).toBe(
+      "Oct 15, 2026",
+    );
+    expect(fieldValue("ext.jobsearch.job_type", "hourly")).toBe("Hourly");
+    expect(fieldValue("ext.jobsearch.client_rating", "4.84")).toBe("4.84");
+    expect(
+      fieldValue("message", "<untrusted_participant_content>\nBuild a shop.\n</untrusted_participant_content>"),
+    ).toBe("Build a shop.");
+  });
+});
+

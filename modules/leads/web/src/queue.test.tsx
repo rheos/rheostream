@@ -494,7 +494,24 @@ describe("queue rendering", () => {
     expect(quiet).not.toContain('role="alert"');
     expect(quiet).not.toContain("Payment verified");
   });
-  it("shows the stage in view when no stage select is offered", () => {
+  it("puts the client's hire rate and reviews in the info tip", () => {
+    const html = renderToStaticMarkup(
+      <JobHeader
+        item={{ ...full, fields: { ...row(full.fields), client_hire_rate: "0.68", client_reviews: "379" } }}
+        now={NOW}
+      />,
+    );
+    expect(html).toContain("<dd>68% hire rate, 379 reviews</dd>");
+    // A 0% rate with no reviews is the feed's placeholder: not shown.
+    const fresh = renderToStaticMarkup(
+      <JobHeader
+        item={{ ...full, fields: { ...row(full.fields), client_hire_rate: "0", client_reviews: "0" } }}
+        now={NOW}
+      />,
+    );
+    expect(fresh).not.toContain("hire rate");
+  });
+    it("shows the stage in view when no stage select is offered", () => {
     // A read-only host: no submit, so no select; the stage stays visible.
     const html = renderToStaticMarkup(<JobHeader item={full} now={NOW} />);
     expect(html).toMatch(/<span class="[^"]*badge[^"]*">Review<\/span>/);

@@ -24,6 +24,14 @@ export function items(outcome: OperationOutcome): Row[] {
 export function data(outcome: OperationOutcome): Row {
   return outcome.state === "ok" ? row(row(outcome.result).data) : {};
 }
+/** Text as a person reads it: without the provider's marker tag that feed
+ * descriptions can arrive wrapped in (#392). Only that outer wrapper goes,
+ * never other markup; the stored text is unchanged. */
+export function unwrapped(text: string): string {
+  return text
+    .replace(/^\s*<untrusted_participant_content>\s*/, "")
+    .replace(/\s*<\/untrusted_participant_content>\s*$/, "");
+}
 export function label(value: unknown): string {
   return str(value).replaceAll("_", " ");
 }

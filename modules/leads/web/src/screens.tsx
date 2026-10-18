@@ -32,6 +32,7 @@ import {
   row,
   rows,
   str,
+  unwrapped,
   type Row,
 } from "./data";
 import styles from "./leads.module.css";
@@ -149,7 +150,31 @@ export function assessmentStale(
     ? assessment.evidence_digest !== record.evidence_digest
     : assessment.input_revision !== revision;
 }
-function fieldLabel(target: string): string {
+/** Names for fields a module adds under ``ext.<module>.``: the job feed's. */
+const EXT_LABELS: Record<string, string> = {
+  applied: "Applied",
+  budget_min: "Budget from",
+  budget_max: "Budget to",
+  client_hire_rate: "Client hire rate",
+  client_payment_verified: "Payment verified",
+  client_rating: "Client rating",
+  client_reviews: "Client reviews",
+  client_spend: "Client spend",
+  job_type: "Job type",
+  platform: "Platform",
+  posted_on: "Posted",
+  posting_id: "Posting ID",
+  posting_url: "Posting link",
+  proposal_count: "Proposals",
+  proposal_count_exact: "Proposal count is exact",
+  proposal_observed_at: "Proposals counted",
+};
+function sentence(text: string): string {
+  const words = text.replaceAll("_", " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+/** A field's name as a person reads it: never a dotted storage path. */
+export function fieldLabel(target: string): string {
   const labels: Record<string, string> = {
     "person.name": "Contact",
     "person.email": "Email",
@@ -162,7 +187,32 @@ function fieldLabel(target: string): string {
     source_url: "Source URL",
     locale: "Language",
   };
-  return labels[target] ?? label(target);
+  const known = labels[target];
+  if (known) return known;
+  const ext = /^ext\.[a-z0-9_]+\.(.+)$/.exec(target);
+  const key = ext ? (ext[1] ?? "") : target;
+  return EXT_LABELS[key] ?? sentence(key.replaceAll(".", " "));
+}
+const MONEY = new Set(["budget_min", "budget_max", "client_spend"]);
+/** A field's value as a person reads it: yes or no for flags, money with its
+ * sign, rates as percentages, instants as dates, the original message without
+ * the feed's marker tag. Anything else shows as stored. */
+export function fieldValue(target: string, text: string): string {
+  const key = target.replace(/^ext\.[a-z0-9_]+\./, "");
+  if (target.endsWith("phone")) return phoneDisplay(text);
+  if (target === "message") return unwrapped(text);
+  if (text === "true") return "Yes";
+  if (text === "false") return "No";
+  const n = Number(text);
+  if (text.trim() !== "" && Number.isFinite(n)) {
+    if (MONEY.has(key))
+      return `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+    if (key === "client_hire_rate" && n <= 1) return `${Math.round(n * 100)}%`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2})?)?$/.test(text))
+    return date(text);
+  if (key === "job_type" || key === "platform") return sentence(text);
+  return text;
 }
 function stageLabel(record: Row, catalog: Row[]): string {
   const pipeline = catalog.find((p) => p.id === record.pipeline_id);
@@ -1042,7 +1092,7 @@ export async function detail({ shell, query }: ScreenProps) {
           submit={shell.submit}
           opportunityRef={str(envelope.ref)}
           proposal={proposal}
-          posting={str(job.description)}
+          posting={unwrapped(str(job.description))}
           paste={paste}
         />
       ) : null}
@@ -1089,10 +1139,10 @@ export async function detail({ shell, query }: ScreenProps) {
                           >
                             <dt>{fieldLabel(str(field.target))}</dt>
                             <dd>
-                              {(str(field.target).endsWith("phone")
-                                ? phoneDisplay(str(field.value_text))
-                                : str(field.value_text)) ||
-                                label(field.value_kind)}
+                              {fieldValue(
+                                str(field.target),
+                                str(field.value_text),
+                              ) || label(field.value_kind)}
                             </dd>
                           </div>
                         ))}

@@ -7,15 +7,25 @@ import {
   type ReactNode,
 } from "react";
 import type { ShellApi } from "@rheo-stream/web-contract/screen";
-import { date, JOBSEARCH_PRESET_ID, row, rows, str, type Row } from "./data";
+import {
+  date,
+  JOBSEARCH_PRESET_ID,
+  row,
+  rows,
+  str,
+  unwrapped,
+  type Row,
+} from "./data";
 import {
   afterMove,
   age,
   fitFor,
   followupFor,
   formatBudget,
+  formatHireRate,
   formatProposals,
   formatRating,
+  formatReviews,
   formatSpend,
   isNewClient,
   MAX_PROPOSALS,
@@ -409,7 +419,7 @@ function Card({
       ) : null}
       {item.preview ? (
         <a href={href} className={styles.preview}>
-          {str(item.preview)}
+          {unwrapped(str(item.preview))}
         </a>
       ) : null}
       <StageActions item={item} onMove={onMove} copyId />
@@ -757,6 +767,10 @@ export function JobHeader({
   const evidence = reasons.length > 1 ? reasons.slice(1) : [];
   const source = sourceLabel(item.source);
   const id = shortId(item.id);
+  // Client history the facts line has no room for.
+  const client = [formatHireRate(fields), formatReviews(fields)]
+    .filter(Boolean)
+    .join(", ");
   return (
     <header className={styles.job}>
       <div className={styles.jobMain}>
@@ -783,6 +797,12 @@ export function JobHeader({
               <p>Not assessed yet.</p>
             ) : null}
             <dl className={styles.tipFacts}>
+              {client ? (
+                <div>
+                  <dt>Client</dt>
+                  <dd>{client}</dd>
+                </div>
+              ) : null}
               <div>
                 <dt>Stage</dt>
                 <dd>{str(item.stage_label) || str(item.stage_id)}</dd>

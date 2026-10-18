@@ -70,6 +70,22 @@ export function formatRating(fields: Row): string | null {
   return n !== null && n > 0 ? `${n} rating` : null;
 }
 
+/** "68% hire rate", or nothing when unknown. A 0% rate with no reviews is the
+ * feed's placeholder for a client with no history, not a fact (#391). */
+export function formatHireRate(fields: Row): string | null {
+  const n = amount(fields.client_hire_rate);
+  if (n === null) return null;
+  if (n === 0 && !count(fields.client_reviews)) return null;
+  const percent = n <= 1 ? n * 100 : n;
+  return `${Math.round(percent)}% hire rate`;
+}
+
+/** "379 reviews", or nothing when there are none or the count is unknown. */
+export function formatReviews(fields: Row): string | null {
+  const n = count(fields.client_reviews);
+  return n ? `${n.toLocaleString("en-US")} ${n === 1 ? "review" : "reviews"}` : null;
+}
+
 /** A client with a known zero spend and a known zero review count. Unknown
  * values are not evidence of a new client. */
 export function isNewClient(fields: Row): boolean {
