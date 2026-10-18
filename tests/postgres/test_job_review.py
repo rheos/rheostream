@@ -83,6 +83,27 @@ def test_the_review_queue_lists_held_jobs_with_their_clauses(scored: Scoring) ->
         pipeline_id=str(scored.c.pipeline_id),
     )
     assert all("hold" not in i for i in queue.items) and len(queue.items) == 2
+    # Dismissed, it leaves the review list, closed stages asked for or not.
+    call(
+        scored.i,
+        scored.c.owner,
+        "leads.opportunity.transition",
+        ref=item["ref"],
+        revision=item["revision"],
+        to_stage_id=item["dismiss"]["stage_id"],
+    )
+    assert review(scored) == []
+    assert (
+        call(
+            scored.i,
+            scored.c.owner,
+            "leads.ui.queue",
+            pipeline_id=str(scored.c.pipeline_id),
+            held_only=True,
+            include_closed=True,
+        ).items
+        == []
+    )
 
 
 def test_promote_lets_the_model_score_a_held_job_and_survives_rescoring(

@@ -157,7 +157,9 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
         if m.hide_full:
             q = q.where(~_over_cap(o.c.id))
         if m.held_only:
+            # Only open jobs are held: a closed one has nothing left to promote.
             q = q.where(
+                s.c.kind == "open",
                 o.c.preset_id == h.JOBSEARCH_PRESET_ID,
                 review.is_held(o.c.id),
                 review.not_promoted(o.c.id),
