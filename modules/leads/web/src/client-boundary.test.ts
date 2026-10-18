@@ -53,6 +53,7 @@ describe("the server/client boundary", () => {
       "finish-connecting",
       "job-paste",
       "paste-capture",
+      "proposal-workflow",
       "queue-view",
     ]);
   });

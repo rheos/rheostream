@@ -17,6 +17,7 @@ import { postingUrl } from "./queue";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import { JobPaste } from "./job-paste";
+import { ProposalWorkflow } from "./proposal-workflow";
 import {
   data,
   date,
@@ -795,6 +796,22 @@ export async function detail({ shell, query }: ScreenProps) {
       ? await read(shell, "leads.ui.queue", { ref: envelope.ref })
       : null;
   const job = jobResult ? items(jobResult)[0] : undefined;
+  const proposalResult = job
+    ? await read(shell, "leads.jobproposal.get", { ref: envelope.ref })
+    : null;
+  const proposal =
+    proposalResult?.state === "ok" ? row(proposalResult.result) : null;
+  const paste =
+    job && shell.submit ? (
+      <JobPaste
+        submit={shell.submit}
+        kinds={["posting"]}
+        pipelines={[
+          { value: pipelineRef(str(job.pipeline_id)), label: "This pipeline" },
+        ]}
+        postingUrl={postingUrl(row(job.fields)) ?? ""}
+      />
+    ) : null;
   const ratingOptions = [
     { value: "needs_information", label: "Needs information" },
     { value: "high", label: "High" },
@@ -814,6 +831,15 @@ export async function detail({ shell, query }: ScreenProps) {
       bare={job !== undefined}
     >
       {job ? <JobHeader item={job} now={Date.now()} /> : null}
+      {job && proposal ? (
+        <ProposalWorkflow
+          submit={shell.submit}
+          opportunityRef={str(envelope.ref)}
+          proposal={proposal}
+          posting={str(job.description)}
+          paste={paste}
+        />
+      ) : null}
       {result.state !== "ok" ? (
         <Failure outcome={result} />
       ) : (
@@ -864,20 +890,11 @@ export async function detail({ shell, query }: ScreenProps) {
               {!evidence.length ? (
                 <p>No source observations are linked.</p>
               ) : null}
-              {job && shell.submit ? (
+              {/* Without the workflow, the paste form stays with the evidence. */}
+              {paste && !proposal ? (
                 <details className={styles.manualCapture}>
                   <summary>Paste the full posting</summary>
-                  <JobPaste
-                    submit={shell.submit}
-                    kinds={["posting"]}
-                    pipelines={[
-                      {
-                        value: pipelineRef(str(job.pipeline_id)),
-                        label: "This pipeline",
-                      },
-                    ]}
-                    postingUrl={postingUrl(row(job.fields)) ?? ""}
-                  />
+                  {paste}
                 </details>
               ) : null}
             </section>

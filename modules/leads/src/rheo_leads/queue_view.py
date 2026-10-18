@@ -263,6 +263,8 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                     if target.startswith(EXTENSION)
                 },
                 "preview": _preview(found.get("message"), PREVIEW_CHARS),
+                # The whole derived posting, only for the one job the detail reads.
+                **({"description": found.get("message")} if m.ref is not None else {}),
                 "assessment": None
                 if assessment is None
                 else {

@@ -269,6 +269,13 @@ MANIFEST = ModuleManifest(
                 "jobfeed.revoke",
                 "jobfeed.paste",
                 "jobfeed.select_account",
+                # The job detail's proposal workflow: drafts and the answer library.
+                "jobproposal.request",
+                "jobproposal.update",
+                "jobproposal.delete",
+                "proposalsection.set",
+                "proposalsection.use_library",
+                "answerlibrary.save",
             )
         ),
     ),
