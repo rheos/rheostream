@@ -319,6 +319,18 @@ describe("the pricing tab", () => {
     expect(submit).toHaveBeenCalledTimes(2);
     expect(host.textContent).toContain("zero or more");
   });
+  it("clears a due date on the server too", async () => {
+    const submit = vi.fn().mockResolvedValue(ok(priced({ milestones: [{ ...MILESTONE, due_on: null }] })));
+    mount({ submit, proposal: priced() });
+    const due = host.querySelector<HTMLInputElement>('input[type="date"]') as HTMLInputElement;
+    type(due, "");
+    await blur(due);
+    expect(submit).toHaveBeenCalledWith("leads.proposalmilestone.set", {
+      ref: REF,
+      milestone_id: "m1",
+      due_on: null,
+    });
+  });
   it("words a refusal to price", async () => {
     const submit = vi.fn().mockResolvedValue(refused("pricing_not_set"));
     mount({ submit, proposal: view("ready", { pricing: { available: true, state: "idle", milestones: [] } }) });

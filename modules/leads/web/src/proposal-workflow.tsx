@@ -1163,7 +1163,7 @@ function PricingPanel(props: {
 function MilestoneCard(props: {
   milestone: MilestoneView;
   disabled: boolean;
-  onSave: (changes: Record<string, string>) => Promise<string>;
+  onSave: (changes: Record<string, string | null>) => Promise<string>;
 }) {
   const m = props.milestone;
   const [title, setTitle] = useState(m.title);
@@ -1183,7 +1183,10 @@ function MilestoneCard(props: {
       return;
     }
     setProblem("");
-    const message = await props.onSave({ [field]: value });
+    // A cleared due date is sent as no date, so the server forgets it too.
+    const message = await props.onSave({
+      [field]: field === "due_on" && !value ? null : value,
+    });
     if (message) setProblem(`Not saved: ${message}`);
   }
 
@@ -1226,7 +1229,7 @@ function MilestoneCard(props: {
             value={dueOn}
             disabled={props.disabled}
             onChange={(event) => setDueOn(event.target.value)}
-            onBlur={() => dueOn && save("due_on", dueOn, m.dueOn)}
+            onBlur={() => save("due_on", dueOn, m.dueOn)}
           />
         </label>
         <p className={styles.note} aria-live="polite">
