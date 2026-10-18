@@ -64,6 +64,7 @@ const READS = [
   "leads.observation.get",
   "leads.intake.receipt",
   "leads.connection.health",
+  "leads.jobproposal.get",
 ] as const;
 export function read(
   shell: ShellApi,

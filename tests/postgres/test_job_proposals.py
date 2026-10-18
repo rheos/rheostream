@@ -623,3 +623,14 @@ def test_removing_answers_counts_as_a_hand_edit(drafting: Drafting) -> None:
     assert drafting.refused("leads.jobproposal.request", ref=opportunity) == (
         "draft_edited"
     )
+
+
+def test_the_one_job_queue_read_carries_the_whole_posting(drafting: Drafting) -> None:
+    opportunity = drafting.paste("~025995")
+    one = drafting.op("leads.ui.queue", ref=opportunity)
+    assert one.items[0]["description"] == POSTING
+    listed = drafting.op(
+        "leads.ui.queue", pipeline_id=str(drafting.c.pipeline_id), sort="newest"
+    )
+    # The list keeps its preview only.
+    assert "description" not in listed.items[0]
