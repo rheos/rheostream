@@ -161,7 +161,11 @@ def test_populated_0008_upgrades_additively_to_the_fresh_schema(
     with open_unit_of_work(intake.ctx) as uow:
         undone = rewind_leads(uow.connection, "0008_attach_by_field")
         assert undone == (
-            HEAD, "0012_job_proposals", "0011_job_scoring", "0010_job_paste", REVISION
+            HEAD,
+            "0012_job_proposals",
+            "0011_job_scoring",
+            "0010_job_paste",
+            REVISION,
         )
         uow.connection.execute(
             delete(module_schema_version).where(

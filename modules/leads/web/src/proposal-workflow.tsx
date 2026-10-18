@@ -893,6 +893,12 @@ function FindingsPanel({ found }: { found: Findings }) {
     <section className={styles.findings} aria-label="Draft findings">
       <h3 className={styles.cardTitle}>Draft findings</h3>
       {found.clean ? <p className={styles.note}>No issues found.</p> : null}
+      {found.figuresStale ? (
+        <p className={styles.warn}>
+          The pricing changed after this draft was written, so the letter may quote
+          figures that differ from the Pricing tab. Regenerate the proposal to match.
+        </p>
+      ) : null}
       {!found.checked ? (
         <p className={styles.warn}>
           The accuracy check did not run on this draft. Read every claim against
@@ -1134,7 +1140,7 @@ function PricingPanel(props: {
         <div className={styles.cards}>
           {rows.map((m) => (
             <MilestoneCard
-              key={`${m.id}:${m.title}:${m.amount}:${m.dueOn}:${m.description}`}
+              key={m.id}
               milestone={m}
               disabled={!submit || running}
               onSave={(changes) =>

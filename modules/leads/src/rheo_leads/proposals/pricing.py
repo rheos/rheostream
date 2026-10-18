@@ -43,13 +43,19 @@ def plain(value: Decimal | float) -> str:
 
 
 def budget_is_project_total(
-    budget_min: Decimal | None, budget_max: Decimal | None, mode: str | None
+    budget_min: Decimal | None, budget_max: Decimal | None, listing_type: str | None
 ) -> bool:
     """Whether the budget is a project total, not an hourly cap, a rate band or
-    nothing. A single figure with no minimum reads as an hourly cap."""
-    if budget_max is None or budget_min is None:
+    nothing. The listing's own type decides when it is known: a fixed-price
+    listing's figure is a total (often "up to" one, with no minimum), an hourly
+    listing's never is. Otherwise a single figure with no minimum, or a small one,
+    reads as an hourly cap."""
+    kind = (listing_type or "").strip().lower()
+    if budget_max is None or kind == "hourly":
         return False
-    if mode == "hourly":
+    if kind == "fixed":
+        return True
+    if budget_min is None:
         return False
     return budget_max > HOURLY_CAP_CEILING
 
@@ -58,9 +64,9 @@ def scope_fit_warning(
     amounts: Sequence[Decimal],
     budget_min: Decimal | None,
     budget_max: Decimal | None,
-    mode: str | None,
+    listing_type: str | None,
 ) -> str | None:
-    if not budget_is_project_total(budget_min, budget_max, mode):
+    if not budget_is_project_total(budget_min, budget_max, listing_type):
         return None
     assert budget_max is not None
     return SCOPE_FIT_WARNING if sum(amounts) >= SCOPE_FIT_RATIO * budget_max else None

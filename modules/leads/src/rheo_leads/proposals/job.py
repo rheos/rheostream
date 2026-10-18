@@ -63,7 +63,7 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
-from sqlalchemy import and_, delete, func, insert, or_, select, update
+from sqlalchemy import and_, delete, exists, func, insert, or_, select, update
 from sqlalchemy.exc import StatementError
 
 from rheo_leads import pipeline_common as h
@@ -217,10 +217,20 @@ def queue_sweep(
 def _claimable(now: datetime) -> Any:
     state = s.job_proposal
     due = or_(state.c.retry_after.is_(None), state.c.retry_after <= now)
-    return or_(
-        and_(state.c.state == "queued", due),
-        # A claim whose holder died: its window has lapsed.
-        and_(state.c.state == "drafting", state.c.retry_after <= now),
+    pricing = s.job_pricing
+    # A draft waits while its job's milestones are being prepared, so the letter
+    # quotes the rows the Pricing tab will show.
+    priced_first = ~exists().where(
+        pricing.c.opportunity_id == state.c.opportunity_id,
+        pricing.c.state.in_(("queued", "running")),
+    )
+    return and_(
+        priced_first,
+        or_(
+            and_(state.c.state == "queued", due),
+            # A claim whose holder died: its window has lapsed.
+            and_(state.c.state == "drafting", state.c.retry_after <= now),
+        ),
     )
 
 
@@ -416,8 +426,11 @@ def record_draft(
         for i, answer in enumerate(result.draft.answers, start=1)
     ]
     uow.connection.execute(insert(section), rows)
-    if result.schedule is not None:
-        _write_priced(uow, claimed, result.schedule, now=now)
+    if result.schedule is not None and not _write_priced(
+        uow, claimed, result.schedule, now=now
+    ):
+        # The letter quotes a schedule that lost to newer pricing: say so.
+        result.findings["figures_stale"] = True
     values: dict[str, Any] = {
         "state": "ready",
         "stage": None,
@@ -444,18 +457,30 @@ def record_draft(
 
 def _write_priced(
     uow: UnitOfWork, claimed: Claimed, schedule: Any, *, now: datetime
-) -> None:
-    """The Pricing stage's schedule, unless a pricing request of its own is queued
-    or running for this job (that one's answer wins)."""
+) -> bool:
+    """The Pricing stage's schedule, only while the job's pricing is as the draft
+    found it (no row, or the same row unchanged, and no milestones). Anything newer
+    wins, and the draft is marked as quoting figures that have since changed."""
     from rheo_leads.proposals.pricing import scope_fit_warning
 
-    busy_state = uow.connection.execute(
-        select(s.job_pricing.c.state)
-        .where(s.job_pricing.c.opportunity_id == claimed.opportunity_id)
+    t = s.job_pricing
+    now_row = uow.connection.execute(
+        select(t.c.updated_at)
+        .where(t.c.opportunity_id == claimed.opportunity_id)
         .with_for_update()
-    ).scalar_one_or_none()
-    if busy_state in ("queued", "running"):
-        return
+    ).one_or_none()
+    unchanged = (
+        now_row is None
+        if claimed.priced.changed_at is None
+        else now_row is not None and now_row.updated_at == claimed.priced.changed_at
+    )
+    has_rows = uow.connection.execute(
+        select(func.count())
+        .select_from(s.proposal_milestone)
+        .where(s.proposal_milestone.c.opportunity_id == claimed.opportunity_id)
+    ).scalar_one()
+    if not unchanged or has_rows:
+        return False
     fields = claimed.fields
 
     def budget(name: str) -> Any:
@@ -469,9 +494,10 @@ def _write_priced(
         [stage.amount for stage in schedule.stages],
         budget("budget_min"),
         budget("budget_max"),
-        "milestones" if schedule.stages else claimed.priced.mode,
+        fields.get(EXTENSION + "job_type"),
     )
     write_schedule(uow, claimed.opportunity_id, schedule, warning=warning, now=now)
+    return True
 
 
 def record_wait(uow: UnitOfWork, claimed: Claimed, *, kind: str, now: datetime) -> bool:
@@ -655,6 +681,13 @@ def _sweep(
     if not enabled:
         return
     runner = hooks.runner()
+    # Pricing first: a draft waits behind its job's pricing request, and quotes
+    # the rows this leaves.
+    from rheo_leads.proposals import pricing_job
+
+    pricing_job.price_all(
+        ctx, profile, runner=runner, token=token, window=window, started=started
+    )
     counts = {"drafted": 0, "failed": 0, "deferred": 0}
     while True:
         token.checkpoint()
@@ -709,12 +742,6 @@ def _sweep(
             )
     _log.info(
         DRAFTED_LOG, extra=content_free_extra({"unit_count": sum(counts.values())})
-    )
-    # Then the pricing requests, in what is left of the run budget.
-    from rheo_leads.proposals import pricing_job
-
-    pricing_job.price_all(
-        ctx, profile, runner=runner, token=token, window=window, started=started
     )
     now = hooks.clock()
     waits = [
@@ -773,7 +800,7 @@ def _draft_one(
         before=hold,
     )
     try:
-        return generate(job, profile, ask, report)
+        return generate(job, profile, ask, report, today=HOOKS.clock().date())
     except _Deferred as exc:
         return exc
     except AnswerUnusable as exc:

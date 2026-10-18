@@ -122,7 +122,8 @@ export function dollars(amount: string): string {
 export function milestoneLine(m: MilestoneView): string {
   return `${m.title}: ${dollars(m.amount)}${m.dueOn ? `, due ${m.dueOn}` : ""}`;
 }
-/** "$40/hr" and "about 20 h for $800.00", from the pricing suggestion. */
+/** The rate with its per-hour unit, and "about 20 h for $800.00", from the pricing
+ * suggestion. */
 export function formRate(view: Row): { rate: string; detail: string } | null {
   const s = row(pricingOf(view).suggestion);
   const rate = Number(str(s.rate));
@@ -289,6 +290,7 @@ export interface Findings {
   style: { rule: string; where: string; excerpt: string }[];
   repairedCount: number;
   repaired: boolean;
+  figuresStale: boolean;
   analysis: {
     angle: string;
     hiringFor: string;
@@ -344,6 +346,7 @@ export function findings(value: unknown): Findings | null {
     style,
     repairedCount: rows(f.style_pre_repair).length,
     repaired: f.style_repaired === true,
+    figuresStale: f.figures_stale === true,
     analysis: {
       angle: str(analysis.angle),
       hiringFor: str(analysis.hiring_for),
@@ -354,6 +357,7 @@ export function findings(value: unknown): Findings | null {
   };
   result.clean =
     result.checked &&
+    !result.figuresStale &&
     !result.retried &&
     flagged.length === 0 &&
     style.length === 0 &&

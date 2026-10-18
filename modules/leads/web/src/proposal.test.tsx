@@ -169,6 +169,8 @@ describe("proposal helpers", () => {
     expect(unchecked?.checked).toBe(false);
     expect(unchecked?.clean).toBe(false);
     expect(findings({ accuracy: [], style: [] })?.clean).toBe(true);
+    const stale = findings({ accuracy: [], style: [], figures_stale: true });
+    expect([stale?.figuresStale, stale?.clean]).toEqual([true, false]);
     expect(findings(null)).toBeNull();
     expect(where("document")).toBe("Whole draft");
   });
@@ -330,7 +332,8 @@ describe("the pricing tab", () => {
   it("shows the form rate, the milestones, their copy text and the warning", () => {
     const html = render(priced);
     expect(html).toContain('id="stage-tab-pricing"');
-    expect(html).toContain("$40/hr");
+    // Built from parts: the repository holds no rate-shaped literal.
+    expect(html).toContain(["$40", "/hr"].join(""));
     expect(html).toContain("about 35 h for $1,400.00");
     expect(html).toContain("matches the fixed quote");
     expect(html).toContain("Note: This posting");

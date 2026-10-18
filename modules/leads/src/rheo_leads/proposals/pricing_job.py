@@ -146,7 +146,7 @@ def record_schedule(
         [stage.amount for stage in schedule.stages],
         _budget(fields.get(EXTENSION + "budget_min")),
         _budget(fields.get(EXTENSION + "budget_max")),
-        "milestones" if schedule.stages else claimed.mode,
+        fields.get(EXTENSION + "job_type"),
     )
     write_schedule(uow, claimed.opportunity_id, schedule, warning=warning, now=now)
     return True

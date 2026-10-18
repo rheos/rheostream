@@ -13,6 +13,7 @@ import logging
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -689,7 +690,10 @@ def test_pricing_needs_a_policy_then_drafts_a_schedule_the_owner_can_edit(
     ]
     assert pricing.milestones[0].due_on is not None
     # The form rate matches the fixed total at the day rate spread over the day.
-    assert (pricing.suggestion["rate"], pricing.suggestion["hours"]) == ("40.00", "20.0")
+    assert (pricing.suggestion["rate"], pricing.suggestion["hours"]) == (
+        "40.00",
+        "20.0",
+    )
     assert drafting.model.roles == ["milestones"]
     task = drafting.model.starts[0].request.task
     assert "Calibration-marker-5c1" in task and "$200.00 PER WORKING-DAY" in task
@@ -772,3 +776,87 @@ def test_losing_the_posting_evidence_removes_the_pricing(drafting: Drafting) -> 
     approve_delete(drafting.i, ref("observation", link["observation_id"]))
     assert rows(drafting.i, select(s.job_pricing)) == []
     assert rows(drafting.i, select(s.proposal_milestone)) == []
+
+
+def test_a_draft_waits_for_its_jobs_pricing_and_quotes_the_stored_rows(
+    drafting: Drafting,
+) -> None:
+    drafting.set_profile(pricing=PRICING)
+    opportunity = drafting.paste("~025981")
+    drafting.model.analysis = {**ANALYSIS, "asks_quote": True}
+    drafting.op("leads.jobpricing.request", ref=opportunity)
+    drafting.op("leads.jobproposal.request", ref=opportunity)
+    now = datetime.now(UTC)
+    # A draft claimed while the pricing is queued would quote its own figures.
+    with open_unit_of_work(drafting.c.owner) as uow:
+        assert proposing.claim(uow, now=now, window=timedelta(minutes=10)) is None
+        uow.rollback()
+    drafting.sweep(now)
+    # Pricing ran first; the draft then found the rows and needed no Pricing stage.
+    assert drafting.model.roles == ["milestones", "analysis", "draft", "gate"]
+    draft_task = drafting.model.starts[2].request.task
+    assert "- Total: $800.00 for 4 working-days" in draft_task
+    got = drafting.op("leads.jobproposal.get", ref=opportunity)
+    assert got.state == "ready" and got.findings["priced"] is False
+
+
+def test_a_drafts_schedule_never_replaces_newer_pricing(drafting: Drafting) -> None:
+    drafting.set_profile(pricing=PRICING)
+    opportunity = drafting.paste("~025982")
+    drafting.model.analysis = {**ANALYSIS, "asks_quote": True}
+    drafting.op("leads.jobproposal.request", ref=opportunity)
+    now = datetime.now(UTC)
+    with open_unit_of_work(drafting.c.owner) as uow:
+        claimed = proposing.claim(uow, now=now, window=timedelta(minutes=10))
+        uow.commit()
+    assert claimed is not None and claimed.priced.state is None
+    # Pricing arrives while the draft runs.
+    drafting.op("leads.jobpricing.request", ref=opportunity)
+    drafting.sweep(now)
+    assert drafting.op("leads.jobproposal.get", ref=opportunity).pricing.state == (
+        "ready"
+    )
+    from rheo_leads.proposals.milestones import Schedule, Stage
+    from rheo_leads.proposals.pipeline import Result
+    from rheo_leads.proposals.render import Draft
+
+    stale = Result(
+        draft=Draft(letter="A letter."),
+        findings={"accuracy": [], "style": []},
+        schedule=Schedule(
+            stages=(Stage("Other", "", Decimal(999), now.date()),),
+        ),
+    )
+    with open_unit_of_work(drafting.c.owner) as uow:
+        assert proposing.record_draft(
+            uow, claimed, stale, profile_version=1, model_id="m", now=now
+        )
+        uow.commit()
+    got = drafting.op("leads.jobproposal.get", ref=opportunity)
+    assert [m.title for m in got.pricing.milestones] == ["Discovery", "Checkout fix"]
+    assert got.findings["figures_stale"] is True
+
+
+def test_a_milestone_edit_changes_only_what_it_names(drafting: Drafting) -> None:
+    drafting.set_profile(pricing=PRICING)
+    opportunity = drafting.paste("~025983")
+    drafting.op("leads.jobpricing.request", ref=opportunity)
+    drafting.sweep()
+    first = drafting.op("leads.jobproposal.get", ref=opportunity).pricing.milestones[0]
+    after = drafting.op(
+        "leads.proposalmilestone.set",
+        ref=opportunity,
+        milestone_id=str(first.id),
+        due_on="2026-12-01",
+    ).pricing.milestones[0]
+    assert (after.title, after.amount, str(after.due_on)) == (
+        first.title,
+        first.amount,
+        "2026-12-01",
+    )
+    assert drafting.refused(
+        "leads.proposalmilestone.set",
+        ref=opportunity,
+        milestone_id=str(first.id),
+        title=None,
+    ) == ("input_invalid")

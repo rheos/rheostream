@@ -84,8 +84,14 @@ class PricingPolicy(Strict):
 
     @model_validator(mode="after")
     def ordered(self) -> "PricingPolicy":
-        if self.hourly_floor > self.hourly_default:
-            raise ValueError("the hourly floor cannot exceed the hourly default")
+        day_hourly = self.day_rate / self.hours_per_day
+        if not self.hourly_floor <= day_hourly <= self.hourly_default:
+            # The form rate for a fixed total is the day rate spread over the day;
+            # outside these bounds it would be clamped and disagree with the letter.
+            raise ValueError(
+                "the hourly floor, the day rate per hour and the hourly default "
+                "must be in that order"
+            )
         return self
 
 

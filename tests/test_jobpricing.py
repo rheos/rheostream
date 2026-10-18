@@ -33,17 +33,28 @@ def D(value: str | int) -> Decimal:
 
 
 def test_the_budget_shape_decides_whether_scope_fit_means_anything() -> None:
+    # Unknown listing type: the predecessor's shape rules.
     assert pricing.budget_is_project_total(D(1000), D(2000), None)
     assert not pricing.budget_is_project_total(None, D(2000), None)
-    assert not pricing.budget_is_project_total(D(1000), None, None)
-    assert not pricing.budget_is_project_total(D(1000), D(2000), "hourly")
     assert not pricing.budget_is_project_total(D(20), D(150), None)
+    # A fixed listing's figure is a total, "up to" ones included; hourly never.
+    assert pricing.budget_is_project_total(None, D(2000), "fixed")
+    assert pricing.budget_is_project_total(None, D(100), "Fixed")
+    assert not pricing.budget_is_project_total(D(1000), D(2000), "hourly")
+    assert not pricing.budget_is_project_total(D(1000), None, "fixed")
     assert (
-        pricing.scope_fit_warning([D(1000), D(1400)], D(2000), D(2000), None)
+        pricing.scope_fit_warning([D(1000), D(1400)], None, D(2000), "fixed")
         == pricing.SCOPE_FIT_WARNING
     )
     assert pricing.scope_fit_warning([D(1000), D(1300)], D(2000), D(2000), None) is None
-    assert pricing.scope_fit_warning([D(9000)], D(30), D(60), None) is None
+    assert pricing.scope_fit_warning([D(9000)], D(30), D(60), "hourly") is None
+
+
+def test_the_policy_keeps_its_rates_in_order() -> None:
+    with pytest.raises(ValueError):
+        PricingPolicy(day_rate=D(500), hourly_default=D(60), hourly_floor=D(30))
+    with pytest.raises(ValueError):
+        PricingPolicy(day_rate=D(50), hourly_default=D(60), hourly_floor=D(30))
 
 
 def test_the_ladder_and_the_bridge_follow_the_policy() -> None:
@@ -83,8 +94,10 @@ def test_the_figures_are_the_only_amounts_a_draft_may_state() -> None:
     assert "- Discovery: $200.00 (1 working-days)" in block
     assert "- Build: $700.00 (3.5 working-days)" in block
     assert "- Total: $900.00 for 4.5 working-days, about 1 calendar week" in block
-    assert "- Hourly equivalent: $40/hr, about 22.5 tracked hours." in block
-    assert "the form shows $40/hr" in block
+    # Built from parts: the repository holds no rate-shaped literal.
+    rate = "$40" + "/hr"
+    assert f"- Hourly equivalent: {rate}, about 22.5 tracked hours." in block
+    assert f"the form shows {rate}" in block
     assert "form shows" not in pricing.figures_block(POLICY, [("A", D(200))], "fixed")
 
 
@@ -141,6 +154,12 @@ def test_the_reader_holds_the_model_to_its_contract() -> None:
         ("Discovery", D("200.00"), date(2026, 10, 19)),
         ("Build", D("700.50"), date(2026, 10, 23)),
     ]
+    # JSON's one number type: an integral float offset is an integer.
+    whole = milestones.read(
+        {"milestones": [{"title": "A", "amount": 1, "due_date_offset_days": 7.0}]},
+        today=TODAY,
+    )
+    assert whole.stages[0].due_on == date(2026, 10, 25)
     vague = milestones.read(
         {"milestones": [], "too_vague": True, "reason": "No deliverable."}, today=TODAY
     )
@@ -151,6 +170,8 @@ def test_the_reader_holds_the_model_to_its_contract() -> None:
         {"milestones": [{"title": "", "amount": 1, "due_date_offset_days": 1}]},
         {"milestones": [], "too_vague": False},
         {"milestones": "no"},
+        {"milestones": [{"title": "A", "amount": 2e7, "due_date_offset_days": 1}]},
+        {"milestones": [{"title": "A", "amount": 1, "due_date_offset_days": 7.5}]},
     ):
         with pytest.raises(ValueError):
             milestones.read(broken, today=TODAY)

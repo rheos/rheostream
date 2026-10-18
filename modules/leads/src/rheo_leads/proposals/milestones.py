@@ -20,6 +20,8 @@ from rheo_leads.proposals.profile import PricingPolicy
 PROMPT_VERSION: Final = "jobmilestones.1"
 MAX_STAGES: Final = 12
 MAX_OFFSET_DAYS: Final = 730
+# The same ceiling the milestone edit takes; anything above it is a model error.
+MAX_AMOUNT: Final = Decimal(10_000_000)
 
 RULES: Final = """\
 You break a freelance job posting into a milestone payment schedule for a senior developer.
@@ -100,8 +102,16 @@ SCHEMA: Final[Mapping[str, Any]] = {
                 "properties": {
                     "title": {"type": "string", "minLength": 1},
                     "description": {"type": "string"},
-                    "amount": {"type": "number", "minimum": 0},
-                    "due_date_offset_days": {"type": "integer", "minimum": 0},
+                    "amount": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": int(MAX_AMOUNT),
+                    },
+                    "due_date_offset_days": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MAX_OFFSET_DAYS,
+                    },
                 },
             },
         },
@@ -190,14 +200,17 @@ def read(answer: Mapping[str, object], *, today: date) -> Schedule:
         if not isinstance(item, Mapping):
             raise ValueError("a milestone must be an object")
         offset = item.get("due_date_offset_days")
+        # JSON has one number type: 7.0 is the integer 7.
+        if type(offset) is float and offset.is_integer():
+            offset = int(offset)
         if type(offset) is not int or not 0 <= offset <= MAX_OFFSET_DAYS:
             raise ValueError("every milestone needs a due offset in days")
         try:
             amount = round(Decimal(str(item.get("amount"))), 2)
         except InvalidOperation:
             raise ValueError("an amount must be a number") from None
-        if not amount.is_finite() or amount < 0:
-            raise ValueError("an amount must be a number of zero or more")
+        if not amount.is_finite() or amount < 0 or amount > MAX_AMOUNT:
+            raise ValueError("an amount must be a number between zero and the cap")
         title = str(item.get("title") or "").strip()
         if not title:
             raise ValueError("a milestone needs a title")

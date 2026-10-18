@@ -26,12 +26,19 @@ class Priced:
 
     mode: str | None = None
     rows: tuple[tuple[str, Decimal], ...] = ()
+    # The pricing row's state and last change when read, so a draft can tell
+    # whether the pricing moved while it ran. ``None`` when there is no row.
+    state: str | None = None
+    changed_at: datetime | None = None
 
 
 def read_priced(uow: UnitOfWork, identifier: UUID) -> Priced:
-    mode = uow.connection.execute(
-        select(s.job_pricing.c.mode).where(s.job_pricing.c.opportunity_id == identifier)
-    ).scalar_one_or_none()
+    t = s.job_pricing
+    found = uow.connection.execute(
+        select(t.c.mode, t.c.state, t.c.updated_at).where(
+            t.c.opportunity_id == identifier
+        )
+    ).one_or_none()
     m = s.proposal_milestone
     rows = tuple(
         (r.title, Decimal(r.amount))
@@ -41,7 +48,11 @@ def read_priced(uow: UnitOfWork, identifier: UUID) -> Priced:
             .order_by(m.c.position)
         )
     )
-    return Priced(mode=mode, rows=rows)
+    if found is None:
+        return Priced(rows=rows)
+    return Priced(
+        mode=found.mode, rows=rows, state=found.state, changed_at=found.updated_at
+    )
 
 
 def milestone_rows(uow: UnitOfWork, identifier: UUID) -> list[dict[str, Any]]:
