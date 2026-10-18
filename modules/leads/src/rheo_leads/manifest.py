@@ -72,6 +72,7 @@ from rheo_leads.scoring.job import (
 from rheo_leads.scoring.profile import OPERATIONS as SCORING_OPERATIONS
 from rheo_leads.scoring.profile import SCHEDULE_NAME as SCORE_SCHEDULE_NAME
 from rheo_leads.scoring.review import OPERATIONS as REVIEW_OPERATIONS
+from rheo_leads.scoring.view import OPERATIONS as SCORING_VIEW_OPERATIONS
 from rheo_leads.web_reads import OPERATIONS as WEB_OPERATIONS
 
 MANIFEST = ModuleManifest(
@@ -112,6 +113,7 @@ MANIFEST = ModuleManifest(
     + JOBPASTE_OPERATIONS
     + SCORING_OPERATIONS
     + REVIEW_OPERATIONS
+    + SCORING_VIEW_OPERATIONS
     + PROPOSAL_PROFILE_OPERATIONS
     + PROPOSAL_OPERATIONS,
     tools=(
@@ -242,6 +244,7 @@ MANIFEST = ModuleManifest(
             for name, path in (
                 ("queue", "/"),
                 ("review", "/review"),
+                ("scoring", "/scoring"),
                 ("list", "/opportunities"),
                 ("board", "/board"),
                 ("detail", "/detail"),
@@ -283,6 +286,8 @@ MANIFEST = ModuleManifest(
                 "proposalmilestone.set",
                 # The review queue's override.
                 "jobreview.promote",
+                # The Scoring view's re-queue of failed jobs.
+                "jobscoring.retry_failed",
             )
         ),
     ),

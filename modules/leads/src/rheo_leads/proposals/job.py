@@ -66,6 +66,7 @@ from rheo_core.work.jobs import enqueue_job
 from sqlalchemy import and_, delete, exists, func, insert, or_, select, update
 from sqlalchemy.exc import StatementError
 
+from rheo_leads import model_calls
 from rheo_leads import pipeline_common as h
 from rheo_leads.proposals import prompts
 from rheo_leads.proposals.pipeline import (
@@ -603,6 +604,7 @@ def _asker(
     account_id: UUID,
     heartbeat: Callable[[], None],
     before: Callable[[], None],
+    track: model_calls.CallTracker = model_calls.NO_TRACKING,
 ) -> Any:
     def ask(
         role: AskRole, task: str, schema: Mapping[str, Any]
@@ -610,16 +612,18 @@ def _asker(
         # One stage can make three calls; each renews the claim first.
         before()
         try:
-            return runner.run(
-                workspace_id=workspace_id,
-                account_id=account_id,
-                purpose=ContextPurpose.INTERNAL_ANALYSIS,
-                task=task,
-                json_schema=dict(schema),
-                model_id_key=MODEL_KEYS[role],
-                scratch_subdir=SCRATCH_SUBDIR,
-                heartbeat=heartbeat,
-            )
+            with track.call(role, MODEL_KEYS[role]) as call:
+                return runner.run(
+                    workspace_id=workspace_id,
+                    account_id=account_id,
+                    purpose=ContextPurpose.INTERNAL_ANALYSIS,
+                    task=task,
+                    json_schema=dict(schema),
+                    model_id_key=MODEL_KEYS[role],
+                    scratch_subdir=SCRATCH_SUBDIR,
+                    heartbeat=heartbeat,
+                    on_usage=call.usage,
+                )
         except OneShotDeferred as exc:
             raise _Deferred(exc.kind) from None
         except OneShotCredentialNotOwned:
@@ -798,6 +802,7 @@ def _draft_one(
         account_id=profile.drafting_account_id,
         heartbeat=token.checkpoint,
         before=hold,
+        track=model_calls.Tracker(ctx, claimed.opportunity_id, HOOKS.clock),
     )
     try:
         return generate(job, profile, ask, report, today=HOOKS.clock().date())

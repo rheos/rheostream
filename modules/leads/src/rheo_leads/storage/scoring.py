@@ -8,6 +8,9 @@ The score itself lives on the qualification record.
 ``job_promotion`` holds one row per job the owner promoted past the client filters:
 an override of tier 1, kept apart from the scoring state so that rescoring, a moved
 posting and a new profile all leave it in place.
+``model_call`` holds one row per model call Leads makes (scoring, drafting, pricing):
+what it was for, the model, the token counts, how long it took and how it ended. It
+is content-free: no task, answer or posting text, only counts, times and fixed words.
 """
 
 from sqlalchemy import (
@@ -16,6 +19,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Table,
     Text,
@@ -78,4 +82,46 @@ job_promotion = Table(
     Column("promoted_by_kind", Text, nullable=False),
     Column("promoted_by_id", Uuid),
     Column("promoted_at", DateTime(timezone=True), nullable=False),
+)
+
+CALL_OUTCOMES = ("running", "answered", "deferred", "failed")
+
+model_call = Table(
+    "model_call",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    # A fixed word: scoring, or the proposal chain's role (analysis, gate, draft,
+    # repair, milestones).
+    Column("purpose", Text, nullable=False),
+    # The job it was for; a deleted job leaves its usage behind without the link.
+    Column(
+        "opportunity_id",
+        Uuid,
+        ForeignKey("leads.opportunity.id", ondelete="SET NULL"),
+    ),
+    # The model setting's value when the call started, or "default".
+    Column("model_id", Text, nullable=False),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("input_tokens", Integer),
+    Column("output_tokens", Integer),
+    Column("outcome", Text, nullable=False),
+    Column("failure_kind", Text),
+    CheckConstraint(
+        "outcome IN ('running','answered','deferred','failed')",
+        name="model_call_outcome_known",
+    ),
+    CheckConstraint(
+        "(outcome = 'running') = (finished_at IS NULL)",
+        name="model_call_finished_when_done",
+    ),
+    CheckConstraint(
+        "input_tokens IS NULL OR input_tokens >= 0", name="model_call_input_tokens"
+    ),
+    CheckConstraint(
+        "output_tokens IS NULL OR output_tokens >= 0",
+        name="model_call_output_tokens",
+    ),
+    Index("model_call_started", "started_at"),
+    Index("model_call_opportunity", "opportunity_id"),
 )

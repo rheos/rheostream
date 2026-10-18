@@ -7,6 +7,7 @@ import {
   queue,
   receipt,
   review,
+  scoring,
 } from "./screens";
 import { ActionForm } from "./action-form";
 const list = (props: ScreenProps) => overview(props, false);
@@ -14,6 +15,7 @@ const board = (props: ScreenProps) => overview(props, true);
 export const screens = {
   queue,
   review,
+  scoring,
   list,
   board,
   capture,

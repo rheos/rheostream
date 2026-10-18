@@ -20,6 +20,7 @@ import { PasteCapture } from "./paste-capture";
 import { JobPaste } from "./job-paste";
 import { ProposalWorkflow } from "./proposal-workflow";
 import { ReviewQueue } from "./review-view";
+import { ScoringView } from "./scoring-view";
 import {
   data,
   date,
@@ -40,6 +41,7 @@ import styles from "./leads.module.css";
 const NAV = [
   ["queue", "Job queue"],
   ["review", "Review queue"],
+  ["scoring", "Scoring"],
   ["list", "Opportunities"],
   ["board", "Pipeline"],
   ["capture", "Capture inquiry"],
@@ -724,6 +726,44 @@ export async function review({ shell }: ScreenProps) {
           hrefs={hrefs}
           limited={records.length >= REVIEW_LIMIT}
           canPromote={shell.role === "owner"}
+          submit={shell.submit}
+        />
+      )}
+    </Frame>
+  );
+}
+/** The Scoring view: what scoring is doing, recent jobs by import with their
+ * stage, and the model call log (``?tab=calls``). */
+export async function scoring({ shell, query }: ScreenProps) {
+  const tab = query.tab === "calls" ? "calls" : "queue";
+  const result = await read(shell, "leads.ui.scoring");
+  const view = data(result);
+  const refs = new Set<string>();
+  for (const batch of rows(view.batches))
+    for (const job of rows(batch.jobs)) if (job.ref) refs.add(str(job.ref));
+  for (const call of rows(view.calls)) if (call.ref) refs.add(str(call.ref));
+  const hrefs = Object.fromEntries(
+    [...refs].map((r) => [r, shell.href("detail", { ref: r })]),
+  );
+  return (
+    <Frame shell={shell} active="scoring" title="Scoring" bare>
+      {result.state !== "ok" ? (
+        <>
+          <h1 className={styles.srOnly}>Scoring</h1>
+          <Failure outcome={result} />
+        </>
+      ) : (
+        <ScoringView
+          view={view}
+          now={Date.now()}
+          tab={tab}
+          hrefs={hrefs}
+          tabHrefs={{
+            queue: shell.href("scoring"),
+            calls: shell.href("scoring", { tab: "calls" }),
+          }}
+          reviewHref={shell.href("review")}
+          canRetry={shell.role === "owner"}
           submit={shell.submit}
         />
       )}

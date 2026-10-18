@@ -23,6 +23,7 @@ from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken
 from sqlalchemy import and_, func, or_, select, update
 
+from rheo_leads import model_calls
 from rheo_leads.proposals import job as drafting
 from rheo_leads.proposals import milestones, pricing
 from rheo_leads.proposals.pipeline import AnswerUnusable
@@ -250,6 +251,7 @@ def price_one(
         account_id=profile.drafting_account_id,
         heartbeat=token.checkpoint,
         before=hold,
+        track=model_calls.Tracker(ctx, claimed.opportunity_id, drafting.HOOKS.clock),
     )
     fields = claimed.fields
     try:

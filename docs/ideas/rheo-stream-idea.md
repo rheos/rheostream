@@ -1981,6 +1981,16 @@ The following changes are recorded here.
     place, and the clauses that held the job stay on its assessment as conditions.
     Migration `0014_job_promotion` adds the override table.
 
+25. **Leads logs every model call in tokens and time, never in money.** Recorded on
+    2026-10-18 against issue #423. Each scoring, drafting and pricing call writes one
+    row: its purpose, the job, the model setting, start and finish, input and output
+    tokens from the adapter's usage report, and how it ended (answered, deferred on
+    the usage limit, failed with its word). Calls run on the owner's subscription
+    login, so the adapter's cost figure is dropped rather than shown. Rows are
+    content-free, kept 90 days, not exported, and outlive a deleted job without its
+    link. Leads > Scoring reads them beside each recent job's stage. Migration
+    `0015_model_calls` adds the table.
+
 ### Website intake implementation clarification (2026-10-09)
 
 Signed website event identity comes from the signed body (`event_id`) or its exact-byte

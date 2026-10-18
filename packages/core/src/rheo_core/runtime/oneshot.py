@@ -48,6 +48,7 @@ from rheo_contracts import (
     RuntimeLimits,
     RuntimeRequest,
     StructuredOutput,
+    UsageEvent,
 )
 from rheo_contracts.purposes import ContextPurpose
 
@@ -154,6 +155,7 @@ class OneShotRunner:
         model_id_key: str,
         scratch_subdir: str,
         heartbeat: Callable[[], None] | None = None,
+        on_usage: Callable[[int, int], None] | None = None,
     ) -> Mapping[str, object]:
         """Run ``task`` once as ``account_id`` and return the structured result.
 
@@ -161,6 +163,8 @@ class OneShotRunner:
         CLI's default). ``scratch_subdir`` names the throwaway directory's parent
         under the workspace's scratch area. ``heartbeat``, when given, is called
         while the run is awaited, so a job handler can keep its lease.
+        ``on_usage``, when given, receives the run's input and output token counts
+        if the adapter reports them; a run that fails can still report them.
         """
         # Only ever the registered adapter, and first: a process whose registry
         # holds none reads no settings, mints no token and makes no directory.
@@ -231,7 +235,7 @@ class OneShotRunner:
             )
             handle = adapter.start(request, spawn=spawn)
             return self._await_result(
-                handle, deadline_at=deadline_at, heartbeat=heartbeat
+                handle, deadline_at=deadline_at, heartbeat=heartbeat, on_usage=on_usage
             )
         finally:
             revoke_failed = False
@@ -293,6 +297,7 @@ class OneShotRunner:
         *,
         deadline_at: datetime,
         heartbeat: Callable[[], None] | None,
+        on_usage: Callable[[int, int], None] | None = None,
     ) -> Mapping[str, object]:
         """Poll to a terminal event; the structured mapping, or a raise."""
         while True:
@@ -321,7 +326,12 @@ class OneShotRunner:
             if isinstance(event, ApprovalRequiredEvent):
                 # Nothing is permitted, so no approval request can be legitimate.
                 raise OneShotFailed(APPROVAL_REQUESTED)
-            # Progress, tool-call, tool-result and usage events carry no result.
+            if isinstance(event, UsageEvent):
+                # Counts only: the cost figure is not passed on.
+                if on_usage is not None:
+                    on_usage(event.input_tokens, event.output_tokens)
+                continue
+            # Progress, tool-call and tool-result events carry no result.
 
 
 _registered: OneShotRunner | None = None
