@@ -273,9 +273,11 @@ matching entry when there is one, and `leads.proposalsection.use_library` puts i
 the section.
 
 **Failures.** A usage limit, a refused login or a missing runtime makes every queued
-draft wait 15 minutes without spending an attempt. An unusable answer or a run past its
-deadline retries with backoff, and the third attempt marks the proposal failed with its
-reason; requesting it again starts over. Deleting the evidence an opportunity rests on
+draft wait 15 minutes without spending an attempt. Any other failure (an unusable
+answer, a crashed or truncated run, a run past its deadline) retries with backoff, and
+the third attempt marks the proposal failed with its reason; requesting it again starts
+over. A sweep is queued by each request and by its own follow-ups; a schedule every 30
+minutes, on once a proposal profile is set, picks up anything left waiting. Deleting the evidence an opportunity rests on
 removes its proposal, since a proposal quotes the posting.
 
 ## Dated next follow-up
