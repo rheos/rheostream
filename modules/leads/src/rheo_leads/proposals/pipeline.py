@@ -220,7 +220,11 @@ def _check(
     """The accuracy findings, and whether the check ran at all. A check that could
     not run returns no findings and says so, never a pass."""
     try:
-        extracted = ask("gate", gate.EXTRACTOR_RULES + text, gate.EXTRACTOR_SCHEMA)
+        extracted = ask(
+            "gate",
+            gate.EXTRACTOR_RULES + text + gate.EXTRACTOR_CLOSING,
+            gate.EXTRACTOR_SCHEMA,
+        )
         return gate.check_claims(text, extracted, evidence), True
     except (AnswerUnusable, ValueError):
         return [], False

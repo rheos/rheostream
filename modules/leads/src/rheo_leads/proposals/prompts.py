@@ -393,10 +393,18 @@ Never pre-answer a screening question inside the cover letter: the answer block 
 lives, and the letter touches that topic in at most one clause. A sentence that says the same \
 thing in both places reads as padding."""  # noqa: E501
 
+# The runtime reads the reply as JSON and checks it against the schema; the schema
+# itself never reaches the model, so every task that wants an object says so.
+JSON_TEXT_REPLY: Final = (
+    "\n\nREPLY FORMAT (critical): reply with exactly one JSON object and nothing else, "
+    "no markdown fences and no text before or after it: "
+    '{"text": "<the whole text>"}. Inside the string, write every line break as \\n '
+    'and escape every double quote as \\".'
+)
 OUTPUT_INSTRUCTION: Final = (
-    "\n\nOUTPUT: put the whole submission (the proposal, and the answer blocks when "
-    "screening questions are asked) in the result's text field, starting at its first "
-    "word. No preamble, no notes about your choices."
+    "\n\nOUTPUT: the text is the whole submission (the proposal, and the answer blocks "
+    "when screening questions are asked), starting at its first word. No preamble, no "
+    "notes about your choices." + JSON_TEXT_REPLY
 )
 
 POSTING_INTRO: Final = (
@@ -408,8 +416,9 @@ STYLE_REPAIR_RULES: Final = """\
 You are a copy editor fixing a SPECIFIC, LISTED set of style problems in a proposal. The text
 is otherwise finished. Fix the listed problems and change nothing else.
 
-OUTPUT (critical): Return ONLY the proposal text, starting at its very first word. No preamble,
-no commentary, no note about what you changed, no list of fixes.
+OUTPUT (critical): the text you return is ONLY the proposal, starting at its very first word, in
+the JSON reply described at the end. No preamble, no commentary, no note about what you changed,
+no list of fixes.
 
 You ARE licensed to make these structural edits, but ONLY where a finding asks for one:
 - Split a paragraph that is too long. Break it at a natural seam into two paragraphs. This is a
@@ -441,7 +450,7 @@ Hard constraints (never violate):
   structure exactly. Question headings are the client's own words and are never edited, even if
   a finding appears to point at one.
 
-Put the repaired text in the result's text field."""  # noqa: E501 - ported prompt text, kept verbatim
+The text is the repaired proposal."""  # noqa: E501 - ported prompt text, kept verbatim
 
 # Value system to framing: the classification is backstage (never named in the
 # letter), and framing is honest overlap only, the same true material opened through
@@ -780,7 +789,7 @@ def draft_task(system: str, context: str, questions: str, extra: str = "") -> st
         user += (
             "\n\nSCREENING QUESTIONS (answer each after the proposal):\n" + questions
         )
-    return system + POSTING_INTRO + user + extra
+    return system + POSTING_INTRO + user + extra + JSON_TEXT_REPLY
 
 
 def repair_task(draft: str, repair_block: str) -> str:
@@ -791,7 +800,9 @@ def repair_task(draft: str, repair_block: str) -> str:
         + "\n\n---\nA style lint flagged the following in the text above. Fix ONLY "
         "these, in place, under all the rules you were given. Change nothing else, "
         "and do not "
-        "alter any factual claim, number, name, or URL:\n" + repair_block
+        "alter any factual claim, number, name, or URL:\n"
+        + repair_block
+        + JSON_TEXT_REPLY
     )
 
 
