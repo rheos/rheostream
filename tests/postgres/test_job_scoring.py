@@ -240,6 +240,7 @@ def scored(
 
 
 def queued_sweeps(i: Intake) -> list[dict[str, Any]]:
+    """Every scoring sweep ever queued, in any state, not only the waiting ones."""
     return rows(i, select(job).where(job.c.kind == SCORE_JOB_KIND))
 
 
@@ -570,6 +571,7 @@ def test_two_triggers_racing_for_one_minute_queue_one_sweep(scored: Scoring) -> 
     release.set()
     a.join(10)
     b.join(10)
+    assert not (a.is_alive() or b.is_alive()), "an enqueue never finished"
     assert not errors, errors
     assert [r["next_run_at"] for r in queued_sweeps(scored.i)].count(due) == 1
     assert waited, "the second enqueue never waited on the first one's lock"
