@@ -13,7 +13,7 @@
 # `modules/recallatron/web`). `apps/web/Dockerfile.dockerignore` binds to this
 # Dockerfile's own name and is the only ignore file BuildKit applies to this
 # build; the root `.dockerignore` does not apply here.
-FROM node:22.23.3-slim
+FROM node:24-slim
 
 # corepack ships with Node and pins pnpm to package.json's `packageManager`
 # field (pnpm@9.15.9), so the version here can never drift from the one CI's
