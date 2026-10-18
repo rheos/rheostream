@@ -830,7 +830,15 @@ export async function detail({ shell, query }: ScreenProps) {
       }
       bare={job !== undefined}
     >
-      {job ? <JobHeader item={job} now={Date.now()} /> : null}
+      {job ? (
+        <JobHeader
+          item={job}
+          now={Date.now()}
+          submit={shell.submit}
+          // Bare, so the queue reopens the view saved when it was last used.
+          back={shell.href("queue")}
+        />
+      ) : null}
       {job && proposal ? (
         <ProposalWorkflow
           submit={shell.submit}
