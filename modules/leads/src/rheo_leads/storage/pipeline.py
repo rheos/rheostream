@@ -327,6 +327,14 @@ qualification = child(
 qualification.append_constraint(
     CheckConstraint("score BETWEEN 1 AND 100", name="qualification_score")
 )
+# A job's current assessment, read newest first (migration 0015).
+Index(
+    "qualification_current",
+    qualification.c.opportunity_id,
+    qualification.c.input_revision.desc(),
+    qualification.c.created_at.desc(),
+    qualification.c.id.desc(),
+)
 draft = child(
     "draft",
     col("kind"),

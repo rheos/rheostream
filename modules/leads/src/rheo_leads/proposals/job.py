@@ -612,7 +612,9 @@ def _asker(
         # One stage can make three calls; each renews the claim first.
         before()
         try:
-            with track.call(role, MODEL_KEYS[role]) as call:
+            with track.call(
+                role, MODEL_KEYS[role], defers=lambda kind: kind in DEFERRING
+            ) as call:
                 return runner.run(
                     workspace_id=workspace_id,
                     account_id=account_id,

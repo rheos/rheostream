@@ -251,3 +251,28 @@ def test_off_and_without_a_profile_the_status_says_so(scored: Scoring) -> None:
     data = view(scored)
     assert data["status"]["state"] == "off"
     assert data["batches"] == [] and data["calls"] == []
+
+
+def test_an_account_side_failure_is_logged_deferred_and_a_claim_reads_claimed(
+    scored: Scoring,
+) -> None:
+    scored.paste("~02100", GOOD)
+    scored.model(failure(FailureKind.CREDENTIAL_INVALID))
+    scored.set_profile()
+    scored.sweep()
+    (row,) = calls(scored)
+    # The job waits with every other one; the log says so rather than "failed".
+    assert (row["outcome"], row["failure_kind"]) == ("deferred", "credential_invalid")
+    assert jobs(view(scored))["Good job"]["stage"] == "paused"
+
+    # A sweep that claims it again clears the old failure word: until its call
+    # starts (or after the sweep stops) the job reads as claimed, not paused.
+    later = scored.state("~02100")["retry_after"] + timedelta(seconds=1)
+    with open_unit_of_work(scored.c.owner) as uow:
+        claimed = scoring.claim(uow, now=later, window=timedelta(hours=1))
+        uow.commit()
+    assert claimed is not None
+    assert scored.state("~02100")["failure_kind"] is None
+    data = view(scored)
+    assert jobs(data)["Good job"]["stage"] == "waiting"
+    assert data["status"]["state"] == "idle"

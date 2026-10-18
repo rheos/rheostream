@@ -610,7 +610,9 @@ class RecordingTracker:
         self.calls: list[tuple[str, str, Call]] = []
 
     @contextmanager
-    def call(self, purpose: str, model_id_key: str) -> Iterator[Call]:
+    def call(
+        self, purpose: str, model_id_key: str, defers: Any = None
+    ) -> Iterator[Call]:
         reported = Call()
         self.calls.append((purpose, model_id_key, reported))
         yield reported

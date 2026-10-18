@@ -14,8 +14,13 @@ adapter detail reaches it.
 
 **Bounded.** Starting a call also deletes rows older than :data:`RETENTION`, so the
 log keeps a rolling window without a job of its own.
+
+**Best effort.** The log never changes what a call does: a row that cannot be
+written is skipped with a fixed warning, and the call's own answer or exception goes
+on as if the log were not there.
 """
 
+import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -33,10 +38,14 @@ from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from rheo_core.storage.routing import open_unit_of_work
 from sqlalchemy import delete, insert, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from rheo_leads.storage import scoring as s
 
+_log = logging.getLogger(__name__)
+
 RETENTION: Final = timedelta(days=90)
+LOG_WRITE_FAILED: Final = "model_call_log_write_failed"
 SCORING: Final = "scoring"
 CREDENTIAL_NOT_OWNED: Final = "credential_not_owned"
 UNEXPECTED: Final = "unexpected"
@@ -75,31 +84,18 @@ class Tracker:
         self._clock = clock
 
     @contextmanager
-    def call(self, purpose: str, model_id_key: str) -> Iterator[Call]:
+    def call(
+        self,
+        purpose: str,
+        model_id_key: str,
+        defers: Callable[[str], bool] = lambda kind: False,
+    ) -> Iterator[Call]:
+        """Record one call. ``defers`` says which failure words the caller treats
+        as a wait for the whole account (logged ``deferred``, as the usage limit
+        always is) rather than a failure of this call."""
         identifier = uuid7()
         started = self._clock()
-        table = s.model_call
-        with open_unit_of_work(self._ctx) as uow:
-            uow.connection.execute(
-                delete(table).where(table.c.started_at < started - RETENTION)
-            )
-            settings = resolve(
-                workspace_id=self._ctx.workspace_id,
-                source=TransactionBoundOverrideSource(
-                    uow, workspace_id=self._ctx.workspace_id
-                ),
-            )
-            uow.connection.execute(
-                insert(table).values(
-                    id=identifier,
-                    purpose=purpose,
-                    opportunity_id=self._opportunity_id,
-                    model_id=settings.get_str(model_id_key).strip() or "default",
-                    started_at=started,
-                    outcome="running",
-                )
-            )
-            uow.commit()
+        logged = self._start(identifier, purpose, model_id_key, started)
         call = Call()
         outcome: str = "failed"
         kind: str | None = UNEXPECTED
@@ -114,12 +110,57 @@ class Tracker:
             outcome, kind = "deferred", exc.kind
             raise
         except OneShotFailed as exc:
+            outcome = "deferred" if defers(exc.kind) else "failed"
             kind = exc.kind
             raise
         except OneShotCredentialNotOwned:
-            kind = CREDENTIAL_NOT_OWNED
+            outcome, kind = "deferred", CREDENTIAL_NOT_OWNED
             raise
         finally:
+            if logged:
+                self._finish(identifier, started, call, outcome, kind)
+
+    def _start(
+        self, identifier: UUID, purpose: str, model_id_key: str, started: datetime
+    ) -> bool:
+        table = s.model_call
+        try:
+            with open_unit_of_work(self._ctx) as uow:
+                uow.connection.execute(
+                    delete(table).where(table.c.started_at < started - RETENTION)
+                )
+                settings = resolve(
+                    workspace_id=self._ctx.workspace_id,
+                    source=TransactionBoundOverrideSource(
+                        uow, workspace_id=self._ctx.workspace_id
+                    ),
+                )
+                uow.connection.execute(
+                    insert(table).values(
+                        id=identifier,
+                        purpose=purpose,
+                        opportunity_id=self._opportunity_id,
+                        model_id=settings.get_str(model_id_key).strip() or "default",
+                        started_at=started,
+                        outcome="running",
+                    )
+                )
+                uow.commit()
+        except SQLAlchemyError:
+            _log.warning(LOG_WRITE_FAILED)
+            return False
+        return True
+
+    def _finish(
+        self,
+        identifier: UUID,
+        started: datetime,
+        call: Call,
+        outcome: str,
+        kind: str | None,
+    ) -> None:
+        table = s.model_call
+        try:
             with open_unit_of_work(self._ctx) as uow:
                 uow.connection.execute(
                     update(table)
@@ -133,13 +174,20 @@ class Tracker:
                     )
                 )
                 uow.commit()
+        except SQLAlchemyError:
+            _log.warning(LOG_WRITE_FAILED)
 
 
 class NoTracking:
     """A tracker that records nothing: for callers outside a sweep, and tests."""
 
     @contextmanager
-    def call(self, purpose: str, model_id_key: str) -> Iterator[Call]:
+    def call(
+        self,
+        purpose: str,
+        model_id_key: str,
+        defers: Callable[[str], bool] = lambda kind: False,
+    ) -> Iterator[Call]:
         yield Call()
 
 

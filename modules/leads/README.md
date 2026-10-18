@@ -240,22 +240,23 @@ filters hold can be promoted (`not_held` otherwise), and promoting twice does no
 **The Scoring view.** Leads > Scoring shows what scoring is doing and where recent jobs
 are. A status line says whether a model call is running (and for which job and how
 long), whether every waiting job is paused on the usage limit and until when, or that
-scoring is idle, off, or waiting for a profile. Below it: how many jobs are queued, a
-rough time to clear from the median of recent scoring calls, how many wait out a
-backoff, and how many failed (an owner can put failed open jobs back in line with
-`leads.jobscoring.retry_failed`). The Queue tab lists Job search jobs from the last 48
-hours grouped into imports, each with its stage: queued with its position (newest
-first, as the sweep claims them), scoring now, scored with its score, retrying, paused,
-needs the full posting, failed, or held by the filters (folded away, with a link to the
-review queue). The Model calls tab is the call log: every model call Leads makes
+scoring is idle, off, or waiting for a profile. Below it: how many jobs are queued, an
+upper bound on the time to clear (the median recent scoring call for each queued job),
+how many wait out a backoff, and how many failed (an owner can put failed open jobs back
+in line with `leads.jobscoring.retry_failed`). The Queue tab lists Job search jobs from
+the last 48 hours grouped into imports, each with its stage: queued with its position
+(newest first, as the sweep claims them), scoring now, scored with its score, retrying,
+paused, needs the full posting, failed, or held by the filters (folded away, with a link
+to the review queue). The Model calls tab is the call log: every model call Leads makes
 (`leads.model_call`, written around each one-shot run) with its purpose, model, input
 and output tokens, time and outcome, plus a seven-day summary by purpose and model.
 Tokens and time only: the calls run on a subscription login, so the adapter's cost
-figure is never stored. No task, answer or posting text is kept; rows older than 90
-days are deleted as new calls start; the log is not exported; and a deleted job leaves
-its rows without the link. `leads.ui.scoring` is the view's single read. The page
-reloads itself every 15 seconds while work is in flight and every two minutes
-otherwise, unless the window is in the background or a panel on it is open.
+figure is never stored. No task, answer or posting text is kept; rows older than 90 days
+are deleted as new calls start; the log is not exported; and a deleted job leaves its
+rows without the link. `leads.ui.scoring` is the view's single read. The page reloads
+itself every 15 seconds while scoring is moving (a call running, or queued jobs with a
+call in the last five minutes) and every two minutes otherwise, unless the window is in
+the background or a panel on it is open.
 
 ## Job proposals
 

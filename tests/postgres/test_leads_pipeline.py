@@ -1241,6 +1241,7 @@ JOBSEARCH_TABLES = (
 
 def _undo_0015(connection: Any) -> None:
     connection.execute(text("DROP TABLE leads.model_call"))
+    connection.execute(text("DROP INDEX leads.qualification_current"))
 
 
 def _undo_0014(connection: Any) -> None:

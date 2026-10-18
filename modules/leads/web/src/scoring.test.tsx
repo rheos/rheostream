@@ -177,8 +177,28 @@ describe("the Scoring view's words", () => {
     expect(span(600)).toBe("10 min");
     expect(span(5400)).toBe("1h 30m");
     expect(batchSource(["poll", "manual"])).toBe("Job feed + Pasted");
-    expect(busy(VIEW)).toBe(true);
-    expect(busy({ status: { state: "idle" }, queued_total: 0 })).toBe(false);
+    expect(busy(VIEW, NOW)).toBe(true);
+    expect(
+      busy(
+        {
+          status: { state: "idle", last_call_at: "2026-10-18T11:58:00Z" },
+          queued_total: 2,
+        },
+        NOW,
+      ),
+    ).toBe(true);
+    expect(
+      busy(
+        {
+          status: { state: "idle", last_call_at: "2026-10-18T09:00:00Z" },
+          queued_total: 2,
+        },
+        NOW,
+      ),
+    ).toBe(false);
+    expect(busy({ status: { state: "idle" }, queued_total: 0 }, NOW)).toBe(
+      false,
+    );
   });
 });
 
@@ -186,7 +206,7 @@ describe("the Scoring view", () => {
   it("shows the queue by import, with held jobs folded away", () => {
     const html = markup("queue");
     expect(html).toContain("Scoring &quot;Example data pipeline&quot; for 42s");
-    expect(html).toContain("about 40s to clear");
+    expect(html).toContain("up to about 40s to clear");
     expect(html).toContain("Job feed · 10:00 AM UTC");
     expect(html).toContain(">82<");
     expect(html).toContain('href="/leads/detail?ref=good"');

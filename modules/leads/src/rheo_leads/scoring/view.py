@@ -7,7 +7,8 @@
   job and start), ``paused`` (the account's usage limit, or another account-side
   failure, holds every waiting job until a time), or ``idle`` with the last call.
 - the queue's totals: claimable jobs (``queued_total``), jobs waiting out a backoff,
-  failed jobs, and a rough time to clear from the median of recent scoring calls.
+  failed jobs, and an upper bound on the time to clear (the median of recent scoring
+  calls for every queued job, though tier 1 holds some without a call).
 - ``batches``: Job search jobs created in the last :data:`WINDOW`, grouped into
   imports by the gaps between them, each with its stage (:func:`stage_of`).
 - ``calls``: the newest model calls, and ``summary``: calls, tokens, median time,
@@ -39,14 +40,13 @@ from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.redaction.tiers import SensitivityTier, Tiered
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import and_, extract, func, select, update
+from sqlalchemy import and_, extract, func, select, true, update
 
 from rheo_leads import model_calls
 from rheo_leads import pipeline_common as h
 from rheo_leads.pipeline_contracts import Empty, Strict
 from rheo_leads.references import ref
 from rheo_leads.scoring import job as scoring
-from rheo_leads.scoring.review import latest
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import scoring as s
 from rheo_leads.storage import tables as t
@@ -122,18 +122,25 @@ def stage_of(
     return "failed" if job["fit"] == "needs_information" else "held"
 
 
-def _claim_order(uow: UnitOfWork, now: datetime) -> list[UUID]:
-    """Every claimable open job in the order the sweep claims them: newest first."""
+def _claim_order(uow: UnitOfWork, now: datetime) -> tuple[list[UUID], int]:
+    """The first claimable open jobs in the order the sweep claims them (newest
+    first, so the window's jobs lead), and how many are claimable in all."""
     state, o = s.job_score_state, p.opportunity
     open_ids = scoring._open_jobs().with_only_columns(o.c.id)
-    return list(
+    claimable = and_(scoring._claimable(now), state.c.opportunity_id.in_(open_ids))
+    first: list[UUID] = list(
         uow.connection.execute(
             select(state.c.opportunity_id)
             .join(o, o.c.id == state.c.opportunity_id)
-            .where(scoring._claimable(now), state.c.opportunity_id.in_(open_ids))
+            .where(claimable)
             .order_by(o.c.created_at.desc(), o.c.id.desc())
+            .limit(MAX_JOBS + 1)
         ).scalars()
     )
+    total: int = uow.connection.execute(
+        select(func.count()).select_from(state).where(claimable)
+    ).scalar_one()
+    return first, total
 
 
 def _running(uow: UnitOfWork, now: datetime) -> list[dict[str, Any]]:
@@ -156,6 +163,16 @@ def _jobs(uow: UnitOfWork, now: datetime) -> list[dict[str, Any]]:
         s.job_score_state,
         p.qualification,
     )
+    # The current assessment, once per job (the ``qualification_current`` index).
+    current = (
+        select(qual.c.score, qual.c.fit, qual.c.explanation, qual.c.created_at)
+        .where(qual.c.opportunity_id == o.c.id)
+        .order_by(
+            qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
+        )
+        .limit(1)
+        .lateral("current")
+    )
     query = (
         select(
             o.c.id,
@@ -167,10 +184,10 @@ def _jobs(uow: UnitOfWork, now: datetime) -> list[dict[str, Any]]:
             state.c.attempts,
             state.c.retry_after,
             state.c.failure_kind,
-            latest(qual.c.score, o.c.id).label("score"),
-            latest(qual.c.fit, o.c.id).label("fit"),
-            latest(qual.c.explanation, o.c.id).label("explanation"),
-            latest(qual.c.created_at, o.c.id).label("assessed_at"),
+            current.c.score,
+            current.c.fit,
+            current.c.explanation,
+            current.c.created_at.label("assessed_at"),
         )
         .join(
             stage,
@@ -182,6 +199,7 @@ def _jobs(uow: UnitOfWork, now: datetime) -> list[dict[str, Any]]:
         )
         .outerjoin(state, state.c.opportunity_id == o.c.id)
         .outerjoin(t.observation, t.observation.c.id == o.c.source_observation_id)
+        .outerjoin(current, true())
         .where(
             o.c.preset_id == h.JOBSEARCH_PRESET_ID,
             o.c.created_at >= now - WINDOW,
@@ -394,7 +412,7 @@ def _status(
 def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
     h.require(ctx)
     now = datetime.now(UTC)
-    order = _claim_order(uow, now)
+    order, claimable = _claim_order(uow, now)
     running = _running(uow, now)
     jobs = _jobs(uow, now)
     titles = {j["id"]: j["title"] for j in jobs}
@@ -430,7 +448,8 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
         ).all()
     )
     per_call = _median_scoring_seconds(uow)
-    queued = len(position)
+    # A job being scored is claimed, so it is never counted as claimable.
+    queued = claimable
     return ViewOutput(
         data={
             "generated_at": _iso(now),
@@ -438,7 +457,7 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
             "summary_days": SUMMARY_WINDOW.days,
             "status": _status(ctx, uow, running=running, titles=titles, now=now),
             "queued_total": queued,
-            "waiting_total": max(totals.get("pending", 0) - len(order), 0),
+            "waiting_total": max(totals.get("pending", 0) - claimable, 0),
             "failed_total": totals.get("failed", 0),
             "median_call_seconds": per_call,
             "eta_seconds": round(per_call * queued)

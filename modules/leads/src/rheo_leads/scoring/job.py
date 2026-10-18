@@ -402,7 +402,13 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
     uow.connection.execute(
         update(state)
         .where(state.c.opportunity_id == row["opportunity_id"])
-        .values(attempts=attempts, retry_after=now + window, updated_at=now)
+        # In progress: the previous attempt's failure word no longer describes it.
+        .values(
+            attempts=attempts,
+            retry_after=now + window,
+            failure_kind=None,
+            updated_at=now,
+        )
     )
     record = h.row(uow, o, row["opportunity_id"])
     rubric = (
@@ -527,7 +533,11 @@ def assess(
     failure: str | None = None
     rendered: tier2.Rendered | None = None
     try:
-        with track.call(model_calls.SCORING, MODEL_ID_KEY) as call:
+        with track.call(
+            model_calls.SCORING,
+            MODEL_ID_KEY,
+            defers=lambda kind: kind not in JOB_FAILURES,
+        ) as call:
             answer = runner.run(
                 workspace_id=workspace_id,
                 account_id=profile.scoring_account_id,

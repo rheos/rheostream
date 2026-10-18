@@ -5,6 +5,7 @@ import { row, str, type Row } from "./data";
 
 export const FAST_REFRESH_MS = 15000;
 export const SLOW_REFRESH_MS = 120000;
+const RECENT_SECONDS = 300;
 
 const PURPOSES: Record<string, string> = {
   scoring: "Score",
@@ -130,13 +131,15 @@ export function statusLine(
   };
 }
 
-/** Whether work is in flight, so the page refreshes itself sooner. */
-export function busy(view: Row): boolean {
-  const state = str(row(view.status).state);
-  return (
-    state === "running" ||
-    (typeof view.queued_total === "number" && view.queued_total > 0)
-  );
+/** Whether scoring is moving, so the page refreshes itself sooner: a call is
+ * running, or jobs are queued and a call finished in the last few minutes. A
+ * queue nothing is draining refreshes slowly. */
+export function busy(view: Row, now: number): boolean {
+  const status = row(view.status);
+  if (str(status.state) === "running") return true;
+  const queued = typeof view.queued_total === "number" && view.queued_total > 0;
+  const last = since(status.last_call_at, now);
+  return queued && last !== null && last < RECENT_SECONDS;
 }
 
 export const STAGE_LABELS: Record<string, string> = {

@@ -405,7 +405,7 @@ export function ScoringView(props: ScoringProps) {
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
   const root = useRef<HTMLDivElement | null>(null);
-  const live = busy(view);
+  const live = busy(view, now);
 
   useEffect(() => {
     const delay = live ? FAST_REFRESH_MS : SLOW_REFRESH_MS;
@@ -496,7 +496,7 @@ export function ScoringView(props: ScoringProps) {
       <p className={styles.totals}>
         <span>
           <strong>{queued}</strong> queued
-          {eta !== null ? ` · about ${span(eta)} to clear` : ""}
+          {eta !== null ? ` · up to about ${span(eta)} to clear` : ""}
         </span>
         {perJob !== null ? <span>{span(perJob)} per job lately</span> : null}
         {waiting > 0 ? <span>{waiting} waiting to retry</span> : null}

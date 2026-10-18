@@ -1,4 +1,5 @@
-"""Frozen: the model call log: one content-free row per model call Leads makes."""
+"""Frozen: the model call log: one content-free row per model call Leads makes,
+and an index for reading a job's current assessment."""
 
 from alembic import op
 
@@ -6,7 +7,7 @@ revision = "0015_model_calls"
 down_revision = "0014_job_promotion"
 branch_labels = None
 depends_on = None
-# Creates one empty owned table; no row changes.
+# Creates one empty owned table and one index; no row changes.
 non_destructive_upgrade = True
 
 
@@ -36,6 +37,10 @@ def upgrade() -> None:
     op.execute("CREATE INDEX model_call_started ON leads.model_call (started_at)")
     op.execute(
         "CREATE INDEX model_call_opportunity ON leads.model_call (opportunity_id)"
+    )
+    op.execute(
+        "CREATE INDEX qualification_current ON leads.qualification "
+        "(opportunity_id, input_revision DESC, created_at DESC, id DESC)"
     )
 
 
