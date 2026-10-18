@@ -8,6 +8,8 @@ only the process is not. Every profile, posting and answer is synthetic.
 """
 
 import logging
+import threading
+import time
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
@@ -18,7 +20,7 @@ from uuid import UUID
 
 import pytest
 from harness.extraction import ScriptedAdapter, ScriptedHandle, forbid_real_processes
-from harness.jobfeed import Collector, call, collect_kinds, configure_connector, drain
+from harness.jobfeed import Collector, call, collect_kinds, configure_connector
 from harness.jobfeed import collector as collector
 from rheo_contracts import (
     AdapterSpawn,
@@ -34,13 +36,14 @@ from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.storage.work_tables import job, schedule
+from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
 from rheo_leads.references import ref
 from rheo_leads.scoring import job as scoring
 from rheo_leads.scoring.job import SCORE_JOB_KIND, ScorePayload, score_job
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import scoring as s
-from sqlalchemy import select
+from sqlalchemy import select, text, update
 
 from postgres.test_jobfeed_delivery import rows, the_opportunity
 from postgres.test_leads_intake import Intake
@@ -149,7 +152,24 @@ class Scoring:
             content=text,
             posting_url=URL.format(posting),
         )
-        drain(self.i)
+        self.drain()
+
+    def drain(self) -> None:
+        """Process accepted deliveries on the clock the consumer itself reads.
+
+        ``Intake.visit`` runs two seconds ahead of that clock with no job kinds
+        registered, so a sweep that fell due in those two seconds was leased and
+        failed on the spot, and the next paste queued the same minute again (#404).
+        """
+        visit_workspace(
+            DueWorkspace(workspace_id=self.i.workspace, observed_due_at=None),
+            kinds=JobKindRegistry(),
+            consumers=self.i.consumers,
+            backend=self.i.cluster.backend,
+            owner="job-scoring-test",
+            clock=lambda: datetime.now(UTC),
+            jitter=None,
+        )
 
     def set_profile(self, **policy: Any) -> Any:
         return call(
@@ -260,7 +280,7 @@ def test_a_sweep_holds_scores_and_asks_for_the_full_posting(
         kind="search_page",
         content=SEARCH_TILE,
     )
-    drain(scored.i)
+    scored.drain()
     adapter = scored.model(final(8))
     scored.set_profile()
     caplog.set_level(logging.DEBUG)
@@ -468,17 +488,91 @@ def test_a_changed_description_is_rescored_and_an_unchanged_one_is_not(
 
 def test_a_processed_job_delivery_queues_one_sweep_a_minute(scored: Scoring) -> None:
     scored.set_profile()
+    # The first visit fires the schedule the profile turned on. That sweep is due
+    # at the tick itself, not on a minute, and it is the schedule's, not a
+    # delivery's, so it is left out. The profile's own sweep is retired as if it
+    # had run, or it would hold the pastes' minute and they would queue nothing.
+    scored.drain()
+    with open_unit_of_work(scored.c.owner) as uow:
+        uow.connection.execute(
+            update(job)
+            .where(job.c.kind == SCORE_JOB_KIND, job.c.state == "queued")
+            .values(state="succeeded", finished_at=datetime.now(UTC))
+        )
+        uow.commit()
     before = {r["id"] for r in queued_sweeps(scored.i)}
     for posting in ("~02100", "~02101", "~02102"):
         scored.paste(posting, FULL.format(title=posting, what="pipeline", activity=""))
     added = [r for r in queued_sweeps(scored.i) if r["id"] not in before]
     assert added
-    # Three pastes, one sweep per due minute. The pastes may straddle a minute
-    # boundary on a slow runner, and the drain may then run a due sweep that
-    # queues its own follow-up, so the count of rows is not fixed; what is fixed
-    # is that no due instant is queued twice.
+    # The pastes may straddle a minute boundary, so there can be two rows. What is
+    # fixed is that each lands on a minute and no minute is queued twice.
     instants = Counter(r["next_run_at"] for r in added)
     assert all(n == 1 for n in instants.values()), instants
+    assert all(at == at.replace(second=0, microsecond=0) for at in instants), instants
+
+
+def test_two_triggers_racing_for_one_minute_queue_one_sweep(scored: Scoring) -> None:
+    """Two transactions queue the same minute at once, say a delivery beside an
+    owner's retry. The interleaving is forced: the first holds its uncommitted row
+    until the second is seen waiting on the advisory lock, then commits; the second
+    must then find that row and insert nothing."""
+    now = (datetime.now(UTC) + timedelta(hours=1)).replace(second=30, microsecond=0)
+    due = now.replace(second=0) + timedelta(minutes=1)
+    queued, release = threading.Event(), threading.Event()
+    second_pid: list[int] = []
+    errors: list[BaseException] = []
+
+    def first() -> None:
+        try:
+            with open_unit_of_work(scored.c.owner) as uow:
+                scoring.queue_sweep(uow, scored.i.workspace, now=now)
+                queued.set()
+                assert release.wait(10)
+                uow.commit()
+        except BaseException as exc:
+            errors.append(exc)
+            queued.set()
+
+    def second() -> None:
+        try:
+            with open_unit_of_work(scored.c.owner) as uow:
+                second_pid.append(
+                    uow.connection.execute(text("select pg_backend_pid()")).scalar_one()
+                )
+                scoring.queue_sweep(uow, scored.i.workspace, now=now)
+                uow.commit()
+        except BaseException as exc:
+            errors.append(exc)
+
+    a = threading.Thread(target=first)
+    a.start()
+    assert queued.wait(10)
+    b = threading.Thread(target=second)
+    b.start()
+    waited = False
+    deadline = time.monotonic() + 10
+    while b.is_alive() and time.monotonic() < deadline:
+        if second_pid:
+            with open_unit_of_work(scored.c.owner) as uow:
+                waited = bool(
+                    uow.connection.execute(
+                        text(
+                            "select count(*) from pg_locks where pid = :pid"
+                            " and locktype = 'advisory' and not granted"
+                        ),
+                        {"pid": second_pid[0]},
+                    ).scalar_one()
+                )
+            if waited:
+                break
+        time.sleep(0.01)
+    release.set()
+    a.join(10)
+    b.join(10)
+    assert not errors, errors
+    assert [r["next_run_at"] for r in queued_sweeps(scored.i)].count(due) == 1
+    assert waited, "the second enqueue never waited on the first one's lock"
 
 
 def test_without_a_profile_nothing_is_scored(scored: Scoring) -> None:
