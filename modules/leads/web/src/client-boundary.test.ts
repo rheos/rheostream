@@ -58,6 +58,7 @@ describe("the server/client boundary", () => {
       "proposal-workflow",
       "queue-view",
       "review-view",
+      "scoring-view",
     ]);
   });
   it("reads every import and re-export form", () => {

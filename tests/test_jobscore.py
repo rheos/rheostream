@@ -3,7 +3,8 @@ the digest that decides a rescore, and one assessment through a fake runner. No
 database. Every profile, policy and posting here is synthetic."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -15,6 +16,7 @@ from rheo_core.runtime.oneshot import (
     OneShotDeferred,
     OneShotFailed,
 )
+from rheo_leads.model_calls import Call
 from rheo_leads.scoring import tier2
 from rheo_leads.scoring.job import (
     ASSESSMENT_INVALID,
@@ -596,3 +598,58 @@ def test_an_account_or_deployment_failure_pauses_instead_of_counting(
 def test_a_login_owned_by_another_account_pauses() -> None:
     paused, _ = run(FakeRunner(error=OneShotCredentialNotOwned("x")), established())
     assert paused.deferred == "credential_not_owned"
+
+
+# --- the model call log's view of one assessment ----------------------------------
+
+
+class RecordingTracker:
+    """Stands in for the call log: what each tracked call reported."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Call]] = []
+
+    @contextmanager
+    def call(
+        self, purpose: str, model_id_key: str, defers: Any = None
+    ) -> Iterator[Call]:
+        reported = Call()
+        self.calls.append((purpose, model_id_key, reported))
+        yield reported
+
+
+class UsageRunner(FakeRunner):
+    def run(self, **kwargs: Any) -> Mapping[str, object]:
+        kwargs["on_usage"](900, 120)
+        return super().run(**kwargs)
+
+
+def tracked(runner: Any, job: JobFacts) -> tuple[Outcome, RecordingTracker]:
+    tracker = RecordingTracker()
+    outcome = assess(
+        job,
+        STORED,
+        runner=runner,
+        workspace_id=WORKSPACE,
+        heartbeat=lambda: None,
+        track=tracker,  # type: ignore[arg-type]
+    )
+    return outcome, tracker
+
+
+def test_a_model_call_reports_its_tokens_and_a_held_job_makes_none() -> None:
+    outcome, tracker = tracked(UsageRunner(answer(score=8)), established())
+    assert outcome.score == 80
+    [(purpose, key, reported)] = tracker.calls
+    assert (purpose, key) == ("scoring", "leads.scoring.model_id")
+    assert (reported.input_tokens, reported.output_tokens) == (900, 120)
+    assert reported.unusable_kind is None
+    _, none = tracked(UsageRunner(answer()), established(client_rating=Decimal("3.1")))
+    assert none.calls == []
+
+
+def test_an_answer_that_fails_its_checks_is_logged_as_unusable() -> None:
+    outcome, tracker = tracked(FakeRunner(answer(score=42)), established())
+    assert outcome.failure == ASSESSMENT_INVALID
+    [(_, _, reported)] = tracker.calls
+    assert reported.unusable_kind == ASSESSMENT_INVALID

@@ -74,6 +74,7 @@ from sqlalchemy import and_, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import StatementError
 
+from rheo_leads import model_calls
 from rheo_leads import pipeline_common as h
 from rheo_leads.references import ref
 from rheo_leads.scoring import tier2
@@ -401,7 +402,13 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
     uow.connection.execute(
         update(state)
         .where(state.c.opportunity_id == row["opportunity_id"])
-        .values(attempts=attempts, retry_after=now + window, updated_at=now)
+        # In progress: the previous attempt's failure word no longer describes it.
+        .values(
+            attempts=attempts,
+            retry_after=now + window,
+            failure_kind=None,
+            updated_at=now,
+        )
     )
     record = h.row(uow, o, row["opportunity_id"])
     rubric = (
@@ -479,11 +486,15 @@ def _held(job: JobFacts, decided: Tier1Result) -> Outcome:
     )
 
 
+UNDESCRIBED_LINE: Final = "Not scored: the posting's full description is missing."
+"""The first line of an assessment that waits for the full posting."""
+
+
 def _undescribed(job: JobFacts) -> Outcome:
     return Outcome(
         fit="needs_information",
         lines=(
-            "Not scored: the posting's full description is missing.",
+            UNDESCRIBED_LINE,
             "Paste the full posting on this job to score it.",
         ),
         completeness=_completeness(job),
@@ -501,9 +512,10 @@ def assess(
     workspace_id: UUID,
     heartbeat: Callable[[], None],
     promoted: bool = False,
+    track: model_calls.CallTracker = model_calls.NO_TRACKING,
 ) -> Outcome:
     """Tier 1, then the model for a job tier 1 lets through (or the owner promoted)
-    with a description."""
+    with a description. ``track`` records the model call in the call log."""
     decided = run_tier1(job, profile.policy.tier1)
     if not decided.passed and not promoted:
         return _held(job, decided)
@@ -519,23 +531,33 @@ def assess(
     text = tier2.source_text(job)
     catalog = tier2.evidence_catalog(profile.profile, profile.policy)
     failure: str | None = None
-    answer: Mapping[str, object] | None = None
+    rendered: tier2.Rendered | None = None
     try:
-        answer = runner.run(
-            workspace_id=workspace_id,
-            account_id=profile.scoring_account_id,
-            purpose=ContextPurpose.INTERNAL_ANALYSIS,
-            task=tier2.build_task(
-                job,
-                profile=profile.profile,
-                policy=profile.policy,
-                new_client=decided.new_client,
-            ),
-            json_schema=tier2.response_schema(catalog, tier2.job_excerpts(text)),
-            model_id_key=MODEL_ID_KEY,
-            scratch_subdir=SCRATCH_SUBDIR,
-            heartbeat=heartbeat,
-        )
+        with track.call(
+            model_calls.SCORING,
+            MODEL_ID_KEY,
+            defers=lambda kind: kind not in JOB_FAILURES,
+        ) as call:
+            answer = runner.run(
+                workspace_id=workspace_id,
+                account_id=profile.scoring_account_id,
+                purpose=ContextPurpose.INTERNAL_ANALYSIS,
+                task=tier2.build_task(
+                    job,
+                    profile=profile.profile,
+                    policy=profile.policy,
+                    new_client=decided.new_client,
+                ),
+                json_schema=tier2.response_schema(catalog, tier2.job_excerpts(text)),
+                model_id_key=MODEL_ID_KEY,
+                scratch_subdir=SCRATCH_SUBDIR,
+                heartbeat=heartbeat,
+                on_usage=call.usage,
+            )
+            try:
+                rendered = tier2.render_assessment(answer, text, catalog, job)
+            except ValueError:
+                call.unusable(ASSESSMENT_INVALID)
     except OneShotDeferred:
         return Outcome(deferred=USAGE_LIMITED)
     except OneShotFailed as exc:
@@ -546,9 +568,7 @@ def assess(
         if failure in JOB_FAILURES:
             return Outcome(failure=failure)
         return Outcome(deferred=failure)
-    try:
-        rendered = tier2.render_assessment(answer, text, catalog, job)
-    except ValueError:
+    if rendered is None:
         return Outcome(failure=ASSESSMENT_INVALID)
     lines = (*rendered.lines, *decided.soft)
     uncertainty = (
@@ -822,6 +842,7 @@ def _sweep(
             workspace_id=ctx.workspace_id,
             heartbeat=token.checkpoint,
             promoted=claimed.promoted,
+            track=model_calls.Tracker(ctx, claimed.opportunity_id, hooks.clock),
         )
         token.checkpoint(force=True)
         now = hooks.clock()
