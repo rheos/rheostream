@@ -1050,7 +1050,7 @@ export async function detail({ shell, query }: ScreenProps) {
         <Failure outcome={result} />
       ) : (
         <RecordFor
-          job={job !== undefined}
+          job={record.preset_id === JOBSEARCH_PRESET_ID}
           shell={shell}
           record={record}
           base={base}

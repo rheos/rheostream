@@ -338,6 +338,28 @@ describe("the pricing tab", () => {
     expect(host.textContent).not.toContain("Renamed");
     expect(host.textContent).toContain("Not saved: Milestones are already being prepared.");
   });
+    it("reverts only the field whose save failed", async () => {
+    const submit = vi
+      .fn()
+      .mockResolvedValueOnce(refused("pricing_in_progress"))
+      .mockImplementationOnce(async (_name: string, input: Row) =>
+        ok(priced({ milestones: [{ ...MILESTONE, description: String(input.description) }] })),
+      );
+    mount({ submit, proposal: priced() });
+    await click(button("Edit: Discovery"));
+    const title = host.querySelector<HTMLInputElement>('input[aria-label="Milestone title"]')!;
+    type(title, "Renamed");
+    await blur(title);
+    const text = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Milestone description"]')!;
+    type(text, "Read the code.");
+    await blur(text);
+    await click(button("Done"));
+    const card = host.querySelector('article[aria-label^="Milestone"]')!;
+    // The refused title is back to the stored one; the saved description stays.
+    expect(card.querySelector("h3")?.textContent).toBe("Discovery");
+    expect(card.textContent).toContain("Read the code.");
+    expect(card.textContent).toContain("Not saved: Milestones are already being prepared.");
+  });
     it("clears a due date on the server too", async () => {
     const submit = vi.fn().mockResolvedValue(ok(priced({ milestones: [{ ...MILESTONE, due_on: null }] })));
     mount({ submit, proposal: priced() });

@@ -73,7 +73,30 @@ describe("the modal form (#418)", () => {
     expect(dialog().open).toBe(false);
   });
 
-  it("closes from its Close button", () => {
+  it("never lets a save from an earlier opening close a reopened dialog", async () => {
+    let finish: (value: unknown) => void = () => {};
+    const submit = vi.fn(() => new Promise((resolve) => (finish = resolve)));
+    mount(submit);
+    const open = () =>
+      Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Add note")!;
+    act(() => open().click());
+    await act(async () => {
+      const text = host.querySelector("textarea")!;
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(
+        text,
+        "First.",
+      );
+      text.dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+    await act(async () => host.querySelector("form")!.requestSubmit());
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click());
+    act(() => open().click());
+    expect(dialog().open).toBe(true);
+    await act(async () => finish({ state: "ok", result: {} }));
+    expect(dialog().open).toBe(true);
+  });
+
+    it("closes from its Close button", () => {
     mount(vi.fn());
     act(() =>
       Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Add note")!.click(),

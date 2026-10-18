@@ -21,6 +21,9 @@ export function ModalForm({
   const heading = useId();
   // A fresh form each time it opens, so a saved entry never reappears.
   const [round, setRound] = useState(0);
+  // The opening a save belongs to: a save still pending from an earlier
+  // opening must not close the dialog once it has been reopened.
+  const opened = useRef(0);
   // Once the fresh form is in, straight to its first field, not Close.
   useEffect(() => {
     if (round)
@@ -35,7 +38,8 @@ export function ModalForm({
         type="button"
         className={styles.textButton}
         onClick={() => {
-          setRound((n) => n + 1);
+          opened.current = round + 1;
+          setRound(round + 1);
           dialog.current?.showModal();
         }}
       >
@@ -75,7 +79,8 @@ export function ModalForm({
           key={round}
           {...form}
           onResult={(shown) => {
-            if (shown.state === "ok") dialog.current?.close();
+            if (shown.state === "ok" && opened.current === round)
+              dialog.current?.close();
           }}
         />
       </dialog>

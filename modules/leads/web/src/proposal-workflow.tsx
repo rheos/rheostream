@@ -1185,6 +1185,9 @@ function MilestoneCard(props: {
   const [dueOn, setDueOn] = useState(m.dueOn);
   const [description, setDescription] = useState(m.description);
   const [problem, setProblem] = useState("");
+  // The fields whose last save failed: only these go back to the stored value
+  // when the fields close, so a newer save of another field is never undone.
+  const failed = useRef(new Set<string>());
   const edit = useRef<HTMLButtonElement | null>(null);
   const wasEditing = useRef(false);
   // Leaving the fields puts focus back on the Edit button that opened them.
@@ -1193,34 +1196,45 @@ function MilestoneCard(props: {
     wasEditing.current = editing;
   }, [editing]);
 
-  /** Every field back to what the server holds. */
-  function revert() {
-    setTitle(m.title);
-    setAmount(m.amount);
-    setDueOn(m.dueOn);
-    setDescription(m.description);
+  /** A field whose save failed, back to what the server holds. */
+  function revert(field: string) {
+    if (field === "title") setTitle(m.title);
+    else if (field === "amount") setAmount(m.amount);
+    else if (field === "due_on") setDueOn(m.dueOn);
+    else if (field === "description") setDescription(m.description);
   }
 
   async function save(field: string, value: string, saved: string) {
-    if (value === saved) return;
+    if (value === saved) {
+      // Back to the stored value: nothing of this field is unsaved now.
+      failed.current.delete(field);
+      if (!failed.current.size) setProblem("");
+      return;
+    }
     if (field === "title" && !value.trim()) {
+      failed.current.add(field);
       setProblem("A milestone needs a title.");
       return;
     }
     if (field === "amount" && !(Number(value) >= 0 && value.trim() !== "")) {
+      failed.current.add(field);
       setProblem("The amount must be a number of zero or more.");
       return;
     }
-    setProblem("");
     // A cleared due date is sent as no date, so the server forgets it too.
     const message = await props.onSave({
       [field]: field === "due_on" && !value ? null : value,
     });
-    if (!message) return;
+    if (!message) {
+      failed.current.delete(field);
+      if (!failed.current.size) setProblem("");
+      return;
+    }
+    failed.current.add(field);
     setProblem(`Not saved: ${message}`);
     // A save that fails after the fields closed must not leave its text
     // showing as if it were saved.
-    if (!wasEditing.current) revert();
+    if (!wasEditing.current) revert(field);
   }
 
   const problemLine = problem ? (
@@ -1319,7 +1333,7 @@ function MilestoneCard(props: {
           className={styles.ghost}
           onClick={() => {
             // Unsaved text goes back to the stored value; the reason stays.
-            if (problem) revert();
+            for (const field of failed.current) revert(field);
             setEditing(false);
           }}
         >
