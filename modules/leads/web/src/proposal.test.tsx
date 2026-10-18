@@ -211,6 +211,9 @@ describe("the proposal workflow", () => {
     // The answer has a library match; the cover letter never gets library tools.
     expect(html.match(/Use the saved library answer/g)).toHaveLength(2);
     expect(html).toContain("Save this answer to the library");
+    // The text stays readable; a separate Edit button opens it.
+    expect(html).toContain('aria-label="Edit: What is your rate?"');
+    expect(html).not.toContain('role="button"');
     expect(html).toContain(">Edited<");
     expect(html).toContain("Copy the whole draft");
     expect(html).toContain("Delete draft");

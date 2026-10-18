@@ -120,6 +120,7 @@ export function ProposalWorkflow(props: WorkflowProps) {
               role="tab"
               aria-selected={selected}
               aria-controls={`stage-panel-${id}`}
+              aria-label={`${STAGE_LABELS[id]}: ${words[id]}`}
               tabIndex={selected ? 0 : -1}
               className={`${styles.tab}${selected ? ` ${styles.tabActive}` : ""}`}
               onClick={() => select(id)}
@@ -362,7 +363,7 @@ function ProposalPanel(props: {
         <div className={styles.confirm} role="alertdialog" aria-label="Replace edited sections">
           <p>{refusalCopy("draft_edited")} Draft again anyway?</p>
           <div className={styles.actions}>
-            <button type="button" className={styles.primary} onClick={() => draft(true)}>
+            <button type="button" className={styles.primary} onClick={() => draft(true)} autoFocus>
               Replace my edits
             </button>
             <button type="button" className={styles.ghost} onClick={() => setConfirmForce(false)}>
@@ -375,10 +376,11 @@ function ProposalPanel(props: {
         <div className={styles.confirm} role="alertdialog" aria-label="Delete the draft">
           <p>Delete this draft? The screening questions stay.</p>
           <div className={styles.actions}>
+            {/* Focus lands on the safe choice. */}
             <button type="button" className={styles.danger} onClick={remove}>
               Delete the draft
             </button>
-            <button type="button" className={styles.ghost} onClick={() => setConfirmDelete(false)}>
+            <button type="button" className={styles.ghost} onClick={() => setConfirmDelete(false)} autoFocus>
               Cancel
             </button>
           </div>
@@ -513,6 +515,15 @@ function BookIcon() {
   );
 }
 
+function EditIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
 function SaveIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -557,6 +568,18 @@ function AnswerCard(props: {
             <span className={styles.badge}>From the library</span>
           ) : part.edited ? (
             <span className={styles.badge}>Edited</span>
+          ) : null}
+          {!editing ? (
+            <button
+              type="button"
+              className={styles.iconButton}
+              onClick={() => setEditing(true)}
+              disabled={props.disabled}
+              aria-label={`Edit: ${part.label}`}
+              title="Edit"
+            >
+              <EditIcon />
+            </button>
           ) : null}
           {answer && part.libraryMatch ? (
             <button
@@ -606,19 +629,12 @@ function AnswerCard(props: {
           }}
         />
       ) : (
+        // Plain text for every reader; a click edits it too, and the Edit button
+        // is the keyboard's way in.
         <div
           className={styles.cardRead}
-          role="button"
-          tabIndex={0}
-          aria-label={`${part.label}. Press Enter to edit.`}
           title="Click to edit"
           onClick={() => !props.disabled && setEditing(true)}
-          onKeyDown={(event) => {
-            if (!props.disabled && (event.key === "Enter" || event.key === " ")) {
-              event.preventDefault();
-              setEditing(true);
-            }
-          }}
         >
           {text || <span className={styles.empty}>No answer yet. Click to add one.</span>}
         </div>
