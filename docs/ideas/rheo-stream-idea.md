@@ -1952,6 +1952,18 @@ The following changes are recorded here.
     Migration `0011_job_scoring` adds the nullable score and the profile and scoring
     state tables.
 
+22. **Proposals are drafts from a profile kept as workspace data.** Recorded on
+    2026-10-17 against issue #393. Each workspace's proposal profile (the candidate's
+    application evidence and a writing policy: notes, example letters, vouched
+    anecdotes, platform notes) is Leads data set by an owner operation and exported
+    with Leads; only the generic drafting rules ship in the repository. A draft is
+    stored as sections, the cover letter and one answer per screening question, with
+    the findings of an accuracy check against the profile and a style lint beside it.
+    Every proposal operation is draft-class: nothing is ever submitted. A regenerate
+    never overwrites a hand-edited or library-filled section without force, and a
+    usage limit defers a draft without counting an attempt. Migration
+    `0012_job_proposals` adds the profile, proposal, section and answer library tables.
+
 ### Website intake implementation clarification (2026-10-09)
 
 Signed website event identity comes from the signed body (`event_id`) or its exact-byte

@@ -225,6 +225,59 @@ jobs and every job without a score yet, so changed thresholds apply to held jobs
 projects and quote the recorded experience boundaries they cite, and those reasons
 sit on the job's qualification record, which every workspace member can read.
 
+## Job proposals
+
+A Job search opportunity can have a draft application: a cover letter and one answer
+per screening question, kept as separate sections because an application form takes
+each separately. Every proposal operation prepares text; none sends anything. Submitting
+is always yours, on the platform.
+
+**The proposal profile.** Drafting needs an owner to set the workspace's proposal
+profile with `leads.proposalprofile.set`: the candidate's evidence for applications as
+plain text (projects as `- Name (link): text` lines, capability areas, links) and a
+policy: writing notes the drafter must follow (which project a tool belongs to, which
+links to give), example letters to learn editorial moves from, vouched anecdotes it may
+tell when a posting asks for a story, per-platform notes, and extra named terms the
+accuracy check accepts. Like the scoring profile it is the workspace's own data: no
+package ships one, it is exported with Leads, and no log line or audit record carries
+its text. Drafts run on the model login of the owner who set it.
+
+**Asking for a draft.** `leads.jobproposal.request` queues one, optionally with the
+screening questions (one per line). A worker sweep (`leads.jobsearch_propose`) drafts
+it in four stages that `leads.jobproposal.get` reports while it runs: **Analysis** reads
+the posting against the full profile (what the client is hiring for, the angle, the
+opening, firm requirements, gaps, story asks, embedded questions); **Drafting** writes
+the letter and answers; **Checking** extracts what the draft claims and checks each
+named tool, each property tied to a project, and each narrated incident against the
+profile and the offered anecdotes, with one corrective redraft when something is
+flagged; **Tidying** runs a style lint and one repair pass, kept only when it leaves
+fewer findings. The posting is untrusted source material. When no questions were
+entered, items the posting asks applicants to include become the questions.
+`leads.proposals.model_id` picks the model for the letter and its repair, and
+`leads.proposals.analysis_model_id` the one for the analysis and the check (empty uses
+the CLI's default).
+
+**Reading and editing.** `leads.jobproposal.get` returns the state, progress,
+questions, sections, the whole draft as text, and the findings (accuracy, style, and
+the analysis). `leads.proposalsection.set` edits one section and
+`leads.jobproposal.update` replaces the whole draft from its text form (a text without
+a `---` divider replaces only the letter). A new request refuses `draft_edited` when a
+section was edited or taken from the library since the last draft, unless `force` is
+set. `leads.jobproposal.delete` removes the draft, keeps the questions, and stops a
+draft that is queued or running.
+
+**The answer library.** `leads.answerlibrary.save` keeps an answer under its question,
+normalised (case, spacing and surrounding punctuation), so one question has one entry.
+`leads.answerlibrary.match` finds one, each section in `leads.jobproposal.get` names a
+matching entry when there is one, and `leads.proposalsection.use_library` puts it into
+the section.
+
+**Failures.** A usage limit, a refused login or a missing runtime makes every queued
+draft wait 15 minutes without spending an attempt. An unusable answer or a run past its
+deadline retries with backoff, and the third attempt marks the proposal failed with its
+reason; requesting it again starts over. Deleting the evidence an opportunity rests on
+removes its proposal, since a proposal quotes the posting.
+
 ## Dated next follow-up
 
 Each opportunity has at most one pending reminder, owned by Leads. Call
