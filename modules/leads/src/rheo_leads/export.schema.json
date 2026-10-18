@@ -3280,6 +3280,44 @@
         "updated_at"
       ],
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.job_promotion"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "promoted_by_kind": {
+          "type": "string"
+        },
+        "promoted_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "promoted_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "opportunity_id",
+        "promoted_by_kind",
+        "promoted_by_id",
+        "promoted_at"
+      ],
+      "additionalProperties": false
     }
   ]
 }

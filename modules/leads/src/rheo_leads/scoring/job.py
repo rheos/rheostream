@@ -25,6 +25,11 @@ backoff, and the fifth attempt records a ``needs_information`` assessment that s
 scoring failed. Setting the profile again puts failed and unscored jobs back in line
 (:func:`repend_unscored`). A job never simply disappears from the queue.
 
+**Promoted jobs.** A job the owner promoted from the review queue
+(``job_promotion``) is not held by tier 1: it goes to the model like a job that
+passed, and the clauses that would have held it are kept on its assessment as
+conditions to check. The promotion is its own row, so it outlives every rescore.
+
 **Content-free.** Log lines carry counts and fixed failure words, and a database
 error leaves as a fixed word. The profile text reaches the model's stdin, and a
 score's reasons quote what they cite from it (project names and recorded experience
@@ -179,6 +184,7 @@ class Claimed:
     rubric_version: int
     evidence_digest: str
     observation_refs: tuple[str, ...]
+    promoted: bool = False
 
 
 @dataclass(frozen=True)
@@ -310,7 +316,8 @@ def _open_jobs() -> Any:
     )
 
 
-def _fields(uow: UnitOfWork, ids: list[UUID]) -> dict[UUID, dict[str, str]]:
+def read_fields(uow: UnitOfWork, ids: list[UUID]) -> dict[UUID, dict[str, str]]:
+    """The scoring inputs of these opportunities, by target."""
     state = p.opportunity_field_state
     found: dict[UUID, dict[str, str]] = {i: {} for i in ids}
     if not ids:
@@ -331,7 +338,7 @@ def _fields(uow: UnitOfWork, ids: list[UUID]) -> dict[UUID, dict[str, str]]:
 def refresh(uow: UnitOfWork, *, cap: int, now: datetime) -> int:
     """Make every open job whose inputs are new or moved ``pending``; the count."""
     jobs = {r.id: r.title for r in uow.connection.execute(_open_jobs())}
-    fields = _fields(uow, list(jobs))
+    fields = read_fields(uow, list(jobs))
     known = {
         r.opportunity_id: r.input_digest
         for r in uow.connection.execute(
@@ -419,13 +426,27 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
         digest=row["input_digest"],
         attempts=attempts,
         title=record["title"],
-        fields=_fields(uow, [record["id"]])[record["id"]],
+        fields=read_fields(uow, [record["id"]])[record["id"]],
         revision=record["revision"],
         preset_version=record["preset_version"],
         rubric_slug=rubric["rubric_slug"],
         rubric_version=rubric["rubric_version"],
         evidence_digest=h.evidence_digest(uow, record),
         observation_refs=tuple(ref("observation", i) for i in observations),
+        promoted=promoted(uow, record["id"]),
+    )
+
+
+def promoted(uow: UnitOfWork, opportunity_id: UUID) -> bool:
+    """Whether the owner promoted this job past the client filters."""
+    table = s.job_promotion
+    return (
+        uow.connection.execute(
+            select(table.c.opportunity_id).where(
+                table.c.opportunity_id == opportunity_id
+            )
+        ).one_or_none()
+        is not None
     )
 
 
@@ -445,10 +466,14 @@ def _completeness(job: JobFacts) -> str:
     return "high" if known >= 6 else "medium" if known >= 4 else "low"
 
 
+HELD_LINE: Final = "Held back by the client filters before scoring."
+"""The first line of every tier-1 hold's explanation; the review queue reads it."""
+
+
 def _held(job: JobFacts, decided: Tier1Result) -> Outcome:
     return Outcome(
         fit="low",
-        lines=("Held back by the client filters before scoring.", *decided.failed),
+        lines=(HELD_LINE, *decided.failed),
         uncertainty="low",
         completeness=_completeness(job),
     )
@@ -465,6 +490,9 @@ def _undescribed(job: JobFacts) -> Outcome:
     )
 
 
+PROMOTED_LINE: Final = "Promoted past the client filters by the owner."
+
+
 def assess(
     job: JobFacts,
     profile: StoredProfile,
@@ -472,11 +500,18 @@ def assess(
     runner: OneShotRunner | None,
     workspace_id: UUID,
     heartbeat: Callable[[], None],
+    promoted: bool = False,
 ) -> Outcome:
-    """Tier 1, then the model for a job tier 1 lets through with a description."""
+    """Tier 1, then the model for a job tier 1 lets through (or the owner promoted)
+    with a description."""
     decided = run_tier1(job, profile.policy.tier1)
-    if not decided.passed:
+    if not decided.passed and not promoted:
         return _held(job, decided)
+    if not decided.passed:
+        # The owner's override: the failed clauses become conditions to check.
+        decided = Tier1Result(
+            soft=(PROMOTED_LINE, *decided.failed), new_client=decided.new_client
+        )
     if job.description is None:
         return _undescribed(job)
     if runner is None:
@@ -551,7 +586,9 @@ def record(
     now: datetime,
 ) -> bool:
     """Write the outcome; ``False`` when the job's inputs moved while it was scored
-    (the refresh made it pending again, and its next claim scores the new inputs)."""
+    (the refresh made it pending again, and its next claim scores the new inputs),
+    or when the owner promoted it after the claim (the promotion made it pending,
+    and its next claim scores it past the filters)."""
     state = s.job_score_state
     current = uow.connection.execute(
         select(state.c.input_digest, state.c.attempts)
@@ -559,6 +596,8 @@ def record(
         .with_for_update()
     ).one_or_none()
     if current is None or current.input_digest != claimed.digest:
+        return False
+    if not claimed.promoted and promoted(uow, claimed.opportunity_id):
         return False
     if outcome.deferred:
         # The cause is the account's, so every claimable job waits with this one,
@@ -782,6 +821,7 @@ def _sweep(
             runner=runner,
             workspace_id=ctx.workspace_id,
             heartbeat=token.checkpoint,
+            promoted=claimed.promoted,
         )
         token.checkpoint(force=True)
         now = hooks.clock()

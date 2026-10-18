@@ -1239,6 +1239,10 @@ JOBSEARCH_TABLES = (
 )
 
 
+def _undo_0014(connection: Any) -> None:
+    connection.execute(text("DROP TABLE leads.job_promotion"))
+
+
 def _undo_0013(connection: Any) -> None:
     connection.execute(text("DROP TABLE leads.proposal_milestone"))
     connection.execute(text("DROP TABLE leads.job_pricing"))
@@ -1327,6 +1331,7 @@ def _undo_0005(connection: Any) -> None:
 # Newest first. Each step undoes one frozen Leads migration on a disposable
 # workspace that started at head, so a test can rebuild an exact predecessor.
 LEADS_REVISIONS = (
+    ("0014_job_promotion", _undo_0014),
     ("0013_job_pricing", _undo_0013),
     ("0012_job_proposals", _undo_0012),
     ("0011_job_scoring", _undo_0011),
@@ -1559,6 +1564,7 @@ def test_attach_by_field_survives_frozen_upgrade(intake: Intake) -> None:
     setup(intake)
     with open_unit_of_work(intake.ctx) as uow:
         assert rewind_leads(uow.connection, "0007_jobsearch_preset") == (
+            "0014_job_promotion",
             "0013_job_pricing",
             "0012_job_proposals",
             "0011_job_scoring",

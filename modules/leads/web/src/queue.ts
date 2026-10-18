@@ -3,7 +3,7 @@
  * becomes a pill, and how filters, sorting, saved preferences and an optimistic
  * dismiss behave. Kept apart from the components so each rule is tested alone.
  */
-import { row, str, type Row } from "./data";
+import { row, rows, str, type Row } from "./data";
 
 /** Above this many proposals a posting is crowded: the chip hides it and the
  * detail header warns. */
@@ -328,4 +328,30 @@ export function afterDismiss(items: Row[], id: string, stage: string): Row[] {
     { stage_id: str(to.stage_id), label: str(to.label), kind: "terminal" },
     stage,
   );
+}
+
+/** A held job's clause, as the review card's badge names it. */
+const HOLD_LABELS: Record<string, string> = {
+  payment_unverified: "Payment unverified",
+  low_spend: "Low client spend",
+  low_rating: "Low client rating",
+  low_hire_rate: "Low hire rate",
+  high_proposals: "Too many proposals",
+};
+export interface Hold {
+  code: string;
+  label: string;
+  text: string;
+}
+/** The clauses that held a job, from the review queue's ``hold`` list. */
+export function holdsOf(item: Row): Hold[] {
+  return rows(item.hold).map((h) => ({
+    code: str(h.code),
+    label: HOLD_LABELS[str(h.code)] ?? "Held by the filters",
+    text: str(h.text),
+  }));
+}
+/** The review list after a promote or a dismiss: that card leaves it. */
+export function without(items: Row[], id: string): Row[] {
+  return items.filter((item) => str(item.id) !== id);
 }

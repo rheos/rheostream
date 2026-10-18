@@ -6,12 +6,14 @@ import {
   detail,
   queue,
   receipt,
+  review,
 } from "./screens";
 import { ActionForm } from "./action-form";
 const list = (props: ScreenProps) => overview(props, false);
 const board = (props: ScreenProps) => overview(props, true);
 export const screens = {
   queue,
+  review,
   list,
   board,
   capture,

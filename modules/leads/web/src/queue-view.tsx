@@ -213,7 +213,7 @@ function Badges({ item, pipeline }: { item: Row; pipeline?: string }) {
 }
 
 /** Budget · proposals · spend · rating · contact · age, each only when known. */
-function Meta({
+export function Meta({
   item,
   now,
   detail = false,
@@ -261,17 +261,22 @@ export interface Move {
 }
 
 /** The stage select, the open-the-posting link, the optional ID copy and Dismiss:
- * one row of controls for the queue card and the job detail header alike. */
+ * one row of controls for the queue card, the review card and the job detail
+ * header alike. ``lead`` goes first in the row (the review card's Promote). */
 export function StageActions({
   item,
   onMove,
   copyId = false,
   disabled = false,
+  stageSelect = true,
+  lead,
 }: {
   item: Row;
   onMove?: (item: Row, to: Move) => void;
   copyId?: boolean;
   disabled?: boolean;
+  stageSelect?: boolean;
+  lead?: ReactNode;
 }) {
   const title = str(item.title) || "Untitled opportunity";
   const posting = postingUrl(row(item.fields));
@@ -285,7 +290,8 @@ export function StageActions({
   );
   return (
     <div className={styles.actions}>
-      {onMove && next.length ? (
+      {lead}
+      {stageSelect && onMove && next.length ? (
         <select
           className={styles.stageSelect}
           aria-label={`Stage for ${title}`}

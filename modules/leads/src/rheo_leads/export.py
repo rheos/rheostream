@@ -1,13 +1,14 @@
-"""Version-ten intake, pipeline, job feed, job scoring, proposal and pricing snapshot;
-restore preserves identities.
+"""Version-eleven intake, pipeline, job feed, job scoring, review, proposal and pricing
+snapshot; restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. The job feed connection is exported
 without its token reference, its registered client, its run claim and its backoff,
 and the pending authorization is never exported; a restored collector needs the
 owner to reconnect, which registers a fresh client. The job-search profile and each
-job's scoring state are exported whole; a restored scoring schedule stays off until
-the owner sets the profile again. The proposal profile, each job's proposal with its
+job's scoring state are exported whole, and so are the owner's promotions from the
+review queue; a restored scoring schedule stays off until the owner sets the profile
+again. The proposal profile, each job's proposal with its
 sections, its pricing and milestones, and the answer library are exported whole; a
 proposal or pricing request that was queued or running is restored as failed, since its
 sweep did not come with it. Restore

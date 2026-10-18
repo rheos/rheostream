@@ -9,6 +9,10 @@ it to. Sorting by score (then fit) and hiding crowded postings happen here, befo
 the limit,
 so the first page is the right one. Contact points, notes,
 draft bodies and full messages stay behind ``leads.opportunity.get``.
+
+With ``held_only`` it is the review queue: Job search jobs the client filters hold
+back and nobody promoted, each with a ``hold`` list of the clauses that held it
+(:mod:`rheo_leads.scoring.review`).
 """
 
 from typing import Any, Literal
@@ -29,6 +33,7 @@ from sqlalchemy import Integer, and_, case, cast, exists, select
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
 from rheo_leads.references import ref
+from rheo_leads.scoring import review
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import proposals
 from rheo_leads.storage import tables as t
@@ -66,8 +71,9 @@ DISMISS_OUTCOMES = ("disqualified", "lost")
 class QueueInput(c.Strict):
     """Without ``ref``: open stages unless a stage or closed ones are asked for,
     by latest score, then fit, then newest (``sort="score"``) or newest only,
-    optionally without postings above the proposal cap. With ``ref``: that one
-    opportunity, whatever its stage or count."""
+    optionally without postings above the proposal cap, or only the Job search jobs
+    the client filters hold (``held_only``, the review queue). With ``ref``: that
+    one opportunity, whatever its stage or count."""
 
     ref: c.OpportunityRef | None = None
     pipeline_id: UUID | None = None
@@ -76,6 +82,7 @@ class QueueInput(c.Strict):
     include_closed: bool = False
     sort: Literal["score", "newest"] = "newest"
     hide_full: bool = False
+    held_only: bool = False
     limit: int = Field(default=100, ge=1, le=200)
 
 
@@ -149,6 +156,14 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
             q = q.where(s.c.kind == "open")
         if m.hide_full:
             q = q.where(~_over_cap(o.c.id))
+        if m.held_only:
+            # Only open jobs are held: a closed one has nothing left to promote.
+            q = q.where(
+                s.c.kind == "open",
+                o.c.preset_id == h.JOBSEARCH_PRESET_ID,
+                review.is_held(o.c.id),
+                review.not_promoted(o.c.id),
+            )
     order = [o.c.created_at.desc(), o.c.id.desc()]
     if m.sort == "score":
         order[:0] = [
@@ -233,6 +248,15 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
     ).mappings():
         parties.setdefault(r["opportunity_id"], r["party_ref"])
     moves = _transitions(uow, records)
+    holds = (
+        review.hold_reasons(
+            uow,
+            records,
+            {i: _reasons(a["explanation"]) for i, a in assessments.items()},
+        )
+        if m.held_only
+        else {}
+    )
 
     def key(record: dict[str, Any]) -> tuple[UUID, int, str]:
         return (record["preset_id"], record["preset_version"], record["stage_id"])
@@ -284,6 +308,7 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                 "party": None if reference is None else _party(ctx, uow, reference),
                 "transitions": moves.get(key(record), {}).get("next", []),
                 "dismiss": moves.get(key(record), {}).get("dismiss"),
+                **({"hold": holds.get(identifier, [])} if m.held_only else {}),
             }
         )
     return c.ItemsOutput(items=items)

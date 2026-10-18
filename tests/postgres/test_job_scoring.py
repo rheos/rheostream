@@ -8,6 +8,7 @@ only the process is not. Every profile, posting and answer is synthetic.
 """
 
 import logging
+from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -467,11 +468,17 @@ def test_a_changed_description_is_rescored_and_an_unchanged_one_is_not(
 
 def test_a_processed_job_delivery_queues_one_sweep_a_minute(scored: Scoring) -> None:
     scored.set_profile()
-    before = len(queued_sweeps(scored.i))
+    before = {r["id"] for r in queued_sweeps(scored.i)}
     for posting in ("~02100", "~02101", "~02102"):
         scored.paste(posting, FULL.format(title=posting, what="pipeline", activity=""))
-    added = len(queued_sweeps(scored.i)) - before
-    assert 0 < added <= 2
+    added = [r for r in queued_sweeps(scored.i) if r["id"] not in before]
+    assert added
+    # Three pastes, one sweep per due minute. The pastes may straddle a minute
+    # boundary on a slow runner, and the drain may then run a due sweep that
+    # queues its own follow-up, so the count of rows is not fixed; what is fixed
+    # is that no due instant is queued twice.
+    instants = Counter(r["next_run_at"] for r in added)
+    assert all(n == 1 for n in instants.values()), instants
 
 
 def test_without_a_profile_nothing_is_scored(scored: Scoring) -> None:
