@@ -513,14 +513,15 @@ describe("queue rendering", () => {
         now={NOW}
       />,
     );
-    expect(html).toContain('aria-label="Why this score"');
+    expect(html).toContain('aria-label="Why this score, and the record details"');
     expect(html).toContain(">80<");
     expect(html).toMatch(/<p[^>]*>Fit: strong\. Economics: favorable\.<\/p>/);
     expect(html).toContain("<li>Candidate evidence to review: Example pipeline.</li>");
     expect(html).toContain("<li>Clarify scope and acceptance criteria.</li>");
-    // Without reasons the one-paragraph summary still shows.
+    // Without reasons the one-paragraph summary still shows, and the info
+    // button keeps only the record details.
     const plain = renderToStaticMarkup(<JobHeader item={full} now={NOW} />);
-    expect(plain).not.toContain("Why this score");
+    expect(plain).not.toContain("<li>");
     expect(plain).toContain("Strong synthetic match.");
   });
 });

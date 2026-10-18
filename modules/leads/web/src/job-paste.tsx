@@ -76,6 +76,9 @@ export function JobPaste({
   const [problem, setProblem] = useState("");
   const [outcome, setOutcome] = useState<OperationOutcome | null>(null);
   const [pending, startTransition] = useTransition();
+  // A job's own page already knows the posting's link: no field to fill.
+  const linkKnown =
+    kinds.length === 1 && kinds[0] === "posting" && postingUrl.trim() !== "";
   const warnings =
     outcome?.state === "ok"
       ? (row(outcome.result).warnings as unknown[] | undefined)?.map(str) ?? []
@@ -136,7 +139,7 @@ export function JobPaste({
           </select>
         </div>
       ) : null}
-      {kind === "posting" ? (
+      {kind === "posting" && !linkKnown ? (
         <div className={styles.field}>
           <label htmlFor={`${id}-url`}>Posting link</label>
           <input

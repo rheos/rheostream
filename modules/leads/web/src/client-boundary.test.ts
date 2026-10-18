@@ -51,6 +51,7 @@ describe("the server/client boundary", () => {
     expect([...clientModules].sort()).toEqual([
       "action-form",
       "finish-connecting",
+      "info-tip",
       "job-paste",
       "paste-capture",
       "proposal-workflow",

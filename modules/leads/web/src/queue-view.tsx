@@ -33,6 +33,7 @@ import {
   type Prefs,
   type Sort,
 } from "./queue";
+import { InfoTip } from "./info-tip";
 import styles from "./queue.module.css";
 
 type Submit = NonNullable<ShellApi["submit"]>;
@@ -167,12 +168,19 @@ export function CopyButton({
 }
 
 /** The fit pill: a short rating, its band's colour, the verdict in the name. */
-export function FitPill({ assessment }: { assessment: unknown }) {
+export function FitPill({
+  assessment,
+  large = false,
+}: {
+  assessment: unknown;
+  /** The job page's size: the score is the first thing read there. */
+  large?: boolean;
+}) {
   const fit = fitFor(assessment);
   if (!fit) return null;
   return (
     <div
-      className={`${styles.score} ${styles[`score_${fit.band}`]}`}
+      className={`${styles.score} ${styles[`score_${fit.band}`]}${large ? ` ${styles.scoreLarge}` : ""}`}
       title={fit.description}
       aria-label={fit.description}
       role="img"
@@ -234,6 +242,9 @@ function Meta({
       {spend ? <span>{spend}</span> : null}
       {rating ? <span>{rating}</span> : null}
       {detail && paymentVerified(fields) ? <span>Payment verified</span> : null}
+      {detail && isNewClient(fields) ? (
+        <span className={styles.flag}>New client</span>
+      ) : null}
       {party ? <span>{party}</span> : null}
       <span>{age(item, now)}</span>
     </div>
@@ -678,7 +689,9 @@ export function JobQueue(props: QueueProps) {
   );
 }
 
-/** The detail page's header for a job-search opportunity. */
+/** The detail page's header for a job-search opportunity: what deciding on the
+ * job needs (title, figures, verdict, score, the stage controls) in view, and
+ * the evidence and record facts behind one info button (#408). */
 export function JobHeader({
   item,
   now,
@@ -732,50 +745,82 @@ export function JobHeader({
   const reasons = Array.isArray(assessment.reasons)
     ? assessment.reasons.map(str).filter(Boolean)
     : [];
+  // The first reason is the verdict ("Fit: strong. Economics: uncertain."); the
+  // rest is evidence, which waits behind the info button with the record facts.
+  const verdict = reasons[0] ?? summary;
+  const evidence = reasons.length > 1 ? reasons.slice(1) : [];
+  const source = sourceLabel(item.source);
   const id = shortId(item.id);
   return (
-    <div className={styles.detail}>
-      <div className={styles.cardHeader}>
-        <div>
-          <h1 className={styles.title}>
-            {posting ? (
-              <a href={posting} target="_blank" rel="noopener noreferrer">
-                {title}
-              </a>
-            ) : (
-              title
-            )}
-          </h1>
-          <Badges item={item} />
-          <div className={styles.idRow}>
-            <CopyButton
-              text={str(item.id)}
-              label={`Copy the full ID (short ID ${id})`}
-              className={styles.idChip}
-            >
-              <span className={styles.idLabel}>ID</span>
-              <span className={styles.idValue}>{id}</span>
-            </CopyButton>
-          </div>
+    <header className={styles.job}>
+      <div className={styles.jobMain}>
+        <h1 className={styles.jobTitle}>
+          {posting ? (
+            <a href={posting} target="_blank" rel="noopener noreferrer">
+              {title}
+            </a>
+          ) : (
+            title
+          )}
+        </h1>
+        <Meta item={item} now={now} detail />
+        <div className={styles.verdictRow}>
+          {verdict ? <p className={styles.verdict}>{verdict}</p> : null}
+          <InfoTip label="Why this score, and the record details" align="start" wide>
+            {evidence.length ? (
+              <ul>
+                {evidence.map((reason, index) => (
+                  <li key={index}>{reason}</li>
+                ))}
+              </ul>
+            ) : !verdict ? (
+              <p>Not assessed yet.</p>
+            ) : null}
+            <dl className={styles.tipFacts}>
+              <div>
+                <dt>Stage</dt>
+                <dd>{str(item.stage_label) || str(item.stage_id)}</dd>
+              </div>
+              {source ? (
+                <div>
+                  <dt>Source</dt>
+                  <dd>{source}</dd>
+                </div>
+              ) : null}
+              <div>
+                <dt>ID</dt>
+                <dd>
+                  <CopyButton
+                    text={str(item.id)}
+                    label={`Copy the full ID (short ID ${id})`}
+                    className={styles.idChip}
+                  >
+                    <span className={styles.idValue}>{id}</span>
+                  </CopyButton>
+                </dd>
+              </div>
+            </dl>
+          </InfoTip>
         </div>
-        <FitPill assessment={item.assessment} />
       </div>
-      <Meta item={item} now={now} detail />
-      <StageActions
-        item={item}
-        disabled={moving}
-        onMove={
-          submit
-            ? (each, to) =>
-                move(
-                  each,
-                  to,
-                  to.stage_id === str(row(item.dismiss).stage_id) &&
-                    to.kind === "terminal",
-                )
-            : undefined
-        }
-      />
+      <div className={styles.jobSide}>
+        <FitPill assessment={item.assessment} large />
+        <StageActions
+          item={item}
+          disabled={moving}
+          onMove={
+            submit
+              ? (each, to) =>
+                  move(
+                    each,
+                    to,
+                    to.stage_id === str(row(item.dismiss).stage_id) &&
+                      to.kind === "terminal",
+                  )
+              : undefined
+          }
+        />
+      </div>
       {error ? (
         <p className={styles.inlineError} role="alert">
           {error}
@@ -788,18 +833,6 @@ export function JobHeader({
         </div>
       ) : null}
       <FollowupLine item={item} now={now} />
-      {reasons.length > 1 ? (
-        <section className={styles.reasons} aria-label="Why this score">
-          <p className={styles.reasonLead}>{reasons[0]}</p>
-          <ul>
-            {reasons.slice(1).map((reason, index) => (
-              <li key={index}>{reason}</li>
-            ))}
-          </ul>
-        </section>
-      ) : summary ? (
-        <p className={styles.reason}>{summary}</p>
-      ) : null}
-    </div>
+    </header>
   );
 }

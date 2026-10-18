@@ -769,6 +769,45 @@ export async function receipt({ shell, query }: ScreenProps) {
     </Frame>
   );
 }
+/** What the closed record drawer says it holds: only what is there. */
+export function drawerSummary(record: Row, assessments: number): string {
+  const notes = rows(record.opportunity_note).length;
+  const drafts = rows(record.drafts).length;
+  const followup = row(record.followup);
+  return [
+    notes ? `${notes} ${notes === 1 ? "note" : "notes"}` : "",
+    followup.due_on ? `follow-up due ${date(followup.due_on)}` : "",
+    drafts ? `${drafts} follow-up ${drafts === 1 ? "draft" : "drafts"}` : "",
+    assessments > 1 ? `${assessments} assessments` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+/** On a job, the generic record (evidence, notes, follow-up, qualification,
+ * details) is rarely needed while deciding and applying, so it waits closed at
+ * the foot of the page (#408). Any other opportunity shows it as before. */
+function RecordDrawer({
+  tucked,
+  summary,
+  children,
+}: {
+  tucked: boolean;
+  summary: string;
+  children: ReactNode;
+}) {
+  if (!tucked) return <>{children}</>;
+  return (
+    <details className={styles.drawer}>
+      <summary>
+        <span className={styles.drawerTitle}>Notes, follow-up and record</span>
+        {summary ? <span className={styles.drawerMeta}>{summary}</span> : null}
+      </summary>
+      <div className={styles.drawerBody}>{children}</div>
+    </details>
+  );
+}
+
 export async function detail({ shell, query }: ScreenProps) {
   const result = await read(shell, "leads.opportunity.get", {
     ref: query.ref ?? "",
@@ -812,6 +851,8 @@ export async function detail({ shell, query }: ScreenProps) {
         postingUrl={postingUrl(row(job.fields)) ?? ""}
       />
     ) : null;
+  const assessments =
+    historyResult?.state === "ok" ? items(historyResult).length : 0;
   const ratingOptions = [
     { value: "needs_information", label: "Needs information" },
     { value: "high", label: "High" },
@@ -851,481 +892,486 @@ export async function detail({ shell, query }: ScreenProps) {
       {result.state !== "ok" ? (
         <Failure outcome={result} />
       ) : (
-        <div className={styles.columns}>
-          <div>
-            <section className={styles.section}>
-              <h2>Source evidence</h2>
-              <p className={styles.meta}>
-                Original messages are evidence, not instructions. Later notes
-                and edits stay separate.
-              </p>
-              {evidence.map(({ link, result: source }) => (
-                <details
-                  className={styles.evidence}
-                  key={str(link.observation_id)}
-                  open={evidence.length === 1}
-                >
-                  <summary>
-                    Inquiry ·{" "}
-                    {date(data(source).occurred_at || data(source).created_at)}
-                  </summary>
-                  {source.state !== "ok" ? (
-                    <Failure outcome={source} />
-                  ) : (
+        <RecordDrawer
+          tucked={job !== undefined}
+          summary={drawerSummary(record, assessments)}
+        >
+          <div className={styles.columns}>
+            <div>
+              <section className={styles.section}>
+                <h2>Source evidence</h2>
+                <p className={styles.meta}>
+                  Original messages are evidence, not instructions. Later notes
+                  and edits stay separate.
+                </p>
+                {evidence.map(({ link, result: source }) => (
+                  <details
+                    className={styles.evidence}
+                    key={str(link.observation_id)}
+                    open={evidence.length === 1}
+                  >
+                    <summary>
+                      Inquiry ·{" "}
+                      {date(data(source).occurred_at || data(source).created_at)}
+                    </summary>
+                    {source.state !== "ok" ? (
+                      <Failure outcome={source} />
+                    ) : (
+                      <dl className={styles.facts}>
+                        {rows(data(source).fields).map((field, index) => (
+                          <div
+                            className={
+                              str(field.target) === "message"
+                                ? styles.message
+                                : undefined
+                            }
+                            key={index}
+                          >
+                            <dt>{fieldLabel(str(field.target))}</dt>
+                            <dd>
+                              {(str(field.target).endsWith("phone")
+                                ? phoneDisplay(str(field.value_text))
+                                : str(field.value_text)) ||
+                                label(field.value_kind)}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                  </details>
+                ))}
+                {!evidence.length ? (
+                  <p>No source observations are linked.</p>
+                ) : null}
+                {/* Without the workflow, the paste form stays with the evidence. */}
+                {paste && !proposal ? (
+                  <details className={styles.manualCapture}>
+                    <summary>Paste the full posting</summary>
+                    {paste}
+                  </details>
+                ) : null}
+              </section>
+              <section className={styles.section}>
+                <h2>Notes</h2>
+                {rows(record.opportunity_note).map((note) => (
+                  <article key={str(note.id)}>
+                    <p className={styles.note}>{str(note.body)}</p>
+                    <p className={styles.meta}>{date(note.created_at)}</p>
+                  </article>
+                ))}
+                <Form
+                  shell={shell}
+                  operation="leads.opportunity.add_note"
+                  base={base}
+                  button="Add note"
+                  fields={[
+                    {
+                      name: "body",
+                      label: "New note",
+                      type: "textarea",
+                      required: true,
+                    },
+                  ]}
+                />
+              </section>
+              <section className={styles.section}>
+                <h2>Follow-up draft</h2>
+                <p className={styles.meta}>
+                  Drafts are saved here. Nothing is sent.
+                </p>
+                {rows(record.drafts).map((draft, index) => (
+                  // Newest first, and open, so a draft is visible right after saving.
+                  <details
+                    className={styles.evidence}
+                    key={str(draft.id)}
+                    open={index === 0}
+                  >
+                    <summary>Draft · {date(draft.created_at)}</summary>
+                    <p className={styles.note}>{str(draft.body)}</p>
+                  </details>
+                ))}
+                <Form
+                  shell={shell}
+                  operation="leads.followup.draft"
+                  base={base}
+                  button="Save draft"
+                  fields={[
+                    {
+                      name: "body",
+                      label: "Draft text",
+                      type: "textarea",
+                      required: true,
+                    },
+                  ]}
+                />
+              </section>
+            </div>
+            <aside>
+              <section className={styles.section}>
+                <h2>Next follow-up</h2>
+                <p className={styles.meta}>
+                  A dated action for you or your agent to check here. No
+                  notification is sent.
+                </p>
+                {record.followup ? (
+                  <>
+                    <p className={styles.note}>{str(followup.action)}</p>
+                    <p>Due {date(followup.due_on)}</p>
+                    <div className={styles.toolbar}>
+                      <Form
+                        shell={shell}
+                        operation="leads.followup.resolve"
+                        base={{
+                          ...base,
+                          reminder_id: followup.id,
+                          outcome: "completed",
+                        }}
+                        fields={[]}
+                        button="Mark follow-up complete"
+                      />
+                      <Form
+                        shell={shell}
+                        operation="leads.followup.resolve"
+                        base={{
+                          ...base,
+                          reminder_id: followup.id,
+                          outcome: "cancelled",
+                        }}
+                        fields={[]}
+                        button="Cancel follow-up"
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <p>
+                    {record.disposition_outcome
+                      ? "Opportunity closed."
+                      : "No follow-up scheduled."}
+                  </p>
+                )}
+                {!record.disposition_outcome ? (
+                  <Form
+                    key={str(followup.id) || "new-followup"}
+                    shell={shell}
+                    operation="leads.followup.schedule"
+                    base={base}
+                    button={
+                      record.followup
+                        ? "Reschedule follow-up"
+                        : "Schedule follow-up"
+                    }
+                    fields={[
+                      {
+                        name: "action",
+                        label: "Follow-up action",
+                        required: true,
+                        maxLength: 2000,
+                        value: str(followup.action),
+                      },
+                      {
+                        name: "due_on",
+                        label: "Due date",
+                        type: "date",
+                        required: true,
+                        value: str(followup.due_on),
+                      },
+                    ]}
+                  />
+                ) : null}
+                {rows(record.followup_history).length ? (
+                  <details className={styles.evidence}>
+                    <summary>Recent follow-up history</summary>
+                    <p className={styles.meta}>
+                      Up to 20 previous reminders. Closing an opportunity cancels
+                      its pending follow-up.
+                    </p>
+                    {rows(record.followup_history).map((reminder) => (
+                      <article key={str(reminder.id)}>
+                        <p className={styles.note}>{str(reminder.action)}</p>
+                        <p className={styles.meta}>
+                          {label(reminder.state)} · Due {date(reminder.due_on)} ·
+                          Resolved {date(reminder.resolved_at)}
+                        </p>
+                      </article>
+                    ))}
+                  </details>
+                ) : null}
+              </section>
+              <section className={styles.section}>
+                <h2>Next step</h2>
+                {rows(record.transitions).length ? (
+                  <Form
+                    shell={shell}
+                    operation="leads.opportunity.transition"
+                    base={base}
+                    button="Change stage"
+                    fields={[
+                      {
+                        name: "to_stage_id",
+                        label: "Move to",
+                        type: "select",
+                        required: true,
+                        options: rows(record.transitions).map((stage) => ({
+                          value: str(stage.stage_id),
+                          label: str(stage.label),
+                        })),
+                      },
+                      {
+                        name: "note",
+                        label: "Reason or next action",
+                        type: "textarea",
+                      },
+                    ]}
+                  />
+                ) : (
+                  <p>
+                    This opportunity has reached a final outcome:{" "}
+                    {label(record.disposition_outcome) ||
+                      str(row(record.stage).label)}
+                    .
+                  </p>
+                )}
+              </section>
+              <section className={styles.section}>
+                <h2>Qualification</h2>
+                {record.qualification ? (
+                  <>
+                    <p className={styles.note}>{str(qualification.objective)}</p>
                     <dl className={styles.facts}>
-                      {rows(data(source).fields).map((field, index) => (
-                        <div
-                          className={
-                            str(field.target) === "message"
-                              ? styles.message
-                              : undefined
-                          }
-                          key={index}
-                        >
-                          <dt>{fieldLabel(str(field.target))}</dt>
-                          <dd>
-                            {(str(field.target).endsWith("phone")
-                              ? phoneDisplay(str(field.value_text))
-                              : str(field.value_text)) ||
-                              label(field.value_kind)}
-                          </dd>
+                      {typeof qualification.score === "number" ? (
+                        <div>
+                          <dt>Score</dt>
+                          <dd>{qualification.score} of 100</dd>
+                        </div>
+                      ) : null}
+                      {[
+                        "fit",
+                        "intent",
+                        "urgency",
+                        "evidence_completeness",
+                        "uncertainty",
+                      ].map((key) => (
+                        <div key={key}>
+                          <dt>{label(key)}</dt>
+                          <dd>{label(qualification[key])}</dd>
                         </div>
                       ))}
                     </dl>
-                  )}
-                </details>
-              ))}
-              {!evidence.length ? (
-                <p>No source observations are linked.</p>
-              ) : null}
-              {/* Without the workflow, the paste form stays with the evidence. */}
-              {paste && !proposal ? (
-                <details className={styles.manualCapture}>
-                  <summary>Paste the full posting</summary>
-                  {paste}
-                </details>
-              ) : null}
-            </section>
-            <section className={styles.section}>
-              <h2>Notes</h2>
-              {rows(record.opportunity_note).map((note) => (
-                <article key={str(note.id)}>
-                  <p className={styles.note}>{str(note.body)}</p>
-                  <p className={styles.meta}>{date(note.created_at)}</p>
-                </article>
-              ))}
-              <Form
-                shell={shell}
-                operation="leads.opportunity.add_note"
-                base={base}
-                button="Add note"
-                fields={[
-                  {
-                    name: "body",
-                    label: "New note",
-                    type: "textarea",
-                    required: true,
-                  },
-                ]}
-              />
-            </section>
-            <section className={styles.section}>
-              <h2>Follow-up draft</h2>
-              <p className={styles.meta}>
-                Drafts are saved here. Nothing is sent.
-              </p>
-              {rows(record.drafts).map((draft, index) => (
-                // Newest first, and open, so a draft is visible right after saving.
-                <details
-                  className={styles.evidence}
-                  key={str(draft.id)}
-                  open={index === 0}
-                >
-                  <summary>Draft · {date(draft.created_at)}</summary>
-                  <p className={styles.note}>{str(draft.body)}</p>
-                </details>
-              ))}
-              <Form
-                shell={shell}
-                operation="leads.followup.draft"
-                base={base}
-                button="Save draft"
-                fields={[
-                  {
-                    name: "body",
-                    label: "Draft text",
-                    type: "textarea",
-                    required: true,
-                  },
-                ]}
-              />
-            </section>
-          </div>
-          <aside>
-            <section className={styles.section}>
-              <h2>Next follow-up</h2>
-              <p className={styles.meta}>
-                A dated action for you or your agent to check here. No
-                notification is sent.
-              </p>
-              {record.followup ? (
-                <>
-                  <p className={styles.note}>{str(followup.action)}</p>
-                  <p>Due {date(followup.due_on)}</p>
-                  <div className={styles.toolbar}>
-                    <Form
-                      shell={shell}
-                      operation="leads.followup.resolve"
-                      base={{
-                        ...base,
-                        reminder_id: followup.id,
-                        outcome: "completed",
-                      }}
-                      fields={[]}
-                      button="Mark follow-up complete"
-                    />
-                    <Form
-                      shell={shell}
-                      operation="leads.followup.resolve"
-                      base={{
-                        ...base,
-                        reminder_id: followup.id,
-                        outcome: "cancelled",
-                      }}
-                      fields={[]}
-                      button="Cancel follow-up"
-                    />
-                  </div>
-                </>
-              ) : (
-                <p>
-                  {record.disposition_outcome
-                    ? "Opportunity closed."
-                    : "No follow-up scheduled."}
-                </p>
-              )}
-              {!record.disposition_outcome ? (
-                <Form
-                  key={str(followup.id) || "new-followup"}
-                  shell={shell}
-                  operation="leads.followup.schedule"
-                  base={base}
-                  button={
-                    record.followup
-                      ? "Reschedule follow-up"
-                      : "Schedule follow-up"
-                  }
-                  fields={[
-                    {
-                      name: "action",
-                      label: "Follow-up action",
-                      required: true,
-                      maxLength: 2000,
-                      value: str(followup.action),
-                    },
-                    {
-                      name: "due_on",
-                      label: "Due date",
-                      type: "date",
-                      required: true,
-                      value: str(followup.due_on),
-                    },
-                  ]}
-                />
-              ) : null}
-              {rows(record.followup_history).length ? (
-                <details className={styles.evidence}>
-                  <summary>Recent follow-up history</summary>
-                  <p className={styles.meta}>
-                    Up to 20 previous reminders. Closing an opportunity cancels
-                    its pending follow-up.
-                  </p>
-                  {rows(record.followup_history).map((reminder) => (
-                    <article key={str(reminder.id)}>
-                      <p className={styles.note}>{str(reminder.action)}</p>
-                      <p className={styles.meta}>
-                        {label(reminder.state)} · Due {date(reminder.due_on)} ·
-                        Resolved {date(reminder.resolved_at)}
-                      </p>
-                    </article>
-                  ))}
-                </details>
-              ) : null}
-            </section>
-            <section className={styles.section}>
-              <h2>Next step</h2>
-              {rows(record.transitions).length ? (
-                <Form
-                  shell={shell}
-                  operation="leads.opportunity.transition"
-                  base={base}
-                  button="Change stage"
-                  fields={[
-                    {
-                      name: "to_stage_id",
-                      label: "Move to",
-                      type: "select",
-                      required: true,
-                      options: rows(record.transitions).map((stage) => ({
-                        value: str(stage.stage_id),
-                        label: str(stage.label),
-                      })),
-                    },
-                    {
-                      name: "note",
-                      label: "Reason or next action",
-                      type: "textarea",
-                    },
-                  ]}
-                />
-              ) : (
-                <p>
-                  This opportunity has reached a final outcome:{" "}
-                  {label(record.disposition_outcome) ||
-                    str(row(record.stage).label)}
-                  .
-                </p>
-              )}
-            </section>
-            <section className={styles.section}>
-              <h2>Qualification</h2>
-              {record.qualification ? (
-                <>
-                  <p className={styles.note}>{str(qualification.objective)}</p>
-                  <dl className={styles.facts}>
-                    {typeof qualification.score === "number" ? (
-                      <div>
-                        <dt>Score</dt>
-                        <dd>{qualification.score} of 100</dd>
-                      </div>
-                    ) : null}
-                    {[
-                      "fit",
-                      "intent",
-                      "urgency",
-                      "evidence_completeness",
-                      "uncertainty",
-                    ].map((key) => (
-                      <div key={key}>
-                        <dt>{label(key)}</dt>
-                        <dd>{label(qualification[key])}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                  <p className={styles.note}>
-                    {str(qualification.explanation)}
-                  </p>
-                  {qualification.model_id ? (
-                    <p className={styles.meta}>
-                      Model: {str(qualification.model_id)} · Prompt:{" "}
-                      {str(qualification.prompt_version)}
+                    <p className={styles.note}>
+                      {str(qualification.explanation)}
                     </p>
-                  ) : null}
-                  <p className={styles.meta}>
-                    Assessed at revision {str(qualification.input_revision)} ·{" "}
-                    {assessmentStale(qualification, record, envelope.revision)
-                      ? "Evidence changed since · Reassess after changes"
-                      : "Evidence unchanged"}
+                    {qualification.model_id ? (
+                      <p className={styles.meta}>
+                        Model: {str(qualification.model_id)} · Prompt:{" "}
+                        {str(qualification.prompt_version)}
+                      </p>
+                    ) : null}
+                    <p className={styles.meta}>
+                      Assessed at revision {str(qualification.input_revision)} ·{" "}
+                      {assessmentStale(qualification, record, envelope.revision)
+                        ? "Evidence changed since · Reassess after changes"
+                        : "Evidence unchanged"}
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    No assessment yet. Review the evidence, then record how well
+                    this inquiry fits your objective.
                   </p>
-                </>
-              ) : (
-                <p>
-                  No assessment yet. Review the evidence, then record how well
-                  this inquiry fits your objective.
-                </p>
-              )}
-              <details className={styles.evidence}>
-                <summary>Record assessment</summary>
-                <p className={styles.meta}>
-                  Record your judgment against the source evidence. Choose Needs
-                  information wherever the evidence is missing. Saving keeps
-                  prior assessments and leaves the stage unchanged.
-                </p>
-                <Form
-                  shell={shell}
-                  operation="leads.qualification.assess"
-                  base={base}
-                  button="Save assessment"
-                  fields={[
-                    {
-                      name: "objective",
-                      label: "Qualification objective",
-                      required: true,
-                      value: str(qualification.objective),
-                    },
-                    ...(
-                      [
-                        ["fit", "Fit for this objective"],
-                        ["intent", "Buying intent"],
-                        ["urgency", "Urgency"],
-                        ["evidence_completeness", "Evidence completeness"],
-                      ] as const
-                    ).map(([name, label]) => ({
-                      name,
-                      label,
-                      type: "select" as const,
-                      required: true,
-                      options: ratingOptions,
-                    })),
-                    {
-                      name: "uncertainty",
-                      label: "Uncertainty",
-                      type: "select",
-                      required: true,
-                      // No silent default: the assessor chooses how sure they are.
-                      value: "",
-                      options: [
-                        { value: "", label: "Choose…" },
-                        { value: "high", label: "High" },
-                        { value: "medium", label: "Medium" },
-                        { value: "low", label: "Low" },
-                      ],
-                    },
-                    {
-                      name: "explanation",
-                      label: "Reasoning and missing information",
-                      type: "textarea",
-                      required: true,
-                    },
-                  ]}
-                />
-              </details>
-              <details className={styles.evidence}>
-                <summary>Check evidence completeness</summary>
-                <p className={styles.meta}>
-                  Counts populated fields and records an assessment with fit,
-                  intent and urgency left as Needs information. This does not
-                  judge suitability.
-                </p>
-                <Form
-                  shell={shell}
-                  operation="leads.qualification.assess"
-                  base={base}
-                  button="Check completeness"
-                  fields={[
-                    {
-                      name: "objective",
-                      label: "Completeness objective",
-                      required: true,
-                      value: str(qualification.objective),
-                    },
-                  ]}
-                />
-              </details>
-              {historyResult && historyResult.state !== "ok" ? (
-                <Failure outcome={historyResult} />
-              ) : historyResult && items(historyResult).length > 1 ? (
+                )}
                 <details className={styles.evidence}>
-                  <summary>
-                    Assessment history ({items(historyResult).length})
-                  </summary>
-                  {items(historyResult)
-                    .slice(0, 20)
-                    .map((assessment) => (
-                      <article key={str(assessment.id)}>
-                        <h3 className={styles.note}>
-                          {str(assessment.objective)}
-                        </h3>
-                        <p className={styles.meta}>
-                          {date(assessment.created_at)} · Evidence revision{" "}
-                          {str(assessment.input_revision)}
-                          {assessment.id === qualification.id
-                            ? " · Latest assessment"
-                            : ""}
-                        </p>
-                        <dl className={styles.facts}>
-                          {[
-                            "fit",
-                            "intent",
-                            "urgency",
-                            "evidence_completeness",
-                            "uncertainty",
-                          ].map((key) => (
-                            <div key={key}>
-                              <dt>{label(key)}</dt>
-                              <dd>{label(assessment[key])}</dd>
-                            </div>
-                          ))}
-                        </dl>
-                        <p className={styles.note}>
-                          {str(assessment.explanation)}
-                        </p>
-                        {assessment.model_id ? (
-                          <p className={styles.meta}>
-                            Model: {str(assessment.model_id)} · Prompt:{" "}
-                            {str(assessment.prompt_version)}
-                          </p>
-                        ) : null}
-                      </article>
-                    ))}
-                  {items(historyResult).length > 20 ? (
-                    <p>Showing the latest 20 assessments.</p>
-                  ) : null}
+                  <summary>Record assessment</summary>
+                  <p className={styles.meta}>
+                    Record your judgment against the source evidence. Choose Needs
+                    information wherever the evidence is missing. Saving keeps
+                    prior assessments and leaves the stage unchanged.
+                  </p>
+                  <Form
+                    shell={shell}
+                    operation="leads.qualification.assess"
+                    base={base}
+                    button="Save assessment"
+                    fields={[
+                      {
+                        name: "objective",
+                        label: "Qualification objective",
+                        required: true,
+                        value: str(qualification.objective),
+                      },
+                      ...(
+                        [
+                          ["fit", "Fit for this objective"],
+                          ["intent", "Buying intent"],
+                          ["urgency", "Urgency"],
+                          ["evidence_completeness", "Evidence completeness"],
+                        ] as const
+                      ).map(([name, label]) => ({
+                        name,
+                        label,
+                        type: "select" as const,
+                        required: true,
+                        options: ratingOptions,
+                      })),
+                      {
+                        name: "uncertainty",
+                        label: "Uncertainty",
+                        type: "select",
+                        required: true,
+                        // No silent default: the assessor chooses how sure they are.
+                        value: "",
+                        options: [
+                          { value: "", label: "Choose…" },
+                          { value: "high", label: "High" },
+                          { value: "medium", label: "Medium" },
+                          { value: "low", label: "Low" },
+                        ],
+                      },
+                      {
+                        name: "explanation",
+                        label: "Reasoning and missing information",
+                        type: "textarea",
+                        required: true,
+                      },
+                    ]}
+                  />
                 </details>
-              ) : null}
-            </section>
-            <details className={styles.section}>
-              <summary>Edit opportunity title</summary>
-              <Form
-                shell={shell}
-                operation="leads.opportunity.update"
-                base={base}
-                button="Save title"
-                fields={[
-                  {
-                    name: "title",
-                    label: "Title",
-                    required: true,
-                    value: str(record.title),
-                  },
-                ]}
-              />
-            </details>
-            <section className={styles.section}>
-              <h2>Record details</h2>
-              <dl className={styles.facts}>
-                <dt>Value</dt>
-                <dd>{value(record)}</dd>
-                <dt>Preset version</dt>
-                <dd>{str(record.preset_version)}</dd>
-                <dt>Revision</dt>
-                <dd>{str(envelope.revision)}</dd>
-              </dl>
-              <details>
-                <summary>
-                  {record.value_amount == null ? "Set value" : "Change value"}
-                </summary>
+                <details className={styles.evidence}>
+                  <summary>Check evidence completeness</summary>
+                  <p className={styles.meta}>
+                    Counts populated fields and records an assessment with fit,
+                    intent and urgency left as Needs information. This does not
+                    judge suitability.
+                  </p>
+                  <Form
+                    shell={shell}
+                    operation="leads.qualification.assess"
+                    base={base}
+                    button="Check completeness"
+                    fields={[
+                      {
+                        name: "objective",
+                        label: "Completeness objective",
+                        required: true,
+                        value: str(qualification.objective),
+                      },
+                    ]}
+                  />
+                </details>
+                {historyResult && historyResult.state !== "ok" ? (
+                  <Failure outcome={historyResult} />
+                ) : historyResult && items(historyResult).length > 1 ? (
+                  <details className={styles.evidence}>
+                    <summary>
+                      Assessment history ({items(historyResult).length})
+                    </summary>
+                    {items(historyResult)
+                      .slice(0, 20)
+                      .map((assessment) => (
+                        <article key={str(assessment.id)}>
+                          <h3 className={styles.note}>
+                            {str(assessment.objective)}
+                          </h3>
+                          <p className={styles.meta}>
+                            {date(assessment.created_at)} · Evidence revision{" "}
+                            {str(assessment.input_revision)}
+                            {assessment.id === qualification.id
+                              ? " · Latest assessment"
+                              : ""}
+                          </p>
+                          <dl className={styles.facts}>
+                            {[
+                              "fit",
+                              "intent",
+                              "urgency",
+                              "evidence_completeness",
+                              "uncertainty",
+                            ].map((key) => (
+                              <div key={key}>
+                                <dt>{label(key)}</dt>
+                                <dd>{label(assessment[key])}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                          <p className={styles.note}>
+                            {str(assessment.explanation)}
+                          </p>
+                          {assessment.model_id ? (
+                            <p className={styles.meta}>
+                              Model: {str(assessment.model_id)} · Prompt:{" "}
+                              {str(assessment.prompt_version)}
+                            </p>
+                          ) : null}
+                        </article>
+                      ))}
+                    {items(historyResult).length > 20 ? (
+                      <p>Showing the latest 20 assessments.</p>
+                    ) : null}
+                  </details>
+                ) : null}
+              </section>
+              <details className={styles.section}>
+                <summary>Edit opportunity title</summary>
                 <Form
                   shell={shell}
                   operation="leads.opportunity.update"
                   base={base}
-                  button="Save value"
+                  button="Save title"
                   fields={[
                     {
-                      name: "value_amount",
-                      label: "Estimated amount; leave blank to clear",
-                      value: str(record.value_amount),
-                      maxLength: 32,
-                    },
-                    {
-                      name: "value_currency",
-                      label: "Currency code",
-                      value: str(record.value_currency) || "CAD",
-                      maxLength: 3,
-                    },
-                    {
-                      name: "value_basis",
-                      label: "Basis",
-                      type: "select",
-                      value: str(record.value_basis) || "project_fee",
-                      options: VALUE_BASES,
+                      name: "title",
+                      label: "Title",
+                      required: true,
+                      value: str(record.title),
                     },
                   ]}
                 />
               </details>
-            </section>
-          </aside>
-        </div>
+              <section className={styles.section}>
+                <h2>Record details</h2>
+                <dl className={styles.facts}>
+                  <dt>Value</dt>
+                  <dd>{value(record)}</dd>
+                  <dt>Preset version</dt>
+                  <dd>{str(record.preset_version)}</dd>
+                  <dt>Revision</dt>
+                  <dd>{str(envelope.revision)}</dd>
+                </dl>
+                <details>
+                  <summary>
+                    {record.value_amount == null ? "Set value" : "Change value"}
+                  </summary>
+                  <Form
+                    shell={shell}
+                    operation="leads.opportunity.update"
+                    base={base}
+                    button="Save value"
+                    fields={[
+                      {
+                        name: "value_amount",
+                        label: "Estimated amount; leave blank to clear",
+                        value: str(record.value_amount),
+                        maxLength: 32,
+                      },
+                      {
+                        name: "value_currency",
+                        label: "Currency code",
+                        value: str(record.value_currency) || "CAD",
+                        maxLength: 3,
+                      },
+                      {
+                        name: "value_basis",
+                        label: "Basis",
+                        type: "select",
+                        value: str(record.value_basis) || "project_fee",
+                        options: VALUE_BASES,
+                      },
+                    ]}
+                  />
+                </details>
+              </section>
+            </aside>
+          </div>
+        </RecordDrawer>
       )}
     </Frame>
   );

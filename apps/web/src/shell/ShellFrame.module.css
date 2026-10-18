@@ -5,9 +5,8 @@
  * the hairline, not by background alone: the seed's surfaces are close in
  * luminance by design, so an edge carries the separation.
  *
- * Narrow screens: the header wraps into rows (brand, navigation, account
- * controls), and every child may shrink below its content width, so a long
- * workspace label never pushes the page wider than the viewport.
+ * Narrow screens: the header wraps into rows (brand and settings, then
+ * navigation), and every child may shrink below its content width.
  */
 
 .frame {
@@ -110,16 +109,6 @@
   border-block-end-color: var(--rs-color-accent);
 }
 
-.controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--rs-space-3);
-  min-inline-size: 0;
-  max-inline-size: 100%;
-  margin-inline-start: auto;
-}
-
 /* The page. It is focusable (tabIndex -1) so the skip link can move focus to it,
    but it draws no ring of its own: `main` is a landmark, not a control. */
 .main {
@@ -163,15 +152,5 @@
 
   .main {
     padding-block: var(--rs-space-5);
-  }
-
-  /* The account controls take a row of their own under the nav: the switcher
-     fills it, and sign-out aligns with the switcher's bottom row, the one that
-     holds the Switch button. */
-  .controls {
-    flex-basis: 100%;
-    flex-wrap: nowrap;
-    align-items: flex-end;
-    margin-inline-start: initial;
   }
 }

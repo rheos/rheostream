@@ -36,7 +36,8 @@ describe("RootLayout", () => {
   });
 
   it("loads the vendored font file as --rs-font-brand", () => {
-    expect(fontCalls).toHaveLength(2);
+    // Geist only: the Novadiem theme uses it too since #408.
+    expect(fontCalls).toHaveLength(1);
     const [options] = fontCalls;
     expect(options.variable).toBe("--rs-font-brand");
     expect(typeof options.src).toBe("string");
