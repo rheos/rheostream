@@ -323,7 +323,22 @@ describe("the pricing tab", () => {
     expect(submit).toHaveBeenCalledTimes(2);
     expect(host.textContent).toContain("zero or more");
   });
-  it("clears a due date on the server too", async () => {
+  it("never shows an unsaved title as saved after Done", async () => {
+    const submit = vi.fn().mockResolvedValue(refused("pricing_in_progress"));
+    mount({ submit, proposal: priced() });
+    await click(button("Edit: Discovery"));
+    const title = host.querySelector<HTMLInputElement>('input[aria-label="Milestone title"]');
+    if (!title) throw new Error("no title");
+    type(title, "Renamed");
+    await blur(title);
+    expect(host.textContent).toContain("Not saved: Milestones are already being prepared.");
+    await click(button("Done"));
+    // Back to the stored title, with the reason still in view.
+    expect(host.querySelector("article[aria-label^=\"Milestone\"] h3")?.textContent).toBe("Discovery");
+    expect(host.textContent).not.toContain("Renamed");
+    expect(host.textContent).toContain("Not saved: Milestones are already being prepared.");
+  });
+    it("clears a due date on the server too", async () => {
     const submit = vi.fn().mockResolvedValue(ok(priced({ milestones: [{ ...MILESTONE, due_on: null }] })));
     mount({ submit, proposal: priced() });
     await click(button("Edit: Discovery"));

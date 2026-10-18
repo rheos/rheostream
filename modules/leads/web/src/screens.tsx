@@ -837,10 +837,14 @@ function JobRecord({
   shell,
   record,
   base,
+  paste,
 }: {
   shell: ScreenProps["shell"];
   record: Row;
   base: Record<string, unknown>;
+  /** The paste form, given only when the workflow (which normally holds it)
+   * could not load, so a posting can still be pasted. */
+  paste?: ReactNode;
 }) {
   const notes = rows(record.opportunity_note);
   const followup = row(record.followup);
@@ -848,6 +852,12 @@ function JobRecord({
   const submit = shell.submit;
   return (
     <section className={styles.jobRecord} aria-label="Notes and follow-up">
+      {paste ? (
+        <details className={`${styles.manualCapture} ${styles.jobRecordWide}`}>
+          <summary>Paste the full posting</summary>
+          {paste}
+        </details>
+      ) : null}
       <div>
         <div className={styles.jobRecordHead}>
           <h2 className={styles.jobRecordTitle}>Notes</h2>
@@ -881,7 +891,6 @@ function JobRecord({
           <h2 className={styles.jobRecordTitle}>Follow-up</h2>
           {submit && !closed ? (
             <ModalForm
-              key={str(followup.id) || "new-followup"}
               submit={submit}
               trigger={record.followup ? "Reschedule" : "Schedule"}
               title={record.followup ? "Reschedule the follow-up" : "Schedule a follow-up"}
@@ -918,7 +927,7 @@ function JobRecord({
                   operation="leads.followup.resolve"
                   base={{ ...base, reminder_id: followup.id, outcome: "completed" }}
                   fields={[]}
-                  button="Done"
+                  button="Mark done"
                   buttonClass="secondary"
                 />
                 <ActionForm
@@ -952,6 +961,7 @@ function RecordFor({
   shell: ScreenProps["shell"];
   record: Row;
   base: Record<string, unknown>;
+  paste?: ReactNode;
   children: ReactNode;
 }) {
   return job ? <JobRecord {...props} /> : <>{children}</>;
@@ -1044,6 +1054,7 @@ export async function detail({ shell, query }: ScreenProps) {
           shell={shell}
           record={record}
           base={base}
+          paste={paste && !proposal ? paste : undefined}
         >
           <div className={styles.columns}>
             <div>
@@ -1091,13 +1102,6 @@ export async function detail({ shell, query }: ScreenProps) {
                 ))}
                 {!evidence.length ? (
                   <p>No source observations are linked.</p>
-                ) : null}
-                {/* Without the workflow, the paste form stays with the evidence. */}
-                {paste && !proposal ? (
-                  <details className={styles.manualCapture}>
-                    <summary>Paste the full posting</summary>
-                    {paste}
-                  </details>
                 ) : null}
               </section>
               <section className={styles.section}>

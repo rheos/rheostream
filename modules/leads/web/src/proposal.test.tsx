@@ -309,6 +309,40 @@ describe("the job detail", () => {
   });
 });
 
+describe("a job whose workflow cannot load", () => {
+  it("still offers the paste form, beside its notes (#418)", async () => {
+    const answers: Record<string, OperationOutcome> = {
+      "leads.opportunity.get": ok({
+        ref: REF,
+        revision: 3,
+        data: { title: "Example storefront", preset_id: JOBSEARCH_PRESET_ID, stage: { label: "New" } },
+      }),
+      "leads.ui.queue": ok({
+        items: [
+          {
+            ref: REF,
+            id: "0a1b2c3d-0000-7000-8000-00000000b001",
+            title: "Example storefront",
+            pipeline_id: "0a1b2c3d-0000-7000-8000-00000000a002",
+            fields: { posting_url: "https://www.example.com/jobs/~02100" },
+            description: POSTING,
+          },
+        ],
+      }),
+    };
+    const api = {
+      role: "owner",
+      call: vi.fn(async (name: string) => answers[name] ?? ({ state: "unavailable" } as OperationOutcome)),
+      submit: vi.fn(async () => ok({})),
+      href: (id: string) => `/leads/${id}`,
+    } satisfies ShellApi;
+    const html = renderToStaticMarkup(await screens.detail({ shell: api, query: { ref: REF } }));
+    expect(html).not.toContain('aria-label="Proposal workflow"');
+    expect(html.split("<summary>Paste the full posting</summary>")).toHaveLength(2);
+    expect(html).toContain('aria-label="Notes and follow-up"');
+  });
+});
+
 describe("the pricing tab", () => {
   const priced: Row = {
     ...ready,

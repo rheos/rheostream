@@ -1170,7 +1170,9 @@ function PricingPanel(props: {
 
 /** One milestone. It reads as text (title, amount and date, what it delivers)
  * until the Edit button opens its fields (#418); then each field saves when it
- * loses focus, and a failed save keeps what was typed, with the reason. */
+ * loses focus, and a failed save keeps what was typed, with the reason. Leaving
+ * the fields never shows unsaved text as saved: a field whose save failed goes
+ * back to the stored value, and the reason stays in view. */
 function MilestoneCard(props: {
   milestone: MilestoneView;
   disabled: boolean;
@@ -1191,6 +1193,14 @@ function MilestoneCard(props: {
     wasEditing.current = editing;
   }, [editing]);
 
+  /** Every field back to what the server holds. */
+  function revert() {
+    setTitle(m.title);
+    setAmount(m.amount);
+    setDueOn(m.dueOn);
+    setDescription(m.description);
+  }
+
   async function save(field: string, value: string, saved: string) {
     if (value === saved) return;
     if (field === "title" && !value.trim()) {
@@ -1206,17 +1216,25 @@ function MilestoneCard(props: {
     const message = await props.onSave({
       [field]: field === "due_on" && !value ? null : value,
     });
-    if (message) setProblem(`Not saved: ${message}`);
+    if (!message) return;
+    setProblem(`Not saved: ${message}`);
+    // A save that fails after the fields closed must not leave its text
+    // showing as if it were saved.
+    if (!wasEditing.current) revert();
   }
 
+  const problemLine = problem ? (
+    <p className={styles.error} role="alert">
+      {problem}
+    </p>
+  ) : null;
   const copy = (
     <CopyButton
       text={milestoneLine({ ...m, title, amount, dueOn })}
       label={`Copy: ${title}`}
     />
   );
-  // Stays open while a save failed, so what was typed is still in view.
-  if (!editing && !problem)
+  if (!editing)
     return (
       <article className={styles.card} aria-label={`Milestone: ${m.title}`}>
         <div className={styles.cardHead}>
@@ -1241,6 +1259,7 @@ function MilestoneCard(props: {
           {dueOn ? `, due ${dueOn}` : ""}
         </p>
         {description ? <p className={styles.milestoneText}>{description}</p> : null}
+        {problemLine}
       </article>
     );
 
@@ -1293,18 +1312,15 @@ function MilestoneCard(props: {
         onChange={(event) => setDescription(event.target.value)}
         onBlur={() => save("description", description, m.description)}
       />
-      {problem ? (
-        <p className={styles.error} role="alert">
-          {problem}
-        </p>
-      ) : null}
+      {problemLine}
       <div className={styles.actions}>
         <button
           type="button"
           className={styles.ghost}
           onClick={() => {
+            // Unsaved text goes back to the stored value; the reason stays.
+            if (problem) revert();
             setEditing(false);
-            setProblem("");
           }}
         >
           Done

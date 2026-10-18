@@ -49,7 +49,7 @@ describe("the modal form (#418)", () => {
   it("opens on its button and closes itself once the form saves", async () => {
     const submit = vi.fn().mockResolvedValue({ state: "ok", result: {} });
     mount(submit);
-    const open = [...host.querySelectorAll("button")].find(
+    const open = Array.from(host.querySelectorAll("button")).find(
       (b) => b.textContent === "Add note",
     )!;
     act(() => open.click());
@@ -76,7 +76,7 @@ describe("the modal form (#418)", () => {
   it("closes from its Close button", () => {
     mount(vi.fn());
     act(() =>
-      [...host.querySelectorAll("button")].find((b) => b.textContent === "Add note")!.click(),
+      Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Add note")!.click(),
     );
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click());
     expect(dialog().open).toBe(false);

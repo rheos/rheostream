@@ -372,6 +372,10 @@
   gap: var(--rs-space-3);
   margin-bottom: var(--rs-space-2);
 }
+.jobRecordWide {
+  grid-column: 1 / -1;
+  margin-block: 0;
+}
 .jobRecordTitle {
   margin: 0;
   font-size: var(--rs-font-size-md);
