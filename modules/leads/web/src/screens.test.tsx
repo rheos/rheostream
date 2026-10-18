@@ -542,6 +542,8 @@ describe("record fields as a person reads them", () => {
       "Oct 15, 2026",
     );
     expect(fieldValue("ext.jobsearch.job_type", "hourly")).toBe("Hourly");
+    // Date-shaped text outside a date field stays as written.
+    expect(fieldValue("subject", "2026-10-15")).toBe("2026-10-15");
     expect(fieldValue("ext.jobsearch.client_rating", "4.84")).toBe("4.84");
     expect(
       fieldValue("message", "<untrusted_participant_content>\nBuild a shop.\n</untrusted_participant_content>"),

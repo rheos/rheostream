@@ -209,7 +209,11 @@ export function fieldValue(target: string, text: string): string {
       return `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
     if (key === "client_hire_rate" && n <= 1) return `${Math.round(n * 100)}%`;
   }
-  if (/^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2})?)?$/.test(text))
+  // Only a date field's value is a date; other text that looks like one stays.
+  if (
+    /_(on|at)$/.test(key) &&
+    /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2})?)?$/.test(text)
+  )
     return date(text);
   if (key === "job_type" || key === "platform") return sentence(text);
   return text;
