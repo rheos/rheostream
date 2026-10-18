@@ -290,11 +290,56 @@ describe("the job detail", () => {
     expect(html).toContain("Fifty an hour.");
     // The paste form lives in the Posting tab, once, not again under the evidence.
     expect(html.split("<summary>Paste the full posting</summary>")).toHaveLength(2);
-    // The generic record waits, closed, at the foot of a job's page (#408).
-    expect(html).toMatch(
-      /<details class="[^"]*drawer[^"]*"><summary><span[^>]*>Notes, follow-up and record<\/span>/,
-    );
+    // A job shows its notes and follow-up, and none of the generic record that
+    // repeats the header or the Posting tab, or serves inquiries (#418).
+    expect(html).toContain('aria-label="Notes and follow-up"');
+    expect(html).toContain(">Notes</h2>");
+    expect(html).toContain(">Follow-up</h2>");
+    for (const gone of [
+      "Source evidence",
+      "Next step",
+      "Qualification</h2>",
+      "Record assessment",
+      "Record details",
+      "Edit opportunity title",
+      "Follow-up draft",
+    ])
+      expect(html).not.toContain(gone);
     expect(api.submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("a job whose workflow cannot load", () => {
+  it("still offers the paste form, beside its notes (#418)", async () => {
+    const answers: Record<string, OperationOutcome> = {
+      "leads.opportunity.get": ok({
+        ref: REF,
+        revision: 3,
+        data: { title: "Example storefront", preset_id: JOBSEARCH_PRESET_ID, stage: { label: "New" } },
+      }),
+      "leads.ui.queue": ok({
+        items: [
+          {
+            ref: REF,
+            id: "0a1b2c3d-0000-7000-8000-00000000b001",
+            title: "Example storefront",
+            pipeline_id: "0a1b2c3d-0000-7000-8000-00000000a002",
+            fields: { posting_url: "https://www.example.com/jobs/~02100" },
+            description: POSTING,
+          },
+        ],
+      }),
+    };
+    const api = {
+      role: "owner",
+      call: vi.fn(async (name: string) => answers[name] ?? ({ state: "unavailable" } as OperationOutcome)),
+      submit: vi.fn(async () => ok({})),
+      href: (id: string) => `/leads/${id}`,
+    } satisfies ShellApi;
+    const html = renderToStaticMarkup(await screens.detail({ shell: api, query: { ref: REF } }));
+    expect(html).not.toContain('aria-label="Proposal workflow"');
+    expect(html.split("<summary>Paste the full posting</summary>")).toHaveLength(2);
+    expect(html).toContain('aria-label="Notes and follow-up"');
   });
 });
 
@@ -341,9 +386,12 @@ describe("the pricing tab", () => {
     expect(html).toContain("about 35 h for $1,400.00");
     expect(html).toContain("matches the fixed quote");
     expect(html).toContain("Note: This posting");
-    expect(html).toContain('value="Discovery"');
-    expect(html).toContain('value="Checkout &lt;fix&gt;"');
-    expect(html).toContain('value="2026-10-19"');
+    // Milestones read as text, escaped, until edited (#418): no input boxes.
+    expect(html).toMatch(/<h3[^>]*>Discovery<\/h3>/);
+    expect(html).toMatch(/<h3[^>]*>Checkout &lt;fix&gt;<\/h3>/);
+    expect(html).toContain("$200.00, due 2026-10-19");
+    expect(html).not.toContain('aria-label="Milestone title"');
+    expect(html).toContain('aria-label="Edit: Discovery"');
     expect(html).toContain("Regenerate milestones");
     expect(html).toContain("Copy every milestone");
     expect(milestoneLine({ id: "x", title: "Build", description: "", amount: "1200.00", dueOn: "" })).toBe(

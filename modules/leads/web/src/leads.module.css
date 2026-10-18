@@ -356,49 +356,107 @@
   white-space: nowrap;
 }
 
-/* A job's generic record, closed at the foot of its page (#408). The summary is
-   one quiet line; open, the record keeps its usual two columns. */
-.drawer {
+/* A job's own record under its workflow (#418): notes beside the next
+   follow-up, compact, on the page rather than in a card. */
+.jobRecord {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--rs-space-6);
+  padding-top: var(--rs-space-5);
   border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
-  padding-top: var(--rs-space-2);
 }
-.drawer > summary {
+.jobRecordHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--rs-space-3);
+  margin-bottom: var(--rs-space-2);
+}
+.jobRecordWide {
+  grid-column: 1 / -1;
+  margin-block: 0;
+}
+.jobRecordTitle {
+  margin: 0;
+  font-size: var(--rs-font-size-md);
+  font-weight: 600;
+}
+.jobNote {
+  margin-bottom: var(--rs-space-3);
+}
+.jobNote p {
+  margin: 0;
+}
+.jobRecordActions {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--rs-space-1) var(--rs-space-3);
-  min-height: var(--rs-size-control);
-  padding-block: var(--rs-space-2);
-  color: var(--rs-color-ink-dim);
-  cursor: pointer;
+  gap: var(--rs-space-2);
+  margin-top: var(--rs-space-3);
 }
-.drawer > summary:hover {
-  color: var(--rs-color-ink);
-}
-/* The disclosure marker, drawn as a small chevron that turns when open. */
-.drawer > summary::before {
-  content: "";
-  align-self: center;
-  inline-size: calc(var(--rs-space-2) * 0.75);
-  block-size: calc(var(--rs-space-2) * 0.75);
-  border-inline-end: calc(var(--rs-size-hairline) * 1.5) solid currentColor;
-  border-block-end: calc(var(--rs-size-hairline) * 1.5) solid currentColor;
-  rotate: -45deg;
-}
-.drawer[open] > summary::before {
-  rotate: 45deg;
-}
-.drawerTitle {
-  font-weight: 500;
-}
-.drawerMeta {
-  color: var(--rs-color-ink-faint);
+.jobRecordActions .secondary {
+  min-height: calc(var(--rs-space-6) + var(--rs-space-1));
+  padding: var(--rs-space-1) var(--rs-space-3);
   font-size: var(--rs-font-size-sm);
 }
-.drawerBody {
-  padding-top: var(--rs-space-4);
+/* A quiet text button that opens a dialog. */
+.textButton {
+  min-block-size: 0;
+  padding: var(--rs-space-1) var(--rs-space-2);
+  border: 0;
+  background: transparent;
+  color: var(--rs-color-accent);
+  font-size: var(--rs-font-size-sm);
+  cursor: pointer;
 }
-.drawerBody .section:first-child {
-  border-top: 0;
-  padding-top: 0;
+.textButton:hover {
+  color: var(--rs-color-accent-strong);
+  text-decoration: underline;
+  text-underline-offset: var(--rs-space-1);
+}
+/* The modal form: one form, centred over a dimmed page. */
+.modal {
+  inline-size: min(calc(var(--rs-space-6) * 17), calc(100vw - var(--rs-space-6)));
+  padding: var(--rs-space-5);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+  background: var(--rs-color-surface-1);
+  color: var(--rs-color-ink);
+  box-shadow: 0 var(--rs-space-4) calc(var(--rs-space-6) * 2)
+    color-mix(in srgb, var(--rs-color-ground) 80%, transparent);
+}
+.modal::backdrop {
+  background: color-mix(in srgb, var(--rs-color-ground) 70%, transparent);
+}
+.modal .form {
+  max-width: none;
+}
+.modalHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rs-space-3);
+  margin-bottom: var(--rs-space-4);
+}
+.modalTitle {
+  margin: 0;
+  font-size: var(--rs-font-size-lg);
+  font-weight: 600;
+}
+.modalClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--rs-size-control);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rs-color-ink-dim);
+}
+.modalClose:hover {
+  color: var(--rs-color-ink);
+}
+@media (max-width: 48rem) {
+  .jobRecord {
+    grid-template-columns: 1fr;
+  }
 }

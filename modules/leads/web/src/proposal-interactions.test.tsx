@@ -302,6 +302,10 @@ describe("the pricing tab", () => {
         ok(priced({ milestones: [{ ...MILESTONE, amount: String(input.amount) }] })),
       );
     mount({ submit, proposal: priced() });
+    // A milestone reads as text until its Edit button opens the fields.
+    expect(host.querySelector('input[type="number"]')).toBeNull();
+    expect(host.textContent).toContain("$200.00, due 2026-10-19");
+    await click(button("Edit: Discovery"));
     const amount = host.querySelector<HTMLInputElement>('input[type="number"]');
     if (!amount) throw new Error("no amount");
     type(amount, "350");
@@ -319,9 +323,47 @@ describe("the pricing tab", () => {
     expect(submit).toHaveBeenCalledTimes(2);
     expect(host.textContent).toContain("zero or more");
   });
-  it("clears a due date on the server too", async () => {
+  it("never shows an unsaved title as saved after Done", async () => {
+    const submit = vi.fn().mockResolvedValue(refused("pricing_in_progress"));
+    mount({ submit, proposal: priced() });
+    await click(button("Edit: Discovery"));
+    const title = host.querySelector<HTMLInputElement>('input[aria-label="Milestone title"]');
+    if (!title) throw new Error("no title");
+    type(title, "Renamed");
+    await blur(title);
+    expect(host.textContent).toContain("Not saved: Milestones are already being prepared.");
+    await click(button("Done"));
+    // Back to the stored title, with the reason still in view.
+    expect(host.querySelector("article[aria-label^=\"Milestone\"] h3")?.textContent).toBe("Discovery");
+    expect(host.textContent).not.toContain("Renamed");
+    expect(host.textContent).toContain("Not saved: Milestones are already being prepared.");
+  });
+    it("reverts only the field whose save failed", async () => {
+    const submit = vi
+      .fn()
+      .mockResolvedValueOnce(refused("pricing_in_progress"))
+      .mockImplementationOnce(async (_name: string, input: Row) =>
+        ok(priced({ milestones: [{ ...MILESTONE, description: String(input.description) }] })),
+      );
+    mount({ submit, proposal: priced() });
+    await click(button("Edit: Discovery"));
+    const title = host.querySelector<HTMLInputElement>('input[aria-label="Milestone title"]')!;
+    type(title, "Renamed");
+    await blur(title);
+    const text = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Milestone description"]')!;
+    type(text, "Read the code.");
+    await blur(text);
+    await click(button("Done"));
+    const card = host.querySelector('article[aria-label^="Milestone"]')!;
+    // The refused title is back to the stored one; the saved description stays.
+    expect(card.querySelector("h3")?.textContent).toBe("Discovery");
+    expect(card.textContent).toContain("Read the code.");
+    expect(card.textContent).toContain("Not saved: Milestones are already being prepared.");
+  });
+    it("clears a due date on the server too", async () => {
     const submit = vi.fn().mockResolvedValue(ok(priced({ milestones: [{ ...MILESTONE, due_on: null }] })));
     mount({ submit, proposal: priced() });
+    await click(button("Edit: Discovery"));
     const due = host.querySelector<HTMLInputElement>('input[type="date"]') as HTMLInputElement;
     type(due, "");
     await blur(due);
