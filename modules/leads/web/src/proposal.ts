@@ -12,6 +12,33 @@ export const STAGE_LABELS: Record<StageId, string> = {
 };
 /** How long a page waits before it reloads to show a running draft's progress. */
 export const REFRESH_MS = 4000;
+/** The wait while a draft is held for the account (a usage limit, a login): the
+ * cause clears in minutes at best, so the page looks again once a minute. */
+export const WAITING_REFRESH_MS = 60_000;
+
+/** Why a queued draft is waiting, when the account or deployment holds it. */
+const WAITING: Record<string, string> = {
+  usage_limited:
+    "Waiting for the model's usage limit to reset. The draft starts again on its own.",
+  credential_invalid:
+    "Waiting: the model login needs attention. The draft starts once the login works again.",
+  credential_not_owned:
+    "Waiting: the model login belongs to another account. An owner needs to fix the login.",
+  executable_unavailable:
+    "Waiting: the model runtime is not available on the server.",
+  adapter_unavailable: "Waiting: the model runtime is not available on the server.",
+  token_revoke_failed: "Waiting on a server problem. The draft is retried shortly.",
+};
+/** The waiting line for a queued draft held by the account, or "". */
+export function waitingLine(view: Row): string {
+  if (draftState(view) !== "queued") return "";
+  const kind = str(view.failure_kind);
+  if (!kind) return "";
+  return WAITING[kind] ?? "Waiting to retry the draft.";
+}
+export function refreshDelay(view: Row): number {
+  return waitingLine(view) ? WAITING_REFRESH_MS : REFRESH_MS;
+}
 
 export function stageFromHash(hash: string): StageId {
   const candidate = hash.replace(/^#stage-/, "");
@@ -67,8 +94,10 @@ export function progressLine(view: Row): string {
   const total = str(view.total);
   if (draftState(view) === "drafting" && stage && step && total)
     return `${stage} (${step} of ${total})`;
-  if (str(view.failure_kind) === "usage_limited")
-    return "Waiting for the model's usage limit to reset. The draft starts again on its own.";
+  const waiting = waitingLine(view);
+  if (waiting) return waiting;
+  if (draftState(view) === "queued" && str(view.failure_kind))
+    return `${failureCopy(str(view.failure_kind))} Trying again shortly.`;
   return draftState(view) === "queued"
     ? "Queued. The draft starts within a minute."
     : "Starting the draft.";
@@ -87,8 +116,6 @@ const FAILURES: Record<string, string> = {
     "The account that drafts proposals is no longer an owner of this workspace.",
   claim_lapsed: "The draft was interrupted too many times.",
   restored: "The draft was interrupted when the workspace was restored.",
-  credential_invalid: "The model login needs attention.",
-  credential_not_owned: "The model login belongs to another account.",
 };
 export function failureCopy(kind: string): string {
   return FAILURES[kind] ?? `Drafting failed (${kind || "unknown reason"}).`;
@@ -101,7 +128,8 @@ const REFUSALS: Record<string, string> = {
     "Some sections were edited by hand or filled from the library. A new draft replaces every section.",
   capability_disabled: "Job search is off for this workspace.",
   not_found: "That draft or section is no longer there. Reload the page.",
-  input_invalid: "That text could not be saved. Check it is not empty.",
+  input_invalid:
+    "That text could not be saved. It may be empty or longer than the form allows.",
   record_stale: "This job changed. Reload the page.",
   operation_not_permitted:
     "This action is no longer available. Reload the page and try again.",

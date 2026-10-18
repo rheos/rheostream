@@ -3,8 +3,10 @@ import {
   useEffect,
   useRef,
   useState,
+  type Dispatch,
   type KeyboardEvent,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 import type {
   OperationOutcome,
@@ -17,7 +19,7 @@ import {
   failureCopy,
   findings as readFindings,
   progressLine,
-  REFRESH_MS,
+  refreshDelay,
   refusalCopy,
   rowsFor,
   sections as readSections,
@@ -33,6 +35,7 @@ import { CopyButton } from "./queue-view";
 import styles from "./proposal.module.css";
 
 type Submit = NonNullable<ShellApi["submit"]>;
+type SetView = Dispatch<SetStateAction<Row>>;
 
 export interface WorkflowProps {
   submit?: Submit;
@@ -43,13 +46,43 @@ export interface WorkflowProps {
   posting: string;
   /** The paste-the-full-posting form, rendered by the screen. */
   paste?: ReactNode;
+  /** Reloads the page; tests pass their own. */
+  reload?: () => void;
 }
 
-const UNREACHABLE = "Could not reach the server. Check the connection and try again.";
+const UNREACHABLE =
+  "Could not reach the server. Check the connection and try again.";
+
+/** An operation's answer, in the words a person reads: ok with the result, or
+ * the message to show. */
+interface Called {
+  outcome: OperationOutcome | null;
+  message: string;
+  code: string;
+}
 
 function isView(result: unknown): boolean {
   const r = row(result);
   return typeof r.state === "string" && Array.isArray(r.sections);
+}
+
+function isField(target: EventTarget | null): boolean {
+  const name = (target as { tagName?: unknown } | null)?.tagName;
+  return name === "INPUT" || name === "TEXTAREA" || name === "SELECT";
+}
+
+/** Typing anywhere on the page. A reload would throw the text away, so the
+ * page stops reloading itself once someone types and offers a button instead. */
+function useTyped(): boolean {
+  const [typed, setTyped] = useState(false);
+  useEffect(() => {
+    const onInput = (event: Event) => {
+      if (isField(event.target)) setTyped(true);
+    };
+    window.addEventListener("input", onInput, true);
+    return () => window.removeEventListener("input", onInput, true);
+  }, []);
+  return typed;
 }
 
 /** The job detail's proposal workflow: Posting, Questions and Proposal. */
@@ -60,6 +93,8 @@ export function ProposalWorkflow(props: WorkflowProps) {
     draftState(props.proposal) === "idle" ? "posting" : "proposal",
   );
   const tabs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const typed = useTyped();
+  const reload = props.reload;
 
   useEffect(() => {
     const sync = () => {
@@ -72,13 +107,18 @@ export function ProposalWorkflow(props: WorkflowProps) {
   }, []);
 
   // A queued or running draft: reload until it settles, so the stage line and
-  // then the draft itself appear without anyone pressing anything.
+  // then the draft appear on their own. Never while someone has typed on the
+  // page, and only once a minute while the account holds the draft.
   const running = busy(view);
+  const delay = refreshDelay(view);
   useEffect(() => {
-    if (!running) return;
-    const timer = setTimeout(() => window.location.reload(), REFRESH_MS);
+    if (!running || typed) return;
+    const timer = setTimeout(
+      () => (reload ? reload() : window.location.reload()),
+      delay,
+    );
     return () => clearTimeout(timer);
-  }, [running, view]);
+  }, [running, typed, delay, view, reload]);
 
   function select(next: StageId) {
     setStage(next);
@@ -146,6 +186,7 @@ export function ProposalWorkflow(props: WorkflowProps) {
         className={styles.panel}
         id="stage-panel-posting"
         role="tabpanel"
+        tabIndex={0}
         aria-labelledby="stage-tab-posting"
         hidden={stage !== "posting"}
       >
@@ -155,6 +196,7 @@ export function ProposalWorkflow(props: WorkflowProps) {
         className={styles.panel}
         id="stage-panel-questions"
         role="tabpanel"
+        tabIndex={0}
         aria-labelledby="stage-tab-questions"
         hidden={stage !== "questions"}
       >
@@ -170,6 +212,7 @@ export function ProposalWorkflow(props: WorkflowProps) {
         className={styles.panel}
         id="stage-panel-proposal"
         role="tabpanel"
+        tabIndex={0}
         aria-labelledby="stage-tab-proposal"
         hidden={stage !== "proposal"}
       >
@@ -179,13 +222,21 @@ export function ProposalWorkflow(props: WorkflowProps) {
           view={view}
           questions={questions}
           setView={setView}
+          paused={running && typed}
+          reload={() => (reload ? reload() : window.location.reload())}
         />
       </div>
     </section>
   );
 }
 
-function PostingPanel({ posting, paste }: { posting: string; paste?: ReactNode }) {
+function PostingPanel({
+  posting,
+  paste,
+}: {
+  posting: string;
+  paste?: ReactNode;
+}) {
   return (
     <>
       <div className={styles.head}>
@@ -205,7 +256,9 @@ function PostingPanel({ posting, paste }: { posting: string; paste?: ReactNode }
           </div>
         </div>
       ) : (
-        <p className={styles.empty}>No posting text yet. Paste the full posting below.</p>
+        <p className={styles.empty}>
+          No posting text yet. Paste the full posting below.
+        </p>
       )}
       {paste ? <div className={styles.paste}>{paste}</div> : null}
     </>
@@ -245,7 +298,11 @@ function QuestionsPanel(props: {
       {dirty ? (
         <p className={styles.note} role="status">
           Not saved yet: questions are saved when you draft.{" "}
-          <button type="button" className={styles.linkButton} onClick={props.onDraft}>
+          <button
+            type="button"
+            className={styles.linkButton}
+            onClick={props.onDraft}
+          >
             Go to the proposal
           </button>
         </p>
@@ -259,7 +316,9 @@ function ProposalPanel(props: {
   opportunityRef: string;
   view: Row;
   questions: string;
-  setView: (view: Row) => void;
+  setView: SetView;
+  paused: boolean;
+  reload: () => void;
 }) {
   const { submit, opportunityRef, view, setView } = props;
   const [pending, setPending] = useState("");
@@ -270,12 +329,23 @@ function ProposalPanel(props: {
   const state = draftState(view);
   const parts = readSections(view);
   const whole = str(view.draft);
+  // The whole-draft text lives here, so leaving the editor or drafting again
+  // cannot drop it unnoticed.
+  const [wholeText, setWholeText] = useState(whole);
+  const [wholeSaved, setWholeSaved] = useState(false);
+  const wholeDirty = editingAll && wholeText !== whole;
   const found = readFindings(view.findings);
 
-  async function call(operation: string, input: Record<string, unknown>) {
-    if (!submit) return null;
+  /** Runs one operation. A refusal is worded; ``local`` keeps the message for
+   * the caller instead of the panel's own error line. */
+  async function call(
+    operation: string,
+    input: Record<string, unknown>,
+    local = false,
+  ): Promise<Called> {
+    if (!submit) return { outcome: null, message: UNREACHABLE, code: "" };
     setPending(operation);
-    setError("");
+    if (!local) setError("");
     let outcome: OperationOutcome;
     try {
       outcome = await submit(operation, input);
@@ -285,13 +355,12 @@ function ProposalPanel(props: {
     setPending("");
     if (outcome.state === "ok") {
       if (isView(outcome.result)) setView(row(outcome.result));
-      return outcome;
+      return { outcome, message: "", code: "" };
     }
-    if (outcome.state === "refused") {
-      if (outcome.code === "draft_edited") setConfirmForce(true);
-      else setError(refusalCopy(outcome.code));
-    } else setError(UNREACHABLE);
-    return null;
+    const code = outcome.state === "refused" ? outcome.code : "";
+    const message = code ? refusalCopy(code) : UNREACHABLE;
+    if (!local && code !== "draft_edited") setError(message);
+    return { outcome: null, message, code };
   }
 
   async function draft(force: boolean) {
@@ -301,18 +370,40 @@ function ProposalPanel(props: {
       questions: props.questions,
       force,
     });
-    if (done) setEditingAll(false);
+    if (done.code === "draft_edited") setConfirmForce(true);
+    if (done.outcome) setEditingAll(false);
   }
 
   async function remove() {
     setConfirmDelete(false);
-    const done = await call("leads.jobproposal.delete", { ref: opportunityRef });
-    if (done) setEditingAll(false);
+    const done = await call("leads.jobproposal.delete", {
+      ref: opportunityRef,
+    });
+    if (done.outcome) setEditingAll(false);
+  }
+
+  function openWhole() {
+    setWholeText(whole);
+    setWholeSaved(false);
+    setEditingAll(true);
+  }
+
+  async function saveWhole() {
+    const done = await call("leads.jobproposal.update", {
+      ref: opportunityRef,
+      draft: wholeText,
+    });
+    if (done.outcome) {
+      setWholeText(str(row(done.outcome.state === "ok" ? done.outcome.result : {}).draft));
+      setWholeSaved(true);
+    }
   }
 
   const working = pending !== "";
   const running = state === "queued" || state === "drafting";
-  const ready = state === "ready" && parts.length > 0;
+  // The stored draft shows whenever one exists and no new one is being written:
+  // after a failed regenerate it is still the draft, so it stays usable.
+  const hasDraft = !running && parts.length > 0;
   return (
     <>
       <div className={styles.head}>
@@ -327,7 +418,7 @@ function ProposalPanel(props: {
           type="button"
           className={styles.primary}
           onClick={() => draft(false)}
-          disabled={!submit || working || running}
+          disabled={!submit || working || running || wholeDirty}
         >
           {running
             ? "Drafting…"
@@ -337,50 +428,84 @@ function ProposalPanel(props: {
                 ? "Draft proposal"
                 : "Regenerate proposal"}
         </button>
-        {ready ? (
+        {hasDraft ? (
           <>
             <button
               type="button"
               className={styles.ghost}
-              onClick={() => setEditingAll((value) => !value)}
-              disabled={working}
+              onClick={() => (editingAll ? setEditingAll(false) : openWhole())}
+              disabled={working || wholeDirty}
             >
               {editingAll ? "Back to sections" : "Edit the whole draft"}
             </button>
             <CopyButton text={whole} label="Copy the whole draft" />
-            <button
-              type="button"
-              className={styles.ghostDanger}
-              onClick={() => setConfirmDelete(true)}
-              disabled={working}
-            >
-              Delete draft
-            </button>
           </>
         ) : null}
+        {hasDraft || running ? (
+          <button
+            type="button"
+            className={styles.ghostDanger}
+            onClick={() => setConfirmDelete(true)}
+            disabled={!submit || working}
+          >
+            {running ? "Stop drafting" : "Delete draft"}
+          </button>
+        ) : null}
       </div>
+      {wholeDirty ? (
+        <p className={styles.note} role="status">
+          Save or undo your changes to the whole draft before drafting again or
+          going back to the sections.
+        </p>
+      ) : null}
       {confirmForce ? (
-        <div className={styles.confirm} role="alertdialog" aria-label="Replace edited sections">
+        <div
+          className={styles.confirm}
+          role="alertdialog"
+          aria-label="Replace edited sections"
+        >
           <p>{refusalCopy("draft_edited")} Draft again anyway?</p>
           <div className={styles.actions}>
-            <button type="button" className={styles.primary} onClick={() => draft(true)} autoFocus>
+            <button
+              type="button"
+              className={styles.danger}
+              onClick={() => draft(true)}
+            >
               Replace my edits
             </button>
-            <button type="button" className={styles.ghost} onClick={() => setConfirmForce(false)}>
+            {/* Focus lands on the safe choice. */}
+            <button
+              type="button"
+              className={styles.ghost}
+              onClick={() => setConfirmForce(false)}
+              autoFocus
+            >
               Keep my edits
             </button>
           </div>
         </div>
       ) : null}
       {confirmDelete ? (
-        <div className={styles.confirm} role="alertdialog" aria-label="Delete the draft">
-          <p>Delete this draft? The screening questions stay.</p>
+        <div
+          className={styles.confirm}
+          role="alertdialog"
+          aria-label={running ? "Stop drafting" : "Delete the draft"}
+        >
+          <p>
+            {running
+              ? "Stop drafting? Any earlier draft of this job is deleted too. The screening questions stay."
+              : "Delete this draft? The screening questions stay."}
+          </p>
           <div className={styles.actions}>
-            {/* Focus lands on the safe choice. */}
             <button type="button" className={styles.danger} onClick={remove}>
-              Delete the draft
+              {running ? "Stop and delete" : "Delete the draft"}
             </button>
-            <button type="button" className={styles.ghost} onClick={() => setConfirmDelete(false)} autoFocus>
+            <button
+              type="button"
+              className={styles.ghost}
+              onClick={() => setConfirmDelete(false)}
+              autoFocus
+            >
               Cancel
             </button>
           </div>
@@ -392,29 +517,52 @@ function ProposalPanel(props: {
         </p>
       ) : null}
       {running ? (
-        <p className={styles.progress} role="status" aria-live="polite">
-          {progressLine(view)}
-        </p>
+        <div className={styles.progress} role="status" aria-live="polite">
+          <p>{progressLine(view)}</p>
+          {props.paused ? (
+            <p className={styles.note}>
+              The page stopped following the draft while you type, so nothing you
+              type is lost.{" "}
+              <button
+                type="button"
+                className={styles.linkButton}
+                onClick={props.reload}
+              >
+                Check progress
+              </button>
+            </p>
+          ) : null}
+        </div>
       ) : null}
       {state === "failed" ? (
         <p className={styles.error} role="alert">
           {failureCopy(str(view.failure_kind))} Draft again to retry.
+          {parts.length ? " The earlier draft below is unchanged." : ""}
         </p>
       ) : null}
-      {state === "idle" && !running ? (
+      {state === "idle" ? (
         <p className={styles.empty}>
           No draft yet. Drafting takes a few minutes; the page follows it.
         </p>
       ) : null}
-      {ready && editingAll ? (
+      {hasDraft && state === "failed" ? (
+        <h3 className={styles.subhead}>Earlier draft</h3>
+      ) : null}
+      {hasDraft && editingAll ? (
         <WholeDraft
-          key={whole}
-          text={whole}
+          text={wholeText}
+          saved={wholeSaved && !wholeDirty}
+          dirty={wholeDirty}
           saving={pending === "leads.jobproposal.update"}
-          onSave={(text) => call("leads.jobproposal.update", { ref: opportunityRef, draft: text })}
+          onChange={(text) => {
+            setWholeText(text);
+            setWholeSaved(false);
+          }}
+          onUndo={() => setWholeText(whole)}
+          onSave={saveWhole}
         />
       ) : null}
-      {ready && !editingAll ? (
+      {hasDraft && !editingAll ? (
         <div className={styles.cards}>
           {parts.map((part) => (
             <AnswerCard
@@ -422,81 +570,89 @@ function ProposalPanel(props: {
               part={part}
               disabled={!submit || working}
               onSave={(body) =>
-                call("leads.proposalsection.set", {
-                  ref: opportunityRef,
-                  section_id: part.id,
-                  body,
-                })
+                call(
+                  "leads.proposalsection.set",
+                  { ref: opportunityRef, section_id: part.id, body },
+                  true,
+                )
               }
               onUseLibrary={() =>
-                call("leads.proposalsection.use_library", {
-                  ref: opportunityRef,
-                  section_id: part.id,
-                })
+                call(
+                  "leads.proposalsection.use_library",
+                  { ref: opportunityRef, section_id: part.id },
+                  true,
+                )
               }
               onSaveToLibrary={async () => {
-                const done = await call("leads.answerlibrary.save", {
-                  question: part.question,
-                  answer: part.body,
-                });
-                if (!done) return false;
-                // The library now matches this question.
-                setView({
-                  ...view,
-                  sections: (Array.isArray(view.sections) ? view.sections : []).map((s) =>
-                    str(row(s).id) === part.id
-                      ? { ...row(s), library_match_id: str(row(done.result).id) }
-                      : s,
-                  ),
-                });
-                return true;
+                const done = await call(
+                  "leads.answerlibrary.save",
+                  { question: part.question, answer: part.body },
+                  true,
+                );
+                if (done.outcome?.state === "ok") {
+                  const entry = str(row(done.outcome.result).id);
+                  // The library now matches this question; the newest view wins.
+                  setView((current) => ({
+                    ...current,
+                    sections: (Array.isArray(current.sections)
+                      ? current.sections
+                      : []
+                    ).map((s) =>
+                      str(row(s).id) === part.id
+                        ? { ...row(s), library_match_id: entry }
+                        : s,
+                    ),
+                  }));
+                }
+                return done;
               }}
             />
           ))}
         </div>
       ) : null}
-      {found && (state === "ready" || state === "failed") ? (
-        <FindingsPanel found={found} />
-      ) : null}
+      {found && hasDraft ? <FindingsPanel found={found} /> : null}
     </>
   );
 }
 
 function WholeDraft(props: {
   text: string;
+  saved: boolean;
+  dirty: boolean;
   saving: boolean;
-  onSave: (text: string) => Promise<OperationOutcome | null>;
+  onChange: (text: string) => void;
+  onUndo: () => void;
+  onSave: () => void;
 }) {
-  const [text, setText] = useState(props.text);
-  const [saved, setSaved] = useState(false);
-  const changed = text !== props.text;
   return (
     <div className={styles.whole}>
       <p className={styles.hint}>
         The letter, then a line with three dashes, then each question in double
-        asterisks with its answer under it. Text with no dashes line replaces only the
-        cover letter.
+        asterisks with its answer under it. Text with no dashes line replaces only
+        the cover letter.
       </p>
       <textarea
         className={styles.textarea}
         aria-label="The whole draft"
-        rows={rowsFor(text, 12)}
-        value={text}
-        onChange={(event) => {
-          setText(event.target.value);
-          setSaved(false);
-        }}
+        rows={rowsFor(props.text, 12)}
+        value={props.text}
+        onChange={(event) => props.onChange(event.target.value)}
       />
       <div className={styles.actions}>
         <button
           type="button"
           className={styles.primary}
-          disabled={!changed || props.saving || !text.trim()}
-          onClick={async () => setSaved((await props.onSave(text)) !== null)}
+          disabled={!props.dirty || props.saving || !props.text.trim()}
+          onClick={props.onSave}
         >
           {props.saving ? "Saving…" : "Save the draft"}
         </button>
-        {saved && !changed ? (
+        {props.dirty ? (
+          <button type="button" className={styles.ghost} onClick={props.onUndo}>
+            Undo changes
+          </button>
+        ) : null}
+        {props.saved ? (
           <span className={styles.note} role="status">
             Saved.
           </span>
@@ -508,7 +664,17 @@ function WholeDraft(props: {
 
 function BookIcon() {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
     </svg>
@@ -517,7 +683,17 @@ function BookIcon() {
 
 function EditIcon() {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <path d="M12 20h9" />
       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
     </svg>
@@ -526,37 +702,61 @@ function EditIcon() {
 
 function SaveIcon() {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <path d="M5 12h14" />
       <path d="M12 5v14" />
     </svg>
   );
 }
 
-/** One section of the draft: read, click or Enter to edit, saved on blur. */
+/** One section of the draft: plain text, a click or the Edit button to edit,
+ * saved on blur. A save that fails keeps the text and stays open. */
 function AnswerCard(props: {
   part: SectionView;
   disabled: boolean;
-  onSave: (body: string) => Promise<OperationOutcome | null>;
-  onUseLibrary: () => Promise<OperationOutcome | null>;
-  onSaveToLibrary: () => Promise<boolean>;
+  onSave: (body: string) => Promise<Called>;
+  onUseLibrary: () => Promise<Called>;
+  onSaveToLibrary: () => Promise<Called>;
 }) {
   const { part } = props;
   const [text, setText] = useState(part.body);
   const [editing, setEditing] = useState(false);
   const [note, setNote] = useState("");
+  const [problem, setProblem] = useState("");
+  const edit = useRef<HTMLButtonElement | null>(null);
   const answer = part.kind === "answer";
 
   async function commit() {
-    setEditing(false);
-    if (text === part.body) return;
-    if (!text.trim()) {
-      setNote("An answer cannot be empty, so the saved text stays.");
-      setText(part.body);
+    if (text === part.body) {
+      setEditing(false);
       return;
     }
+    if (!text.trim()) {
+      setProblem("An answer cannot be empty. Type one, or press Escape to undo.");
+      return;
+    }
+    setProblem("");
     const done = await props.onSave(text);
-    if (!done) setText(part.body);
+    if (done.outcome) setEditing(false);
+    // A failed save keeps what was typed, open, with the reason beside it.
+    else setProblem(`Not saved: ${done.message}`);
+  }
+
+  function cancel() {
+    setText(part.body);
+    setProblem("");
+    setEditing(false);
+    edit.current?.focus();
   }
 
   return (
@@ -571,6 +771,7 @@ function AnswerCard(props: {
           ) : null}
           {!editing ? (
             <button
+              ref={edit}
               type="button"
               className={styles.iconButton}
               onClick={() => setEditing(true)}
@@ -585,7 +786,10 @@ function AnswerCard(props: {
             <button
               type="button"
               className={styles.iconButton}
-              onClick={props.onUseLibrary}
+              onClick={async () => {
+                const done = await props.onUseLibrary();
+                setProblem(done.outcome ? "" : done.message);
+              }}
               disabled={props.disabled}
               aria-label="Use the saved library answer"
               title="Use the saved library answer"
@@ -598,8 +802,11 @@ function AnswerCard(props: {
               type="button"
               className={styles.iconButton}
               onClick={async () => {
-                if (await props.onSaveToLibrary())
+                const done = await props.onSaveToLibrary();
+                if (done.outcome) {
+                  setProblem("");
                   setNote("Saved to the library for this question.");
+                } else setProblem(done.message);
               }}
               disabled={props.disabled || !part.body.trim()}
               aria-label="Save this answer to the library (strip anything specific to this client first)"
@@ -615,6 +822,7 @@ function AnswerCard(props: {
         <textarea
           className={styles.cardTextarea}
           aria-label={`Edit: ${part.label}`}
+          aria-invalid={problem ? true : undefined}
           rows={rowsFor(text, 5)}
           value={text}
           disabled={props.disabled}
@@ -623,8 +831,8 @@ function AnswerCard(props: {
           onBlur={commit}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
-              setText(part.body);
-              setEditing(false);
+              event.preventDefault();
+              cancel();
             }
           }}
         />
@@ -636,9 +844,16 @@ function AnswerCard(props: {
           title="Click to edit"
           onClick={() => !props.disabled && setEditing(true)}
         >
-          {text || <span className={styles.empty}>No answer yet. Click to add one.</span>}
+          {text || (
+            <span className={styles.empty}>No answer yet. Click to add one.</span>
+          )}
         </div>
       )}
+      {problem ? (
+        <p className={styles.error} role="alert">
+          {problem}
+        </p>
+      ) : null}
       {note ? (
         <p className={styles.note} role="status">
           {note}
@@ -656,8 +871,8 @@ function FindingsPanel({ found }: { found: Findings }) {
       {found.clean ? <p className={styles.note}>No issues found.</p> : null}
       {!found.checked ? (
         <p className={styles.warn}>
-          The accuracy check did not run on this draft. Read every claim against your
-          profile before you send it.
+          The accuracy check did not run on this draft. Read every claim against
+          your profile before you send it.
         </p>
       ) : null}
       {found.retried || found.flagged.length ? (

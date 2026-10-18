@@ -241,6 +241,20 @@
   font-size: var(--rs-font-size-sm);
   text-align: center;
 }
+.progress p {
+  margin: 0;
+}
+.progress .note {
+  margin-top: var(--rs-space-2);
+}
+.subhead {
+  margin: var(--rs-space-4) 0 0;
+  font-size: calc(var(--rs-font-size-sm) * 0.85);
+  font-weight: 700;
+  letter-spacing: calc(var(--rs-space-1) / 6);
+  text-transform: uppercase;
+  color: var(--rs-color-ink-dim);
+}
 .error,
 .warn {
   margin: var(--rs-space-2) 0;
