@@ -18,6 +18,7 @@ import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import { JobPaste } from "./job-paste";
 import { ProposalWorkflow } from "./proposal-workflow";
+import { ReviewQueue } from "./review-view";
 import {
   data,
   date,
@@ -36,6 +37,7 @@ import styles from "./leads.module.css";
 
 const NAV = [
   ["queue", "Job queue"],
+  ["review", "Review queue"],
   ["list", "Opportunities"],
   ["board", "Pipeline"],
   ["capture", "Capture inquiry"],
@@ -616,6 +618,59 @@ export async function queue({ shell, query }: ScreenProps) {
           />
         </details>
       ) : null}
+    </Frame>
+  );
+}
+export const REVIEW_LIMIT = 200;
+/** The review queue: Job search jobs the client filters hold back, newest first,
+ * across every Job search pipeline. */
+export async function review({ shell }: ScreenProps) {
+  const catalogResult = await read(shell, "leads.ui.catalog");
+  const jobs = jobSearchPipelines(
+    items(catalogResult).filter((r) => r.kind === "pipeline"),
+  );
+  const result =
+    catalogResult.state === "ok" && jobs.length
+      ? await read(shell, "leads.ui.queue", {
+          jobsearch_only: true,
+          held_only: true,
+          sort: "newest",
+          limit: REVIEW_LIMIT,
+        })
+      : null;
+  const records = result ? items(result) : [];
+  const hrefs = Object.fromEntries(
+    records.map((r) => [str(r.id), shell.href("detail", { ref: str(r.ref) })]),
+  );
+  return (
+    <Frame shell={shell} active="review" title="Review queue" bare>
+      {catalogResult.state !== "ok" ? (
+        <>
+          <h1 className={styles.srOnly}>Review queue</h1>
+          <Failure outcome={catalogResult} />
+        </>
+      ) : !jobs.length ? (
+        <>
+          <h1 className={styles.heading}>Review queue</h1>
+          <p className={styles.intro}>
+            The review queue holds jobs the client filters kept back. It fills
+            once a pipeline uses the Job search preset.
+          </p>
+        </>
+      ) : result && result.state !== "ok" ? (
+        <>
+          <h1 className={styles.srOnly}>Review queue</h1>
+          <Failure outcome={result} />
+        </>
+      ) : (
+        <ReviewQueue
+          items={records}
+          now={Date.now()}
+          hrefs={hrefs}
+          limited={records.length >= REVIEW_LIMIT}
+          submit={shell.submit}
+        />
+      )}
     </Frame>
   );
 }

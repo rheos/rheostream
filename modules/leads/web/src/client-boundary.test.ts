@@ -55,6 +55,7 @@ describe("the server/client boundary", () => {
       "paste-capture",
       "proposal-workflow",
       "queue-view",
+      "review-view",
     ]);
   });
   it("reads every import and re-export form", () => {

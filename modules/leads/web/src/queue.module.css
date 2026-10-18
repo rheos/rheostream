@@ -395,3 +395,39 @@
       color 150ms ease-out;
   }
 }
+/* The review queue: what held a job, in the warning colour, and why in words. */
+.badgeHold {
+  color: var(--rs-color-warning);
+  border-color: color-mix(in srgb, var(--rs-color-warning) 55%, transparent);
+  background: color-mix(in srgb, var(--rs-color-warning) 10%, transparent);
+}
+.holdBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-1) var(--rs-space-2);
+  margin-top: var(--rs-space-1);
+}
+.holdBadges .badge {
+  margin-left: 0;
+}
+.holdReasons {
+  margin: 0 0 var(--rs-space-3);
+  padding-left: var(--rs-space-4);
+  max-width: 70ch;
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+.reviewIntro {
+  margin: 0 0 var(--rs-space-4);
+  max-width: 70ch;
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+.srOnly {
+  position: absolute;
+  width: var(--rs-size-hairline);
+  height: var(--rs-size-hairline);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

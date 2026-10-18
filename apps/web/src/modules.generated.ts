@@ -62,6 +62,7 @@ export const MODULES = [
     ],
     routes: [
       { id: "queue", path: "/", screen: leadsWeb.screens.queue },
+      { id: "review", path: "/review", screen: leadsWeb.screens.review },
       { id: "list", path: "/opportunities", screen: leadsWeb.screens.list },
       { id: "board", path: "/board", screen: leadsWeb.screens.board },
       { id: "detail", path: "/detail", screen: leadsWeb.screens.detail },
@@ -96,6 +97,7 @@ export const MODULES = [
       { operation: "leads.answerlibrary.save", component: leadsWeb.components.ActionForm },
       { operation: "leads.jobpricing.request", component: leadsWeb.components.ActionForm },
       { operation: "leads.proposalmilestone.set", component: leadsWeb.components.ActionForm },
+      { operation: "leads.jobreview.promote", component: leadsWeb.components.ActionForm },
     ],
     searchProviders: [],
     readOperations: [
@@ -133,6 +135,7 @@ export const MODULES = [
       "leads.jobproposal.delete",
       "leads.jobproposal.request",
       "leads.jobproposal.update",
+      "leads.jobreview.promote",
       "leads.opportunity.add_note",
       "leads.opportunity.create_from_observation",
       "leads.opportunity.transition",
