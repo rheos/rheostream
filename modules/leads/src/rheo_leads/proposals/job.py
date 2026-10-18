@@ -35,6 +35,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
@@ -76,6 +77,7 @@ from rheo_leads.proposals.pipeline import (
 from rheo_leads.proposals.pipeline import (
     Role as AskRole,
 )
+from rheo_leads.proposals.pricing_store import Priced, read_priced, write_schedule
 from rheo_leads.proposals.profile import StoredProposalProfile, read_proposal_profile
 from rheo_leads.scoring.tier1 import EXTENSION
 from rheo_leads.storage import pipeline as p
@@ -94,6 +96,7 @@ MODEL_KEYS: Final[Mapping[AskRole, str]] = {
     "gate": ANALYSIS_MODEL_KEY,
     "draft": DRAFT_MODEL_KEY,
     "repair": DRAFT_MODEL_KEY,
+    "milestones": DRAFT_MODEL_KEY,
 }
 SCRATCH_SUBDIR: Final = "jobpropose"
 DRAFT_ATTEMPTS: Final = 3
@@ -109,6 +112,7 @@ READ_TARGETS: Final = (
     EXTENSION + "platform",
     EXTENSION + "budget_min",
     EXTENSION + "budget_max",
+    EXTENSION + "job_type",
 )
 
 DRAFTED_LOG: Final = "job_proposal_finished"
@@ -158,6 +162,7 @@ class Claimed:
     # Which request this claim answers: a delete and a new request reset the
     # attempt count, so the count alone cannot tell two requests apart.
     requested_at: datetime
+    priced: Priced = Priced()
 
 
 class _Deferred(Exception):
@@ -301,6 +306,7 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
         fields=_fields(uow, row["opportunity_id"]),
         questions=row["questions"],
         requested_at=row["requested_at"],
+        priced=read_priced(uow, row["opportunity_id"]),
     )
 
 
@@ -410,6 +416,8 @@ def record_draft(
         for i, answer in enumerate(result.draft.answers, start=1)
     ]
     uow.connection.execute(insert(section), rows)
+    if result.schedule is not None:
+        _write_priced(uow, claimed, result.schedule, now=now)
     values: dict[str, Any] = {
         "state": "ready",
         "stage": None,
@@ -432,6 +440,38 @@ def record_draft(
         .values(**values)
     )
     return True
+
+
+def _write_priced(
+    uow: UnitOfWork, claimed: Claimed, schedule: Any, *, now: datetime
+) -> None:
+    """The Pricing stage's schedule, unless a pricing request of its own is queued
+    or running for this job (that one's answer wins)."""
+    from rheo_leads.proposals.pricing import scope_fit_warning
+
+    busy_state = uow.connection.execute(
+        select(s.job_pricing.c.state)
+        .where(s.job_pricing.c.opportunity_id == claimed.opportunity_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if busy_state in ("queued", "running"):
+        return
+    fields = claimed.fields
+
+    def budget(name: str) -> Any:
+        try:
+            value = fields.get(EXTENSION + name)
+            return Decimal(value) if value else None
+        except ArithmeticError:
+            return None
+
+    warning = scope_fit_warning(
+        [stage.amount for stage in schedule.stages],
+        budget("budget_min"),
+        budget("budget_max"),
+        "milestones" if schedule.stages else claimed.priced.mode,
+    )
+    write_schedule(uow, claimed.opportunity_id, schedule, warning=warning, now=now)
 
 
 def record_wait(uow: UnitOfWork, claimed: Claimed, *, kind: str, now: datetime) -> bool:
@@ -524,6 +564,9 @@ def _job_input(claimed: Claimed) -> JobInput:
         budget_min=fields.get(EXTENSION + "budget_min"),
         budget_max=fields.get(EXTENSION + "budget_max"),
         questions=claimed.questions,
+        pricing_mode=claimed.priced.mode,
+        listing_type=fields.get(EXTENSION + "job_type"),
+        milestones=claimed.priced.rows,
     )
 
 
@@ -667,10 +710,25 @@ def _sweep(
     _log.info(
         DRAFTED_LOG, extra=content_free_extra({"unit_count": sum(counts.values())})
     )
+    # Then the pricing requests, in what is left of the run budget.
+    from rheo_leads.proposals import pricing_job
+
+    pricing_job.price_all(
+        ctx, profile, runner=runner, token=token, window=window, started=started
+    )
     now = hooks.clock()
-    due = follow_up_at(uow, now=now)
-    if due is not None:
-        queue_sweep(uow, workspace_id=ctx.workspace_id, now=now, at=max(due, now))
+    waits = [
+        due
+        for due in (
+            follow_up_at(uow, now=now),
+            pricing_job.follow_up_at(uow, now=now),
+        )
+        if due is not None
+    ]
+    if waits:
+        queue_sweep(
+            uow, workspace_id=ctx.workspace_id, now=now, at=max(min(waits), now)
+        )
 
 
 def _draft_one(

@@ -45,6 +45,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from rheo_leads import pipeline_common as h
 from rheo_leads.pipeline_contracts import RefInput, Strict
 from rheo_leads.proposals.job import queue_sweep
+from rheo_leads.proposals.pricing_operations import PricingView, pricing_view
+from rheo_leads.proposals.pricing_operations import operations as pricing_operations
 from rheo_leads.proposals.profile import read_proposal_profile
 from rheo_leads.proposals.render import (
     UNLABELLED,
@@ -120,6 +122,7 @@ class ProposalView(Strict):
     profile_version: int | None = None
     model_id: str | None = None
     prompt_version: str | None = None
+    pricing: PricingView | None = None
 
 
 class LibraryQuestion(Strict):
@@ -213,7 +216,11 @@ def view(uow: UnitOfWork, identifier: UUID) -> ProposalView:
     row = _row(uow, identifier)
     reference = ref("opportunity", identifier)
     if row is None:
-        return ProposalView(opportunity_ref=reference, state="idle")
+        return ProposalView(
+            opportunity_ref=reference,
+            state="idle",
+            pricing=pricing_view(uow, identifier, None),
+        )
     sections = _sections(uow, identifier)
     matches = _library_matches(uow, [x["question"] for x in sections if x["question"]])
     views = [
@@ -250,6 +257,7 @@ def view(uow: UnitOfWork, identifier: UUID) -> ProposalView:
         profile_version=row["profile_version"],
         model_id=row["model_id"],
         prompt_version=row["prompt_version"],
+        pricing=pricing_view(uow, identifier, row["findings"]),
     )
 
 
@@ -628,4 +636,4 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
         READERS,
         None,
     ),
-)
+) + pricing_operations(ProposalView)

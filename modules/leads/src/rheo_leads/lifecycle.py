@@ -171,6 +171,7 @@ def delete_owned(
         p.followup_reminder,
         # Its sections go with it (ON DELETE CASCADE): a proposal quotes the posting.
         proposals.job_proposal,
+        proposals.job_pricing,
     ):
         uow.connection.execute(
             delete(table).where(table.c.opportunity_id.in_(affected))
