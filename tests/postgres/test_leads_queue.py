@@ -33,6 +33,7 @@ FIELDS = (
     "client_spend",
     "client_rating",
     "client_reviews",
+    "client_hire_rate",
 )
 
 
@@ -99,6 +100,7 @@ def test_cards_carry_full_and_sparse_facts(intake: Intake) -> None:
             "client_spend": "12000",
             "client_rating": "4.9",
             "client_reviews": "12",
+            "client_hire_rate": "0.68",
         },
     )
     capture(intake, "sparse", {"subject": "Sparse posting"})
@@ -108,6 +110,8 @@ def test_cards_carry_full_and_sparse_facts(intake: Intake) -> None:
     full, sparse = found["Full posting"], found["Sparse posting"]
     assert full["fields"]["proposal_count"] == "50"
     assert full["fields"]["client_spend"] == "12000"
+    # The detail header's info tip reads the hire rate from the card (#420).
+    assert full["fields"]["client_hire_rate"] == "0.68"
     assert full["fields"]["posting_url"].endswith("/postings/0201")
     assert "posting_id" not in full["fields"], "only what a card shows"
     assert full["preview"].endswith("…") and len(full["preview"]) <= PREVIEW_CHARS + 1
