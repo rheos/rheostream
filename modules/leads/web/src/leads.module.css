@@ -375,6 +375,19 @@
 .drawer > summary:hover {
   color: var(--rs-color-ink);
 }
+/* The disclosure marker, drawn as a small chevron that turns when open. */
+.drawer > summary::before {
+  content: "";
+  align-self: center;
+  inline-size: calc(var(--rs-space-2) * 0.75);
+  block-size: calc(var(--rs-space-2) * 0.75);
+  border-inline-end: calc(var(--rs-size-hairline) * 1.5) solid currentColor;
+  border-block-end: calc(var(--rs-size-hairline) * 1.5) solid currentColor;
+  rotate: -45deg;
+}
+.drawer[open] > summary::before {
+  rotate: 45deg;
+}
 .drawerTitle {
   font-weight: 500;
 }

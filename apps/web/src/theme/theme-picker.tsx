@@ -5,7 +5,8 @@ import type { ThemeId } from "./builtins";
 import styles from "./theme-picker.module.css";
 
 /** The theme choice, as it sits inside the settings menu. A change applies at
- * once; the Apply button remains for a page without scripts. */
+ * once; the Apply button remains for a page without scripts, where the menu
+ * still opens (it is a native disclosure). */
 export function ThemePicker({ current }: { current: ThemeId }) {
   const id = useId();
   const form = useRef<HTMLFormElement>(null);

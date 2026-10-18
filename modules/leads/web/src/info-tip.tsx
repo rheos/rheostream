@@ -6,7 +6,8 @@ import styles from "./info-tip.module.css";
  * panel under it. Escape or a click elsewhere closes it, and focus returns to
  * the button. The panel is in the markup while closed, hidden, so what it says
  * is never lost to a reader that skips scripts. A block, so it never sits
- * inside a paragraph. */
+ * inside a paragraph. On a phone the panel is a sheet at the foot of the
+ * screen, so a button at the end of a line never pushes it off the edge. */
 export function InfoTip({
   label,
   children,
@@ -28,9 +29,16 @@ export function InfoTip({
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Only take focus back when it was here; Escape in a field elsewhere
+      // still closes the tip but leaves the caret where it is.
+      // A key event's target is the focused element, or body when none is.
+      const target = event.target as HTMLElement | null;
+      const inside =
+        Boolean(target && root.current?.contains(target)) ||
+        target?.tagName === "BODY";
       setOpen(false);
-      button.current?.focus();
+      if (inside) button.current?.focus();
     };
     const onPointer = (event: PointerEvent) => {
       if (root.current && !root.current.contains(event.target as Node))

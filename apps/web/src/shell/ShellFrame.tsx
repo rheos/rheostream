@@ -135,7 +135,9 @@ export function ShellFrame({
             </SettingsSection>
           ) : null}
           <SettingsSection title="Appearance">
-            <ThemePicker key={theme} current={theme} />
+            {/* No key: remounting on the new theme would drop the focus
+                the select had when its change applied the theme. */}
+            <ThemePicker current={theme} />
           </SettingsSection>
           {account ? (
             <SettingsSection title="Account">

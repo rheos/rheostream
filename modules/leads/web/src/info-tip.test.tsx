@@ -51,11 +51,27 @@ describe("the info tip (#408)", () => {
 
   it("closes on Escape and gives focus back to its button", () => {
     act(() => button().click());
+    button().focus();
     act(() => {
-      window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape" }));
+      button().dispatchEvent(
+        new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
     });
     expect(panel().hidden).toBe(true);
     expect(window.document.activeElement).toBe(button());
+  });
+
+  it("leaves focus in a field elsewhere when Escape closes it from there", () => {
+    act(() => button().click());
+    const elsewhere = host.querySelector<HTMLButtonElement>("button:not([aria-label])")!;
+    elsewhere.focus();
+    act(() => {
+      elsewhere.dispatchEvent(
+        new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(panel().hidden).toBe(true);
+    expect(window.document.activeElement).toBe(elsewhere);
   });
 
   it("closes when the pointer goes down outside it", () => {

@@ -805,6 +805,15 @@ export function JobHeader({
       </div>
       <div className={styles.jobSide}>
         <FitPill assessment={item.assessment} large />
+        {/* Without a stage select (a closed job, or a read-only host) the stage
+            still shows, so a dismissed job never looks open. */}
+        {!submit || !rows(item.transitions).length ? (
+          <span
+            className={`${styles.badge} ${item.stage_kind === "open" ? styles.stageOpen : styles.stageClosed}`}
+          >
+            {str(item.stage_label) || str(item.stage_id)}
+          </span>
+        ) : null}
         <StageActions
           item={item}
           disabled={moving}

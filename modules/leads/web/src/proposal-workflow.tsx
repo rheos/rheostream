@@ -471,7 +471,7 @@ function ProposalPanel(props: {
             {running ? "Stop drafting" : "Delete draft"}
           </button>
         ) : null}
-        <span className={styles.push}>
+        <div className={styles.push}>
           <InfoTip label="About drafts">
             <p>
               Drafts come from your proposal profile, and nothing is sent. You
@@ -482,7 +482,7 @@ function ProposalPanel(props: {
               answer; the plus saves an answer to the library.
             </p>
           </InfoTip>
-        </span>
+        </div>
       </div>
       {wholeDirty ? (
         <p className={styles.note} role="status">
@@ -684,7 +684,7 @@ function WholeDraft(props: {
             Saved.
           </span>
         ) : null}
-        <span className={styles.push}>
+        <div className={styles.push}>
           <InfoTip label="About the whole-draft format">
             <p>
               The letter, then a line with three dashes, then each question in
@@ -692,7 +692,7 @@ function WholeDraft(props: {
               replaces only the cover letter.
             </p>
           </InfoTip>
-        </span>
+        </div>
       </div>
     </div>
   );

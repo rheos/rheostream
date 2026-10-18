@@ -350,8 +350,9 @@ edits only an empty rule set or one unconditional create/record-only rule; advan
 remain readable and require the operation API. Routing edits include the ordered rule IDs
 so a stale form cannot overwrite newer configuration. Opportunity edits use record revisions.
 
-Appearance offers GreenStream dark (default), Novadiem dark and Novadiem light. A host-local
-cookie remembers the selection. The Novadiem pair shares Sora typography and corner geometry;
+Appearance, in the header's settings menu, offers GreenStream dark (default), Novadiem dark
+and Novadiem light. A cookie on the deployment's base host remembers the selection for every
+module host. All three use Geist; the Novadiem pair shares its corner geometry, and
 confirmation chrome stays identical across all themes.
 
 The flagship overlay loads the Leads and Relationships packages and routes the Leads host.
