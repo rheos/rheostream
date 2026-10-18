@@ -24,6 +24,7 @@ from rheo_leads.jobfeed.state import forget_posting
 from rheo_leads.pipeline_evidence import derive
 from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import pipeline as p
+from rheo_leads.storage import proposals
 from rheo_leads.storage import tables as t
 
 
@@ -163,7 +164,14 @@ def delete_owned(
         .values(evidence_observation_id=None)
     )
     # Textual derivatives cannot safely survive loss of their source evidence.
-    for table in (p.qualification, p.draft, p.handoff, p.followup_reminder):
+    for table in (
+        p.qualification,
+        p.draft,
+        p.handoff,
+        p.followup_reminder,
+        # Its sections go with it (ON DELETE CASCADE): a proposal quotes the posting.
+        proposals.job_proposal,
+    ):
         uow.connection.execute(
             delete(table).where(table.c.opportunity_id.in_(affected))
         )

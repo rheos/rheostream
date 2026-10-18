@@ -51,6 +51,14 @@ from rheo_leads.pipeline_common import RELATIONSHIPS
 from rheo_leads.pipeline_contracts import DeleteInput
 from rheo_leads.pipeline_operations import OPERATIONS as PIPELINE_OPERATIONS
 from rheo_leads.pipeline_operations import TOOLS
+from rheo_leads.proposals.job import (
+    PROPOSE_JOB_KIND,
+    PROPOSE_JOB_MAX_ATTEMPTS,
+    ProposePayload,
+    propose_job,
+)
+from rheo_leads.proposals.operations import OPERATIONS as PROPOSAL_OPERATIONS
+from rheo_leads.proposals.profile import OPERATIONS as PROPOSAL_PROFILE_OPERATIONS
 from rheo_leads.resolvers import RECORD_TABLES, resolve_record
 from rheo_leads.scoring.job import (
     SCORE_INTERVAL_SECONDS,
@@ -99,7 +107,9 @@ MANIFEST = ModuleManifest(
     + CONNECTION_OPERATIONS
     + JOBFEED_OPERATIONS
     + JOBPASTE_OPERATIONS
-    + SCORING_OPERATIONS,
+    + SCORING_OPERATIONS
+    + PROPOSAL_PROFILE_OPERATIONS
+    + PROPOSAL_OPERATIONS,
     tools=(
         *TOOLS,
         *CONNECTION_TOOLS,
@@ -165,6 +175,13 @@ MANIFEST = ModuleManifest(
             max_attempts=SCORE_JOB_MAX_ATTEMPTS,
             cancellable=False,
         ),
+        JobKind(
+            name=PROPOSE_JOB_KIND,
+            input_model=ProposePayload,
+            handler=propose_job,
+            max_attempts=PROPOSE_JOB_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
     ),
     # Off by default: module enable writes no row; a completed authorization
     # enables it, and the ticker enqueues only while job search is on.
@@ -197,7 +214,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=8,
+        format_version=9,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,

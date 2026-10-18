@@ -2748,6 +2748,362 @@
         "updated_at"
       ],
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.answer_library"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "question": {
+          "type": "string"
+        },
+        "question_key": {
+          "type": "string"
+        },
+        "answer": {
+          "type": "string"
+        },
+        "updated_by_kind": {
+          "type": "string"
+        },
+        "updated_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "question",
+        "question_key",
+        "answer",
+        "updated_by_kind",
+        "updated_by_id",
+        "created_at",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.proposal_profile"
+        },
+        "singleton": {
+          "type": "boolean"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "policy": {
+          "type": "object"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "drafting_account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "updated_by_kind": {
+          "type": "string"
+        },
+        "updated_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "singleton",
+        "profile",
+        "policy",
+        "version",
+        "drafting_account_id",
+        "updated_by_kind",
+        "updated_by_id",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.job_proposal"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "queued",
+            "drafting",
+            "ready",
+            "failed"
+          ]
+        },
+        "questions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "findings": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generated_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attempts": {
+          "type": "integer"
+        },
+        "retry_after": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profile_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requested_by_kind": {
+          "type": "string"
+        },
+        "requested_by_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requested_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "opportunity_id",
+        "state",
+        "questions",
+        "stage",
+        "step",
+        "total",
+        "findings",
+        "generated_at",
+        "attempts",
+        "retry_after",
+        "failure_kind",
+        "profile_version",
+        "model_id",
+        "prompt_version",
+        "requested_by_kind",
+        "requested_by_id",
+        "requested_at",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "record_type": {
+          "const": "leads.proposal_section"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "opportunity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "position": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "cover_letter",
+            "answer"
+          ]
+        },
+        "question": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "body": {
+          "type": "string"
+        },
+        "library_answer_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "id",
+        "opportunity_id",
+        "position",
+        "kind",
+        "question",
+        "body",
+        "library_answer_id",
+        "updated_at"
+      ],
+      "additionalProperties": false
     }
   ]
 }

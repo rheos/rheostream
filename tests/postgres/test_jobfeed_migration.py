@@ -31,7 +31,7 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0009_jobfeed_collector"
-HEAD = "0011_job_scoring"
+HEAD = "0012_job_proposals"
 NEW_TABLES = {
     "jobfeed_connection",
     "jobfeed_authorization",
@@ -40,6 +40,13 @@ NEW_TABLES = {
 }
 # Created by 0011_job_scoring, after this file's revision, and empty on upgrade too.
 SCORING_TABLES = {"jobsearch_profile", "job_score_state"}
+# Created by 0012_job_proposals, and empty on upgrade too.
+PROPOSAL_TABLES = {
+    "proposal_profile",
+    "job_proposal",
+    "proposal_section",
+    "answer_library",
+}
 
 
 def fingerprint(connection: Connection, schema: str = "leads") -> dict[str, Any]:
@@ -150,7 +157,7 @@ def test_populated_0008_upgrades_additively_to_the_fresh_schema(
     reference = populate(intake)
     with open_unit_of_work(intake.ctx) as uow:
         undone = rewind_leads(uow.connection, "0008_attach_by_field")
-        assert undone == (HEAD, "0010_job_paste", REVISION)
+        assert undone == (HEAD, "0011_job_scoring", "0010_job_paste", REVISION)
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
@@ -180,8 +187,10 @@ def test_populated_0008_upgrades_additively_to_the_fresh_schema(
         upgraded = fingerprint(uow.connection)
         assert recorded_revisions(uow.connection, "leads") == {HEAD}
     assert {name: after[name] for name in before} == before
-    assert set(after) - set(before) == NEW_TABLES | SCORING_TABLES
-    assert all(after[name] == [] for name in NEW_TABLES | SCORING_TABLES)
+    assert set(after) - set(before) == NEW_TABLES | SCORING_TABLES | PROPOSAL_TABLES
+    assert all(
+        after[name] == [] for name in NEW_TABLES | SCORING_TABLES | PROPOSAL_TABLES
+    )
     assert upgraded == fresh
     assert one(intake).ref == reference
 

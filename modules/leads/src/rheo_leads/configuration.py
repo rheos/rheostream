@@ -84,6 +84,26 @@ SCORING_SETTINGS: Final = (
         minimum=1,
     ),
 )
+# Proposal drafting: the model for the letter and its repair, and the one for the
+# posting analysis and the accuracy extraction (empty leaves the CLI's default).
+PROPOSAL_SETTINGS: Final = (
+    KeySpec(
+        key="leads.proposals.model_id",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
+    KeySpec(
+        key="leads.proposals.analysis_model_id",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
+)
 SETTINGS: Final = (
     (JOBSEARCH_SETTING,)
     + tuple(
@@ -106,4 +126,5 @@ SETTINGS: Final = (
     )
     + JOBFEED_SETTINGS
     + SCORING_SETTINGS
+    + PROPOSAL_SETTINGS
 )
