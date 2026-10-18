@@ -429,3 +429,17 @@ def test_an_account_failure_passes_straight_through() -> None:
     script = Script(analysis=[Limited()], draft=[{"text": LETTER}], gate=[CLAIMS_OK])
     with pytest.raises(Limited):
         run(script)
+
+
+def test_a_repair_that_drops_an_answer_is_not_kept() -> None:
+    tell = "Carts are lost — and I am happy to help. Which processor do you use?"
+    with_answer = tell + "\n\n---\n\n**What is your rate?**\nFifty an hour."
+    script = Script(
+        analysis=[ANALYSIS],
+        draft=[{"text": with_answer}],
+        gate=[CLAIMS_OK],
+        repair=[{"text": LETTER}],
+    )
+    result, _ = run(script)
+    assert result.findings["style_repaired"] is False
+    assert result.draft.answers == (Answer("What is your rate?", "Fifty an hour."),)

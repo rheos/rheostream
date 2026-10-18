@@ -181,9 +181,10 @@ def generate(
                 expect_questions=bool(asked),
             )
             after = gate.lint_text(candidate)
-            # A repair that trades one tell for another, or loses sections, is
-            # a regression, so the original stands.
-            if len(after) < len(style):
+            # A repair that trades one tell for another, or loses or renames a
+            # section, is a regression, so the original stands.
+            same_sections = _questions(candidate) == _questions(result)
+            if same_sections and len(after) < len(style):
                 result, style, repaired = candidate, after, True
         except AnswerUnusable:
             pass
@@ -207,6 +208,10 @@ def generate(
     if render_draft(parsed).strip() != result.strip():
         findings["normalized"] = True
     return Result(draft=parsed, findings=findings, seeded_questions=seeded)
+
+
+def _questions(text: str) -> tuple[str, ...]:
+    return tuple(a.question for a in parse_draft(text).answers)
 
 
 def _check(
