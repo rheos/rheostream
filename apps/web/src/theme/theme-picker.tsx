@@ -1,17 +1,25 @@
 "use client";
-import { useId, useRef, useState } from "react";
+import { useId, useRef, useState, useSyncExternalStore } from "react";
 import { selectTheme } from "./theme-action";
 import type { ThemeId } from "./builtins";
 import styles from "./theme-picker.module.css";
 
-/** The theme choice, as it sits inside the settings menu. A change applies at
- * once; the Apply button remains for a page without scripts, where the menu
- * still opens (it is a native disclosure). */
+/** The theme choice, as it sits inside the settings menu. Once scripts run, a
+ * change applies at once; until then (before hydration, or with no scripts at
+ * all) an Apply button submits the form natively. */
+const noop = () => () => {};
+
 export function ThemePicker({ current }: { current: ThemeId }) {
   const id = useId();
   const form = useRef<HTMLFormElement>(null);
   const [family, setFamily] = useState(
     current.startsWith("novadiem") ? "novadiem" : "greenstream",
+  );
+  // False in the server markup and during hydration, true once scripts run.
+  const live = useSyncExternalStore(
+    noop,
+    () => true,
+    () => false,
   );
   return (
     <form ref={form} action={selectTheme} className={styles.form}>
@@ -43,9 +51,7 @@ export function ThemePicker({ current }: { current: ThemeId }) {
           </select>
         </>
       ) : null}
-      <noscript>
-        <button type="submit">Apply</button>
-      </noscript>
+      {live ? null : <button type="submit">Apply</button>}
     </form>
   );
 }
