@@ -586,7 +586,9 @@ def record(
     now: datetime,
 ) -> bool:
     """Write the outcome; ``False`` when the job's inputs moved while it was scored
-    (the refresh made it pending again, and its next claim scores the new inputs)."""
+    (the refresh made it pending again, and its next claim scores the new inputs),
+    or when the owner promoted it after the claim (the promotion made it pending,
+    and its next claim scores it past the filters)."""
     state = s.job_score_state
     current = uow.connection.execute(
         select(state.c.input_digest, state.c.attempts)
@@ -594,6 +596,8 @@ def record(
         .with_for_update()
     ).one_or_none()
     if current is None or current.input_digest != claimed.digest:
+        return False
+    if not claimed.promoted and promoted(uow, claimed.opportunity_id):
         return False
     if outcome.deferred:
         # The cause is the account's, so every claimable job waits with this one,

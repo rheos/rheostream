@@ -8,10 +8,12 @@ from uuid import UUID
 import pytest
 from harness.jobfeed import call
 from harness.jobfeed import collector as collector
+from harness.registry import add_member
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.operations import dispatch
 from rheo_leads.references import ref
+from rheo_leads.scoring import job as scoring
 from rheo_leads.scoring.job import PROMOTED_LINE
 from rheo_leads.storage import scoring as s
 from sqlalchemy import select
@@ -44,10 +46,10 @@ def promote(scored: Scoring, posting: str) -> Any:
     return call(scored.i, scored.c.owner, "leads.jobreview.promote", ref=reference)
 
 
-def refused(scored: Scoring, posting: str) -> str:
+def refused(scored: Scoring, posting: str, ctx: WorkspaceContext | None = None) -> str:
     reference = ref("opportunity", the_opportunity(scored.i, posting)["id"])
     outcome = dispatch(
-        scored.c.owner,
+        ctx or scored.c.owner,
         "leads.jobreview.promote",
         {"ref": reference},
         registry=scored.i.surfaces.operations,
@@ -118,10 +120,41 @@ def test_promote_lets_the_model_score_a_held_job_and_survives_rescoring(
     assert review(scored) == []
 
 
-def test_only_a_held_job_is_promoted(scored: Scoring) -> None:
+def test_only_a_held_job_is_promoted_and_only_by_an_owner(scored: Scoring) -> None:
     held(scored)
     assert refused(scored, "~02100") == "not_held"
+    member_id = add_member(
+        scored.i.cluster.backend, scored.i.workspace, Role.MEMBER, display_name="m"
+    )
+    member = context_for_harness(scored.i.workspace, member_id, Role.MEMBER)
+    assert isinstance(member, WorkspaceContext)
+    assert refused(scored, "~02200", member) != ""
     assert rows(scored.i, select(s.job_promotion)) == []
+
+
+def test_a_promote_during_a_sweep_is_not_overwritten_by_its_hold(
+    scored: Scoring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held(scored)
+    # A new profile puts the held job back in line; it is claimed unpromoted.
+    scored.set_profile(goals=["A changed goal."])
+    original = scoring.assess
+    promoted: list[bool] = []
+
+    def assess_then_promote(*args: Any, **kwargs: Any) -> Any:
+        outcome = original(*args, **kwargs)
+        if not promoted:
+            promoted.append(kwargs["promoted"])
+            promote(scored, "~02200")
+        return outcome
+
+    monkeypatch.setattr(scoring, "assess", assess_then_promote)
+    scored.sweep()
+    assert promoted == [False]
+    # The stale hold was dropped and the promoted job scored in the same sweep.
+    latest = scored.assessments("~02200")[-1]
+    assert (latest["fit"], latest["score"]) == ("medium", 60)
+    assert scored.state("~02200")["state"] == "scored"
 
 
 def test_a_promotion_is_exported_and_restored(

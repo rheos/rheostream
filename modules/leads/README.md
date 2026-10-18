@@ -230,7 +230,7 @@ back, newest first, each with a badge for every clause that held it (unverified
 payment, client spend, rating, hire rate, too many proposals), decided again against
 the current profile. `leads.ui.queue` with `held_only` is its read; each item carries
 a `hold` list of `{code, text}`. From a card you can open the posting, copy the ID,
-dismiss the job, or **promote** it: `leads.jobreview.promote` records an override on
+dismiss the job, or (an owner) **promote** it: `leads.jobreview.promote` records an override on
 that job (`job_promotion`), and the next sweep sends it to the model like a job that
 passed, with the clauses that held it kept on its assessment as conditions. The
 override is its own row, so a rescore, a changed posting or a new profile never undoes

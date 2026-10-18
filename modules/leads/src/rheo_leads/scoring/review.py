@@ -41,7 +41,6 @@ from rheo_leads.scoring.tier1 import JobFacts, run_tier1
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import scoring as s
 
-MEMBERS = frozenset({Role.OWNER, Role.MEMBER})
 # A clause the current profile no longer names (the job waits to be rescored),
 # or a hold read without a profile: its sentence comes from the stored assessment.
 OTHER = "other"
@@ -175,7 +174,9 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
         OperationDeclaration(
             name="leads.jobreview.promote",
             safety_class=SafetyClass.MUTATE,
-            roles=MEMBERS,
+            # The override is the owner's: it sets aside their own filters and
+            # spends their scoring account's model time.
+            roles=frozenset({Role.OWNER}),
             input_model=RefInput,
             output=PromoteOutput,
             # Promoting a promoted job answers its first promotion.

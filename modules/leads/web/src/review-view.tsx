@@ -15,6 +15,8 @@ export interface ReviewProps {
   hrefs: Record<string, string>;
   /** The server's answer had as many items as it may send. */
   limited: boolean;
+  /** Promote is the owner's override; members see the list and may dismiss. */
+  canPromote: boolean;
   submit?: Submit;
 }
 
@@ -100,13 +102,14 @@ function ReviewCard({
           onPromote ? (
             <button
               type="button"
-              className={styles.iconButton}
+              className={styles.promoteButton}
               aria-label={`Promote ${title}: score it past the filters`}
-              title="Promote: score it past the filters"
+              title="Score it past the filters"
               disabled={busy}
               onClick={() => onPromote(item)}
             >
               <PromoteIcon />
+              <span aria-hidden="true">Promote</span>
             </button>
           ) : null
         }
@@ -202,9 +205,10 @@ export function ReviewQueue(props: ReviewProps) {
         </span>
       </div>
       <p className={styles.reviewIntro}>
-        Jobs the client filters held back before scoring. Promote one to have
-        it scored and drafted like any other job; the clauses that held it stay
-        on its assessment as things to check.
+        Jobs the client filters held back before scoring.{" "}
+        {props.canPromote
+          ? "Promote one to have it scored and drafted like any other job; the clauses that held it stay on its assessment as things to check."
+          : "A workspace owner can promote one to have it scored like any other job."}
       </p>
       <p className={styles.srOnly} role="status">
         {notice}
@@ -225,7 +229,7 @@ export function ReviewQueue(props: ReviewProps) {
                 now={props.now}
                 busy={busy[id] === true}
                 error={errors[id]}
-                onPromote={props.submit ? promote : undefined}
+                onPromote={props.submit && props.canPromote ? promote : undefined}
                 onMove={
                   props.submit && row(item.dismiss).stage_id ? move : undefined
                 }

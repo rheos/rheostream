@@ -668,6 +668,7 @@ export async function review({ shell }: ScreenProps) {
           now={Date.now()}
           hrefs={hrefs}
           limited={records.length >= REVIEW_LIMIT}
+          canPromote={shell.role === "owner"}
           submit={shell.submit}
         />
       )}

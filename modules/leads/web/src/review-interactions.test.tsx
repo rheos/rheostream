@@ -57,7 +57,7 @@ function mount(submit?: ReturnType<typeof vi.fn>, items = [CROWDED, THIN]) {
   const send = submit as unknown as ShellApi["submit"];
   act(() =>
     root.render(
-      <ReviewQueue items={items} now={0} hrefs={{}} limited={false} submit={send} />,
+      <ReviewQueue items={items} now={0} hrefs={{}} limited={false} canPromote submit={send} />,
     ),
   );
 }
@@ -79,7 +79,7 @@ describe("the review queue", () => {
       "Held by the filters",
     );
     const html = renderToStaticMarkup(
-      <ReviewQueue items={[THIN]} now={0} hrefs={{}} limited={false} />,
+      <ReviewQueue items={[THIN]} now={0} hrefs={{}} limited={false} canPromote />,
     );
     expect(html).toContain("Low client spend");
     expect(html).toContain("below 4.5.");
@@ -88,9 +88,18 @@ describe("the review queue", () => {
     expect(html).not.toContain('aria-label="Promote');
     expect(html).toContain("Copy opportunity ID");
   });
+  it("leaves Promote to owners; a member can still dismiss", () => {
+    const submit = vi.fn() as unknown as ShellApi["submit"];
+    const html = renderToStaticMarkup(
+      <ReviewQueue items={[THIN]} now={0} hrefs={{}} limited={false} canPromote={false} submit={submit} />,
+    );
+    expect(html).not.toContain('aria-label="Promote');
+    expect(html).toContain('aria-label="Dismiss Example thin client');
+    expect(html).toContain("A workspace owner can promote one");
+  });
   it("shows the empty state when nothing is held", () => {
     const html = renderToStaticMarkup(
-      <ReviewQueue items={[]} now={0} hrefs={{}} limited={false} />,
+      <ReviewQueue items={[]} now={0} hrefs={{}} limited={false} canPromote={false} />,
     );
     expect(html).toContain("Nothing is held back right now.");
   });

@@ -410,6 +410,32 @@
 .holdBadges .badge {
   margin-left: 0;
 }
+.promoteButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rs-space-1);
+  height: calc(var(--rs-space-6) - var(--rs-space-1) / 2);
+  padding: 0 var(--rs-space-3);
+  border: var(--rs-size-hairline) solid var(--rs-color-accent);
+  border-radius: var(--rs-radius-md);
+  background: transparent;
+  color: var(--rs-color-accent-strong);
+  font: inherit;
+  font-size: var(--rs-font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.promoteButton svg {
+  width: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
+  height: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
+}
+.promoteButton:hover {
+  background: color-mix(in srgb, var(--rs-color-accent) 12%, transparent);
+}
+.promoteButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 .holdReasons {
   margin: 0 0 var(--rs-space-3);
   padding-left: var(--rs-space-4);
