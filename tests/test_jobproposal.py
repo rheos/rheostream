@@ -443,3 +443,20 @@ def test_a_repair_that_drops_an_answer_is_not_kept() -> None:
     result, _ = run(script)
     assert result.findings["style_repaired"] is False
     assert result.draft.answers == (Answer("What is your rate?", "Fifty an hour."),)
+
+
+def test_every_task_that_wants_an_object_asks_for_bare_json() -> None:
+    """The runtime parses the reply as JSON; the schema never reaches the model."""
+    script = Script(
+        analysis=[ANALYSIS],
+        draft=[{"text": LETTER + " — happy to help."}],
+        gate=[CLAIMS_OK],
+        repair=[{"text": LETTER}],
+    )
+    run(script)
+    tasks = dict(script.calls)
+    assert "Return ONLY valid JSON" in tasks["analysis"]
+    assert "Return STRICT JSON only" in tasks["gate"]
+    assert tasks["gate"].endswith(gate.EXTRACTOR_CLOSING)
+    for role in ("draft", "repair"):
+        assert tasks[role].endswith(prompts.JSON_TEXT_REPLY), role
