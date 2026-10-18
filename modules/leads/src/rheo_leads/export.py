@@ -1,5 +1,5 @@
-"""Version-eight intake, pipeline, job feed and job scoring snapshot; restore preserves
-identities.
+"""Version-nine intake, pipeline, job feed, job scoring and proposal snapshot; restore
+preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. The job feed connection is exported
@@ -7,8 +7,11 @@ without its token reference, its registered client, its run claim and its backof
 and the pending authorization is never exported; a restored collector needs the
 owner to reconnect, which registers a fresh client. The job-search profile and each
 job's scoring state are exported whole; a restored scoring schedule stays off until
-the owner sets the profile again. Restore replaces only the fresh seed; existing
-intake records cause a refusal, never a destructive merge.
+the owner sets the profile again. The proposal profile, each job's proposal with its
+sections, and the answer library are exported whole; a proposal that was queued or
+drafting is restored as failed, since its sweep did not come with it. Restore
+replaces only the fresh seed; existing intake records cause a refusal, never a
+destructive merge.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -38,9 +41,11 @@ from sqlalchemy import (
     select,
 )
 
+from rheo_leads.proposals.profile import ProposalPolicy
 from rheo_leads.scoring.profile import ScoringPolicy
 from rheo_leads.storage import jobfeed
 from rheo_leads.storage import pipeline as _pipeline  # noqa: F401
+from rheo_leads.storage import proposals as _proposals
 from rheo_leads.storage import scoring as _scoring
 from rheo_leads.storage import tables as t
 
@@ -85,6 +90,17 @@ RESTORED_COLLECTOR: Mapping[str, object] = {
     "client_secret_expires_at": None,
     "client_secret_ref": None,
     "registration_token_ref": None,
+}
+
+
+# A queued or running draft's sweep is not exported, so nothing would ever run it.
+RESTORED_PROPOSAL: Mapping[str, object] = {
+    "state": "failed",
+    "stage": None,
+    "step": None,
+    "total": None,
+    "retry_after": None,
+    "failure_kind": "restored",
 }
 
 
@@ -173,6 +189,13 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
                 # The scorer reads the policy whole, so a malformed one is refused
                 # here rather than stalling scoring after the restore.
                 ScoringPolicy.model_validate(values["policy"])
+            if table is _proposals.proposal_profile:
+                ProposalPolicy.model_validate(values["policy"])
+            if table is _proposals.job_proposal and values["state"] in (
+                "queued",
+                "drafting",
+            ):
+                values.update(RESTORED_PROPOSAL)
             if table is jobfeed.jobfeed_connection:
                 # No token, no client, no claim, no backoff: the owner reconnects.
                 values.update(RESTORED_COLLECTOR)

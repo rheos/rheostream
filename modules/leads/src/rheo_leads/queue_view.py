@@ -30,6 +30,7 @@ from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
 from rheo_leads.references import ref
 from rheo_leads.storage import pipeline as p
+from rheo_leads.storage import proposals
 from rheo_leads.storage import tables as t
 
 EXTENSION = "ext.jobsearch."
@@ -200,6 +201,14 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
         uow.connection.execute(
             select(p.draft.c.opportunity_id)
             .where(p.draft.c.opportunity_id.in_(ids))
+            .distinct()
+        ).scalars()
+    )
+    # A drafted proposal counts as a draft on the card too.
+    drafts |= set(
+        uow.connection.execute(
+            select(proposals.proposal_section.c.opportunity_id)
+            .where(proposals.proposal_section.c.opportunity_id.in_(ids))
             .distinct()
         ).scalars()
     )
