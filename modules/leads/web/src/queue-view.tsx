@@ -260,6 +260,101 @@ export interface Move {
   kind: string;
 }
 
+/** The stage select, the open-the-posting link, the optional ID copy and Dismiss:
+ * one row of controls for the queue card and the job detail header alike. */
+export function StageActions({
+  item,
+  onMove,
+  copyId = false,
+  disabled = false,
+}: {
+  item: Row;
+  onMove?: (item: Row, to: Move) => void;
+  copyId?: boolean;
+  disabled?: boolean;
+}) {
+  const title = str(item.title) || "Untitled opportunity";
+  const posting = postingUrl(row(item.fields));
+  const target = row(item.dismiss);
+  const next = rows(item.transitions).map(
+    (m): Move => ({
+      stage_id: str(m.stage_id),
+      label: str(m.label),
+      kind: str(m.kind),
+    }),
+  );
+  return (
+    <div className={styles.actions}>
+      {onMove && next.length ? (
+        <select
+          className={styles.stageSelect}
+          aria-label={`Stage for ${title}`}
+          value={str(item.stage_id)}
+          disabled={disabled}
+          onChange={(e) => {
+            const to = next.find((m) => m.stage_id === e.target.value);
+            if (to) onMove(item, to);
+          }}
+        >
+          <option value={str(item.stage_id)}>
+            {str(item.stage_label) || str(item.stage_id)}
+          </option>
+          {next.map((m) => (
+            <option key={m.stage_id} value={m.stage_id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {posting ? (
+        <a
+          className={styles.iconButton}
+          href={posting}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Open the posting"
+          title="Open the posting"
+        >
+          <OpenIcon />
+        </a>
+      ) : null}
+      {copyId ? (
+        <CopyButton text={str(item.id)} label="Copy opportunity ID" />
+      ) : null}
+      {onMove && target.stage_id ? (
+        <button
+          type="button"
+          className={`${styles.iconButton} ${styles.danger}`}
+          aria-label={`Dismiss ${title} (move to ${str(target.label)})`}
+          title={`Dismiss: move to ${str(target.label)}`}
+          disabled={disabled}
+          onClick={() =>
+            onMove(item, {
+              stage_id: str(target.stage_id),
+              label: str(target.label),
+              kind: "terminal",
+            })
+          }
+        >
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function Card({
   item,
   href,
@@ -275,18 +370,8 @@ function Card({
   error?: string;
   onMove?: (item: Row, to: Move) => void;
 }) {
-  const fields = row(item.fields);
   const title = str(item.title) || "Untitled opportunity";
-  const posting = postingUrl(fields);
   const summary = str(row(item.assessment).summary);
-  const target = row(item.dismiss);
-  const next = rows(item.transitions).map(
-    (m): Move => ({
-      stage_id: str(m.stage_id),
-      label: str(m.label),
-      kind: str(m.kind),
-    }),
-  );
   return (
     <article className={styles.card}>
       <div className={styles.cardHeader}>
@@ -310,70 +395,7 @@ function Card({
           {str(item.preview)}
         </a>
       ) : null}
-      <div className={styles.actions}>
-        {onMove && next.length ? (
-          <select
-            className={styles.stageSelect}
-            aria-label={`Stage for ${title}`}
-            value={str(item.stage_id)}
-            onChange={(e) => {
-              const to = next.find((m) => m.stage_id === e.target.value);
-              if (to) onMove(item, to);
-            }}
-          >
-            <option value={str(item.stage_id)}>
-              {str(item.stage_label) || str(item.stage_id)}
-            </option>
-            {next.map((m) => (
-              <option key={m.stage_id} value={m.stage_id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        ) : null}
-        {posting ? (
-          <a
-            className={styles.iconButton}
-            href={posting}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Open the posting"
-            title="Open the posting"
-          >
-            <OpenIcon />
-          </a>
-        ) : null}
-        <CopyButton text={str(item.id)} label="Copy opportunity ID" />
-        {onMove && target.stage_id ? (
-          <button
-            type="button"
-            className={`${styles.iconButton} ${styles.danger}`}
-            aria-label={`Dismiss ${title} (move to ${str(target.label)})`}
-            title={`Dismiss: move to ${str(target.label)}`}
-            onClick={() =>
-              onMove(item, {
-                stage_id: str(target.stage_id),
-                label: str(target.label),
-                kind: "terminal",
-              })
-            }
-          >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
-        ) : null}
-      </div>
+      <StageActions item={item} onMove={onMove} copyId />
       {error ? (
         <p className={styles.inlineError} role="alert">
           {error}
@@ -657,7 +679,50 @@ export function JobQueue(props: QueueProps) {
 }
 
 /** The detail page's header for a job-search opportunity. */
-export function JobHeader({ item, now }: { item: Row; now: number }) {
+export function JobHeader({
+  item,
+  now,
+  submit,
+  back,
+}: {
+  item: Row;
+  now: number;
+  /** Absent on a read-only host: then only the open link shows. */
+  submit?: Submit;
+  /** Where Dismiss returns to: the job queue. */
+  back?: string;
+}) {
+  const [moving, setMoving] = useState(false);
+  const [error, setError] = useState("");
+
+  /** Moves the job like a queue card does; the page then shows the new stage,
+   * and a dismissed job returns to the queue. */
+  async function move(_: Row, to: Move, dismiss = false) {
+    if (!submit) return;
+    setMoving(true);
+    setError("");
+    let outcome;
+    try {
+      outcome = await submit("leads.opportunity.transition", {
+        ref: item.ref,
+        revision: item.revision,
+        to_stage_id: to.stage_id,
+      });
+    } catch {
+      outcome = { state: "unavailable" as const };
+    }
+    if (outcome.state === "ok") {
+      if (dismiss && back) window.location.assign(back);
+      else window.location.reload();
+      return;
+    }
+    setMoving(false);
+    setError(
+      outcome.state === "refused" && outcome.code === "record_stale"
+        ? "This changed since the page loaded. Reload to change its stage."
+        : `Could not move it to ${to.label}. Try again.`,
+    );
+  }
   const fields = row(item.fields);
   const title = str(item.title) || "Untitled opportunity";
   const posting = postingUrl(fields);
@@ -695,6 +760,26 @@ export function JobHeader({ item, now }: { item: Row; now: number }) {
         <FitPill assessment={item.assessment} />
       </div>
       <Meta item={item} now={now} detail />
+      <StageActions
+        item={item}
+        disabled={moving}
+        onMove={
+          submit
+            ? (each, to) =>
+                move(
+                  each,
+                  to,
+                  to.stage_id === str(row(item.dismiss).stage_id) &&
+                    to.kind === "terminal",
+                )
+            : undefined
+        }
+      />
+      {error ? (
+        <p className={styles.inlineError} role="alert">
+          {error}
+        </p>
+      ) : null}
       {overCap(fields) ? (
         <div className={styles.capWarning} role="alert">
           Over {MAX_PROPOSALS} proposals. Check the current count on the posting

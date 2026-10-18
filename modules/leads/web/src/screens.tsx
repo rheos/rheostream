@@ -830,7 +830,16 @@ export async function detail({ shell, query }: ScreenProps) {
       }
       bare={job !== undefined}
     >
-      {job ? <JobHeader item={job} now={Date.now()} /> : null}
+      {job ? (
+        <JobHeader
+          item={job}
+          now={Date.now()}
+          submit={shell.submit}
+          back={shell.href("queue", {
+            pipeline: str(job.pipeline_id) || undefined,
+          })}
+        />
+      ) : null}
       {job && proposal ? (
         <ProposalWorkflow
           submit={shell.submit}

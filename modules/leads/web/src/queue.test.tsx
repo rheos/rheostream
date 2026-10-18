@@ -687,6 +687,19 @@ describe("queue screen", () => {
     });
     expect(html).toContain("Copy the full ID");
     expect(html.match(/<h1/g)).toHaveLength(1);
+    // The queue card's controls, in the header: stage, open, dismiss.
+    expect(html).toContain('aria-label="Stage for Example data service"');
+    expect(html).toContain('aria-label="Open the posting"');
+    expect(html).toMatch(/aria-label="Dismiss Example data service \(move to [^)]+\)"/);
+    const readOnly = renderToStaticMarkup(
+      await screens.detail({
+        shell: { ...api, submit: undefined },
+        query: { ref: "leads.opportunity:x" },
+      }),
+    );
+    expect(readOnly).toContain('aria-label="Open the posting"');
+    expect(readOnly).not.toContain("Stage for Example data service");
+    expect(readOnly).not.toContain("Dismiss Example data service");
     const plain = shell({
       "leads.opportunity.get": ok({
         ...record,
