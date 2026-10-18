@@ -1,0 +1,111 @@
+/* The footnote popover. A quiet round button at rest; the panel floats over the
+   page on surface-2 with a soft shadow, so it reads as an aside, not a card in
+   the flow. Every value is a theme token. */
+.root {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+}
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--rs-space-5) + var(--rs-space-1));
+  height: calc(var(--rs-space-5) + var(--rs-space-1));
+  min-block-size: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--rs-color-ink-faint);
+  cursor: pointer;
+}
+.trigger:hover,
+.open {
+  color: var(--rs-color-accent-strong);
+  background: var(--rs-color-surface-2);
+}
+.trigger svg {
+  width: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
+  height: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
+}
+.panel {
+  position: absolute;
+  top: calc(100% + var(--rs-space-2));
+  z-index: 20;
+  width: max-content;
+  max-width: min(42ch, calc(100vw - var(--rs-space-6)));
+  padding: var(--rs-space-3) var(--rs-space-4);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+  background: var(--rs-color-surface-2);
+  box-shadow: 0 var(--rs-space-2) var(--rs-space-6)
+    color-mix(in srgb, var(--rs-color-ground) 70%, transparent);
+  color: var(--rs-color-ink-dim);
+  font-size: var(--rs-font-size-sm);
+  font-weight: 400;
+  line-height: 1.55;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+}
+.panel[hidden] {
+  display: none;
+}
+.wide {
+  max-width: min(64ch, calc(100vw - var(--rs-space-6)));
+}
+.start {
+  left: 0;
+}
+.end {
+  right: 0;
+}
+.panel p {
+  margin: 0;
+}
+.panel p + p,
+.panel p + ul,
+.panel ul + p,
+.panel ul + dl,
+.panel p + dl {
+  margin-top: var(--rs-space-2);
+}
+.panel ul {
+  margin: 0;
+  padding-left: var(--rs-space-4);
+}
+.panel li + li {
+  margin-top: var(--rs-space-1);
+}
+.panel strong {
+  color: var(--rs-color-ink);
+  font-weight: 600;
+}
+/* Phones: a sheet pinned above the bottom edge, full width less the gutters,
+   instead of a panel hanging off a button that may sit near the right edge. */
+@media (max-width: 39.9375rem) {
+  .panel,
+  .wide {
+    position: fixed;
+    inset: auto var(--rs-space-4) var(--rs-space-4);
+    width: auto;
+    max-width: none;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+}
+@media (pointer: coarse) {
+  .trigger {
+    width: var(--rs-size-control);
+    height: var(--rs-size-control);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .trigger {
+    transition:
+      color 150ms ease-out,
+      background-color 150ms ease-out;
+  }
+}

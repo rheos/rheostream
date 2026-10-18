@@ -1,6 +1,7 @@
 import type { ComposedModule, Screen, ShellApi } from "@rheo-stream/web-contract/screen";
 import { cookies } from "next/headers";
 import { themeId } from "@/theme/builtins";
+import { readThemeCookie } from "@/theme/theme-cookie";
 import { notFound } from "next/navigation";
 import { cache, type ReactNode } from "react";
 
@@ -275,7 +276,7 @@ function accountOf(config: RoutingConfig, session: SignedIn): ShellAccount {
  * unreachable core still leaves the page rendering and no branch renders blank.
  */
 export async function renderSurface(request: SurfaceRequest): Promise<ReactNode> {
-  const theme = themeId((await cookies()).get("rheo_theme")?.value);
+  const theme = themeId(readThemeCookie(await cookies()));
   const baseUrl = process.env.RHEO_CORE_INTERNAL_URL;
   const [health, decision] = await Promise.all([
     baseUrl ? fetchCoreHealth(baseUrl) : unavailableHealth(),

@@ -82,7 +82,7 @@ describe("job paste summary", () => {
 });
 
 describe("job paste form", () => {
-  it("offers only a posting, with its link prefilled, on a job", () => {
+  it("offers only a posting on a job, whose link it already knows", () => {
     const html = renderToStaticMarkup(
       <JobPaste
         submit={vi.fn()}
@@ -91,11 +91,20 @@ describe("job paste form", () => {
         postingUrl={URL_}
       />,
     );
-    expect(html).toContain("Posting link");
-    expect(html).toContain(`value="${URL_}"`);
+    expect(html).not.toContain("Posting link");
     expect(html).toContain("Add posting");
     expect(html).not.toContain("What are you pasting?");
     expect(html).not.toContain("Pipeline</label>");
+  });
+  it("asks for the link when a posting has none", () => {
+    const html = renderToStaticMarkup(
+      <JobPaste
+        submit={vi.fn()}
+        kinds={["posting"]}
+        pipelines={[{ value: PIPELINE, label: "This pipeline" }]}
+      />,
+    );
+    expect(html).toContain("Posting link");
   });
   it("offers both kinds and a pipeline choice on the queue", () => {
     const html = renderToStaticMarkup(

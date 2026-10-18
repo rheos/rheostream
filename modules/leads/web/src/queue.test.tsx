@@ -494,7 +494,25 @@ describe("queue rendering", () => {
     expect(quiet).not.toContain('role="alert"');
     expect(quiet).not.toContain("Payment verified");
   });
-  it("lists the score's reasons under the verdict line", () => {
+  it("shows the stage in view when no stage select is offered", () => {
+    // A read-only host: no submit, so no select; the stage stays visible.
+    const html = renderToStaticMarkup(<JobHeader item={full} now={NOW} />);
+    expect(html).toMatch(/<span class="[^"]*badge[^"]*">Review<\/span>/);
+    // With a select the stage lives there instead of twice.
+    const movable = renderToStaticMarkup(
+      <JobHeader
+        item={{
+          ...full,
+          transitions: [{ stage_id: "passed", label: "Passed", kind: "terminal" }],
+        }}
+        now={NOW}
+        submit={async () => ({ state: "ok", result: {} })}
+      />,
+    );
+    expect(movable).not.toMatch(/<span class="[^"]*badge[^"]*">Review<\/span>/);
+    expect(movable).toContain("<select");
+  });
+    it("lists the score's reasons under the verdict line", () => {
     const html = renderToStaticMarkup(
       <JobHeader
         item={{
@@ -513,14 +531,15 @@ describe("queue rendering", () => {
         now={NOW}
       />,
     );
-    expect(html).toContain('aria-label="Why this score"');
+    expect(html).toContain('aria-label="Why this score, and the record details"');
     expect(html).toContain(">80<");
     expect(html).toMatch(/<p[^>]*>Fit: strong\. Economics: favorable\.<\/p>/);
     expect(html).toContain("<li>Candidate evidence to review: Example pipeline.</li>");
     expect(html).toContain("<li>Clarify scope and acceptance criteria.</li>");
-    // Without reasons the one-paragraph summary still shows.
+    // Without reasons the one-paragraph summary still shows, and the info
+    // button keeps only the record details.
     const plain = renderToStaticMarkup(<JobHeader item={full} now={NOW} />);
-    expect(plain).not.toContain("Why this score");
+    expect(plain).not.toContain("<li>");
     expect(plain).toContain("Strong synthetic match.");
   });
 });

@@ -3,6 +3,7 @@ import type { ThemeId } from "@/theme/builtins";
 import type { ReactNode } from "react";
 
 import { LogoutForm } from "@/components/logout-form";
+import { SettingsMenu, SettingsSection } from "@/components/settings-menu";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import type { CoreHealthResult } from "@/lib/core-health";
 import type { Membership } from "@/lib/session";
@@ -34,13 +35,22 @@ export interface ShellNavigationItem {
   current: boolean;
 }
 
+/** The active workspace as "name (role)", the switcher's own wording, for the
+ * one-workspace case where no switcher is shown. */
+function workspaceLabel(account: ShellAccount): string {
+  const active = account.memberships.find(
+    (membership) => membership.workspace_id === account.activeWorkspaceId,
+  );
+  return active ? `${active.display_name} (${active.role})` : "No active workspace";
+}
+
 /** The skip link's target. A fragment on the current page, not a route. */
 const MAIN_ID = "rheo-main";
 
 /**
  * The frame the shell's signed-in-capable pages render inside, the home page and
  * every module screen: a header with the product name, the composed navigation and
- * (signed in only) the compact workspace switcher and logout, then the page, then
+ * the settings menu (appearance; signed in, also the workspace and logout), then the page, then
  * the core-status line. Sign-in, not-found and the error boundary do not use it;
  * they render a bare panel with no account or health context.
  *
@@ -108,17 +118,33 @@ export function ShellFrame({
             </ul>
           </nav>
         ) : null}
-        <ThemePicker key={theme} current={theme} />
-        {account ? (
-          <div className={styles.controls}>
-            <WorkspaceSwitcher
-              action={account.switcherAction}
-              memberships={account.memberships}
-              activeWorkspaceId={account.activeWorkspaceId}
-            />
-            <LogoutForm action={account.logoutAction} />
-          </div>
-        ) : null}
+        {/* Workspace, appearance and sign-out are rarely touched, so they wait
+            behind one settings button rather than filling the header (#408). */}
+        <SettingsMenu>
+          {account ? (
+            <SettingsSection title="Workspace">
+              {account.memberships.length > 1 ? (
+                <WorkspaceSwitcher
+                  action={account.switcherAction}
+                  memberships={account.memberships}
+                  activeWorkspaceId={account.activeWorkspaceId}
+                />
+              ) : (
+                <p>{workspaceLabel(account)}</p>
+              )}
+            </SettingsSection>
+          ) : null}
+          <SettingsSection title="Appearance">
+            {/* No key: remounting on the new theme would drop the focus
+                the select had when its change applied the theme. */}
+            <ThemePicker current={theme} />
+          </SettingsSection>
+          {account ? (
+            <SettingsSection title="Account">
+              <LogoutForm action={account.logoutAction} />
+            </SettingsSection>
+          ) : null}
+        </SettingsMenu>
       </header>
       <main id={MAIN_ID} tabIndex={-1} className={styles.main}>
         {children}

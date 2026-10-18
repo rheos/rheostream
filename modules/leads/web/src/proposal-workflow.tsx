@@ -1,6 +1,7 @@
 "use client";
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type Dispatch,
@@ -16,7 +17,6 @@ import { row, str, type Row } from "./data";
 import {
   busy,
   draftBusy,
-  dollars,
   draftState,
   failureCopy,
   findings as readFindings,
@@ -40,6 +40,7 @@ import {
   type SectionView,
   type StageId,
 } from "./proposal";
+import { InfoTip } from "./info-tip";
 import { CopyButton } from "./queue-view";
 import styles from "./proposal.module.css";
 
@@ -175,9 +176,6 @@ export function ProposalWorkflow(props: WorkflowProps) {
               onClick={() => select(id)}
               onKeyDown={(event) => onKey(event, index)}
             >
-              <span className={styles.tabIndex} aria-hidden="true">
-                {index + 1}
-              </span>
               <span className={styles.tabCopy}>
                 <span className={styles.tabLabel}>{STAGE_LABELS[id]}</span>
                 <span
@@ -263,15 +261,6 @@ function PostingPanel({
 }) {
   return (
     <>
-      <div className={styles.head}>
-        <h2 className={styles.label}>Verify the posting</h2>
-        <p className={styles.hint}>
-          Search results and feed entries often carry only a summary, so the score
-          and any draft may rest on thin text. Paste the full posting (with its
-          activity section, which updates the proposal count) and the job is scored
-          again on the real text.
-        </p>
-      </div>
       {posting.trim() ? (
         <div className={styles.posting}>
           <div className={styles.postingText}>{posting}</div>
@@ -284,7 +273,17 @@ function PostingPanel({
           No posting text yet. Paste the full posting below.
         </p>
       )}
-      {paste ? <div className={styles.paste}>{paste}</div> : null}
+      {paste ? (
+        <details className={styles.paste}>
+          <summary>Paste the full posting</summary>
+          <p className={styles.hint}>
+            Feed entries often carry only a summary, so the score and any draft
+            may rest on thin text. Paste the whole posting, activity section
+            included, and the job is scored again on the real text.
+          </p>
+          {paste}
+        </details>
+      ) : null}
     </>
   );
 }
@@ -297,20 +296,24 @@ function QuestionsPanel(props: {
   onDraft: () => void;
 }) {
   const dirty = props.questions.trim() !== props.saved.trim();
+  const field = useId();
   return (
     <>
-      <div className={styles.head}>
-        <h2 className={styles.label}>Screening questions</h2>
-        <p className={styles.hint}>
-          One per line, as the application form asks them. The draft answers each
-          one after the cover letter, from your profile only. Leave this empty for a
-          cover letter alone; questions the posting itself asks you to answer are
-          picked up when you draft.
-        </p>
+      <div className={styles.fieldHead}>
+        <label className={styles.fieldLabel} htmlFor={field}>
+          Screening questions, one per line
+        </label>
+        <InfoTip label="About screening questions">
+          <p>
+            The draft answers each one after the cover letter, from your profile
+            only. Leave this empty for a cover letter alone. Questions the posting
+            itself asks are picked up when you draft.
+          </p>
+        </InfoTip>
       </div>
       <textarea
+        id={field}
         className={styles.textarea}
-        aria-label="Screening questions, one per line"
         placeholder={
           "For example:\nHow many years have you worked with FastAPI?\nWhen could you start?"
         }
@@ -430,13 +433,6 @@ function ProposalPanel(props: {
   const hasDraft = !running && parts.length > 0;
   return (
     <>
-      <div className={styles.head}>
-        <h2 className={styles.label}>Proposal</h2>
-        <p className={styles.hint}>
-          Drafts are prepared here from your proposal profile and nothing is sent.
-          You submit the application yourself, on the platform.
-        </p>
-      </div>
       <div className={styles.actions}>
         <button
           type="button"
@@ -475,6 +471,18 @@ function ProposalPanel(props: {
             {running ? "Stop drafting" : "Delete draft"}
           </button>
         ) : null}
+        <div className={styles.push}>
+          <InfoTip label="About drafts">
+            <p>
+              Drafts come from your proposal profile, and nothing is sent. You
+              submit the application yourself, on the platform.
+            </p>
+            <p>
+              Click any section to edit it. The book icon swaps in a saved library
+              answer; the plus saves an answer to the library.
+            </p>
+          </InfoTip>
+        </div>
       </div>
       {wholeDirty ? (
         <p className={styles.note} role="status">
@@ -650,11 +658,6 @@ function WholeDraft(props: {
 }) {
   return (
     <div className={styles.whole}>
-      <p className={styles.hint}>
-        The letter, then a line with three dashes, then each question in double
-        asterisks with its answer under it. Text with no dashes line replaces only
-        the cover letter.
-      </p>
       <textarea
         className={styles.textarea}
         aria-label="The whole draft"
@@ -681,6 +684,15 @@ function WholeDraft(props: {
             Saved.
           </span>
         ) : null}
+        <div className={styles.push}>
+          <InfoTip label="About the whole-draft format">
+            <p>
+              The letter, then a line with three dashes, then each question in
+              double asterisks with its answer under it. Text with no dashes line
+              replaces only the cover letter.
+            </p>
+          </InfoTip>
+        </div>
       </div>
     </div>
   );
@@ -1046,30 +1058,27 @@ function PricingPanel(props: {
 
   return (
     <>
-      <div className={styles.head}>
-        <h2 className={styles.label}>Pricing and milestones</h2>
-        <p className={styles.hint}>
-          Milestones are priced from your day rate per honest working-day, never from
-          the budget. The form rate is what to type into an hourly apply form so it
-          agrees with the figure in the letter.
-        </p>
-      </div>
       {!available ? (
         <p className={styles.empty}>{refusalCopy("pricing_not_set")}</p>
       ) : null}
       {rate ? (
         <div className={styles.formRate}>
-          <p className={styles.formRateLine}>
-            <span className={styles.groupTitle}>Form rate</span>{" "}
+          <div className={styles.formRateLine}>
+            <span className={styles.formRateLabel}>Form rate</span>
             <span className={styles.formRateValue}>{rate.rate}</span>
             {rate.detail ? (
-              <span className={styles.note}> {rate.detail}</span>
+              <span className={styles.note}>{rate.detail}</span>
             ) : null}
-          </p>
-          <p className={styles.note}>{str(suggestion.basis)}</p>
-          {str(suggestion.note) ? (
-            <p className={styles.note}>{str(suggestion.note)}</p>
-          ) : null}
+            <InfoTip label="How the form rate was worked out" align="start">
+              <p>
+                Milestones are priced from your day rate per honest working day,
+                never from the budget. The form rate is what to type into an
+                hourly apply form so it agrees with the letter.
+              </p>
+              {str(suggestion.basis) ? <p>{str(suggestion.basis)}</p> : null}
+              {str(suggestion.note) ? <p>{str(suggestion.note)}</p> : null}
+            </InfoTip>
+          </div>
         </div>
       ) : null}
       {available ? (
@@ -1232,9 +1241,6 @@ function MilestoneCard(props: {
             onBlur={() => save("due_on", dueOn, m.dueOn)}
           />
         </label>
-        <p className={styles.note} aria-live="polite">
-          {dollars(amount)}
-        </p>
       </div>
       <textarea
         className={styles.cardTextarea}

@@ -1,0 +1,90 @@
+/* The header settings menu. A quiet trigger at rest; the panel floats over the
+   page on surface-1 with a soft shadow. Every value is a --rs-* token or a CSS
+   keyword. */
+
+.root {
+  position: relative;
+  margin-inline-start: auto;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--rs-size-control);
+  block-size: var(--rs-size-control);
+  border: var(--rs-size-hairline) solid transparent;
+  border-radius: var(--rs-radius-md);
+  color: var(--rs-color-ink-dim);
+  list-style: none;
+  cursor: pointer;
+}
+
+.trigger::-webkit-details-marker {
+  display: none;
+}
+
+/* The name is for assistive technology; the icon carries it on screen. */
+.label {
+  position: absolute;
+  inline-size: var(--rs-size-hairline);
+  block-size: var(--rs-size-hairline);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.trigger:hover,
+.root[open] > .trigger {
+  color: var(--rs-color-ink);
+  background: var(--rs-color-surface-2);
+  border-color: var(--rs-color-hairline);
+}
+
+.trigger svg {
+  flex-shrink: 0;
+}
+
+.panel {
+  position: absolute;
+  inset-block-start: calc(100% + var(--rs-space-2));
+  inset-inline-end: 0;
+  z-index: 30;
+  display: grid;
+  gap: var(--rs-space-4);
+  inline-size: min(calc(var(--rs-space-6) * 9), calc(100vw - var(--rs-space-6)));
+  padding: var(--rs-space-4);
+  background: var(--rs-color-surface-1);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+  box-shadow: 0 var(--rs-space-2) var(--rs-space-6)
+    color-mix(in srgb, var(--rs-color-ground) 70%, transparent);
+}
+
+.section + .section {
+  padding-block-start: var(--rs-space-4);
+  border-block-start: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+
+.sectionTitle {
+  margin: 0 0 var(--rs-space-2);
+  font-size: var(--rs-font-size-sm);
+  font-weight: 600;
+  letter-spacing: normal;
+  color: var(--rs-color-ink);
+}
+
+.section p {
+  margin: 0;
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .trigger {
+    transition:
+      color 150ms ease-out,
+      background-color 150ms ease-out,
+      border-color 150ms ease-out;
+  }
+}

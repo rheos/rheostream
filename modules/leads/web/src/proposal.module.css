@@ -1,87 +1,69 @@
-/* The job detail's proposal workflow. Every value is a theme token; the icon
-   buttons match the queue's, so the copy controls sit in one family. */
+/* The job detail's proposal workflow (#408): a plain tab bar on the page, no
+   card around it, and each tab's explanation behind an info button. Every value
+   is a theme token; the icon buttons match the queue's, so the copy controls
+   sit in one family. */
 .workflow {
-  background: var(--rs-color-surface-1);
-  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
-  border-radius: var(--rs-radius-lg);
-  padding: calc(var(--rs-space-4) * 1.25);
   margin-bottom: var(--rs-space-6);
   overflow-wrap: anywhere;
 }
 .strip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--rs-size-hairline);
-  overflow: hidden;
-  margin-bottom: var(--rs-space-5);
-  background: var(--rs-color-hairline);
-  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
-  border-radius: var(--rs-radius-md);
+  display: flex;
+  gap: var(--rs-space-5);
+  margin-bottom: var(--rs-space-4);
+  border-bottom: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 .tab {
   display: flex;
-  min-width: 0;
-  align-items: center;
+  flex: 0 0 auto;
+  align-items: baseline;
   gap: var(--rs-space-2);
   min-height: var(--rs-size-control);
-  padding: var(--rs-space-2) calc(var(--rs-space-2) * 1.25);
+  margin-bottom: calc(var(--rs-size-hairline) * -1);
+  padding: var(--rs-space-2) 0;
   border: 0;
+  border-bottom: calc(var(--rs-size-hairline) * 2) solid transparent;
   border-radius: 0;
-  background: var(--rs-color-surface-1);
-  color: var(--rs-color-ink-faint);
+  background: transparent;
+  color: var(--rs-color-ink-dim);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 .tab:hover {
-  background: var(--rs-color-surface-2);
   color: var(--rs-color-ink);
+  border-bottom-color: var(--rs-color-hairline);
 }
 .tabActive,
 .tabActive:hover {
-  background: color-mix(in srgb, var(--rs-color-accent) 14%, var(--rs-color-surface-1));
-  color: var(--rs-color-accent-strong);
-  box-shadow: inset 0 calc(var(--rs-size-hairline) * -2) 0 var(--rs-color-accent);
+  color: var(--rs-color-ink);
+  border-bottom-color: var(--rs-color-accent);
 }
 .tab:focus-visible {
   outline: calc(var(--rs-size-hairline) * 2) solid var(--rs-color-control-focus);
-  outline-offset: calc(var(--rs-size-hairline) * -2);
-}
-.tabIndex {
-  display: inline-flex;
-  flex: 0 0 calc(var(--rs-space-4) + var(--rs-space-1));
-  width: calc(var(--rs-space-4) + var(--rs-space-1));
-  height: calc(var(--rs-space-4) + var(--rs-space-1));
-  align-items: center;
-  justify-content: center;
-  border: var(--rs-size-hairline) solid currentColor;
-  border-radius: 50%;
-  font-size: calc(var(--rs-font-size-sm) * 0.75);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  outline-offset: calc(var(--rs-size-hairline) * 2);
 }
 .tabCopy {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  line-height: 1.15;
+  align-items: baseline;
+  gap: var(--rs-space-2);
+  line-height: 1.2;
 }
 .tabLabel {
-  overflow: hidden;
-  color: var(--rs-color-ink-dim);
-  font-size: calc(var(--rs-font-size-sm) * 0.95);
-  font-weight: 600;
-  text-overflow: ellipsis;
+  color: inherit;
+  font-size: var(--rs-font-size-md);
+  font-weight: 500;
   white-space: nowrap;
 }
 .tabActive .tabLabel {
-  color: var(--rs-color-ink);
+  font-weight: 600;
 }
 .tabState {
-  margin-top: calc(var(--rs-space-1) * 0.75);
-  font-size: calc(var(--rs-font-size-sm) * 0.78);
-  letter-spacing: calc(var(--rs-space-1) / 6);
-  text-transform: uppercase;
+  color: var(--rs-color-ink-faint);
+  font-size: calc(var(--rs-font-size-sm) * 0.875);
+  white-space: nowrap;
 }
 .tabStateWarn {
   color: var(--rs-color-danger);
@@ -89,16 +71,19 @@
 .panel[hidden] {
   display: none;
 }
-.head {
-  margin-bottom: var(--rs-space-3);
+.fieldHead {
+  display: flex;
+  align-items: center;
+  gap: var(--rs-space-1);
+  margin-bottom: var(--rs-space-2);
 }
-.label {
-  margin: 0 0 var(--rs-space-1);
-  font-size: var(--rs-font-size-md);
-  font-weight: 700;
-  letter-spacing: calc(var(--rs-space-1) / 4);
-  text-transform: uppercase;
-  color: var(--rs-color-ink);
+.fieldLabel {
+  font-size: var(--rs-font-size-sm);
+  font-weight: 500;
+  color: var(--rs-color-ink-dim);
+}
+.push {
+  margin-left: auto;
 }
 .hint {
   max-width: 70ch;
@@ -116,10 +101,10 @@
   padding: var(--rs-space-3) calc(var(--rs-space-6) * 1.75) var(--rs-space-3) var(--rs-space-3);
   border: var(--rs-size-hairline) solid var(--rs-color-hairline);
   border-radius: var(--rs-radius-md);
-  background: var(--rs-color-surface-2);
+  background: var(--rs-color-surface-1);
   color: var(--rs-color-ink);
-  font-size: var(--rs-font-size-sm);
-  line-height: 1.6;
+  font-size: calc(var(--rs-font-size-md) * 0.9375);
+  line-height: 1.65;
   white-space: pre-wrap;
 }
 .postingCopy {
@@ -128,7 +113,24 @@
   right: var(--rs-space-2);
 }
 .paste {
-  margin-top: var(--rs-space-4);
+  margin-top: var(--rs-space-3);
+  font-size: var(--rs-font-size-sm);
+}
+.paste summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--rs-size-control);
+  color: var(--rs-color-accent);
+  cursor: pointer;
+}
+.paste summary:hover {
+  color: var(--rs-color-accent-strong);
+}
+.paste[open] summary {
+  color: var(--rs-color-ink);
+}
+.paste > .hint {
+  margin-bottom: var(--rs-space-3);
 }
 .textarea,
 .cardTextarea {
@@ -249,10 +251,8 @@
 }
 .subhead {
   margin: var(--rs-space-4) 0 0;
-  font-size: calc(var(--rs-font-size-sm) * 0.85);
-  font-weight: 700;
-  letter-spacing: calc(var(--rs-space-1) / 6);
-  text-transform: uppercase;
+  font-size: var(--rs-font-size-sm);
+  font-weight: 600;
   color: var(--rs-color-ink-dim);
 }
 .error,
@@ -292,9 +292,9 @@
 .cardTitle {
   margin: 0;
   font-size: var(--rs-font-size-sm);
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.4;
-  color: var(--rs-color-accent-strong);
+  color: var(--rs-color-ink);
 }
 .cardActions {
   display: flex;
@@ -307,17 +307,16 @@
   border: var(--rs-size-hairline) solid var(--rs-color-hairline);
   border-radius: var(--rs-radius-md);
   color: var(--rs-color-ink-dim);
-  font-size: calc(var(--rs-font-size-sm) * 0.8);
-  font-weight: 600;
-  letter-spacing: calc(var(--rs-space-1) / 6);
-  text-transform: uppercase;
+  font-size: calc(var(--rs-font-size-sm) * 0.875);
+  font-weight: 500;
 }
 .cardRead {
+  max-width: 75ch;
   padding: var(--rs-space-2) calc(var(--rs-space-2) * 1.25);
   border: var(--rs-size-hairline) solid transparent;
   border-radius: var(--rs-radius-sm);
   color: var(--rs-color-ink);
-  font-size: var(--rs-font-size-sm);
+  font-size: calc(var(--rs-font-size-md) * 0.9375);
   line-height: 1.65;
   white-space: pre-wrap;
   cursor: text;
@@ -360,10 +359,8 @@
 }
 .groupTitle {
   margin: 0;
-  font-size: calc(var(--rs-font-size-sm) * 0.85);
-  font-weight: 700;
-  letter-spacing: calc(var(--rs-space-1) / 6);
-  text-transform: uppercase;
+  font-size: var(--rs-font-size-sm);
+  font-weight: 600;
   color: var(--rs-color-ink-dim);
 }
 .list {
@@ -408,10 +405,6 @@
 }
 .formRate {
   margin: 0 0 var(--rs-space-3);
-  padding: var(--rs-space-3);
-  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
-  border-radius: var(--rs-radius-md);
-  background: var(--rs-color-surface-2);
 }
 .formRate .note {
   margin-top: var(--rs-space-1);
@@ -419,13 +412,20 @@
 .formRateLine {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--rs-space-2);
+  align-items: center;
+  gap: var(--rs-space-1) var(--rs-space-3);
   margin: 0;
+}
+.formRateLine .note {
+  margin: 0;
+}
+.formRateLabel {
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
 }
 .formRateValue {
   font-size: var(--rs-font-size-lg);
-  font-weight: 700;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--rs-color-accent-strong);
 }
@@ -440,9 +440,15 @@
   font: inherit;
   font-size: var(--rs-font-size-sm);
 }
+/* Reads as the milestone's heading until it is pointed at or focused. */
 .milestoneTitle {
   flex: 1;
-  font-weight: 700;
+  border-color: transparent;
+  background: transparent;
+  font-weight: 600;
+}
+.milestoneTitle:hover:not(:disabled) {
+  border-color: var(--rs-color-control-border);
 }
 .milestoneFields {
   display: flex;
@@ -467,15 +473,11 @@
 }
 @media (max-width: 39.9375rem) {
   .strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--rs-space-4);
   }
-  .workflow {
-    padding: var(--rs-space-3);
-  }
-  .tab {
+  .tabCopy {
     flex-direction: column;
-    align-items: flex-start;
-    gap: var(--rs-space-1);
+    gap: 0;
   }
   .argues dl {
     grid-template-columns: 1fr;

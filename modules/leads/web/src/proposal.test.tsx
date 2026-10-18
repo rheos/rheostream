@@ -288,8 +288,12 @@ describe("the job detail", () => {
     expect(call).toHaveBeenCalledWith("leads.jobproposal.get", { ref: REF });
     expect(html).toContain('aria-label="Proposal workflow"');
     expect(html).toContain("Fifty an hour.");
-    // The paste form lives in the Posting tab now, not again under the evidence.
-    expect(html).not.toContain("<summary>Paste the full posting</summary>");
+    // The paste form lives in the Posting tab, once, not again under the evidence.
+    expect(html.split("<summary>Paste the full posting</summary>")).toHaveLength(2);
+    // The generic record waits, closed, at the foot of a job's page (#408).
+    expect(html).toMatch(
+      /<details class="[^"]*drawer[^"]*"><summary><span[^>]*>Notes, follow-up and record<\/span>/,
+    );
     expect(api.submit).not.toHaveBeenCalled();
   });
 });

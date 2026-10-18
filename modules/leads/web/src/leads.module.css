@@ -292,6 +292,19 @@
   margin-top: var(--rs-space-4);
 }
 @media (max-width: 48rem) {
+  /* One row that scrolls sideways, not three wrapped rows above the page. */
+  .nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin-inline: calc(var(--rs-space-4) * -1);
+    padding-inline: var(--rs-space-4);
+    margin-bottom: var(--rs-space-5);
+  }
+  .nav a {
+    flex: 0 0 auto;
+    padding-inline: var(--rs-space-3);
+  }
   .columns {
     grid-template-columns: 1fr;
   }
@@ -341,4 +354,51 @@
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* A job's generic record, closed at the foot of its page (#408). The summary is
+   one quiet line; open, the record keeps its usual two columns. */
+.drawer {
+  border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  padding-top: var(--rs-space-2);
+}
+.drawer > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--rs-space-1) var(--rs-space-3);
+  min-height: var(--rs-size-control);
+  padding-block: var(--rs-space-2);
+  color: var(--rs-color-ink-dim);
+  cursor: pointer;
+}
+.drawer > summary:hover {
+  color: var(--rs-color-ink);
+}
+/* The disclosure marker, drawn as a small chevron that turns when open. */
+.drawer > summary::before {
+  content: "";
+  align-self: center;
+  inline-size: calc(var(--rs-space-2) * 0.75);
+  block-size: calc(var(--rs-space-2) * 0.75);
+  border-inline-end: calc(var(--rs-size-hairline) * 1.5) solid currentColor;
+  border-block-end: calc(var(--rs-size-hairline) * 1.5) solid currentColor;
+  rotate: -45deg;
+}
+.drawer[open] > summary::before {
+  rotate: 45deg;
+}
+.drawerTitle {
+  font-weight: 500;
+}
+.drawerMeta {
+  color: var(--rs-color-ink-faint);
+  font-size: var(--rs-font-size-sm);
+}
+.drawerBody {
+  padding-top: var(--rs-space-4);
+}
+.drawerBody .section:first-child {
+  border-top: 0;
+  padding-top: 0;
 }

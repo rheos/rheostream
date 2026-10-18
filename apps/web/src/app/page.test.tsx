@@ -144,16 +144,30 @@ describe("shell home page", () => {
     expect(html).not.toContain("Sign out");
   });
 
-  it("renders a signed-in account with the switcher and logout on the built actions", async () => {
+  it("renders a signed-in account with its workspace and logout on the built action", async () => {
     const html = await render();
     expect(html).toContain("account: account acct-synthetic");
-    // The display name, not the id (#115); the id still reaches the switcher.
+    // The display name, not the id (#115).
     expect(html).toContain("workspace: Alpha Desk (owner)");
     expect(html).not.toContain("workspace: ws-alpha");
-    expect(html).toContain(`data-switcher-action="${switcherAction(CONFIG)}"`);
-    expect(html).toContain('data-active-workspace="ws-alpha"');
+    // One workspace: the settings menu names it and offers no switcher (#408).
+    expect(html).toContain("<p>Alpha Desk (owner)</p>");
+    expect(html).not.toContain("data-switcher-action");
     const logout = new RegExp(`<form[^>]* action="${escapeRegExp(logoutAction(CONFIG))}"[^>]*>`);
     expect(logout.exec(html)?.[0]).toContain('method="post"');
+  });
+
+  it("offers the switcher on the built action when the account has several workspaces", async () => {
+    seams.session = {
+      ...SIGNED_IN,
+      memberships: [
+        ...(SIGNED_IN.state === "ok" ? SIGNED_IN.memberships : []),
+        { workspace_id: "ws-beta", display_name: "Beta Desk", role: "member" },
+      ],
+    } as SessionResult;
+    const html = await render();
+    expect(html).toContain(`data-switcher-action="${switcherAction(CONFIG)}"`);
+    expect(html).toContain('data-active-workspace="ws-alpha"');
   });
 
   it.each([
