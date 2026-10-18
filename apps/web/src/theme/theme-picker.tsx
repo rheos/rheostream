@@ -1,28 +1,41 @@
 "use client";
-import { useId, useRef, useState, useSyncExternalStore } from "react";
+import { useId, useState, useSyncExternalStore, useTransition } from "react";
 import { selectTheme } from "./theme-action";
 import type { ThemeId } from "./builtins";
 import styles from "./theme-picker.module.css";
 
-/** The theme choice, as it sits inside the settings menu. Once scripts run, a
- * change applies at once; until then (before hydration, or with no scripts at
- * all) an Apply button submits the form natively. */
 const noop = () => () => {};
 
+/** The theme choice, as it sits inside the settings menu. Once scripts run, a
+ * change applies at once by calling the action directly; until then (before
+ * hydration, or with no scripts at all) an Apply button submits the form.
+ *
+ * The change does not submit the form: React resets a form after its action
+ * runs, which put these controlled selects back to the server-rendered choice
+ * while the page had already switched theme. */
 export function ThemePicker({ current }: { current: ThemeId }) {
   const id = useId();
-  const form = useRef<HTMLFormElement>(null);
   const [family, setFamily] = useState(
     current.startsWith("novadiem") ? "novadiem" : "greenstream",
   );
+  const [scheme, setScheme] = useState(current.endsWith("light") ? "light" : "dark");
+  const [, startTransition] = useTransition();
   // False in the server markup and during hydration, true once scripts run.
   const live = useSyncExternalStore(
     noop,
     () => true,
     () => false,
   );
+
+  function apply(nextFamily: string, nextScheme: string) {
+    const data = new FormData();
+    data.set("family", nextFamily);
+    data.set("scheme", nextScheme);
+    startTransition(() => selectTheme(data));
+  }
+
   return (
-    <form ref={form} action={selectTheme} className={styles.form}>
+    <form action={selectTheme} className={styles.form}>
       <label htmlFor={`${id}-family`}>Theme</label>
       <select
         id={`${id}-family`}
@@ -30,8 +43,7 @@ export function ThemePicker({ current }: { current: ThemeId }) {
         value={family}
         onChange={(event) => {
           setFamily(event.target.value);
-          // After React commits the Mode field, so the submitted form matches.
-          setTimeout(() => form.current?.requestSubmit(), 0);
+          apply(event.target.value, scheme);
         }}
       >
         <option value="greenstream">GreenStream</option>
@@ -43,8 +55,11 @@ export function ThemePicker({ current }: { current: ThemeId }) {
           <select
             id={`${id}-scheme`}
             name="scheme"
-            defaultValue={current.endsWith("light") ? "light" : "dark"}
-            onChange={() => form.current?.requestSubmit()}
+            value={scheme}
+            onChange={(event) => {
+              setScheme(event.target.value);
+              apply(family, event.target.value);
+            }}
           >
             <option value="dark">Dark</option>
             <option value="light">Light</option>
