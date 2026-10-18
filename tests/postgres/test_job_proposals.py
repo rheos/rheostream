@@ -92,6 +92,31 @@ LETTER = (
 )
 DRAFT = LETTER + "\n\n---\n\n**What is your rate?**\nFifty an hour, to confirm."
 CLAIMS = {"claims": ["Next.js"], "attributions": [], "process_claims": []}
+PRICING = {
+    "day_rate": "200",
+    "hours_per_day": "5",
+    "hourly_default": "60",
+    "hourly_floor": "30",
+    "calibration": "Calibration-marker-5c1: a fictional delivery record.",
+}
+SCHEDULE = {
+    "milestones": [
+        {
+            "title": "Discovery",
+            "description": "Read the example code.",
+            "amount": 200,
+            "due_date_offset_days": 1,
+        },
+        {
+            "title": "Checkout fix",
+            "description": "",
+            "amount": 600,
+            "due_date_offset_days": 4,
+        },
+    ],
+    "too_vague": False,
+    "reason": None,
+}
 
 
 def final(answer: Mapping[str, Any]) -> list[RuntimeEvent]:
@@ -110,6 +135,7 @@ class Model(ScriptedAdapter):
         super().__init__()
         self.draft = draft
         self.override: list[RuntimeEvent] | None = None
+        self.analysis: dict[str, Any] = dict(ANALYSIS)
         self.roles: list[str] = []
 
     @staticmethod
@@ -120,13 +146,16 @@ class Model(ScriptedAdapter):
             return "gate"
         if task.startswith("You are a copy editor"):
             return "repair"
+        if task.startswith("You break a freelance job posting"):
+            return "milestones"
         return "draft"
 
     def start(self, request: RuntimeRequest, *, spawn: AdapterSpawn) -> ScriptedHandle:
         role = self.role(request.task)
         self.roles.append(role)
         answers = {
-            "analysis": ANALYSIS,
+            "milestones": SCHEDULE,
+            "analysis": self.analysis,
             "gate": CLAIMS,
             "draft": {"text": self.draft},
             "repair": {"text": self.draft},
@@ -634,3 +663,112 @@ def test_the_one_job_queue_read_carries_the_whole_posting(drafting: Drafting) ->
     )
     # The list keeps its preview only.
     assert "description" not in listed.items[0]
+
+
+def test_pricing_needs_a_policy_then_drafts_a_schedule_the_owner_can_edit(
+    drafting: Drafting,
+) -> None:
+    drafting.set_profile()
+    opportunity = drafting.paste("~025996")
+    assert drafting.refused("leads.jobpricing.request", ref=opportunity) == (
+        "pricing_not_set"
+    )
+    drafting.set_profile(pricing=PRICING)
+    queued = drafting.op("leads.jobpricing.request", ref=opportunity)
+    assert (queued.pricing.state, queued.pricing.mode) == ("queued", "milestones")
+    assert drafting.refused("leads.jobpricing.request", ref=opportunity) == (
+        "pricing_in_progress"
+    )
+    drafting.sweep()
+    got = drafting.op("leads.jobproposal.get", ref=opportunity)
+    pricing = got.pricing
+    assert pricing.available is True and pricing.state == "ready"
+    assert [(m.title, m.amount) for m in pricing.milestones] == [
+        ("Discovery", "200.00"),
+        ("Checkout fix", "600.00"),
+    ]
+    assert pricing.milestones[0].due_on is not None
+    # The form rate matches the fixed total at the day rate spread over the day.
+    assert (pricing.suggestion["rate"], pricing.suggestion["hours"]) == ("40.00", "20.0")
+    assert drafting.model.roles == ["milestones"]
+    task = drafting.model.starts[0].request.task
+    assert "Calibration-marker-5c1" in task and "$200.00 PER WORKING-DAY" in task
+    edited = drafting.op(
+        "leads.proposalmilestone.set",
+        ref=opportunity,
+        milestone_id=str(pricing.milestones[1].id),
+        amount="800",
+        title="Checkout fix and tests",
+    )
+    assert [(m.title, m.amount) for m in edited.pricing.milestones][1] == (
+        "Checkout fix and tests",
+        "800.00",
+    )
+    assert edited.pricing.suggestion["fixed_total"] == "1000.00"
+
+
+def test_a_draft_that_is_asked_for_a_quote_prices_the_job_first(
+    drafting: Drafting,
+) -> None:
+    drafting.set_profile(pricing=PRICING)
+    opportunity = drafting.paste("~025997")
+    drafting.model.analysis = {**ANALYSIS, "asks_quote": True}
+    drafting.op("leads.jobproposal.request", ref=opportunity)
+    drafting.sweep()
+    assert drafting.model.roles == ["analysis", "milestones", "draft", "gate"]
+    draft_task = drafting.model.starts[2].request.task
+    assert "PRICING FIGURES" in draft_task
+    assert "- Total: $800.00 for 4 working-days" in draft_task
+    got = drafting.op("leads.jobproposal.get", ref=opportunity)
+    assert got.state == "ready"
+    assert (got.pricing.state, got.pricing.mode) == ("ready", "milestones")
+    assert len(got.pricing.milestones) == 2
+    assert got.findings["priced"] is True
+    # The next draft uses the stored milestones: no Pricing stage again.
+    drafting.model.roles.clear()
+    drafting.op("leads.jobproposal.request", ref=opportunity, force=True)
+    drafting.sweep()
+    assert drafting.model.roles == ["analysis", "draft", "gate"]
+
+
+def test_a_usage_limit_holds_pricing_without_spending_an_attempt(
+    drafting: Drafting,
+) -> None:
+    drafting.set_profile(pricing=PRICING)
+    opportunity = drafting.paste("~025998")
+    drafting.op("leads.jobpricing.request", ref=opportunity)
+    drafting.model.override = failure(FailureKind.USAGE_LIMITED)
+    now = datetime.now(UTC)
+    drafting.sweep(now)
+    identifier = RecordRef.parse(opportunity).id
+    (row,) = rows(
+        drafting.i,
+        select(s.job_pricing).where(s.job_pricing.c.opportunity_id == identifier),
+    )
+    assert (row["state"], row["attempts"], row["failure_kind"]) == (
+        "queued",
+        0,
+        "usage_limited",
+    )
+    drafting.model.override = None
+    drafting.sweep(now + timedelta(minutes=16))
+    got = drafting.op("leads.jobproposal.get", ref=opportunity)
+    assert got.pricing.state == "ready"
+
+
+def test_losing_the_posting_evidence_removes_the_pricing(drafting: Drafting) -> None:
+    drafting.set_profile(pricing=PRICING)
+    opportunity = drafting.paste("~025999")
+    drafting.op("leads.jobpricing.request", ref=opportunity)
+    drafting.sweep()
+    assert rows(drafting.i, select(s.proposal_milestone))
+    identifier = RecordRef.parse(opportunity).id
+    (link,) = rows(
+        drafting.i,
+        select(p.opportunity_observation).where(
+            p.opportunity_observation.c.opportunity_id == identifier
+        ),
+    )
+    approve_delete(drafting.i, ref("observation", link["observation_id"]))
+    assert rows(drafting.i, select(s.job_pricing)) == []
+    assert rows(drafting.i, select(s.proposal_milestone)) == []
