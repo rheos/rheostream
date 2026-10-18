@@ -1,5 +1,5 @@
-"""Version-nine intake, pipeline, job feed, job scoring and proposal snapshot; restore
-preserves identities.
+"""Version-ten intake, pipeline, job feed, job scoring, proposal and pricing snapshot;
+restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. The job feed connection is exported
@@ -8,8 +8,9 @@ and the pending authorization is never exported; a restored collector needs the
 owner to reconnect, which registers a fresh client. The job-search profile and each
 job's scoring state are exported whole; a restored scoring schedule stays off until
 the owner sets the profile again. The proposal profile, each job's proposal with its
-sections, and the answer library are exported whole; a proposal that was queued or
-drafting is restored as failed, since its sweep did not come with it. Restore
+sections, its pricing and milestones, and the answer library are exported whole; a
+proposal or pricing request that was queued or running is restored as failed, since its
+sweep did not come with it. Restore
 replaces only the fresh seed; existing intake records cause a refusal, never a
 destructive merge.
 """
@@ -99,6 +100,13 @@ RESTORED_PROPOSAL: Mapping[str, object] = {
     "stage": None,
     "step": None,
     "total": None,
+    "retry_after": None,
+    "failure_kind": "restored",
+}
+
+
+RESTORED_PRICING: Mapping[str, object] = {
+    "state": "failed",
     "retry_after": None,
     "failure_kind": "restored",
 }
@@ -196,6 +204,11 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
                 "drafting",
             ):
                 values.update(RESTORED_PROPOSAL)
+            if table is _proposals.job_pricing and values["state"] in (
+                "queued",
+                "running",
+            ):
+                values.update(RESTORED_PRICING)
             if table is jobfeed.jobfeed_connection:
                 # No token, no client, no claim, no backoff: the owner reconnects.
                 values.update(RESTORED_COLLECTOR)

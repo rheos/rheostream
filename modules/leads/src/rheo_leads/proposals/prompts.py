@@ -758,6 +758,7 @@ def system_prompt(
     anecdotes: Sequence[Anecdote],
     pricing_mode: str | None,
     questions: bool,
+    figures: str = "",
 ) -> str:
     """Everything before the posting: opener, profile, rules, the owner's notes and
     examples, the analysis, anecdotes, the platform note, pricing and questions."""
@@ -777,7 +778,10 @@ def system_prompt(
     note = policy.platform_notes.get(platform, "").strip()
     if note:
         text += "\n\nPLATFORM: " + note
-    text += PRICING_INSTRUCTIONS.get(pricing_mode or "", PRICING_UNKNOWN_INSTRUCTION)
+    # Figures carry their own instructions and replace both pricing rules.
+    text += figures or PRICING_INSTRUCTIONS.get(
+        pricing_mode or "", PRICING_UNKNOWN_INSTRUCTION
+    )
     if questions:
         text += QUESTIONS_INSTRUCTION
     return text + OUTPUT_INSTRUCTION

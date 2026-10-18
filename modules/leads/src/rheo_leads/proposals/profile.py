@@ -5,9 +5,10 @@ areas, links) as plain text, and the policy is how the owner wants it used: writ
 notes the drafter must follow (which project a tool belongs to, which links to give),
 example letters to learn editorial moves from, vouched anecdotes the drafter may tell
 when a posting asks for a story, per-platform notes and extra named terms the accuracy
-check accepts. All of it is the workspace's data, set by the owner and exported with
-Leads. Nothing in this package ships a profile, and no log line or audit record carries
-its text.
+check accepts, and the pricing: a day rate, hourly rates and the owner's own rate
+context and delivery calibration. All of it is the workspace's data, set by the owner
+and exported with Leads. Nothing in this package ships a profile, and no log line or
+audit record carries its text.
 
 The owner who sets it is the account whose model login drafts proposals, the same
 rule the scoring profile follows. Setting it turns the drafting schedule on, the
@@ -15,6 +16,7 @@ sweep's safety net for a chain a disabled capability or a dead job broke.
 """
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Final
 
 from pydantic import Field, model_validator
@@ -63,6 +65,36 @@ class Anecdote(Strict):
         return self
 
 
+class PricingPolicy(Strict):
+    """How the owner prices work: a day rate per honest working-day, and the
+    hourly rates an hourly apply form takes. The texts tell the milestone model
+    who is pricing and how fast they deliver; they are the owner's own words."""
+
+    day_rate: Decimal = Field(gt=0, le=100_000)
+    hours_per_day: Decimal = Field(default=Decimal(5), gt=0, le=24)
+    # The profile's listed hourly rate, the form's default.
+    hourly_default: Decimal = Field(gt=0, le=10_000)
+    # The lowest hourly rate the owner bids.
+    hourly_floor: Decimal = Field(gt=0, le=10_000)
+    # The hourly rate for a multi-week engagement; unset sits halfway between the
+    # day rate's hourly equivalent and the floor.
+    weeks_rate: Decimal | None = Field(default=None, gt=0, le=10_000)
+    rate_context: str = Field(default="", max_length=MAX_NOTE_CHARS)
+    calibration: str = Field(default="", max_length=MAX_EXAMPLES_CHARS)
+
+    @model_validator(mode="after")
+    def ordered(self) -> "PricingPolicy":
+        day_hourly = self.day_rate / self.hours_per_day
+        if not self.hourly_floor <= day_hourly <= self.hourly_default:
+            # The form rate for a fixed total is the day rate spread over the day;
+            # outside these bounds it would be clamped and disagree with the letter.
+            raise ValueError(
+                "the hourly floor, the day rate per hour and the hourly default "
+                "must be in that order"
+            )
+        return self
+
+
 class ProposalPolicy(Strict):
     """How the drafter uses the profile; every entry is the owner's."""
 
@@ -71,6 +103,8 @@ class ProposalPolicy(Strict):
     anecdotes: list[Anecdote] = Field(default_factory=list, max_length=MAX_ANECDOTES)
     platform_notes: dict[str, str] = Field(default_factory=dict, max_length=20)
     entity_terms: list[str] = Field(default_factory=list, max_length=MAX_TERMS)
+    # Without it, drafts never price and milestones cannot be generated.
+    pricing: PricingPolicy | None = None
     # The owner's own revision label for the policy text.
     version: int | None = Field(default=None, ge=1)
 

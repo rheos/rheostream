@@ -8,16 +8,20 @@ Job search opportunity a draft was asked for: its questions, the drafting state 
 progress, the findings and the retry bookkeeping. ``proposal_section`` holds the draft
 itself, one row per part an application form takes separately: the cover letter, then
 one answer per screening question. ``answer_library`` holds hand-written answers keyed
-by the normalised question, for reuse across jobs.
+by the normalised question, for reuse across jobs. ``job_pricing`` holds one row per
+job whose pricing was asked for: its mode, the milestone generation's state and
+outcome; ``proposal_milestone`` holds the schedule, one row per stage.
 """
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     Table,
     Text,
     UniqueConstraint,
@@ -131,4 +135,60 @@ proposal_section = Table(
     CheckConstraint(
         "(kind = 'answer') = (question IS NOT NULL)", name="proposal_section_question"
     ),
+)
+
+PRICING_STATES = ("idle", "queued", "running", "ready", "failed")
+PRICING_MODES = ("hourly", "milestones")
+
+job_pricing = Table(
+    "job_pricing",
+    metadata,
+    Column(
+        "opportunity_id",
+        Uuid,
+        ForeignKey("leads.opportunity.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # How the application prices: generating milestones chooses "milestones".
+    Column("mode", Text),
+    Column("state", Text, nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    # While queued, when it may run; while running, when its claim lapses.
+    Column("retry_after", DateTime(timezone=True)),
+    Column("failure_kind", Text),
+    # The last generation's outcome: the scope-fit warning, or why the posting
+    # was too vague to stage.
+    Column("warning", Text),
+    Column("too_vague", Text),
+    Column("generated_at", DateTime(timezone=True)),
+    Column("requested_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "state IN ('idle','queued','running','ready','failed')",
+        name="job_pricing_state_known",
+    ),
+    CheckConstraint(
+        "mode IS NULL OR mode IN ('hourly','milestones')", name="job_pricing_mode_known"
+    ),
+    CheckConstraint("attempts >= 0", name="job_pricing_attempts"),
+)
+
+proposal_milestone = Table(
+    "proposal_milestone",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column(
+        "opportunity_id",
+        Uuid,
+        ForeignKey("leads.job_pricing.opportunity_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("position", Integer, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("description", Text),
+    Column("amount", Numeric(12, 2), nullable=False),
+    Column("due_on", Date),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("opportunity_id", "position", name="proposal_milestone_position"),
+    CheckConstraint("amount >= 0", name="proposal_milestone_amount"),
 )

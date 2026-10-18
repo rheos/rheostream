@@ -261,3 +261,80 @@ describe("a failed regenerate", () => {
     expect(button("Delete draft")).toBeTruthy();
   });
 });
+
+describe("the pricing tab", () => {
+  const MILESTONE = {
+    id: "m1",
+    position: 0,
+    title: "Discovery",
+    description: "",
+    amount: "200.00",
+    due_on: "2026-10-19",
+  };
+  function priced(extra: Row = {}): Row {
+    return view("ready", {
+      pricing: {
+        available: true,
+        state: "ready",
+        milestones: [MILESTONE],
+        suggestion: { rate: "40.00", hours: "5.0", fixed_total: "200.00", basis: "b" },
+        ...extra,
+      },
+    });
+  }
+  it("asks before replacing milestones and keeps them by default", async () => {
+    const submit = vi
+      .fn()
+      .mockResolvedValue(ok(priced({ state: "queued", milestones: [] })));
+    mount({ submit, proposal: priced() });
+    await click(button("Regenerate milestones"));
+    expect(submit).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Your edits to them are replaced.");
+    await click(button("Regenerate"));
+    expect(submit).toHaveBeenCalledWith("leads.jobpricing.request", { ref: REF });
+    expect(host.textContent).toContain("Suggesting milestones");
+  });
+  it("keeps a typed amount when its save fails, and saves a good one", async () => {
+    const submit = vi
+      .fn()
+      .mockResolvedValueOnce(refused("pricing_in_progress"))
+      .mockImplementationOnce(async (_name: string, input: Row) =>
+        ok(priced({ milestones: [{ ...MILESTONE, amount: String(input.amount) }] })),
+      );
+    mount({ submit, proposal: priced() });
+    const amount = host.querySelector<HTMLInputElement>('input[type="number"]');
+    if (!amount) throw new Error("no amount");
+    type(amount, "350");
+    await blur(amount);
+    expect(host.textContent).toContain("Not saved: Milestones are already being prepared.");
+    expect(host.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe("350");
+    await blur(host.querySelector<HTMLInputElement>('input[type="number"]') as HTMLInputElement);
+    expect(submit).toHaveBeenLastCalledWith("leads.proposalmilestone.set", {
+      ref: REF,
+      milestone_id: "m1",
+      amount: "350",
+    });
+    type(host.querySelector<HTMLInputElement>('input[type="number"]') as HTMLInputElement, "-5");
+    await blur(host.querySelector<HTMLInputElement>('input[type="number"]') as HTMLInputElement);
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain("zero or more");
+  });
+  it("clears a due date on the server too", async () => {
+    const submit = vi.fn().mockResolvedValue(ok(priced({ milestones: [{ ...MILESTONE, due_on: null }] })));
+    mount({ submit, proposal: priced() });
+    const due = host.querySelector<HTMLInputElement>('input[type="date"]') as HTMLInputElement;
+    type(due, "");
+    await blur(due);
+    expect(submit).toHaveBeenCalledWith("leads.proposalmilestone.set", {
+      ref: REF,
+      milestone_id: "m1",
+      due_on: null,
+    });
+  });
+  it("words a refusal to price", async () => {
+    const submit = vi.fn().mockResolvedValue(refused("pricing_not_set"));
+    mount({ submit, proposal: view("ready", { pricing: { available: true, state: "idle", milestones: [] } }) });
+    await click(button("Suggest milestones"));
+    expect(host.textContent).toContain("Pricing is not set up yet");
+  });
+});

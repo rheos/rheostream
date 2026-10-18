@@ -272,6 +272,24 @@ normalised (case, spacing and surrounding punctuation), so one question has one 
 matching entry when there is one, and `leads.proposalsection.use_library` puts it into
 the section.
 
+**Pricing.** With a pricing section in the proposal policy (a day rate, the hours in a
+working day, the hourly rate the profile lists and the lowest one you bid, optionally
+the rate for a multi-week engagement, and your own rate context and delivery
+calibration as text), `leads.jobpricing.request` asks the model for a milestone
+schedule: each stage priced at the day rate per honest working-day, never from the
+budget, with a due date; or "too vague" with the reason when the posting names no
+concrete deliverable. Generating milestones chooses milestone pricing for the job. The
+scope-fit warning is decided in code: only when the budget is a project total and the
+priced scope reaches 1.2 times it. `leads.proposalmilestone.set` edits a milestone.
+`leads.jobproposal.get` carries the pricing, the milestones, and the hourly rate for an
+hourly apply form with its basis: the day rate spread over the working day when there
+are milestones (so the form agrees with the letter's total), else a ladder by the
+scope the analysis read (a day or two: your listed rate; a week: the day rate's
+hourly equivalent; weeks: the multi-week rate; ongoing: your floor). A draft whose
+posting asks for a quote and which has no milestones yet runs a **Pricing** stage
+first; a draft of a job with milestones is given them as the only amounts it may
+state. Milestone work runs in the same sweep as drafts, with the same failure rules.
+
 **Failures.** A usage limit, a refused login or a missing runtime makes every queued
 draft wait 15 minutes without spending an attempt. Any other failure (an unusable
 answer, a crashed or truncated run, a run past its deadline) retries with backoff, and

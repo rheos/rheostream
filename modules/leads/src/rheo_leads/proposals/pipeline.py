@@ -21,9 +21,12 @@ the draft itself cannot.
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
 from typing import Any, Literal, Protocol
 
-from rheo_leads.proposals import gate, prompts
+from rheo_leads.proposals import gate, milestones, pricing, prompts
+from rheo_leads.proposals.milestones import Schedule
 from rheo_leads.proposals.profile import StoredProposalProfile
 from rheo_leads.proposals.render import (
     Draft,
@@ -32,7 +35,7 @@ from rheo_leads.proposals.render import (
     strip_model_chatter,
 )
 
-Role = Literal["analysis", "draft", "gate", "repair"]
+Role = Literal["analysis", "draft", "gate", "repair", "milestones"]
 STAGES = ("Analysis", "Drafting", "Checking", "Tidying")
 
 
@@ -59,6 +62,9 @@ class JobInput:
     budget_max: str | None = None
     questions: str | None = None
     pricing_mode: str | None = None
+    # The listing's own type (hourly or fixed) and the job's milestones, if any.
+    listing_type: str | None = None
+    milestones: tuple[tuple[str, Decimal], ...] = ()
 
 
 @dataclass
@@ -68,6 +74,8 @@ class Result:
     # Set when the posting's own "please include" items became the questions.
     seeded_questions: str | None = None
     notes: list[str] = field(default_factory=list)
+    # Set when the Pricing stage priced the job for this draft.
+    schedule: Schedule | None = None
 
 
 def _text(answer: Mapping[str, object]) -> str:
@@ -82,6 +90,8 @@ def generate(
     profile: StoredProposalProfile,
     ask: Ask,
     report: Callable[[str, int, int], None],
+    *,
+    today: date | None = None,
 ) -> Result:
     policy = profile.policy
     context = prompts.job_context(
@@ -91,9 +101,12 @@ def generate(
         budget_min=job.budget_min,
         budget_max=job.budget_max,
     )
-    total = len(STAGES)
+    stages = list(STAGES)
 
-    report("Analysis", 1, total)
+    def at(name: str) -> None:
+        report(name, stages.index(name) + 1, len(stages))
+
+    at("Analysis")
     try:
         analysis = prompts.normalize_analysis(
             ask(
@@ -121,13 +134,45 @@ def generate(
         f"{job.title}\n{job.description}",
         analysis["story_asks"],
     )
+    # Pricing: a posting that asks for a quote, and no milestones yet, is priced
+    # first, so the letter can state the figure. A failure here never sinks the
+    # draft: it is written without figures.
+    rows = job.milestones
+    schedule: Schedule | None = None
+    if analysis["asks_quote"] and not rows and policy.pricing is not None:
+        stages.insert(1, "Pricing")
+        at("Pricing")
+        try:
+            schedule = milestones.read(
+                ask(
+                    "milestones",
+                    milestones.task(
+                        policy.pricing,
+                        title=job.title,
+                        description=job.description,
+                        budget_min=job.budget_min,
+                        budget_max=job.budget_max,
+                    ),
+                    milestones.SCHEMA,
+                ),
+                today=today or date.today(),
+            )
+            rows = tuple((s.title, s.amount) for s in schedule.stages)
+        except (AnswerUnusable, ValueError):
+            schedule = None
+    figures = (
+        pricing.figures_block(policy.pricing, rows, job.listing_type)
+        if rows and policy.pricing is not None
+        else ""
+    )
     system = prompts.system_prompt(
         platform=job.platform,
         profile=profile.profile,
         policy=policy,
         analysis=analysis,
         anecdotes=anecdotes,
-        pricing_mode=job.pricing_mode,
+        pricing_mode="milestones" if rows else job.pricing_mode,
+        figures=figures,
         questions=bool(asked),
     )
     evidence = gate.Evidence(
@@ -146,10 +191,10 @@ def generate(
         )
         return strip_model_chatter(text, expect_questions=bool(asked))
 
-    report("Drafting", 2, total)
+    at("Drafting")
     result = draft()
 
-    report("Checking", 3, total)
+    at("Checking")
     accuracy, checked = _check(ask, result, evidence)
     flagged_first = [f["claim"] for f in accuracy if f["verdict"] == "flagged"]
     retried = False
@@ -163,7 +208,7 @@ def generate(
     for f in accuracy:
         f["flagged_pre_retry"] = f["claim"].strip().lower() in earlier
 
-    report("Tidying", 4, total)
+    at("Tidying")
     style = gate.lint_text(result)
     style_first = list(style)
     repaired = False
@@ -202,12 +247,18 @@ def generate(
         "analysed": analysed,
         "anecdotes": [a.id for a in anecdotes],
         "gate_version": prompts.GATE_VERSION,
+        # Whether the letter was given figures to state, and whether this draft
+        # priced the job itself.
+        "figures": bool(figures),
+        "priced": schedule is not None and bool(schedule.stages),
     }
     # The stored sections must be what the person sees; a draft that does not
     # survive its own round trip is stored as parsed.
     if render_draft(parsed).strip() != result.strip():
         findings["normalized"] = True
-    return Result(draft=parsed, findings=findings, seeded_questions=seeded)
+    return Result(
+        draft=parsed, findings=findings, seeded_questions=seeded, schedule=schedule
+    )
 
 
 def _questions(text: str) -> tuple[str, ...]:

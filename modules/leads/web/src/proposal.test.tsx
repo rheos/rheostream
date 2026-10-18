@@ -7,6 +7,7 @@ import type {
 import { screens } from "./index";
 import { JOBSEARCH_PRESET_ID, type Row } from "./data";
 import {
+  milestoneLine,
   failureCopy,
   findings,
   progressLine,
@@ -97,18 +98,29 @@ function render(proposal: Row, posting = POSTING) {
 describe("proposal helpers", () => {
   it("reads the tab from the hash and says each tab's state", () => {
     expect(stageFromHash("#stage-proposal")).toBe("proposal");
-    expect(stageFromHash("#stage-pricing")).toBe("posting");
+    expect(stageFromHash("#stage-pricing")).toBe("pricing");
+    expect(stageFromHash("#stage-elsewhere")).toBe("posting");
     expect(stageFromHash("")).toBe("posting");
     expect(stageWords({ state: "idle" }, "", "")).toEqual({
       posting: "Needed",
       questions: "Optional",
       proposal: "Draft next",
+      pricing: "Optional",
     });
     expect(stageWords(ready, POSTING, "What is your rate?")).toEqual({
       posting: "Ready",
       questions: "Added",
       proposal: "Ready",
+      pricing: "Optional",
     });
+    expect(
+      stageWords({ state: "idle", pricing: { available: false } }, "", "")
+        .pricing,
+    ).toBe("Not set");
+    expect(
+      stageWords({ state: "idle", pricing: { state: "running" } }, "", "")
+        .pricing,
+    ).toBe("Pricing");
     // Typed but not yet saved with a draft: the tab says so.
     expect(stageWords(ready, POSTING, "Another?").questions).toBe("Unsaved");
     expect(stageWords({ state: "drafting" }, POSTING, "").proposal).toBe(
@@ -157,6 +169,8 @@ describe("proposal helpers", () => {
     expect(unchecked?.checked).toBe(false);
     expect(unchecked?.clean).toBe(false);
     expect(findings({ accuracy: [], style: [] })?.clean).toBe(true);
+    const stale = findings({ accuracy: [], style: [], figures_stale: true });
+    expect([stale?.figuresStale, stale?.clean]).toEqual([true, false]);
     expect(findings(null)).toBeNull();
     expect(where("document")).toBe("Whole draft");
   });
@@ -166,7 +180,7 @@ describe("the proposal workflow", () => {
   it("opens on the posting with no draft, and moves the paste form there", () => {
     const html = render({ opportunity_ref: REF, state: "idle", sections: [] });
     expect(html).toContain('role="tablist"');
-    expect(html.match(/role="tab"/g)).toHaveLength(3);
+    expect(html.match(/role="tab"/g)).toHaveLength(4);
     expect(html).toMatch(/id="stage-tab-posting"[^>]*aria-selected="true"/);
     expect(html).toMatch(/id="stage-panel-proposal"[^>]*hidden=""/);
     expect(html).toContain("Build a small example storefront.");
@@ -277,5 +291,72 @@ describe("the job detail", () => {
     // The paste form lives in the Posting tab now, not again under the evidence.
     expect(html).not.toContain("<summary>Paste the full posting</summary>");
     expect(api.submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("the pricing tab", () => {
+  const priced: Row = {
+    ...ready,
+    pricing: {
+      available: true,
+      state: "ready",
+      mode: "milestones",
+      warning: "This posting's scope runs past its stated budget.",
+      milestones: [
+        {
+          id: "m1",
+          position: 0,
+          title: "Discovery",
+          description: "Read the example code.",
+          amount: "200.00",
+          due_on: "2026-10-19",
+        },
+        {
+          id: "m2",
+          position: 1,
+          title: "Checkout <fix>",
+          description: null,
+          amount: "1200.00",
+          due_on: null,
+        },
+      ],
+      suggestion: {
+        rate: "40.00",
+        hours: "35.0",
+        fixed_total: "1400.00",
+        basis: "matches the fixed quote",
+        note: "The listing is hourly.",
+      },
+    },
+  };
+  it("shows the form rate, the milestones, their copy text and the warning", () => {
+    const html = render(priced);
+    expect(html).toContain('id="stage-tab-pricing"');
+    // Built from parts: the repository holds no rate-shaped literal.
+    expect(html).toContain(["$40", "/hr"].join(""));
+    expect(html).toContain("about 35 h for $1,400.00");
+    expect(html).toContain("matches the fixed quote");
+    expect(html).toContain("Note: This posting");
+    expect(html).toContain('value="Discovery"');
+    expect(html).toContain('value="Checkout &lt;fix&gt;"');
+    expect(html).toContain('value="2026-10-19"');
+    expect(html).toContain("Regenerate milestones");
+    expect(html).toContain("Copy every milestone");
+    expect(milestoneLine({ id: "x", title: "Build", description: "", amount: "1200.00", dueOn: "" })).toBe(
+      "Build: $1,200.00",
+    );
+  });
+  it("says when pricing is not set and offers nothing to press", () => {
+    const html = render({ ...ready, pricing: { available: false, state: "idle", milestones: [] } });
+    expect(html).toContain("Pricing is not set up yet");
+    expect(html).not.toContain("Suggest milestones");
+  });
+  it("words a vague posting and a running request", () => {
+    expect(
+      render({ ...ready, pricing: { available: true, state: "ready", too_vague: "No deliverable named.", milestones: [] } }),
+    ).toContain("too vague to stage: No deliverable named.");
+    const running = render({ ...ready, pricing: { available: true, state: "running", milestones: [] } });
+    expect(running).toContain("Suggesting milestones. This takes");
+    expect(running).toMatch(/<button[^>]*disabled=""[^>]*>Suggesting…<\/button>/);
   });
 });

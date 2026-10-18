@@ -225,7 +225,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=9,
+        format_version=10,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,
@@ -276,6 +276,8 @@ MANIFEST = ModuleManifest(
                 "proposalsection.set",
                 "proposalsection.use_library",
                 "answerlibrary.save",
+                "jobpricing.request",
+                "proposalmilestone.set",
             )
         ),
     ),

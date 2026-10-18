@@ -233,15 +233,15 @@ def test_populated_round_trip_carries_no_secret_and_needs_a_reconnect(
         for r in (c.token_ref, before.client_secret_ref, before.registration_token_ref)
     }
     assert all(f.is_file() for f in original_files)
-    assert MANIFEST.export.format_version == 9
+    assert MANIFEST.export.format_version == 10
 
     artifact = export_workspace(intake)
     entries, text = archive_text(artifact)
     manifest = json.loads(entries["manifest.json"])
     (leads,) = (m for m in manifest["modules"] if m["module_id"] == "leads")
-    assert leads["export_format_version"] == 9
+    assert leads["export_format_version"] == 10
     rows = leads_rows(entries)
-    # The archived rows are the format-9 shape, valid against its schema.
+    # The archived rows are the format-10 shape, valid against its schema.
     assert _validated_module_rows(MANIFEST, rows, "leads") == rows
     by_type: dict[str, list[dict[str, Any]]] = {}
     for row in rows:

@@ -10,7 +10,7 @@
 }
 .strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--rs-size-hairline);
   overflow: hidden;
   margin-bottom: var(--rs-space-5);
@@ -406,7 +406,69 @@
   margin: 0;
   color: var(--rs-color-ink);
 }
+.formRate {
+  margin: 0 0 var(--rs-space-3);
+  padding: var(--rs-space-3);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+  background: var(--rs-color-surface-2);
+}
+.formRate .note {
+  margin-top: var(--rs-space-1);
+}
+.formRateLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--rs-space-2);
+  margin: 0;
+}
+.formRateValue {
+  font-size: var(--rs-font-size-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--rs-color-accent-strong);
+}
+.milestoneTitle,
+.milestoneField input {
+  min-width: 0;
+  padding: var(--rs-space-2);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-sm);
+  background: var(--rs-color-control-bg);
+  color: var(--rs-color-ink);
+  font: inherit;
+  font-size: var(--rs-font-size-sm);
+}
+.milestoneTitle {
+  flex: 1;
+  font-weight: 700;
+}
+.milestoneFields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--rs-space-3);
+  margin-bottom: var(--rs-space-2);
+}
+.milestoneField {
+  display: grid;
+  gap: var(--rs-space-1);
+  font-size: calc(var(--rs-font-size-sm) * 0.85);
+  color: var(--rs-color-ink-faint);
+}
+.milestoneField input {
+  font-variant-numeric: tabular-nums;
+}
+.milestoneTitle:focus-visible,
+.milestoneField input:focus-visible {
+  outline: calc(var(--rs-size-hairline) * 2) solid var(--rs-color-control-focus);
+  outline-offset: calc(var(--rs-size-hairline) * 2);
+}
 @media (max-width: 39.9375rem) {
+  .strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .workflow {
     padding: var(--rs-space-3);
   }

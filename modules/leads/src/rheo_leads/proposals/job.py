@@ -35,6 +35,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
@@ -62,7 +63,7 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
-from sqlalchemy import and_, delete, func, insert, or_, select, update
+from sqlalchemy import and_, delete, exists, func, insert, or_, select, update
 from sqlalchemy.exc import StatementError
 
 from rheo_leads import pipeline_common as h
@@ -76,6 +77,7 @@ from rheo_leads.proposals.pipeline import (
 from rheo_leads.proposals.pipeline import (
     Role as AskRole,
 )
+from rheo_leads.proposals.pricing_store import Priced, read_priced, write_schedule
 from rheo_leads.proposals.profile import StoredProposalProfile, read_proposal_profile
 from rheo_leads.scoring.tier1 import EXTENSION
 from rheo_leads.storage import pipeline as p
@@ -94,6 +96,7 @@ MODEL_KEYS: Final[Mapping[AskRole, str]] = {
     "gate": ANALYSIS_MODEL_KEY,
     "draft": DRAFT_MODEL_KEY,
     "repair": DRAFT_MODEL_KEY,
+    "milestones": DRAFT_MODEL_KEY,
 }
 SCRATCH_SUBDIR: Final = "jobpropose"
 DRAFT_ATTEMPTS: Final = 3
@@ -109,6 +112,7 @@ READ_TARGETS: Final = (
     EXTENSION + "platform",
     EXTENSION + "budget_min",
     EXTENSION + "budget_max",
+    EXTENSION + "job_type",
 )
 
 DRAFTED_LOG: Final = "job_proposal_finished"
@@ -158,6 +162,7 @@ class Claimed:
     # Which request this claim answers: a delete and a new request reset the
     # attempt count, so the count alone cannot tell two requests apart.
     requested_at: datetime
+    priced: Priced = Priced()
 
 
 class _Deferred(Exception):
@@ -212,10 +217,20 @@ def queue_sweep(
 def _claimable(now: datetime) -> Any:
     state = s.job_proposal
     due = or_(state.c.retry_after.is_(None), state.c.retry_after <= now)
-    return or_(
-        and_(state.c.state == "queued", due),
-        # A claim whose holder died: its window has lapsed.
-        and_(state.c.state == "drafting", state.c.retry_after <= now),
+    pricing = s.job_pricing
+    # A draft waits while its job's milestones are being prepared, so the letter
+    # quotes the rows the Pricing tab will show.
+    priced_first = ~exists().where(
+        pricing.c.opportunity_id == state.c.opportunity_id,
+        pricing.c.state.in_(("queued", "running")),
+    )
+    return and_(
+        priced_first,
+        or_(
+            and_(state.c.state == "queued", due),
+            # A claim whose holder died: its window has lapsed.
+            and_(state.c.state == "drafting", state.c.retry_after <= now),
+        ),
     )
 
 
@@ -301,6 +316,7 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
         fields=_fields(uow, row["opportunity_id"]),
         questions=row["questions"],
         requested_at=row["requested_at"],
+        priced=read_priced(uow, row["opportunity_id"]),
     )
 
 
@@ -410,6 +426,11 @@ def record_draft(
         for i, answer in enumerate(result.draft.answers, start=1)
     ]
     uow.connection.execute(insert(section), rows)
+    if result.schedule is not None and not _write_priced(
+        uow, claimed, result.schedule, now=now
+    ):
+        # The letter quotes a schedule that lost to newer pricing: say so.
+        result.findings["figures_stale"] = True
     values: dict[str, Any] = {
         "state": "ready",
         "stage": None,
@@ -431,6 +452,51 @@ def record_draft(
         .where(state.c.opportunity_id == claimed.opportunity_id)
         .values(**values)
     )
+    return True
+
+
+def _write_priced(
+    uow: UnitOfWork, claimed: Claimed, schedule: Any, *, now: datetime
+) -> bool:
+    """The Pricing stage's schedule, only while the job's pricing is as the draft
+    found it (no row, or the same row unchanged, and no milestones). Anything newer
+    wins, and the draft is marked as quoting figures that have since changed."""
+    from rheo_leads.proposals.pricing import scope_fit_warning
+
+    t = s.job_pricing
+    now_row = uow.connection.execute(
+        select(t.c.updated_at)
+        .where(t.c.opportunity_id == claimed.opportunity_id)
+        .with_for_update()
+    ).one_or_none()
+    unchanged = (
+        now_row is None
+        if claimed.priced.changed_at is None
+        else now_row is not None and now_row.updated_at == claimed.priced.changed_at
+    )
+    has_rows = uow.connection.execute(
+        select(func.count())
+        .select_from(s.proposal_milestone)
+        .where(s.proposal_milestone.c.opportunity_id == claimed.opportunity_id)
+    ).scalar_one()
+    if not unchanged or has_rows:
+        return False
+    fields = claimed.fields
+
+    def budget(name: str) -> Any:
+        try:
+            value = fields.get(EXTENSION + name)
+            return Decimal(value) if value else None
+        except ArithmeticError:
+            return None
+
+    warning = scope_fit_warning(
+        [stage.amount for stage in schedule.stages],
+        budget("budget_min"),
+        budget("budget_max"),
+        fields.get(EXTENSION + "job_type"),
+    )
+    write_schedule(uow, claimed.opportunity_id, schedule, warning=warning, now=now)
     return True
 
 
@@ -524,6 +590,9 @@ def _job_input(claimed: Claimed) -> JobInput:
         budget_min=fields.get(EXTENSION + "budget_min"),
         budget_max=fields.get(EXTENSION + "budget_max"),
         questions=claimed.questions,
+        pricing_mode=claimed.priced.mode,
+        listing_type=fields.get(EXTENSION + "job_type"),
+        milestones=claimed.priced.rows,
     )
 
 
@@ -612,6 +681,13 @@ def _sweep(
     if not enabled:
         return
     runner = hooks.runner()
+    # Pricing first: a draft waits behind its job's pricing request, and quotes
+    # the rows this leaves.
+    from rheo_leads.proposals import pricing_job
+
+    pricing_job.price_all(
+        ctx, profile, runner=runner, token=token, window=window, started=started
+    )
     counts = {"drafted": 0, "failed": 0, "deferred": 0}
     while True:
         token.checkpoint()
@@ -668,9 +744,18 @@ def _sweep(
         DRAFTED_LOG, extra=content_free_extra({"unit_count": sum(counts.values())})
     )
     now = hooks.clock()
-    due = follow_up_at(uow, now=now)
-    if due is not None:
-        queue_sweep(uow, workspace_id=ctx.workspace_id, now=now, at=max(due, now))
+    waits = [
+        due
+        for due in (
+            follow_up_at(uow, now=now),
+            pricing_job.follow_up_at(uow, now=now),
+        )
+        if due is not None
+    ]
+    if waits:
+        queue_sweep(
+            uow, workspace_id=ctx.workspace_id, now=now, at=max(min(waits), now)
+        )
 
 
 def _draft_one(
@@ -715,7 +800,7 @@ def _draft_one(
         before=hold,
     )
     try:
-        return generate(job, profile, ask, report)
+        return generate(job, profile, ask, report, today=HOOKS.clock().date())
     except _Deferred as exc:
         return exc
     except AnswerUnusable as exc:
