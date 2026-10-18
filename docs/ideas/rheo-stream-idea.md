@@ -1973,6 +1973,14 @@ The following changes are recorded here.
     so it agrees with the letter's fixed total. A draft states amounts only from those
     rows. Migration `0013_job_pricing` adds the pricing state and milestone tables.
 
+24. **A held job is promoted by an owner override, not a hand-written score.**
+    Recorded on 2026-10-18 against issue #407. Promote in the review queue stores an
+    override per opportunity; with it the client filters no longer hold the job, the
+    model scores it and it can be drafted as usual. The override is not derived from
+    the assessment, so rescoring, a changed posting and a new profile all leave it in
+    place, and the clauses that held the job stay on its assessment as conditions.
+    Migration `0014_job_promotion` adds the override table.
+
 ### Website intake implementation clarification (2026-10-09)
 
 Signed website event identity comes from the signed body (`event_id`) or its exact-byte

@@ -104,13 +104,23 @@ class JobFacts:
         return self.platform in (None, UPWORK)
 
 
+# The clause codes a hold carries, one per failed sentence, for the review queue.
+PAYMENT_UNVERIFIED: Final = "payment_unverified"
+LOW_SPEND: Final = "low_spend"
+LOW_RATING: Final = "low_rating"
+LOW_HIRE_RATE: Final = "low_hire_rate"
+HIGH_PROPOSALS: Final = "high_proposals"
+
+
 @dataclass(frozen=True)
 class Tier1Result:
-    """``failed`` clauses hold the job back; ``soft`` ones go on to the model."""
+    """``failed`` clauses hold the job back; ``soft`` ones go on to the model.
+    ``codes`` names each failed clause, in the same order."""
 
     failed: tuple[str, ...] = ()
     soft: tuple[str, ...] = ()
     new_client: bool = False
+    codes: tuple[str, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -140,31 +150,42 @@ def run_tier1(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
             return Tier1Result(
                 failed=("A new client without a verified payment method.",),
                 new_client=True,
+                codes=(PAYMENT_UNVERIFIED,),
             )
         if over_cap:
-            return Tier1Result(failed=(crowded,), new_client=True)
+            return Tier1Result(
+                failed=(crowded,), new_client=True, codes=(HIGH_PROPOSALS,)
+            )
         soft = (unknown_payment,) if job.payment_verified is None else ()
         return Tier1Result(soft=soft, new_client=True)
 
     failed: list[str] = []
+    codes: list[str] = []
     if job.payment_verified is False:
         failed.append("The client's payment method is not verified.")
+        codes.append(PAYMENT_UNVERIFIED)
     if job.client_spend is not None and job.client_spend < policy.min_client_spend:
+        codes.append(LOW_SPEND)
         failed.append(
             f"The client has spent {_money(job.client_spend)}, below the "
             f"{_money(policy.min_client_spend)} minimum."
         )
     if job.client_rating is not None and job.client_rating < policy.min_client_rating:
+        codes.append(LOW_RATING)
         failed.append(
             f"The client's rating is {job.client_rating}, below "
             f"{policy.min_client_rating}."
         )
     if job.client_hire_rate is not None and job.client_hire_rate < policy.min_hire_rate:
+        codes.append(LOW_HIRE_RATE)
         failed.append(
             f"The client hires on {_percent(job.client_hire_rate)} of their jobs, "
             f"below {_percent(policy.min_hire_rate)}."
         )
     if over_cap:
         failed.append(crowded)
+        codes.append(HIGH_PROPOSALS)
     soft = (unknown_payment,) if job.payment_verified is None else ()
-    return Tier1Result(failed=tuple(failed), soft=() if failed else soft)
+    return Tier1Result(
+        failed=tuple(failed), soft=() if failed else soft, codes=tuple(codes)
+    )

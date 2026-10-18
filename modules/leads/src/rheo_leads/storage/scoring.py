@@ -5,6 +5,9 @@ policy, which are the workspace's own data and never package content.
 ``job_score_state`` holds one row per Job search opportunity the scorer has seen: the
 digest of the inputs it last scored or is about to score, and the retry bookkeeping.
 The score itself lives on the qualification record.
+``job_promotion`` holds one row per job the owner promoted past the client filters:
+an override of tier 1, kept apart from the scoring state so that rescoring, a moved
+posting and a new profile all leave it in place.
 """
 
 from sqlalchemy import (
@@ -61,4 +64,18 @@ job_score_state = Table(
         "state IN ('pending','scored','failed')", name="job_score_state_known"
     ),
     CheckConstraint("attempts >= 0", name="job_score_state_attempts"),
+)
+
+job_promotion = Table(
+    "job_promotion",
+    metadata,
+    Column(
+        "opportunity_id",
+        Uuid,
+        ForeignKey("leads.opportunity.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("promoted_by_kind", Text, nullable=False),
+    Column("promoted_by_id", Uuid),
+    Column("promoted_at", DateTime(timezone=True), nullable=False),
 )

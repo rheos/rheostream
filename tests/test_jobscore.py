@@ -18,6 +18,8 @@ from rheo_core.runtime.oneshot import (
 from rheo_leads.scoring import tier2
 from rheo_leads.scoring.job import (
     ASSESSMENT_INVALID,
+    HELD_LINE,
+    PROMOTED_LINE,
     Outcome,
     assess,
     input_digest,
@@ -496,6 +498,63 @@ def test_a_held_job_never_reaches_the_model() -> None:
     assert outcome.fit == "low" and outcome.score is None and not outcome.model
     assert "3.1, below 4.5" in outcome.lines[1]
     assert runner.calls == []
+
+
+def test_each_failed_clause_carries_its_code() -> None:
+    decided = run_tier1(
+        established(
+            payment_verified=False,
+            client_spend=Decimal("10"),
+            client_rating=Decimal("3.1"),
+            client_hire_rate=Decimal("0.1"),
+            proposal_count=80,
+        ),
+        Tier1Policy(),
+    )
+    assert decided.codes == (
+        "payment_unverified",
+        "low_spend",
+        "low_rating",
+        "low_hire_rate",
+        "high_proposals",
+    )
+    assert len(decided.codes) == len(decided.failed)
+    new = {"client_spend": Decimal(0), "client_reviews": 0}
+    unverified = established(**new, payment_verified=False)
+    assert run_tier1(unverified, Tier1Policy()).codes == ("payment_unverified",)
+    crowded = established(**new, proposal_count=80)
+    assert run_tier1(crowded, Tier1Policy()).codes == ("high_proposals",)
+    assert run_tier1(established(), Tier1Policy()).codes == ()
+
+
+def test_a_promoted_job_is_scored_with_its_held_clauses_as_conditions() -> None:
+    runner = FakeRunner(answer(score=7, requirements=["job:1"]))
+    held = established(client_rating=Decimal("3.1"), proposal_count=80)
+    outcome = assess(
+        held,
+        STORED,
+        runner=runner,
+        workspace_id=WORKSPACE,
+        heartbeat=lambda: None,
+        promoted=True,
+    )
+    assert outcome.model and outcome.score == 70
+    assert outcome.lines[-3] == PROMOTED_LINE
+    assert "3.1, below 4.5" in outcome.lines[-2]
+    assert outcome.lines[-1].startswith("More than 50 proposals")
+    assert HELD_LINE not in outcome.lines
+    assert outcome.uncertainty in ("medium", "high")
+    assert len(runner.calls) == 1
+    # A promotion never makes up a missing description.
+    bare = assess(
+        established(client_rating=Decimal("3.1"), description=None),
+        STORED,
+        runner=runner,
+        workspace_id=WORKSPACE,
+        heartbeat=lambda: None,
+        promoted=True,
+    )
+    assert bare.fit == "needs_information" and len(runner.calls) == 1
 
 
 def test_a_job_without_its_description_needs_information() -> None:

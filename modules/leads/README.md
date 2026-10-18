@@ -225,6 +225,18 @@ jobs and every job without a score yet, so changed thresholds apply to held jobs
 projects and quote the recorded experience boundaries they cite, and those reasons
 sit on the job's qualification record, which every workspace member can read.
 
+**The review queue.** Leads > Review queue lists the open Job search jobs tier 1 holds
+back, newest first, each with a badge for every clause that held it (unverified
+payment, client spend, rating, hire rate, too many proposals), decided again against
+the current profile. `leads.ui.queue` with `held_only` is its read; each item carries
+a `hold` list of `{code, text}`. From a card you can open the posting, copy the ID,
+dismiss the job, or **promote** it: `leads.jobreview.promote` records an override on
+that job (`job_promotion`), and the next sweep sends it to the model like a job that
+passed, with the clauses that held it kept on its assessment as conditions. The
+override is its own row, so a rescore, a changed posting or a new profile never undoes
+it; it is exported with the workspace and goes when the job is deleted. Only a job the
+filters hold can be promoted (`not_held` otherwise), and promoting twice does nothing.
+
 ## Job proposals
 
 A Job search opportunity can have a draft application: a cover letter and one answer

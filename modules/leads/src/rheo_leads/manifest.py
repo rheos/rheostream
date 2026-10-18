@@ -71,6 +71,7 @@ from rheo_leads.scoring.job import (
 )
 from rheo_leads.scoring.profile import OPERATIONS as SCORING_OPERATIONS
 from rheo_leads.scoring.profile import SCHEDULE_NAME as SCORE_SCHEDULE_NAME
+from rheo_leads.scoring.review import OPERATIONS as REVIEW_OPERATIONS
 from rheo_leads.web_reads import OPERATIONS as WEB_OPERATIONS
 
 MANIFEST = ModuleManifest(
@@ -110,6 +111,7 @@ MANIFEST = ModuleManifest(
     + JOBFEED_OPERATIONS
     + JOBPASTE_OPERATIONS
     + SCORING_OPERATIONS
+    + REVIEW_OPERATIONS
     + PROPOSAL_PROFILE_OPERATIONS
     + PROPOSAL_OPERATIONS,
     tools=(
@@ -225,7 +227,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=10,
+        format_version=11,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,
@@ -239,6 +241,7 @@ MANIFEST = ModuleManifest(
             WebRoute(id=name, path=path, screen=name)
             for name, path in (
                 ("queue", "/"),
+                ("review", "/review"),
                 ("list", "/opportunities"),
                 ("board", "/board"),
                 ("detail", "/detail"),
@@ -278,6 +281,8 @@ MANIFEST = ModuleManifest(
                 "answerlibrary.save",
                 "jobpricing.request",
                 "proposalmilestone.set",
+                # The review queue's override.
+                "jobreview.promote",
             )
         ),
     ),
