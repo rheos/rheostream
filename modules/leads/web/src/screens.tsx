@@ -835,9 +835,8 @@ export async function detail({ shell, query }: ScreenProps) {
           item={job}
           now={Date.now()}
           submit={shell.submit}
-          back={shell.href("queue", {
-            pipeline: str(job.pipeline_id) || undefined,
-          })}
+          // Bare, so the queue reopens the view saved when it was last used.
+          back={shell.href("queue")}
         />
       ) : null}
       {job && proposal ? (

@@ -712,7 +712,8 @@ export function JobHeader({
       outcome = { state: "unavailable" as const };
     }
     if (outcome.state === "ok") {
-      if (dismiss && back) window.location.assign(back);
+      // Replace: Back from the queue should not reopen a dismissed job.
+      if (dismiss && back) window.location.replace(back);
       else window.location.reload();
       return;
     }

@@ -28,16 +28,18 @@ const job: Row = {
 let host: HTMLDivElement;
 let root: Root;
 const assign = vi.fn();
+const replace = vi.fn();
 const reload = vi.fn();
 beforeEach(() => {
   host = window.document.createElement("div");
   window.document.body.appendChild(host);
   root = createRoot(host);
   assign.mockReset();
+  replace.mockReset();
   reload.mockReset();
   Object.defineProperty(window, "location", {
     configurable: true,
-    value: { ...window.location, assign, reload },
+    value: { ...window.location, assign, replace, reload },
   });
 });
 afterEach(() => {
@@ -69,7 +71,7 @@ describe("the job header's controls", () => {
       revision: 3,
       to_stage_id: "passed",
     });
-    expect(assign).toHaveBeenCalledWith("/leads/?pipeline=jobs");
+    expect(replace).toHaveBeenCalledWith("/leads/?pipeline=jobs");
     expect(reload).not.toHaveBeenCalled();
   });
   it("reloads after a stage change from the select", async () => {
@@ -83,7 +85,27 @@ describe("the job header's controls", () => {
     });
     expect(submit.mock.calls[0]?.[1]).toMatchObject({ to_stage_id: "qualified" });
     expect(reload).toHaveBeenCalled();
-    expect(assign).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+  it("treats the dismiss stage chosen in the select as a dismiss", async () => {
+    const submit = vi.fn().mockResolvedValue({ state: "ok", result: {} });
+    mount(submit);
+    const select = host.querySelector<HTMLSelectElement>("select") as HTMLSelectElement;
+    await act(async () => {
+      select.value = "passed";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(replace).toHaveBeenCalledWith("/leads/?pipeline=jobs");
+  });
+  it("holds the controls while a move is in flight", async () => {
+    let settle: (value: unknown) => void = () => {};
+    const submit = vi.fn(() => new Promise((resolve) => (settle = resolve)));
+    mount(submit);
+    await act(async () => dismissButton().click());
+    expect(dismissButton().disabled).toBe(true);
+    expect(host.querySelector("select")?.disabled).toBe(true);
+    await act(async () => settle({ state: "unavailable" }));
+    expect(dismissButton().disabled).toBe(false);
   });
   it("says why a move failed and stays put", async () => {
     const submit = vi
@@ -92,7 +114,7 @@ describe("the job header's controls", () => {
     mount(submit);
     await act(async () => dismissButton().click());
     expect(host.textContent).toContain("Reload to change its stage.");
-    expect(assign).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
     expect(dismissButton().disabled).toBe(false);
   });
 });

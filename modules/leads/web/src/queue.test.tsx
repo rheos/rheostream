@@ -700,6 +700,10 @@ describe("queue screen", () => {
     expect(readOnly).toContain('aria-label="Open the posting"');
     expect(readOnly).not.toContain("Stage for Example data service");
     expect(readOnly).not.toContain("Dismiss Example data service");
+    // Dismiss returns to the queue's own route, bare, so its saved view reopens.
+    const href = vi.spyOn(api, "href");
+    await screens.detail({ shell: api, query: { ref: "leads.opportunity:x" } });
+    expect(href).toHaveBeenCalledWith("queue");
     const plain = shell({
       "leads.opportunity.get": ok({
         ...record,
