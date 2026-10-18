@@ -5,6 +5,7 @@ import type {
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
 import { ActionForm, type FormProps } from "./action-form";
+import { ModalForm } from "./modal-form";
 import {
   JobFeedCollector,
   JobFeedConnect,
@@ -825,43 +826,135 @@ export async function receipt({ shell, query }: ScreenProps) {
     </Frame>
   );
 }
-/** What the closed record drawer says it holds: only what is there. */
-export function drawerSummary(record: Row, assessments: number): string {
-  const notes = rows(record.opportunity_note).length;
-  const drafts = rows(record.drafts).length;
+/** A job's own record, under its workflow: notes and the next follow-up, the
+ * two parts of the generic record that matter once a job is in hand. They read
+ * as plain lines; adding or changing one opens its form in a dialog, so the page
+ * carries no text box until one is wanted. The rest of the generic page (raw
+ * source fields, a second stage form, manual qualification, title and value
+ * edits, follow-up drafts) repeats the header and the Posting tab or serves
+ * inquiries, so a job does not show it (#418). */
+function JobRecord({
+  shell,
+  record,
+  base,
+}: {
+  shell: ScreenProps["shell"];
+  record: Row;
+  base: Record<string, unknown>;
+}) {
+  const notes = rows(record.opportunity_note);
   const followup = row(record.followup);
-  return [
-    notes ? `${notes} ${notes === 1 ? "note" : "notes"}` : "",
-    followup.due_on ? `follow-up due ${date(followup.due_on)}` : "",
-    drafts ? `${drafts} follow-up ${drafts === 1 ? "draft" : "drafts"}` : "",
-    assessments > 1 ? `${assessments} assessments` : "",
-  ]
-    .filter(Boolean)
-    .join(", ");
+  const closed = Boolean(record.disposition_outcome);
+  const submit = shell.submit;
+  return (
+    <section className={styles.jobRecord} aria-label="Notes and follow-up">
+      <div>
+        <div className={styles.jobRecordHead}>
+          <h2 className={styles.jobRecordTitle}>Notes</h2>
+          {submit ? (
+            <ModalForm
+              submit={submit}
+              trigger="Add note"
+              title="Add a note"
+              operation="leads.opportunity.add_note"
+              base={base}
+              button="Add note"
+              fields={[
+                { name: "body", label: "Note", type: "textarea", required: true },
+              ]}
+            />
+          ) : null}
+        </div>
+        {notes.length ? (
+          notes.map((note) => (
+            <article className={styles.jobNote} key={str(note.id)}>
+              <p className={styles.note}>{str(note.body)}</p>
+              <p className={styles.meta}>{date(note.created_at)}</p>
+            </article>
+          ))
+        ) : (
+          <p className={styles.meta}>No notes yet.</p>
+        )}
+      </div>
+      <div>
+        <div className={styles.jobRecordHead}>
+          <h2 className={styles.jobRecordTitle}>Follow-up</h2>
+          {submit && !closed ? (
+            <ModalForm
+              key={str(followup.id) || "new-followup"}
+              submit={submit}
+              trigger={record.followup ? "Reschedule" : "Schedule"}
+              title={record.followup ? "Reschedule the follow-up" : "Schedule a follow-up"}
+              operation="leads.followup.schedule"
+              base={base}
+              button={record.followup ? "Reschedule" : "Schedule"}
+              fields={[
+                {
+                  name: "action",
+                  label: "What to do",
+                  required: true,
+                  maxLength: 2000,
+                  value: str(followup.action),
+                },
+                {
+                  name: "due_on",
+                  label: "When",
+                  type: "date",
+                  required: true,
+                  value: str(followup.due_on),
+                },
+              ]}
+            />
+          ) : null}
+        </div>
+        {record.followup ? (
+          <>
+            <p className={styles.note}>{str(followup.action)}</p>
+            <p className={styles.meta}>Due {date(followup.due_on)}</p>
+            {submit ? (
+              <div className={styles.jobRecordActions}>
+                <ActionForm
+                  submit={submit}
+                  operation="leads.followup.resolve"
+                  base={{ ...base, reminder_id: followup.id, outcome: "completed" }}
+                  fields={[]}
+                  button="Done"
+                  buttonClass="secondary"
+                />
+                <ActionForm
+                  submit={submit}
+                  operation="leads.followup.resolve"
+                  base={{ ...base, reminder_id: followup.id, outcome: "cancelled" }}
+                  fields={[]}
+                  button="Cancel it"
+                  buttonClass="secondary"
+                />
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className={styles.meta}>
+            {closed ? "Closed: no follow-up." : "None scheduled."}
+          </p>
+        )}
+      </div>
+    </section>
+  );
 }
 
-/** On a job, the generic record (evidence, notes, follow-up, qualification,
- * details) is rarely needed while deciding and applying, so it waits closed at
- * the foot of the page (#408). Any other opportunity shows it as before. */
-function RecordDrawer({
-  tucked,
-  summary,
+/** A job swaps the generic record for its own (#418); anything else keeps it. */
+function RecordFor({
+  job,
   children,
+  ...props
 }: {
-  tucked: boolean;
-  summary: string;
+  job: boolean;
+  shell: ScreenProps["shell"];
+  record: Row;
+  base: Record<string, unknown>;
   children: ReactNode;
 }) {
-  if (!tucked) return <>{children}</>;
-  return (
-    <details className={styles.drawer}>
-      <summary>
-        <span className={styles.drawerTitle}>Notes, follow-up and record</span>
-        {summary ? <span className={styles.drawerMeta}>{summary}</span> : null}
-      </summary>
-      <div className={styles.drawerBody}>{children}</div>
-    </details>
-  );
+  return job ? <JobRecord {...props} /> : <>{children}</>;
 }
 
 export async function detail({ shell, query }: ScreenProps) {
@@ -907,8 +1000,6 @@ export async function detail({ shell, query }: ScreenProps) {
         postingUrl={postingUrl(row(job.fields)) ?? ""}
       />
     ) : null;
-  const assessments =
-    historyResult?.state === "ok" ? items(historyResult).length : 0;
   const ratingOptions = [
     { value: "needs_information", label: "Needs information" },
     { value: "high", label: "High" },
@@ -948,9 +1039,11 @@ export async function detail({ shell, query }: ScreenProps) {
       {result.state !== "ok" ? (
         <Failure outcome={result} />
       ) : (
-        <RecordDrawer
-          tucked={job !== undefined}
-          summary={drawerSummary(record, assessments)}
+        <RecordFor
+          job={job !== undefined}
+          shell={shell}
+          record={record}
+          base={base}
         >
           <div className={styles.columns}>
             <div>
@@ -1427,7 +1520,7 @@ export async function detail({ shell, query }: ScreenProps) {
               </section>
             </aside>
           </div>
-        </RecordDrawer>
+        </RecordFor>
       )}
     </Frame>
   );

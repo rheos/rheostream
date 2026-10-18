@@ -302,6 +302,10 @@ describe("the pricing tab", () => {
         ok(priced({ milestones: [{ ...MILESTONE, amount: String(input.amount) }] })),
       );
     mount({ submit, proposal: priced() });
+    // A milestone reads as text until its Edit button opens the fields.
+    expect(host.querySelector('input[type="number"]')).toBeNull();
+    expect(host.textContent).toContain("$200.00, due 2026-10-19");
+    await click(button("Edit: Discovery"));
     const amount = host.querySelector<HTMLInputElement>('input[type="number"]');
     if (!amount) throw new Error("no amount");
     type(amount, "350");
@@ -322,6 +326,7 @@ describe("the pricing tab", () => {
   it("clears a due date on the server too", async () => {
     const submit = vi.fn().mockResolvedValue(ok(priced({ milestones: [{ ...MILESTONE, due_on: null }] })));
     mount({ submit, proposal: priced() });
+    await click(button("Edit: Discovery"));
     const due = host.querySelector<HTMLInputElement>('input[type="date"]') as HTMLInputElement;
     type(due, "");
     await blur(due);

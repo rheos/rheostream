@@ -6,8 +6,8 @@ import type {
 } from "@rheo-stream/web-contract/screen";
 import { screens } from "./index";
 import { formInput } from "./action-form";
-import { date, pageOffset } from "./data";
-import { assessmentStale, drawerSummary, phoneDisplay, value } from "./screens";
+import { pageOffset } from "./data";
+import { assessmentStale, phoneDisplay, value } from "./screens";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const opportunity = {
@@ -522,23 +522,5 @@ describe("opportunity value", () => {
         value_basis: "hourly_rate",
       }),
     ).toMatch(/^CAD\s85\.50 · hourly rate$/);
-  });
-});
-
-describe("the record drawer's summary (#408)", () => {
-  it("names only what the record holds", () => {
-    expect(drawerSummary({}, 0)).toBe("");
-    expect(
-      drawerSummary(
-        {
-          opportunity_note: [{ id: "n1" }, { id: "n2" }],
-          followup: { due_on: "2026-10-20" },
-          drafts: [{ id: "d1" }],
-        },
-        3,
-      ),
-    ).toBe(`2 notes, follow-up due ${date("2026-10-20")}, 1 follow-up draft, 3 assessments`);
-    // A single assessment is the one already shown; it is not "history".
-    expect(drawerSummary({ opportunity_note: [{ id: "n1" }] }, 1)).toBe("1 note");
   });
 });

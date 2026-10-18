@@ -17,6 +17,7 @@ import { row, str, type Row } from "./data";
 import {
   busy,
   draftBusy,
+  dollars,
   draftState,
   failureCopy,
   findings as readFindings,
@@ -1167,19 +1168,28 @@ function PricingPanel(props: {
   );
 }
 
-/** One milestone: each field saves when it loses focus; a failed save keeps
- * what was typed, with the reason. */
+/** One milestone. It reads as text (title, amount and date, what it delivers)
+ * until the Edit button opens its fields (#418); then each field saves when it
+ * loses focus, and a failed save keeps what was typed, with the reason. */
 function MilestoneCard(props: {
   milestone: MilestoneView;
   disabled: boolean;
   onSave: (changes: Record<string, string | null>) => Promise<string>;
 }) {
   const m = props.milestone;
+  const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(m.title);
   const [amount, setAmount] = useState(m.amount);
   const [dueOn, setDueOn] = useState(m.dueOn);
   const [description, setDescription] = useState(m.description);
   const [problem, setProblem] = useState("");
+  const edit = useRef<HTMLButtonElement | null>(null);
+  const wasEditing = useRef(false);
+  // Leaving the fields puts focus back on the Edit button that opened them.
+  useEffect(() => {
+    if (!editing && wasEditing.current) edit.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
 
   async function save(field: string, value: string, saved: string) {
     if (value === saved) return;
@@ -1199,6 +1209,41 @@ function MilestoneCard(props: {
     if (message) setProblem(`Not saved: ${message}`);
   }
 
+  const copy = (
+    <CopyButton
+      text={milestoneLine({ ...m, title, amount, dueOn })}
+      label={`Copy: ${title}`}
+    />
+  );
+  // Stays open while a save failed, so what was typed is still in view.
+  if (!editing && !problem)
+    return (
+      <article className={styles.card} aria-label={`Milestone: ${m.title}`}>
+        <div className={styles.cardHead}>
+          <h3 className={styles.cardTitle}>{title}</h3>
+          <div className={styles.cardActions}>
+            <button
+              ref={edit}
+              type="button"
+              className={styles.iconButton}
+              onClick={() => setEditing(true)}
+              disabled={props.disabled}
+              aria-label={`Edit: ${title}`}
+              title="Edit"
+            >
+              <EditIcon />
+            </button>
+            {copy}
+          </div>
+        </div>
+        <p className={styles.milestoneFacts}>
+          {dollars(amount)}
+          {dueOn ? `, due ${dueOn}` : ""}
+        </p>
+        {description ? <p className={styles.milestoneText}>{description}</p> : null}
+      </article>
+    );
+
   return (
     <article className={styles.card} aria-label={`Milestone: ${m.title}`}>
       <div className={styles.cardHead}>
@@ -1207,15 +1252,11 @@ function MilestoneCard(props: {
           aria-label="Milestone title"
           value={title}
           disabled={props.disabled}
+          autoFocus
           onChange={(event) => setTitle(event.target.value)}
           onBlur={() => save("title", title, m.title)}
         />
-        <div className={styles.cardActions}>
-          <CopyButton
-            text={milestoneLine({ ...m, title, amount, dueOn })}
-            label={`Copy: ${title}`}
-          />
-        </div>
+        <div className={styles.cardActions}>{copy}</div>
       </div>
       <div className={styles.milestoneFields}>
         <label className={styles.milestoneField}>
@@ -1257,6 +1298,18 @@ function MilestoneCard(props: {
           {problem}
         </p>
       ) : null}
+      <div className={styles.actions}>
+        <button
+          type="button"
+          className={styles.ghost}
+          onClick={() => {
+            setEditing(false);
+            setProblem("");
+          }}
+        >
+          Done
+        </button>
+      </div>
     </article>
   );
 }

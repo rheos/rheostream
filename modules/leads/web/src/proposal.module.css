@@ -450,6 +450,20 @@
 .milestoneTitle:hover:not(:disabled) {
   border-color: var(--rs-color-control-border);
 }
+.milestoneFacts {
+  margin: 0;
+  color: var(--rs-color-ink-dim);
+  font-size: var(--rs-font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+.milestoneText {
+  max-width: 75ch;
+  margin: var(--rs-space-2) 0 0;
+  color: var(--rs-color-ink);
+  font-size: calc(var(--rs-font-size-md) * 0.9375);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
 .milestoneFields {
   display: flex;
   flex-wrap: wrap;
