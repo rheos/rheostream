@@ -15,9 +15,17 @@ import type {
 import { row, str, type Row } from "./data";
 import {
   busy,
+  draftBusy,
+  dollars,
   draftState,
   failureCopy,
   findings as readFindings,
+  formRate,
+  milestoneLine,
+  milestones as readMilestones,
+  pricingOf,
+  pricingState,
+  pricingWaitingLine,
   progressLine,
   refreshDelay,
   refusalCopy,
@@ -28,6 +36,7 @@ import {
   stageFromHash,
   stageWords,
   type Findings,
+  type MilestoneView,
   type SectionView,
   type StageId,
 } from "./proposal";
@@ -203,7 +212,7 @@ export function ProposalWorkflow(props: WorkflowProps) {
         <QuestionsPanel
           questions={questions}
           saved={str(view.questions)}
-          locked={running}
+          locked={draftBusy(view)}
           onChange={setQuestions}
           onDraft={() => select("proposal")}
         />
@@ -224,6 +233,21 @@ export function ProposalWorkflow(props: WorkflowProps) {
           setView={setView}
           paused={running && typed}
           reload={() => (reload ? reload() : window.location.reload())}
+        />
+      </div>
+      <div
+        className={styles.panel}
+        id="stage-panel-pricing"
+        role="tabpanel"
+        tabIndex={0}
+        aria-labelledby="stage-tab-pricing"
+        hidden={stage !== "pricing"}
+      >
+        <PricingPanel
+          submit={props.submit}
+          opportunityRef={props.opportunityRef}
+          view={view}
+          setView={setView}
         />
       </div>
     </section>
@@ -968,5 +992,256 @@ function FindingsPanel({ found }: { found: Findings }) {
         </details>
       ) : null}
     </section>
+  );
+}
+
+function PricingPanel(props: {
+  submit?: Submit;
+  opportunityRef: string;
+  view: Row;
+  setView: SetView;
+}) {
+  const { submit, opportunityRef, view, setView } = props;
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  const pricing = pricingOf(view);
+  const state = pricingState(view);
+  const rows = readMilestones(view);
+  const rate = formRate(view);
+  const suggestion = row(pricing.suggestion);
+  const running = state === "queued" || state === "running";
+  const available = pricing.available !== false;
+
+  async function call(
+    operation: string,
+    input: Record<string, unknown>,
+  ): Promise<string> {
+    if (!submit) return UNREACHABLE;
+    let outcome: OperationOutcome;
+    try {
+      outcome = await submit(operation, input);
+    } catch {
+      outcome = { state: "unavailable" };
+    }
+    if (outcome.state === "ok") {
+      if (isView(outcome.result)) setView(row(outcome.result));
+      return "";
+    }
+    return outcome.state === "refused" ? refusalCopy(outcome.code) : UNREACHABLE;
+  }
+
+  async function suggest() {
+    setConfirm(false);
+    setPending(true);
+    setError(await call("leads.jobpricing.request", { ref: opportunityRef }));
+    setPending(false);
+  }
+
+  return (
+    <>
+      <div className={styles.head}>
+        <h2 className={styles.label}>Pricing and milestones</h2>
+        <p className={styles.hint}>
+          Milestones are priced from your day rate per honest working-day, never from
+          the budget. The form rate is what to type into an hourly apply form so it
+          agrees with the figure in the letter.
+        </p>
+      </div>
+      {!available ? (
+        <p className={styles.empty}>{refusalCopy("pricing_not_set")}</p>
+      ) : null}
+      {rate ? (
+        <div className={styles.formRate}>
+          <p className={styles.formRateLine}>
+            <span className={styles.groupTitle}>Form rate</span>{" "}
+            <span className={styles.formRateValue}>{rate.rate}</span>
+            {rate.detail ? (
+              <span className={styles.note}> {rate.detail}</span>
+            ) : null}
+          </p>
+          <p className={styles.note}>{str(suggestion.basis)}</p>
+          {str(suggestion.note) ? (
+            <p className={styles.note}>{str(suggestion.note)}</p>
+          ) : null}
+        </div>
+      ) : null}
+      {available ? (
+        <div className={styles.actions}>
+          <button
+            type="button"
+            className={styles.primary}
+            onClick={() => (rows.length ? setConfirm(true) : suggest())}
+            disabled={!submit || pending || running}
+          >
+            {running
+              ? "Suggesting…"
+              : rows.length
+                ? "Regenerate milestones"
+                : "Suggest milestones"}
+          </button>
+          {rows.length ? (
+            <CopyButton
+              text={rows.map(milestoneLine).join("\n")}
+              label="Copy every milestone"
+            />
+          ) : null}
+        </div>
+      ) : null}
+      {confirm ? (
+        <div className={styles.confirm} role="alertdialog" aria-label="Regenerate milestones">
+          <p>Regenerate the milestones? Your edits to them are replaced.</p>
+          <div className={styles.actions}>
+            <button type="button" className={styles.danger} onClick={suggest}>
+              Regenerate
+            </button>
+            <button
+              type="button"
+              className={styles.ghost}
+              onClick={() => setConfirm(false)}
+              autoFocus
+            >
+              Keep these
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {error ? (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      ) : null}
+      {running ? (
+        <p className={styles.progress} role="status" aria-live="polite">
+          {pricingWaitingLine(view) || "Suggesting milestones. This takes a minute or two."}
+        </p>
+      ) : null}
+      {state === "failed" ? (
+        <p className={styles.error} role="alert">
+          {failureCopy(str(pricing.failure_kind))} Suggest again to retry.
+        </p>
+      ) : null}
+      {str(pricing.warning) ? (
+        <p className={styles.warn}>Note: {str(pricing.warning)}</p>
+      ) : null}
+      {str(pricing.too_vague) && !rows.length ? (
+        <p className={styles.warn}>
+          The posting is too vague to stage: {str(pricing.too_vague)} Add detail to
+          the posting and suggest again.
+        </p>
+      ) : null}
+      {rows.length ? (
+        <div className={styles.cards}>
+          {rows.map((m) => (
+            <MilestoneCard
+              key={`${m.id}:${m.title}:${m.amount}:${m.dueOn}:${m.description}`}
+              milestone={m}
+              disabled={!submit || running}
+              onSave={(changes) =>
+                call("leads.proposalmilestone.set", {
+                  ref: opportunityRef,
+                  milestone_id: m.id,
+                  ...changes,
+                })
+              }
+            />
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** One milestone: each field saves when it loses focus; a failed save keeps
+ * what was typed, with the reason. */
+function MilestoneCard(props: {
+  milestone: MilestoneView;
+  disabled: boolean;
+  onSave: (changes: Record<string, string>) => Promise<string>;
+}) {
+  const m = props.milestone;
+  const [title, setTitle] = useState(m.title);
+  const [amount, setAmount] = useState(m.amount);
+  const [dueOn, setDueOn] = useState(m.dueOn);
+  const [description, setDescription] = useState(m.description);
+  const [problem, setProblem] = useState("");
+
+  async function save(field: string, value: string, saved: string) {
+    if (value === saved) return;
+    if (field === "title" && !value.trim()) {
+      setProblem("A milestone needs a title.");
+      return;
+    }
+    if (field === "amount" && !(Number(value) >= 0 && value.trim() !== "")) {
+      setProblem("The amount must be a number of zero or more.");
+      return;
+    }
+    setProblem("");
+    const message = await props.onSave({ [field]: value });
+    if (message) setProblem(`Not saved: ${message}`);
+  }
+
+  return (
+    <article className={styles.card} aria-label={`Milestone: ${m.title}`}>
+      <div className={styles.cardHead}>
+        <input
+          className={styles.milestoneTitle}
+          aria-label="Milestone title"
+          value={title}
+          disabled={props.disabled}
+          onChange={(event) => setTitle(event.target.value)}
+          onBlur={() => save("title", title, m.title)}
+        />
+        <div className={styles.cardActions}>
+          <CopyButton
+            text={milestoneLine({ ...m, title, amount, dueOn })}
+            label={`Copy: ${title}`}
+          />
+        </div>
+      </div>
+      <div className={styles.milestoneFields}>
+        <label className={styles.milestoneField}>
+          <span>Amount ($)</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            inputMode="decimal"
+            value={amount}
+            disabled={props.disabled}
+            onChange={(event) => setAmount(event.target.value)}
+            onBlur={() => save("amount", amount, m.amount)}
+          />
+        </label>
+        <label className={styles.milestoneField}>
+          <span>Due date</span>
+          <input
+            type="date"
+            value={dueOn}
+            disabled={props.disabled}
+            onChange={(event) => setDueOn(event.target.value)}
+            onBlur={() => dueOn && save("due_on", dueOn, m.dueOn)}
+          />
+        </label>
+        <p className={styles.note} aria-live="polite">
+          {dollars(amount)}
+        </p>
+      </div>
+      <textarea
+        className={styles.cardTextarea}
+        aria-label="Milestone description"
+        rows={rowsFor(description, 2)}
+        placeholder="What this stage delivers."
+        value={description}
+        disabled={props.disabled}
+        onChange={(event) => setDescription(event.target.value)}
+        onBlur={() => save("description", description, m.description)}
+      />
+      {problem ? (
+        <p className={styles.error} role="alert">
+          {problem}
+        </p>
+      ) : null}
+    </article>
   );
 }

@@ -3,12 +3,18 @@
  * React and no "use client", so a server screen and the tests can import it. */
 import { row, rows, str, type Row } from "./data";
 
-export type StageId = "posting" | "questions" | "proposal";
-export const STAGE_IDS: readonly StageId[] = ["posting", "questions", "proposal"];
+export type StageId = "posting" | "questions" | "proposal" | "pricing";
+export const STAGE_IDS: readonly StageId[] = [
+  "posting",
+  "questions",
+  "proposal",
+  "pricing",
+];
 export const STAGE_LABELS: Record<StageId, string> = {
   posting: "Posting",
   questions: "Questions",
   proposal: "Proposal",
+  pricing: "Pricing",
 };
 /** How long a page waits before it reloads to show a running draft's progress. */
 export const REFRESH_MS = 4000;
@@ -36,8 +42,21 @@ export function waitingLine(view: Row): string {
   if (!kind) return "";
   return WAITING[kind] ?? "Waiting to retry the draft.";
 }
+/** The same for a queued pricing request. */
+export function pricingWaitingLine(view: Row): string {
+  const pricing = row(view.pricing);
+  if (str(pricing.state) !== "queued") return "";
+  const kind = str(pricing.failure_kind);
+  if (!kind) return "";
+  return WAITING[kind] ?? "";
+}
 export function refreshDelay(view: Row): number {
-  return waitingLine(view) ? WAITING_REFRESH_MS : REFRESH_MS;
+  // Whichever piece of work is moving sets the pace.
+  const draftWaits = draftBusy(view) ? Boolean(waitingLine(view)) : true;
+  const pricingWaits = pricingBusy(view)
+    ? Boolean(pricingWaitingLine(view))
+    : true;
+  return draftWaits && pricingWaits ? WAITING_REFRESH_MS : REFRESH_MS;
 }
 
 export function stageFromHash(hash: string): StageId {
@@ -55,9 +74,66 @@ export function draftState(view: Row): DraftState {
     ? state
     : "idle";
 }
-export function busy(view: Row): boolean {
+export function draftBusy(view: Row): boolean {
   const state = draftState(view);
   return state === "queued" || state === "drafting";
+}
+/** Any work the page follows: a draft or a pricing request. */
+export function busy(view: Row): boolean {
+  return draftBusy(view) || pricingBusy(view);
+}
+
+/** The job's pricing, from the proposal view. */
+export function pricingOf(view: Row): Row {
+  return row(view.pricing);
+}
+export function pricingState(view: Row): string {
+  return str(pricingOf(view).state) || "idle";
+}
+export function pricingBusy(view: Row): boolean {
+  const state = pricingState(view);
+  return state === "queued" || state === "running";
+}
+
+export interface MilestoneView {
+  id: string;
+  title: string;
+  description: string;
+  amount: string;
+  dueOn: string;
+}
+export function milestones(view: Row): MilestoneView[] {
+  return rows(pricingOf(view).milestones).map((m) => ({
+    id: str(m.id),
+    title: str(m.title),
+    description: str(m.description),
+    amount: str(m.amount),
+    dueOn: str(m.due_on),
+  }));
+}
+/** "$1,200.00" from a decimal string; the text itself when it is not a number. */
+export function dollars(amount: string): string {
+  const n = Number(amount);
+  return Number.isFinite(n) && amount.trim() !== ""
+    ? `$${n.toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : amount;
+}
+/** What one milestone copies as: the form's title, amount and due date. */
+export function milestoneLine(m: MilestoneView): string {
+  return `${m.title}: ${dollars(m.amount)}${m.dueOn ? `, due ${m.dueOn}` : ""}`;
+}
+/** "$40/hr" and "about 20 h for $800.00", from the pricing suggestion. */
+export function formRate(view: Row): { rate: string; detail: string } | null {
+  const s = row(pricingOf(view).suggestion);
+  const rate = Number(str(s.rate));
+  if (!str(s.rate) || !Number.isFinite(rate)) return null;
+  const hours = str(s.hours);
+  const total = str(s.fixed_total);
+  return {
+    rate: `$${rate.toLocaleString("en", { maximumFractionDigits: 2 })}/hr`,
+    detail:
+      hours && total ? `about ${Number(hours)} h for ${dollars(total)}` : "",
+  };
 }
 
 /** The state word under each tab's name. */
@@ -68,7 +144,17 @@ export function stageWords(
 ): Record<StageId, string> {
   const saved = str(view.questions);
   const state = draftState(view);
+  const priced = pricingState(view);
   return {
+    pricing: pricingBusy(view)
+      ? "Pricing"
+      : milestones(view).length
+        ? "Ready"
+        : priced === "failed"
+          ? "Failed"
+          : pricingOf(view).available === false
+            ? "Not set"
+            : "Optional",
     posting: posting.trim() ? "Ready" : "Needed",
     questions:
       questions.trim() !== saved.trim()
@@ -131,6 +217,9 @@ const REFUSALS: Record<string, string> = {
   input_invalid:
     "That text could not be saved. It may be empty or longer than the form allows.",
   record_stale: "This job changed. Reload the page.",
+  pricing_not_set:
+    "Pricing is not set up yet: an owner adds a day rate and hourly rates to the proposal profile.",
+  pricing_in_progress: "Milestones are already being prepared.",
   operation_not_permitted:
     "This action is no longer available. Reload the page and try again.",
 };

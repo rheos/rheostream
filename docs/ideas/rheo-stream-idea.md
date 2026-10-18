@@ -1964,6 +1964,15 @@ The following changes are recorded here.
     usage limit defers a draft without counting an attempt. Migration
     `0012_job_proposals` adds the profile, proposal, section and answer library tables.
 
+23. **Proposal prices come from the owner's day rate, not the budget.** Recorded on
+    2026-10-18 against issue #402. The pricing section of the proposal policy (day
+    rate, working hours, hourly default and floor, rate context, delivery calibration)
+    is workspace data; no rate ships in the repository. Milestones are priced at the day
+    rate per honest working-day and stored as rows the owner edits; the scope-fit
+    warning is computed in code, never by the model; the hourly form rate is derived
+    so it agrees with the letter's fixed total. A draft states amounts only from those
+    rows. Migration `0013_job_pricing` adds the pricing state and milestone tables.
+
 ### Website intake implementation clarification (2026-10-09)
 
 Signed website event identity comes from the signed body (`event_id`) or its exact-byte
