@@ -23,12 +23,12 @@ from rheo_core.storage.control_plane import (
     get_session,
     get_workspace,
     insert_session,
-    insert_session_secret,
     list_memberships,
     list_recent_session_workspaces,
     revoke_session,
     set_active_workspace,
     touch_session,
+    upsert_session_secret,
 )
 from rheo_core.storage.control_tables import WorkspaceState
 from rheo_core.storage.postgres import get_backend
@@ -130,11 +130,12 @@ def create_session(account_id: UUID) -> SessionRow:
 def mint_host_secret(session_id: UUID, host: str) -> bytes:
     """A fresh 256-bit secret for ``session_id`` on ``host``; only its SHA-256 is
     ever stored. Returns the raw secret once — the caller sets it in a host-only
-    cookie immediately and this module never stores or logs it."""
+    cookie immediately and this module never stores or logs it. Minting again for
+    the same session and host replaces the earlier secret, which stops resolving."""
     secret = secrets.token_bytes(_HOST_SECRET_BYTES)
     backend = get_backend()
     with backend.control_engine.begin() as connection:
-        insert_session_secret(
+        upsert_session_secret(
             connection,
             secret_hash=_hash_secret(secret),
             session_id=session_id,

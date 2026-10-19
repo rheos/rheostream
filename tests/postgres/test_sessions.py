@@ -37,6 +37,7 @@ from rheo_core.boundary.context import (
     INVALID_GRANT,
     INVALID_RETURN,
     NOT_A_MEMBER,
+    SESSION_MISSING,
     Refusal,
 )
 from rheo_core.boundary.factories import context_from_session
@@ -520,6 +521,49 @@ def test_grant_presented_on_the_wrong_host_is_invalid_grant(
     result = consume_grant(code, IDENTITY_HOST, nonce)
     assert isinstance(result, Refusal)
     assert result.state == INVALID_GRANT
+
+
+# --- #415: re-minting a host secret replaces the earlier one ------------------
+
+
+def test_minting_again_for_the_same_host_replaces_the_earlier_secret(
+    cluster: ClusterSession, owner_account_id: UUID, workspace: UUID
+) -> None:
+    """A browser that keeps its session but loses one host's cookie gets a fresh
+    hand-off code and mints again for that host. That second mint used to collide
+    on ``session_secret_session_host`` and 500 on every retry (#415). Both mints
+    now succeed, only the newest secret resolves, and the session's secret for
+    another host is left alone."""
+    session_row = create_session(owner_account_id)
+    assert switch_workspace(session_row.id, workspace) is None
+    other_host_secret = mint_host_secret(session_row.id, SHELL_HOST)
+
+    first = mint_host_secret(session_row.id, BASE_HOST)
+    second = mint_host_secret(session_row.id, BASE_HOST)
+    assert first != second
+
+    stale = context_from_session(first, BASE_HOST)
+    assert isinstance(stale, Refusal)
+    assert stale.state == SESSION_MISSING
+    fresh = context_from_session(second, BASE_HOST)
+    assert isinstance(fresh, WorkspaceContext)
+    assert fresh.workspace_id == workspace
+    other_host = context_from_session(other_host_secret, SHELL_HOST)
+    assert isinstance(other_host, WorkspaceContext)
+
+    secret_table = control_tables.session_secret
+    with cluster.backend.control_engine.connect() as connection:
+        rows = connection.execute(
+            select(secret_table.c.host, secret_table.c.secret_hash).where(
+                secret_table.c.session_id == session_row.id
+            )
+        ).all()
+    assert sorted(rows) == sorted(
+        [
+            (BASE_HOST, hashlib.sha256(second).digest()),
+            (SHELL_HOST, hashlib.sha256(other_host_secret).digest()),
+        ]
+    )
 
 
 async def _write_grant_via_http(

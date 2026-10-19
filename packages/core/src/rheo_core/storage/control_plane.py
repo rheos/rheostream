@@ -480,7 +480,6 @@ def list_recent_session_workspaces(
 # test failure never has to guess which layer said so.
 
 SESSION_ROW_MISSING: Final = "session_row_missing"
-SESSION_SECRET_EXISTS: Final = "session_secret_exists"
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,29 +581,33 @@ def set_active_workspace(
 # --- session_secret (C7a, run 0b2) -------------------------------------------------
 
 
-def insert_session_secret(
+def upsert_session_secret(
     conn: Connection, *, secret_hash: bytes, session_id: UUID, host: str
 ) -> None:
-    """One host-scoped secret hash for ``session_id``. ``(session_id, host)`` is
-    unique; a second mint for the same host is ``session_secret_exists``."""
+    """The one host-scoped secret hash for ``session_id`` on ``host``.
+    ``(session_id, host)`` is unique, so a second mint for the same host replaces
+    the stored hash in the same statement: the newest cookie resolves and the one
+    before it stops resolving (#415). A browser that keeps its session but loses
+    one host's cookie can then sign back in to that host."""
+    statement = pg_insert(t.session_secret).values(
+        secret_hash=secret_hash,
+        session_id=session_id,
+        host=host,
+        created_at=_now(),
+    )
+    statement = statement.on_conflict_do_update(
+        constraint="session_secret_session_host",
+        set_={
+            "secret_hash": statement.excluded.secret_hash,
+            "created_at": statement.excluded.created_at,
+        },
+    )
     try:
-        conn.execute(
-            insert(t.session_secret).values(
-                secret_hash=secret_hash,
-                session_id=session_id,
-                host=host,
-                created_at=_now(),
-            )
-        )
+        conn.execute(statement)
     except IntegrityError as exc:
         if isinstance(exc.orig, psycopg.errors.ForeignKeyViolation):
             raise StorageRefusal(
                 SESSION_ROW_MISSING, f"session {session_id} does not exist"
-            ) from None
-        if isinstance(exc.orig, psycopg.errors.UniqueViolation):
-            raise StorageRefusal(
-                SESSION_SECRET_EXISTS,
-                f"session {session_id} already has a secret for host {host!r}",
             ) from None
         raise
 
