@@ -1,4 +1,6 @@
-"""The job feed collector's tables. Every queryable value is a column; none is JSON.
+"""The job feed collector's tables. Every queryable value is a column. The one JSON
+value is the run history's ``read_failures``: a tally of fixed reason codes that is
+only ever read whole, never queried by.
 
 ``jobfeed_connection`` and ``jobfeed_authorization`` hold at most one row each per
 workspace. ``token_ref``, ``client_secret_ref`` and ``registration_token_ref`` are

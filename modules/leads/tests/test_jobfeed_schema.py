@@ -1,4 +1,5 @@
-"""The job feed collector's declared tables: singletons, closed values, no JSON."""
+"""The job feed collector's declared tables: singletons, closed values, and no JSON
+apart from the run history's reason tally."""
 
 from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import tables as t
@@ -45,6 +46,21 @@ def test_no_column_is_json() -> None:
     for table in TABLES.values():
         for column in table.columns:
             assert not isinstance(column.type, JSON | JSONB), column
+
+
+def test_the_run_history_holds_json_only_in_its_reason_tally() -> None:
+    """``read_failures`` is the one JSON column: a tally of fixed reason codes read
+    whole (#377); every count and code the history is filtered by is a column."""
+    run = j.jobfeed_run
+    assert t.metadata.tables["leads.jobfeed_run"] is run
+    assert run in j.TABLES
+    assert len(run.columns) == 14
+    assert [c.name for c in run.columns if isinstance(c.type, JSON | JSONB)] == [
+        "read_failures"
+    ]
+    assert checks(run) == {
+        "jobfeed_run_outcome": "outcome IN ('completed','partial','stopped')"
+    }
 
 
 def test_singletons_are_unique_and_true() -> None:

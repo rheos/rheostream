@@ -382,7 +382,6 @@ function Calls({
   );
 }
 
-/** The status line, with its own one-second clock for the elapsed counter. */
 /** The job feed's recent runs: what each brought in, and why any detail read
  * failed, so a bad stretch can be read after the fact (#377). */
 function FeedRuns({ view, now }: { view: Row; now: number }) {
@@ -424,7 +423,7 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
                     <>
                       {tokens(run.imported)} new, {tokens(run.refreshed)} updated
                       {typeof run.detail_reads === "number" && run.detail_reads > 0
-                        ? `, ${tokens(run.detail_reads)} read`
+                        ? `, ${tokens(run.detail_reads)} tried`
                         : ""}
                     </>
                   )}
@@ -447,6 +446,7 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
   );
 }
 
+/** The status line, with its own one-second clock for the elapsed counter. */
 function Status({ status, now: initial }: { status: Row; now: number }) {
   const [now, setNow] = useState(initial);
   useEffect(() => {

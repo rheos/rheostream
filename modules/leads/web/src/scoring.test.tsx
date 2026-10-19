@@ -310,7 +310,7 @@ describe("the job feed tab (#377)", () => {
   it("lists runs with their counts and why reads failed, in words", () => {
     const html = markup("feed", withRuns);
     expect(html).toContain("Recent runs");
-    expect(html).toContain("4 new, 12 updated, 9 read");
+    expect(html).toContain("4 new, 12 updated, 9 tried");
     expect(html).toContain("2 answered without a description");
     expect(html).toContain("1 refused by the job service (JOB_NOT_VISIBLE)");
     expect(html).toContain("Stopped: job service unavailable");

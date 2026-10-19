@@ -232,6 +232,10 @@ def test_declared_tables_match_the_migrated_schema(intake: Intake) -> None:
     assert owned(declared, NEW_TABLES) == owned(migrated, NEW_TABLES)
     # Positive control: the comparison saw every new table's columns and checks.
     assert len(owned(migrated, NEW_TABLES)["columns"]) == 69
+    # The run history (0016) is compared too, column by column and check by check.
+    history = {"jobfeed_run"}
+    assert owned(declared, history) == owned(migrated, history)
+    assert len(owned(migrated, history)["columns"]) == 14
     transport = [
         row
         for row in migrated["constraints"]

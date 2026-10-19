@@ -49,7 +49,6 @@ const READ_FAILURES: Record<string, string> = {
   rate_limited: "rate limited",
   protocol: "unreadable answer",
   tool_error: "refused by the job service",
-  unauthorized: "login refused",
   endpoint_misconfigured: "wrong address",
 };
 export function readFailureLabel(code: string): string {
@@ -65,6 +64,8 @@ const STOPS: Record<string, string> = {
   endpoint_misconfigured: "wrong address",
   account_selection_required: "choose an account",
   collection_partial: "cut short",
+  token_refresh_failed: "could not renew its login",
+  refresh_token_unsaved: "renewed login not saved: reconnect",
 };
 export function stopLabel(code: unknown): string {
   const value = str(code);
