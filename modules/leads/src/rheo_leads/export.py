@@ -12,8 +12,8 @@ again. The model call log and the job feed's run history are never exported. The
 proposal profile, each job's proposal with its sections, its pricing and milestones,
 and the answer library are exported whole; a proposal or pricing request that was
 queued or running is restored as failed, since its sweep did not come with it.
-Restore replaces only the fresh
-seed; existing intake records cause a refusal, never a destructive merge.
+Restore replaces only the fresh seed; existing intake records cause a refusal, never
+a destructive merge.
 """
 
 from collections.abc import Callable, Mapping, Sequence
