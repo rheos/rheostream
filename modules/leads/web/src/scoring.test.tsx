@@ -288,6 +288,7 @@ describe("the job feed tab (#377)", () => {
     ...VIEW,
     feed_runs: [
       {
+        id: "run-2",
         finished_at: new Date(NOW - 3600000).toISOString(),
         outcome: "partial",
         stop_code: null,
@@ -297,6 +298,7 @@ describe("the job feed tab (#377)", () => {
         read_failures: { no_description: 2, "tool_error:JOB_NOT_VISIBLE": 1 },
       },
       {
+        id: "run-1",
         finished_at: new Date(NOW - 3 * 3600000).toISOString(),
         outcome: "stopped",
         stop_code: "upstream_unavailable",

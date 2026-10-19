@@ -317,6 +317,7 @@ def _feed_runs(uow: UnitOfWork) -> list[dict[str, Any]]:
     run = jf.jobfeed_run
     return [
         {
+            "id": str(r["id"]),
             "finished_at": _iso(r["finished_at"]),
             "outcome": r["outcome"],
             "stop_code": r["stop_code"],

@@ -313,7 +313,8 @@ def test_the_job_feed_tab_reads_the_latest_runs_and_old_ones_are_dropped(
     runs = view(scored)["feed_runs"]
     assert len(runs) == 12
     newest, latest_partial = runs[0], runs[1]
-    assert newest == {
+    assert len({r["id"] for r in runs}) == 12
+    assert {k: v for k, v in newest.items() if k != "id"} == {
         "finished_at": now.isoformat(),
         "outcome": "stopped",
         "stop_code": "upstream_unavailable",

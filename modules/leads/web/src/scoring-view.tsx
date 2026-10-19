@@ -412,7 +412,7 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
             ) as [string, number][];
             const stopped = run.outcome === "stopped";
             return (
-              <li key={`${str(run.finished_at)}-${index}`} className={styles.run}>
+              <li key={str(run.id) || `${str(run.finished_at)}-${index}`} className={styles.run}>
                 <span className={styles.runWhen}>{clock(run.finished_at, now)}</span>
                 <span className={styles.runWhat}>
                   {stopped ? (
