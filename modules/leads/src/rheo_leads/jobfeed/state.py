@@ -3,7 +3,7 @@
 import hashlib
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from typing import Final
@@ -11,6 +11,7 @@ from uuid import UUID
 
 from rheo_contracts import SafetyClass, WorkspaceContext
 from rheo_core.audit.records import insert_audit_record
+from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.schedules import ensure_module_schedule
@@ -694,6 +695,43 @@ class RunReport:
     errors: int = 0
     detail_reads: int = 0
     pages: int = 0
+
+
+RUN_RETENTION: Final = timedelta(days=90)
+"""How long the run history keeps a run; recording one deletes older rows."""
+
+
+def record_run(
+    uow: UnitOfWork,
+    *,
+    now: datetime,
+    outcome: str,
+    report: RunReport | None = None,
+    stop_code: str | None = None,
+    read_failures: Mapping[str, int] | None = None,
+) -> None:
+    """One run in the history, on the caller's transaction: ``completed`` or
+    ``partial`` with its report and the reason codes of its failed detail reads,
+    or ``stopped`` with the code it stopped on. Only fixed codes and counts are
+    stored, never a posting, a token or an upstream message."""
+    table = j.jobfeed_run
+    counts = {
+        name.name: getattr(report or RunReport(), name.name)
+        for name in fields(RunReport)
+    }
+    uow.connection.execute(
+        delete(table).where(table.c.finished_at < now - RUN_RETENTION)
+    )
+    uow.connection.execute(
+        table.insert().values(
+            id=uuid7(),
+            finished_at=now,
+            outcome=outcome,
+            stop_code=stop_code,
+            read_failures=dict(read_failures or {}),
+            **counts,
+        )
+    )
 
 
 def write_success(

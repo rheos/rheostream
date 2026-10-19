@@ -13,6 +13,8 @@
   imports by the gaps between them, each with its stage (:func:`stage_of`).
 - ``calls``: the newest model calls, and ``summary``: calls, tokens, median time,
   failures and deferrals by purpose and model over :data:`SUMMARY_WINDOW`.
+- ``feed_runs``: the job feed's latest :data:`MAX_FEED_RUNS` runs from its run
+  history, with why their detail reads failed.
 
 Everything is content-free apart from job titles, which the job queue already
 shows: no posting text, prompt or answer. Tokens and times, never money: the calls
@@ -47,6 +49,7 @@ from rheo_leads import pipeline_common as h
 from rheo_leads.pipeline_contracts import Empty, Strict
 from rheo_leads.references import ref
 from rheo_leads.scoring import job as scoring
+from rheo_leads.storage import jobfeed as jf
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import scoring as s
 from rheo_leads.storage import tables as t
@@ -304,6 +307,35 @@ def _calls(uow: UnitOfWork, now: datetime) -> list[dict[str, Any]]:
     return found
 
 
+MAX_FEED_RUNS: Final = 12
+"""The job feed's most recent runs the view shows."""
+
+
+def _feed_runs(uow: UnitOfWork) -> list[dict[str, Any]]:
+    """The collector's latest runs, newest first: outcome, the counts a person
+    reads, and why detail reads failed (fixed codes only)."""
+    run = jf.jobfeed_run
+    return [
+        {
+            "id": str(r["id"]),
+            "finished_at": _iso(r["finished_at"]),
+            "outcome": r["outcome"],
+            "stop_code": r["stop_code"],
+            "fetched": r["fetched"],
+            "imported": r["imported"],
+            "refreshed": r["refreshed"],
+            "detail_reads": r["detail_reads"],
+            "errors": r["errors"],
+            "read_failures": dict(r["read_failures"] or {}),
+        }
+        for r in uow.connection.execute(
+            select(run)
+            .order_by(run.c.finished_at.desc(), run.c.id.desc())
+            .limit(MAX_FEED_RUNS)
+        ).mappings()
+    ]
+
+
 def _summary(uow: UnitOfWork, now: datetime) -> list[dict[str, Any]]:
     call = s.model_call
     seconds = extract("epoch", call.c.finished_at - call.c.started_at)
@@ -466,6 +498,7 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
             "batches": _batches(jobs, running=scoring_now, position=position, now=now),
             "calls": _calls(uow, now),
             "summary": _summary(uow, now),
+            "feed_runs": _feed_runs(uow),
         }
     )
 

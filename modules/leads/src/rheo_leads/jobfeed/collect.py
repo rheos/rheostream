@@ -11,8 +11,9 @@ other searches still run. A terminal upstream failure (a refused credential) is
 raised, because every later call would be refused too.
 """
 
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Final
 
@@ -57,6 +58,25 @@ class DetailResult:
     failures: int
     """Discovery postings downgraded because their read failed or was not made."""
     cut: bool
+    reasons: Mapping[str, int] = field(default_factory=dict)
+    """Why each of the ``failures`` happened, as fixed codes and their counts
+    (:func:`read_failure_reason`): the run history keeps these, content-free."""
+
+
+# Why a discovery posting's detail read gave no description. Only these codes, an
+# upstream code, or ``tool_error:<CODE>`` ever reach the run history.
+NO_FEED_ID: Final = "no_feed_id"
+NOT_READ_DEADLINE: Final = "not_read_deadline"
+NOT_READ_CAP: Final = "not_read_cap"
+NO_DESCRIPTION: Final = "no_description"
+
+
+def read_failure_reason(failure: UpstreamFailure) -> str:
+    """An upstream failure as a run-history reason: its fixed code, and for a
+    tool error the tool's own code when it gave one."""
+    if failure.code == "tool_error" and failure.tool_code:
+        return f"tool_error:{failure.tool_code}"
+    return failure.code
 
 
 def _limit(params: Mapping[str, object]) -> int:
@@ -261,6 +281,7 @@ def read_details(
     details: dict[str, dict[str, object] | None] = {}
     updated: list[Sighting] = []
     reads = failures = 0
+    reasons: Counter[str] = Counter()
     cut = False
     terminal: UpstreamFailure | None = None
     for sighting in sightings:
@@ -271,16 +292,25 @@ def read_details(
         key = posting.posting_id
         if key not in details:
             detail: dict[str, object] | None = None
+            reason: str | None = None
             feed_id = posting.feed_id
-            if feed_id is not None and not cut and reads < max_reads:
+            if feed_id is None:
+                reason = NO_FEED_ID
+            elif cut:
+                reason = NOT_READ_DEADLINE
+            elif reads >= max_reads:
+                reason = NOT_READ_CAP
+            else:
                 try:
                     detail = upstream.find_jobs(
                         "get", org_uid, {"id": feed_id}, deadline=deadline
                     )
                 except RunCut:
                     cut = True
+                    reason = NOT_READ_DEADLINE
                 except UpstreamFailure as failure:
                     reads += 1
+                    reason = read_failure_reason(failure)
                     if failure.terminal:
                         terminal = failure
                 else:
@@ -289,9 +319,11 @@ def read_details(
                 raise terminal
             if detail is not None and _described(posting, detail, job_hosts) is None:
                 detail = None
+                reason = NO_DESCRIPTION
             details[key] = detail
             if detail is None:
                 failures += 1
+                reasons[reason or NO_DESCRIPTION] += 1
         found = details[key]
         described = None if found is None else _described(posting, found, job_hosts)
         updated.append(
@@ -300,5 +332,9 @@ def read_details(
             else Sighting(described, detail_ok=True)
         )
     return DetailResult(
-        sightings=tuple(updated), detail_reads=reads, failures=failures, cut=cut
+        sightings=tuple(updated),
+        detail_reads=reads,
+        failures=failures,
+        cut=cut,
+        reasons=dict(reasons),
     )

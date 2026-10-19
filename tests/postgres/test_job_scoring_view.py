@@ -276,3 +276,57 @@ def test_an_account_side_failure_is_logged_deferred_and_a_claim_reads_claimed(
     data = view(scored)
     assert jobs(data)["Good job"]["stage"] == "waiting"
     assert data["status"]["state"] == "idle"
+
+
+def test_the_job_feed_tab_reads_the_latest_runs_and_old_ones_are_dropped(
+    scored: Scoring,
+) -> None:
+    """#377: the view lists the run history newest first, at most twelve, with
+    each run's counts, stop code and failed-read reasons; recording a run deletes
+    rows past the retention window."""
+    from rheo_leads.jobfeed.state import RUN_RETENTION, RunReport, record_run
+    from rheo_leads.storage import jobfeed as jf
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    with open_unit_of_work(scored.c.owner) as uow:
+        record_run(
+            uow,
+            now=now - RUN_RETENTION - timedelta(days=1),
+            outcome="completed",
+            report=RunReport(imported=9),
+        )
+        for n in range(13):
+            record_run(
+                uow,
+                now=now - timedelta(hours=2 * (13 - n)),
+                outcome="partial",
+                report=RunReport(imported=n, refreshed=1, detail_reads=3, errors=1),
+                read_failures={"no_description": 1},
+            )
+        record_run(uow, now=now, outcome="stopped", stop_code="upstream_unavailable")
+        uow.commit()
+    # Recording a run dropped the one past the window; fourteen remain.
+    stored = rows(scored.i, select(jf.jobfeed_run))
+    assert len(stored) == 14
+    assert all(r["finished_at"] >= now - RUN_RETENTION for r in stored)
+
+    runs = view(scored)["feed_runs"]
+    assert len(runs) == 12
+    newest, latest_partial = runs[0], runs[1]
+    assert len({r["id"] for r in runs}) == 12
+    assert {k: v for k, v in newest.items() if k != "id"} == {
+        "finished_at": now.isoformat(),
+        "outcome": "stopped",
+        "stop_code": "upstream_unavailable",
+        "fetched": 0,
+        "imported": 0,
+        "refreshed": 0,
+        "detail_reads": 0,
+        "errors": 0,
+        "read_failures": {},
+    }
+    assert latest_partial["imported"] == 12
+    assert latest_partial["read_failures"] == {"no_description": 1}
+    assert [r["finished_at"] for r in runs] == sorted(
+        (r["finished_at"] for r in runs), reverse=True
+    )

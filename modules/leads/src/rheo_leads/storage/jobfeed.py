@@ -1,4 +1,6 @@
-"""The job feed collector's tables. Every queryable value is a column; none is JSON.
+"""The job feed collector's tables. Every queryable value is a column. The one JSON
+value is the run history's ``read_failures``: a tally of fixed reason codes that is
+only ever read whole, never queried by.
 
 ``jobfeed_connection`` and ``jobfeed_authorization`` hold at most one row each per
 workspace. ``token_ref``, ``client_secret_ref`` and ``registration_token_ref`` are
@@ -13,12 +15,14 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     Table,
     Text,
     Uuid,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from rheo_leads.storage.tables import metadata
 
@@ -168,9 +172,27 @@ jobfeed_account_choice = Table(
     Column("ordinal", Integer, nullable=False),
     _time("seen_at"),
 )
+# One content-free row per collector run, newest kept for RUN_RETENTION (migration
+# 0016). The connection row holds only the last run's counts; this keeps why each
+# detail read failed (codes in ``read_failures``) across runs and deploys.
+jobfeed_run = Table(
+    "jobfeed_run",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    _time("finished_at"),
+    _text("outcome"),
+    _text("stop_code", nullable=True),
+    *(_count(name) for name in REPORT_COUNTS),
+    Column("read_failures", JSONB, nullable=False, server_default="{}"),
+    CheckConstraint(
+        "outcome IN ('completed','partial','stopped')", name="jobfeed_run_outcome"
+    ),
+)
+Index("jobfeed_run_finished", jobfeed_run.c.finished_at)
 TABLES = (
     jobfeed_connection,
     jobfeed_authorization,
     jobfeed_posting,
     jobfeed_account_choice,
+    jobfeed_run,
 )

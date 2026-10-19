@@ -12,18 +12,20 @@ import {
   clock,
   outcomeLabel,
   purposeLabel,
+  readFailureLabel,
   scoreBand,
   since,
   span,
   stageChip,
   statusLine,
+  stopLabel,
   tokens,
 } from "./scoring";
 import queueStyles from "./queue.module.css";
 import styles from "./scoring.module.css";
 
 type Submit = NonNullable<ShellApi["submit"]>;
-export type ScoringTab = "queue" | "calls";
+export type ScoringTab = "queue" | "calls" | "feed";
 
 export interface ScoringProps {
   /** The ``leads.ui.scoring`` answer's data. */
@@ -380,6 +382,70 @@ function Calls({
   );
 }
 
+/** The job feed's recent runs: what each brought in, and why any detail read
+ * failed, so a bad stretch can be read after the fact (#377). */
+function FeedRuns({ view, now }: { view: Row; now: number }) {
+  const runs = rows(view.feed_runs);
+  return (
+    <>
+      <div className={styles.sectionHead}>
+        <h2 className={styles.sectionTitle}>Recent runs</h2>
+        <InfoTip label="About the job feed runs" wide>
+          <p>
+            The feed runs every two hours. Each new job it finds is read in
+            full; a job whose read fails is kept as a refresh only, with no
+            description, until a later run reads it.
+          </p>
+          <p>
+            Only counts and fixed reasons are kept, never a posting. Runs older
+            than 90 days are removed.
+          </p>
+        </InfoTip>
+      </div>
+      {!runs.length ? (
+        <p className={styles.quiet}>No runs recorded yet.</p>
+      ) : (
+        <ul className={styles.runs}>
+          {runs.map((run, index) => {
+            const failures = Object.entries(row(run.read_failures)).filter(
+              ([, n]) => typeof n === "number" && n > 0,
+            ) as [string, number][];
+            const stopped = run.outcome === "stopped";
+            return (
+              <li key={str(run.id) || `${str(run.finished_at)}-${index}`} className={styles.run}>
+                <span className={styles.runWhen}>{clock(run.finished_at, now)}</span>
+                <span className={styles.runWhat}>
+                  {stopped ? (
+                    <span className={styles.runStopped}>
+                      Stopped: {stopLabel(run.stop_code)}
+                    </span>
+                  ) : (
+                    <>
+                      {tokens(run.imported)} new, {tokens(run.refreshed)} updated
+                      {typeof run.detail_reads === "number" && run.detail_reads > 0
+                        ? `, ${tokens(run.detail_reads)} tried`
+                        : ""}
+                    </>
+                  )}
+                </span>
+                {failures.length ? (
+                  <span className={styles.runFailures}>
+                    {failures.map(([code, n]) => (
+                      <span key={code} className={styles.chip}>
+                        {n} {readFailureLabel(code)}
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </>
+  );
+}
+
 /** The status line, with its own one-second clock for the elapsed counter. */
 function Status({ status, now: initial }: { status: Row; now: number }) {
   const [now, setNow] = useState(initial);
@@ -472,6 +538,7 @@ export function ScoringView(props: ScoringProps) {
   const tabs: [ScoringTab, string][] = [
     ["queue", "Queue"],
     ["calls", "Model calls"],
+    ["feed", "Job feed"],
   ];
 
   return (
@@ -537,6 +604,8 @@ export function ScoringView(props: ScoringProps) {
       </nav>
       {tab === "calls" ? (
         <Calls view={view} now={now} hrefs={props.hrefs} />
+      ) : tab === "feed" ? (
+        <FeedRuns view={view} now={now} />
       ) : (
         <Queue
           view={view}

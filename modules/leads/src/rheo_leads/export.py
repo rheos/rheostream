@@ -8,11 +8,12 @@ and the pending authorization is never exported; a restored collector needs the
 owner to reconnect, which registers a fresh client. The job-search profile and each
 job's scoring state are exported whole, and so are the owner's promotions from the
 review queue; a restored scoring schedule stays off until the owner sets the profile
-again. The model call log is never exported. The proposal profile, each job's
-proposal with its sections, its pricing and milestones, and the answer library are
-exported whole; a proposal or pricing request that was queued or running is restored
-as failed, since its sweep did not come with it. Restore replaces only the fresh
-seed; existing intake records cause a refusal, never a destructive merge.
+again. The model call log and the job feed's run history are never exported. The
+proposal profile, each job's proposal with its sections, its pricing and milestones,
+and the answer library are exported whole; a proposal or pricing request that was
+queued or running is restored as failed, since its sweep did not come with it.
+Restore replaces only the fresh seed; existing intake records cause a refusal, never
+a destructive merge.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -56,12 +57,13 @@ if TYPE_CHECKING:
 TABLES = tuple(t.metadata.sorted_tables)
 """Every owned table: restore checks each against the fresh seed and replaces it."""
 # The pending authorization holds a PKCE verifier and fresh client references. The
-# model call log is this deployment's usage record, not workspace data; a restored
-# workspace starts with an empty one.
+# model call log and the collector's run history are this deployment's operating
+# record, not workspace data; a restored workspace starts with empty ones.
 EXPORTED = tuple(
     table
     for table in TABLES
-    if table not in (jobfeed.jobfeed_authorization, _scoring.model_call)
+    if table
+    not in (jobfeed.jobfeed_authorization, _scoring.model_call, jobfeed.jobfeed_run)
 )
 SECRET_COLUMNS = {"signing_secret_ref", "previous_secret_ref", "previous_valid_until"}
 # Left out of the export entirely, not nulled: a secret reference, the registered

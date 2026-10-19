@@ -258,6 +258,20 @@ itself every 15 seconds while scoring is moving (a call running, or queued jobs 
 call in the last five minutes) and every two minutes otherwise, unless the window is in
 the background or a panel on it is open.
 
+The Job feed tab lists the collector's last 12 runs from its run history
+(`leads.jobfeed_run`, migration 0016): when each finished, how many jobs it added and
+updated, how many detail reads it tried, or the code it stopped on. Each failed detail
+read is kept as a fixed reason: no feed id, not read (the run's deadline or read limit),
+an upstream code (`unavailable`, `rate_limited`, `protocol`, `endpoint_misconfigured`),
+`tool_error` with the tool's own upper-snake code when it gave one, or `no_description`
+when the read answered without one. A refused login is never a read reason: it stops
+the run, which is recorded as stopped. The connection row keeps only the last run's
+counts and the worker's logs end with each deploy, so this history is how a stretch of
+failed reads is diagnosed afterwards. A run that ends because the connection moved on
+(revoked or reconnected meanwhile) or on an internal error leaves no row, and the
+configuration check before a claim records a stopped row on each tick it fails. Counts and codes only, never a posting; rows older than 90 days are deleted
+as runs are recorded; the history is not exported.
+
 ## Job proposals
 
 A Job search opportunity can have a draft application: a cover letter and one answer

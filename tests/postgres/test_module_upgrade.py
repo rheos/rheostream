@@ -27,7 +27,7 @@ pytestmark = pytest.mark.postgres
 TARGET = {
     "module_id": "leads",
     "target_version": MANIFEST.package_version,
-    "target_schema": "0015_model_calls",
+    "target_schema": "0016_jobfeed_runs",
 }
 
 

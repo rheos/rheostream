@@ -31,7 +31,7 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0009_jobfeed_collector"
-HEAD = "0015_model_calls"
+HEAD = "0016_jobfeed_runs"
 NEW_TABLES = {
     "jobfeed_connection",
     "jobfeed_authorization",
@@ -53,6 +53,8 @@ PROPOSAL_TABLES = {
     "job_promotion",
     # 0015_model_calls
     "model_call",
+    # 0016_jobfeed_runs
+    "jobfeed_run",
 }
 
 
@@ -166,6 +168,7 @@ def test_populated_0008_upgrades_additively_to_the_fresh_schema(
         undone = rewind_leads(uow.connection, "0008_attach_by_field")
         assert undone == (
             HEAD,
+            "0015_model_calls",
             "0014_job_promotion",
             "0013_job_pricing",
             "0012_job_proposals",
@@ -229,6 +232,10 @@ def test_declared_tables_match_the_migrated_schema(intake: Intake) -> None:
     assert owned(declared, NEW_TABLES) == owned(migrated, NEW_TABLES)
     # Positive control: the comparison saw every new table's columns and checks.
     assert len(owned(migrated, NEW_TABLES)["columns"]) == 69
+    # The run history (0016) is compared too, column by column and check by check.
+    history = {"jobfeed_run"}
+    assert owned(declared, history) == owned(migrated, history)
+    assert len(owned(migrated, history)["columns"]) == 14
     transport = [
         row
         for row in migrated["constraints"]
@@ -370,8 +377,8 @@ def test_export_carries_the_job_feed_tables_without_secret_or_client_state(
     intake: Intake,
 ) -> None:
     """Export format 7: the connection row leaves out its token reference, every
-    client column, its run claim and its backoff; the pending authorization is never
-    exported; the dedupe rows and account choices are."""
+    client column, its run claim and its backoff; the pending authorization and the
+    run history are never exported; the dedupe rows and account choices are."""
     from types import SimpleNamespace
     from typing import cast
 
@@ -435,6 +442,18 @@ def test_export_carries_the_job_feed_tables_without_secret_or_client_state(
             label="Example organization",
             ordinal=0,
             seen_at=now,
+        ),
+    )
+    # The run history (0016) is the deployment's operating record: written here so
+    # the check below proves it stays out of the export, like the pending
+    # authorization.
+    write(
+        intake,
+        insert(j.jobfeed_run).values(
+            id=uuid7(),
+            finished_at=now,
+            outcome="partial",
+            read_failures={"no_description": 1},
         ),
     )
     with open_unit_of_work(intake.ctx) as uow:

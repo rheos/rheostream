@@ -547,6 +547,7 @@ def test_at_most_sixty_reads_and_the_omitted_rest_downgrade() -> None:
     )
     assert len(r.session.calls) == MAX_DETAIL_READS == result.detail_reads
     assert result.failures == 5
+    assert result.reasons == {"not_read_cap": 5}
     read, omitted = result.sightings[:60], result.sightings[60:]
     assert all(s.detail_ok and s.posting.description == FULL for s in read)
     assert all(
@@ -601,6 +602,13 @@ def test_overlapping_searches_read_details_once_end_to_end() -> None:
     assert one.detail_ok and one.posting.purpose == "discover"
 
 
+# The run-history reason each failed read is kept as (#377).
+FAILED_READ_REASONS = {
+    "call-failed": "unavailable",
+    "status": "no_description",
+    "no-description": "no_description",
+    "blank-description": "no_description",
+}
 FAILED_READS: dict[str, Callable[[dict[str, Any]], object]] = {
     "call-failed": lambda p: McpFailure("unavailable"),
     "status": lambda p: {"status": "error"},
@@ -612,18 +620,35 @@ FAILED_READS: dict[str, Callable[[dict[str, Any]], object]] = {
 }
 
 
-@pytest.mark.parametrize("answer", FAILED_READS.values(), ids=FAILED_READS.keys())
-def test_a_failed_read_downgrades_without_a_description(
-    answer: Callable[[dict[str, Any]], object],
-) -> None:
-    r = run(details_answer(answer))
+@pytest.mark.parametrize("name", FAILED_READS.keys())
+def test_a_failed_read_downgrades_without_a_description(name: str) -> None:
+    r = run(details_answer(FAILED_READS[name]))
     result = r.details(sightings(posting(1401, ordinal=0, at=0)))
     (one,) = result.sightings
     assert not one.detail_ok
     assert one.posting.purpose == "refresh_only" and one.posting.description is None
     assert "description" not in one.posting.to_body()
     assert (result.detail_reads, result.failures) == (1, 1)
+    assert result.reasons == {FAILED_READ_REASONS[name]: 1}
     assert_no_snippet(result)
+
+
+def test_a_tool_error_keeps_the_tool_code_as_its_reason() -> None:
+    r = run(
+        details_answer(lambda p: McpFailure("tool_error", tool_code="JOB_NOT_VISIBLE"))
+    )
+    result = r.details(sightings(posting(1451, ordinal=0, at=0)))
+    assert result.reasons == {"tool_error:JOB_NOT_VISIBLE": 1}
+
+
+def test_a_posting_without_a_feed_id_is_not_read() -> None:
+    r = run(details_answer())
+    result = r.details(
+        [Sighting(replace(posting(1461, ordinal=0, at=0), feed_id=None))]
+    )
+    assert r.session.calls == []
+    assert (result.detail_reads, result.failures) == (0, 1)
+    assert result.reasons == {"no_feed_id": 1}
 
 
 def test_a_failed_read_is_not_repeated_for_a_duplicate_id() -> None:
@@ -632,6 +657,8 @@ def test_a_failed_read_is_not_repeated_for_a_duplicate_id() -> None:
         sightings(posting(1501, ordinal=0, at=0), posting(1501, ordinal=1, at=1))
     )
     assert len(r.session.calls) == 1 and result.failures == 1
+    # One reason per failure: the duplicate shares the first read's.
+    assert result.reasons == {"unavailable": 1}
     assert all(s.posting.purpose == "refresh_only" for s in result.sightings)
 
 
@@ -645,6 +672,7 @@ def test_the_deadline_omits_the_remaining_reads() -> None:
     )
     assert len(r.session.calls) == 4 == result.detail_reads
     assert result.cut is True and result.failures == 2
+    assert result.reasons == {"not_read_deadline": 2}
     assert [s.detail_ok for s in result.sightings] == [True] * 4 + [False] * 2
     assert all(
         s.posting.purpose == "refresh_only" and s.posting.description is None
