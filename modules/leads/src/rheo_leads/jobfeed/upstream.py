@@ -87,18 +87,23 @@ UpstreamCode = Literal[
 
 class UpstreamFailure(Exception):
     """A failed upstream call, carrying a fixed code only. ``terminal`` is true
-    only for a refused credential (HTTP 401 or 403)."""
+    only for a refused credential (HTTP 401 or 403). A ``tool_error`` keeps the
+    tool's own upper-snake error code when it gave one (the MCP client accepts
+    nothing else), so a run's history can say which error it was."""
 
     def __init__(
         self,
         code: UpstreamCode,
         retry_after: int | None = None,
         terminal: bool = False,
+        *,
+        tool_code: str | None = None,
     ) -> None:
         super().__init__(code)
         self.code: UpstreamCode = code
         self.retry_after = retry_after
         self.terminal = terminal
+        self.tool_code = tool_code
 
     def __str__(self) -> str:
         return self.code
@@ -161,6 +166,8 @@ def _translate(failure: McpFailure) -> UpstreamFailure:
         return UpstreamFailure("unauthorized", terminal=True)
     if failure.code == "rate_limited":
         return UpstreamFailure("rate_limited", retry_after=failure.retry_after)
+    if failure.code == "tool_error":
+        return UpstreamFailure("tool_error", tool_code=failure.tool_code)
     return UpstreamFailure(failure.code)
 
 

@@ -49,8 +49,8 @@ raised as the fixed ``internal_error``, with no chained exception.
 """
 
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Final, cast
 from uuid import UUID
 
@@ -93,6 +93,7 @@ from rheo_leads.jobfeed.state import (
     clear_rejected_client,
     current_token,
     read_connection,
+    record_run,
     replace_account_choices,
     store_selection,
     switch_token,
@@ -187,6 +188,8 @@ class Collected:
     """Invalid rows plus downgraded sightings."""
     partial: bool
     """A page or detail failed, a detail was omitted, or the deadline cut the run."""
+    read_failures: Mapping[str, int] = field(default_factory=dict)
+    """Why the downgraded detail reads failed, as fixed codes and counts."""
 
 
 @dataclass
@@ -267,6 +270,7 @@ def collect_phase(
             or details.failures
             or details.cut
         ),
+        read_failures=details.reasons,
     )
 
 
@@ -350,22 +354,26 @@ def _deliver_and_report(
         now=deps.now(),
         checkpoint=token.checkpoint,
     )
-    write_success(
+    report = RunReport(
+        fetched=collected.fetched,
+        imported=delivered.imported,
+        skipped_dup=delivered.skipped_dup,
+        refreshed=delivered.refreshed,
+        filtered=delivered.filtered,
+        skipped_untracked=delivered.skipped_untracked,
+        errors=collected.errors + delivered.errors,
+        detail_reads=collected.detail_reads,
+        pages=collected.pages,
+    )
+    partial = collected.partial or delivered.partial
+    now = deps.now()
+    write_success(uow, current, now=now, report=report, partial=partial)
+    record_run(
         uow,
-        current,
-        now=deps.now(),
-        report=RunReport(
-            fetched=collected.fetched,
-            imported=delivered.imported,
-            skipped_dup=delivered.skipped_dup,
-            refreshed=delivered.refreshed,
-            filtered=delivered.filtered,
-            skipped_untracked=delivered.skipped_untracked,
-            errors=collected.errors + delivered.errors,
-            detail_reads=collected.detail_reads,
-            pages=collected.pages,
-        ),
-        partial=collected.partial or delivered.partial,
+        now=now,
+        outcome="partial" if partial else "completed",
+        report=report,
+        read_failures=collected.read_failures,
     )
 
 
@@ -733,6 +741,14 @@ def _end(
     if current is None:
         return
     now = deps.now()
+    record_run(
+        uow,
+        now=now,
+        outcome="stopped",
+        stop_code=(
+            "authorization_required" if isinstance(outcome, Terminal) else outcome.code
+        ),
+    )
     if isinstance(outcome, Terminal):
         write_terminal(uow, current, run.conn_ctx, now=now)
     elif backoff:

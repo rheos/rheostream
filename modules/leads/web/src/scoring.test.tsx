@@ -125,7 +125,11 @@ function markup(tab: ScoringTab, view = VIEW, canRetry = true): string {
         [GOOD]: "/leads/detail?ref=good",
         [NEXT]: "/leads/detail?ref=next",
       }}
-      tabHrefs={{ queue: "/leads/scoring", calls: "/leads/scoring?tab=calls" }}
+      tabHrefs={{
+        queue: "/leads/scoring",
+        calls: "/leads/scoring?tab=calls",
+        feed: "/leads/scoring?tab=feed",
+      }}
       reviewHref="/leads/review"
       canRetry={canRetry}
       submit={vi.fn() as unknown as ShellApi["submit"]}
@@ -258,7 +262,7 @@ describe("retrying failed jobs", () => {
           now={NOW}
           tab="queue"
           hrefs={{}}
-          tabHrefs={{ queue: "/q", calls: "/c" }}
+          tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
           reviewHref="/r"
           canRetry
           submit={submit as unknown as ShellApi["submit"]}
@@ -276,5 +280,43 @@ describe("retrying failed jobs", () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not put the failed jobs back in line",
     );
+  });
+});
+
+describe("the job feed tab (#377)", () => {
+  const withRuns = {
+    ...VIEW,
+    feed_runs: [
+      {
+        finished_at: new Date(NOW - 3600000).toISOString(),
+        outcome: "partial",
+        stop_code: null,
+        imported: 4,
+        refreshed: 12,
+        detail_reads: 9,
+        read_failures: { no_description: 2, "tool_error:JOB_NOT_VISIBLE": 1 },
+      },
+      {
+        finished_at: new Date(NOW - 3 * 3600000).toISOString(),
+        outcome: "stopped",
+        stop_code: "upstream_unavailable",
+        imported: 0,
+        refreshed: 0,
+        detail_reads: 0,
+        read_failures: {},
+      },
+    ],
+  };
+  it("lists runs with their counts and why reads failed, in words", () => {
+    const html = markup("feed", withRuns);
+    expect(html).toContain("Recent runs");
+    expect(html).toContain("4 new, 12 updated, 9 read");
+    expect(html).toContain("2 answered without a description");
+    expect(html).toContain("1 refused by the job service (JOB_NOT_VISIBLE)");
+    expect(html).toContain("Stopped: job service unavailable");
+    expect(html).toContain('href="/leads/scoring?tab=feed"');
+  });
+  it("says so when there are no runs yet", () => {
+    expect(markup("feed")).toContain("No runs recorded yet.");
   });
 });

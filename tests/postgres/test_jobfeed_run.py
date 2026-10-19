@@ -88,6 +88,7 @@ from rheo_leads.jobfeed.state import (
 )
 from rheo_leads.pipeline_evidence import COMPETITION_GROUP
 from rheo_leads.references import ref
+from rheo_leads.storage import jobfeed as jf
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 from sqlalchemy import Engine, event, select, text, update
@@ -1872,7 +1873,33 @@ def test_a_transient_mcp_failure_backs_off_with_no_retry(
     assert after.not_before == clock.now() + wait
     assert after.authorization_state == "connected"
     assert lost_audits(c.owner) == []
+    # A stopped run is in the history too, with the code it stopped on.
+    assert runs(c) == [
+        {"outcome": "stopped", "stop_code": code, "imported": 0, "read_failures": {}}
+    ]
     quietly_succeeded(c)
+
+
+def test_a_tool_error_detail_read_keeps_the_tool_code_in_the_history(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """#377: a detail read the tool refuses keeps the tool's own upper-snake
+    code in the run history; a sentence in its place is not a code and is kept
+    only as ``tool_error``."""
+    c = connected_collector(intake, served)
+    mcp.feeds = {"best_match": [[feed_row(401), feed_row(402)]]}
+    mcp.details = {
+        "401": tool_result({"error_code": "JOB_NOT_VISIBLE"}, is_error=True),
+        "402": tool_result({"error_code": "This job is private."}, is_error=True),
+    }
+    collected(c, clock)
+    assert runs(c)[0]["read_failures"] == {
+        "tool_error:JOB_NOT_VISIBLE": 1,
+        "tool_error": 1,
+    }
 
 
 def test_a_malformed_account_list_is_upstream_unavailable(
@@ -2160,6 +2187,24 @@ def counts(c: ConnectedCollector) -> dict[str, int]:
     return {name: read[name] for name in COUNTS}
 
 
+def runs(c: ConnectedCollector) -> list[dict[str, Any]]:
+    """The collector's run history, newest first: outcome, stop code, imported
+    count and the failed detail reads' reason codes."""
+    run = jf.jobfeed_run
+    with open_unit_of_work(c.owner) as uow:
+        return [
+            {
+                "outcome": r.outcome,
+                "stop_code": r.stop_code,
+                "imported": r.imported,
+                "read_failures": dict(r.read_failures),
+            }
+            for r in uow.connection.execute(
+                select(run).order_by(run.c.finished_at.desc(), run.c.id.desc())
+            )
+        ]
+
+
 def bodies(c: ConnectedCollector) -> list[dict[str, Any]]:
     """Every delivered body of the collector's connection, oldest first."""
     with open_unit_of_work(c.owner) as uow:
@@ -2368,6 +2413,15 @@ def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
         "pages": 3,
     }
     assert last_error(c) == "collection_partial"
+    # Why the read failed is kept in the run history, past any deploy (#377).
+    assert runs(c) == [
+        {
+            "outcome": "partial",
+            "stop_code": None,
+            "imported": 1,
+            "read_failures": {"unavailable": 1},
+        }
+    ]
     for posting_id in ("~02302", "~02303", "~02304"):
         assert opportunities(intake, posting_id) == []
     before = states(intake, "~02301")
@@ -2393,6 +2447,8 @@ def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
         "pages": 3,
     }
     assert last_error(c) == "collection_partial"
+    assert runs(c)[0]["read_failures"] == {"unavailable": 1, "no_description": 1}
+    assert len(runs(c)) == 2
     assert len(opportunities(intake, "~02301")) == 1
     assert opportunities(intake, "~02305") == []
     assert competition(intake, "~02301")[0] == "15"

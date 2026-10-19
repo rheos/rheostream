@@ -733,9 +733,11 @@ export async function review({ shell }: ScreenProps) {
   );
 }
 /** The Scoring view: what scoring is doing, recent jobs by import with their
- * stage, and the model call log (``?tab=calls``). */
+ * stage, the model call log (``?tab=calls``) and the job feed's recent runs
+ * (``?tab=feed``). */
 export async function scoring({ shell, query }: ScreenProps) {
-  const tab = query.tab === "calls" ? "calls" : "queue";
+  const tab =
+    query.tab === "calls" ? "calls" : query.tab === "feed" ? "feed" : "queue";
   const result = await read(shell, "leads.ui.scoring");
   const view = data(result);
   const refs = new Set<string>();
@@ -761,6 +763,7 @@ export async function scoring({ shell, query }: ScreenProps) {
           tabHrefs={{
             queue: shell.href("scoring"),
             calls: shell.href("scoring", { tab: "calls" }),
+            feed: shell.href("scoring", { tab: "feed" }),
           }}
           reviewHref={shell.href("review")}
           canRetry={shell.role === "owner"}

@@ -38,6 +38,39 @@ const FAILURES: Record<string, string> = {
   token_revoke_failed: "run token not revoked",
   unexpected: "unexpected error",
 };
+/** Why a job feed detail read failed, in words; codes it does not know (a new
+ * tool error code) show as they are. */
+const READ_FAILURES: Record<string, string> = {
+  no_description: "answered without a description",
+  no_feed_id: "no id to read",
+  not_read_deadline: "not read: run out of time",
+  not_read_cap: "not read: read limit reached",
+  unavailable: "service unavailable",
+  rate_limited: "rate limited",
+  protocol: "unreadable answer",
+  tool_error: "refused by the job service",
+  unauthorized: "login refused",
+  endpoint_misconfigured: "wrong address",
+};
+export function readFailureLabel(code: string): string {
+  const [kind, detail] = code.split(":", 2);
+  const known = READ_FAILURES[kind ?? ""] ?? code.replaceAll("_", " ");
+  return kind === "tool_error" && detail ? `${known} (${detail})` : known;
+}
+
+const STOPS: Record<string, string> = {
+  upstream_unavailable: "job service unavailable",
+  upstream_rate_limited: "rate limited",
+  authorization_required: "needs reconnecting",
+  endpoint_misconfigured: "wrong address",
+  account_selection_required: "choose an account",
+  collection_partial: "cut short",
+};
+export function stopLabel(code: unknown): string {
+  const value = str(code);
+  return STOPS[value] ?? value.replaceAll("_", " ");
+}
+
 export function failureLabel(kind: unknown): string {
   const value = str(kind);
   return FAILURES[value] ?? value.replaceAll("_", " ");
