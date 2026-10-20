@@ -26,6 +26,10 @@ OpportunityRef = Annotated[
         lambda v, info: _parse(v, info, "opportunity"), json_schema_input_type=str
     ),
     PlainSerializer(lambda r: r.format(), return_type=str),
+    Field(
+        description="The opportunity's short ID (8 or more hex characters, as the "
+        "UI shows it) or its full reference, leads.opportunity:<uuid>."
+    ),
 ]
 ObservationRef = Annotated[
     RecordRef,

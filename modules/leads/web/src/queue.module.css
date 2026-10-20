@@ -388,32 +388,6 @@
   margin: 0;
   color: var(--rs-color-ink);
 }
-.idChip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--rs-space-2);
-  max-width: 100%;
-  padding: var(--rs-space-1) calc(var(--rs-space-2) + var(--rs-space-1) / 4);
-  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
-  border-radius: var(--rs-radius-md);
-  background: var(--rs-color-surface-2);
-  color: var(--rs-color-ink-dim);
-  font-family: var(--rs-font-mono);
-  font-size: calc(var(--rs-font-size-sm) * 0.85);
-  cursor: pointer;
-}
-.idChip:hover {
-  color: var(--rs-color-ink);
-  border-color: var(--rs-color-accent);
-}
-.idChip svg {
-  width: calc(var(--rs-space-3) + var(--rs-space-1) / 4);
-  height: calc(var(--rs-space-3) + var(--rs-space-1) / 4);
-  flex-shrink: 0;
-}
-.idValue {
-  overflow-wrap: anywhere;
-}
 @media (max-width: 39.9375rem) {
   .job {
     grid-template-columns: 1fr;
@@ -452,7 +426,6 @@
   .card,
   .chip,
   .iconButton,
-  .idChip,
   .preview {
     transition:
       border-color 150ms ease-out,

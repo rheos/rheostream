@@ -322,3 +322,25 @@ describe("the job feed tab (#377)", () => {
     expect(markup("feed")).toContain("No runs recorded yet.");
   });
 });
+
+describe("the Scoring screen's links (#345)", () => {
+  it("links jobs and calls by short ID", async () => {
+    const { scoring } = await import("./screens");
+    const view = {
+      batches: [{ jobs: [job(GOOD, "Good job", { short_id: "6437992a85" })] }],
+      calls: [{ id: "c1", ref: NEXT, short_id: "37992a87", title: "Next" }],
+    };
+    const shell = {
+      role: "owner",
+      call: vi.fn(async () => ({ state: "ok", result: { data: view } })),
+      href: (id: string, query?: Record<string, string | undefined>) =>
+        `/leads/${id}?ref=${query?.ref ?? ""}`,
+    } as unknown as ShellApi;
+    const html = renderToStaticMarkup(await scoring({ shell, query: {} }));
+    expect(html).toContain('href="/leads/detail?ref=6437992a85"');
+    const calls = renderToStaticMarkup(
+      await scoring({ shell, query: { tab: "calls" } }),
+    );
+    expect(calls).toContain('href="/leads/detail?ref=37992a87"');
+  });
+});

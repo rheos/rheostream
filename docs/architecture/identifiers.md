@@ -64,6 +64,33 @@ Rules:
   It never has a foreign key into another module's schema. This is how FR 11 stays checkable by a
   static test (criterion 26).
 
+### Short IDs
+
+People see, paste and link a **short ID** instead of the full UUID (issue #345). It is the
+last 8 hex characters of the record's UUID: `leads.opportunity:01a126c1-02cc-7d5b-a113-4d0fef1c1302`
+shows as `ef1c1302`. The tail, not the head: a UUIDv7 starts with a millisecond timestamp,
+so records made in the same minute share their leading characters, and a batch of
+collected postings would all look alike.
+
+- The UUID stays the only identity. Primary keys, foreign keys, events, audit and export
+  are unchanged; there is no extra column and no backfill.
+- Display lengthens a tail that two records of one type share, like a git short hash
+  (8, then 10, 12, and so on) within the workspace and record type.
+- Every place that accepts a reference also accepts `<module>.<record_type>:<tail>`, or a
+  bare tail where the field already knows its type. It resolves by unique tail match
+  within that type, refuses a tail two records share with an error asking for more
+  characters, and keeps accepting the full reference. Operations and MCP tools resolve
+  it while input is validated (the reference field's validator reads
+  `rheo_core.refs.short` through the validation context `dispatch` passes); the resolver
+  below expands the typed form. Either way the handler, the audit row and every output
+  carry the full reference.
+- A record type opts in by declaring a `tail_lookup` in its manifest
+  ([owned record types](module-contract.md#owned-record-types)). Without one, a type takes
+  full references only. Lookup is a scan on the tail today, which is fine at a workspace's
+  scale; an expression index is a module migration away if it ever is not.
+- An external provider's own id (a job board's posting id) is a separate field and never a
+  short ID.
+
 ## Resolution under permission
 
 The core exposes one resolver:
