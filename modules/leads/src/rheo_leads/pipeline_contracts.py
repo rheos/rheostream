@@ -11,33 +11,47 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    ValidationInfo,
     model_validator,
 )
 from rheo_contracts import ContextPurpose, RecordRef
 from rheo_core.redaction.tiers import SensitivityTier, Tiered
+from rheo_core.refs.short import ref_value
 
-# Explicit aliases keep audit subjects typed through the tool adapter.
+# Explicit aliases keep audit subjects typed through the tool adapter. An opportunity
+# also takes its short ID (#345), typed or bare, resolved while dispatch validates.
 OpportunityRef = Annotated[
     RecordRef,
-    BeforeValidator(lambda v: _parse(v, "opportunity"), json_schema_input_type=str),
+    BeforeValidator(
+        lambda v, info: _parse(v, info, "opportunity"), json_schema_input_type=str
+    ),
     PlainSerializer(lambda r: r.format(), return_type=str),
+    Field(
+        description="The opportunity's short ID (8 or more hex characters, as the "
+        "UI shows it) or its full reference, leads.opportunity:<uuid>."
+    ),
 ]
 ObservationRef = Annotated[
     RecordRef,
-    BeforeValidator(lambda v: _parse(v, "observation"), json_schema_input_type=str),
+    BeforeValidator(
+        lambda v, info: _parse(v, info, "observation"), json_schema_input_type=str
+    ),
     PlainSerializer(lambda r: r.format(), return_type=str),
 ]
 PartyRef = Annotated[
     RecordRef,
     BeforeValidator(
-        lambda v: _parse(v, "party", "relationships"), json_schema_input_type=str
+        lambda v, info: _parse(v, info, "party", "relationships"),
+        json_schema_input_type=str,
     ),
     PlainSerializer(lambda r: r.format(), return_type=str),
 ]
 
 
-def _parse(v: object, kind: str, module: str = "leads") -> RecordRef:
-    r = RecordRef.parse(v) if isinstance(v, str) else v
+def _parse(
+    v: object, info: ValidationInfo, kind: str, module: str = "leads"
+) -> RecordRef:
+    r = ref_value(v, info, module, kind)
     if not isinstance(r, RecordRef) or r.module != module or r.record_type != kind:
         raise ValueError("unexpected reference")
     return r
@@ -318,8 +332,13 @@ class ReferenceEvent(Strict):
     revision: int = 1
 
 
-def _deletable(v: object) -> RecordRef:
-    reference = RecordRef.parse(v) if isinstance(v, str) else v
+def _deletable(v: object, info: ValidationInfo) -> RecordRef:
+    # Two types are deletable here, so a short ID must say which (no bare tail).
+    short = RecordRef.short(v) if isinstance(v, str) else None
+    if short is not None and short[0] == "leads":
+        reference = ref_value(v, info, "leads", short[1])
+    else:
+        reference = RecordRef.parse(v) if isinstance(v, str) else v
     if (
         not isinstance(reference, RecordRef)
         or reference.module != "leads"

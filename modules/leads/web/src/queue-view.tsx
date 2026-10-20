@@ -36,7 +36,7 @@ import {
   postingUrl,
   readPrefsText,
   savePrefs,
-  shortId,
+  jobId,
   SORTS,
   sourceLabel,
   PREFS_KEY,
@@ -346,7 +346,7 @@ export function StageActions({
         </a>
       ) : null}
       {copyId ? (
-        <CopyButton text={str(item.id)} label="Copy opportunity ID" />
+        <CopyButton text={jobId(item)} label={`Copy job ID ${jobId(item)}`} />
       ) : null}
       {onMove && target.stage_id ? (
         <button
@@ -766,7 +766,6 @@ export function JobHeader({
   const verdict = reasons[0] ?? summary;
   const evidence = reasons.length > 1 ? reasons.slice(1) : [];
   const source = sourceLabel(item.source);
-  const id = shortId(item.id);
   // Client history the facts line has no room for.
   const client = [formatHireRate(fields), formatReviews(fields)]
     .filter(Boolean)
@@ -813,18 +812,6 @@ export function JobHeader({
                   <dd>{source}</dd>
                 </div>
               ) : null}
-              <div>
-                <dt>ID</dt>
-                <dd>
-                  <CopyButton
-                    text={str(item.id)}
-                    label={`Copy the full ID (short ID ${id})`}
-                    className={styles.idChip}
-                  >
-                    <span className={styles.idValue}>{id}</span>
-                  </CopyButton>
-                </dd>
-              </div>
             </dl>
           </InfoTip>
         </div>
@@ -842,6 +829,7 @@ export function JobHeader({
         ) : null}
         <StageActions
           item={item}
+          copyId
           disabled={moving}
           onMove={
             submit

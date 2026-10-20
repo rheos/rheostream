@@ -14,6 +14,7 @@ from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
 from rheo_leads import pipeline_evidence as e
 from rheo_leads.references import ref
+from rheo_leads.short_ids import with_short_ids
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
@@ -152,9 +153,9 @@ def listing(ctx: WorkspaceContext, uow: UnitOfWork, m: c.ListInput) -> c.ItemsOu
         .limit(m.limit)
         .offset(m.offset)
     ).mappings()
-    return c.ItemsOutput(
-        items=[{**dict(r), "ref": ref("opportunity", r["id"])} for r in rows]
-    )
+    items = [{**dict(r), "ref": ref("opportunity", r["id"])} for r in rows]
+    with_short_ids(uow, items)
+    return c.ItemsOutput(items=items)
 
 
 def _link(

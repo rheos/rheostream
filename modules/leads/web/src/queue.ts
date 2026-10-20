@@ -202,11 +202,17 @@ export function age(item: Row, now: number): string {
   );
 }
 
-/** The display-only short ID: the random tail of a UUIDv7 (its head is a
- * timestamp, so the tail is what tells two records apart). */
+/** A UUID's short ID: its last 8 hex characters, the random tail (a UUIDv7's
+ * head is a timestamp, so records from the same minute share it). */
 export function shortId(id: unknown): string {
   const hex = str(id).replaceAll("-", "").toLowerCase();
-  return /^[0-9a-f]{32}$/.test(hex) ? hex.slice(-10) : str(id);
+  return /^[0-9a-f]{32}$/.test(hex) ? hex.slice(-8) : str(id);
+}
+
+/** A job's short ID as the server gave it (lengthened if two jobs ever share a
+ * tail), or the plain 8-character tail of its id. */
+export function jobId(item: Row): string {
+  return str(item.short_id) || shortId(item.id);
 }
 
 export interface Followup {

@@ -86,7 +86,7 @@ describe("the review queue", () => {
     expect(html).toContain("1 held job");
     // Without a submit there is nothing to press, but the facts still show.
     expect(html).not.toContain('aria-label="Promote');
-    expect(html).toContain("Copy opportunity ID");
+    expect(html).toContain("Copy job ID");
   });
   it("leaves Promote to owners; a member can still dismiss", () => {
     const submit = vi.fn() as unknown as ShellApi["submit"];

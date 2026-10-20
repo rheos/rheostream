@@ -64,6 +64,38 @@ Rules:
   It never has a foreign key into another module's schema. This is how FR 11 stays checkable by a
   static test (criterion 26).
 
+### Short IDs
+
+People see, paste and link a **short ID** instead of the full UUID (issue #345). It is the
+last 8 hex characters of the record's UUID: `leads.opportunity:01a126c1-02cc-7d5b-a113-4d0fef1c1302`
+shows as `ef1c1302`. The tail, not the head: a UUIDv7 starts with a millisecond timestamp,
+so records made in the same minute share their leading characters, and a batch of
+collected postings would all look alike.
+
+- The UUID stays the only identity. Primary keys, foreign keys, events, audit and export
+  are unchanged; there is no extra column and no backfill.
+- Display lengthens a tail that two records of one type share, like a git short hash
+  (8, then 10, 12, and so on) within the workspace and record type.
+- A reference field for a type with short IDs also accepts `<module>.<record_type>:<tail>`,
+  or a bare tail where the field already knows its type. It resolves by unique tail match
+  within that type, refuses a tail two records share with an error asking for more
+  characters, and keeps accepting the full reference. Operations and MCP tools resolve it
+  while input is validated: a typed reference field's validator (`ref_value` in
+  `rheo_core.refs.short`) reads the expander from the validation context that `dispatch`,
+  the tool facade and in-transaction calls pass. `core.runtime.run` expands typed short
+  forms in its `refs` the same way, so the job and its provenance hold full references.
+  The resolver below expands the typed form too. Past validation, handlers, audit rows
+  and outputs see only the full reference. A plain `*_ref: str` field that does its own
+  parsing takes full references until it moves to a typed field.
+- A link built from a short ID can become ambiguous if a later record shares its tail;
+  it then asks for more characters, as a git short hash does.
+- A record type opts in by declaring a `tail_lookup` in its manifest
+  ([owned record types](module-contract.md#owned-record-types)). Without one, a type takes
+  full references only. Lookup is a scan on the tail today, which is fine at a workspace's
+  scale; an expression index is a module migration away if it ever is not.
+- An external provider's own id (a job board's posting id) is a separate field and never a
+  short ID.
+
 ## Resolution under permission
 
 The core exposes one resolver:

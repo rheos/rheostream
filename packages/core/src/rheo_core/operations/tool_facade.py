@@ -127,6 +127,7 @@ from rheo_core.redaction.policy import TierPolicy, policy_for
 # but not ``rheo_core.redaction`` (``tests/test_mcp_boundary.py``).
 from rheo_core.redaction.render import WITHHELD_REASON as WITHHELD_REASON
 from rheo_core.redaction.render import render_output
+from rheo_core.refs.short import validation_context
 from rheo_core.settings import CORE_ORIGIN
 from rheo_core.tokens.sets import (
     DISCOVER_THEN_CALL_OPERATION,
@@ -389,7 +390,9 @@ def _refused(state: str, detail: str) -> OperationOutcome:
 
 
 def _validated(
-    declaration: ToolDeclaration, arguments: Mapping[str, object]
+    ctx: WorkspaceContext,
+    declaration: ToolDeclaration,
+    arguments: Mapping[str, object],
 ) -> BaseModel | OperationOutcome:
     """``arguments`` as the tool's own input model, or the refusal that stops it.
 
@@ -413,7 +416,7 @@ def _validated(
             f"{declaration.name} does not accept argument(s) {unknown}",
         )
     try:
-        return model.model_validate(dict(arguments))
+        return model.model_validate(dict(arguments), context=validation_context(ctx))
     except ValidationError as exc:
         return _refused(INPUT_INVALID, _describe_validation_error(exc))
 
@@ -603,7 +606,7 @@ def _call(
         )
     declaration = registered.declaration
     started = time.monotonic()
-    validated = _validated(declaration, arguments)
+    validated = _validated(ctx, declaration, arguments)
     if not isinstance(validated, OperationOutcome):
         refused_write = _mask_token_write(declaration, arguments)
         if refused_write is not None:

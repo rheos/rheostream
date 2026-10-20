@@ -34,6 +34,7 @@ from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
 from rheo_leads.references import ref
 from rheo_leads.scoring import review
+from rheo_leads.short_ids import with_short_ids
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import proposals
 from rheo_leads.storage import tables as t
@@ -330,6 +331,7 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                 **({"hold": holds.get(identifier, [])} if m.held_only else {}),
             }
         )
+    with_short_ids(uow, items)
     return c.ItemsOutput(items=items)
 
 

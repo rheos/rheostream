@@ -72,6 +72,7 @@ from rheo_core.redaction.render import RecordLoader as _RecordLoader
 from rheo_core.redaction.tiers import SensitivityTier as SensitivityTier
 from rheo_core.redaction.tiers import restricted_fields
 from rheo_core.refs.resolver import RecordResolver
+from rheo_core.refs.short import TailLookup as _TailLookup
 from rheo_core.settings.schema import KeySpec, Scope, ValueType
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.work.kinds import JobHandler
@@ -487,6 +488,10 @@ ModelRenderer = Annotated[
 """``(record, tier_policy) -> text | None``: the ratified ``render_for_model``; see
 :class:`~rheo_core.redaction.render.ModelRenderer`."""
 
+ShortIdLookup = Annotated[_TailLookup | None, PlainValidator(_model_rendering_callable)]
+"""``(uow, length, tails) -> ids``: gives the type short IDs (#345); see
+:data:`~rheo_core.refs.short.TailLookup`."""
+
 
 def _export_callable(value: object) -> object:
     """The duck check :class:`ExportDeclaration`'s pair applies.
@@ -672,6 +677,10 @@ class RecordType(BaseModel):
     (:func:`check_sensitivity`): a type with a tier map or its own renderer must
     declare a loader, and a loader on a type with neither is refused as a declaration
     nothing reads.
+
+    **``tail_lookup`` gives the type short IDs** (issue #345): people see and paste the
+    UUID's random tail, and reference inputs resolve it through this lookup. ``None``
+    keeps the type on full references only.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -686,6 +695,7 @@ class RecordType(BaseModel):
     delete_owned: OwnedDeleter = None
     load_for_model: RecordLoader = None
     render_for_model: ModelRenderer = None
+    tail_lookup: ShortIdLookup = None
 
     @model_validator(mode="after")
     def _the_owned_delete_pair_is_whole(self) -> Self:

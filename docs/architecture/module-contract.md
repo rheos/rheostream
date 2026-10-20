@@ -90,7 +90,13 @@ RecordType
   delete_owned: OwnedDeleter | None           # (ctx, uow, authorization) -> RemovedMemories
   load_for_model: RecordLoader | None         # (ctx, uow, ref) -> fields | None
   render_for_model: ModelRenderer | None      # (record, tier_policy) -> text | None
+  tail_lookup: TailLookup | None              # (uow, length, tails) -> ids; gives the type short IDs
 ```
+
+**`tail_lookup` gives a type [short IDs](identifiers.md#short-ids)** (issue #345): the ids
+of the type whose last `length` hex characters are one of `tails`. The loader registers it,
+reference inputs resolve a short ID through it, and display uses it to lengthen a shared
+tail. Null keeps the type on full references.
 
 **The model-rendering pair is the redaction contract's record half, added in issue #130.**
 `render_for_model(record, tier_policy)` is where the

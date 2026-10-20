@@ -15,10 +15,10 @@ import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Final, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Final, NamedTuple
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter
 from rheo_contracts import (
     ActorKind,
     AdapterSpawn,
@@ -64,6 +64,7 @@ from rheo_core.redaction.render import RenderedRecord, render_record
 from rheo_core.redaction.tiers import SensitivityTier
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import LIVE, RecordHead, Unavailable, resolve_in
+from rheo_core.refs.short import full_ref_text
 from rheo_core.routing.config import MCP, RoutingConfig
 from rheo_core.routing.url_for import url_for
 from rheo_core.runtime.registry import AdapterRegistry
@@ -128,7 +129,9 @@ class RuntimeRunInput(BaseModel):
 
     task: str
     purpose: ContextPurpose
-    refs: list[str] = []
+    # A typed short ID (#345) is expanded here, so the job and its provenance row hold
+    # the full reference the caller meant, not a tail a later record could share.
+    refs: list[Annotated[str, BeforeValidator(full_ref_text)]] = []
     requirements: list[str] = []
     output: RuntimeOutput
     continuation: UUID | None = None

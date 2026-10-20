@@ -24,6 +24,7 @@ import {
   postingUrl,
   PREFS_KEY,
   savePrefs,
+  jobId,
   shortId,
   sourceLabel,
   stageMatches,
@@ -260,8 +261,17 @@ describe("times, short IDs and extras", () => {
     );
   });
   it("uses the random tail of a UUIDv7 as the short ID", () => {
-    expect(shortId("01a133b6-b93c-73c0-975f-cf6437992a85")).toBe("6437992a85");
+    expect(shortId("01a133b6-b93c-73c0-975f-cf6437992a85")).toBe("37992a85");
     expect(shortId("not-a-uuid")).toBe("not-a-uuid");
+    // Two jobs from the same minute share their head, never their tail.
+    expect(shortId("01a133b6-b93c-73c0-975f-cf6437992a85")).not.toBe(
+      shortId("01a133b6-b93c-7e11-8a02-55d1e0c4b7f3"),
+    );
+  });
+  it("prefers the server's short ID, which lengthens on a shared tail", () => {
+    const id = "01a133b6-b93c-73c0-975f-cf6437992a85";
+    expect(jobId({ id })).toBe("37992a85");
+    expect(jobId({ id, short_id: "6437992a85" })).toBe("6437992a85");
   });
   it("marks a follow-up due before today as overdue", () => {
     expect(followupFor(full, NOW)).toEqual({
@@ -407,7 +417,7 @@ describe("queue rendering", () => {
       "A short synthetic description.",
       'aria-label="Stage for Example data service"',
       'aria-label="Open the posting"',
-      'aria-label="Copy opportunity ID"',
+      'aria-label="Copy job ID ',
       "Dismiss Example data service (move to Passed)",
     ];
     let at = -1;
@@ -477,7 +487,7 @@ describe("queue rendering", () => {
     expect(crowdedOnly).toContain("Every job here has 50+ proposals.");
     expect(crowdedOnly).toContain("Show them");
   });
-  it("draws the detail header with the ID chip and the over-cap alert", () => {
+  it("draws the detail header with the job ID copy and the over-cap alert", () => {
     const html = renderToStaticMarkup(
       <JobHeader
         item={{ ...full, fields: { ...row(full.fields), proposal_count: "51" } }}
@@ -485,8 +495,7 @@ describe("queue rendering", () => {
       />,
     );
     expect(html).toMatch(/<h1[^>]*><a href="https:\/\/jobs\.example\.com/);
-    expect(html).toContain(shortId(full.id));
-    expect(html).toContain(`Copy the full ID (short ID ${shortId(full.id)})`);
+    expect(html).toContain(`Copy job ID ${shortId(full.id)}`);
     expect(html).toContain("Payment verified");
     expect(html).toContain('role="alert"');
     expect(html).toContain("Over 50 proposals");
@@ -605,6 +614,18 @@ describe("queue screen", () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  it("links each card by its short ID, not the full reference", async () => {
+    const api = shell({
+      "leads.ui.catalog": ok({ items: catalog }),
+      "leads.ui.queue": ok({ items: [{ ...full, short_id: "1a2b3c4d" }] }),
+    });
+    const html = renderToStaticMarkup(
+      await screens.queue({ shell: api, query: {} }),
+    );
+    expect(html).toContain('href="/leads/detail?ref=1a2b3c4d"');
+    expect(html).not.toContain(`ref=${encodeURIComponent(str(full.ref))}`);
+  });
+
   it("opens on the job-search pipeline's first open stage, by score, 50+ hidden", async () => {
     const api = shell({
       "leads.ui.catalog": ok({ items: catalog }),
@@ -721,9 +742,9 @@ describe("queue screen", () => {
     expect(api.call).toHaveBeenCalledWith("leads.ui.queue", {
       ref: "leads.opportunity:x",
     });
-    expect(html).toContain("Copy the full ID");
+    expect(html).toContain("Copy job ID");
     expect(html.match(/<h1/g)).toHaveLength(1);
-    // The queue card's controls, in the header: stage, open, dismiss.
+    // The queue card's controls, in the header: stage, open, copy, dismiss.
     expect(html).toContain('aria-label="Stage for Example data service"');
     expect(html).toContain('aria-label="Open the posting"');
     expect(html).toMatch(/aria-label="Dismiss Example data service \(move to [^)]+\)"/);
@@ -752,6 +773,6 @@ describe("queue screen", () => {
     expect(plain.call.mock.calls.map(([name]) => name)).not.toContain(
       "leads.ui.queue",
     );
-    expect(other).not.toContain("Copy the full ID");
+    expect(other).not.toContain("Copy job ID");
   });
 });

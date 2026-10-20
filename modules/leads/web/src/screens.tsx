@@ -24,6 +24,7 @@ import { ScoringView } from "./scoring-view";
 import {
   data,
   date,
+  detailRef,
   pipelineRef,
   JOBSEARCH_PRESET_ID,
   items,
@@ -379,7 +380,7 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                             <a
                               className={styles.card}
                               href={shell.href("detail", {
-                                ref: str(record.ref),
+                                ref: detailRef(record),
                               })}
                             >
                               <strong>{str(record.title)}</strong>
@@ -422,7 +423,7 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                     <tr key={str(record.id)}>
                       <td>
                         <a
-                          href={shell.href("detail", { ref: str(record.ref) })}
+                          href={shell.href("detail", { ref: detailRef(record) })}
                         >
                           {str(record.title)}
                         </a>
@@ -590,7 +591,7 @@ export async function queue({ shell, query }: ScreenProps) {
         ).length > 0
       : false;
   const hrefs = Object.fromEntries(
-    records.map((r) => [str(r.id), shell.href("detail", { ref: str(r.ref) })]),
+    records.map((r) => [str(r.id), shell.href("detail", { ref: detailRef(r) })]),
   );
   const names =
     scope.scoped.length > 1
@@ -697,7 +698,7 @@ export async function review({ shell }: ScreenProps) {
       : null;
   const records = result ? items(result) : [];
   const hrefs = Object.fromEntries(
-    records.map((r) => [str(r.id), shell.href("detail", { ref: str(r.ref) })]),
+    records.map((r) => [str(r.id), shell.href("detail", { ref: detailRef(r) })]),
   );
   return (
     <Frame shell={shell} active="review" title="Review queue" bare>
@@ -740,12 +741,13 @@ export async function scoring({ shell, query }: ScreenProps) {
     query.tab === "calls" ? "calls" : query.tab === "feed" ? "feed" : "queue";
   const result = await read(shell, "leads.ui.scoring");
   const view = data(result);
-  const refs = new Set<string>();
-  for (const batch of rows(view.batches))
-    for (const job of rows(batch.jobs)) if (job.ref) refs.add(str(job.ref));
-  for (const call of rows(view.calls)) if (call.ref) refs.add(str(call.ref));
+  // Keyed by full reference, linking by short ID.
+  const linked = [
+    ...rows(view.batches).flatMap((batch) => rows(batch.jobs)),
+    ...rows(view.calls),
+  ].filter((r) => r.ref);
   const hrefs = Object.fromEntries(
-    [...refs].map((r) => [r, shell.href("detail", { ref: r })]),
+    linked.map((r) => [str(r.ref), shell.href("detail", { ref: detailRef(r) })]),
   );
   return (
     <Frame shell={shell} active="scoring" title="Scoring" bare>
