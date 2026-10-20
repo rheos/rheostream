@@ -157,11 +157,13 @@ class ShortRefExpander:
         # Checked first, so a type without short IDs opens no connection.
         if self._registry.lookup(module_id, record_type) is None:
             raise ValueError(FULL_ONLY)
-        # Validation was pure before short IDs, so a storage failure here must still
-        # answer ``input_invalid`` (pydantic wraps only ``ValueError``), not raise.
+        # Inside a caller's transaction a storage failure propagates, as every other
+        # failure there does. On the short read of our own, validation was pure before
+        # short IDs, so it must still answer ``input_invalid`` (pydantic wraps only
+        # ``ValueError``) rather than raise out of ``dispatch``.
+        if self._uow is not None:
+            return self._expand(self._uow, module_id, record_type, tail)
         try:
-            if self._uow is not None:
-                return self._expand(self._uow, module_id, record_type, tail)
             with open_unit_of_work(self._ctx) as uow:
                 return self._expand(uow, module_id, record_type, tail)
         except (StorageRefusal, SQLAlchemyError):
