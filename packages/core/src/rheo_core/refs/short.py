@@ -28,6 +28,7 @@ from rheo_contracts import (
     RecordRefMalformed,
     WorkspaceContext,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
 from rheo_core.operations.refusals import OperationRefused, RegistrationRefused
 from rheo_core.operations.registry import check_origin
@@ -42,6 +43,7 @@ SHORT_REFS: Final = "rheo.short_refs"
 
 AMBIGUOUS: Final = "this short ID matches more than one record; give more characters"
 NOT_FOUND: Final = "no record has this short ID"
+FULL_ONLY: Final = "this record type takes full references only"
 UNAVAILABLE: Final = "short IDs cannot be looked up now; use the full reference"
 
 
@@ -91,7 +93,7 @@ def expand_in(
     """The one record of the type whose UUID ends in ``tail``, or ``ValueError``."""
     lookup = registry.lookup(module_id, record_type)
     if lookup is None:
-        raise ValueError("this record type takes full references only")
+        raise ValueError(FULL_ONLY)
     found = set(lookup(uow, len(tail), [tail]))
     if not found:
         raise ValueError(NOT_FOUND)
@@ -152,14 +154,18 @@ class ShortRefExpander:
         self._registry = registry
 
     def expand(self, module_id: str, record_type: str, tail: str) -> RecordRef:
-        if self._uow is not None:
-            return self._expand(self._uow, module_id, record_type, tail)
+        # Checked first, so a type without short IDs opens no connection.
+        if self._registry.lookup(module_id, record_type) is None:
+            raise ValueError(FULL_ONLY)
+        # Validation was pure before short IDs, so a storage failure here must still
+        # answer ``input_invalid`` (pydantic wraps only ``ValueError``), not raise.
         try:
-            uow = open_unit_of_work(self._ctx)
-        except StorageRefusal:
+            if self._uow is not None:
+                return self._expand(self._uow, module_id, record_type, tail)
+            with open_unit_of_work(self._ctx) as uow:
+                return self._expand(uow, module_id, record_type, tail)
+        except (StorageRefusal, SQLAlchemyError):
             raise ValueError(UNAVAILABLE) from None
-        with uow:
-            return self._expand(uow, module_id, record_type, tail)
 
     def _expand(
         self, uow: UnitOfWork, module_id: str, record_type: str, tail: str
@@ -202,3 +208,28 @@ def ref_value(
     if tail is None or not isinstance(expander, ShortRefExpander):
         raise ValueError("invalid reference")
     return expander.expand(module_id, record_type, tail)
+
+
+def full_ref_text(value: Any, info: ValidationInfo) -> Any:
+    """A free-form reference string, with a typed short form expanded to the full one.
+
+    For fields that take references of any type as text (a runtime run's ``refs``),
+    so what is stored and later resolved is the full reference, fixed at the moment
+    the caller named it. Anything that is not a typed short form for a type with
+    short IDs is returned unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        RecordRef.parse(value)
+        return value
+    except RecordRefMalformed:
+        pass
+    short = RecordRef.short(value)
+    context = info.context if isinstance(info.context, dict) else {}
+    expander = context.get(SHORT_REFS)
+    if short is None or not isinstance(expander, ShortRefExpander):
+        return value
+    if TAILS.lookup(short[0], short[1]) is None:
+        return value
+    return expander.expand(*short).format()

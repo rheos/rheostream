@@ -7,6 +7,8 @@ import pytest
 from rheo_contracts import RecordRef
 from rheo_core.operations.tool_facade import call_registered_tool
 from rheo_core.refs.resolver import RecordHead, Unavailable, resolve
+from rheo_core.refs.short import validation_context
+from rheo_core.runtime import RuntimeRunInput
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_leads.storage import pipeline as p
 from sqlalchemy import insert, select
@@ -125,3 +127,20 @@ def test_tools_and_the_resolver_take_short_ids(intake: Intake) -> None:
     ambiguous = resolve(f"leads.opportunity:{a.hex[-8:]}", intake.ctx)
     assert isinstance(ambiguous, Unavailable)
     assert ambiguous.reason == "reference_ambiguous"
+
+
+def test_a_runtime_run_stores_the_full_reference(intake: Intake) -> None:
+    first = jobs(intake)["First posting"]
+    payload = {
+        "task": "Summarise the posting.",
+        "purpose": "respond",
+        "output": {"kind": "text"},
+        "refs": [f"leads.opportunity:{first['short_id']}", "leads.funnel:notauuid"],
+    }
+    run = RuntimeRunInput.model_validate(
+        payload, context=validation_context(intake.ctx)
+    )
+    # Expanded when named, so a later clash cannot change what the run read; a
+    # string that is not a typed short ID passes through for the run to skip.
+    assert run.refs == [first["ref"], "leads.funnel:notauuid"]
+    assert RuntimeRunInput.model_validate(payload).refs == payload["refs"]

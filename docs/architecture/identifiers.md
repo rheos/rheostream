@@ -76,14 +76,19 @@ collected postings would all look alike.
   are unchanged; there is no extra column and no backfill.
 - Display lengthens a tail that two records of one type share, like a git short hash
   (8, then 10, 12, and so on) within the workspace and record type.
-- Every place that accepts a reference also accepts `<module>.<record_type>:<tail>`, or a
-  bare tail where the field already knows its type. It resolves by unique tail match
+- A reference field for a type with short IDs also accepts `<module>.<record_type>:<tail>`,
+  or a bare tail where the field already knows its type. It resolves by unique tail match
   within that type, refuses a tail two records share with an error asking for more
-  characters, and keeps accepting the full reference. Operations and MCP tools resolve
-  it while input is validated (the reference field's validator reads
-  `rheo_core.refs.short` through the validation context `dispatch` passes); the resolver
-  below expands the typed form. Either way the handler, the audit row and every output
-  carry the full reference.
+  characters, and keeps accepting the full reference. Operations and MCP tools resolve it
+  while input is validated: a typed reference field's validator (`ref_value` in
+  `rheo_core.refs.short`) reads the expander from the validation context that `dispatch`,
+  the tool facade and in-transaction calls pass. `core.runtime.run` expands typed short
+  forms in its `refs` the same way, so the job and its provenance hold full references.
+  The resolver below expands the typed form too. Past validation, handlers, audit rows
+  and outputs see only the full reference. A plain `*_ref: str` field that does its own
+  parsing takes full references until it moves to a typed field.
+- A link built from a short ID can become ambiguous if a later record shares its tail;
+  it then asks for more characters, as a git short hash does.
 - A record type opts in by declaring a `tail_lookup` in its manifest
   ([owned record types](module-contract.md#owned-record-types)). Without one, a type takes
   full references only. Lookup is a scan on the tail today, which is fine at a workspace's
