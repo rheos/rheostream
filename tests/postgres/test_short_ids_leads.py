@@ -54,8 +54,8 @@ def test_short_ids_show_resolve_and_refuse_when_ambiguous(intake: Intake) -> Non
     found = jobs(intake)
     first, second = found["First posting"], found["Second posting"]
     a, b = UUID(str(first["id"])), UUID(str(second["id"]))
-    # The timestamp trap: two jobs made a moment apart share their head, not their tail.
-    assert a.hex[:8] == b.hex[:8]
+    # The timestamp trap (a shared head) is pinned in tests/test_short_ids.py; asserting
+    # it here would flake when the two mints straddle a 65-second head boundary.
     assert first["short_id"] == a.hex[-8:] != second["short_id"] == b.hex[-8:]
 
     full = ok(intake, "opportunity.get", ref=first["ref"])
