@@ -73,6 +73,7 @@ from rheo_leads.scoring.profile import OPERATIONS as SCORING_OPERATIONS
 from rheo_leads.scoring.profile import SCHEDULE_NAME as SCORE_SCHEDULE_NAME
 from rheo_leads.scoring.review import OPERATIONS as REVIEW_OPERATIONS
 from rheo_leads.scoring.view import OPERATIONS as SCORING_VIEW_OPERATIONS
+from rheo_leads.short_ids import opportunity_tails
 from rheo_leads.web_reads import OPERATIONS as WEB_OPERATIONS
 
 MANIFEST = ModuleManifest(
@@ -96,6 +97,7 @@ MANIFEST = ModuleManifest(
             else None,
             exportable=name != "delivery_receipt",
             audience_field=None,
+            tail_lookup=opportunity_tails if name == "opportunity" else None,
         )
         for name in RECORD_TABLES
     ),

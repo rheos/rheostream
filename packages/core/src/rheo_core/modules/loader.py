@@ -134,6 +134,7 @@ from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.redaction.policy import exclude_types_spec
 from rheo_core.redaction.registry import RENDERINGS, ModelRendering
 from rheo_core.refs.resolver import RESOLVERS, ResolverRegistry
+from rheo_core.refs.short import register_tail_lookup
 from rheo_core.settings.deployment import read_deployment_value
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
 from rheo_core.settings.schema import SettingTypeMismatch, ValueType
@@ -898,6 +899,14 @@ def _register(
             # check here the way there is for an owning declaration.
             deletions.register_participant(
                 manifest.module_id, participant.record_types, participant.handler
+            )
+    for owned_type in manifest.record_types:
+        if owned_type.tail_lookup is not None:
+            register_tail_lookup(
+                manifest.module_id,
+                owned_type.name,
+                owned_type.tail_lookup,
+                origin=manifest.module_id,
             )
     for owned_type in manifest.record_types:
         # The redaction contract's record half, unconditional and on the process-global

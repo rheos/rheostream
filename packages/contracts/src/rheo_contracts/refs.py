@@ -25,6 +25,21 @@ _REFERENCE = re.compile(
 
 Segment = Annotated[str, StringConstraints(pattern=rf"^{_SEGMENT_PATTERN}$")]
 
+SHORT_ID_LENGTH = 8
+"""How many hex characters a short ID starts at: the UUID's random tail (#345).
+
+A UUIDv7 begins with a millisecond timestamp, so records made in the same minute share
+their head; the tail is random. Display lengthens it, like a git short hash, when two
+records of a type share it.
+"""
+_TAIL = re.compile(rf"[0-9a-f]{{{SHORT_ID_LENGTH},32}}")
+
+
+def _clean_tail(value: str) -> str | None:
+    candidate = value.strip().lower().replace("-", "")
+    return candidate if _TAIL.fullmatch(candidate) else None
+
+
 RESERVED_MODULE_SEGMENT = "core"
 """The module segment reserved for core-owned records (operations, approvals).
 
@@ -77,6 +92,36 @@ class RecordRef(BaseModel):
         return cls(
             module=match["module"], record_type=match["record_type"], id=record_id
         )
+
+    @staticmethod
+    def short(value: str) -> tuple[str, str, str] | None:
+        """``(module, record_type, tail)`` for ``<module>.<record_type>:<tail>``.
+
+        The typed short form (#345). A tail is 8 to 32 hex characters, read without
+        dashes or case. This only reads the string: finding the one record a tail names
+        needs the workspace's storage (``rheo_core.refs.short``).
+        """
+        match = _REFERENCE.fullmatch(value.strip())
+        if match is None:
+            return None
+        tail = _clean_tail(match["record_id"])
+        return None if tail is None else (match["module"], match["record_type"], tail)
+
+    @classmethod
+    def tail(cls, value: str, module: str, record_type: str) -> str | None:
+        """The tail ``value`` names for ``<module>.<record_type>``, or ``None``.
+
+        Accepts the typed short form and, since the type is known, a bare tail.
+        """
+        short = cls.short(value)
+        if short is not None:
+            return short[2] if short[:2] == (module, record_type) else None
+        return _clean_tail(value)
+
+    @staticmethod
+    def short_id(identifier: UUID, length: int = SHORT_ID_LENGTH) -> str:
+        """The last ``length`` hex characters of ``identifier``."""
+        return identifier.hex[-length:]
 
     def format(self) -> str:
         """The canonical string form, round-tripping through :meth:`parse`."""

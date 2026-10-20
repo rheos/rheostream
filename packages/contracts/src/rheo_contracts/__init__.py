@@ -34,6 +34,7 @@ from rheo_contracts.manifest import (
 from rheo_contracts.purposes import ContextPurpose
 from rheo_contracts.refs import (
     RESERVED_MODULE_SEGMENT,
+    SHORT_ID_LENGTH,
     RecordRef,
     RecordRefMalformed,
     is_reserved_module,
@@ -84,6 +85,7 @@ __all__ = [
     "ISOLATION_ENFORCED",
     "RESERVED_INPUT_FIELDS",
     "RESERVED_MODULE_SEGMENT",
+    "SHORT_ID_LENGTH",
     "Actor",
     "ActorKind",
     "AdapterSpawn",

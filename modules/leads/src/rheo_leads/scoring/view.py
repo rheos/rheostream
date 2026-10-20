@@ -49,6 +49,7 @@ from rheo_leads import pipeline_common as h
 from rheo_leads.pipeline_contracts import Empty, Strict
 from rheo_leads.references import ref
 from rheo_leads.scoring import job as scoring
+from rheo_leads.short_ids import with_short_ids
 from rheo_leads.storage import jobfeed as jf
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import scoring as s
@@ -301,6 +302,9 @@ def _calls(uow: UnitOfWork, now: datetime) -> list[dict[str, Any]]:
                 "ref": ref("opportunity", r["opportunity_id"])
                 if r["opportunity_id"] is not None
                 else None,
+                "opportunity_id": str(r["opportunity_id"])
+                if r["opportunity_id"] is not None
+                else None,
                 "title": r["title"],
             }
         )
@@ -479,6 +483,10 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
             .group_by(state.c.state)
         ).all()
     )
+    batches = _batches(jobs, running=scoring_now, position=position, now=now)
+    calls = _calls(uow, now)
+    with_short_ids(uow, [j for b in batches for j in b["jobs"]])
+    with_short_ids(uow, calls, key="opportunity_id")
     per_call = _median_scoring_seconds(uow)
     # A job being scored is claimed, so it is never counted as claimable.
     queued = claimable
@@ -495,8 +503,8 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
             "eta_seconds": round(per_call * queued)
             if per_call is not None and queued
             else None,
-            "batches": _batches(jobs, running=scoring_now, position=position, now=now),
-            "calls": _calls(uow, now),
+            "batches": batches,
+            "calls": calls,
             "summary": _summary(uow, now),
             "feed_runs": _feed_runs(uow),
         }

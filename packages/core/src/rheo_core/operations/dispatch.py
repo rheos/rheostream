@@ -190,6 +190,7 @@ from rheo_core.operations.registry import (
     OperationRegistry,
     RegisteredOperation,
 )
+from rheo_core.refs.short import validation_context
 from rheo_core.storage.backend import HandlerUnitOfWork, StorageRefusal, UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.jobs import has_job_for_operation
@@ -1081,7 +1082,7 @@ def dispatch(
         )
     try:
         model_input = declaration.input_model.model_validate(
-            {} if payload is None else payload
+            {} if payload is None else payload, context=validation_context(ctx)
         )
     except ValidationError as exc:
         _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)

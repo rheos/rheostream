@@ -57,6 +57,7 @@ RECORD_STATES: Final = frozenset({LIVE, DELETED, UNAVAILABLE})
 REFERENCE_MALFORMED: Final = "reference_malformed"
 UNRESOLVABLE: Final = "unresolvable"
 NOT_FOUND: Final = "not_found"
+REFERENCE_AMBIGUOUS: Final = "reference_ambiguous"
 
 _SEGMENT: Final = re.compile(r"[a-z][a-z0-9_]*")
 
@@ -165,7 +166,10 @@ def resolve_in(
         try:
             parsed = RecordRef.parse(ref)
         except RecordRefMalformed:
-            return Unavailable(str(ref), REFERENCE_MALFORMED)
+            expanded = _expand_short(ref, ctx, uow)
+            if isinstance(expanded, Unavailable):
+                return expanded
+            parsed = expanded
         except TypeError:
             return Unavailable(str(ref), REFERENCE_MALFORMED)
     reference = parsed.format()
@@ -184,6 +188,37 @@ def resolve_in(
     except OperationRefused:
         return Unavailable(reference, "module_unavailable")
     return resolver(ctx, uow, parsed)
+
+
+def _expand_short(
+    ref: str, ctx: WorkspaceContext, uow: UnitOfWork
+) -> RecordRef | Unavailable:
+    """A ``<module>.<type>:<tail>`` short reference (#345), by unique tail match.
+
+    Malformed when the string is not that form or the type has no short IDs; the
+    module's own refusal when it is disabled or not ready; ``not_found`` for no match,
+    ``reference_ambiguous`` for a tail two records share. Readiness is checked before
+    the lookup touches the module's tables, and again by the caller for the expanded
+    reference.
+    """
+    from rheo_core.modules.readiness import require_ready
+    from rheo_core.operations.refusals import OperationRefused
+    from rheo_core.refs.short import AMBIGUOUS, TAILS, expand_in
+
+    short = RecordRef.short(ref)
+    if short is None or TAILS.lookup(short[0], short[1]) is None:
+        return Unavailable(ref, REFERENCE_MALFORMED)
+    if not is_reserved_module(short[0]) and short[0] not in ctx.enabled_modules:
+        return Unavailable(ref, MODULE_DISABLED)
+    try:
+        require_ready(uow.connection, short[0])
+    except OperationRefused:
+        return Unavailable(ref, "module_unavailable")
+    try:
+        return expand_in(uow, *short)
+    except ValueError as exc:
+        reason = REFERENCE_AMBIGUOUS if str(exc) == AMBIGUOUS else NOT_FOUND
+        return Unavailable(ref, reason)
 
 
 def resolve(

@@ -20,6 +20,7 @@ from rheo_core.operations.dispatch import (
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.refs.resolver import UnitOfWork
+from rheo_core.refs.short import validation_context
 
 
 def call_in_transaction(
@@ -48,7 +49,9 @@ def call_in_transaction(
     if audit is None and declaration.safety_class is not SafetyClass.READ:
         raise OperationRefused("audit_sink_missing", "operation audit sink unavailable")
     try:
-        model = declaration.input_model.model_validate(payload)
+        model = declaration.input_model.model_validate(
+            payload, context=validation_context(ctx, uow)
+        )
     except ValidationError:
         raise OperationRefused("input_invalid", "invalid service input") from None
     from rheo_core.modules.readiness import require_ready
