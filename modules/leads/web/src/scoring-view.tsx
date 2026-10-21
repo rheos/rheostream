@@ -475,25 +475,32 @@ export function ScoringView(props: ScoringProps) {
   const root = useRef<HTMLDivElement | null>(null);
   const live = busy(view, now);
 
+  // A window in the background (another tab or app has focus) waits until it
+  // is back in front. Kept outside the loop, which re-arms on every refresh.
+  const away = useRef(false);
   useEffect(() => {
-    const delay = live ? FAST_REFRESH_MS : SLOW_REFRESH_MS;
-    // A window in the background (another tab or app has focus) waits until it
-    // is back in front, and an open panel is never reloaded away.
-    // Seeded from focus now: the effect re-arms on every refresh (#443).
-    let away = !document.hasFocus();
     const leave = () => {
-      away = true;
+      away.current = true;
     };
     const back = () => {
-      away = false;
+      away.current = false;
     };
     window.addEventListener("blur", leave);
     window.addEventListener("focus", back);
+    return () => {
+      window.removeEventListener("blur", leave);
+      window.removeEventListener("focus", back);
+    };
+  }, []);
+
+  useEffect(() => {
+    const delay = live ? FAST_REFRESH_MS : SLOW_REFRESH_MS;
+    // An open panel is never reloaded away.
     let id = 0;
     let stopped = false;
     const tick = () => {
       const engaged =
-        away ||
+        away.current ||
         Boolean(
           root.current?.querySelector("details[open], [aria-expanded='true']"),
         );
@@ -515,8 +522,6 @@ export function ScoringView(props: ScoringProps) {
     return () => {
       stopped = true;
       window.clearTimeout(id);
-      window.removeEventListener("blur", leave);
-      window.removeEventListener("focus", back);
     };
   }, [live, refresh]);
 
