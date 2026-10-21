@@ -9,6 +9,35 @@ MCP facade and Next.js shell.
 [Watch the 1:42 explainer](https://youtu.be/168-OWHkdvU) (music only): the problem, the modules,
 the MCP door, durable jobs, safety classes, and what is built so far.
 
+## What you get
+
+One system you own, with your work in it and an agent named rheo to run it. The
+[design guide](docs/guide/README.md) walks through every part.
+
+- Each workspace is its own Postgres database, chosen from who you are and never from what
+  a request says. ([Workspaces and storage](docs/guide/workspaces-and-storage.md))
+- A change and its events commit together, jobs run under leases, and every long call
+  leaves an operation record you can poll. ([Durable work](docs/guide/durable-work.md))
+- Deleting, sending and paying need a person's approval, bound to the exact call. No
+  token can approve, so an agent can propose and never decide.
+  ([Safety and approvals](docs/guide/safety-and-approvals.md))
+- Every agent comes in through one MCP server, with scoped tokens, redaction before
+  anything reaches a model, and a runtime you can swap.
+  ([The MCP door](docs/guide/mcp-and-runtimes.md))
+- Recallatron stores who may read each memory and why, recalls with hybrid search that runs inside the deployment, and erases whatever was derived from erased data. It can save
+  from your Claude Code sessions on its own. ([Recallatron](docs/guide/recallatron.md),
+  [the Claude Code bridge](docs/guide/claude-code-bridge.md))
+- Leads takes inquiries from any funnel (signed webhooks, imports, pasted email) and keeps
+  the evidence behind every opportunity. ([Leads](docs/guide/leads.md),
+  [Relationships](docs/guide/relationships.md), [Connectors](docs/guide/connectors.md))
+- Current turns repeats of the same alert into one item that wakes up, and takes
+  handoffs from Leads exactly once. ([Current](docs/guide/current.md))
+- rheo works from Claude, Telegram or voice under one authorization model.
+  ([rheo and channels](docs/guide/rheo-and-channels.md))
+- A workspace exports to one file and restores elsewhere with the same identifiers.
+  ([Export, restore and deploy](docs/guide/export-restore-deploy.md),
+  [Web shell and CLI](docs/guide/web-shell-and-cli.md))
+
 ## Mechanisms you can inspect
 
 - Each workspace has its own Postgres database. Server-resolved identity selects

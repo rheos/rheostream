@@ -53,8 +53,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: calc(var(--rs-size-control) * 0.65);
-  height: calc(var(--rs-size-control) * 0.65);
+  flex: 0 0 auto;
+  inline-size: var(--rs-space-6);
+  block-size: var(--rs-space-6);
+  /* The shell's 44px base min-block-size beats a plain height (#440). */
+  min-block-size: var(--rs-space-6);
   padding: 0;
   border: var(--rs-size-hairline) solid var(--rs-color-control-border);
   border-radius: var(--rs-radius-md);
@@ -333,4 +336,11 @@ a.rowTitle:hover {
 .runFailures .chip {
   color: var(--rs-color-danger);
   border-color: color-mix(in srgb, var(--rs-color-danger) 45%, transparent);
+}
+@media (pointer: coarse) {
+  .iconButton {
+    inline-size: var(--rs-size-control);
+    block-size: var(--rs-size-control);
+    min-block-size: var(--rs-size-control);
+  }
 }

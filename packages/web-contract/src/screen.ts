@@ -10,6 +10,10 @@ export interface ShellApi {
   /** Server action for explicitly declared MUTATE/DRAFT forms; absent in read-only hosts. */
   submit?: (operation: string, input: unknown) => Promise<OperationOutcome>;
   call(operation: string, input: unknown): Promise<OperationOutcome>;
+  /** Server action that renders the current screen again with fresh data, in
+   * place: no page load, so scroll, focus and client state survive. Absent in
+   * hosts that cannot; a screen then falls back to reloading the page. */
+  refresh?: () => Promise<void>;
   href(routeId: string, query?: Record<string, string | undefined>): string;
 }
 
