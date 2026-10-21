@@ -240,6 +240,19 @@ describe("following a draft", () => {
     expect(reload).toHaveBeenCalledTimes(1);
     expect(button("Stop drafting")).toBeTruthy();
   });
+  it("follows in place with the shell's refresh and takes in the newest proposal (#443)", async () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    mount({ proposal: view("drafting", { sections: [] }), refresh });
+    act(() => vi.advanceTimersByTime(REFRESH_MS * 2));
+    expect(refresh).toHaveBeenCalledTimes(2);
+    // The refresh renders the screen again with the settled draft.
+    mount({ proposal: view("ready"), refresh });
+    expect(host.textContent).toContain("Fifty.");
+    expect(host.querySelector('[role="status"]')).toBeNull();
+    act(() => vi.advanceTimersByTime(REFRESH_MS * 5));
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
   it("never reloads a settled draft", () => {
     vi.useFakeTimers();
     const reload = vi.fn();

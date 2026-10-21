@@ -57,7 +57,9 @@ export interface WorkflowProps {
   posting: string;
   /** The paste-the-full-posting form, rendered by the screen. */
   paste?: ReactNode;
-  /** Reloads the page; tests pass their own. */
+  /** The shell's in-place refresh: fresh server data, no page load (#443). */
+  refresh?: () => Promise<void>;
+  /** Replaces how the page looks again; tests pass their own. */
   reload?: () => void;
 }
 
@@ -96,6 +98,14 @@ function useTyped(): boolean {
   return typed;
 }
 
+/** Shows the newest state: in place through the shell's refresh when there is
+ * one, so scroll, the open tab and anything on the page stay put (#443). */
+function lookAgain(reload?: () => void, refresh?: () => Promise<void>) {
+  if (reload) reload();
+  else if (refresh) refresh().catch(() => {});
+  else window.location.reload();
+}
+
 /** The job detail's proposal workflow: Posting, Questions and Proposal. */
 export function ProposalWorkflow(props: WorkflowProps) {
   const [view, setView] = useState<Row>(props.proposal);
@@ -105,7 +115,16 @@ export function ProposalWorkflow(props: WorkflowProps) {
   );
   const tabs = useRef<Record<string, HTMLButtonElement | null>>({});
   const typed = useTyped();
-  const reload = props.reload;
+  // Looking again renders the screen in place when the shell can, so scroll,
+  // the open tab and anything on the page stay put; a full reload otherwise.
+  const { reload, refresh } = props;
+
+  // A refresh brings the server's newest proposal: take it in.
+  const [seen, setSeen] = useState(props.proposal);
+  if (seen !== props.proposal) {
+    setSeen(props.proposal);
+    setView(props.proposal);
+  }
 
   useEffect(() => {
     const sync = () => {
@@ -117,19 +136,16 @@ export function ProposalWorkflow(props: WorkflowProps) {
     return () => window.removeEventListener("hashchange", sync);
   }, []);
 
-  // A queued or running draft: reload until it settles, so the stage line and
-  // then the draft appear on their own. Never while someone has typed on the
-  // page, and only once a minute while the account holds the draft.
+  // A queued or running draft: look again until it settles, so the stage line
+  // and then the draft appear on their own. Never while someone has typed on
+  // the page, and only once a minute while the account holds the draft.
   const running = busy(view);
   const delay = refreshDelay(view);
   useEffect(() => {
     if (!running || typed) return;
-    const timer = setTimeout(
-      () => (reload ? reload() : window.location.reload()),
-      delay,
-    );
-    return () => clearTimeout(timer);
-  }, [running, typed, delay, view, reload]);
+    const timer = setInterval(() => lookAgain(reload, refresh), delay);
+    return () => clearInterval(timer);
+  }, [running, typed, delay, reload, refresh]);
 
   function select(next: StageId) {
     setStage(next);
@@ -231,7 +247,7 @@ export function ProposalWorkflow(props: WorkflowProps) {
           questions={questions}
           setView={setView}
           paused={running && typed}
-          reload={() => (reload ? reload() : window.location.reload())}
+          reload={() => lookAgain(reload, refresh)}
         />
       </div>
       <div
