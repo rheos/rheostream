@@ -85,8 +85,9 @@ function isField(target: EventTarget | null): boolean {
 }
 
 /** Typing anywhere on the page. A reload would throw the text away, so the
- * page stops reloading itself once someone types and offers a button instead. */
-function useTyped(): boolean {
+ * page stops following the draft once someone types and offers a button
+ * instead; the button clears it, so following resumes (#443). */
+function useTyped(): [boolean, () => void] {
   const [typed, setTyped] = useState(false);
   useEffect(() => {
     const onInput = (event: Event) => {
@@ -95,14 +96,17 @@ function useTyped(): boolean {
     window.addEventListener("input", onInput, true);
     return () => window.removeEventListener("input", onInput, true);
   }, []);
-  return typed;
+  return [typed, () => setTyped(false)];
 }
 
 /** Shows the newest state: in place through the shell's refresh when there is
  * one, so scroll, the open tab and anything on the page stay put (#443). */
-function lookAgain(reload?: () => void, refresh?: () => Promise<void>) {
+async function lookAgain(
+  reload?: () => void,
+  refresh?: () => Promise<void>,
+): Promise<void> {
   if (reload) reload();
-  else if (refresh) refresh().catch(() => {});
+  else if (refresh) await refresh().catch(() => {});
   else window.location.reload();
 }
 
@@ -114,16 +118,20 @@ export function ProposalWorkflow(props: WorkflowProps) {
     draftState(props.proposal) === "idle" ? "posting" : "proposal",
   );
   const tabs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const typed = useTyped();
+  const [typed, clearTyped] = useTyped();
   // Looking again renders the screen in place when the shell can, so scroll,
   // the open tab and anything on the page stay put; a full reload otherwise.
   const { reload, refresh } = props;
 
   // A refresh brings the server's newest proposal: take it in.
   const [seen, setSeen] = useState(props.proposal);
+  // The questions follow too unless they hold unsaved text: a draft settled
+  // with none stores the posting's own questions (#443).
   if (seen !== props.proposal) {
     setSeen(props.proposal);
     setView(props.proposal);
+    if (questions.trim() === str(view.questions).trim())
+      setQuestions(str(props.proposal.questions));
   }
 
   useEffect(() => {
@@ -143,8 +151,18 @@ export function ProposalWorkflow(props: WorkflowProps) {
   const delay = refreshDelay(view);
   useEffect(() => {
     if (!running || typed) return;
-    const timer = setInterval(() => lookAgain(reload, refresh), delay);
-    return () => clearInterval(timer);
+    // One look at a time: the next waits until the last one has landed.
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      await lookAgain(reload, refresh);
+      if (!stopped) timer = setTimeout(tick, delay);
+    };
+    timer = setTimeout(tick, delay);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
   }, [running, typed, delay, reload, refresh]);
 
   function select(next: StageId) {
@@ -247,7 +265,10 @@ export function ProposalWorkflow(props: WorkflowProps) {
           questions={questions}
           setView={setView}
           paused={running && typed}
-          reload={() => lookAgain(reload, refresh)}
+          reload={() => {
+            clearTyped();
+            void lookAgain(reload, refresh);
+          }}
         />
       </div>
       <div

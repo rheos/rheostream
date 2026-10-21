@@ -479,7 +479,8 @@ export function ScoringView(props: ScoringProps) {
     const delay = live ? FAST_REFRESH_MS : SLOW_REFRESH_MS;
     // A window in the background (another tab or app has focus) waits until it
     // is back in front, and an open panel is never reloaded away.
-    let away = false;
+    // Seeded from focus now: the effect re-arms on every refresh (#443).
+    let away = !document.hasFocus();
     const leave = () => {
       away = true;
     };
