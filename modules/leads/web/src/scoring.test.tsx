@@ -8,6 +8,7 @@ import type { Row } from "./data";
 import {
   batchSource,
   busy,
+  FAST_REFRESH_MS,
   outcomeLabel,
   span,
   stageChip,
@@ -280,6 +281,48 @@ describe("retrying failed jobs", () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not put the failed jobs back in line",
     );
+  });
+});
+
+describe("following scoring work (#443)", () => {
+  let host: HTMLDivElement;
+  let root: Root;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    host = window.document.createElement("div");
+    window.document.body.appendChild(host);
+    root = createRoot(host);
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.useRealTimers();
+  });
+
+  it("looks again in place with the shell's refresh, never reloading", async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    act(() =>
+      root.render(
+        <ScoringView
+          view={VIEW}
+          now={NOW}
+          tab="queue"
+          hrefs={{}}
+          tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
+          reviewHref="/r"
+          canRetry={false}
+          refresh={refresh}
+        />,
+      ),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    });
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 });
 
