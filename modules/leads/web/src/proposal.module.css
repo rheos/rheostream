@@ -178,11 +178,9 @@
   cursor: pointer;
 }
 .check input {
-  inline-size: 1rem;
-  block-size: 1rem;
   min-block-size: 0;
   margin: 0;
-  accent-color: var(--rs-color-accent, currentColor);
+  accent-color: var(--rs-color-accent);
 }
 .primary,
 .ghost,
