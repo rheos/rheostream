@@ -30,7 +30,10 @@ is for a record whose sensitivity is data rather than a type: a Leads opportunit
 ``internal`` as a whole, but which of its field values are contact points or
 workspace-declared ``restricted`` extension fields is known only row by row, so the
 module drops those before the generic walk sees them. The hook can only take away: what
-it returns is still tiered by its class and masked string by string.
+it returns is still tiered by its class and masked string by string. It runs on the
+result itself only: an output that nested a projecting model inside another would send
+the nested one unprojected, so a projecting model is meant to be returned whole, as
+Leads' are.
 """
 
 import dataclasses
@@ -202,6 +205,8 @@ class _OutputWalk:
                 return _DROP
             return mask_for_model(dumped, self.policy)
         if isinstance(dumped, dict):
+            if self._excluded(dumped.get("ref")):
+                return _DROP
             rendered: dict[str, object] = {}
             for key, item in dumped.items():
                 value = self.json(item)
@@ -294,6 +299,11 @@ class _OutputWalk:
         # A mapping's keys are data, not field names, so they are masked like values,
         # and an entry whose key does not dump to what the walk expects is withheld
         # rather than passed through unpaired (a UUID or int key, before this rule).
+        # A plain dict that names itself with a ``ref`` (a list row) is a record as
+        # much as a model is: when the type is excluded, the row goes whole, not just
+        # its ``ref`` string (issue #436's review).
+        if self._excluded(value.get("ref")) or self._excluded(dumped.get("ref")):
+            return _DROP
         rendered: dict[str, object] = {}
         for key, item in value.items():
             json_key = _json_key(key)

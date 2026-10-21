@@ -589,6 +589,11 @@ set instead ([discover-then-call](#discover-then-call)).
   the `person.email` and `person.phone` field values and an observation's `verified_email`
   unless contact values are released, any extension field value a preset declares
   `restricted` (or that the handler did not look up), and a handoff's outbound `snapshot`.
+  It also drops an observation's `external_subject_id`, and nested rows of an excluded
+  record type that carry no `ref` (an opportunity's `qualification`, `drafts` and
+  observation links). The hook runs on the result itself, never on a projecting model
+  nested inside another output. A plain row that names itself with a `ref` (a list item)
+  is dropped whole when that `ref` names an excluded type, as a model whose `ref` does is.
   A class with no marker is untiered and
   answers its JSON dump with contact values and secret references masked, which is every output
   model in release one: Recallatron's and the core's tools return the same fields as before,

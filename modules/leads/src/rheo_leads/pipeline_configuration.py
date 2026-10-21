@@ -12,6 +12,7 @@ from sqlalchemy import delete, insert, select, update
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
 from rheo_leads.configuration import FACTS
+from rheo_leads.references import ref
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
@@ -49,7 +50,7 @@ def pipeline_create(
 def pipeline_list(ctx: WorkspaceContext, uow: UnitOfWork, m: c.Empty) -> c.ItemsOutput:
     return c.ItemsOutput(
         items=[
-            dict(r)
+            {**dict(r), "ref": ref("pipeline", r["id"])}
             for r in uow.connection.execute(
                 select(p.pipeline).order_by(p.pipeline.c.id)
             ).mappings()

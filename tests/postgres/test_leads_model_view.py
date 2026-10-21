@@ -4,8 +4,9 @@ Leads tiered its whole generic output ``restricted``, so every Leads tool render
 ``{}`` for a model while the web, which reads ``result``, looked fine. These tests
 read ``model_view``, the half the MCP transport sends, for a direct call and for the
 same call made through ``operations_call``, and check both what arrives and what must
-not: contact facts, the verified sender address, and an extension field a preset
-declares ``restricted``.
+not: contact facts, the verified sender address and the source's subject key, an
+extension field a preset declares ``restricted``, a handoff's outbound payload, and
+records of a type the workspace excludes.
 """
 
 import json
@@ -15,9 +16,12 @@ import pytest
 from rheo_contracts import ContextPurpose, RecordRef, WorkspaceContext
 from rheo_core.operations.core_ops import TOOL_CALL
 from rheo_core.operations.tool_facade import call_registered_tool
+from rheo_core.redaction.policy import exclude_types_spec
+from rheo_core.settings import resolver as settings_resolver
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.tokens.sets import register_core_tools
 from rheo_leads.storage import pipeline as p
+from rheo_leads.storage import tables as t
 from sqlalchemy import update
 
 from postgres.test_leads_intake import Intake
@@ -34,6 +38,8 @@ EMAIL = "client@example.com"
 PHONE = "+1 250 555 0142"
 SPEND = "48213"
 """A value distinctive enough that finding it in a rendering means it leaked."""
+SUBJECT = "2505550142"
+"""A bare-digit subject key, which the free-text phone mask does not catch."""
 
 
 def posting(i: Intake) -> dict[str, Any]:
@@ -45,6 +51,17 @@ def posting(i: Intake) -> dict[str, Any]:
             update(p.preset_field)
             .where(p.preset_field.c.target == "ext.jobsearch.client_spend")
             .values(sensitivity="restricted")
+        )
+        # The source proves its sender's email and keys the sender by a phone number.
+        uow.connection.execute(
+            update(t.intake_connection)
+            .where(t.intake_connection.c.id == i.connection_id)
+            .values(email_verified=True, subject_authenticated=True)
+        )
+        uow.connection.execute(
+            update(t.field_mapping_identity).values(
+                verified_email_path="/person.email", subject_id_path="/subject_key"
+            )
         )
         uow.commit()
     capture(
@@ -58,6 +75,7 @@ def posting(i: Intake) -> dict[str, Any]:
             "person.phone": PHONE,
             "budget_max": "900",
             "client_spend": SPEND,
+            "subject_key": SUBJECT,
         },
     )
     (item,) = ok(i, "opportunity.list").items
@@ -86,7 +104,7 @@ def rows(view: dict[str, Any], key: str) -> dict[str, dict[str, Any]]:
 
 def assert_nothing_restricted(view: object) -> None:
     text = json.dumps(view)
-    for value in (EMAIL, PHONE, SPEND):
+    for value in (EMAIL, PHONE, SPEND, SUBJECT):
         assert value not in text, value
 
 
@@ -109,7 +127,13 @@ def test_leads_reads_reach_a_model_without_restricted_values(intake: Intake) -> 
         module="leads", record_type="observation", id=link["observation_id"]
     )
     seen = tool(intake, "leads_get_observation", observation_ref=observation.format())
+    full_observation = ok(
+        intake, "observation.get", observation_ref=observation.format()
+    )
+    assert full_observation.data["verified_email"] == EMAIL
+    assert full_observation.data["external_subject_id"] == SUBJECT
     assert "verified_email" not in seen["data"]
+    assert "external_subject_id" not in seen["data"]
     assert (
         rows(seen, "fields")["message"]["value_text"]
         == "Short explainer, cutout style."
@@ -166,3 +190,62 @@ def test_a_purpose_without_internal_gets_only_the_reference(intake: Intake) -> N
     )
     got = tool(intake, "leads_get", narrow, ref=item["short_id"])
     assert got == {"ref": item["ref"], "revision": item["revision"]}
+
+
+def test_contact_values_reach_a_model_when_both_levels_allow_them(
+    intake: Intake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = posting(intake)
+    monkeypatch.setenv("RHEO__redaction__contact_points_to_model", "true")
+    ok(intake, "core.settings.set", key="redaction.contact_points_to_model", value=True)
+    got = tool(intake, "leads_get", ref=item["short_id"])
+    fields = rows(got, "opportunity_field_state")
+    assert fields["person.email"]["value_text"] == EMAIL
+    # The allowance is for contact values only, never a restricted extension field.
+    assert "value_text" not in fields["ext.jobsearch.client_spend"]
+
+
+def test_excluded_record_types_stay_out_of_lists_and_nested_rows(
+    intake: Intake,
+) -> None:
+    item = posting(intake)
+    # The loader declares this key per module; the intake fixture resolves against an
+    # isolated registry built from manifests, which does not carry it.
+    settings_resolver.REGISTRY.register(exclude_types_spec("leads"), origin="leads")
+    ok(
+        intake,
+        "core.settings.set",
+        key="leads.redaction.exclude_types",
+        value=["qualification", "draft", "pipeline"],
+    )
+    got = tool(intake, "leads_get", ref=item["short_id"])
+    assert got["data"]["title"] == "2D animator for an explainer"
+    assert "qualification" not in got["data"] and "drafts" not in got["data"]
+    assert tool(intake, "leads_pipelines") == {"items": []}
+
+    ok(
+        intake,
+        "core.settings.set",
+        key="leads.redaction.exclude_types",
+        value=["opportunity"],
+    )
+    assert tool(intake, "leads_list") == {"items": []}
+    assert tool(intake, "leads_search", query="animator") == {"items": []}
+
+
+def test_a_handoff_s_outbound_payload_stays_out(intake: Intake) -> None:
+    item = posting(intake)
+    handoff = ok(
+        intake,
+        "handoff.request",
+        ref=item["ref"],
+        revision=item["revision"],
+        purpose="respond",
+        payload={"note": SPEND},
+        idempotency_key="model-view",
+    )
+    handoff_id = str(RecordRef.parse(handoff.ref).id)
+    assert ok(intake, "handoff.get", handoff_id=handoff_id).data["snapshot"]
+    seen = tool(intake, "leads_get_handoff", handoff_id=handoff_id)
+    assert seen["ref"] == handoff.ref and "snapshot" not in seen["data"]
+    assert_nothing_restricted(seen)

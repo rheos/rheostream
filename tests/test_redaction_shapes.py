@@ -783,3 +783,15 @@ def test_an_output_s_projection_is_what_gets_rendered() -> None:
 def test_a_projection_to_another_class_withholds_the_result() -> None:
     rendered = render_output(Swapping(title="t"), _policy())
     assert rendered.withheld is True and rendered.value is None
+
+
+class Rows(BaseModel):
+    items: Annotated[list[dict[str, object]], P]
+
+
+def test_a_plain_row_whose_ref_is_excluded_is_dropped_whole() -> None:
+    rendered = render_output(
+        Rows(items=[{"ref": EXCLUDED_REF, "title": "HIDDEN"}, {"title": "kept"}]),
+        _policy(),
+    )
+    assert rendered.value == {"items": [{"title": "kept"}]}
