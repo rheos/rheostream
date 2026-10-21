@@ -459,7 +459,11 @@ function ProposalPanel(props: {
             >
               {editingAll ? "Back to sections" : "Edit the whole draft"}
             </button>
-            <CopyButton text={whole} label="Copy the whole draft" />
+            <CopyButton
+              text={whole}
+              label="Copy the whole draft"
+              className={styles.iconButton}
+            />
           </>
         ) : null}
         {hasDraft || running ? (
@@ -1100,6 +1104,7 @@ function PricingPanel(props: {
             <CopyButton
               text={rows.map(milestoneLine).join("\n")}
               label="Copy every milestone"
+              className={styles.iconButton}
             />
           ) : null}
         </div>
