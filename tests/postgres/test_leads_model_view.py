@@ -9,17 +9,26 @@ extension field a preset declares ``restricted``, a handoff's outbound payload, 
 records of a type the workspace excludes.
 """
 
+import hashlib
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from harness.redaction import AREA, EXCHANGE, LINE, phone
-from rheo_contracts import ContextPurpose, RecordRef, WorkspaceContext
+from rheo_app_mcp.session import resolve_context
+from rheo_contracts import ContextPurpose, RecordRef, Role, WorkspaceContext
+from rheo_core.boundary import context_for_harness
 from rheo_core.operations.core_ops import TOOL_CALL
 from rheo_core.operations.tool_facade import call_registered_tool
 from rheo_core.redaction.policy import exclude_types_spec
 from rheo_core.settings import resolver as settings_resolver
+from rheo_core.storage.control_plane import (
+    insert_access_token,
+    insert_access_token_operations,
+)
 from rheo_core.storage.routing import open_unit_of_work
+from rheo_core.tokens.format import mint
 from rheo_core.tokens.sets import register_core_tools
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
@@ -81,6 +90,32 @@ def posting(i: Intake) -> dict[str, Any]:
     )
     (item,) = ok(i, "opportunity.list").items
     return item
+
+
+def mcp_token(i: Intake, operations: set[str]) -> WorkspaceContext:
+    """An ``mcp`` token holding exactly ``operations``, resolved by the boundary
+    (the recipe ``test_mcp_discover_call.py`` uses)."""
+    owner = i.ctx.principal.account_id
+    assert owner is not None
+    value, raw = mint("mcp")
+    with i.cluster.backend.control_engine.begin() as connection:
+        row = insert_access_token(
+            connection,
+            account_id=owner,
+            workspace_id=i.workspace,
+            kind="mcp",
+            issued_from="operator",
+            token_hash=hashlib.sha256(raw).digest(),
+            set_name=None,
+            purpose=None,
+            expires_at=datetime(2999, 1, 1, tzinfo=UTC),
+        )
+        insert_access_token_operations(
+            connection, token_id=row.id, operation_names=sorted(operations)
+        )
+    ctx = resolve_context(value)
+    assert isinstance(ctx, WorkspaceContext), ctx
+    return ctx
 
 
 def tool(
@@ -156,12 +191,8 @@ def test_leads_reads_reach_a_model_without_restricted_values(intake: Intake) -> 
 def test_operations_call_returns_the_same_view(intake: Intake) -> None:
     item = posting(intake)
     register_core_tools(intake.surfaces.tools)
-    discover = intake.ctx.model_copy(
-        update={
-            "operation_set": frozenset(
-                {TOOL_CALL, "leads.opportunity.get", "leads.pipeline.list"}
-            )
-        }
+    discover = mcp_token(
+        intake, {TOOL_CALL, "leads.opportunity.get", "leads.pipeline.list"}
     )
     direct = tool(intake, "leads_get", ref=item["short_id"])
     called = tool(
@@ -179,10 +210,12 @@ def test_operations_call_returns_the_same_view(intake: Intake) -> None:
 
 def test_a_purpose_without_internal_gets_only_the_reference(intake: Intake) -> None:
     item = posting(intake)
-    principal = intake.ctx.principal.model_copy(
-        update={"bound_purpose": ContextPurpose.RESPOND}
+    owner = intake.ctx.principal.account_id
+    assert owner is not None
+    narrow = context_for_harness(
+        intake.workspace, owner, Role.OWNER, bound_purpose=ContextPurpose.RESPOND
     )
-    narrow = intake.ctx.model_copy(update={"principal": principal})
+    assert isinstance(narrow, WorkspaceContext), narrow
     ok(
         intake,
         "core.settings.set",
