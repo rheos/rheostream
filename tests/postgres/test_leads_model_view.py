@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 import pytest
+from harness.redaction import AREA, EXCHANGE, LINE, phone
 from rheo_contracts import ContextPurpose, RecordRef, WorkspaceContext
 from rheo_core.operations.core_ops import TOOL_CALL
 from rheo_core.operations.tool_facade import call_registered_tool
@@ -35,10 +36,10 @@ pytestmark = [
 ]
 
 EMAIL = "client@example.com"
-PHONE = "+1 250 555 0142"
+PHONE = "+1 " + phone(AREA, EXCHANGE, LINE, sep=" ")
 SPEND = "48213"
 """A value distinctive enough that finding it in a rendering means it leaked."""
-SUBJECT = "2505550142"
+SUBJECT = phone(AREA, EXCHANGE, LINE, sep="")
 """A bare-digit subject key, which the free-text phone mask does not catch."""
 
 
