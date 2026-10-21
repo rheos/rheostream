@@ -1,8 +1,8 @@
-"""The three named package sets (B7) and the MCP facade's tool registry.
+"""The four named package sets and the MCP facade's tool registry.
 
-Each set is a rule evaluated against the registry **at issuance** (``issue.py``
-calls these at the moment a token is minted), never an enumerated list stored
-anywhere, so a set tracks the registry live:
+Every set is evaluated against the registry **at issuance** (``issue.py`` calls
+these at the moment a token is minted) and nothing about it is stored. Three are
+rules, so they track the registry live:
 
 - ``read_only``: every registered operation of ``SafetyClass.READ``.
 - ``agent_default``: every operation named by a tool in :data:`TOOL_REGISTRY`,
@@ -10,6 +10,12 @@ anywhere, so a set tracks the registry live:
   a declared tool naming an operation that failed to register does not silently
   leak into the set.
 - ``cli_full``: every registered operation except :data:`NON_TOKEN_ISSUABLE`.
+
+The fourth is enumerated on purpose, so it cannot grow when an operation is added:
+
+- ``alert_writer``: exactly ``current.item.create`` and
+  ``current.item.close_by_source``, intersected with the registered names. It is
+  the token an external service holds to open and close alert items in Current.
 
 :class:`ToolRegistry` is also the MCP facade's tool table
 (``apps/mcp/src/rheo_app_mcp/tools.py`` lists exactly what this registry holds --
@@ -50,7 +56,7 @@ each tool's published JSON schema with its operation's and checks each tool's sa
 class against the operation's declaration.
 
 **Everything from ``rheo_core.operations`` is imported lazily, inside the function
-that needs it, never at module level** -- ``REGISTRY`` in the three set
+that needs it, never at module level** -- ``REGISTRY`` in the four set
 evaluators below, and ``reserved_input_fields``/``RegistrationRefused`` in
 :meth:`ToolRegistry.register`. ``core_ops.py`` imports ``rheo_core.tokens.issue``
 (which imports this module for :data:`PACKAGE_SETS`), and ``rheo_core.
@@ -577,10 +583,32 @@ def cli_full() -> frozenset[str]:
     return REGISTRY.names() - NON_TOKEN_ISSUABLE - {DISCOVER_THEN_CALL_OPERATION}
 
 
+_ALERT_WRITER_OPERATIONS: Final[frozenset[str]] = frozenset(
+    {"current.item.create", "current.item.close_by_source"}
+)
+"""Current's create and close by source, as literals: core must not import a module
+package. A test in Current's own suite holds both equal to Current's declared names,
+and ``tests/postgres/test_tokens.py`` pins :func:`alert_writer` as this exact set."""
+
+
+def alert_writer() -> frozenset[str]:
+    """Exactly the two Current writes an external alert writer needs, intersected
+    with the live registry.
+
+    Enumerated on purpose: unlike the three rule sets it never grows when an
+    operation is added. When Current is not registered it is empty, so issuance
+    refuses it ``set_empty``.
+    """
+    from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
+
+    return _ALERT_WRITER_OPERATIONS & REGISTRY.names()
+
+
 PACKAGE_SETS: Final[dict[str, Callable[[], frozenset[str]]]] = {
     "read_only": read_only,
     "agent_default": agent_default,
     "cli_full": cli_full,
+    "alert_writer": alert_writer,
 }
 """Name -> evaluator, for ``issue.py``'s named-set resolution (``rheo token issue
 --set <name>``). Each callable evaluates against the process-wide ``REGISTRY``."""

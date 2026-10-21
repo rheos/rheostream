@@ -84,6 +84,7 @@ from rheo_core.tokens.sets import (
     DISCOVER_THEN_CALL_OPERATION,
     TOOL_REGISTRY,
     agent_default,
+    alert_writer,
     cli_full,
     read_only,
     register_core_tools,
@@ -582,6 +583,35 @@ def test_close_by_source_is_in_agent_default_and_cli_full_but_not_read_only(
     assert CLOSE_BY_SOURCE not in snapshots["read_only"]
     assert CLOSE_BY_SOURCE in snapshots["cli_full"]
     assert CLOSE_BY_SOURCE in snapshots["agent_default"]
+
+
+ALERT_WRITER_OPERATIONS = frozenset({"current.item.create", CLOSE_BY_SOURCE})
+"""What ``alert_writer`` expands to with Current installed. A literal, for the reason
+``READ_ONLY_OPERATIONS`` gives: an exact set that cannot widen when Current, or any
+other module, gains an operation."""
+
+
+@pytest.mark.usefixtures("current_registered")
+def test_alert_writer_is_exactly_create_and_close_by_source(
+    session_ctx: WorkspaceContext,
+) -> None:
+    # Control: Current's other writes are registered, so the exact match below is
+    # the set's own narrowing and not an empty registry.
+    assert {"current.item.update", "current.item.set_status"} <= cli_full()
+    assert alert_writer() == ALERT_WRITER_OPERATIONS
+    _, _, operations = _issue(session_ctx, kind="cli", set_name="alert_writer")
+    assert operations == ALERT_WRITER_OPERATIONS
+
+
+def test_alert_writer_is_empty_and_refused_set_empty_without_current(
+    session_ctx: WorkspaceContext,
+) -> None:
+    assert not {name for name in REGISTRY.names() if name.startswith("current.")}
+    assert alert_writer() == frozenset()
+    outcome = dispatch(
+        session_ctx, TOKEN_ISSUE, {"kind": "cli", "set_name": "alert_writer"}
+    )
+    assert outcome.state == SET_EMPTY, outcome
 
 
 # --- B7: the non-token-issuable rule, both ends -----------------------------

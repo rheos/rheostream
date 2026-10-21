@@ -23,6 +23,7 @@ in the session. Each table is swapped for a copy (or a fresh instance) through
 """
 
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -37,12 +38,16 @@ from rheo_core.redaction.registry import RenderingRegistry
 from rheo_core.refs.resolver import RESOLVERS
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
 from rheo_core.settings.schema import SettingsRegistry
-from rheo_core.storage.control_plane import list_access_token_operations
+from rheo_core.storage.control_plane import (
+    get_access_token,
+    list_access_token_operations,
+)
 from rheo_core.tokens.sets import TOOL_REGISTRY
 
 pytestmark = pytest.mark.postgres
 
 RECALLATRON = "recallatron"
+CURRENT = "current"
 
 
 @pytest.fixture
@@ -91,12 +96,17 @@ def _issue(
     return code, out, err
 
 
-def _stored_operations(cluster: ClusterSession, err: str) -> frozenset[str]:
-    """The issued token's operations, read back off its rows by the id on stderr."""
+def _token_id(err: str) -> UUID:
+    """The issued token's id, from the line the command prints on stderr."""
     first = err.strip().splitlines()[-1].split()
     assert first[0] == "token" and first[2] == "issued,", err
+    return UUID(first[1])
+
+
+def _stored_operations(cluster: ClusterSession, err: str) -> frozenset[str]:
+    """The issued token's operations, read back off its rows by the id on stderr."""
     with cluster.backend.control_engine.connect() as connection:
-        return list_access_token_operations(connection, UUID(first[1]))
+        return list_access_token_operations(connection, _token_id(err))
 
 
 @pytest.mark.usefixtures("isolated_process_tables")
@@ -145,6 +155,33 @@ def test_an_mcp_token_holds_the_core_and_module_tools_operations(
     stored = _stored_operations(cluster, err)
     assert "recallatron.memory.recall" in stored
     assert "core.workspace.status" in stored
+
+
+@pytest.mark.usefixtures("isolated_process_tables")
+def test_an_alert_writer_cli_token_holds_exactly_two_operations_for_90_days_at_most(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """The issuance an external alert writer's token comes from, run as the operator
+    runs it: ``--set alert_writer --kind cli`` with Current installed."""
+    install(monkeypatch, CURRENT)
+    before = datetime.now(UTC)
+
+    code, out, err = _issue(
+        capsys, workspace, owner_account_id, set_name="alert_writer", kind="cli"
+    )
+
+    assert code == 0, err
+    assert out.strip()
+    stored = _stored_operations(cluster, err)
+    assert stored == {"current.item.create", "current.item.close_by_source"}
+    with cluster.backend.control_engine.connect() as connection:
+        row = get_access_token(connection, _token_id(err))
+    assert row is not None
+    assert before < row.expires_at <= datetime.now(UTC) + timedelta(days=90)
 
 
 @pytest.mark.usefixtures("isolated_process_tables")

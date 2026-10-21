@@ -20,14 +20,23 @@ query-string channels (the api surface)") and ``spec.md``'s own B2 bullet
 ("the HTTP channels are C8"); proved here in favour of the canonical
 documents over the matrix's silence, per ``00-index.md``'s own rule that a
 canonical document wins a disagreement.
+
+With Current installed, the ``alert_writer`` set over this route: its token creates
+and closes by source, is refused every other operation, is audited as the token,
+and is refused 401 once revoked or expired. A ``read_only`` token reads Current's
+list and get over the same route.
 """
 
+from collections.abc import Iterator
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 import httpx
 import pytest
 from conftest import ClusterSession, MakeWorkspace
+from harness.modules import install_and_enable_module, loaded_probe_modules
 from harness.records import ensure_note_table, get_note, list_notes
 from harness.registry import (
     NOTE_SCHEDULE,
@@ -39,12 +48,15 @@ from rheo_app_core import api_routes
 from rheo_app_core.main import public_app
 from rheo_app_core.startup import CONSUMERS
 from rheo_contracts import Role, WorkspaceContext
-from rheo_core.boundary import context_for_harness
+from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.operations import OPERATION_GET, dispatch, register_core_operations
-from rheo_core.operations.core_ops import TOKEN_ISSUE
+from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
+from rheo_core.operations.registry import REGISTRY
 from rheo_core.storage import control_tables as t
 from rheo_core.storage.backend import UnitOfWork
-from sqlalchemy import inspect, update
+from rheo_core.storage.routing import open_unit_of_work
+from rheo_core.storage.work_tables import audit_record
+from sqlalchemy import inspect, select, update
 
 pytestmark = pytest.mark.postgres
 
@@ -360,6 +372,186 @@ async def test_reserved_field_in_body_is_ignored_and_in_query_string_is_refused(
         # exactly the proof the write did not land in it.
         has_table = inspect(other_uow.connection).has_table("note", schema="harness")
         assert not has_table or get_note(other_uow.connection, note_id) is None
+
+
+@dataclass(frozen=True)
+class CurrentOnTheRoute:
+    owner: WorkspaceContext
+    workspace: UUID
+
+
+@pytest.fixture
+def current_on_the_route(
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> Iterator[CurrentOnTheRoute]:
+    """Current installed and enabled in ``workspace``, with its operations in a copy
+    of the process-wide registry the route dispatches through.
+
+    The loader recipe puts Current's operations in a local registry, and the route
+    reads the global one, so the loaded operations are registered again into a
+    ``monkeypatch`` copy of it. The original goes back at teardown, so the exact-set
+    assertions in ``tests/postgres/test_tokens.py`` never see Current.
+    """
+    with loaded_probe_modules(monkeypatch, "current") as surfaces:
+        operator = context_for_operator(workspace)
+        assert isinstance(operator, WorkspaceContext), operator
+        install_and_enable_module(cluster.backend, operator, workspace, "current")
+        monkeypatch.setattr(REGISTRY, "_operations", dict(REGISTRY._operations))
+        for name in surfaces.operations.names():
+            loaded = surfaces.operations.lookup(name)
+            assert loaded is not None
+            REGISTRY.register(loaded.declaration, loaded.handler, origin=loaded.origin)
+        yield CurrentOnTheRoute(_owner_ctx(workspace, owner_account_id), workspace)
+
+
+def _owner_item(owner: WorkspaceContext) -> str:
+    """One open item, created by the owner directly; returns its ref."""
+    item = dispatch(
+        owner,
+        "current.item.create",
+        {"title": "Synthetic task"},
+        consumers=CONSUMERS,
+    )
+    assert item.ok, item
+    return item.result.item.ref  # type: ignore[union-attr]
+
+
+def _issue_with_id(ctx: WorkspaceContext, set_name: str) -> tuple[str, UUID]:
+    outcome = dispatch(ctx, TOKEN_ISSUE, {"kind": "cli", "set_name": set_name})
+    assert outcome.ok, outcome
+    assert outcome.result is not None
+    return outcome.result.value, outcome.result.token_id  # type: ignore[attr-defined]
+
+
+ALERT = {
+    "title": "Synthetic probe down",
+    "body": "Type: infra-alert",
+    "priority": "critical",
+    "area": "dev",
+    "provenance": "alert",
+    "source_kind": "health-probe",
+    "source_ref": "health-probe:example",
+    "fingerprint": "down",
+}
+SOURCE_PAIR = {"source_kind": "health-probe", "source_ref": "health-probe:example"}
+
+
+async def test_an_alert_writer_token_creates_and_closes_and_is_audited_as_the_token(
+    current_on_the_route: CurrentOnTheRoute,
+) -> None:
+    value, token_id = _issue_with_id(current_on_the_route.owner, "alert_writer")
+    headers = {"Authorization": f"Bearer {value}"}
+
+    created = await _post(
+        "/api/v1/operations/current.item.create", headers=headers, json=ALERT
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["state"] == "succeeded"
+    assert created.json()["result"]["action"] == "created"
+    ref = created.json()["result"]["item"]["ref"]
+
+    closed = await _post(
+        "/api/v1/operations/current.item.close_by_source",
+        headers=headers,
+        json=SOURCE_PAIR,
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["state"] == "succeeded"
+    assert closed.json()["result"] == {"closed": True, "ref": ref}
+
+    # Both calls are audited as the token, on the api entry, not as the owner.
+    with open_unit_of_work(current_on_the_route.owner) as uow:
+        rows = uow.connection.execute(
+            select(
+                audit_record.c.operation_name,
+                audit_record.c.actor_kind,
+                audit_record.c.actor_id,
+                audit_record.c.entry,
+                audit_record.c.outcome,
+            ).where(audit_record.c.operation_name.like("current.item.%"))
+        ).all()
+    assert sorted(tuple(row) for row in rows) == [
+        ("current.item.close_by_source", "token", token_id, "api", "succeeded"),
+        ("current.item.create", "token", token_id, "api", "succeeded"),
+    ]
+
+
+async def test_an_alert_writer_token_is_refused_every_other_operation(
+    current_on_the_route: CurrentOnTheRoute,
+) -> None:
+    owner = current_on_the_route.owner
+    ref = _owner_item(owner)
+    value, _ = _issue_with_id(owner, "alert_writer")
+    refused = {
+        "current.item.list": {},
+        "current.item.update": {"ref": ref, "revision": 1, "title": "Changed"},
+        "current.item.set_status": {"ref": ref, "revision": 1, "status": "done"},
+        "current.item.comment": {"ref": ref, "body": "A comment"},
+        "core.record.delete": {"ref": ref},
+        "core.workspace.status": {},
+    }
+    for name, payload in refused.items():
+        resp = await _post(
+            f"/api/v1/operations/{name}",
+            headers={"Authorization": f"Bearer {value}"},
+            json=payload,
+        )
+        assert resp.status_code == 403, (name, resp.text)
+        assert resp.json()["state"] == "operation_not_permitted", name
+    after = dispatch(owner, "current.item.get", {"ref": ref})
+    assert after.ok, after
+    assert after.result.status == "open" and after.result.revision == 1  # type: ignore[union-attr]
+
+
+async def test_a_revoked_and_an_expired_alert_writer_token_are_refused_401(
+    cluster: ClusterSession, current_on_the_route: CurrentOnTheRoute
+) -> None:
+    owner = current_on_the_route.owner
+    revoked, revoked_id = _issue_with_id(owner, "alert_writer")
+    expired, expired_id = _issue_with_id(owner, "alert_writer")
+    assert dispatch(owner, TOKEN_REVOKE, {"token_id": str(revoked_id)}).ok
+    with cluster.backend.control_engine.begin() as connection:
+        connection.execute(
+            update(t.access_token)
+            .where(t.access_token.c.id == expired_id)
+            .values(expires_at=datetime(2000, 1, 1, tzinfo=UTC))
+        )
+    for value, state in ((revoked, "token_revoked"), (expired, "token_expired")):
+        resp = await _post(
+            "/api/v1/operations/current.item.create",
+            headers={"Authorization": f"Bearer {value}"},
+            json=ALERT,
+        )
+        assert resp.status_code == 401, (state, resp.text)
+        assert resp.json()["state"] == state
+    listed = dispatch(owner, "current.item.list", {"status": "all"})
+    assert listed.ok and listed.result.items == []  # type: ignore[union-attr]
+
+
+async def test_a_read_only_cli_token_reads_current_over_the_route(
+    current_on_the_route: CurrentOnTheRoute,
+) -> None:
+    owner = current_on_the_route.owner
+    ref = _owner_item(owner)
+    value, _ = _issue_with_id(owner, "read_only")
+    headers = {"Authorization": f"Bearer {value}"}
+
+    listed = await _post(
+        "/api/v1/operations/current.item.list", headers=headers, json={}
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["state"] == "succeeded"
+    assert [i["ref"] for i in listed.json()["result"]["items"]] == [ref]
+
+    got = await _post(
+        "/api/v1/operations/current.item.get", headers=headers, json={"ref": ref}
+    )
+    assert got.status_code == 200, got.text
+    assert got.json()["state"] == "succeeded"
+    assert got.json()["result"]["ref"] == ref
 
 
 async def test_a_payload_field_in_the_query_string_is_refused(
