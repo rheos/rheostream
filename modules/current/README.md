@@ -121,14 +121,30 @@ both. It also reads every other module, because `read_only` is not limited to Cu
 Residual exposure: a leaked writer token can open items in any area and close any
 source-keyed item of any `source_kind`, including an email thread whose id it guesses,
 until it expires or is revoked. It can also reopen any existing source-keyed item, or
-raise its priority, by creating with that item's pair. It cannot read items: its create
-and close results carry an action and at most a ref, never an item's content, and close
-by source answers a done item and an unknown pair alike. This matters because some
+raise its priority, by creating with that item's pair. It gets no item content back:
+its create and close results carry an action or `closed` and at most a ref, never a
+title, body, comment, source ref, provenance or status field. This matters because some
 writers number their source refs in sequence (support requests, for one), so a token
-that could read by pair could walk every item that writer filed. A create still says
-whether its pair was new, but only by acting on it, which leaves a new item or a repeat
-on the old one. It cannot update, comment on or delete items, and it cannot reach
-another module.
+that could read by pair could walk every item that writer filed.
+
+What its results do reveal:
+
+- Close by source answers a done item and an unknown pair alike, with a null ref. Only
+  `closed: true` says something: an unfinished item held the pair, and is now done.
+- A create with a pair that already exists shows that the pair exists, and its action
+  shows the item's state: `reopened` for done, `woke` for snoozed, `grouped` for open or
+  waiting, or for a fingerprint the item already holds.
+- The ref a create returns is a UUIDv7, so it carries the item's creation time.
+
+A probe by create leaves a trace either way. On an absent pair with a usable area it
+makes a new item. With an unknown or retired area, or a project ref that does not exist,
+it is refused, and only the refused call's audit record remains. On a pair that exists
+it acts on the item: it reopens or wakes it, or raises its event count and adds a system
+comment; a fingerprint the item already holds only moves its updated time. The area is
+checked after the pair lookup on purpose, so a writer whose area was later retired can
+still repeat onto its open items.
+
+It cannot update, comment on or delete items, and it cannot reach another module.
 
 Audit growth: every close by source writes one audit record, a no-op close included,
 because the dispatcher audits every mutate. Release one does not prune audit records. A

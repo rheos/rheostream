@@ -47,6 +47,8 @@ def reads_items(ctx: WorkspaceContext) -> bool:
     create and close by source without get, so its results carry no item content and
     close by source does not say which item, if any, holds a pair.
     """
+    # Not REGISTRY.authorize: a handler is not told which registry dispatched it, and
+    # tests dispatch through local registries where the process one lacks get.
     permitted = ctx.operation_set
     return permitted is ALL_OPERATIONS or (
         isinstance(permitted, frozenset) and READ_ITEM in permitted
