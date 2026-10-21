@@ -9,6 +9,34 @@ MCP facade and Next.js shell.
 [Watch the 1:42 explainer](https://youtu.be/168-OWHkdvU) (music only): the problem, the modules,
 the MCP door, durable jobs, safety classes, and what is built so far.
 
+## What you get
+
+One system you own, with your work in it and an agent named rheo to run it. The
+[design guide](docs/guide/README.md) walks through every part.
+
+- **A database per workspace.** Each workspace is its own Postgres database, routed from
+  who you are, never from what a request says. ([workspaces](docs/guide/workspaces-and-storage.md))
+- **Work that survives crashes.** Changes and their events commit together; jobs run
+  under leases; every long call has an operation record you can poll.
+  ([durable work](docs/guide/durable-work.md))
+- **A hard stop on real effects.** Deleting, sending and paying need an approval bound
+  to the exact call, and no token can approve. ([safety](docs/guide/safety-and-approvals.md))
+- **One door for every agent.** A single MCP server with scoped tokens, redaction before
+  anything reaches a model, and replaceable runtimes. ([MCP and runtimes](docs/guide/mcp-and-runtimes.md))
+- **Memory that keeps its permissions.** Recallatron stores who may read each memory and
+  why, recalls with local hybrid search, and erases what was derived from erased data.
+  ([Recallatron](docs/guide/recallatron.md), [the Claude Code bridge](docs/guide/claude-code-bridge.md))
+- **Leads from any funnel.** Signed webhooks, imports and pasted inquiries become
+  evidence, then opportunities in pipelines you configure. ([Leads](docs/guide/leads.md),
+  [Relationships](docs/guide/relationships.md), [connectors](docs/guide/connectors.md))
+- **Work in motion.** Current turns repeated alerts into one item that wakes, and takes
+  handoffs from Leads exactly once. ([Current](docs/guide/current.md))
+- **One agent, several surfaces.** rheo works from Claude, Telegram or voice under one
+  authorization model. ([rheo and channels](docs/guide/rheo-and-channels.md))
+- **Data you can carry out.** Export a workspace to one file and restore it elsewhere
+  with the same identifiers. ([export, restore and deploy](docs/guide/export-restore-deploy.md),
+  [web shell and CLI](docs/guide/web-shell-and-cli.md))
+
 ## Mechanisms you can inspect
 
 - Each workspace has its own Postgres database. Server-resolved identity selects
