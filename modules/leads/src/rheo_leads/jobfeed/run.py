@@ -69,7 +69,9 @@ from rheo_core.connectors.oauth import (
     ClientAuthMethod,
     OAuthFailure,
 )
+from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.settings import resolve
+from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.cancellation import CancellationToken, JobCancelled, JobLeaseLost
@@ -83,7 +85,12 @@ from rheo_leads.jobfeed.collect import (
     read_details,
 )
 from rheo_leads.jobfeed.delivery import deliver
-from rheo_leads.jobfeed.presets import DEFAULT_PRESETS
+from rheo_leads.jobfeed.presets import (
+    DEFAULT_PRESETS,
+    Preset,
+    PresetInvalid,
+    configured_presets,
+)
 from rheo_leads.jobfeed.state import SCHEDULE_NAME as SCHEDULE_NAME
 from rheo_leads.jobfeed.state import (
     JobfeedConnection,
@@ -121,10 +128,12 @@ RUN_DEADLINE_SECONDS: Final = 420.0
 RESOURCE_URL_KEY: Final = "leads.jobfeed.resource_url"
 JOB_HOSTS_KEY: Final = "leads.jobfeed.job_hosts"
 TOOL_PREFIX_KEY: Final = "leads.jobfeed.tool_prefix"
+PRESETS_KEY: Final = "leads.jobfeed.presets"
 INTERNAL_ERROR: Final = "internal_error"
 INTERNAL_ERROR_LOG: Final = "jobfeed_internal_error %s"
 
 ENDPOINT_MISCONFIGURED: Final = "endpoint_misconfigured"
+PRESETS_INVALID: Final = "presets_invalid"
 TOKEN_REFRESH_FAILED: Final = "token_refresh_failed"
 UPSTREAM_RATE_LIMITED: Final = "upstream_rate_limited"
 UPSTREAM_UNAVAILABLE: Final = "upstream_unavailable"
@@ -204,6 +213,7 @@ class _Run:
     generation: int
     deadline: float = 0.0
     tool_prefix: str = ""
+    presets: tuple[Preset, ...] = DEFAULT_PRESETS
 
     def auth(self) -> ClientAuth:
         """The stored client; a run reaches a request only with one."""
@@ -239,7 +249,7 @@ def collect_phase(
     job_hosts = resolve().get_list(JOB_HOSTS_KEY)
     collected = collect_presets(
         upstream,
-        DEFAULT_PRESETS,
+        run.presets,
         organization_id,
         job_hosts,
         clock=deps.now,
@@ -272,6 +282,15 @@ def collect_phase(
         ),
         read_failures=details.reasons,
     )
+
+
+def _presets_text(ctx: WorkspaceContext, uow: UnitOfWork) -> str:
+    """The workspace's ``leads.jobfeed.presets`` value, empty when unset."""
+    settings = resolve(
+        workspace_id=ctx.workspace_id,
+        source=TransactionBoundOverrideSource(uow, workspace_id=ctx.workspace_id),
+    )
+    return settings.get_str(PRESETS_KEY)
 
 
 def _capability_on(ctx: WorkspaceContext) -> bool:
@@ -470,6 +489,7 @@ def _collect(
     with open_unit_of_work(job_ctx) as short:
         connection = read_connection(short.connection)
         enabled = jobsearch_enabled(job_ctx, short)
+        presets_text = _presets_text(job_ctx, short)
         short.commit()
     if connection is None:
         return
@@ -505,6 +525,13 @@ def _collect(
         _end(uow, run, Transient(ENDPOINT_MISCONFIGURED), backoff=False)
         return
     run.tool_prefix = tool_prefix
+    try:
+        run.presets = configured_presets(presets_text)
+    except PresetInvalid:
+        # The owner's list breaks a bound: no request, no backoff, visible on health
+        # and in the run history until the setting is fixed.
+        _end(uow, run, Transient(PRESETS_INVALID), backoff=False)
+        return
     # Step 2: the claim.
     claimed = claim_run(
         job_ctx,

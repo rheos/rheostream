@@ -62,6 +62,7 @@ const STOPS: Record<string, string> = {
   upstream_rate_limited: "rate limited",
   authorization_required: "needs reconnecting",
   endpoint_misconfigured: "wrong address",
+  presets_invalid: "search presets invalid",
   account_selection_required: "choose an account",
   collection_partial: "cut short",
   token_refresh_failed: "could not renew its login",

@@ -621,9 +621,11 @@ owner connects. Owner-facing behaviour is summarized in the
 
 ### Settings
 
-All seven are deployment settings. Set them in the environment of both `core` (connect,
+Seven are deployment settings. Set them in the environment of both `core` (connect,
 reconnect, the callback) and `worker` (collection); a Coolify deployment attaches its
-`.env` to every service. Values below are placeholders.
+`.env` to every service. Values below are placeholders. The eighth,
+`leads.jobfeed.presets`, is a workspace setting an owner writes through
+`core.settings.set`.
 
 ```
 RHEO__connectors__oauth_client__enabled=true
@@ -661,6 +663,28 @@ RHEO__leads__jobfeed__tool_prefix=acme__
   name its tools with a prefix; set this to match what its `tools/list` or a working
   client uses. Letters, digits, `_` and `-` only, at most 64; any other value makes a
   run record `endpoint_misconfigured` before it sends anything.
+- `leads.jobfeed.presets` (workspace scope, default empty) is a JSON array of the
+  searches a run issues, replacing the three defaults (one Best Matches page, five
+  Most Recent pages, one over-cap refresh page) for that workspace. Each preset has a
+  unique `name`, an `action` (`smart_search` for the personalized feeds with
+  `params.mode` `best_match` or `most_recent`; `search` for a keyword search whose
+  `params` may carry `query`, `title`, `sort` and the provider's other filters),
+  optional `pages` (1 to 5, default 1) and an optional `purpose` (`discover`, the
+  default, or `refresh_only`, which needs `action` `search` and `proposals_min` of
+  at least 51). At most 8 presets and 8 pages in all, 10 rows a page. An owner sets it
+  with `core.settings.set` (`key`, `value` as the JSON text); an empty value restores
+  the defaults. A value that is not a JSON array or breaks a bound makes every run
+  record `presets_invalid` before it sends anything, with no backoff, until the value
+  is fixed. Example, keeping the personalized feeds and adding a keyword search:
+
+  ```json
+  [
+    {"name": "Best Matches", "action": "smart_search", "params": {"mode": "best_match"}},
+    {"name": "Most Recent", "action": "smart_search", "pages": 4, "params": {"mode": "most_recent"}},
+    {"name": "Animation", "action": "search", "pages": 2, "params": {"query": "\"2D animation\" OR \"motion graphics\"", "sort": "recency"}},
+    {"name": "Over-cap refresh", "action": "search", "purpose": "refresh_only", "params": {"proposals_min": 51, "sort": "recency"}}
+  ]
+  ```
 
 Environment changes take effect when `core` and `worker` restart. The connection pins
 the endpoints it discovered at connect time, so a changed `resource_url` takes effect
@@ -869,7 +893,7 @@ selected account and the account choices, and the last completed run's nine coun
 `next_run_not_before` is the later of the backoff's earliest start and the last run's
 start plus 60 minutes, or empty when neither applies.
 
-The collector writes nine health codes to `last_error`:
+The collector writes ten health codes to `last_error`:
 
 | Code | Meaning |
 | --- | --- |
@@ -881,6 +905,7 @@ The collector writes nine health codes to `last_error`:
 | `upstream_rate_limited` | The provider rate-limited the run. Backoff applies, at least as long as its `Retry-After` up to the 24-hour cap. |
 | `collection_partial` | The run finished, but a page, a detail read or a delivery failed, or the deadline cut it short. Also written alone when the deadline cut a run before collection began. |
 | `endpoint_misconfigured` | An endpoint redirected or does not resolve to a public `https` address (backoff applies), or the configured resource URL no longer matches the pinned one (no backoff until the owner reconnects). |
+| `presets_invalid` | The workspace's `leads.jobfeed.presets` value is not a JSON array or breaks a bound. Nothing is sent; no backoff. Fix the setting (or clear it to restore the defaults). |
 | `registration_failed` | A reconnect's registration failed. Collection continues if the connection is connected. |
 
 A completed run without a partial result clears the collector's own codes and leaves

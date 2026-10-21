@@ -1,11 +1,12 @@
 """The search presets a collection run issues, and the validator that bounds them.
 
-v1 offers no preset configuration: every run uses ``DEFAULT_PRESETS``. The validator
-still exists as tested code so the bounds hold the moment configuration arrives, and
-the defaults are built through it, so they can never drift outside those bounds.
-Every refusal happens here, before any upstream call.
+A run uses ``DEFAULT_PRESETS`` unless the workspace setting ``leads.jobfeed.presets``
+carries a JSON array of presets, which :func:`configured_presets` validates through the
+same bounds, so a configured list can never drift outside them. Every refusal happens
+here, before any upstream call.
 """
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -166,6 +167,21 @@ def validate_presets(presets: object) -> tuple[Preset, ...]:
     if sum(preset.pages for preset in validated) > MAX_TOTAL_PAGES:
         raise PresetInvalid("total_pages_invalid")
     return validated
+
+
+def configured_presets(text: str) -> tuple[Preset, ...]:
+    """The presets a workspace configured, or ``DEFAULT_PRESETS`` when ``text`` is
+    empty. Text that is not a JSON array refuses ``presets_not_json``; a list that
+    breaks a bound refuses as :func:`validate_presets` does."""
+    if not text.strip():
+        return DEFAULT_PRESETS
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        raise PresetInvalid("presets_not_json") from None
+    if not isinstance(parsed, list):
+        raise PresetInvalid("presets_not_json")
+    return validate_presets(parsed)
 
 
 # Best Matches is one page; Most Recent is the initial page plus four load-more
