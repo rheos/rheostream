@@ -583,7 +583,7 @@ def cli_full() -> frozenset[str]:
     return REGISTRY.names() - NON_TOKEN_ISSUABLE - {DISCOVER_THEN_CALL_OPERATION}
 
 
-_ALERT_WRITER_OPERATIONS: Final[frozenset[str]] = frozenset(
+ALERT_WRITER_OPERATIONS: Final[frozenset[str]] = frozenset(
     {"current.item.create", "current.item.close_by_source"}
 )
 """Current's create and close by source, as literals: core must not import a module
@@ -601,7 +601,7 @@ def alert_writer() -> frozenset[str]:
     """
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
-    return _ALERT_WRITER_OPERATIONS & REGISTRY.names()
+    return ALERT_WRITER_OPERATIONS & REGISTRY.names()
 
 
 PACKAGE_SETS: Final[dict[str, Callable[[], frozenset[str]]]] = {

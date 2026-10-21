@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 from rheo_contracts import Role, SafetyClass
-from rheo_core.tokens.sets import _ALERT_WRITER_OPERATIONS
+from rheo_core.tokens.sets import ALERT_WRITER_OPERATIONS
 from rheo_current import MANIFEST
 from rheo_current.areas import DEFAULT_AREAS
 from rheo_current.contracts import (
@@ -243,8 +243,8 @@ def test_the_alert_writer_set_names_currents_declared_create_and_close() -> None
     must not import this package. This holds each literal to a declared operation, so
     renaming either operation here fails a test instead of emptying the set."""
     declared = {declaration.name for declaration, _ in OPERATIONS}
-    assert _ALERT_WRITER_OPERATIONS == {"current.item.create", CLOSE}
-    assert _ALERT_WRITER_OPERATIONS <= declared
+    assert ALERT_WRITER_OPERATIONS == {"current.item.create", CLOSE}
+    assert ALERT_WRITER_OPERATIONS <= declared
 
 
 def test_no_input_names_an_author() -> None:

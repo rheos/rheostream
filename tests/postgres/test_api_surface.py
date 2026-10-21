@@ -75,11 +75,12 @@ def _owner_ctx(workspace: UUID, owner_account_id: UUID) -> WorkspaceContext:
 
 def _mint(
     ctx: WorkspaceContext, *, kind: str = "cli", set_name: str = "cli_full"
-) -> str:
+) -> tuple[str, UUID]:
+    """Issue a token; returns its presented value and its id."""
     outcome = dispatch(ctx, TOKEN_ISSUE, {"kind": kind, "set_name": set_name})
     assert outcome.ok, outcome
     assert outcome.result is not None
-    return outcome.result.value  # type: ignore[attr-defined]
+    return outcome.result.value, outcome.result.token_id  # type: ignore[attr-defined]
 
 
 async def _post(
@@ -131,7 +132,7 @@ async def test_garbage_bearer_refused_401() -> None:
 async def test_valid_token_succeeds_200_with_null_operation_id(
     workspace: UUID, owner_account_id: UUID
 ) -> None:
-    value = _mint(_owner_ctx(workspace, owner_account_id))
+    value, _ = _mint(_owner_ctx(workspace, owner_account_id))
     resp = await _post(
         "/api/v1/operations/core.workspace.status",
         headers={"Authorization": f"Bearer {value}"},
@@ -166,7 +167,7 @@ async def test_the_route_dispatches_with_the_process_consumer_registry(
 
     monkeypatch.setattr(api_routes, "dispatch", _spy)
 
-    value = _mint(_owner_ctx(workspace, owner_account_id))
+    value, _ = _mint(_owner_ctx(workspace, owner_account_id))
     resp = await _post(
         "/api/v1/operations/core.workspace.status",
         headers={"Authorization": f"Bearer {value}"},
@@ -191,7 +192,7 @@ async def test_role_not_permitted_403(
     ``operation_not_permitted`` (which fires when the operation is not even
     in the snapshot, proved separately below).
     """
-    value = _mint(_owner_ctx(workspace, owner_account_id))
+    value, _ = _mint(_owner_ctx(workspace, owner_account_id))
     with cluster.backend.control_engine.begin() as connection:
         connection.execute(
             update(t.membership)
@@ -213,7 +214,7 @@ async def test_role_not_permitted_403(
 async def test_operation_not_permitted_403(
     workspace: UUID, owner_account_id: UUID
 ) -> None:
-    value = _mint(_owner_ctx(workspace, owner_account_id), set_name="read_only")
+    value, _ = _mint(_owner_ctx(workspace, owner_account_id), set_name="read_only")
     resp = await _post(
         "/api/v1/operations/core.settings.set",
         headers={"Authorization": f"Bearer {value}"},
@@ -234,7 +235,7 @@ async def test_not_found_404(
     with UnitOfWork(engine, row.database_name) as uow:
         enable_harness_module(uow.connection)
         uow.commit()
-    value = _mint(_owner_ctx(workspace, owner_account_id), set_name="cli_full")
+    value, _ = _mint(_owner_ctx(workspace, owner_account_id), set_name="cli_full")
     made_up_ref = "harness.note:00000000-0000-7000-8000-000000000000"
     resp = await _post(
         "/api/v1/operations/harness.note.get",
@@ -249,7 +250,7 @@ async def test_not_found_404(
 
 
 async def test_input_invalid_422(workspace: UUID, owner_account_id: UUID) -> None:
-    value = _mint(_owner_ctx(workspace, owner_account_id))
+    value, _ = _mint(_owner_ctx(workspace, owner_account_id))
     resp = await _post(
         "/api/v1/operations/core.settings.set",
         headers={"Authorization": f"Bearer {value}"},
@@ -279,7 +280,7 @@ async def test_a_long_running_dispatch_carries_its_minted_id_in_the_envelope(
         enable_harness_module(uow.connection)
         uow.commit()
     ctx = _owner_ctx(workspace, owner_account_id)
-    value = _mint(ctx)
+    value, _ = _mint(ctx)
 
     resp = await _post(
         f"/api/v1/operations/{NOTE_SCHEDULE}",
@@ -331,7 +332,7 @@ async def test_reserved_field_in_body_is_ignored_and_in_query_string_is_refused(
     with UnitOfWork(engine, row.database_name) as uow:
         enable_harness_module(uow.connection)
         uow.commit()
-    value = _mint(_owner_ctx(workspace, owner_account_id), set_name="cli_full")
+    value, _ = _mint(_owner_ctx(workspace, owner_account_id), set_name="cli_full")
     refused = await _post(
         f"/api/v1/operations/{NOTE_WRITE}",
         headers={"Authorization": f"Bearer {value}"},
@@ -419,13 +420,6 @@ def _owner_item(owner: WorkspaceContext) -> str:
     return item.result.item.ref  # type: ignore[union-attr]
 
 
-def _issue_with_id(ctx: WorkspaceContext, set_name: str) -> tuple[str, UUID]:
-    outcome = dispatch(ctx, TOKEN_ISSUE, {"kind": "cli", "set_name": set_name})
-    assert outcome.ok, outcome
-    assert outcome.result is not None
-    return outcome.result.value, outcome.result.token_id  # type: ignore[attr-defined]
-
-
 ALERT = {
     "title": "Synthetic probe down",
     "body": "Type: infra-alert",
@@ -442,7 +436,7 @@ SOURCE_PAIR = {"source_kind": "health-probe", "source_ref": "health-probe:exampl
 async def test_an_alert_writer_token_creates_and_closes_and_is_audited_as_the_token(
     current_on_the_route: CurrentOnTheRoute,
 ) -> None:
-    value, token_id = _issue_with_id(current_on_the_route.owner, "alert_writer")
+    value, token_id = _mint(current_on_the_route.owner, set_name="alert_writer")
     headers = {"Authorization": f"Bearer {value}"}
 
     created = await _post(
@@ -484,7 +478,7 @@ async def test_an_alert_writer_token_is_refused_every_other_operation(
 ) -> None:
     owner = current_on_the_route.owner
     ref = _owner_item(owner)
-    value, _ = _issue_with_id(owner, "alert_writer")
+    value, _ = _mint(owner, set_name="alert_writer")
     refused = {
         "current.item.list": {},
         "current.item.update": {"ref": ref, "revision": 1, "title": "Changed"},
@@ -510,8 +504,8 @@ async def test_a_revoked_and_an_expired_alert_writer_token_are_refused_401(
     cluster: ClusterSession, current_on_the_route: CurrentOnTheRoute
 ) -> None:
     owner = current_on_the_route.owner
-    revoked, revoked_id = _issue_with_id(owner, "alert_writer")
-    expired, expired_id = _issue_with_id(owner, "alert_writer")
+    revoked, revoked_id = _mint(owner, set_name="alert_writer")
+    expired, expired_id = _mint(owner, set_name="alert_writer")
     assert dispatch(owner, TOKEN_REVOKE, {"token_id": str(revoked_id)}).ok
     with cluster.backend.control_engine.begin() as connection:
         connection.execute(
@@ -536,7 +530,7 @@ async def test_a_read_only_cli_token_reads_current_over_the_route(
 ) -> None:
     owner = current_on_the_route.owner
     ref = _owner_item(owner)
-    value, _ = _issue_with_id(owner, "read_only")
+    value, _ = _mint(owner, set_name="read_only")
     headers = {"Authorization": f"Bearer {value}"}
 
     listed = await _post(
@@ -566,7 +560,7 @@ async def test_a_payload_field_in_the_query_string_is_refused(
     with UnitOfWork(engine, row.database_name) as uow:
         enable_harness_module(uow.connection)
         uow.commit()
-    value = _mint(_owner_ctx(workspace, owner_account_id), set_name="cli_full")
+    value, _ = _mint(_owner_ctx(workspace, owner_account_id), set_name="cli_full")
     headers = {"Authorization": f"Bearer {value}"}
     for path, body in (
         (f"/api/v1/operations/{NOTE_WRITE}?body=from-the-url", {}),
