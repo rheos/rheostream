@@ -1,5 +1,7 @@
 """Operation, role and MCP declarations: the permission and audit surface."""
 
+from typing import Final
+
 from rheo_contracts import (
     AuditSpec,
     Idempotency,
@@ -20,6 +22,9 @@ READ, MUTATE = SafetyClass.READ, SafetyClass.MUTATE
 REFUSALS = (
     " Missing records return not_found; a revision that moved on returns record_stale."
 )
+# Tools whose description states its own refusals, because REFUSALS would be false
+# for them: close by source never returns not_found or record_stale.
+OWN_REFUSALS: Final = frozenset({"current_close_by_source"})
 SPECS = (
     (
         "item.create",
@@ -94,6 +99,23 @@ SPECS = (
         "status takes one. done can only be reopened to open "
         "(transition_not_allowed otherwise). Completing a blocked item is allowed. "
         "snooze_invalid refuses a missing, past or misplaced snooze time.",
+    ),
+    (
+        "item.close_by_source",
+        c.ItemCloseBySource,
+        c.ItemClosed,
+        items.close_by_source,
+        MUTATE,
+        MEMBERS,
+        None,
+        "current_close_by_source",
+        "Close the item that holds this source_kind and source_ref, without knowing "
+        "its ref or revision. Returns closed true with the ref when an open, waiting "
+        "or snoozed item was closed; closed false when no item holds the pair or it "
+        "is already done. Closing clears the item's seen fingerprints, so the next "
+        "create with this pair reopens it. note (up to 2000 characters) is added to "
+        "the system comment. This tool never returns not_found or record_stale; a "
+        "bad source_kind, source_ref or note returns input_invalid.",
     ),
     (
         "item.comment",
@@ -224,7 +246,7 @@ TOOLS = (
             operation="current." + name,
             safety_class=safety,
             input_model=model,
-            description=description + REFUSALS,
+            description=description if tool in OWN_REFUSALS else description + REFUSALS,
         )
         for name, model, _, _, safety, _, _, tool, description in SPECS
         if tool

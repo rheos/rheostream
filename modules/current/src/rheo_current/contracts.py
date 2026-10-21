@@ -23,6 +23,9 @@ CreateAction = Literal["created", "grouped", "reopened", "woke"]
 AreaKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")]
 Title = Annotated[str, Field(min_length=1, max_length=500)]
 Body = Annotated[str, Field(max_length=20000)]
+# One definition for create and close by source, so the two bounds cannot drift.
+SourceKind = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
+SourceRef = Annotated[str, Field(min_length=1, max_length=512)]
 
 
 def _calendar_date(value: object) -> date:
@@ -62,8 +65,8 @@ class ItemCreate(Strict):
     project_ref: ProjectRef | None = None
     due_on: CalendarDate | None = None
     provenance: Provenance = "manual"
-    source_kind: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
-    source_ref: str | None = Field(default=None, min_length=1, max_length=512)
+    source_kind: SourceKind | None = None
+    source_ref: SourceRef | None = None
     fingerprint: str | None = Field(default=None, min_length=1, max_length=512)
 
     @model_validator(mode="after")
@@ -73,6 +76,18 @@ class ItemCreate(Strict):
         if self.fingerprint is not None and self.source_ref is None:
             raise ValueError("fingerprint needs source_ref")
         return self
+
+
+class ItemCloseBySource(Strict):
+    source_kind: SourceKind
+    source_ref: SourceRef
+    note: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class ItemClosed(Strict):
+    closed: bool
+    ref: str | None
+    """The item holding the pair, closed or not; null when no item holds it."""
 
 
 def _no_overlap(model: BaseModel, clear: list[str]) -> None:

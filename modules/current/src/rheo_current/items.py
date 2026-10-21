@@ -436,6 +436,48 @@ def set_status(
     return detail(uow, record["id"])
 
 
+def close_by_source(
+    ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemCloseBySource
+) -> c.ItemClosed:
+    """Close the item holding a source pair, for writers that know only the pair.
+
+    A found item always loses its seen fingerprints, even when it is already done:
+    otherwise an item a person closed by hand during an outage keeps them, and the
+    next outage with the same fingerprint groups onto the done item without a page.
+    A manual move to done keeps them, so a re-read email thread stays closed.
+    That delete is the only write a no-op close makes.
+    """
+    h.lock(uow)
+    found = (
+        uow.connection.execute(
+            select(t.item)
+            .where(
+                t.item.c.source_kind == data.source_kind,
+                t.item.c.source_ref == data.source_ref,
+            )
+            .with_for_update()
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if found is None:
+        return c.ItemClosed(closed=False, ref=None)
+    record = dict(found)
+    reference = ref("item", record["id"])
+    uow.connection.execute(delete(t.signal).where(t.signal.c.item_id == record["id"]))
+    if record["status"] == "done":
+        return c.ItemClosed(closed=False, ref=reference)
+    updated = h.write(
+        uow, t.item, record, status="done", snoozed_until=None, closed_at=h.now()
+    )
+    body = f"Closed by a source signal ({ctx.actor.kind.value})."
+    if data.note is not None:
+        body = f"{body}\n\n{data.note}"
+    add_comment(ctx, uow, record["id"], body, "system")
+    h.publish_item_event(ctx, uow, "completed", updated)
+    return c.ItemClosed(closed=True, ref=reference)
+
+
 def comment(
     ctx: WorkspaceContext, uow: UnitOfWork, data: c.CommentInput
 ) -> c.ItemDetail:
