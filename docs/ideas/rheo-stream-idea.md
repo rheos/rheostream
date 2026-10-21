@@ -2001,12 +2001,13 @@ The following changes are recorded here.
     file alert items over HTTP and close them on recovery, and none of them should
     hold a person's `cli_full`. The residual exposure: a leaked writer token can open
     items in any area and close any source-keyed item of any `source_kind`, an email
-    thread whose id it guesses included, until it expires or is revoked; it cannot
-    read, update, comment, delete or reach another module. `read_only`,
-    `agent_default` and `cli_full` are unchanged. Rotation: a `cli` token lives at most
-    90 days and each writer has its own, so a renewal mints the replacement, swaps the
-    writer's secret, then revokes the old token, and a renewal item in Current carries
-    the date. No migration.
+    thread whose id it guesses included, until it expires or is revoked. It can also
+    reopen any existing source-keyed item, or raise its priority, by creating with
+    that item's pair. It cannot read, update, comment, delete or reach another module.
+    `read_only`, `agent_default` and `cli_full` are unchanged. Rotation: a `cli` token
+    lives at most 90 days and each writer has its own, so a renewal mints the
+    replacement, swaps the writer's secret, then revokes the old token, and a renewal
+    item in Current carries the date. No migration.
 
 ### Website intake implementation clarification (2026-10-09)
 

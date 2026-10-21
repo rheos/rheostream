@@ -107,8 +107,9 @@ revoked on its own without touching the others. The writer calls
 token, not the person: the audit record has `actor_kind` `token` and the token id as
 `actor_id`, and the system comment on a close names the actor kind `token`. A person's
 own web session shows as `actor_kind` `account`. `rheo token list` prints each token's
-id, set and expiry, so with one token per writer repo a token id in the audit trail maps
-to exactly one writer.
+id, set and expiry but stores no label, so it cannot tell two writer tokens apart: record
+each issued token id against its writer repo (for example in the Current renewal item),
+and a token id in the audit trail then maps to exactly one writer.
 
 A `read_only` `cli` token reads Current over the same route: its set holds every read
 operation, including `current.item.list` and `current.item.get`, and a route test checks
@@ -116,8 +117,9 @@ both. It also reads every other module, because `read_only` is not limited to Cu
 
 Residual exposure: a leaked writer token can open items in any area and close any
 source-keyed item of any `source_kind`, including an email thread whose id it guesses,
-until it expires or is revoked. It cannot read, update, comment on or delete items, and
-it cannot reach another module.
+until it expires or is revoked. It can also reopen any existing source-keyed item, or
+raise its priority, by creating with that item's pair. It cannot read, update, comment
+on or delete items, and it cannot reach another module.
 
 Audit growth: every close by source writes one audit record, a no-op close included,
 because the dispatcher audits every mutate. Release one does not prune audit records. A
