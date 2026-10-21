@@ -1,74 +1,77 @@
 #!/usr/bin/env python3
-"""Run `rheo doctor` against the flagship and page on FAIL through a ticket service
-(issue #229).
+"""Run `rheo doctor` against the flagship and page a person when a check starts or
+stops failing (issue #229).
 
 Usage:
-  rheostream-doctor-alert.py [run]     run doctor, file or close tickets
-  rheostream-doctor-alert.py --dry-run run doctor and print what it would do
+  rheostream-doctor-alert.py [run]     run doctor, send the pages it needs
+  rheostream-doctor-alert.py --dry-run run doctor and print what it would send
 
-A host cron job calls this. It runs `rheo doctor` inside the flagship's core
-container and turns each FAIL line into a critical ticket in the operator's ticket
-service, which is expected to page on a critical ticket's *creation* and to update
-the open ticket, not add one, when a ticket with the same `source_ref` and
-`ticket_type` arrives again. When a check recovers, the script closes its ticket, so
-the next failure pages afresh. A pager that never closes its tickets pages once and
-then goes quiet for good.
+A host cron job calls this every hour. It runs `rheo doctor` inside the flagship's
+core container. A check that starts failing sends one page. A check that keeps
+failing sends nothing more. A paged check that stops failing sends one recovery
+notice. The script keeps the paged checks in a state file on the host, so it needs
+no outside service to know what it already sent.
 
-The ticket service contract: `GET {url}/tickets?status=open&page=N&per_page=M`
-returns `{"tickets": [...], "total": T, "per_page": M}`; `POST {url}/tickets`
-creates (201) or dedupes onto the open ticket (200); `PATCH {url}/tickets/{id}`
-with `{"status": "done"}` closes one. Bearer-token auth. Any field the service
-needs beyond the ones this script sets goes in `RHEO_DOCTOR_TICKET_FIELDS`.
+Paging runs the page command: a command line split with shlex and run without a
+shell. It reads one message on stdin and exits 0 once the message is delivered.
+The script never holds or reads a messaging credential; the command does. A
+command that exits nonzero, cannot start, or runs past 60 seconds has not sent, so
+the check stays unrecorded and the next run tries again.
 
-Doctor's lines are content-free by design (counts, ids, slugs, settings keys),
-so a FAIL line is copied into the ticket body as it is.
+Each message is one plain line, handed to the command unchanged (the script never
+picks a markup mode):
+  rheo.stream doctor FAIL on <host>: <doctor's own FAIL line>
+  rheo.stream doctor recovered on <host>: <check name>
+Doctor's lines are content-free by design (counts, ids, slugs, settings keys).
+
+State file: {"version": 1, "paged": {"<check slug>": "<check name>"}}, mode 0600,
+replaced atomically (temp file in the same directory, fsync, rename). A missing,
+unreadable or wrong-shape file is "unknown": no check counts as paged, so every
+current FAIL pages. It never means all clear.
 
 Configuration (environment; the cron file sets what differs from the defaults):
-  RHEO_DOCTOR_COMPOSE_PROJECT  compose project label of the app (required)
-  RHEO_DOCTOR_SERVICE          compose service to run doctor in (default core)
-  RHEO_DOCTOR_TICKETS_URL      ticket service API base            (required)
-  RHEO_DOCTOR_ENV_FILE         file holding TICKETS_API_KEY=...   (default
-                               /root/.config/rheostream-doctor.env, mode 0600)
-  RHEO_DOCTOR_TICKET_FIELDS    JSON object of extra ticket fields (default {})
-  RHEO_DOCTOR_LOG              syslog | stderr                   (default syslog)
+  RHEO_DOCTOR_COMPOSE_PROJECT  compose project label of the app      (required)
+  RHEO_DOCTOR_SERVICE          compose service to run doctor in      (default core)
+  RHEO_DOCTOR_PAGE_COMMAND     command that sends stdin as one page  (required)
+  RHEO_DOCTOR_STATE_FILE       paged-check state                     (default
+                               /var/lib/rheostream-doctor/state.json)
+  RHEO_DOCTOR_LOG              syslog | stderr                       (default syslog)
 
-Exit codes: 0 all ok (tickets closed as needed); 1 at least one FAIL was paged;
-2 the run could not do its job (no key, the ticket service unreachable, a ticket
-write failed). An exit 2 is itself a problem the cron's mail or syslog should
-surface: a pager that cannot reach its ticket service must not look healthy.
+Exit codes: 0 all ok; 1 at least one check FAILs, and every page it needs was sent
+or already recorded; 2 the pager could not do its job: a required setting is
+missing, a page command failed or timed out, or the state file could not be
+written. Exit 2 wins over 1. An exit 2 is itself a problem the cron's mail or
+syslog should surface: a pager that cannot page must not look healthy.
 
 **No recovery on a failed run.** When doctor itself could not run (no single core
 container, an exec failure, a non-zero exit with no FAIL line), the other checks
-were never evaluated, so no open ticket is closed on that run.
+were never evaluated, so that run sends no recovery notice.
 
 Standard library only, so the host needs nothing beyond python3 and docker.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import platform
 import re
-import socket
+import shlex
 import subprocess
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
+import tempfile
 from dataclasses import dataclass
-from typing import Any
 
 TAG = "rheostream-doctor"
-SOURCE_PREFIX = "rheostream-doctor:"
-TICKET_TYPE = "infra-alert"
-DOCTOR_RUN_REF = SOURCE_PREFIX + "doctor-run"
+# Slug of the synthetic FAIL that run_doctor reports when doctor cannot run.
+DOCTOR_RUN = "doctor-run"
+STATE_VERSION = 1
+DEFAULT_STATE_FILE = "/var/lib/rheostream-doctor/state.json"
+PAGE_TIMEOUT = 60
 # ``LEVEL`` padded to four characters, one space, then ``name: detail``.
 LINE_RE = re.compile(r"^(ok|warn|FAIL)\s+(.+?): (.*)$")
 SLUG_RE = re.compile(r"[^a-z0-9()._-]+")
-
-
-class Unavailable(Exception):
-    """The run cannot do its job; exit 2."""
 
 
 def log(level: str, message: str) -> None:
@@ -95,8 +98,8 @@ class Failure:
     line: str
 
     @property
-    def source_ref(self) -> str:
-        return SOURCE_PREFIX + SLUG_RE.sub("-", self.check.lower()).strip("-")
+    def slug(self) -> str:
+        return SLUG_RE.sub("-", self.check.lower()).strip("-")
 
 
 def parse_failures(output: str) -> list[Failure]:
@@ -157,97 +160,71 @@ def run_doctor(project: str, service: str) -> list[Failure]:
     return failures
 
 
-class Tickets:
-    def __init__(self, base: str, key: str, extra: dict[str, Any]) -> None:
-        self.base = base.rstrip("/")
-        self.key = key
-        self.extra = extra
+def load_state(path: str) -> tuple[dict[str, str], str]:
+    """The paged checks and the file's status: ok, missing or unreadable.
 
-    def _request(
-        self, method: str, path: str, body: dict[str, Any] | None = None
-    ) -> tuple[int, dict[str, Any]]:
-        data = None if body is None else json.dumps(body).encode()
-        request = urllib.request.Request(
-            self.base + path,
-            data=data,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {self.key}",
-                "Content-Type": "application/json",
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read()
-                return response.status, (json.loads(raw) if raw else {})
-        except urllib.error.HTTPError as exc:
-            return exc.code, {}
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise Unavailable(
-                f"tickets {method} {path}: {type(exc).__name__}"
-            ) from None
-
-    def open_doctor_tickets(self) -> list[dict[str, Any]]:
-        """Every open ticket this pager owns. Also the preflight: an unreachable
-        service or a rejected key fails the run before doctor's result counts."""
-        tickets: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            status, body = self._request(
-                "GET", f"/tickets?status=open&page={page}&per_page=100"
-            )
-            if status != 200:
-                raise Unavailable(f"tickets open-ticket list answered {status}")
-            batch = body.get("tickets", [])
-            tickets.extend(
-                t
-                for t in batch
-                if str(t.get("source_ref") or "").startswith(SOURCE_PREFIX)
-                and t.get("ticket_type") == TICKET_TYPE
-            )
-            total = int(body.get("total", 0))
-            if not batch or page * int(body.get("per_page", 100) or 100) >= total:
-                return tickets
-            page += 1
-
-    def file(self, failure: Failure, host: str) -> int:
-        status, _ = self._request(
-            "POST",
-            "/tickets",
-            {
-                **self.extra,
-                "title": f"rheo.stream doctor FAIL: {failure.check}"[:200],
-                "ticket_type": TICKET_TYPE,
-                "severity": "critical",
-                "provenance": "status-poll",
-                "source_ref": failure.source_ref,
-                "body": f"{failure.line}\n\nFrom `rheo doctor` on {host}, via {TAG}.",
-            },
-        )
-        if status not in (200, 201):
-            raise Unavailable(f"tickets write answered {status}")
-        return status
-
-    def close(self, ticket_id: object) -> None:
-        status, _ = self._request(
-            "PATCH",
-            f"/tickets/{urllib.parse.quote(str(ticket_id))}",
-            {"status": "done"},
-        )
-        if status != 200:
-            raise Unavailable(f"tickets close answered {status}")
-
-
-def read_key(path: str) -> str:
+    Anything but a well-formed file gives no paged checks, so the run pages."""
     try:
         with open(path, encoding="utf-8") as handle:
-            for line in handle:
-                name, _, value = line.strip().partition("=")
-                if name == "TICKETS_API_KEY" and value:
-                    return value.strip().strip('"').strip("'")
+            data = json.load(handle)
+    except FileNotFoundError:
+        return {}, "missing"
+    except (OSError, ValueError):
+        return {}, "unreadable"
+    paged = data.get("paged") if isinstance(data, dict) else None
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != STATE_VERSION
+        or not isinstance(paged, dict)
+        or not all(isinstance(k, str) and isinstance(v, str) for k, v in paged.items())
+    ):
+        return {}, "unreadable"
+    return dict(paged), "ok"
+
+
+def write_state(path: str, paged: dict[str, str]) -> None:
+    """Replace the state file atomically. mkstemp creates the temp file 0600."""
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".state-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"version": STATE_VERSION, "paged": paged}, handle, sort_keys=True
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    # Sync the directory too, so the rename itself survives a reboot.
+    dir_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def page(command: list[str], message: str) -> str | None:
+    """Run the page command with `message` on stdin. None when it was sent,
+    otherwise why not."""
+    try:
+        result = subprocess.run(
+            command,
+            input=message.encode("utf-8"),
+            stdout=subprocess.DEVNULL,
+            check=False,
+            timeout=PAGE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return f"timed out after {PAGE_TIMEOUT} s"
     except OSError as exc:
-        raise Unavailable(f"cannot read {path}: {type(exc).__name__}") from None
-    raise Unavailable(f"no TICKETS_API_KEY in {path}")
+        return f"could not start: {type(exc).__name__}"
+    if result.returncode != 0:
+        return f"exited {result.returncode}"
+    return None
 
 
 def main(argv: list[str]) -> int:
@@ -257,48 +234,74 @@ def main(argv: list[str]) -> int:
         log("error", "RHEO_DOCTOR_COMPOSE_PROJECT is not set")
         return 2
     service = os.environ.get("RHEO_DOCTOR_SERVICE", "core")
-    base = os.environ.get("RHEO_DOCTOR_TICKETS_URL", "")
-    if not base:
-        log("error", "RHEO_DOCTOR_TICKETS_URL is not set")
-        return 2
     try:
-        extra = json.loads(os.environ.get("RHEO_DOCTOR_TICKET_FIELDS") or "{}")
+        command = shlex.split(os.environ.get("RHEO_DOCTOR_PAGE_COMMAND", ""))
     except ValueError:
-        extra = None
-    if not isinstance(extra, dict):
-        log("error", "RHEO_DOCTOR_TICKET_FIELDS is not a JSON object")
+        log("error", "RHEO_DOCTOR_PAGE_COMMAND is not a valid command line")
         return 2
-    try:
-        key = read_key(
-            os.environ.get(
-                "RHEO_DOCTOR_ENV_FILE", "/root/.config/rheostream-doctor.env"
-            )
+    if not command:
+        log("error", "RHEO_DOCTOR_PAGE_COMMAND is not set")
+        return 2
+    state_file = os.environ.get("RHEO_DOCTOR_STATE_FILE") or DEFAULT_STATE_FILE
+
+    paged, state_status = load_state(state_file)
+    if state_status != "ok":
+        log(
+            "error",
+            f"state file {state_file} is {state_status}, so no check counts as paged",
         )
-        tickets = Tickets(base, key, extra)
-        open_tickets = tickets.open_doctor_tickets()
-        failures = run_doctor(project, service)
-        failing = {f.source_ref for f in failures}
-        host = socket.gethostname()
-        for failure in failures:
+    if dry_run:
+        print(f"state file {state_file}: {state_status}")
+
+    failures = run_doctor(project, service)
+    failing: dict[str, Failure] = {}
+    for failure in failures:
+        failing.setdefault(failure.slug, failure)
+    host = platform.node()
+    pager_failed = False
+
+    for slug, failure in failing.items():
+        if slug in paged:
+            log("error", f"{slug} FAIL, already paged")
+            continue
+        message = f"rheo.stream doctor FAIL on {host}: {failure.line}"
+        if dry_run:
+            print(f"would page: {message}")
+            continue
+        reason = page(command, message)
+        if reason is None:
+            paged[slug] = failure.check
+            log("error", f"{slug} FAIL, paged")
+        else:
+            pager_failed = True
+            log("error", f"{slug} FAIL, page not sent: page command {reason}")
+
+    # Doctor did not run, so no other check was evaluated: send no recovery.
+    if DOCTOR_RUN not in failing:
+        for slug, check in sorted(paged.items()):
+            if slug in failing:
+                continue
+            message = f"rheo.stream doctor recovered on {host}: {check}"
             if dry_run:
-                print(f"would file {failure.source_ref}: {failure.line}")
+                print(f"would send recovery: {message}")
                 continue
-            status = tickets.file(failure, host)
-            action = "created" if status == 201 else "updated"
-            log("error", f"{failure.source_ref} FAIL, ticket {action}")
-        # Doctor did not run, so no other check was evaluated: close nothing.
-        evaluated = DOCTOR_RUN_REF not in failing
-        for ticket in open_tickets if evaluated else []:
-            if ticket.get("source_ref") in failing:
-                continue
-            ref, ticket_id = ticket.get("source_ref"), ticket.get("id")
-            if dry_run:
-                print(f"would close {ref} (ticket {ticket_id})")
-                continue
-            tickets.close(ticket_id)
-            log("info", f"{ref} recovered, ticket {ticket_id} closed")
-    except Unavailable as exc:
-        log("error", str(exc))
+            reason = page(command, message)
+            if reason is None:
+                del paged[slug]
+                log("info", f"{slug} recovered, notice sent")
+            else:
+                pager_failed = True
+                log(
+                    "error", f"{slug} recovered, notice not sent: page command {reason}"
+                )
+
+    if not dry_run:
+        try:
+            write_state(state_file, paged)
+        except OSError as exc:
+            pager_failed = True
+            log("error", f"cannot write state file {state_file}: {type(exc).__name__}")
+    if pager_failed:
         return 2
     if not failures:
         log("info", "doctor all ok")
