@@ -87,7 +87,8 @@ class ItemCloseBySource(Strict):
 class ItemClosed(Strict):
     closed: bool
     ref: str | None
-    """The item holding the pair, closed or not; null when no item holds it."""
+    """The item holding the pair, closed or not; null when no item holds it, and
+    always null for a caller that cannot read items."""
 
 
 def _no_overlap(model: BaseModel, clear: list[str]) -> None:
@@ -202,8 +203,20 @@ class ItemDetail(ItemSummary):
 
 
 class ItemCreated(Strict):
+    """What a create did. A caller that can read items gets ``{action, item}``; one
+    that cannot (a writer token) gets ``{action, ref}``, so creating with a known
+    source pair is never a way to read the item. The absent key is left out of the
+    dump, not sent as null, which keeps the reading caller's result as it was."""
+
     action: CreateAction
-    item: ItemDetail
+    item: ItemDetail | None = Field(default=None, exclude_if=lambda v: v is None)
+    ref: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+    @model_validator(mode="after")
+    def _item_or_ref(self) -> "ItemCreated":
+        if (self.item is None) == (self.ref is None):
+            raise ValueError("a create result carries either the item or its ref")
+        return self
 
 
 class ItemPage(Strict):

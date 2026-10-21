@@ -7,10 +7,10 @@ No handler commits: dispatch owns the transaction and the audit boundary.
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
-from rheo_contracts import StaleRecord, WorkspaceContext
+from rheo_contracts import ALL_OPERATIONS, StaleRecord, WorkspaceContext
 from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.events import NewEvent, publish
 from rheo_core.events.consumers import HandlerUnitOfWork
@@ -23,6 +23,8 @@ from rheo_current.contracts import ItemEvent
 from rheo_current.references import ref
 from rheo_current.storage import tables as t
 
+READ_ITEM: Final = "current.item.get"
+
 
 def now() -> datetime:
     return datetime.now(UTC)
@@ -34,6 +36,21 @@ def refuse(state: str, detail: str | None = None) -> OperationRefused:
 
 def lock(uow: UnitOfWork) -> None:
     lock_workspace_lifecycle(uow.connection)
+
+
+def reads_items(ctx: WorkspaceContext) -> bool:
+    """Whether the caller may also run ``current.item.get``, so a write may hand the
+    item back to it.
+
+    The operation set is the only check needed: get's roles include every role that
+    may create or close, and it lives in this same module. A writer token's set holds
+    create and close by source without get, so its results carry no item content and
+    close by source does not say which item, if any, holds a pair.
+    """
+    permitted = ctx.operation_set
+    return permitted is ALL_OPERATIONS or (
+        isinstance(permitted, frozenset) and READ_ITEM in permitted
+    )
 
 
 def row(uow: UnitOfWork, table: Table, identifier: UUID) -> dict[str, Any]:

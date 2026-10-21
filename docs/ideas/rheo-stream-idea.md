@@ -2003,7 +2003,11 @@ The following changes are recorded here.
     items in any area and close any source-keyed item of any `source_kind`, an email
     thread whose id it guesses included, until it expires or is revoked. It can also
     reopen any existing source-keyed item, or raise its priority, by creating with
-    that item's pair. It cannot read, update, comment, delete or reach another module.
+    that item's pair. It cannot read items: create answers it with the action and the
+    ref only, and close by source with a null ref, so neither reads an item nor tells a
+    done item from an unknown pair. Writers with sequential source refs (numbered
+    support requests) are why: a token that could read by pair could walk them all. It
+    cannot update, comment, delete or reach another module.
     `read_only`, `agent_default` and `cli_full` are unchanged. Rotation: a `cli` token
     lives at most 90 days and each writer has its own, so a renewal mints the
     replacement, swaps the writer's secret, then revokes the old token, and a renewal

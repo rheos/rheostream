@@ -445,7 +445,7 @@ async def test_an_alert_writer_token_creates_and_closes_and_is_audited_as_the_to
     assert created.status_code == 200, created.text
     assert created.json()["state"] == "succeeded"
     assert created.json()["result"]["action"] == "created"
-    ref = created.json()["result"]["item"]["ref"]
+    ref = created.json()["result"]["ref"]
 
     closed = await _post(
         "/api/v1/operations/current.item.close_by_source",
@@ -454,7 +454,9 @@ async def test_an_alert_writer_token_creates_and_closes_and_is_audited_as_the_to
     )
     assert closed.status_code == 200, closed.text
     assert closed.json()["state"] == "succeeded"
-    assert closed.json()["result"] == {"closed": True, "ref": ref}
+    assert closed.json()["result"] == {"closed": True, "ref": None}
+    got = dispatch(current_on_the_route.owner, "current.item.get", {"ref": ref})
+    assert got.ok and got.result.status == "done"  # type: ignore[union-attr]
 
     # Both calls are audited as the token, on the api entry, not as the owner.
     with open_unit_of_work(current_on_the_route.owner) as uow:
@@ -523,6 +525,171 @@ async def test_a_revoked_and_an_expired_alert_writer_token_are_refused_401(
         assert resp.json()["state"] == state
     listed = dispatch(owner, "current.item.list", {"status": "all"})
     assert listed.ok and listed.result.items == []  # type: ignore[union-attr]
+
+
+SUPPORT = {"source_kind": "support.form"}
+ITEM_CONTENT = {
+    "item",
+    "title",
+    "body",
+    "comments",
+    "provenance",
+    "source_kind",
+    "source_ref",
+    "blockers",
+    "blocking",
+    "status",
+}
+
+
+def _support_pair(number: int) -> dict[str, str]:
+    """A sequential pair, the kind a writer token could enumerate."""
+    return {**SUPPORT, "source_ref": f"support-request-{number}"}
+
+
+def _owner_creates(owner: WorkspaceContext, pair: dict[str, str]) -> Any:
+    """An item holding ``pair``, with a body and a comment, created by the owner."""
+    made = dispatch(
+        owner,
+        "current.item.create",
+        {"title": "Synthetic support request", "body": "Type: support-ticket", **pair},
+        consumers=CONSUMERS,
+    )
+    assert made.ok, made
+    item = made.result.item  # type: ignore[union-attr]
+    commented = dispatch(
+        owner,
+        "current.item.comment",
+        {"ref": item.ref, "body": "Synthetic private note"},
+    )
+    assert commented.ok, commented
+    return item
+
+
+def _owner_sets_status(owner: WorkspaceContext, ref: str, status: str) -> None:
+    got = dispatch(owner, "current.item.get", {"ref": ref})
+    assert got.ok, got
+    payload: dict[str, object] = {
+        "ref": ref,
+        "revision": got.result.revision,  # type: ignore[union-attr]
+        "status": status,
+    }
+    if status == "snoozed":
+        payload["snoozed_until"] = "2099-01-01T09:00:00+00:00"
+    moved = dispatch(owner, "current.item.set_status", payload, consumers=CONSUMERS)
+    assert moved.ok, moved
+
+
+async def test_an_alert_writer_create_returns_only_the_action_and_the_ref(
+    current_on_the_route: CurrentOnTheRoute,
+) -> None:
+    """Every create path (created, grouped, reopened, woke) answers a writer token
+    with ``{action, ref}``: creating with a known pair never reads the item."""
+    owner = current_on_the_route.owner
+    existing = {
+        "grouped": _owner_creates(owner, _support_pair(1)).ref,
+        "reopened": _owner_creates(owner, _support_pair(2)).ref,
+        "woke": _owner_creates(owner, _support_pair(3)).ref,
+    }
+    _owner_sets_status(owner, existing["reopened"], "done")
+    _owner_sets_status(owner, existing["woke"], "snoozed")
+    value, _ = _mint(owner, set_name="alert_writer")
+    headers = {"Authorization": f"Bearer {value}"}
+
+    for number, action in enumerate(("grouped", "reopened", "woke", "created"), 1):
+        resp = await _post(
+            "/api/v1/operations/current.item.create",
+            headers=headers,
+            json={"title": "Probe", **_support_pair(number)},
+        )
+        assert resp.status_code == 200, resp.text
+        result = resp.json()["result"]
+        assert set(result) == {"action", "ref"}, (action, result)
+        assert not set(result) & ITEM_CONTENT
+        assert result["action"] == action
+        if action in existing:
+            assert result["ref"] == existing[action]
+        assert "Synthetic private note" not in resp.text
+        assert "support-ticket" not in resp.text
+
+
+async def test_an_alert_writer_close_by_source_never_returns_a_ref(
+    current_on_the_route: CurrentOnTheRoute,
+) -> None:
+    """A done item, an open item and a pair nobody holds all answer ``ref: null``,
+    so the call cannot test whether a pair exists."""
+    owner = current_on_the_route.owner
+    done = _owner_creates(owner, _support_pair(1)).ref
+    _owner_sets_status(owner, done, "done")
+    still_open = _owner_creates(owner, _support_pair(2)).ref
+    value, _ = _mint(owner, set_name="alert_writer")
+
+    answers = []
+    for number in (1, 2, 3):
+        resp = await _post(
+            "/api/v1/operations/current.item.close_by_source",
+            headers={"Authorization": f"Bearer {value}"},
+            json=_support_pair(number),
+        )
+        assert resp.status_code == 200, resp.text
+        answers.append(resp.json()["result"])
+    assert answers == [
+        {"closed": False, "ref": None},
+        {"closed": True, "ref": None},
+        {"closed": False, "ref": None},
+    ]
+    got = dispatch(owner, "current.item.get", {"ref": still_open})
+    assert got.ok and got.result.status == "done"  # type: ignore[union-attr]
+
+
+async def test_an_owner_session_and_a_reading_token_keep_the_full_results(
+    current_on_the_route: CurrentOnTheRoute,
+) -> None:
+    """Callers that can read items see what they saw before: create returns
+    ``{action, item}`` with the full detail, and close by source returns the ref."""
+    owner = current_on_the_route.owner
+    session = dispatch(
+        owner,
+        "current.item.create",
+        {"title": "Synthetic support request", **_support_pair(1)},
+        consumers=CONSUMERS,
+    )
+    assert session.ok, session
+    dumped = session.result.model_dump(mode="json")  # type: ignore[union-attr]
+    assert list(dumped) == ["action", "item"]
+    assert dumped["item"]["source_ref"] == "support-request-1"
+    closed = dispatch(
+        owner, "current.item.close_by_source", _support_pair(1), consumers=CONSUMERS
+    )
+    assert closed.ok, closed
+    assert closed.result.model_dump(mode="json") == {  # type: ignore[union-attr]
+        "closed": True,
+        "ref": dumped["item"]["ref"],
+    }
+
+    value, _ = _mint(owner, set_name="cli_full")
+    headers = {"Authorization": f"Bearer {value}"}
+    created = await _post(
+        "/api/v1/operations/current.item.create",
+        headers=headers,
+        json={"title": "Synthetic support request", **_support_pair(2)},
+    )
+    assert created.status_code == 200, created.text
+    result = created.json()["result"]
+    assert list(result) == ["action", "item"]
+    assert result["item"]["source_ref"] == "support-request-2"
+    assert {"body", "comments", "provenance", "blockers"} <= set(result["item"])
+    for closed_now in (True, False):
+        resp = await _post(
+            "/api/v1/operations/current.item.close_by_source",
+            headers=headers,
+            json=_support_pair(2),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["result"] == {
+            "closed": closed_now,
+            "ref": result["item"]["ref"],
+        }
 
 
 async def test_a_read_only_cli_token_reads_current_over_the_route(

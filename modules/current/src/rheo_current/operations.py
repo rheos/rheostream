@@ -41,8 +41,9 @@ SPECS = (
         "grouped, reopened (was done) or woke (was snoozed); pass fingerprint (such as "
         "the latest message id) so the same signal twice changes nothing. A repeat "
         "never changes title, body, area or project, and only raises priority. "
-        "Areas come from current_areas; dates are YYYY-MM-DD. area_unknown and "
-        "area_retired refuse an unusable area.",
+        "Returns the action and the item; a caller that cannot use current_get gets "
+        "the action and the item's ref only. Areas come from current_areas; dates "
+        "are YYYY-MM-DD. area_unknown and area_retired refuse an unusable area.",
     ),
     (
         "item.get",
@@ -112,7 +113,8 @@ SPECS = (
         "Close the item that holds this source_kind and source_ref, without knowing "
         "its ref or revision. Returns closed true with the ref when an open, waiting "
         "or snoozed item was closed; closed false when no item holds the pair or it "
-        "is already done. Closing clears the item's seen fingerprints, so the next "
+        "is already done. A caller that cannot use current_get always gets ref "
+        "null. Closing clears the item's seen fingerprints, so the next "
         "create with this pair reopens it. note (up to 2000 characters) is added to "
         "the system comment. This tool never returns not_found or record_stale; a "
         "bad source_kind, source_ref or note returns input_invalid.",

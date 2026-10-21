@@ -12,10 +12,13 @@ from rheo_contracts import Role, SafetyClass
 from rheo_core.tokens.sets import ALERT_WRITER_OPERATIONS
 from rheo_current import MANIFEST
 from rheo_current.areas import DEFAULT_AREAS
+from rheo_current.common import READ_ITEM
 from rheo_current.contracts import (
     DependencyInput,
     ItemCloseBySource,
     ItemCreate,
+    ItemCreated,
+    ItemDetail,
     ItemInput,
     ItemStatusInput,
     ItemUpdate,
@@ -245,6 +248,55 @@ def test_the_alert_writer_set_names_currents_declared_create_and_close() -> None
     declared = {declaration.name for declaration, _ in OPERATIONS}
     assert ALERT_WRITER_OPERATIONS == {"current.item.create", CLOSE}
     assert ALERT_WRITER_OPERATIONS <= declared
+
+
+DETAIL: dict[str, Any] = {
+    "ref": ITEM,
+    "title": "Synthetic task",
+    "status": "open",
+    "priority": "normal",
+    "area": None,
+    "project_ref": None,
+    "due_on": None,
+    "snoozed_until": None,
+    "woke": False,
+    "overdue": False,
+    "blocked": False,
+    "event_count": 1,
+    "revision": 1,
+    "updated_at": "2026-10-21T09:00:00Z",
+    "body": "Type: support-ticket",
+    "provenance": "alert",
+    "source_kind": "support.form",
+    "source_ref": "support-request-1",
+    "created_at": "2026-10-21T09:00:00Z",
+    "closed_at": None,
+    "project": None,
+    "blockers": [],
+    "blocking": [],
+    "comments": [],
+}
+
+
+def test_a_create_result_dumps_the_item_or_the_ref_with_no_null_key() -> None:
+    full = ItemCreated(action="grouped", item=ItemDetail.model_validate(DETAIL))
+    dumped = full.model_dump(mode="json")
+    assert list(dumped) == ["action", "item"]
+    assert dumped["item"]["body"] == "Type: support-ticket"
+    slim = ItemCreated(action="grouped", ref=ITEM).model_dump(mode="json")
+    assert slim == {"action": "grouped", "ref": ITEM}
+    for neither_or_both in ({}, {"item": DETAIL, "ref": ITEM}):
+        with pytest.raises(ValidationError):
+            ItemCreated.model_validate({"action": "created", **neither_or_both})
+
+
+def test_the_read_check_names_get_which_every_create_or_close_role_may_run() -> None:
+    """``reads_items`` checks only the operation set, which is sound only while get is
+    declared here and open to every role that may create or close by source."""
+    roles = {d.name: d.roles for d, _ in OPERATIONS}
+    assert READ_ITEM == "current.item.get" and READ_ITEM in roles
+    assert roles["current.item.create"] <= roles[READ_ITEM]
+    assert roles[CLOSE] <= roles[READ_ITEM]
 
 
 def test_no_input_names_an_author() -> None:

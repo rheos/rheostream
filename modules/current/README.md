@@ -38,7 +38,9 @@ that pair, snoozed and done ones included. A `fingerprint` (such as the latest m
 id) already seen changes only `updated_at`. Any other repeat raises the event count,
 adds a system comment and raises priority if the new signal's is higher, never lower:
 a done item is `reopened`, a snoozed one `woke`, anything else `grouped`. A repeat never
-changes title, body, area or project.
+changes title, body, area or project. The result is the action and the item, except for
+a caller that cannot read items (its token lacks `current.item.get`, as a writer token
+does): that caller gets the action and the item's ref only.
 
 `current.item.close_by_source` closes the item that holds a `source_kind` and
 `source_ref`, so a caller that keeps no ref or revision can close what it filed. An
@@ -46,11 +48,12 @@ open, waiting or snoozed item becomes `done` with one system comment naming the 
 actor kind (plus the optional note, up to 2000 characters), and the result is
 `closed: true` with the ref. When no item holds the pair, or it is already done, the
 close is a quiet no-op: `closed: false`, no comment, no event, no new revision, never
-`not_found`. Either way the close clears the found item's seen fingerprints, so the
-next create with the same pair reopens it even if it carries a fingerprint sent before
-the close. A person's move to `done` through `current.item.set_status` does not clear
-them: an email thread closed by hand stays closed when intake re-reads it with the same
-newest-message fingerprint.
+`not_found`. A caller that cannot read items always gets a null ref, so a done item and
+a pair no item holds answer alike. Either way the close clears the found item's seen
+fingerprints, so the next create with the same pair reopens it even if it carries a
+fingerprint sent before the close. A person's move to `done` through
+`current.item.set_status` does not clear them: an email thread closed by hand stays
+closed when intake re-reads it with the same newest-message fingerprint.
 
 ## Operations and roles
 
@@ -118,8 +121,14 @@ both. It also reads every other module, because `read_only` is not limited to Cu
 Residual exposure: a leaked writer token can open items in any area and close any
 source-keyed item of any `source_kind`, including an email thread whose id it guesses,
 until it expires or is revoked. It can also reopen any existing source-keyed item, or
-raise its priority, by creating with that item's pair. It cannot read, update, comment
-on or delete items, and it cannot reach another module.
+raise its priority, by creating with that item's pair. It cannot read items: its create
+and close results carry an action and at most a ref, never an item's content, and close
+by source answers a done item and an unknown pair alike. This matters because some
+writers number their source refs in sequence (support requests, for one), so a token
+that could read by pair could walk every item that writer filed. A create still says
+whether its pair was new, but only by acting on it, which leaves a new item or a repeat
+on the old one. It cannot update, comment on or delete items, and it cannot reach
+another module.
 
 Audit growth: every close by source writes one audit record, a no-op close included,
 because the dispatcher audits every mutate. Release one does not prune audit records. A
