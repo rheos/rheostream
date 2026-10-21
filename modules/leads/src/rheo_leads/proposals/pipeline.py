@@ -61,6 +61,9 @@ class JobInput:
     budget_min: str | None = None
     budget_max: str | None = None
     questions: str | None = None
+    # The owner said the form has its own question fields, so the posting's
+    # "please include" items get answer blocks. Off, the letter covers them.
+    posting_questions: bool = False
     pricing_mode: str | None = None
     # The listing's own type (hourly or fixed) and the job's milestones, if any.
     listing_type: str | None = None
@@ -120,14 +123,17 @@ def generate(
         analysis = prompts.empty_analysis()
         analysed = False
 
-    # A "please include" list in the posting is answered like typed questions, but
-    # only when none were entered: a hand-entered list always wins.
+    # A "please include" list in the posting is answered like typed questions only
+    # when the owner said the form has separate fields and typed none: most forms
+    # have one cover letter box, so by default the letter covers those items.
     seeded: str | None = None
     questions = job.questions
-    if not (questions or "").strip() and analysis["embedded_questions"]:
-        seeded = "\n".join(analysis["embedded_questions"])
+    embedded = list(analysis["embedded_questions"])
+    if not (questions or "").strip() and embedded and job.posting_questions:
+        seeded = "\n".join(embedded)
         questions = seeded
     asked = prompts.real_questions(questions)
+    letter_asks = embedded if not asked else []
 
     anecdotes = prompts.select_anecdotes(
         policy.anecdotes,
@@ -174,6 +180,7 @@ def generate(
         pricing_mode="milestones" if rows else job.pricing_mode,
         figures=figures,
         questions=bool(asked),
+        letter_asks=letter_asks,
     )
     evidence = gate.Evidence(
         profile=profile.profile,

@@ -100,6 +100,9 @@ function useTyped(): boolean {
 export function ProposalWorkflow(props: WorkflowProps) {
   const [view, setView] = useState<Row>(props.proposal);
   const [questions, setQuestions] = useState(str(props.proposal.questions));
+  const [separate, setSeparate] = useState(
+    props.proposal.posting_questions === true,
+  );
   const [stage, setStage] = useState<StageId>(
     draftState(props.proposal) === "idle" ? "posting" : "proposal",
   );
@@ -229,6 +232,8 @@ export function ProposalWorkflow(props: WorkflowProps) {
           opportunityRef={props.opportunityRef}
           view={view}
           questions={questions}
+          separate={separate}
+          setSeparate={setSeparate}
           setView={setView}
           paused={running && typed}
           reload={() => (reload ? reload() : window.location.reload())}
@@ -307,8 +312,9 @@ function QuestionsPanel(props: {
         <InfoTip label="About screening questions">
           <p>
             The draft answers each one after the cover letter, from your profile
-            only. Leave this empty for a cover letter alone. Questions the posting
-            itself asks are picked up when you draft.
+            only. Leave this empty for a cover letter alone. To answer the
+            posting&apos;s own questions separately, tick the box by the draft
+            button.
           </p>
         </InfoTip>
       </div>
@@ -344,6 +350,8 @@ function ProposalPanel(props: {
   opportunityRef: string;
   view: Row;
   questions: string;
+  separate: boolean;
+  setSeparate: (on: boolean) => void;
   setView: SetView;
   paused: boolean;
   reload: () => void;
@@ -396,6 +404,7 @@ function ProposalPanel(props: {
     const done = await call("leads.jobproposal.request", {
       ref: opportunityRef,
       questions: props.questions,
+      posting_questions: props.separate,
       force,
     });
     if (done.code === "draft_edited") setConfirmForce(true);
@@ -484,6 +493,25 @@ function ProposalPanel(props: {
             </p>
           </InfoTip>
         </div>
+      </div>
+      <div className={styles.option}>
+        <label className={styles.check}>
+          <input
+            type="checkbox"
+            checked={props.separate}
+            disabled={running}
+            onChange={(event) => props.setSeparate(event.target.checked)}
+          />
+          The form has separate question fields
+        </label>
+        <InfoTip label="About separate question fields">
+          <p>
+            Off, the draft is one cover letter, and anything the posting asks
+            applicants to include is covered inside it. On, the posting&apos;s
+            own questions get their own answers after the letter. Questions you
+            type on the Questions tab always get their own answers.
+          </p>
+        </InfoTip>
       </div>
       {wholeDirty ? (
         <p className={styles.note} role="status">

@@ -62,9 +62,12 @@ job_proposal = Table(
         primary_key=True,
     ),
     Column("state", Text, nullable=False),
-    # The screening questions, one per line, as the owner entered them or as the
-    # posting embedded them. The source of record for the next draft.
+    # The screening questions, one per line, as the owner entered them. The source of
+    # record for the next draft.
     Column("questions", Text),
+    # The owner said the application form has its own question fields, so the
+    # posting's own "please include" items get answer blocks too (0017).
+    Column("posting_questions", Boolean, nullable=False, server_default="false"),
     Column("stage", Text),
     Column("step", Integer),
     Column("total", Integer),

@@ -315,8 +315,10 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
 ) -> None:
     drafting.set_profile()
     opportunity = drafting.paste("~025200")
-    queued = drafting.op("leads.jobproposal.request", ref=opportunity)
-    assert queued.state == "queued"
+    queued = drafting.op(
+        "leads.jobproposal.request", ref=opportunity, posting_questions=True
+    )
+    assert queued.state == "queued" and queued.posting_questions is True
     assert sweeps(drafting.i)
     caplog.set_level(logging.DEBUG)
     drafting.sweep()
@@ -330,13 +332,18 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
     ]
     assert got.draft == DRAFT
     assert got.edited is False
-    # The posting's own "please include" item became the questions.
-    assert got.questions == "What is your rate?"
+    # The posting's own "please include" item was answered on its own, but the
+    # Questions field still holds only what the owner typed.
+    assert got.questions is None
+    assert (
+        "SCREENING QUESTIONS (answer each after the proposal):\nWhat is your rate?"
+        in (drafting.model.starts[1].request.task)
+    )
     assert got.findings["analysis"]["angle"] == ANALYSIS["angle"]
     assert got.findings["accuracy"][0]["verdict"] == "whitelisted"
     assert got.findings["style"] == []
     assert got.model_id == "claude_cli:default"
-    assert got.prompt_version == "jobproposal.1/profile.1"
+    assert got.prompt_version == "jobproposal.2/profile.1"
     assert drafting.model.roles == ["analysis", "draft", "gate"]
     # Every call ran as the profile's owner, tool-less, and left nothing behind.
     assert {t["account_id"] for t in drafting.tokens.issued} == {
@@ -357,6 +364,32 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
         "leads.ui.queue", pipeline_id=str(drafting.c.pipeline_id), sort="newest"
     )
     assert queue.items[0]["has_draft"] is True
+
+
+def test_by_default_the_postings_own_questions_stay_in_the_letter(
+    drafting: Drafting,
+) -> None:
+    drafting.set_profile()
+    opportunity = drafting.paste("~025250")
+    queued = drafting.op("leads.jobproposal.request", ref=opportunity)
+    assert queued.posting_questions is False
+    drafting.sweep()
+    task = drafting.model.starts[1].request.task
+    assert "SCREENING QUESTIONS" not in task
+    assert "ASKED IN THE LETTER" in task and "- What is your rate?" in task
+    got = drafting.op("leads.jobproposal.get", ref=opportunity)
+    assert got.questions is None and got.posting_questions is False
+
+    # The choice is stored with the request and kept when a later one omits it.
+    drafting.op(
+        "leads.jobproposal.request",
+        ref=opportunity,
+        posting_questions=True,
+        force=True,
+    )
+    drafting.sweep()
+    kept = drafting.op("leads.jobproposal.request", ref=opportunity, force=True)
+    assert kept.posting_questions is True
 
 
 def test_a_regenerate_refuses_over_hand_edits_unless_forced(drafting: Drafting) -> None:

@@ -31,7 +31,7 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0009_jobfeed_collector"
-HEAD = "0016_jobfeed_runs"
+HEAD = "0017_proposal_posting_questions"
 NEW_TABLES = {
     "jobfeed_connection",
     "jobfeed_authorization",
