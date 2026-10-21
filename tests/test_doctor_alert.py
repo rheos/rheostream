@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -218,6 +219,8 @@ def test_recovery_sends_one_notice(tmp_path: Path) -> None:
         '{"version": 1, "paged": []}',
         '{"version": 1, "paged": {"cluster": 3}}',
         b"\xff\xfe".decode("latin-1"),
+        # A wrong-version file that once held this very check still pages it.
+        json.dumps({"version": 2, "paged": {FAIL_SLUG: FAIL_CHECK}}),
     ],
 )
 def test_unreadable_state_pages(tmp_path: Path, content: str) -> None:
@@ -239,6 +242,20 @@ def test_missing_state_pages(tmp_path: Path) -> None:
     assert texts(tmp_path) == [FAIL_PAGE]
     assert "is missing" in result.stderr
     assert read_paged(tmp_path) == {FAIL_SLUG: FAIL_CHECK}
+
+
+def test_missing_state_directory_is_created_and_pages_once(tmp_path: Path) -> None:
+    """A fresh host has no state directory: the first run creates it 0700 and
+    records the page, so the next run does not page the same FAIL again."""
+    path = tmp_path / "fresh" / "doctor" / "state.json"
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    first = run(tmp_path, bindir, state_file=path)
+    assert first.returncode == 1, first.stderr
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert json.loads(path.read_text())["paged"] == {FAIL_SLUG: FAIL_CHECK}
+    second = run(tmp_path, bindir, state_file=path)
+    assert second.returncode == 1, second.stderr
+    assert texts(tmp_path) == [FAIL_PAGE]
 
 
 # AC 19: a page that is not sent is not recorded.
@@ -285,9 +302,11 @@ def test_failed_recovery_notice_keeps_the_check_paged(tmp_path: Path) -> None:
 
 
 def test_state_write_failure_exits_2(tmp_path: Path) -> None:
-    missing_dir = tmp_path / "no-such-dir" / "state.json"
+    # The state file's parent is a regular file, so no directory can be made.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
-    result = run(tmp_path, bindir, state_file=missing_dir)
+    result = run(tmp_path, bindir, state_file=blocker / "state.json")
     assert result.returncode == 2
     assert "cannot write state file" in result.stderr
     # The page itself still went out.
@@ -303,6 +322,24 @@ def test_page_command_timeout_counts_as_not_sent(
     sleeper = [sys.executable, "-c", "import time; time.sleep(30)"]
     assert module.page(sleeper, "x") == "timed out after 1 s"
     assert module.page([sys.executable, "-c", "pass"], "x") is None
+
+
+def test_page_command_timeout_kills_the_whole_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrapper that forks a sender must not deliver after the timeout: the
+    child would write its marker 2 s in, after the 1 s bound has passed."""
+    module = load_script(monkeypatch)
+    module.PAGE_TIMEOUT = 1
+    marker = tmp_path / "delivered"
+    wrapper = [
+        "/bin/sh",
+        "-c",
+        f"(sleep 2; touch {shlex.quote(str(marker))}) & sleep 30",
+    ]
+    assert module.page(wrapper, "x") == "timed out after 1 s"
+    time.sleep(2.5)
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(

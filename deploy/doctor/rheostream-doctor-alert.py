@@ -16,7 +16,8 @@ Paging runs the page command: a command line split with shlex and run without a
 shell. It reads one message on stdin and exits 0 once the message is delivered.
 The script never holds or reads a messaging credential; the command does. A
 command that exits nonzero, cannot start, or runs past 60 seconds has not sent, so
-the check stays unrecorded and the next run tries again.
+the check stays unrecorded and the next run tries again. The command runs in its
+own session, and a timeout kills its whole process group.
 
 Each message is one plain line, handed to the command unchanged (the script never
 picks a markup mode):
@@ -25,7 +26,8 @@ picks a markup mode):
 Doctor's lines are content-free by design (counts, ids, slugs, settings keys).
 
 State file: {"version": 1, "paged": {"<check slug>": "<check name>"}}, mode 0600,
-replaced atomically (temp file in the same directory, fsync, rename). A missing,
+replaced atomically (temp file in the same directory, fsync, rename); a missing
+directory is created 0700. A missing,
 unreadable or wrong-shape file is "unknown": no check counts as paged, so every
 current FAIL pages. It never means all clear.
 
@@ -58,6 +60,7 @@ import os
 import platform
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -183,8 +186,12 @@ def load_state(path: str) -> tuple[dict[str, str], str]:
 
 
 def write_state(path: str, paged: dict[str, str]) -> None:
-    """Replace the state file atomically. mkstemp creates the temp file 0600."""
+    """Replace the state file atomically. mkstemp creates the temp file 0600.
+
+    A missing directory is created 0700, so a fresh host records its first page
+    instead of paging the same FAIL every hour."""
     directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".state-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -209,21 +216,29 @@ def write_state(path: str, paged: dict[str, str]) -> None:
 
 def page(command: list[str], message: str) -> str | None:
     """Run the page command with `message` on stdin. None when it was sent,
-    otherwise why not."""
+    otherwise why not.
+
+    The command runs in its own session. On a timeout the whole process group is
+    killed, so a wrapper's child cannot deliver after the page counted as not
+    sent."""
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
-            input=message.encode("utf-8"),
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            check=False,
-            timeout=PAGE_TIMEOUT,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return f"timed out after {PAGE_TIMEOUT} s"
     except OSError as exc:
         return f"could not start: {type(exc).__name__}"
-    if result.returncode != 0:
-        return f"exited {result.returncode}"
+    try:
+        proc.communicate(message.encode("utf-8"), timeout=PAGE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        return f"timed out after {PAGE_TIMEOUT} s"
+    if proc.returncode != 0:
+        return f"exited {proc.returncode}"
     return None
 
 
