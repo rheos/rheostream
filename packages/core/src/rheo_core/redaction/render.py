@@ -22,6 +22,15 @@ removed (see :mod:`rheo_core.redaction.tiers`), and every string left is passed
 through :func:`~rheo_core.redaction.masking.mask_for_model`. The walk follows the
 model *instance* rather than its annotations, so a union field reaches the class the
 value actually is.
+
+**An output may narrow itself first.** An output model that defines
+``model_projection(policy)`` is rendered from what that returns, an instance of the same
+class, and the tier walk and the masking then run over it as over any other result. It
+is for a record whose sensitivity is data rather than a type: a Leads opportunity is
+``internal`` as a whole, but which of its field values are contact points or
+workspace-declared ``restricted`` extension fields is known only row by row, so the
+module drops those before the generic walk sees them. The hook can only take away: what
+it returns is still tiered by its class and masked string by string.
 """
 
 import dataclasses
@@ -260,6 +269,15 @@ class _OutputWalk:
             if self._excluded(dumped):
                 return _DROP
             return mask_for_model(dumped, self.policy)
+        if (value is None and dumped is None) or (
+            isinstance(value, bool | int | float)
+            and isinstance(dumped, bool | int | float)
+        ):
+            # A number, a flag or a null holds no field to tier; the tier that
+            # governs it, if any, was checked on the field that holds it. Without
+            # this a ``public`` int fell to ``unpaired`` and was withheld for
+            # carrying a marker.
+            return dumped
         return self.unpaired(value, dumped, annotation)
 
     def unpaired(self, value: object, dumped: object, annotation: object) -> object:
@@ -398,7 +416,17 @@ def render_output(model: BaseModel, policy: TierPolicy) -> RenderedResult:
     :data:`WITHHELD_REASON`. A result the walk had to withhold whole for any other
     reason (a tiered shape it cannot pair, which operation registration refuses in the
     first place) comes back ``withheld`` with :data:`UNRENDERABLE_REASON`.
+
+    A ``model_projection`` (see the module docstring) runs first. One that returns
+    anything but an instance of the model's own class withholds the result whole,
+    since its tiers are the class's and a different class would bring its own.
     """
+    projection = getattr(model, "model_projection", None)
+    if callable(projection):
+        projected = projection(policy)
+        if type(projected) is not type(model):
+            return RenderedResult(value=None, withheld=True, reason=UNRENDERABLE_REASON)
+        model = projected
     walk = _OutputWalk(policy)
     rendered = walk.value(model, model.model_dump(mode="json"))
     if rendered is _DROP:

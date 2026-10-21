@@ -14,7 +14,7 @@ from rheo_core.operations.registry import REGISTRY
 from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.settings import resolve
 from rheo_core.settings.storage_source import TransactionBoundOverrideSource
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from rheo_leads import pipeline_contracts as c
 from rheo_leads.configuration import JOBSEARCH_KEY
@@ -87,6 +87,21 @@ def output(record: dict[str, Any], kind: str = "opportunity") -> c.RecordOutput:
         ref=ref(kind, record["id"]),
         revision=record.get("revision", 1),
         data={k: (v.hex() if isinstance(v, bytes) else v) for k, v in record.items()},
+    )
+
+
+def released_extensions(uow: UnitOfWork) -> frozenset[str]:
+    """Extension targets a model may see: declared by some preset, and ``restricted``
+    in none of them, at any version. A target one preset marks ``restricted`` stays
+    withheld everywhere, since an observation's fields are not tied to one preset."""
+    field = p.preset_field
+    return frozenset(
+        uow.connection.execute(
+            select(field.c.target)
+            .where(field.c.target.startswith("ext."))
+            .group_by(field.c.target)
+            .having(func.bool_and(field.c.sensitivity != "restricted"))
+        ).scalars()
     )
 
 
