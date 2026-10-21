@@ -1,9 +1,11 @@
 """Synthetic Current behaviour through real installation, dispatch and approval."""
 
 import json
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from importlib import resources
 from types import SimpleNamespace
 from typing import Any
@@ -21,14 +23,16 @@ from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from pydantic_core import to_jsonable_python
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness, context_for_operator
+from rheo_core.boundary.factories import context_for_event_consumer
 from rheo_core.deletion.tables import deletion_record
 from rheo_core.events import ConsumerRegistry
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.operations.tool_facade import call_registered_tool
+from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import register_resolver
 from rheo_core.storage.routing import open_unit_of_work
-from rheo_core.storage.work_tables import outbox_event
+from rheo_core.storage.work_tables import audit_record, outbox_event
 from rheo_current import MANIFEST
 from rheo_current.areas import DEFAULT_AREAS
 from rheo_current.export import export_records, import_records
@@ -165,7 +169,7 @@ def test_current_installs_alone_with_its_schema_and_areas(current: Current) -> N
             assert indexes == {i.name for i in table.indexes}, table.name
     areas = current.ok("area.list").items
     assert [(a.key, a.label) for a in areas] == list(DEFAULT_AREAS)
-    assert len(MANIFEST.operations) == 16 and len(MANIFEST.tools) == 15
+    assert len(MANIFEST.operations) == 17 and len(MANIFEST.tools) == 16
 
 
 def test_source_dedup_groups_reopens_and_wakes(current: Current) -> None:
@@ -564,3 +568,242 @@ def test_mcp_tools_drive_the_work_loop(current: Current) -> None:
     assert current.tool("current_delete_project", ref=item.ref).state == (
         "input_invalid"
     )
+    alert = current.tool("current_create", title="API down", **PROBE).result.item
+    closed = current.tool("current_close_by_source", **PAIR, note="Recovered.")
+    assert closed.ok and (closed.result.closed, closed.result.ref) == (True, alert.ref)
+    again = current.tool("current_close_by_source", **PAIR)
+    assert again.ok and (again.result.closed, again.result.ref) == (False, alert.ref)
+
+
+# --- close by source ---------------------------------------------------------------
+
+PAIR = {"source_kind": "health-probe", "source_ref": "health-probe:api"}
+PROBE = {**PAIR, "provenance": "alert", "priority": "critical", "area": "dev"}
+CLOSED_BY = "Closed by a source signal (account)."
+
+
+def close(current: Current, **payload: Any) -> OperationOutcome:
+    return current.call("item.close_by_source", **{**PAIR, **payload})
+
+
+def closed(outcome: OperationOutcome) -> tuple[bool, str | None]:
+    assert outcome.ok, outcome
+    return outcome.result.closed, outcome.result.ref
+
+
+def audits(current: Current, operation: str) -> list[str]:
+    with open_unit_of_work(current.ctx) as uow:
+        return list(
+            uow.connection.execute(
+                select(audit_record.c.outcome).where(
+                    audit_record.c.operation_name == operation
+                )
+            ).scalars()
+        )
+
+
+@pytest.mark.parametrize("status", ["open", "waiting", "snoozed"])
+def test_close_by_source_closes_an_open_waiting_or_snoozed_item(
+    current: Current, status: str
+) -> None:
+    item = current.ok("item.create", title="API down", **PROBE).item
+    if status != "open":
+        later = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+        extra = {"snoozed_until": later} if status == "snoozed" else {}
+        assert current.status(item.ref, status, **extra).ok
+    assert closed(close(current)) == (True, item.ref)
+    after = current.get(item.ref)
+    assert after.status == "done" and after.closed_at is not None
+    assert after.snoozed_until is None
+
+
+def test_close_by_source_no_op_writes_nothing_to_the_item(current: Current) -> None:
+    absent = close(current, source_ref="health-probe:nothing-here")
+    assert closed(absent) == (False, None)
+    assert current.count(t.item) == 0 and current.events() == []
+    assert current.count(t.comment) == 0
+    item = current.ok("item.create", title="API down", **PROBE).item
+    assert current.status(item.ref, "done").ok
+    before, events = current.get(item.ref), current.events()
+    for _ in range(2):
+        assert closed(close(current, note="Recovered.")) == (False, item.ref)
+    after = current.get(item.ref)
+    assert after == before, "revision, updated_at, comments and status all stay"
+    assert after.comments == [] and current.events() == events
+
+
+def test_close_by_source_writes_one_system_comment_with_the_note(
+    current: Current,
+) -> None:
+    noted = current.ok("item.create", title="API down", **PROBE).item
+    note = "Probe answered 200 at 10:15 after 3 failures."
+    assert closed(close(current, note=note)) == (True, noted.ref)
+    comments = current.get(noted.ref).comments
+    assert [(c.kind, c.body) for c in comments] == [
+        ("system", f"{CLOSED_BY}\n\n{note}")
+    ]
+    assert (comments[0].author_kind, comments[0].author_id) == (
+        "account",
+        current.ctx.actor.id,
+    )
+    plain = current.ok(
+        "item.create", title="Web down", **{**PROBE, "source_ref": "health-probe:web"}
+    ).item
+    assert closed(close(current, source_ref="health-probe:web"))[0]
+    assert [c.body for c in current.get(plain.ref).comments] == [CLOSED_BY]
+    for bad in (
+        {"note": "n" * 2001},
+        {"note": ""},
+        {"source_kind": "Bad Kind"},
+        {"source_ref": "r" * 513},
+        {"source_ref": ""},
+    ):
+        assert close(current, **bad).state == "input_invalid", bad
+    assert closed(close(current, note="n" * 2000)) == (False, noted.ref)
+
+
+def test_close_by_source_publishes_completed_and_is_audited(current: Current) -> None:
+    item = current.ok("item.create", title="API down", **PROBE).item
+    assert closed(close(current))[0]
+    assert current.events() == [
+        ("current.item.created", item.ref),
+        ("current.item.completed", item.ref),
+    ]
+    assert closed(close(current)) == (False, item.ref)
+    assert closed(close(current, source_ref="health-probe:none")) == (False, None)
+    # Every close writes an audit record, a no-op one included.
+    assert audits(current, "current.item.close_by_source") == ["succeeded"] * 3
+    assert len(current.events()) == 2
+
+
+def test_close_by_source_clears_fingerprints_and_a_manual_close_keeps_them(
+    current: Current,
+) -> None:
+    """Both halves of the fingerprint rule."""
+    first = current.ok("item.create", title="API down", fingerprint="down", **PROBE)
+    assert closed(close(current)) == (True, first.item.ref)
+    back = current.ok("item.create", title="API down", fingerprint="down", **PROBE)
+    assert back.action == "reopened" and back.item.ref == first.item.ref
+    assert back.item.status == "open" and back.item.closed_at is None
+
+    # A person closes the item during the outage; recovery's close is a no-op on a
+    # done item and still clears the fingerprint, so the next outage pages again.
+    web = {**PROBE, "source_ref": "health-probe:web"}
+    hand = current.ok("item.create", title="Web down", fingerprint="down", **web).item
+    assert current.status(hand.ref, "done").ok
+    assert closed(close(current, source_ref="health-probe:web")) == (False, hand.ref)
+    again = current.ok("item.create", title="Web down", fingerprint="down", **web)
+    assert again.action == "reopened" and again.item.status == "open"
+
+    # A thread closed by hand stays closed when intake reads the same message again.
+    mail = {"source_kind": "email", "source_ref": "thread-1", "provenance": "email"}
+    thread = current.ok("item.create", title="Reply", fingerprint="message-1", **mail)
+    assert current.status(thread.item.ref, "done").ok
+    reread = current.ok("item.create", title="Reply", fingerprint="message-1", **mail)
+    assert reread.action == "grouped" and reread.item.status == "done"
+
+
+def test_repeat_with_the_same_fingerprint_while_open_adds_nothing(
+    current: Current,
+) -> None:
+    first = current.ok("item.create", title="API down", fingerprint="down", **PROBE)
+    events = current.events()
+    for _ in range(3):
+        again = current.ok("item.create", title="x", fingerprint="down", **PROBE)
+        assert again.action == "grouped" and again.item.comments == []
+        assert again.item.event_count == 1
+        assert again.item.revision == first.item.revision
+    assert current.events() == events
+
+
+RACE_ROUNDS = 8
+"""Rounds per pairing. Two threads released together interleave differently each
+time, so one round would catch a broken serialization only some of the time."""
+
+
+def race(*calls: Callable[[], OperationOutcome]) -> list[OperationOutcome]:
+    """Run ``calls`` from threads released together; an exception fails the test."""
+    start = threading.Barrier(len(calls))
+    results: list[OperationOutcome | BaseException | None] = [None] * len(calls)
+
+    def run(index: int) -> None:
+        start.wait()
+        try:
+            results[index] = calls[index]()
+        except BaseException as error:  # noqa: BLE001 - reported by the assert below
+            results[index] = error
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(calls))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    outcomes: list[OperationOutcome] = []
+    for result in results:
+        assert isinstance(result, OperationOutcome), result
+        outcomes.append(result)
+    return outcomes
+
+
+def test_close_by_source_is_safe_against_concurrent_callers(current: Current) -> None:
+    for n in range(RACE_ROUNDS):
+        pair = {"source_ref": f"race-close-{n}"}
+        item = current.ok("item.create", title="x", **{**PROBE, **pair}).item
+        both = race(partial(close, current, **pair), partial(close, current, **pair))
+        assert sorted(closed(o)[0] for o in both) == [False, True]
+        after = current.get(item.ref)
+        assert after.status == "done" and [c.body for c in after.comments] == [
+            CLOSED_BY
+        ]
+
+        pair = {"source_ref": f"race-create-{n}"}
+        signal = {**PROBE, **pair, "fingerprint": "down"}
+        item = current.ok("item.create", title="x", **signal).item
+        shut, made = race(
+            partial(close, current, **pair),
+            partial(current.call, "item.create", title="x", **signal),
+        )
+        assert closed(shut)[0] and made.ok, made
+        final = current.get(item.ref).status
+        # Close first: the create reopens. Create first: it groups, then close wins.
+        expected = "open" if made.result.action == "reopened" else "done"
+        assert made.result.action in {"reopened", "grouped"}
+        assert final == expected
+
+        pair = {"source_ref": f"race-status-{n}"}
+        item = current.ok("item.create", title="x", **{**PROBE, **pair}).item
+        shut, moved = race(
+            partial(close, current, **pair),
+            partial(
+                current.call,
+                "item.set_status",
+                ref=item.ref,
+                revision=item.revision,
+                status="waiting",
+            ),
+        )
+        assert closed(shut) == (True, item.ref)
+        assert moved.ok or moved.state == "record_stale", moved
+        assert current.get(item.ref).status == "done"
+
+
+def test_close_by_source_refuses_service_and_operator_callers(
+    current: Current,
+) -> None:
+    current.ok("item.create", title="API down", **PROBE)
+    with open_unit_of_work(current.ctx) as uow:
+        service = context_for_event_consumer(
+            current.workspace,
+            uow,
+            request_id=uuid7(),
+            operation_names=frozenset({"current.item.close_by_source"}),
+        )
+    operator = context_for_operator(current.workspace)
+    for ctx in (service, operator):
+        assert isinstance(ctx, WorkspaceContext), ctx
+        caller = Current(
+            current.cluster, current.workspace, ctx, current.surfaces, current.consumers
+        )
+        assert close(caller).state == "role_not_permitted"
+    member = current.as_role(Role.MEMBER, "member-close")
+    assert closed(close(member))[0]

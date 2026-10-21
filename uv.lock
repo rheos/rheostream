@@ -1199,12 +1199,14 @@ name = "rheo-current"
 version = "0.1.0"
 source = { editable = "modules/current" }
 dependencies = [
+    { name = "pydantic" },
     { name = "rheo-contracts" },
     { name = "rheo-core" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "rheo-contracts", editable = "packages/contracts" },
     { name = "rheo-core", editable = "packages/core" },
 ]

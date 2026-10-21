@@ -96,8 +96,9 @@ def _print_outcome_error(state: str, error_text: str | None) -> None:
 def load_operation_inventory() -> str | None:
     """Register what ``core`` registers on top of the core operations, or say why not.
 
-    ``core.token.issue`` expands a named set against the live registries: ``cli_full``
-    and ``read_only`` read ``REGISTRY``, ``agent_default`` reads ``TOOL_REGISTRY``.
+    ``core.token.issue`` expands a named set against the live registries: ``cli_full``,
+    ``read_only`` and ``alert_writer`` read ``REGISTRY``, ``agent_default`` reads
+    ``TOOL_REGISTRY``.
     :func:`~rheo_app_cli.context.bootstrap` registers the core operations only, so
     before issue #117 a CLI-issued token could never hold a module operation, and an
     ``mcp`` token's ``agent_default`` named no tool at all. This runs the same two

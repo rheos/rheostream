@@ -16,9 +16,11 @@ docstring describes in full).
 ``issue``'s pipeline: resolve the issuing authority from ``ctx`` (a session
 issuer's permitted set is every operation whose declared roles include the
 account's role in the target workspace; an operator issuer's permitted set is
-the union of the three named package sets, intersected with the *target
+the union of the three rule-based package sets, intersected with the *target
 account's* role in the target workspace, since an operator context carries no
-role of its own that means anything here) -> expand the named set or the
+role of its own that means anything here; the fourth set, the enumerated
+``alert_writer``, needs no place in that union because ``cli_full`` already holds
+both of its operations) -> expand the named set or the
 explicit list -> intersect with the issuer's permitted set -> strip
 :data:`~rheo_core.tokens.policy.NON_TOKEN_ISSUABLE` (an **explicit** list naming
 one of the eight is refused ``SET_NOT_ISSUABLE`` naming the operation; a **named
@@ -225,7 +227,7 @@ def _issuer_permitted_set(
     test harness's ``context_for_harness``) issues only for its own account,
     with every operation ``ctx.role`` could ever be granted. An operator issuer
     names the target account explicitly and is bounded by the union of the
-    three package sets *for that account's own role* in this workspace, since
+    three rule-based package sets *for that account's own role* in this workspace, since
     ``Role.OPERATOR`` itself carries no membership-shaped permission here.
     """
     if ctx.actor.kind is ActorKind.ACCOUNT:
