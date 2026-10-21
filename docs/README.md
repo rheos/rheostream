@@ -2,6 +2,8 @@
 
 - [Architecture tour](architecture/code-tour.md): a short route through the implemented
   request path, a storage decision, and the cross-database enqueue limitation.
+- [Design guide](guide/README.md): how rheoStream works, by design. One plain-language
+  page per part of the system, each linking to its specification, code and tests.
 
 - [Idea document](ideas/rheo-stream-idea.md): product thesis, boundaries, decisions,
   and open architecture questions.
