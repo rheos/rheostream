@@ -42,12 +42,15 @@ project. It might end in a referral, a nurture stage or a closed outcome.
 
 ## How it works
 
-**Three decisions stay separate.** Has this delivery been seen before? Is this person
-someone we already know? Does this evidence belong to an existing opportunity? Each has
-its own rule and its own scope, and none is allowed to stand in for another.
+### Three decisions stay separate
 
-**Acceptance is one transaction, and the sender's retry is safe.** Every transport ends
-in one operation, `leads.intake.accept_delivery`:
+Has this delivery been seen before? Is this person someone we already know? Does this
+evidence belong to an existing opportunity? Each has its own rule and its own scope, and
+none is allowed to stand in for another.
+
+### Acceptance in one transaction
+
+Every transport ends in one operation, `leads.intake.accept_delivery`:
 
 1. Refuse a body over the workspace's size limit (256 KiB by default) and store nothing.
 2. Check the connection is active and belongs to this workspace.
@@ -60,89 +63,100 @@ in one operation, `leads.intake.accept_delivery`:
 5. Write an outbox event for processing.
 6. Commit, and only then acknowledge (`202` for a webhook).
 
-**Processing happens on the worker, with no model anywhere.** The worker rechecks the
-connection and its key generation, applies the mapping version pinned on the receipt
-(never the current one), and creates the observation with one row per field naming its
-source path and transform. It asks Relationships to resolve the party through a
-registered operation. Then the connection's routing rules run in order: the first
-enabled match wins, and no match means the observation is kept unlinked.
+### Processing happens on the worker, with no model anywhere
 
-**The envelope does not trust the sender.** Every transport produces the same
-CloudEvents-compatible observation envelope. Its `source` is assigned by the server from
-the connection, never taken from the payload. A payload that claims a tenant, a
-destination or a permission set is kept as evidence and read for nothing else.
+The worker rechecks the connection and its key generation, applies the mapping version
+pinned on the receipt (never the current one), and creates the observation with one row
+per field naming its source path and transform. It asks Relationships to resolve the party
+through a registered operation. Then the connection's routing rules run in order: the
+first enabled match wins, and no match means the observation is kept unlinked.
 
-**Field values are derived, not overwritten.** An opportunity's fields are rebuilt from
-all of its linked observations, replayed in the order they happened, so arrival order
-does not matter. A new value replaces a source-owned field only if its observation is at
-least as complete and its connection's priority at least as high. A thin, late email cannot
-overwrite a rich posting. An explicit clear does invalidate older evidence. Anything a
-person edits is marked as theirs and intake never touches it again; stage and notes live
-in columns intake does not write.
+### The envelope does not trust the sender
 
-**Pipelines are versioned presets.** A preset defines stages, allowed transitions, fields
-required before entering a stage, extension fields (`ext.<namespace>.<field>` with a type
-and a sensitivity tier), the qualification rubric and draft templates. That is the whole
-surface: a preset cannot run scripts, write another module's records, change a safety
-class or name a model. Editing a preset makes a new immutable version. An opportunity
-keeps the version it was created under for everything with meaning; only stage labels
-are read from the newest version, so a rename shows everywhere at once. Moving an
-opportunity to a new version is an explicit operation with a stage map, and fields the
-new version dropped stay readable as orphaned.
+Every transport produces the same CloudEvents-compatible observation envelope. Its
+`source` is assigned by the server from the connection, never taken from the payload. A
+payload that claims a tenant, a destination or a permission set is kept as evidence and
+read for nothing else.
 
-**Qualification is a record, not a score.** An assessment records its objective, rubric
-version, the evidence it read, the opportunity revision it read, and four separate
-dimensions: fit, intent, evidence completeness and urgency, each `high`, `medium`, `low`
-or `needs_information`, with an uncertainty and an explanation. There is no combined
-score. If a model helped, its model id and prompt version are recorded. An evidence
-digest tells the interface when new evidence has actually arrived, so notes and stage
-changes never prompt a reassessment. Earlier assessments are never replaced.
+### Field derivation
 
-**Handoffs are tracked, and safe to retry.** `leads.handoff.request` writes a handoff
-with its purpose, destination and a bounded snapshot of the payload, unique on the
-opportunity and an idempotency key. The same key with the same payload returns the same
-handoff; with a different payload it is refused. With no destination the handoff is
-recorded as `unavailable` and nothing happens anywhere. With one, the handoff goes
-`pending` and calls the destination's own operation, which is external class, needs its
-own approval, and writes its outcome back. Several intentional handoffs from one
-opportunity are several records. There is no `converted` flag.
+An opportunity's fields are rebuilt from all of its linked observations, replayed in the
+order they happened, so arrival order does not matter. A new value replaces a source-owned
+field only if its observation is at least as complete and its connection's priority at
+least as high. A thin, late email cannot overwrite a rich posting. An explicit clear does
+invalidate older evidence. Anything a person edits is marked as theirs and intake never
+touches it again; stage and notes live in columns intake does not write.
 
-**Contact permission is its own record.** Showing interest is not permission to
-contact. A grant names the person, the purpose, the channel, the recipient scope and the
-disclosure version, and is created only by an explicit operation. A withdrawal is
-recorded even when nothing was ever granted. A suppression means never contact, for any
-purpose. A check resolves the person through every merge alias and answers
-`suppressed`, `withdrawn`, `permitted` or `absent`. An external action to a person
-requires `permitted`; a memory about a person is hidden for that purpose on `withdrawn`
-or `suppressed`.
+### Pipelines are versioned presets
 
-**Erasure leaves a tombstone, not a hole.** Deleting an observation removes its fields
-and payload, re-derives the opportunity's fields from what remains, and keeps the
-receipt with only its identifier, digest, length and times. If the sender delivers the
-same event again, the receipt catches it and records a conflict with no body, so the
-erased person's data cannot land a second time.
+A preset defines stages, allowed transitions, fields required before entering a stage,
+extension fields (`ext.<namespace>.<field>` with a type and a sensitivity tier), the
+qualification rubric and draft templates. That is the whole surface: a preset cannot run
+scripts, write another module's records, change a safety class or name a model. Editing a
+preset makes a new immutable version. An opportunity keeps the version it was created
+under for everything with meaning; only stage labels are read from the newest version, so
+a rename shows everywhere at once. Moving an opportunity to a new version is an explicit
+operation with a stage map, and fields the new version dropped stay readable as orphaned.
 
-**Job search is a capability, not a module.** An owner turns it on per workspace. It adds
-a job-search preset (review, qualified, applied, interviewing, then hired, lost or
-passed) with sixteen `ext.jobsearch.*` fields, so the Leads core gains no job column. A
-job feed collects postings from a provider's remote MCP server every two hours, with the
-owner's one-time consent, and delivers them through ordinary intake. Scoring runs fixed
-client filters first, then asks a model to judge the posting against the owner's profile
-under a fixed contract whose explanation is built only from the evidence it cites.
-Proposal drafts go through analysis, drafting, an accuracy check against the profile and
-a style pass. None of it sends anything; applying is always yours.
+### Qualification
+
+An assessment records its objective, rubric version, the evidence it read, the opportunity
+revision it read, and four separate dimensions: fit, intent, evidence completeness and
+urgency, each `high`, `medium`, `low` or `needs_information`, with an uncertainty and an
+explanation. There is no combined score. If a model helped, its model id and prompt
+version are recorded. An evidence digest tells the interface when new evidence has
+actually arrived, so notes and stage changes never prompt a reassessment. Earlier
+assessments are never replaced.
+
+### Handoffs are tracked, and safe to retry
+
+`leads.handoff.request` writes a handoff with its purpose, destination and a bounded
+snapshot of the payload, unique on the opportunity and an idempotency key. The same key
+with the same payload returns the same handoff; with a different payload it is refused.
+With no destination the handoff is recorded as `unavailable` and nothing happens anywhere.
+With one, the handoff goes `pending` and calls the destination's own operation, which is
+external class, needs its own approval, and writes its outcome back. Several intentional
+handoffs from one opportunity are several records. There is no `converted` flag.
+
+### Contact permission is its own record
+
+Showing interest is not permission to contact. A grant names the person, the purpose, the
+channel, the recipient scope and the disclosure version, and is created only by an
+explicit operation. A withdrawal is recorded even when nothing was ever granted. A
+suppression means never contact, for any purpose. A check resolves the person through
+every merge alias and answers `suppressed`, `withdrawn`, `permitted` or `absent`. An
+external action to a person requires `permitted`; a memory about a person is hidden for
+that purpose on `withdrawn` or `suppressed`.
+
+### Erasure and tombstones
+
+Deleting an observation removes its fields and payload, re-derives the opportunity's
+fields from what remains, and keeps the receipt with only its identifier, digest, length
+and times. If the sender delivers the same event again, the receipt catches it and records
+a conflict with no body, so the erased person's data cannot land a second time.
+
+### The job-search capability
+
+An owner turns it on per workspace. It adds a job-search preset (review, qualified,
+applied, interviewing, then hired, lost or passed) with sixteen `ext.jobsearch.*` fields,
+so the Leads core gains no job column. A job feed collects postings from a provider's
+remote MCP server every two hours, with the owner's one-time consent, and delivers them
+through ordinary intake. Scoring runs fixed client filters first, then asks a model to
+judge the posting against the owner's profile under a fixed contract whose explanation is
+built only from the evidence it cites. Proposal drafts go through analysis, drafting, an
+accuracy check against the profile and a style pass. None of it sends anything; applying
+is always yours.
 
 ## Why it's built this way
 
 Any funnel works without a code change in the core. A funnel is a mapping plus routing
-rules against one contract, so two unrelated sources are two mappings, not two branches.
+rules against one contract, so two unrelated sources are two mappings against one schema.
 Adding a source never adds a column.
 
-The intake path is also the most hostile input the system sees. It authenticates before
-it writes, stores before it acknowledges, and treats everything inside the payload as
-evidence rather than instruction. Senders retry; the unique receipt makes that harmless.
-Sources disagree; derivation makes the winner explainable and keeps your own edits on
-top.
+The intake path is also the most hostile input the system sees. It authenticates before it
+writes, stores before it acknowledges, and treats everything inside the payload as
+evidence rather than instruction. The unique receipt makes a sender's retry harmless, and
+derivation shows which source won while keeping your own edits on top.
 
 ## Where to look
 

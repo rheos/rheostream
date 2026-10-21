@@ -2,9 +2,9 @@
 
 ## What it is
 
-The shared record of people and organizations in a workspace. Leads needs to know who
-sent an inquiry; an HR or dossier module would need the same people for different
-reasons. Relationships owns exactly what they share and nothing more:
+The shared record of people and organizations in a workspace. Leads needs to know who sent
+an inquiry; an HR or dossier module would need the same people for different reasons.
+Relationships owns exactly what they share and nothing more:
 
 | Record | What it holds |
 | --- | --- |
@@ -33,56 +33,65 @@ about it.
 
 ## How it works
 
-**Only two kinds of evidence link automatically.** When Leads processes a delivery it
-calls `relationships.party.resolve_or_create`, a service-only operation no person's
-token can reach. An existing party is linked only on:
+### Only two kinds of evidence link automatically
+
+When Leads processes a delivery it calls `relationships.party.resolve_or_create`, a
+service-only operation no person's token can reach. An existing party is linked only on:
 
 | Evidence | Supplied only when | Matches |
 | --- | --- | --- |
 | Authenticated subject | The connection declares it authenticates its subjects | An external subject id in the same connection's namespace |
 | Source-verified email | The connection declares it verifies email | A source-verified email in the same connection's namespace |
 
-Both are scoped to the connection that proved them. An email that a different
-connection verified is a strong hint, not a link. A payload's own claim that its email
-is verified is just a hint.
+Both are scoped to the connection that proved them. An email that a different connection
+verified is a strong hint, not a link. A payload's own claim that its email is verified is
+just a hint.
 
-**Everything else becomes a review candidate.** Without strong evidence a new party is
-created, and every weak match becomes an open candidate: the same email at any
-verification, the same phone, a similar person name (trigram similarity of at least 60%,
-up to 10 candidates), or a domain or organization name that matches an existing
-organization. A new organization hint with no match creates the organization and a dated
-affiliation, because creating is not matching.
+### Everything else becomes a review candidate
 
-**One authenticated identity, one live party.** A partial unique index makes it
-impossible for two live parties to hold the same authenticated identity in one
-namespace. Matching never crosses a workspace, because the lookup runs against the
-caller's own database.
+Without strong evidence a new party is created, and every weak match becomes an open
+candidate: the same email at any verification, the same phone, a similar person name
+(trigram similarity of at least 60%, up to 10 candidates), or a domain or organization
+name that matches an existing organization. A new organization hint with no match creates
+the organization and a dated affiliation, because creating is not matching.
 
-**A merge makes an alias, not a rewrite.** Merging sets the source party's
-`merged_into_id` to the target and moves its live contact points and affiliations,
-writing one item per moved row with its previous owner. Parties already pointing at the
-source are re-pointed to the target, so resolution is always exactly one hop. Nothing
-outside the module changes: an observation or opportunity that named the old party keeps
-that id, and resolves through the alias to the survivor. Leads compares parties by their
-canonical reference, never by the stored string.
+### One authenticated identity, one live party
 
-**Unmerge restores from the record.** Because the merge record holds the pre-merge owner
-of every row it moved, unmerging puts each one back, restores every re-pointed alias,
-and clears the source's pointer. Rows the survivor gained after the merge stay with it.
-Every outside reference resolves to the original party again by the same one-hop rule.
-Nested merges are undone in reverse order.
+A partial unique index makes it impossible for two live parties to hold the same
+authenticated identity in one namespace. Matching never crosses a workspace, because the
+lookup runs against the caller's own database.
 
-**Edits are revision-checked and serialized.** Ordinary edits need the party's current
-revision, and merges need both. All identity writes in a workspace share one lifecycle
-lock, so resolution, merge and erasure never interleave. An affiliation collision or two
-conflicting strong identities refuse the whole merge rather than discarding history.
+### Merging creates an alias
 
-**Deletion removes the person, not the history.** Deleting a party needs owner approval
-and is refused for an alias (delete the survivor). It removes the party, its aliases,
-contact points and affiliations, and clears the free-text evidence on any merge record
-naming it, because a reviewer's note can restate a person. Leads keeps the observations
-as unlinked evidence; Recallatron removes memories about the party. Contact values sit in
-the `restricted` redaction tier and never reach a model by default.
+Merging sets the source party's `merged_into_id` to the target and moves its live contact
+points and affiliations, writing one item per moved row with its previous owner. Parties
+already pointing at the source are re-pointed to the target, so resolution is always
+exactly one hop. Nothing outside the module changes: an observation or opportunity that
+named the old party keeps that id, and resolves through the alias to the survivor. Leads
+compares parties by their canonical reference, never by the stored string.
+
+### Unmerge restores from the record
+
+Because the merge record holds the pre-merge owner of every row it moved, unmerging puts
+each one back, restores every re-pointed alias, and clears the source's pointer. Rows the
+survivor gained after the merge stay with it. Every outside reference resolves to the
+original party again by the same one-hop rule. Nested merges are undone in reverse order.
+
+### Edits are revision-checked and serialized
+
+Ordinary edits need the party's current revision, and merges need both. All identity
+writes in a workspace share one lifecycle lock, so resolution, merge and erasure never
+interleave. An affiliation collision or two conflicting strong identities refuse the whole
+merge rather than discarding history.
+
+### Deleting a party
+
+Deleting a party needs owner approval and is refused for an alias (delete the survivor).
+It removes the party, its aliases, contact points and affiliations, and clears the
+free-text evidence on any merge record naming it, because a reviewer's note can restate a
+person. Leads keeps the observations as unlinked evidence; Recallatron removes memories
+about the party. Contact values sit in the `restricted` redaction tier and never reach a
+model by default.
 
 ## Why it's built this way
 
@@ -90,10 +99,10 @@ A wrong automatic merge is a privacy event: one person's history shown as anothe
 the system links only on evidence a connection authenticated, inside that connection's
 namespace, and puts every other match in front of a person.
 
-Reversibility is a property of the representation, not of an undo log. Rewriting every
-reference on merge would mean reaching into tables this module may not touch, and
-unmerge would have to rewrite them all back. An alias costs one hop on every lookup and
-buys a merge that can always be undone, with no other module involved.
+Reversibility comes from how a merge is stored. Rewriting every reference on merge would
+mean reaching into tables this module may not touch, and unmerge would have to rewrite
+them all back. An alias costs one hop on every lookup and buys a merge that can be undone
+with no other module involved.
 
 ## Where to look
 

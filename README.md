@@ -14,28 +14,29 @@ the MCP door, durable jobs, safety classes, and what is built so far.
 One system you own, with your work in it and an agent named rheo to run it. The
 [design guide](docs/guide/README.md) walks through every part.
 
-- **A database per workspace.** Each workspace is its own Postgres database, routed from
-  who you are, never from what a request says. ([workspaces](docs/guide/workspaces-and-storage.md))
-- **Work that survives crashes.** Changes and their events commit together; jobs run
-  under leases; every long call has an operation record you can poll.
-  ([durable work](docs/guide/durable-work.md))
-- **A hard stop on real effects.** Deleting, sending and paying need an approval bound
-  to the exact call, and no token can approve. ([safety](docs/guide/safety-and-approvals.md))
-- **One door for every agent.** A single MCP server with scoped tokens, redaction before
-  anything reaches a model, and replaceable runtimes. ([MCP and runtimes](docs/guide/mcp-and-runtimes.md))
-- **Memory that keeps its permissions.** Recallatron stores who may read each memory and
-  why, recalls with local hybrid search, and erases what was derived from erased data.
-  ([Recallatron](docs/guide/recallatron.md), [the Claude Code bridge](docs/guide/claude-code-bridge.md))
-- **Leads from any funnel.** Signed webhooks, imports and pasted inquiries become
-  evidence, then opportunities in pipelines you configure. ([Leads](docs/guide/leads.md),
-  [Relationships](docs/guide/relationships.md), [connectors](docs/guide/connectors.md))
-- **Work in motion.** Current turns repeated alerts into one item that wakes, and takes
+- Each workspace is its own Postgres database, chosen from who you are and never from what
+  a request says. ([Workspaces and storage](docs/guide/workspaces-and-storage.md))
+- A change and its events commit together, jobs run under leases, and every long call
+  leaves an operation record you can poll. ([Durable work](docs/guide/durable-work.md))
+- Deleting, sending and paying need a person's approval, bound to the exact call. No
+  token can approve, so an agent can propose and never decide.
+  ([Safety and approvals](docs/guide/safety-and-approvals.md))
+- Every agent comes in through one MCP server, with scoped tokens, redaction before
+  anything reaches a model, and a runtime you can swap.
+  ([The MCP door](docs/guide/mcp-and-runtimes.md))
+- Recallatron stores who may read each memory and why, recalls with hybrid search that runs inside the deployment, and erases whatever was derived from erased data. It can save
+  from your Claude Code sessions on its own. ([Recallatron](docs/guide/recallatron.md),
+  [the Claude Code bridge](docs/guide/claude-code-bridge.md))
+- Leads takes inquiries from any funnel (signed webhooks, imports, pasted email) and keeps
+  the evidence behind every opportunity. ([Leads](docs/guide/leads.md),
+  [Relationships](docs/guide/relationships.md), [Connectors](docs/guide/connectors.md))
+- Current turns repeats of the same alert into one item that wakes up, and takes
   handoffs from Leads exactly once. ([Current](docs/guide/current.md))
-- **One agent, several surfaces.** rheo works from Claude, Telegram or voice under one
-  authorization model. ([rheo and channels](docs/guide/rheo-and-channels.md))
-- **Data you can carry out.** Export a workspace to one file and restore it elsewhere
-  with the same identifiers. ([export, restore and deploy](docs/guide/export-restore-deploy.md),
-  [web shell and CLI](docs/guide/web-shell-and-cli.md))
+- rheo works from Claude, Telegram or voice under one authorization model.
+  ([rheo and channels](docs/guide/rheo-and-channels.md))
+- A workspace exports to one file and restores elsewhere with the same identifiers.
+  ([Export, restore and deploy](docs/guide/export-restore-deploy.md),
+  [Web shell and CLI](docs/guide/web-shell-and-cli.md))
 
 ## Mechanisms you can inspect
 

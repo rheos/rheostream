@@ -3,30 +3,30 @@
 rheoStream is an open framework for agent-assisted work. It is one system you own: a web
 shell, an MCP door for agents, a durable worker, and a Postgres database for each
 workspace. On top of that small core sit four modules. Leads develops opportunities,
-Current carries active work, Recallatron remembers, and Relationships keeps the people
-and organizations they all share. An agent named rheo operates all of it, from Claude,
-from Telegram, or by voice.
+Current carries active work, Recallatron remembers, and Relationships keeps the people and
+organizations they all share. An agent named rheo operates all of it, from Claude, from
+Telegram, or by voice.
 
 > Leads enter the stream. Current carries the work. Recallatron remembers.
 
 This guide describes the system as designed, one part per page. Each page says what the
 part is, what you can do with it, how it works, and why it is built that way. Each ends
-with links to the specification, the code and the tests. The
-[architecture specification](../architecture/README.md) is the authority; this guide is
-the readable route into it.
+with links to the specification, the code and the tests. The [architecture
+specification](../architecture/README.md) is the authority; this guide is the readable
+route into it.
 
 ## The problem it solves
 
 Working alone or in a small studio means living in a pile of tools: something that finds
 work, something that tracks it, something that remembers, and a few agent routines
 stitched between them. Each one is useful. Together they trap history: the lead knows
-nothing about the project it became, the memory knows nothing about either, and the
-agent has a different door into each.
+nothing about the project it became, the memory knows nothing about either, and the agent
+has a different door into each.
 
-rheoStream rebuilds those parts as one system with clear boundaries between domains,
-data you can carry out in one file, and a single interface an agent can use. A lead
-found today becomes tomorrow's project, and the decisions, people and promises around it
-are still there months later.
+rheoStream rebuilds those parts as one system with clear boundaries between domains, data
+you can carry out in one file, and a single interface an agent can use. A lead found today
+becomes tomorrow's project, and the decisions, people and promises around it are still
+there months later.
 
 ## The shape
 
@@ -50,9 +50,8 @@ are still there months later.
 
 Four processes run it: `core` (the FastAPI application, which also serves the MCP door),
 `worker` (the same image, running jobs and event deliveries), `web` (the Next.js shell)
-and `postgres`. A reverse proxy sits in front. There is no message broker and no
-workflow engine. Ordinary tables, an outbox, a job table and an audit table carry
-everything.
+and `postgres`. A reverse proxy sits in front. There is no message broker and no workflow
+engine. Ordinary tables, an outbox, a job table and an audit table carry everything.
 
 ## One inquiry, start to finish
 
@@ -90,33 +89,47 @@ Follow a single website inquiry through the system and every part shows up once.
 
 ## The ideas that run through everything
 
-**The workspace is the unit.** Each workspace is its own Postgres database. A connection
-opened for one workspace cannot read another's rows, and export, backup and deletion all
-act on that one unit. ([Workspaces and storage](workspaces-and-storage.md))
+### The workspace is the unit
 
-**Every surface uses the same door.** The web shell, the MCP door, the HTTP API, intake
-and the worker all build the same server-resolved `WorkspaceContext` and call the same
-registered operations. None of them contains a branch on domain meaning.
+Each workspace is its own Postgres database. A connection opened for one workspace cannot
+read another's rows, and export, backup and deletion all act on that one unit.
+([Workspaces and storage](workspaces-and-storage.md))
 
-**Work survives crashes.** A state change and its event commit together. Jobs run under
-leases, deliveries are recorded per consumer, and a crash re-runs work instead of
-doubling it. ([Durable work](durable-work.md))
+### Every surface uses the same door
 
-**Nothing leaves without a person.** Destructive, external and financial operations need
-an approval bound to the exact call. No token of any kind can approve, so a model can
-propose an action and never approve it. ([Safety and approvals](safety-and-approvals.md))
+The web shell, the MCP door, the HTTP API, intake and the worker all build the same
+server-resolved `WorkspaceContext` and call the same registered operations. None of them
+contains a branch on domain meaning.
 
-**Memory carries its own permissions.** A memory stores who may read it and for which
-purposes. A memory derived from two others gets the narrower of the two, and erasing a
-source erases what was made from it. ([Recallatron](recallatron.md))
+### Work survives crashes
 
-**Modules own their records.** Each module has its own schema and talks to the others
-through operations and events. The core imports no module, and the test suites pass in a
-workspace where a module was never installed.
+A state change and its event commit together. Jobs run under leases, deliveries are
+recorded per consumer, and a crash re-runs work instead of doubling it. ([Durable
+work](durable-work.md))
 
-**Models are replaceable.** A runtime adapter runs the model's conversation loop;
-rheoStream keeps identity, permissions, data, audit and durable state. Claude CLI,
-OpenRouter and Codex CLI fit the same contract. ([The MCP door](mcp-and-runtimes.md))
+### A person approves every real effect
+
+Destructive, external and financial operations need an approval bound to the exact call.
+No token of any kind can approve, so a model can propose an action and never approve it.
+([Safety and approvals](safety-and-approvals.md))
+
+### Memory carries its own permissions
+
+A memory stores who may read it and for which purposes. A memory derived from two others
+gets the narrower of the two, and erasing a source erases what was made from it.
+([Recallatron](recallatron.md))
+
+### Modules own their records
+
+Each module has its own schema and talks to the others through operations and events. The
+core imports no module, and the test suites pass in a workspace where a module was never
+installed.
+
+### Models are replaceable
+
+A runtime adapter runs the model's conversation loop; rheoStream keeps identity,
+permissions, data, audit and durable state. Claude CLI, OpenRouter and Codex CLI fit the
+same contract. ([The MCP door](mcp-and-runtimes.md))
 
 ## The pages
 
