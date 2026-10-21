@@ -65,6 +65,11 @@
     center / var(--rs-space-4) no-repeat;
   pointer-events: none;
 }
+@media (forced-colors: active) {
+  .selectWrap::after {
+    background: CanvasText;
+  }
+}
 .selectWrap:has(select:disabled)::after {
   background: var(--rs-color-ink-faint);
 }
@@ -299,8 +304,10 @@
   color: var(--rs-color-danger);
   border-color: var(--rs-color-danger);
 }
-.copied,
-.copied:hover {
+/* Doubled so it beats either module's .iconButton:hover:not(:disabled) (0,3,0)
+   and proposal's .iconButton, which loads after this file. */
+.copied.copied,
+.copied.copied:hover:not(:disabled) {
   color: var(--rs-color-success);
   border-color: var(--rs-color-success);
 }

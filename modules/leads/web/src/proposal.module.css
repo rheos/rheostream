@@ -513,7 +513,7 @@
   .ghost,
   .ghostDanger,
   .danger {
-    min-height: calc(var(--rs-space-6) * 1.4);
+    min-height: var(--rs-size-control);
   }
   .iconButton {
     inline-size: var(--rs-size-control);
