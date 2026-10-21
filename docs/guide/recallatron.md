@@ -57,7 +57,8 @@ into another module.
 ### Recall is two stages, and permission comes first
 
 Stage one is SQL: only live memories the caller's audience covers, carrying the requested
-purpose, inside the workspace's age horizon if it has one. Nothing outside that set is
+purpose, and, for workspace-wide memories, inside the workspace's age horizon if it has
+one. Nothing outside that set is
 ever scored. Stage two ranks the survivors and walks the ranked list in order, resolving
 every link under the caller's context. A link the caller cannot read, or one to a deleted
 record, drops the hit. When Leads is installed, an `about` link to a person whose contact
@@ -84,10 +85,12 @@ hidden memories sit above it.
 
 ### One invalidation rule, three entry points
 
-Correcting, superseding and deleting a memory all run the same traversal: every memory
-linked to it, and every memory derived from those, transitively. Deletion removes them,
+Correcting, superseding and deleting a memory all run the same traversal over its
+dependents: every memory linked to it, and every memory derived from those, transitively.
+A correction fixes the memory itself in place and it stays current; a supersession keeps
+the old one as readable history. Deletion removes the dependents,
 with their embeddings and index entries, because a derivative of erased data has no reason
-to exist. Correction and supersession mark them invalidated and keep the rows, so a person
+to exist. Correction and supersession mark the dependents invalidated and keep the rows, so a person
 deciding whether to re-derive can still see them. Nothing re-derives on its own.
 
 ### Correct and supersede are compare-and-set

@@ -6,7 +6,8 @@ The machinery that lets work outlive a crash, a restart or a lost connection. It
 plain tables in each workspace's `core` schema, in five groups, plus a worker:
 
 - The outbox (`outbox_event`, `event_delivery`, `consumer_processed`): events written
-  in the same transaction as the change they describe, delivered to each consumer once;
+  in the same transaction as the change they describe, delivered to each consumer
+  (a delivery may repeat after a crash; its effect is applied once);
 - Jobs and schedules (`job`, `schedule`): background work run under a lease;
 - Operation records (`operation`): one per long-running or gated call, with a
   terminal outcome a caller can poll;
