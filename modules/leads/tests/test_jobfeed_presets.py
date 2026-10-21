@@ -1,5 +1,6 @@
 """The preset validator's bounds, one refusal per rule, and the three defaults."""
 
+import json
 from typing import Any
 
 import pytest
@@ -7,6 +8,7 @@ from rheo_leads.jobfeed.presets import (
     ALLOWED_FILTERS,
     DEFAULT_PRESETS,
     PresetInvalid,
+    configured_presets,
     validate_presets,
 )
 
@@ -183,3 +185,50 @@ def test_default_presets() -> None:
         )
         == DEFAULT_PRESETS
     )
+
+
+ANIMATION_QUERY = '"2D animation" OR "motion graphics"'
+
+
+@pytest.mark.parametrize("text", ["", "   \n"])
+def test_an_empty_setting_runs_the_defaults(text: str) -> None:
+    assert configured_presets(text) is DEFAULT_PRESETS
+
+
+def test_a_configured_list_is_validated_with_defaults_applied() -> None:
+    text = json.dumps(
+        [
+            {
+                "name": "Best Matches",
+                "action": "smart_search",
+                "params": {"mode": "best_match"},
+            },
+            {
+                "name": "Animation",
+                "action": "search",
+                "pages": 2,
+                "params": {"query": ANIMATION_QUERY, "sort": "recency"},
+            },
+        ]
+    )
+    best, animation = configured_presets(text)
+    assert best.params["mode"] == "best_match" and best.params["limit"] == 10
+    assert animation.pages == 2 and animation.purpose == "discover"
+    assert animation.params["query"] == ANIMATION_QUERY
+    assert animation.params["proposals_max"] == 50
+    assert animation.params["include_full_details"] is True
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        ("not json", "presets_not_json"),
+        ('{"name": "x"}', "presets_not_json"),
+        ("[]", "preset_count_invalid"),
+        ('[{"name": "x", "action": "search", "pages": 9}]', "pages_invalid"),
+    ],
+)
+def test_a_broken_setting_refuses_with_its_code(text: str, code: str) -> None:
+    with pytest.raises(PresetInvalid) as refused:
+        configured_presets(text)
+    assert refused.value.code == code

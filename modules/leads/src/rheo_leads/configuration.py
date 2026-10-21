@@ -62,6 +62,16 @@ JOBFEED_SETTINGS: Final = (
         explicit_per_workspace=False,
         default="",
     ),
+    # The searches a run issues, as the JSON array ``validate_presets`` accepts. Empty
+    # (the default) runs the package defaults. The owner sets it per workspace.
+    KeySpec(
+        key="leads.jobfeed.presets",
+        type=ValueType.STR,
+        scope=Scope.WORKSPACE,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
 )
 # Job scoring: the model the scorer asks (empty leaves the CLI's default), and how
 # many jobs one sweep scores before a follow-up sweep takes over.

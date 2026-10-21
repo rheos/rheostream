@@ -2867,3 +2867,73 @@ def test_off_then_on_after_a_completed_run_collects_with_the_same_reference(
     assert len(refresh_requests(served)) == 2
     assert served.registrations == []
     assert all(grant_type(r) == "refresh_token" for r in served.requests)
+
+
+PRESETS_KEY = "leads.jobfeed.presets"
+ANIMATION_QUERY = '"2D animation" OR animator'
+
+
+def set_presets(c: ConnectedCollector, value: str) -> None:
+    outcome = run(c.intake, c.owner, "core.settings.set", key=PRESETS_KEY, value=value)
+    assert outcome.ok, outcome
+
+
+def test_configured_presets_replace_the_defaults_for_the_workspace(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """Issue #433: the owner's list is what the run searches."""
+    c = connected_collector(intake, served)
+    set_presets(
+        c,
+        json.dumps(
+            [
+                {
+                    "name": "Best Matches",
+                    "action": "smart_search",
+                    "params": {"mode": "best_match"},
+                },
+                {
+                    "name": "Animation",
+                    "action": "search",
+                    "params": {"query": ANIMATION_QUERY, "sort": "recency"},
+                },
+            ]
+        ),
+    )
+    run_at(c, clock)
+    calls = mcp.find_jobs_calls()
+    assert [action for action, _ in calls] == ["smart_search", "search"]
+    assert calls[0][1]["mode"] == "best_match"
+    assert calls[1][1]["query"] == ANIMATION_QUERY
+    assert calls[1][1]["sort"] == "recency"
+    assert calls[1][1]["proposals_max"] == 50
+    assert last_error(c) is None
+    quietly_succeeded(c)
+    # Clearing the setting restores the three defaults.
+    set_presets(c, "")
+    run_at(c, clock, hours=2)
+    later = mcp.find_jobs_calls()[len(calls) :]
+    assert [action for action, _ in later] == ["smart_search"] * 2 + ["search"]
+    assert [p.get("mode") for _, p in later[:2]] == ["best_match", "most_recent"]
+
+
+def test_an_invalid_presets_setting_makes_no_request_and_records_it(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    set_presets(c, '[{"name": "Too many pages", "action": "search", "pages": 9}]')
+    run_at(c, clock)
+    assert served.requests == [] and mcp.requests == []
+    assert last_error(c) == "presets_invalid"
+    assert runs(c)[0]["outcome"] == "stopped"
+    assert runs(c)[0]["stop_code"] == "presets_invalid"
+    after = stored(c.owner)
+    assert after.authorization_state == "connected"
+    assert after.run_claimed_at is None
+    quietly_succeeded(c)

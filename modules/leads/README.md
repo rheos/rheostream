@@ -111,7 +111,10 @@ host operator who has configured the provider and turned the connector client on
 side). Each workspace has at most one job feed connection.
 
 **What it collects.** Every two hours the worker runs three searches as your chosen
-account: best matches, the newest postings, and postings above 50 proposals. A posting
+account: best matches, the newest postings, and postings above 50 proposals. An owner
+can replace those three with their own list, keyword searches included, through the
+workspace setting `leads.jobfeed.presets` (see the deployment guide's
+[settings](../../deploy/README.md#settings) for its shape and bounds). A posting
 with 50 or fewer proposals that you have not applied to is a discovery: the collector
 reads its full description and delivers it, and routing either attaches it to the
 opportunity that already holds that posting id or creates a new one. A posting no

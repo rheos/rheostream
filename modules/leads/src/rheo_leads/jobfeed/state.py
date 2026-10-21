@@ -53,6 +53,7 @@ COLLECTOR_HEALTH_CODES: Final = frozenset(
         "upstream_rate_limited",
         "collection_partial",
         "endpoint_misconfigured",
+        "presets_invalid",
         "registration_failed",
     }
 )
