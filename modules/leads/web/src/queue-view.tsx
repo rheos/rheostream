@@ -313,25 +313,27 @@ export function StageActions({
     <div className={styles.actions}>
       {lead}
       {stageSelect && onMove && next.length ? (
-        <select
-          className={styles.stageSelect}
-          aria-label={`Stage for ${title}`}
-          value={str(item.stage_id)}
-          disabled={disabled}
-          onChange={(e) => {
-            const to = next.find((m) => m.stage_id === e.target.value);
-            if (to) onMove(item, to);
-          }}
-        >
-          <option value={str(item.stage_id)}>
-            {str(item.stage_label) || str(item.stage_id)}
-          </option>
-          {next.map((m) => (
-            <option key={m.stage_id} value={m.stage_id}>
-              {m.label}
+        <span className={styles.selectWrap}>
+          <select
+            className={styles.stageSelect}
+            aria-label={`Stage for ${title}`}
+            value={str(item.stage_id)}
+            disabled={disabled}
+            onChange={(e) => {
+              const to = next.find((m) => m.stage_id === e.target.value);
+              if (to) onMove(item, to);
+            }}
+          >
+            <option value={str(item.stage_id)}>
+              {str(item.stage_label) || str(item.stage_id)}
             </option>
-          ))}
-        </select>
+            {next.map((m) => (
+              <option key={m.stage_id} value={m.stage_id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </span>
       ) : null}
       {posting ? (
         <a
@@ -609,31 +611,35 @@ export function JobQueue(props: QueueProps) {
         <div className={styles.controlGroup}>
           <label className={styles.select}>
             <span>Pipeline</span>
-            <select
-              name="pipeline"
-              value={props.pipeline}
-              onChange={(e) => choose({ pipeline: e.target.value })}
-            >
-              {props.pipelines.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
+            <span className={styles.selectWrap}>
+              <select
+                name="pipeline"
+                value={props.pipeline}
+                onChange={(e) => choose({ pipeline: e.target.value })}
+              >
+                {props.pipelines.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </span>
           </label>
           <label className={styles.select}>
             <span>Show</span>
-            <select
-              name="stage"
-              value={props.stage}
-              onChange={(e) => choose({ stage: e.target.value })}
-            >
-              {props.stages.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
+            <span className={styles.selectWrap}>
+              <select
+                name="stage"
+                value={props.stage}
+                onChange={(e) => choose({ stage: e.target.value })}
+              >
+                {props.stages.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </span>
           </label>
         </div>
         <div className={`${styles.controlGroup} ${styles.controlRight}`}>
@@ -647,17 +653,19 @@ export function JobQueue(props: QueueProps) {
           </button>
           <label className={styles.select}>
             <span>Sort</span>
-            <select
-              name="sort"
-              value={props.sort}
-              onChange={(e) => choose({ sort: e.target.value as Sort })}
-            >
-              {SORTS.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
+            <span className={styles.selectWrap}>
+              <select
+                name="sort"
+                value={props.sort}
+                onChange={(e) => choose({ sort: e.target.value as Sort })}
+              >
+                {SORTS.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </span>
           </label>
         </div>
       </form>
