@@ -2888,6 +2888,9 @@
             }
           ]
         },
+        "separate_answers": {
+          "type": "boolean"
+        },
         "stage": {
           "anyOf": [
             {
@@ -3021,6 +3024,7 @@
         "opportunity_id",
         "state",
         "questions",
+        "separate_answers",
         "stage",
         "step",
         "total",

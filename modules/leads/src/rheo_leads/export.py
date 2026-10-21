@@ -1,4 +1,4 @@
-"""Version-eleven intake, pipeline, job feed, job scoring, review, proposal and pricing
+"""Version-twelve intake, pipeline, job feed, job scoring, review, proposal and pricing
 snapshot; restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported

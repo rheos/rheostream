@@ -114,6 +114,9 @@ async function lookAgain(
 export function ProposalWorkflow(props: WorkflowProps) {
   const [view, setView] = useState<Row>(props.proposal);
   const [questions, setQuestions] = useState(str(props.proposal.questions));
+  const [separate, setSeparate] = useState(
+    props.proposal.separate_answers === true,
+  );
   const [stage, setStage] = useState<StageId>(
     draftState(props.proposal) === "idle" ? "posting" : "proposal",
   );
@@ -263,6 +266,8 @@ export function ProposalWorkflow(props: WorkflowProps) {
           opportunityRef={props.opportunityRef}
           view={view}
           questions={questions}
+          separate={separate}
+          setSeparate={setSeparate}
           setView={setView}
           paused={running && typed}
           reload={() => {
@@ -343,9 +348,9 @@ function QuestionsPanel(props: {
         </label>
         <InfoTip label="About screening questions">
           <p>
-            The draft answers each one after the cover letter, from your profile
-            only. Leave this empty for a cover letter alone. Questions the posting
-            itself asks are picked up when you draft.
+            The draft answers each one from your profile only, inside the cover
+            letter unless you tick the box by the draft button. Questions the
+            posting itself asks are picked up when you draft.
           </p>
         </InfoTip>
       </div>
@@ -381,6 +386,8 @@ function ProposalPanel(props: {
   opportunityRef: string;
   view: Row;
   questions: string;
+  separate: boolean;
+  setSeparate: (on: boolean) => void;
   setView: SetView;
   paused: boolean;
   reload: () => void;
@@ -433,6 +440,7 @@ function ProposalPanel(props: {
     const done = await call("leads.jobproposal.request", {
       ref: opportunityRef,
       questions: props.questions,
+      separate_answers: props.separate,
       force,
     });
     if (done.code === "draft_edited") setConfirmForce(true);
@@ -525,6 +533,24 @@ function ProposalPanel(props: {
             </p>
           </InfoTip>
         </div>
+      </div>
+      <div className={styles.option}>
+        <label className={styles.check}>
+          <input
+            type="checkbox"
+            checked={props.separate}
+            disabled={running}
+            onChange={(event) => props.setSeparate(event.target.checked)}
+          />
+          Answer each question in its own field
+        </label>
+        <InfoTip label="About answer fields">
+          <p>
+            Off, the cover letter answers every question itself, for a form with
+            one cover letter box. On, each question gets its own answer after the
+            letter, for a form with a field per question.
+          </p>
+        </InfoTip>
       </div>
       {wholeDirty ? (
         <p className={styles.note} role="status">

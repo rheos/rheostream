@@ -160,6 +160,7 @@ class Claimed:
     title: str
     fields: Mapping[str, str]
     questions: str | None
+    separate_answers: bool
     # Which request this claim answers: a delete and a new request reset the
     # attempt count, so the count alone cannot tell two requests apart.
     requested_at: datetime
@@ -281,6 +282,7 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
                 state.c.opportunity_id,
                 state.c.attempts,
                 state.c.questions,
+                state.c.separate_answers,
                 state.c.requested_at,
                 o.c.title,
             )
@@ -316,6 +318,7 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
         title=row["title"],
         fields=_fields(uow, row["opportunity_id"]),
         questions=row["questions"],
+        separate_answers=row["separate_answers"],
         requested_at=row["requested_at"],
         priced=read_priced(uow, row["opportunity_id"]),
     )
@@ -591,6 +594,7 @@ def _job_input(claimed: Claimed) -> JobInput:
         budget_min=fields.get(EXTENSION + "budget_min"),
         budget_max=fields.get(EXTENSION + "budget_max"),
         questions=claimed.questions,
+        separate_answers=claimed.separate_answers,
         pricing_mode=claimed.priced.mode,
         listing_type=fields.get(EXTENSION + "job_type"),
         milestones=claimed.priced.rows,

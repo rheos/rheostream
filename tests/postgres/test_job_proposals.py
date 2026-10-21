@@ -315,8 +315,10 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
 ) -> None:
     drafting.set_profile()
     opportunity = drafting.paste("~025200")
-    queued = drafting.op("leads.jobproposal.request", ref=opportunity)
-    assert queued.state == "queued"
+    queued = drafting.op(
+        "leads.jobproposal.request", ref=opportunity, separate_answers=True
+    )
+    assert queued.state == "queued" and queued.separate_answers is True
     assert sweeps(drafting.i)
     caplog.set_level(logging.DEBUG)
     drafting.sweep()
@@ -330,13 +332,18 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
     ]
     assert got.draft == DRAFT
     assert got.edited is False
-    # The posting's own "please include" item became the questions.
+    # The posting's own "please include" item became the questions, answered on
+    # their own because the owner asked for a field per question.
     assert got.questions == "What is your rate?"
+    assert (
+        "SCREENING QUESTIONS (answer each after the proposal):\nWhat is your rate?"
+        in (drafting.model.starts[1].request.task)
+    )
     assert got.findings["analysis"]["angle"] == ANALYSIS["angle"]
     assert got.findings["accuracy"][0]["verdict"] == "whitelisted"
     assert got.findings["style"] == []
     assert got.model_id == "claude_cli:default"
-    assert got.prompt_version == "jobproposal.1/profile.1"
+    assert got.prompt_version == "jobproposal.2/profile.1"
     assert drafting.model.roles == ["analysis", "draft", "gate"]
     # Every call ran as the profile's owner, tool-less, and left nothing behind.
     assert {t["account_id"] for t in drafting.tokens.issued} == {
@@ -357,6 +364,61 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
         "leads.ui.queue", pipeline_id=str(drafting.c.pipeline_id), sort="newest"
     )
     assert queue.items[0]["has_draft"] is True
+
+
+def test_by_default_the_letter_answers_the_questions_itself(
+    drafting: Drafting,
+) -> None:
+    drafting.set_profile()
+    opportunity = drafting.paste("~025250")
+    queued = drafting.op("leads.jobproposal.request", ref=opportunity)
+    assert queued.separate_answers is False
+    drafting.sweep()
+    task = drafting.model.starts[1].request.task
+    assert "SCREENING QUESTIONS" not in task
+    assert "QUESTIONS ANSWERED IN THE LETTER" in task
+    assert "- What is your rate?" in task
+    got = drafting.op("leads.jobproposal.get", ref=opportunity)
+    assert got.questions == "What is your rate?" and got.separate_answers is False
+
+    # The choice is stored with the request and kept when a later one omits it.
+    drafting.op(
+        "leads.jobproposal.request",
+        ref=opportunity,
+        separate_answers=True,
+        force=True,
+    )
+    drafting.sweep()
+    kept = drafting.op("leads.jobproposal.request", ref=opportunity, force=True)
+    assert kept.separate_answers is True
+
+
+def test_an_exported_proposal_is_valid_against_the_export_schema(
+    drafting: Drafting,
+) -> None:
+    """The schema forbids unknown keys, so a new column must be in it."""
+    from types import SimpleNamespace
+
+    from rheo_core.exports.artifact import _validated_module_rows
+    from rheo_leads import MANIFEST
+    from rheo_leads.export import export_records
+
+    drafting.set_profile()
+    opportunity = drafting.paste("~025260")
+    drafting.op("leads.jobproposal.request", ref=opportunity, separate_answers=True)
+    drafting.sweep()
+    with open_unit_of_work(drafting.c.owner) as uow:
+        rows = [
+            dict(r)
+            for r in export_records(SimpleNamespace(connection=uow.connection))  # type: ignore[arg-type]
+        ]
+    rows = [
+        {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()}
+        for r in rows
+    ]
+    (proposal,) = [r for r in rows if r["record_type"] == "leads.job_proposal"]
+    assert proposal["separate_answers"] is True
+    assert len(_validated_module_rows(MANIFEST, [proposal], "leads")) == 1
 
 
 def test_a_regenerate_refuses_over_hand_edits_unless_forced(drafting: Drafting) -> None:
