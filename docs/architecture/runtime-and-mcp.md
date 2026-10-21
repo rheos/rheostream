@@ -629,7 +629,7 @@ operation tables in the module documents are authoritative.
 | Three (leads) | `leads_prepare_followup` | draft | owner, member |
 | Three (leads) | `leads_delete` | destructive | owner |
 | Five (current) | `current_get`, `current_list`, `current_list_projects`, `current_areas`, `current_summary` | read | owner, member |
-| Five (current) | `current_create`, `current_update`, `current_status`, `current_comment`, `current_add_dependency`, `current_remove_dependency`, `current_create_project`, `current_update_project` | mutate | owner, member |
+| Five (current) | `current_create`, `current_update`, `current_status`, `current_close_by_source`, `current_comment`, `current_add_dependency`, `current_remove_dependency`, `current_create_project`, `current_update_project` | mutate | owner, member |
 | Five (current) | `current_delete_item`, `current_delete_project` | destructive | owner |
 
 `audit_list` declares `limit` and nothing else. `core.audit.list`'s two opt-ins,

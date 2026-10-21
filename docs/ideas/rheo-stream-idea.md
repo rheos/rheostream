@@ -1991,6 +1991,23 @@ The following changes are recorded here.
     link. Leads > Scoring reads them beside each recent job's stage. Migration
     `0015_model_calls` adds the table.
 
+26. **External alert writers get a two-operation token set.** Recorded on 2026-10-21
+    against issue #437. A fourth named package set, `alert_writer`, holds exactly
+    `current.item.create` and `current.item.close_by_source`. Unlike the three rule
+    sets it is enumerated, so it never grows when an operation is added. The operator
+    command issues it per writer as a `cli` token under the owner account
+    (`rheo token issue --set alert_writer --kind cli`). The reason: services and
+    scheduled jobs (a health probe, a disk guardrail, a support form, bill monitors)
+    file alert items over HTTP and close them on recovery, and none of them should
+    hold a person's `cli_full`. The residual exposure: a leaked writer token can open
+    items in any area and close any source-keyed item of any `source_kind`, an email
+    thread whose id it guesses included, until it expires or is revoked; it cannot
+    read, update, comment, delete or reach another module. `read_only`,
+    `agent_default` and `cli_full` are unchanged. Rotation: a `cli` token lives at most
+    90 days and each writer has its own, so a renewal mints the replacement, swaps the
+    writer's secret, then revokes the old token, and a renewal item in Current carries
+    the date. No migration.
+
 ### Website intake implementation clarification (2026-10-09)
 
 Signed website event identity comes from the signed body (`event_id`) or its exact-byte

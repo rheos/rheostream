@@ -139,27 +139,30 @@ rechecked from `control.membership` at every presentation):
 
 ### The named package operation sets
 
-Three sets ship in the package, each defined as a rule the core evaluates against the registry at
-issuance, so a builder is not enumerating names by hand and a set never has to be edited when an
-operation is added:
+Four sets ship in the package. Three are rules the core evaluates against the registry at
+issuance, so a builder is not enumerating names by hand and a rule set never has to be edited when
+an operation is added. The fourth, `alert_writer`, is an enumerated pair, intersected with the
+registry at issuance the same way:
 
 | Set | Rule | What it yields in release one |
 | --- | --- | --- |
 | `read_only` | Every registered operation of class `read`. | Workspace status, operation reads, audit (owner), every module read. |
 | `agent_default` | Every operation named by a registered MCP tool ([tool set](runtime-and-mcp.md#the-mcp-facade)). | The reads, drafts, and mutates a tool exposes, plus the request right for the three deletion tools' `core.record.delete`; by construction no configuration, token, grant, or approval operation, because none has a tool. |
 | `cli_full` | Every registered operation except the non-token-issuable set. | Everything the account's role permits, including configuration operations for an owner, minus the six operations no token may carry. |
+| `alert_writer` | Exactly `current.item.create` and `current.item.close_by_source`, enumerated on purpose so the set never grows when an operation is added. | The two Current writes an external alert writer needs (a probe, a guardrail, a form): open an item and close it by its source pair. Issued per writer as a `cli` token by the operator command. Empty when Current is not installed, so issuance refuses `set_empty`. |
 
-None of the three contains `core.tool.call`, the discover-then-call grant: each subtracts it, so
-it reaches a snapshot only when an issuance asks for it (`discover: true`, or an explicit list
-naming it). A token holding it is listed a fixed set of MCP tools and reaches its other grants
-through `operations_call` ([discover-then-call](runtime-and-mcp.md#discover-then-call)); it
-grants nothing else, and an issuance whose only surviving operation would be the grant is refused
-`set_empty`.
+None of the four contains `core.tool.call`, the discover-then-call grant: each rule subtracts it
+and `alert_writer` does not name it, so it reaches a snapshot only when an issuance asks for it
+(`discover: true`, or an explicit list naming it). A token holding it is listed a fixed set of
+MCP tools and reaches its other grants through `operations_call`
+([discover-then-call](runtime-and-mcp.md#discover-then-call)); it grants nothing else, and an
+issuance whose only surviving operation would be the grant is refused `set_empty`.
 
 Workspace-defined named sets are not release-one machinery; nothing in the requirements needs
 one, and a snapshot per token makes criterion 9's "one permitted operation set" a property of
 the token row rather than of a shared row that could change under it. An owner-authored set is an
-additive later feature: a fourth rule source, the same snapshot.
+additive later feature: a further source, the same snapshot. `alert_writer` is a package set,
+not a workspace-defined one: its two names are fixed in the core and change only with a release.
 
 The operator command that adds a second member (`rheo member add --workspace <id> --account
 <id> --role member`) is the only way a second membership exists in release one (R1); criterion 8's
