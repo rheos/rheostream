@@ -160,7 +160,7 @@ class Claimed:
     title: str
     fields: Mapping[str, str]
     questions: str | None
-    posting_questions: bool
+    separate_answers: bool
     # Which request this claim answers: a delete and a new request reset the
     # attempt count, so the count alone cannot tell two requests apart.
     requested_at: datetime
@@ -282,7 +282,7 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
                 state.c.opportunity_id,
                 state.c.attempts,
                 state.c.questions,
-                state.c.posting_questions,
+                state.c.separate_answers,
                 state.c.requested_at,
                 o.c.title,
             )
@@ -318,7 +318,7 @@ def claim(uow: UnitOfWork, *, now: datetime, window: timedelta) -> Claimed | Non
         title=row["title"],
         fields=_fields(uow, row["opportunity_id"]),
         questions=row["questions"],
-        posting_questions=row["posting_questions"],
+        separate_answers=row["separate_answers"],
         requested_at=row["requested_at"],
         priced=read_priced(uow, row["opportunity_id"]),
     )
@@ -449,6 +449,8 @@ def record_draft(
         "prompt_version": f"{prompts.PROMPT_VERSION}/profile.{profile_version}",
         "updated_at": now,
     }
+    if result.seeded_questions and not (claimed.questions or "").strip():
+        values["questions"] = result.seeded_questions
     uow.connection.execute(
         update(state)
         .where(state.c.opportunity_id == claimed.opportunity_id)
@@ -592,7 +594,7 @@ def _job_input(claimed: Claimed) -> JobInput:
         budget_min=fields.get(EXTENSION + "budget_min"),
         budget_max=fields.get(EXTENSION + "budget_max"),
         questions=claimed.questions,
-        posting_questions=claimed.posting_questions,
+        separate_answers=claimed.separate_answers,
         pricing_mode=claimed.priced.mode,
         listing_type=fields.get(EXTENSION + "job_type"),
         milestones=claimed.priced.rows,

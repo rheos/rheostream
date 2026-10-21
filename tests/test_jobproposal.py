@@ -327,7 +327,7 @@ def test_a_draft_runs_every_stage_and_seeds_the_postings_own_questions() -> None
     )
     result, reports = run(
         script,
-        JobInput(title=JOB.title, description=JOB.description, posting_questions=True),
+        JobInput(title=JOB.title, description=JOB.description, separate_answers=True),
     )
     assert [r[0] for r in reports] == list(STAGES)
     assert result.seeded_questions == "What is your rate?"
@@ -351,11 +351,12 @@ def test_a_draft_runs_every_stage_and_seeds_the_postings_own_questions() -> None
     assert draft_task.index(prompts.POSTING_INTRO) > draft_task.index("WRITING QUALITY")
 
 
-def test_by_default_the_letter_covers_the_postings_own_questions() -> None:
+def test_by_default_the_letter_answers_the_questions_itself() -> None:
     """Most forms have one cover letter box: no answer blocks unless asked for."""
     script = Script(analysis=[ANALYSIS], draft=[{"text": LETTER}], gate=[CLAIMS_OK])
     result, _ = run(script)
-    assert result.seeded_questions is None
+    # The posting's own question is still targeted, and still recorded.
+    assert result.seeded_questions == "What is your rate?"
     assert result.draft.answers == ()
     draft_task = script.calls[1][1]
     assert "SCREENING QUESTIONS" not in draft_task
@@ -375,11 +376,12 @@ def test_typed_questions_win_over_the_postings_own() -> None:
     )
     assert result.seeded_questions is None
     assert "Can you start Monday?" in script.calls[1][1]
-    # The posting's own item is still covered, in the letter.
+    # By default the letter answers it, with no screening block.
     assert (
-        prompts.LETTER_ASKS_INSTRUCTION + "\n- What is your rate?"
+        prompts.LETTER_ASKS_INSTRUCTION + "\n- Can you start Monday?"
         in (script.calls[1][1])
     )
+    assert "SCREENING QUESTIONS" not in script.calls[1][1]
 
 
 def test_flagged_claims_get_exactly_one_corrective_redraft() -> None:

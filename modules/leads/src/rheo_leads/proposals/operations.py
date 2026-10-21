@@ -75,9 +75,9 @@ def question_key(text: str) -> str:
 class RequestInput(RefInput):
     # ``None`` keeps the stored questions; a string (empty to clear) replaces them.
     questions: str | None = Field(default=None, max_length=MAX_QUESTIONS_CHARS)
-    # ``None`` keeps the stored choice. True: the form has its own question fields,
-    # so the posting's own questions get answer blocks when none are typed.
-    posting_questions: bool | None = None
+    # ``None`` keeps the stored choice. True: the form has a field per question, so
+    # each gets its own answer block; false, the cover letter answers them all.
+    separate_answers: bool | None = None
     force: bool = False
 
 
@@ -115,7 +115,7 @@ class ProposalView(Strict):
     failure_kind: str | None = None
     attempts: int = 0
     questions: str | None = None
-    posting_questions: bool = False
+    separate_answers: bool = False
     requested_at: datetime | None = None
     generated_at: datetime | None = None
     findings: dict[str, Any] | None = None
@@ -252,7 +252,7 @@ def view(uow: UnitOfWork, identifier: UUID) -> ProposalView:
         failure_kind=row["failure_kind"],
         attempts=row["attempts"],
         questions=row["questions"],
-        posting_questions=row["posting_questions"],
+        separate_answers=row["separate_answers"],
         requested_at=row["requested_at"],
         generated_at=row["generated_at"],
         findings=row["findings"],
@@ -298,13 +298,13 @@ def request(ctx: WorkspaceContext, uow: UnitOfWork, m: RequestInput) -> Proposal
     questions = row["questions"] if row is not None else None
     if m.questions is not None:
         questions = m.questions.strip() or None
-    posting = bool(row["posting_questions"]) if row is not None else False
-    if m.posting_questions is not None:
-        posting = m.posting_questions
+    posting = bool(row["separate_answers"]) if row is not None else False
+    if m.separate_answers is not None:
+        posting = m.separate_answers
     values = {
         "state": "queued",
         "questions": questions,
-        "posting_questions": posting,
+        "separate_answers": posting,
         "stage": None,
         "step": None,
         "total": None,

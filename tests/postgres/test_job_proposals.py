@@ -316,9 +316,9 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
     drafting.set_profile()
     opportunity = drafting.paste("~025200")
     queued = drafting.op(
-        "leads.jobproposal.request", ref=opportunity, posting_questions=True
+        "leads.jobproposal.request", ref=opportunity, separate_answers=True
     )
-    assert queued.state == "queued" and queued.posting_questions is True
+    assert queued.state == "queued" and queued.separate_answers is True
     assert sweeps(drafting.i)
     caplog.set_level(logging.DEBUG)
     drafting.sweep()
@@ -332,9 +332,9 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
     ]
     assert got.draft == DRAFT
     assert got.edited is False
-    # The posting's own "please include" item was answered on its own, but the
-    # Questions field still holds only what the owner typed.
-    assert got.questions is None
+    # The posting's own "please include" item became the questions, answered on
+    # their own because the owner asked for a field per question.
+    assert got.questions == "What is your rate?"
     assert (
         "SCREENING QUESTIONS (answer each after the proposal):\nWhat is your rate?"
         in (drafting.model.starts[1].request.task)
@@ -366,30 +366,31 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
     assert queue.items[0]["has_draft"] is True
 
 
-def test_by_default_the_postings_own_questions_stay_in_the_letter(
+def test_by_default_the_letter_answers_the_questions_itself(
     drafting: Drafting,
 ) -> None:
     drafting.set_profile()
     opportunity = drafting.paste("~025250")
     queued = drafting.op("leads.jobproposal.request", ref=opportunity)
-    assert queued.posting_questions is False
+    assert queued.separate_answers is False
     drafting.sweep()
     task = drafting.model.starts[1].request.task
     assert "SCREENING QUESTIONS" not in task
-    assert "ASKED IN THE LETTER" in task and "- What is your rate?" in task
+    assert "QUESTIONS ANSWERED IN THE LETTER" in task
+    assert "- What is your rate?" in task
     got = drafting.op("leads.jobproposal.get", ref=opportunity)
-    assert got.questions is None and got.posting_questions is False
+    assert got.questions == "What is your rate?" and got.separate_answers is False
 
     # The choice is stored with the request and kept when a later one omits it.
     drafting.op(
         "leads.jobproposal.request",
         ref=opportunity,
-        posting_questions=True,
+        separate_answers=True,
         force=True,
     )
     drafting.sweep()
     kept = drafting.op("leads.jobproposal.request", ref=opportunity, force=True)
-    assert kept.posting_questions is True
+    assert kept.separate_answers is True
 
 
 def test_an_exported_proposal_is_valid_against_the_export_schema(
@@ -404,7 +405,7 @@ def test_an_exported_proposal_is_valid_against_the_export_schema(
 
     drafting.set_profile()
     opportunity = drafting.paste("~025260")
-    drafting.op("leads.jobproposal.request", ref=opportunity, posting_questions=True)
+    drafting.op("leads.jobproposal.request", ref=opportunity, separate_answers=True)
     drafting.sweep()
     with open_unit_of_work(drafting.c.owner) as uow:
         rows = [
@@ -416,7 +417,7 @@ def test_an_exported_proposal_is_valid_against_the_export_schema(
         for r in rows
     ]
     (proposal,) = [r for r in rows if r["record_type"] == "leads.job_proposal"]
-    assert proposal["posting_questions"] is True
+    assert proposal["separate_answers"] is True
     assert len(_validated_module_rows(MANIFEST, [proposal], "leads")) == 1
 
 

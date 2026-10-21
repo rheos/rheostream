@@ -61,9 +61,9 @@ class JobInput:
     budget_min: str | None = None
     budget_max: str | None = None
     questions: str | None = None
-    # The owner said the form has its own question fields, so the posting's
-    # "please include" items get answer blocks. Off, the letter covers them.
-    posting_questions: bool = False
+    # The owner said the form has a field per question, so each gets its own
+    # answer block. Off, the cover letter answers them all.
+    separate_answers: bool = False
     pricing_mode: str | None = None
     # The listing's own type (hourly or fixed) and the job's milestones, if any.
     listing_type: str | None = None
@@ -123,20 +123,18 @@ def generate(
         analysis = prompts.empty_analysis()
         analysed = False
 
-    # A "please include" list in the posting is answered like typed questions only
-    # when the owner said the form has separate fields and typed none: most forms
-    # have one cover letter box, so by default the letter covers those items.
+    # A "please include" list in the posting is answered like typed questions, but
+    # only when none were entered: a hand-entered list always wins.
     seeded: str | None = None
     questions = job.questions
-    embedded = list(analysis["embedded_questions"])
-    if not (questions or "").strip() and embedded and job.posting_questions:
-        seeded = "\n".join(embedded)
+    if not (questions or "").strip() and analysis["embedded_questions"]:
+        seeded = "\n".join(analysis["embedded_questions"])
         questions = seeded
-    asked = prompts.real_questions(questions)
-    # Whatever the posting asks that did not become an answer block goes in the letter.
-    letter_asks = (
-        [] if seeded else prompts.real_questions("\n".join(embedded)).splitlines()
-    )
+    targeted = prompts.real_questions(questions)
+    # Most forms have one cover letter box, so by default the letter answers every
+    # question itself. Separate answer blocks only when the owner asked for them.
+    asked = targeted if job.separate_answers else ""
+    letter_asks = [] if asked else targeted.splitlines()
 
     anecdotes = prompts.select_anecdotes(
         policy.anecdotes,

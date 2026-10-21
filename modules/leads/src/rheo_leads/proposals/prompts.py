@@ -355,11 +355,12 @@ buys and what would be a follow-on, instead of pretending the scope fits."""  # 
 
 LETTER_ASKS_INSTRUCTION: Final = """
 
-ASKED IN THE LETTER: The application has one cover letter box, so the items the \
-posting tells applicants to include are answered inside the letter itself, never as \
-separate blocks, headings or a list after it. Cover each one plainly, in a clause or a \
-sentence, where it fits the letter's flow, and keep the letter's length limit. Never \
-add a "---" divider or a bold heading. The items:"""
+QUESTIONS ANSWERED IN THE LETTER: The application has one cover letter box, so the \
+letter itself answers each question below, never as separate blocks, headings or a \
+list after it. Answer each one plainly and directly, in a sentence or two where it \
+fits the letter's flow, from the profile only; if it asks about experience the \
+profile lacks, say so honestly. The letter may run to 450 words to fit them. Never \
+add a "---" divider or a bold heading. The questions:"""
 
 QUESTIONS_INSTRUCTION: Final = """
 

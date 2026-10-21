@@ -101,7 +101,7 @@ export function ProposalWorkflow(props: WorkflowProps) {
   const [view, setView] = useState<Row>(props.proposal);
   const [questions, setQuestions] = useState(str(props.proposal.questions));
   const [separate, setSeparate] = useState(
-    props.proposal.posting_questions === true,
+    props.proposal.separate_answers === true,
   );
   const [stage, setStage] = useState<StageId>(
     draftState(props.proposal) === "idle" ? "posting" : "proposal",
@@ -311,10 +311,9 @@ function QuestionsPanel(props: {
         </label>
         <InfoTip label="About screening questions">
           <p>
-            The draft answers each one after the cover letter, from your profile
-            only. Leave this empty for a cover letter alone. To answer the
-            posting&apos;s own questions separately, tick the box by the draft
-            button.
+            The draft answers each one from your profile only, inside the cover
+            letter unless you tick the box by the draft button. Questions the
+            posting itself asks are picked up when you draft.
           </p>
         </InfoTip>
       </div>
@@ -404,7 +403,7 @@ function ProposalPanel(props: {
     const done = await call("leads.jobproposal.request", {
       ref: opportunityRef,
       questions: props.questions,
-      posting_questions: props.separate,
+      separate_answers: props.separate,
       force,
     });
     if (done.code === "draft_edited") setConfirmForce(true);
@@ -502,14 +501,13 @@ function ProposalPanel(props: {
             disabled={running}
             onChange={(event) => props.setSeparate(event.target.checked)}
           />
-          The form has separate question fields
+          Answer each question in its own field
         </label>
-        <InfoTip label="About separate question fields">
+        <InfoTip label="About answer fields">
           <p>
-            Off, the draft is one cover letter, and anything the posting asks
-            applicants to include is covered inside it. On, the posting&apos;s
-            own questions get their own answers after the letter. Questions you
-            type on the Questions tab always get their own answers.
+            Off, the cover letter answers every question itself, for a form with
+            one cover letter box. On, each question gets its own answer after the
+            letter, for a form with a field per question.
           </p>
         </InfoTip>
       </div>
