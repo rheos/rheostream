@@ -133,7 +133,10 @@ def generate(
         seeded = "\n".join(embedded)
         questions = seeded
     asked = prompts.real_questions(questions)
-    letter_asks = embedded if not asked else []
+    # Whatever the posting asks that did not become an answer block goes in the letter.
+    letter_asks = (
+        [] if seeded else prompts.real_questions("\n".join(embedded)).splitlines()
+    )
 
     anecdotes = prompts.select_anecdotes(
         policy.anecdotes,

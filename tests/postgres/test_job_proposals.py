@@ -392,6 +392,34 @@ def test_by_default_the_postings_own_questions_stay_in_the_letter(
     assert kept.posting_questions is True
 
 
+def test_an_exported_proposal_is_valid_against_the_export_schema(
+    drafting: Drafting,
+) -> None:
+    """The schema forbids unknown keys, so a new column must be in it."""
+    from types import SimpleNamespace
+
+    from rheo_core.exports.artifact import _validated_module_rows
+    from rheo_leads import MANIFEST
+    from rheo_leads.export import export_records
+
+    drafting.set_profile()
+    opportunity = drafting.paste("~025260")
+    drafting.op("leads.jobproposal.request", ref=opportunity, posting_questions=True)
+    drafting.sweep()
+    with open_unit_of_work(drafting.c.owner) as uow:
+        rows = [
+            dict(r)
+            for r in export_records(SimpleNamespace(connection=uow.connection))  # type: ignore[arg-type]
+        ]
+    rows = [
+        {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()}
+        for r in rows
+    ]
+    (proposal,) = [r for r in rows if r["record_type"] == "leads.job_proposal"]
+    assert proposal["posting_questions"] is True
+    assert len(_validated_module_rows(MANIFEST, [proposal], "leads")) == 1
+
+
 def test_a_regenerate_refuses_over_hand_edits_unless_forced(drafting: Drafting) -> None:
     drafting.set_profile()
     opportunity = drafting.paste("~025300")

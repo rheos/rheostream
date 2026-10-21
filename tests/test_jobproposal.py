@@ -375,6 +375,11 @@ def test_typed_questions_win_over_the_postings_own() -> None:
     )
     assert result.seeded_questions is None
     assert "Can you start Monday?" in script.calls[1][1]
+    # The posting's own item is still covered, in the letter.
+    assert (
+        prompts.LETTER_ASKS_INSTRUCTION + "\n- What is your rate?"
+        in (script.calls[1][1])
+    )
 
 
 def test_flagged_claims_get_exactly_one_corrective_redraft() -> None:
