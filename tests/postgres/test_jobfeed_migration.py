@@ -168,6 +168,7 @@ def test_populated_0008_upgrades_additively_to_the_fresh_schema(
         undone = rewind_leads(uow.connection, "0008_attach_by_field")
         assert undone == (
             HEAD,
+            "0016_jobfeed_runs",
             "0015_model_calls",
             "0014_job_promotion",
             "0013_job_pricing",
