@@ -33,6 +33,7 @@ from rheo_contracts import (
     OperationDeclaration,
     Role,
     SafetyClass,
+    ToolDeclaration,
     WorkspaceContext,
 )
 from rheo_core.operations.refusals import OperationRefused
@@ -646,3 +647,90 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
         None,
     ),
 ) + pricing_operations(ProposalView)
+
+
+# The MCP names for the proposal operations, so an agent reads and edits a draft
+# through operations_call instead of the web form. Same operations, same roles and
+# safety classes; a tool only names one.
+NOTHING_SENT: Final = (
+    " Prepares text only: nothing is sent or submitted; the owner applies on the "
+    "platform by hand. ref takes an opportunity reference or its short ID; a missing "
+    "opportunity returns not_found, and one that is not a Job search opportunity "
+    "returns not_job_search."
+)
+TOOL_SPECS: Final = {
+    "leads.jobproposal.get": (
+        "leads_get_proposal",
+        "Read the proposal drafted for a Job search opportunity: state (idle when "
+        "none was requested, queued, drafting, ready or failed), progress, the "
+        "screening questions, each section with its id, the findings, pricing and "
+        "milestones, and draft, the whole text with the cover letter first.",
+    ),
+    "leads.jobproposal.request": (
+        "leads_request_proposal",
+        "Queue a proposal draft for a Job search opportunity; read it back with "
+        "leads_get_proposal once state is ready. questions replaces the stored "
+        "screening questions (an empty string clears them; omit to keep them). "
+        "separate_answers true gives each question its own answer section. Refuses "
+        "profile_required without a proposal profile, draft_in_progress while one "
+        "is queued or drafting, and draft_edited when a section was edited since the "
+        "last draft unless force is true, which replaces every section.",
+    ),
+    "leads.jobproposal.update": (
+        "leads_update_proposal",
+        "Replace the whole proposal draft from its text form, as leads_get_proposal "
+        "returns it in draft. A text with no --- divider replaces only the cover "
+        "letter. Refuses not_found when there is no draft to edit.",
+    ),
+    "leads.jobproposal.delete": (
+        "leads_delete_proposal",
+        "Delete the proposal draft and keep its screening questions; also stops a "
+        "queued or running draft.",
+    ),
+    "leads.proposalsection.set": (
+        "leads_set_proposal_section",
+        "Replace one section's body. section_id comes from leads_get_proposal; an "
+        "unknown one returns not_found. The section then counts as hand edited.",
+    ),
+    "leads.proposalsection.use_library": (
+        "leads_use_library_answer",
+        "Fill one section with the answer library's answer to its question. Refuses "
+        "not_found when the library has no answer for it.",
+    ),
+    "leads.answerlibrary.save": (
+        "leads_save_library_answer",
+        "Keep an answer in the workspace answer library under its question, "
+        "matched case and punctuation blind; saving the same question again "
+        "replaces the answer. Not tied to any opportunity.",
+    ),
+    "leads.answerlibrary.match": (
+        "leads_match_library_answer",
+        "Find the answer library's answer to a question; entry is null when there "
+        "is none.",
+    ),
+    "leads.jobpricing.request": (
+        "leads_request_pricing",
+        "Queue milestone pricing for a Job search opportunity, which sets the "
+        "proposal to price by milestones. Refuses pricing_not_set when the proposal "
+        "policy has no pricing section and pricing_in_progress while one is queued "
+        "or running.",
+    ),
+    "leads.proposalmilestone.set": (
+        "leads_set_proposal_milestone",
+        "Edit one milestone's title, description, amount or due_on (YYYY-MM-DD); "
+        "fields left out keep their value. milestone_id comes from "
+        "leads_get_proposal; an unknown one returns not_found.",
+    ),
+}
+LIBRARY: Final = frozenset({"leads.answerlibrary.save", "leads.answerlibrary.match"})
+TOOLS: tuple[ToolDeclaration, ...] = tuple(
+    ToolDeclaration(
+        name=TOOL_SPECS[declaration.name][0],
+        operation=declaration.name,
+        safety_class=declaration.safety_class,
+        input_model=declaration.input_model,
+        description=TOOL_SPECS[declaration.name][1]
+        + ("" if declaration.name in LIBRARY else NOTHING_SENT),
+    )
+    for declaration, _ in OPERATIONS
+)

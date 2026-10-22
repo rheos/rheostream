@@ -60,6 +60,7 @@ from rheo_leads.proposals.job import (
 )
 from rheo_leads.proposals.job import SCHEDULE_NAME as PROPOSE_SCHEDULE_NAME
 from rheo_leads.proposals.operations import OPERATIONS as PROPOSAL_OPERATIONS
+from rheo_leads.proposals.operations import TOOLS as PROPOSAL_TOOLS
 from rheo_leads.proposals.profile import OPERATIONS as PROPOSAL_PROFILE_OPERATIONS
 from rheo_leads.resolvers import RECORD_TABLES, resolve_record
 from rheo_leads.scoring.job import (
@@ -121,6 +122,7 @@ MANIFEST = ModuleManifest(
     tools=(
         *TOOLS,
         *CONNECTION_TOOLS,
+        *PROPOSAL_TOOLS,
         ToolDeclaration(
             name="leads_delete",
             operation="core.record.delete",
