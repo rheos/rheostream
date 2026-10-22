@@ -943,8 +943,9 @@ PROPOSAL_TOOLS = {
 
 def test_an_agent_reads_and_edits_a_proposal_over_mcp(drafting: Drafting) -> None:
     """The proposal operations have MCP names: a discover-then-call token holding
-    every tool-named operation (what agent_default issues) finds them in the
-    catalogue, and reads the saved cover letter by the opportunity's short ID."""
+    every tool-named operation (what ``rheo token issue --set agent_default
+    --discover`` issues: agent_default plus the core.tool.call grant) finds them in
+    the catalogue, and reads the saved cover letter by the opportunity's short ID."""
     i = drafting.i
     register_core_tools(i.surfaces.tools)
     named = frozenset(tool.operation for tool in i.surfaces.tools.declarations())

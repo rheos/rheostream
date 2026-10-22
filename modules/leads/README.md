@@ -286,8 +286,9 @@ Agents reach the same operations through MCP: `leads_get_proposal`,
 `leads_request_proposal`, `leads_update_proposal`, `leads_delete_proposal`,
 `leads_set_proposal_section`, `leads_use_library_answer`, `leads_save_library_answer`,
 `leads_match_library_answer`, `leads_request_pricing` and
-`leads_set_proposal_milestone`. Each takes the opportunity's reference or short ID as
-`ref` and keeps its operation's roles and safety class. The profile operations stay
+`leads_set_proposal_milestone`. Each keeps its operation's roles and safety class.
+All but the two answer-library tools take the opportunity's reference or short ID as
+`ref`; those two take `question` (and, to save, `answer`). The profile operations stay
 off MCP.
 
 **The proposal profile.** Drafting needs an owner to set the workspace's proposal
