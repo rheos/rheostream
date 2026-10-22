@@ -2,7 +2,7 @@
 
 from datetime import date
 from decimal import Decimal
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal, Self
 from uuid import UUID
 
 from pydantic import (
@@ -11,10 +11,12 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    PrivateAttr,
     ValidationInfo,
     model_validator,
 )
 from rheo_contracts import ContextPurpose, RecordRef
+from rheo_core.redaction.policy import TierPolicy
 from rheo_core.redaction.tiers import SensitivityTier, Tiered
 from rheo_core.refs.short import ref_value
 
@@ -316,14 +318,106 @@ class PermissionOutput(Strict):
     state: Literal["permitted", "absent", "withdrawn", "suppressed"]
 
 
-class RecordOutput(Strict):
-    ref: str
-    revision: int = 1
-    data: Annotated[dict[str, Any], Tiered(SensitivityTier.RESTRICTED)]
+CONTACT_TARGETS: Final = frozenset({"person.email", "person.phone"})
+"""Fact targets whose values are contact points: ``restricted`` in the tier table."""
+CONTACT_KEYS: Final = frozenset({"verified_email"})
+"""Row columns holding a contact point: an observation's verified sender address."""
+NESTED_TYPES: Final = {
+    "qualification": "qualification",
+    "drafts": "draft",
+    "opportunity_observation": "observation",
+}
+"""Keys of an opportunity's nested rows, by the record type each row is. The rows carry
+no ``ref`` for the renderer's exclusion rule to read, so the projection drops them when
+``leads.redaction.exclude_types`` lists their type."""
+WITHHELD_KEYS: Final = frozenset({"snapshot", "external_subject_id"})
+"""Row keys never sent to a model: a handoff's outbound payload, which is the raw body
+a destination would receive and may hold anything its author put in it, and an
+observation's source identity key for its sender. Sites often fill that key with an
+email or a phone number, but it is an identifier, not a contact point, so releasing
+contact values does not release it."""
 
 
-class ItemsOutput(Strict):
-    items: Annotated[list[dict[str, Any]], Tiered(SensitivityTier.RESTRICTED)]
+def _projected(
+    value: Any, released: frozenset[str], contacts: bool, excluded: frozenset[str]
+) -> Any:
+    """``value`` without the restricted values a model may not see.
+
+    A field row (a dict with ``target`` and ``value_text``, as opportunity field states
+    and observation fields are) loses its value when the target is a contact point and
+    contact values are not released, or when it is an extension field not in
+    ``released``. The row stays, marked ``value_withheld``, so a model still sees that
+    the field is set. Nested rows of an excluded record type (:data:`NESTED_TYPES`) are
+    dropped; rows that carry their own ``ref`` are left to the renderer, which drops a
+    row whose ``ref`` names an excluded type.
+    """
+    if isinstance(value, list):
+        return [_projected(item, released, contacts, excluded) for item in value]
+    if not isinstance(value, dict):
+        return value
+    out = {
+        key: _projected(item, released, contacts, excluded)
+        for key, item in value.items()
+        if key not in WITHHELD_KEYS
+        and (contacts or key not in CONTACT_KEYS)
+        and NESTED_TYPES.get(key) not in excluded
+    }
+    target = out.get("target")
+    if isinstance(target, str) and "value_text" in out:
+        hidden = (target in CONTACT_TARGETS and not contacts) or (
+            target.startswith("ext.") and target not in released
+        )
+        if hidden:
+            del out["value_text"]
+            out["value_withheld"] = True
+    return out
+
+
+class _Projected(Strict):
+    """A Leads output whose model view drops restricted values row by row.
+
+    The payload is ``internal`` as a whole, the tier the tier table gives opportunity
+    data, so a model sees it for the purposes in ``redaction.internal_purposes``.
+    What is ``restricted`` inside it depends on the row, so :meth:`model_projection`
+    removes it before the tool facade renders the rest (see
+    :mod:`rheo_core.redaction.render`). Extension field values are withheld unless the
+    handler named their targets in :meth:`releasing`, so a handler that never looked
+    up the presets' sensitivity sends none of them.
+    """
+
+    _released: frozenset[str] = PrivateAttr(default_factory=frozenset)
+
+    def releasing(self, targets: frozenset[str]) -> Self:
+        self._released = targets
+        return self
+
+
+class RecordOutput(_Projected):
+    ref: Annotated[str, Tiered(SensitivityTier.PUBLIC)]
+    revision: Annotated[int, Tiered(SensitivityTier.PUBLIC)] = 1
+    data: Annotated[dict[str, Any], Tiered(SensitivityTier.INTERNAL)]
+
+    def model_projection(self, policy: TierPolicy) -> Self:
+        projected = _projected(
+            self.data,
+            self._released,
+            policy.contact_points_allowed,
+            policy.excluded_types("leads"),
+        )
+        return self.model_copy(update={"data": projected})
+
+
+class ItemsOutput(_Projected):
+    items: Annotated[list[dict[str, Any]], Tiered(SensitivityTier.INTERNAL)]
+
+    def model_projection(self, policy: TierPolicy) -> Self:
+        projected = _projected(
+            self.items,
+            self._released,
+            policy.contact_points_allowed,
+            policy.excluded_types("leads"),
+        )
+        return self.model_copy(update={"items": projected})
 
 
 class ReferenceEvent(Strict):

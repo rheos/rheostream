@@ -580,7 +580,21 @@ set instead ([discover-then-call](#discover-then-call)).
   aggregate fields are not recomputed when excluded items are dropped: a `recallatron_read`
   window's `total` and positions, and a recall's provenance counts, still count them, a
   one-bit residual (the model can tell excluded memories exist) recorded here rather than
-  closed. A class with no marker is untiered and
+  closed. A number, a flag or a null is sent as dumped once its field's tier allows it. An
+  output model may define `model_projection(policy)`, which runs before the walk and must
+  return an instance of the same class: it is for a payload whose sensitivity is per row
+  rather than per field, and it can only take away, since its return is still tiered and
+  masked. Leads uses it (issue #436): its generic outputs are `internal`, the tier this
+  table gives opportunity data, with `ref` and `revision` `public`, and the projection drops
+  the `person.email` and `person.phone` field values and an observation's `verified_email`
+  unless contact values are released, any extension field value a preset declares
+  `restricted` (or that the handler did not look up), and a handoff's outbound `snapshot`.
+  It also drops an observation's `external_subject_id`, and nested rows of an excluded
+  record type that carry no `ref` (an opportunity's `qualification`, `drafts` and
+  observation links). The hook runs on the result itself, never on a projecting model
+  nested inside another output. A plain row that names itself with a `ref` (a list item)
+  is dropped whole when that `ref` names an excluded type, as a model whose `ref` does is.
+  A class with no marker is untiered and
   answers its JSON dump with contact values and secret references masked, which is every output
   model in release one: Recallatron's and the core's tools return the same fields as before,
   and a contact value inside a memory's text reaches a model as `[email withheld]` or `[phone

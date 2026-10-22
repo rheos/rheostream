@@ -124,7 +124,7 @@ def get(ctx: WorkspaceContext, uow: UnitOfWork, m: c.RefInput) -> c.RecordOutput
             .limit(20)
         ).mappings()
     ]
-    return h.output(record)
+    return h.output(record).releasing(h.released_extensions(uow))
 
 
 def listing(ctx: WorkspaceContext, uow: UnitOfWork, m: c.ListInput) -> c.ItemsOutput:
@@ -418,4 +418,4 @@ def observation_get(
             )
         ).mappings()
     ]
-    return h.output(record, "observation")
+    return h.output(record, "observation").releasing(h.released_extensions(uow))

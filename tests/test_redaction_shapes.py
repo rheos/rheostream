@@ -742,3 +742,56 @@ def test_a_recursive_untiered_tree_stays_untiered() -> None:
     assert class_carries_tiers(Tree) is False
     assert unrenderable_paths(Tree) == ()
     assert render_output(tree, _policy()).value == tree.model_dump(mode="json")
+
+
+# --- issue #436: tiered scalars and an output's own projection
+
+
+class TieredScalars(BaseModel):
+    count: Annotated[int, P]
+    ratio: Annotated[float, P]
+    flag: Annotated[bool, P]
+    missing: Annotated[int | None, P] = None
+    secret: Annotated[int, R] = 7
+
+
+def test_a_tiered_number_flag_or_null_is_sent_when_its_tier_allows() -> None:
+    rendered = render_output(TieredScalars(count=3, ratio=0.5, flag=True), _policy())
+    assert rendered.value == {"count": 3, "ratio": 0.5, "flag": True, "missing": None}
+
+
+class Projecting(BaseModel):
+    title: Annotated[str, P]
+    note: Annotated[str, P]
+
+    def model_projection(self, policy: TierPolicy) -> "Projecting":
+        return self.model_copy(update={"note": "dropped"})
+
+
+class Swapping(BaseModel):
+    title: Annotated[str, P]
+
+    def model_projection(self, policy: TierPolicy) -> BaseModel:
+        return Inner(title=self.title, secret=SECRET)
+
+
+def test_an_output_s_projection_is_what_gets_rendered() -> None:
+    rendered = render_output(Projecting(title="t", note=SECRET), _policy())
+    assert rendered.value == {"title": "t", "note": "dropped"}
+
+
+def test_a_projection_to_another_class_withholds_the_result() -> None:
+    rendered = render_output(Swapping(title="t"), _policy())
+    assert rendered.withheld is True and rendered.value is None
+
+
+class Rows(BaseModel):
+    items: Annotated[list[dict[str, object]], P]
+
+
+def test_a_plain_row_whose_ref_is_excluded_is_dropped_whole() -> None:
+    rendered = render_output(
+        Rows(items=[{"ref": EXCLUDED_REF, "title": "HIDDEN"}, {"title": "kept"}]),
+        _policy(),
+    )
+    assert rendered.value == {"items": [{"title": "kept"}]}
