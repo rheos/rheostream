@@ -61,6 +61,9 @@ class JobInput:
     budget_min: str | None = None
     budget_max: str | None = None
     questions: str | None = None
+    # The owner said the form has a field per question, so each gets its own
+    # answer block. Off, the cover letter answers them all.
+    separate_answers: bool = False
     pricing_mode: str | None = None
     # The listing's own type (hourly or fixed) and the job's milestones, if any.
     listing_type: str | None = None
@@ -127,7 +130,11 @@ def generate(
     if not (questions or "").strip() and analysis["embedded_questions"]:
         seeded = "\n".join(analysis["embedded_questions"])
         questions = seeded
-    asked = prompts.real_questions(questions)
+    targeted = prompts.real_questions(questions)
+    # Most forms have one cover letter box, so by default the letter answers every
+    # question itself. Separate answer blocks only when the owner asked for them.
+    asked = targeted if job.separate_answers else ""
+    letter_asks = [] if asked else targeted.splitlines()
 
     anecdotes = prompts.select_anecdotes(
         policy.anecdotes,
@@ -174,6 +181,7 @@ def generate(
         pricing_mode="milestones" if rows else job.pricing_mode,
         figures=figures,
         questions=bool(asked),
+        letter_asks=letter_asks,
     )
     evidence = gate.Evidence(
         profile=profile.profile,

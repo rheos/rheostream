@@ -23,6 +23,9 @@ CreateAction = Literal["created", "grouped", "reopened", "woke"]
 AreaKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")]
 Title = Annotated[str, Field(min_length=1, max_length=500)]
 Body = Annotated[str, Field(max_length=20000)]
+# One definition for create and close by source, so the two bounds cannot drift.
+SourceKind = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
+SourceRef = Annotated[str, Field(min_length=1, max_length=512)]
 
 
 def _calendar_date(value: object) -> date:
@@ -62,8 +65,8 @@ class ItemCreate(Strict):
     project_ref: ProjectRef | None = None
     due_on: CalendarDate | None = None
     provenance: Provenance = "manual"
-    source_kind: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
-    source_ref: str | None = Field(default=None, min_length=1, max_length=512)
+    source_kind: SourceKind | None = None
+    source_ref: SourceRef | None = None
     fingerprint: str | None = Field(default=None, min_length=1, max_length=512)
 
     @model_validator(mode="after")
@@ -73,6 +76,19 @@ class ItemCreate(Strict):
         if self.fingerprint is not None and self.source_ref is None:
             raise ValueError("fingerprint needs source_ref")
         return self
+
+
+class ItemCloseBySource(Strict):
+    source_kind: SourceKind
+    source_ref: SourceRef
+    note: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class ItemClosed(Strict):
+    closed: bool
+    ref: str | None
+    """The item holding the pair, closed or not; null when no item holds it, and
+    always null for a caller that cannot read items."""
 
 
 def _no_overlap(model: BaseModel, clear: list[str]) -> None:
@@ -187,8 +203,20 @@ class ItemDetail(ItemSummary):
 
 
 class ItemCreated(Strict):
+    """What a create did. A caller that can read items gets ``{action, item}``; one
+    that cannot (a writer token) gets ``{action, ref}``, so creating with a known
+    source pair is never a way to read the item. The absent key is left out of the
+    dump, not sent as null, which keeps the reading caller's result as it was."""
+
     action: CreateAction
-    item: ItemDetail
+    item: ItemDetail | None = Field(default=None, exclude_if=lambda v: v is None)
+    ref: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+    @model_validator(mode="after")
+    def _item_or_ref(self) -> "ItemCreated":
+        if (self.item is None) == (self.ref is None):
+            raise ValueError("a create result carries either the item or its ref")
+        return self
 
 
 class ItemPage(Strict):

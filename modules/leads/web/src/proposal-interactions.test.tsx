@@ -98,10 +98,33 @@ describe("drafting over hand edits", () => {
     expect(host.querySelector('[role="alert"]')).toBeNull();
     await click(button("Replace my edits"));
     expect(submit.mock.calls.map((c) => c[1])).toEqual([
-      { ref: REF, questions: "Rate?", force: false },
-      { ref: REF, questions: "Rate?", force: true },
+      { ref: REF, questions: "Rate?", separate_answers: false, force: false },
+      { ref: REF, questions: "Rate?", separate_answers: false, force: true },
     ]);
     expect(host.textContent).toContain("Queued");
+  });
+});
+
+describe("separate question fields", () => {
+  it("is off by default and sends the owner's choice with the request", async () => {
+    const submit = vi.fn().mockResolvedValue(ok(view("queued")));
+    mount({ submit, proposal: view("idle", { sections: [], draft: null }) });
+    const box = host.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(box?.checked).toBe(false);
+    await click(box as HTMLInputElement);
+    await click(button("Draft proposal"));
+    expect(submit).toHaveBeenCalledWith("leads.jobproposal.request", {
+      ref: REF,
+      questions: "Rate?",
+      separate_answers: true,
+      force: false,
+    });
+  });
+
+  it("shows the stored choice again", () => {
+    mount({ proposal: view("ready", { separate_answers: true }) });
+    const box = host.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(box?.checked).toBe(true);
   });
 });
 

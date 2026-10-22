@@ -22,6 +22,7 @@ test that reads it.
 
 import hashlib
 from datetime import UTC, datetime
+from importlib.metadata import entry_points
 from uuid import UUID, uuid4
 
 import pytest
@@ -42,6 +43,7 @@ from rheo_core.boundary.context import (
     Refusal,
 )
 from rheo_core.boundary.factories import context_from_session, context_from_token
+from rheo_core.modules.manifest import ModuleManifest
 from rheo_core.operations import (
     OPERATION_NOT_PERMITTED,
     SETTINGS_SET,
@@ -50,6 +52,7 @@ from rheo_core.operations import (
 )
 from rheo_core.operations.core_ops import TOKEN_ISSUE, TOKEN_REVOKE
 from rheo_core.operations.refusals import OperationRefused
+from rheo_core.operations.registry import REGISTRY
 from rheo_core.refs.resolver import NOT_FOUND
 from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
 from rheo_core.storage import control_tables as t
@@ -79,8 +82,11 @@ from rheo_core.tokens.issue import (
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 from rheo_core.tokens.sets import (
     DISCOVER_THEN_CALL_OPERATION,
+    TOOL_REGISTRY,
     agent_default,
+    alert_writer,
     cli_full,
+    read_only,
     register_core_tools,
 )
 from sqlalchemy import func, select, update
@@ -532,6 +538,80 @@ def test_cli_full_excludes_the_eight_names(session_ctx: WorkspaceContext) -> Non
     assert len(NON_TOKEN_ISSUABLE) == 8
     assert "core.workspace.status" in operations
     assert NOTE_GET in operations
+
+
+CLOSE_BY_SOURCE = "current.item.close_by_source"
+
+
+@pytest.fixture
+def current_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Current's operations and tools, registered into copies of the process-wide
+    tables the named sets read. ``monkeypatch`` puts the originals back, so the
+    exact-set assertions elsewhere in this file never see Current."""
+    # Found through its entry point, as the loader finds it, so this core test
+    # imports no module package.
+    current = next(
+        ep for ep in entry_points(group="rheo.modules") if ep.name == "current"
+    ).load()
+    assert isinstance(current, ModuleManifest)
+    monkeypatch.setattr(REGISTRY, "_operations", dict(REGISTRY._operations))
+    monkeypatch.setattr(TOOL_REGISTRY, "_tools", dict(TOOL_REGISTRY._tools))
+    for declaration, handler in current.operations:
+        REGISTRY.register(declaration, handler, origin=current.module_id)
+    for tool in current.tools:
+        TOOL_REGISTRY.register(tool, origin=current.module_id)
+
+
+@pytest.mark.usefixtures("current_registered")
+def test_close_by_source_is_in_agent_default_and_cli_full_but_not_read_only(
+    session_ctx: WorkspaceContext,
+) -> None:
+    # Controls: Current really is in the registries the sets read.
+    assert "current.item.list" in read_only()
+    assert "current.item.create" in agent_default()
+    assert CLOSE_BY_SOURCE not in read_only()
+    assert CLOSE_BY_SOURCE in agent_default()
+    assert CLOSE_BY_SOURCE in cli_full()
+    snapshots = {
+        name: _issue(session_ctx, kind=kind, set_name=name)[2]
+        for name, kind in (
+            ("read_only", "cli"),
+            ("cli_full", "cli"),
+            ("agent_default", "mcp"),
+        )
+    }
+    assert CLOSE_BY_SOURCE not in snapshots["read_only"]
+    assert CLOSE_BY_SOURCE in snapshots["cli_full"]
+    assert CLOSE_BY_SOURCE in snapshots["agent_default"]
+
+
+ALERT_WRITER_OPERATIONS = frozenset({"current.item.create", CLOSE_BY_SOURCE})
+"""What ``alert_writer`` expands to with Current installed. A literal, for the reason
+``READ_ONLY_OPERATIONS`` gives: an exact set that cannot widen when Current, or any
+other module, gains an operation."""
+
+
+@pytest.mark.usefixtures("current_registered")
+def test_alert_writer_is_exactly_create_and_close_by_source(
+    session_ctx: WorkspaceContext,
+) -> None:
+    # Control: Current's other writes are registered, so the exact match below is
+    # the set's own narrowing and not an empty registry.
+    assert {"current.item.update", "current.item.set_status"} <= cli_full()
+    assert alert_writer() == ALERT_WRITER_OPERATIONS
+    _, _, operations = _issue(session_ctx, kind="cli", set_name="alert_writer")
+    assert operations == ALERT_WRITER_OPERATIONS
+
+
+def test_alert_writer_is_empty_and_refused_set_empty_without_current(
+    session_ctx: WorkspaceContext,
+) -> None:
+    assert not {name for name in REGISTRY.names() if name.startswith("current.")}
+    assert alert_writer() == frozenset()
+    outcome = dispatch(
+        session_ctx, TOKEN_ISSUE, {"kind": "cli", "set_name": "alert_writer"}
+    )
+    assert outcome.state == SET_EMPTY, outcome
 
 
 # --- B7: the non-token-issuable rule, both ends -----------------------------

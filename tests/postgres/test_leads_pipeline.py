@@ -1239,6 +1239,12 @@ JOBSEARCH_TABLES = (
 )
 
 
+def _undo_0017(connection: Any) -> None:
+    connection.execute(
+        text("ALTER TABLE leads.job_proposal DROP COLUMN separate_answers")
+    )
+
+
 def _undo_0016(connection: Any) -> None:
     connection.execute(text("DROP TABLE leads.jobfeed_run"))
 
@@ -1340,6 +1346,7 @@ def _undo_0005(connection: Any) -> None:
 # Newest first. Each step undoes one frozen Leads migration on a disposable
 # workspace that started at head, so a test can rebuild an exact predecessor.
 LEADS_REVISIONS = (
+    ("0017_proposal_separate_answers", _undo_0017),
     ("0016_jobfeed_runs", _undo_0016),
     ("0015_model_calls", _undo_0015),
     ("0014_job_promotion", _undo_0014),
@@ -1575,6 +1582,7 @@ def test_attach_by_field_survives_frozen_upgrade(intake: Intake) -> None:
     setup(intake)
     with open_unit_of_work(intake.ctx) as uow:
         assert rewind_leads(uow.connection, "0007_jobsearch_preset") == (
+            "0017_proposal_separate_answers",
             "0016_jobfeed_runs",
             "0015_model_calls",
             "0014_job_promotion",

@@ -163,6 +163,25 @@
   gap: var(--rs-space-2);
   margin: var(--rs-space-3) 0;
 }
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--rs-space-1);
+  margin: 0 0 var(--rs-space-3);
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rs-space-2);
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+  cursor: pointer;
+}
+.check input {
+  min-block-size: 0;
+  margin: 0;
+  accent-color: var(--rs-color-accent);
+}
 .primary,
 .ghost,
 .ghostDanger,

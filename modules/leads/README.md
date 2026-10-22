@@ -302,7 +302,11 @@ named tool, each property tied to a project, and each narrated incident against 
 profile and the offered anecdotes, with one corrective redraft when something is
 flagged; **Tidying** runs a style lint and one repair pass, kept only when it leaves
 fewer findings. The posting is untrusted source material. When no questions were
-entered, items the posting asks applicants to include become the questions.
+entered, items the posting asks applicants to include become the questions. By
+default the cover letter answers every question itself, since most forms have one
+cover letter box; with `separate_answers` set on the request (the "answer each
+question in its own field" box, stored with the request, migration 0017) each gets
+its own answer block instead.
 `leads.proposals.model_id` picks the model for the letter and its repair, and
 `leads.proposals.analysis_model_id` the one for the analysis and the check (empty uses
 the CLI's default).

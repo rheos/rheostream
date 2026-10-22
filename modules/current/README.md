@@ -38,7 +38,22 @@ that pair, snoozed and done ones included. A `fingerprint` (such as the latest m
 id) already seen changes only `updated_at`. Any other repeat raises the event count,
 adds a system comment and raises priority if the new signal's is higher, never lower:
 a done item is `reopened`, a snoozed one `woke`, anything else `grouped`. A repeat never
-changes title, body, area or project.
+changes title, body, area or project. The result is the action and the item, except for
+a caller that cannot read items (its token lacks `current.item.get`, as a writer token
+does): that caller gets the action and the item's ref only.
+
+`current.item.close_by_source` closes the item that holds a `source_kind` and
+`source_ref`, so a caller that keeps no ref or revision can close what it filed. An
+open, waiting or snoozed item becomes `done` with one system comment naming the closing
+actor kind (plus the optional note, up to 2000 characters), and the result is
+`closed: true` with the ref. When no item holds the pair, or it is already done, the
+close is a quiet no-op: `closed: false`, no comment, no event, no new revision, never
+`not_found`. A caller that cannot read items always gets a null ref, so a done item and
+a pair no item holds answer alike. Either way the close clears the found item's seen
+fingerprints, so the next create with the same pair reopens it even if it carries a
+fingerprint sent before the close. A person's move to `done` through
+`current.item.set_status` does not clear them: an email thread closed by hand stays
+closed when intake re-reads it with the same newest-message fingerprint.
 
 ## Operations and roles
 
@@ -48,6 +63,7 @@ changes title, body, area or project.
 | `current.item.get`, `current.item.list` | read | owner, member, service | `current_get`, `current_list` |
 | `current.item.update` | mutate | owner, member | `current_update` |
 | `current.item.set_status` | mutate | owner, member | `current_status` |
+| `current.item.close_by_source` | mutate | owner, member | `current_close_by_source` |
 | `current.item.comment` | mutate | owner, member | `current_comment` |
 | `current.dependency.add`, `.remove` | mutate | owner, member | `current_add_dependency`, `current_remove_dependency` |
 | `current.project.create`, `.update` | mutate | owner, member | `current_create_project`, `current_update_project` |
@@ -75,6 +91,64 @@ Events carry a reference and revision only: `current.item.created`,
 Export format 1 covers every table. Restore expects a freshly installed module: it
 replaces the seeded area list with the exported one and refuses if any other table
 holds rows.
+
+## External writers and readers
+
+A service or scheduled job that files alert items (a health probe, a disk guardrail, a
+support form) holds an `alert_writer` token. That named set carries exactly two
+operations, `current.item.create` and `current.item.close_by_source`, and is enumerated
+so it never grows when an operation is added. Issue one token per writer repo with the
+operator command, under the owner account:
+
+```bash
+rheo token issue --account <owner account id> --workspace <workspace id> --set alert_writer --kind cli
+```
+
+A `cli` token lives at most 90 days (`identity.token_max_days.cli`), and each one is
+revoked on its own without touching the others. The writer calls
+`POST /api/v1/operations/<operation>` with the token as its bearer. Its calls run as the
+token, not the person: the audit record has `actor_kind` `token` and the token id as
+`actor_id`, and the system comment on a close names the actor kind `token`. A person's
+own web session shows as `actor_kind` `account`. `rheo token list` prints each token's
+id, set and expiry but stores no label, so it cannot tell two writer tokens apart: record
+each issued token id against its writer repo (for example in the Current renewal item),
+and a token id in the audit trail then maps to exactly one writer.
+
+A `read_only` `cli` token reads Current over the same route: its set holds every read
+operation, including `current.item.list` and `current.item.get`, and a route test checks
+both. It also reads every other module, because `read_only` is not limited to Current.
+
+Residual exposure: a leaked writer token can open items in any area and close any
+source-keyed item of any `source_kind`, including an email thread whose id it guesses,
+until it expires or is revoked. It can also reopen any existing source-keyed item, or
+raise its priority, by creating with that item's pair. It gets no item content back:
+its create and close results carry an action or `closed` and at most a ref, never a
+title, body, comment, source ref, provenance or status field. This matters because some
+writers number their source refs in sequence (support requests, for one), so a token
+that could read by pair could walk every item that writer filed.
+
+What its results do reveal:
+
+- Close by source answers a done item and an unknown pair alike, with a null ref. Only
+  `closed: true` says something: an unfinished item held the pair, and is now done.
+- A create with a pair that already exists shows that the pair exists, and its action
+  shows the item's state: `reopened` for done, `woke` for snoozed, `grouped` for open or
+  waiting, or for a fingerprint the item already holds.
+- The ref a create returns is a UUIDv7, so it carries the item's creation time.
+
+A probe by create leaves a trace either way. On an absent pair with a usable area it
+makes a new item. With an unknown or retired area, or a project ref that does not exist,
+it is refused, and only the refused call's audit record remains. On a pair that exists
+it acts on the item: it reopens or wakes it, or raises its event count and adds a system
+comment; a fingerprint the item already holds only moves its updated time. The area is
+checked after the pair lookup on purpose, so a writer whose area was later retired can
+still repeat onto its open items.
+
+It cannot update, comment on or delete items, and it cannot reach another module.
+
+Audit growth: every close by source writes one audit record, a no-op close included,
+because the dispatcher audits every mutate. Release one does not prune audit records. A
+writer that closes on every healthy check therefore adds one record per check.
 
 ## Screens
 

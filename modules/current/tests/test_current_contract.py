@@ -8,21 +8,29 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from rheo_contracts import SafetyClass
+from rheo_contracts import Role, SafetyClass
+from rheo_core.tokens.sets import ALERT_WRITER_OPERATIONS
 from rheo_current import MANIFEST
 from rheo_current.areas import DEFAULT_AREAS
+from rheo_current.common import READ_ITEM
 from rheo_current.contracts import (
     DependencyInput,
+    ItemCloseBySource,
     ItemCreate,
+    ItemCreated,
+    ItemDetail,
     ItemInput,
     ItemStatusInput,
     ItemUpdate,
 )
 from rheo_current.export import TABLES
+from rheo_current.operations import OPERATIONS, OWN_REFUSALS, REFUSALS, SPECS
 from sqlalchemy import Date, DateTime, Integer, Table, Text, Uuid
 
 SOURCE = Path(__file__).parents[1] / "src" / "rheo_current"
 ITEM = "current.item:00000000-0000-7000-8000-000000000001"
+CLOSE = "current.item.close_by_source"
+CLOSE_TOOL = "current_close_by_source"
 
 
 def column_schema(column: Any) -> dict[str, Any]:
@@ -92,11 +100,12 @@ def test_current_web_surface_and_forms() -> None:
         ("project", "/project"),
         ("areas", "/areas"),
     ]
-    # The screens submit every MUTATE operation and nothing else.
+    # The screens submit every MUTATE operation and nothing else, except close by
+    # source: only external writers call it, so it is no form.
     mutating = {
         d.name for d, _ in MANIFEST.operations if d.safety_class is SafetyClass.MUTATE
     }
-    assert {f.operation for f in web.forms} == mutating
+    assert {f.operation for f in web.forms} == mutating - {CLOSE}
 
 
 def test_current_declares_no_external_or_financial_operation() -> None:
@@ -169,6 +178,125 @@ def test_update_clears_only_named_fields_and_status_needs_aware_time() -> None:
                 "snoozed_until": "2030-01-01T09:00:00",
             }
         )
+
+
+def test_close_by_source_is_a_member_mutate_with_its_tool() -> None:
+    declaration = next(d for d, _ in MANIFEST.operations if d.name == CLOSE)
+    assert declaration.safety_class is SafetyClass.MUTATE
+    assert declaration.roles == frozenset({Role.OWNER, Role.MEMBER})
+    assert declaration.audit is not None and declaration.audit.subject_field is None
+    assert declaration.input_model is ItemCloseBySource
+    tool = next(t for t in MANIFEST.tools if t.name == CLOSE_TOOL)
+    assert (tool.operation, tool.safety_class) == (CLOSE, SafetyClass.MUTATE)
+    assert {t.name for t in MANIFEST.tools if t.operation.startswith("current.")} == {
+        tool for *_, tool, _ in SPECS if tool
+    }
+
+
+def test_close_tool_states_its_own_refusals_and_the_rest_keep_the_suffix() -> None:
+    descriptions = {t.name: t.description for t in MANIFEST.tools}
+    close = descriptions[CLOSE_TOOL]
+    assert REFUSALS.strip() not in close
+    assert "never returns not_found" in close
+    assert OWN_REFUSALS == {CLOSE_TOOL}
+    # Every other tool keeps its row text with the suffix appended once, as before.
+    others = {name: text for *_, name, text in SPECS if name and name != CLOSE_TOOL}
+    assert len(others) == 13
+    for name, text in others.items():
+        assert descriptions[name] == text + REFUSALS, name
+
+
+GOOD_PAIR = {"source_kind": "health-probe", "source_ref": "health-probe:api"}
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        {**GOOD_PAIR, "source_kind": "Bad Kind"},
+        {**GOOD_PAIR, "source_kind": "a" * 65},
+        {**GOOD_PAIR, "source_ref": ""},
+        {**GOOD_PAIR, "source_ref": "r" * 513},
+    ],
+)
+def test_create_and_close_refuse_the_same_bad_pairs(pair: dict[str, str]) -> None:
+    with pytest.raises(ValidationError):
+        ItemCreate.model_validate({"title": "x", **pair})
+    with pytest.raises(ValidationError):
+        ItemCloseBySource.model_validate(pair)
+
+
+def test_close_input_bounds_the_note_and_takes_nothing_else() -> None:
+    widest = {"source_kind": "a" * 64, "source_ref": "r" * 512}
+    assert ItemCreate.model_validate({"title": "x", **widest}).source_ref == "r" * 512
+    closing = ItemCloseBySource.model_validate({**widest, "note": "n" * 2000})
+    assert closing.note == "n" * 2000
+    assert ItemCloseBySource.model_validate(GOOD_PAIR).note is None
+    for bad in (
+        {**GOOD_PAIR, "note": ""},
+        {**GOOD_PAIR, "note": "n" * 2001},
+        {**GOOD_PAIR, "ref": ITEM},
+        {"source_kind": "health-probe"},
+    ):
+        with pytest.raises(ValidationError):
+            ItemCloseBySource.model_validate(bad)
+
+
+def test_the_alert_writer_set_names_currents_declared_create_and_close() -> None:
+    """Core spells the ``alert_writer`` set's two names as literals, because core
+    must not import this package. This holds each literal to a declared operation, so
+    renaming either operation here fails a test instead of emptying the set."""
+    declared = {declaration.name for declaration, _ in OPERATIONS}
+    assert ALERT_WRITER_OPERATIONS == {"current.item.create", CLOSE}
+    assert ALERT_WRITER_OPERATIONS <= declared
+
+
+DETAIL: dict[str, Any] = {
+    "ref": ITEM,
+    "title": "Synthetic task",
+    "status": "open",
+    "priority": "normal",
+    "area": None,
+    "project_ref": None,
+    "due_on": None,
+    "snoozed_until": None,
+    "woke": False,
+    "overdue": False,
+    "blocked": False,
+    "event_count": 1,
+    "revision": 1,
+    "updated_at": "2026-10-21T09:00:00Z",
+    "body": "Type: support-ticket",
+    "provenance": "alert",
+    "source_kind": "support.form",
+    "source_ref": "support-request-1",
+    "created_at": "2026-10-21T09:00:00Z",
+    "closed_at": None,
+    "project": None,
+    "blockers": [],
+    "blocking": [],
+    "comments": [],
+}
+
+
+def test_a_create_result_dumps_the_item_or_the_ref_with_no_null_key() -> None:
+    full = ItemCreated(action="grouped", item=ItemDetail.model_validate(DETAIL))
+    dumped = full.model_dump(mode="json")
+    assert list(dumped) == ["action", "item"]
+    assert dumped["item"]["body"] == "Type: support-ticket"
+    slim = ItemCreated(action="grouped", ref=ITEM).model_dump(mode="json")
+    assert slim == {"action": "grouped", "ref": ITEM}
+    for neither_or_both in ({}, {"item": DETAIL, "ref": ITEM}):
+        with pytest.raises(ValidationError):
+            ItemCreated.model_validate({"action": "created", **neither_or_both})
+
+
+def test_the_read_check_names_get_which_every_create_or_close_role_may_run() -> None:
+    """``reads_items`` checks only the operation set, which is sound only while get is
+    declared here and open to every role that may create or close by source."""
+    roles = {d.name: d.roles for d, _ in OPERATIONS}
+    assert READ_ITEM == "current.item.get" and READ_ITEM in roles
+    assert roles["current.item.create"] <= roles[READ_ITEM]
+    assert roles[CLOSE] <= roles[READ_ITEM]
 
 
 def test_no_input_names_an_author() -> None:
