@@ -1,15 +1,17 @@
 """Core's allowlisted, read-only MCP client: JSON-RPC 2.0 over Streamable HTTP to
 one configured resource URL, synchronous and bounded.
 
-**Three requests, nothing else.** :class:`McpSession` has one public method per
+**Four requests, nothing else.** :class:`McpSession` has one public method per
 request: :meth:`~McpSession.initialize` sends
 :data:`~rheo_core.connectors.egress.INITIALIZE_BODY` (the discovery probe's bytes),
 :meth:`~McpSession.notify_initialized` sends the ``notifications/initialized``
-notification and :meth:`~McpSession.call_tool` sends one ``tools/call``. Entering
-the context manager only opens the ``httpx`` client and sends nothing, so the caller
-can extend its lease before, and checkpoint after, each request. The calls must come
-in that order (``call_tool`` any number of times last); out of order is ``protocol``
-with nothing sent.
+notification, :meth:`~McpSession.list_tools` sends one ``tools/list`` (it calls no
+tool, so the policy does not apply) and :meth:`~McpSession.call_tool` sends one
+``tools/call``. Entering the context manager only opens the ``httpx`` client and
+sends nothing, so the caller can extend its lease before, and checkpoint after, each
+request. The calls must come in that order (``list_tools`` and ``call_tool`` any
+number of times, in any order, last); out of order is ``protocol`` with nothing
+sent.
 
 **Allowlist first.** ``call_tool`` checks its :class:`ToolPolicy` before anything
 else: a tool name outside the policy, an ``action`` outside the tool's set, a missing
@@ -70,6 +72,7 @@ refuses or one out of order sends nothing and logs nothing.
 
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import Iterable, Iterator, Mapping
@@ -661,6 +664,37 @@ class McpSession:
             self._send(NOTIFY_INITIALIZED_BODY, trace, stop=lambda headers, chunk: True)
         self._state = "ready"
 
+    def list_tools(
+        self, cursor: str | None = None, *, deadline: float | None = None
+    ) -> dict[str, object]:
+        """One ``tools/list``, from ``cursor`` when given; its ``result`` object.
+        ``deadline`` may set an earlier cut-off than the session's for this request
+        (the same 50 s and 5 s rules apply against it).
+
+        The result is the server's own text: the caller decides what of it, if
+        anything, may be kept. The cursor is never traced."""
+        if cursor is not None and type(cursor) is not str:
+            raise McpFailure("protocol")
+        if deadline is not None and (
+            not isinstance(deadline, float | int) or not math.isfinite(deadline)
+        ):
+            raise McpFailure("protocol")
+        self._require("ready")
+        request_id = self._next_id
+        self._next_id += 1
+        params = _encode({} if cursor is None else {"cursor": cursor})
+        if params is None:
+            raise McpFailure("protocol")
+        body = b'{"jsonrpc":"2.0","id":%d,"method":"tools/list","params":%s}' % (
+            request_id,
+            params,
+        )
+        with _Trace(self._trace, "tools/list") as trace:
+            _, result = self._exchange(
+                body, request_id, trace, deadline=deadline, redact=(cursor,)
+            )
+        return result
+
     def call_tool(
         self, name: str, arguments: Mapping[str, object]
     ) -> dict[str, object]:
@@ -707,7 +741,13 @@ class McpSession:
             raise McpFailure("protocol")
 
     def _exchange(
-        self, body: bytes, request_id: int, trace: _Trace
+        self,
+        body: bytes,
+        request_id: int,
+        trace: _Trace,
+        *,
+        deadline: float | None = None,
+        redact: tuple[str | None, ...] = (),
     ) -> tuple[EgressResponse, dict[str, object]]:
         """Send one request and return its JSON-RPC ``result`` object."""
         reader = _EventReader(request_id)
@@ -715,7 +755,7 @@ class McpSession:
         def stop(headers: httpx.Headers, chunk: bytes) -> bool:
             return _media_type(headers) == _EVENT_STREAM and reader.feed(chunk)
 
-        response = self._send(body, trace, stop=stop)
+        response = self._send(body, trace, stop=stop, deadline=deadline, redact=redact)
         media = _media_type(response.headers)
         message: dict[str, object] | None = None
         if media == _JSON:
@@ -729,10 +769,21 @@ class McpSession:
             raise McpFailure("protocol")
         return response, result
 
-    def _send(self, body: bytes, trace: _Trace, *, stop: egress.Stop) -> EgressResponse:
-        """One bounded POST to the resource URL; a 2xx response or a failure."""
+    def _send(
+        self,
+        body: bytes,
+        trace: _Trace,
+        *,
+        stop: egress.Stop,
+        deadline: float | None = None,
+        redact: tuple[str | None, ...] = (),
+    ) -> EgressResponse:
+        """One bounded POST to the resource URL; a 2xx response or a failure.
+        ``deadline`` only ever brings the session's deadline closer; ``redact``
+        names request values (a cursor) the trace's error text must not carry."""
         client = self._client
-        remaining = self._deadline - self._monotonic()
+        cutoff = self._deadline if deadline is None else min(deadline, self._deadline)
+        remaining = cutoff - self._monotonic()
         if client is None or remaining < MINIMUM_START_SECONDS:
             trace.egress = "not_started"
             raise McpFailure("unavailable")
@@ -771,7 +822,7 @@ class McpSession:
         if trace.error_text is not None:
             trace.error_text = _redact(
                 trace.error_text,
-                (headers["Authorization"], self._session_id),
+                (headers["Authorization"], self._session_id, *redact),
             )[:ERROR_TEXT_LIMIT]
         failed = _status_failure(outcome)
         if failed is not None:

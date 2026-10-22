@@ -61,6 +61,7 @@ from harness.jobfeed import (
     raising,
     rate_limited_tool,
     refresh_requests,
+    rpc_result,
     serve,
     slow,
     tick,
@@ -1066,6 +1067,101 @@ def test_an_invalid_tool_prefix_makes_no_request_and_records_misconfigured(
     after = stored(c.owner)
     assert after.authorization_state == "connected"
     assert after.run_claimed_at is None
+    quietly_succeeded(c)
+
+
+LIST_TOOLS_ENV = "RHEO__leads__jobfeed__list_tools"
+
+
+def tools_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    messages = [
+        r.getMessage() for r in caplog.records if r.name == "rheo_leads.jobfeed.run"
+    ]
+    return [m for m in messages if m.startswith("jobfeed_tools ")]
+
+
+def test_with_listing_on_a_run_lists_the_tools_then_collects_as_before(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#456: one ``tools/list`` between the notification and ``list_accounts``, one
+    INFO line naming what it listed, and the rest of the run unchanged. The
+    listing calls nothing, write-capable tools included."""
+    monkeypatch.setenv(LIST_TOOLS_ENV, "true")
+    caplog.set_level(logging.INFO)
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    assert mcp.names() == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "list_accounts",
+        *DEFAULT_SEARCHES,
+    ]
+    assert not set(mcp.names()) & set(WRITE_TOOLS)
+    (line,) = tools_lines(caplog)
+    head, tools = line.split(" tools=", 1)
+    assert head == "jobfeed_tools outcome=ok pages=1 count=5 skipped=0"
+    assert [t["name"] for t in json.loads(tools)] == [
+        "list_accounts",
+        "find_jobs",
+        *WRITE_TOOLS,
+    ]
+    assert last_error(c) is None
+    quietly_succeeded(c)
+
+
+def test_with_listing_off_no_tools_list_is_sent(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv(LIST_TOOLS_ENV, raising=False)
+    caplog.set_level(logging.INFO)
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    assert "tools/list" not in mcp.names()
+    assert tools_lines(caplog) == []
+    quietly_succeeded(c)
+
+
+@pytest.mark.parametrize(
+    ("answer", "outcome"),
+    [
+        (lambda r: httpx.Response(500), "unavailable"),
+        (lambda r: httpx.Response(401), "unauthorized"),
+        (lambda r: httpx.Response(400, text="unknown method"), "protocol"),
+        (rpc_result({"tools": "not a list"}), "malformed"),
+    ],
+)
+def test_a_failed_listing_leaves_the_run_untouched(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    answer: Responder,
+    outcome: str,
+) -> None:
+    monkeypatch.setenv(LIST_TOOLS_ENV, "true")
+    caplog.set_level(logging.INFO)
+    mcp.script["tools/list"] = answer
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    assert mcp.names()[3:] == ["list_accounts", *DEFAULT_SEARCHES]
+    (line,) = tools_lines(caplog)
+    assert line.startswith(f"jobfeed_tools outcome={outcome} ")
+    assert last_error(c) is None
+    after = stored(c.owner)
+    assert after.authorization_state == "connected"
     quietly_succeeded(c)
 
 

@@ -19,7 +19,9 @@ from rheo_core.connectors.oauth import AccessToken
 from rheo_leads.jobfeed.upstream import (
     READ_ONLY_POLICY,
     Account,
+    ListedTool,
     RunCut,
+    ToolListing,
     Upstream,
     UpstreamFailure,
     read_only_policy,
@@ -97,7 +99,7 @@ class LoggedContent(list[Any]):
 
 @dataclass
 class FakeSession:
-    """Records which of its three methods ran, and when each tool call started."""
+    """Records which of its methods ran, and when each tool call started."""
 
     clock: Clock
     script: Script = field(default_factory=lambda: lambda name, args: {})
@@ -105,6 +107,10 @@ class FakeSession:
     set_up_failure: McpFailure | None = None
     starts: list[tuple[float, str, object]] = field(default_factory=list)
     arguments: list[Mapping[str, object]] = field(default_factory=list)
+    listing: list[dict[str, object] | McpFailure] = field(default_factory=list)
+    """The ``tools/list`` answers, in order; then an empty last page."""
+    cursors: list[str | None] = field(default_factory=list)
+    list_deadlines: list[float | None] = field(default_factory=list)
     exited: int = 0
 
     def __enter__(self) -> "FakeSession":
@@ -125,6 +131,22 @@ class FakeSession:
 
     def notify_initialized(self) -> None:
         self.clock.log.append("notify_initialized")
+
+    def list_tools(
+        self, cursor: str | None = None, *, deadline: float | None = None
+    ) -> dict[str, object]:
+        self.clock.log.append("list_tools")
+        self.cursors.append(cursor)
+        self.list_deadlines.append(deadline)
+        if deadline is not None and self.clock.now + self.duration > deadline:
+            # A real session's request ends at its cut-off.
+            self.clock.now = max(self.clock.now, deadline)
+            raise McpFailure("unavailable")
+        self.clock.now += self.duration
+        answer = self.listing.pop(0) if self.listing else {"tools": []}
+        if isinstance(answer, McpFailure):
+            raise answer
+        return answer
 
     def call_tool(
         self, name: str, arguments: Mapping[str, object]
@@ -836,3 +858,200 @@ def test_an_unparseable_search_result_is_a_content_free_protocol_failure(
         failure = raises(lambda: upstream.find_jobs("search", ORG, {}), UpstreamFailure)
     assert_content_free(failure, "protocol")
     assert rig.session.attempts() == 1
+
+
+# --- the best-effort tool listing ---------------------------------------------------
+
+TOOL_LIST_PAGES = 5
+TOOL_LIST_MAX = 200
+TOOL_LIST_SECONDS = 60.0
+
+
+def listed(name: object, **extra: object) -> dict[str, object]:
+    return {"name": name, **extra}
+
+
+def test_list_tools_keeps_names_actions_arguments_and_the_read_only_hint(
+    rig: Rig,
+) -> None:
+    rig.session.listing = [
+        {
+            "tools": [
+                listed(
+                    "acme__find_jobs",
+                    description=f"Find jobs for {ORG}",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "action": {"enum": ["search", "get", f"x {ORG}", 7]},
+                            "org_uid": {"type": "string"},
+                            f"bad key {ORG}": {},
+                        },
+                    },
+                    annotations={"readOnlyHint": True, "title": ORG},
+                ),
+                listed("acme__list_invitations", inputSchema={"type": "object"}),
+                listed("acme__accept_offer", annotations={"readOnlyHint": False}),
+                listed(f"spaced name {ORG}"),
+                listed(7),
+                "not an object",
+            ]
+        }
+    ]
+    with rig.upstream() as upstream:
+        listing = upstream.list_tools()
+    assert listing == ToolListing(
+        tools=(
+            ListedTool(
+                "acme__find_jobs", ("search", "get"), ("action", "org_uid"), True
+            ),
+            ListedTool("acme__list_invitations", (), (), None),
+            ListedTool("acme__accept_offer", (), (), False),
+        ),
+        pages=1,
+        skipped=3,
+        outcome="ok",
+    )
+    assert ORG not in repr(listing)
+    assert rig.session.cursors == [None]
+
+
+def test_list_tools_follows_the_cursor_and_stops_at_the_page_limit(rig: Rig) -> None:
+    rig.session.listing = [
+        {"tools": [listed(f"tool_{n}")], "nextCursor": f"cursor-{n}"}
+        for n in range(TOOL_LIST_PAGES + 1)
+    ]
+    with rig.upstream() as upstream:
+        listing = upstream.list_tools()
+    assert listing.outcome == "more"
+    assert listing.pages == TOOL_LIST_PAGES
+    assert [t.name for t in listing.tools] == [
+        f"tool_{n}" for n in range(TOOL_LIST_PAGES)
+    ]
+    assert rig.session.cursors == [None] + [
+        f"cursor-{n}" for n in range(TOOL_LIST_PAGES - 1)
+    ]
+
+
+def test_list_tools_keeps_at_most_the_limit_and_counts_the_rest(rig: Rig) -> None:
+    rig.session.listing = [
+        {"tools": [listed(f"tool_{n}") for n in range(TOOL_LIST_MAX + 3)]}
+    ]
+    with rig.upstream() as upstream:
+        listing = upstream.list_tools()
+    assert (len(listing.tools), listing.skipped) == (TOOL_LIST_MAX, 3)
+
+
+@pytest.mark.parametrize(
+    ("answers", "outcome", "pages"),
+    [
+        ([McpFailure("unauthorized")], "unauthorized", 0),
+        ([McpFailure("protocol")], "protocol", 0),
+        ([McpFailure("rate_limited", retry_after=30)], "rate_limited", 0),
+        ([{"tools": ORG}], "malformed", 1),
+        ([{}], "malformed", 1),
+        ([{"tools": [], "nextCursor": 7}], "malformed", 1),
+        ([{"tools": [], "nextCursor": ""}], "malformed", 1),
+        (
+            [{"tools": [listed("kept")], "nextCursor": "c"}, McpFailure("unavailable")],
+            "unavailable",
+            1,
+        ),
+    ],
+)
+def test_a_failed_listing_never_raises_and_the_session_goes_on(
+    rig: Rig, answers: list[dict[str, object] | McpFailure], outcome: str, pages: int
+) -> None:
+    rig.session.listing = list(answers)
+    with rig.upstream() as upstream:
+        listing = upstream.list_tools()
+        accounts = upstream.list_accounts()
+    assert (listing.outcome, listing.pages) == (outcome, pages)
+    assert ORG not in repr(listing)
+    assert accounts == ()
+    assert rig.session.attempts("list_accounts") == 1
+
+
+def test_list_tools_runs_between_checkpoints(rig: Rig) -> None:
+    rig.session.listing = [{"tools": [], "nextCursor": "c"}, {"tools": []}]
+    with rig.upstream() as upstream:
+        start = len(rig.log)
+        upstream.list_tools()
+        assert rig.log[start:] == [
+            "forced",
+            "list_tools",
+            "ordinary",
+            "forced",
+            "list_tools",
+            "ordinary",
+        ]
+
+
+def test_list_tools_is_cut_not_sent_near_the_deadline(rig: Rig) -> None:
+    with rig.upstream(deadline=START + 5.4) as upstream:
+        listing = upstream.list_tools()
+    assert listing == ToolListing(tools=(), pages=0, skipped=0, outcome="run_cut")
+    assert "list_tools" not in rig.log
+
+
+def test_list_tools_does_not_delay_the_first_search(rig: Rig) -> None:
+    with rig.upstream() as upstream:
+        upstream.list_tools()
+        upstream.find_jobs("search", ORG, {})
+    assert "sleep" not in rig.log
+
+
+def test_a_listing_never_takes_more_than_its_budget(rig: Rig) -> None:
+    """Slow pages: each request is cut off at the listing's budget, and no page
+    starts with too little of it left, so collection keeps the rest of the run."""
+    rig.session.duration = 25.0
+    rig.session.listing = [
+        {"tools": [], "nextCursor": f"cursor-{n}"} for n in range(TOOL_LIST_PAGES)
+    ]
+    with rig.upstream() as upstream:
+        started = rig.clock.now
+        listing = upstream.list_tools()
+        assert rig.clock.now - started <= TOOL_LIST_SECONDS
+    assert (listing.outcome, listing.pages) == ("unavailable", 2)
+    assert rig.session.list_deadlines == [started + TOOL_LIST_SECONDS] * 3
+
+
+def test_a_listing_stops_before_a_page_it_has_no_budget_for(rig: Rig) -> None:
+    rig.session.duration = 27.5
+    rig.session.listing = [
+        {"tools": [], "nextCursor": f"cursor-{n}"} for n in range(TOOL_LIST_PAGES)
+    ]
+    with rig.upstream() as upstream:
+        listing = upstream.list_tools()
+    assert (listing.outcome, listing.pages) == ("budget", 2)
+    assert len(rig.session.cursors) == 2
+
+
+def test_near_the_run_deadline_the_run_deadline_is_the_cut_off(rig: Rig) -> None:
+    with rig.upstream(deadline=START + 30.0) as upstream:
+        listing = upstream.list_tools()
+    assert rig.session.list_deadlines == [START + 30.0]
+    assert listing.outcome == "ok"
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "waited"), [(None, RETRY_SPACING), (2, RETRY_SPACING), (20, 20.0)]
+)
+def test_a_rate_limited_listing_waits_before_the_accounts_are_listed(
+    rig: Rig, retry_after: int | None, waited: float
+) -> None:
+    rig.session.listing = [McpFailure("rate_limited", retry_after=retry_after)]
+    with rig.upstream() as upstream:
+        listing = upstream.list_tools()
+        upstream.list_accounts()
+    assert listing.outcome == "rate_limited"
+    assert rig.clock.slept == [pytest.approx(waited)]
+    assert rig.log.index("sleep") < rig.log.index("call_tool:list_accounts")
+
+
+def test_a_rate_limited_listing_never_waits_past_its_budget(rig: Rig) -> None:
+    rig.session.listing = [McpFailure("rate_limited", retry_after=3600)]
+    with rig.upstream() as upstream:
+        started = rig.clock.now
+        upstream.list_tools()
+    assert rig.clock.now - started == pytest.approx(TOOL_LIST_SECONDS)

@@ -676,9 +676,9 @@ owner connects. Owner-facing behaviour is summarized in the
 
 ### Settings
 
-Seven are deployment settings. Set them in the environment of both `core` (connect,
+Eight are deployment settings. Set them in the environment of both `core` (connect,
 reconnect, the callback) and `worker` (collection); a Coolify deployment attaches its
-`.env` to every service. Values below are placeholders. The eighth,
+`.env` to every service. Values below are placeholders. The ninth,
 `leads.jobfeed.presets`, is a workspace setting an owner writes through
 `core.settings.set`.
 
@@ -690,6 +690,7 @@ RHEO__connectors__oauth_client__loopback_port=33419
 RHEO__leads__jobfeed__resource_url=https://mcp.example.com/mcp
 RHEO__leads__jobfeed__job_hosts=jobs.example.com
 RHEO__leads__jobfeed__tool_prefix=acme__
+RHEO__leads__jobfeed__list_tools=false
 ```
 
 - `connectors.oauth_client.enabled` (default `false`) is the operator switch. While it
@@ -718,6 +719,16 @@ RHEO__leads__jobfeed__tool_prefix=acme__
   name its tools with a prefix; set this to match what its `tools/list` or a working
   client uses. Letters, digits, `_` and `-` only, at most 64; any other value makes a
   run record `endpoint_misconfigured` before it sends anything.
+- `leads.jobfeed.list_tools` (default `false`). When on, each run also sends
+  `tools/list` (after the `initialized` notification, before `list_accounts`, at most
+  five pages) and the worker logs one INFO line, `jobfeed_tools outcome=... tools=[...]`,
+  with each tool's name, its `action` values, its top-level argument names and its
+  read-only hint. Descriptions and any other text are never kept. It is best effort:
+  a failed or malformed listing is logged by its code and the run goes on to collect.
+  The listing takes at most 60 seconds of the run's 420 (after a rate-limited answer it
+  waits inside that time before collecting), so against a slow provider the last
+  detail reads of a full run can be cut for the deadline. Turn it on to see what a
+  provider offers, or to match `tool_prefix` to its names, then turn it off.
 - `leads.jobfeed.presets` (workspace scope, default empty) is a JSON array of the
   searches a run issues, replacing the three defaults (one Best Matches page, five
   Most Recent pages, one over-cap refresh page) for that workspace. Each preset has a
