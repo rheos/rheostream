@@ -22,7 +22,11 @@ makes the connection need a reconnect; a rejected client is also cleared, and th
 worker never registers one.
 
 Then the MCP session: ``initialize``, the ``initialized`` notification and
-``list_accounts``, each between a forced and an ordinary checkpoint. The fresh
+``list_accounts``, each between a forced and an ordinary checkpoint. With the
+deployment setting ``leads.jobfeed.list_tools`` on, a best-effort ``tools/list``
+comes before ``list_accounts`` and its pattern-checked names go to one INFO line
+(:data:`TOOLS_LOG`); whatever happens to it, the run goes on as if it had not been
+asked. The fresh
 account choices are stored before any decision; the account is selected without
 any fallback (:func:`select_organization`), else ``account_selection_required``
 ends the run with no ``find_jobs`` call. An MCP 401 or 403 is terminal, the stored
@@ -48,6 +52,7 @@ Expected failures never raise. Anything unexpected is logged by its type name an
 raised as the fixed ``internal_error``, with no chained exception.
 """
 
+import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -112,6 +117,7 @@ from rheo_leads.jobfeed.upstream import (
     TOOL_PREFIX,
     Account,
     RunCut,
+    ToolListing,
     Upstream,
     UpstreamFailure,
     read_only_policy,
@@ -129,6 +135,8 @@ RESOURCE_URL_KEY: Final = "leads.jobfeed.resource_url"
 JOB_HOSTS_KEY: Final = "leads.jobfeed.job_hosts"
 TOOL_PREFIX_KEY: Final = "leads.jobfeed.tool_prefix"
 PRESETS_KEY: Final = "leads.jobfeed.presets"
+LIST_TOOLS_KEY: Final = "leads.jobfeed.list_tools"
+TOOLS_LOG: Final = "jobfeed_tools outcome=%s pages=%d count=%d skipped=%d tools=%s"
 INTERNAL_ERROR: Final = "internal_error"
 INTERNAL_ERROR_LOG: Final = "jobfeed_internal_error %s"
 
@@ -213,6 +221,7 @@ class _Run:
     generation: int
     deadline: float = 0.0
     tool_prefix: str = ""
+    list_tools: bool = False
     presets: tuple[Preset, ...] = DEFAULT_PRESETS
 
     def auth(self) -> ClientAuth:
@@ -332,6 +341,8 @@ def session_phase(
             sleep=deps.sleep,
             tool_prefix=run.tool_prefix,
         ) as upstream:
+            if run.list_tools:
+                _log_tools(upstream.list_tools())
             selection = _select(run, upstream.list_accounts())
             if isinstance(selection, str):
                 collected = collect_phase(upstream, run, selection)
@@ -349,6 +360,27 @@ def session_phase(
         _deliver_and_report(uow, token, run, collected)
     elif collected is not None:
         _end(uow, run, collected)
+
+
+def _log_tools(listing: ToolListing) -> None:
+    """One INFO line naming what a listing saw; every value passed a pattern."""
+    tools = [
+        {
+            "name": tool.name,
+            "actions": list(tool.actions),
+            "args": list(tool.arguments),
+            "read_only": tool.read_only,
+        }
+        for tool in listing.tools
+    ]
+    _log.info(
+        TOOLS_LOG,
+        listing.outcome,
+        listing.pages,
+        len(tools),
+        listing.skipped,
+        json.dumps(tools, separators=(",", ":")),
+    )
 
 
 def _deliver_and_report(
@@ -525,6 +557,7 @@ def _collect(
         _end(uow, run, Transient(ENDPOINT_MISCONFIGURED), backoff=False)
         return
     run.tool_prefix = tool_prefix
+    run.list_tools = settings.get_bool(LIST_TOOLS_KEY)
     try:
         run.presets = configured_presets(presets_text)
     except PresetInvalid:

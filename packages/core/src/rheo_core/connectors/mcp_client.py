@@ -1,15 +1,17 @@
 """Core's allowlisted, read-only MCP client: JSON-RPC 2.0 over Streamable HTTP to
 one configured resource URL, synchronous and bounded.
 
-**Three requests, nothing else.** :class:`McpSession` has one public method per
+**Four requests, nothing else.** :class:`McpSession` has one public method per
 request: :meth:`~McpSession.initialize` sends
 :data:`~rheo_core.connectors.egress.INITIALIZE_BODY` (the discovery probe's bytes),
 :meth:`~McpSession.notify_initialized` sends the ``notifications/initialized``
-notification and :meth:`~McpSession.call_tool` sends one ``tools/call``. Entering
-the context manager only opens the ``httpx`` client and sends nothing, so the caller
-can extend its lease before, and checkpoint after, each request. The calls must come
-in that order (``call_tool`` any number of times last); out of order is ``protocol``
-with nothing sent.
+notification, :meth:`~McpSession.list_tools` sends one ``tools/list`` (it calls no
+tool, so the policy does not apply) and :meth:`~McpSession.call_tool` sends one
+``tools/call``. Entering the context manager only opens the ``httpx`` client and
+sends nothing, so the caller can extend its lease before, and checkpoint after, each
+request. The calls must come in that order (``list_tools`` and ``call_tool`` any
+number of times, in any order, last); out of order is ``protocol`` with nothing
+sent.
 
 **Allowlist first.** ``call_tool`` checks its :class:`ToolPolicy` before anything
 else: a tool name outside the policy, an ``action`` outside the tool's set, a missing
@@ -660,6 +662,27 @@ class McpSession:
         with _Trace(self._trace, "notifications/initialized") as trace:
             self._send(NOTIFY_INITIALIZED_BODY, trace, stop=lambda headers, chunk: True)
         self._state = "ready"
+
+    def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+        """One ``tools/list``, from ``cursor`` when given; its ``result`` object.
+
+        The result is the server's own text: the caller decides what of it, if
+        anything, may be kept. The cursor is never traced."""
+        if cursor is not None and type(cursor) is not str:
+            raise McpFailure("protocol")
+        self._require("ready")
+        request_id = self._next_id
+        self._next_id += 1
+        params = _encode({} if cursor is None else {"cursor": cursor})
+        if params is None:
+            raise McpFailure("protocol")
+        body = b'{"jsonrpc":"2.0","id":%d,"method":"tools/list","params":%s}' % (
+            request_id,
+            params,
+        )
+        with _Trace(self._trace, "tools/list") as trace:
+            _, result = self._exchange(body, request_id, trace)
+        return result
 
     def call_tool(
         self, name: str, arguments: Mapping[str, object]

@@ -22,6 +22,14 @@ least :data:`RETRY_SPACING` seconds after the failure (and never before the norm
 spacing). A second one fails the call as ``rate_limited``. Nothing else is retried:
 not a transport error, a timeout, a 5xx, an HTTP 429, any other tool error.
 
+**Listing is best effort.** :meth:`Upstream.list_tools` (only when the operator
+asked for it) sends ``tools/list`` between the same checkpoints, following
+``nextCursor`` for at most :data:`TOOL_LIST_PAGES` pages, and never raises an
+:class:`UpstreamFailure` or :class:`RunCut`: a failure ends the listing with its
+code and the run carries on. It keeps only values that pass a fixed pattern (a
+tool's name, its ``action`` values, its argument names, its read-only hint), never
+a description or any other text.
+
 Failures are :class:`UpstreamFailure` with a fixed code, or :class:`RunCut`. Their
 ``str`` and ``repr`` are the code alone, and each is raised outside any ``except``
 block, so ``__cause__`` and ``__context__`` are ``None``: no message, body or
@@ -35,6 +43,7 @@ import math
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from types import TracebackType
 from typing import Final, Literal, Protocol, Self
 
@@ -63,6 +72,15 @@ def read_only_policy(prefix: str = "") -> ToolPolicy:
 
 
 READ_ONLY_POLICY: Final = read_only_policy()
+
+TOOL_LIST_PAGES: Final = 5
+"""The most ``tools/list`` pages one listing reads."""
+TOOL_LIST_MAX: Final = 200
+"""The most tools one listing keeps; the rest are counted as skipped."""
+SCHEMA_LIST_MAX: Final = 32
+"""The most ``action`` values, and argument names, kept for one tool."""
+_TOOL_NAME: Final = re.compile(r"[A-Za-z0-9_.:/-]{1,128}")
+_SCHEMA_WORD: Final = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 START_SECONDS: Final = MINIMUM_START_SECONDS + 0.5
 """The least time a ``find_jobs`` call may start with. The session refuses a call
@@ -143,6 +161,8 @@ class Session(Protocol):
 
     def notify_initialized(self) -> None: ...
 
+    def list_tools(self, cursor: str | None = None) -> dict[str, object]: ...
+
     def call_tool(
         self, name: str, arguments: Mapping[str, object]
     ) -> dict[str, object]: ...
@@ -159,6 +179,57 @@ class Account:
     organization_id: str
     label: str | None
     is_talent: bool
+
+
+@dataclass(frozen=True)
+class ListedTool:
+    """One tool as ``tools/list`` names it: only pattern-checked values.
+    ``read_only`` is the server's ``readOnlyHint``, ``None`` when it gave none."""
+
+    name: str
+    actions: tuple[str, ...]
+    arguments: tuple[str, ...]
+    read_only: bool | None
+
+
+@dataclass(frozen=True)
+class ToolListing:
+    """What one best-effort listing saw. ``outcome`` is ``ok`` when the server
+    said there was no more; else ``more`` (the page limit came first), ``run_cut``,
+    ``malformed`` or the :data:`UpstreamCode` of the failed request. ``skipped``
+    counts tools whose name failed the pattern or that came past the limit."""
+
+    tools: tuple[ListedTool, ...]
+    pages: int
+    skipped: int
+    outcome: str
+
+
+def _words(values: object) -> tuple[str, ...]:
+    if not isinstance(values, list | dict):
+        return ()
+    kept = [v for v in values if isinstance(v, str) and _SCHEMA_WORD.fullmatch(v)]
+    return tuple(kept[:SCHEMA_LIST_MAX])
+
+
+def _listed_tool(entry: object) -> ListedTool | None:
+    if not isinstance(entry, dict):
+        return None
+    name = entry.get("name")
+    if not isinstance(name, str) or not _TOOL_NAME.fullmatch(name):
+        return None
+    schema = entry.get("inputSchema")
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    properties = properties if isinstance(properties, dict) else {}
+    action = properties.get("action")
+    annotations = entry.get("annotations")
+    hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else None
+    return ListedTool(
+        name=name,
+        actions=_words(action.get("enum") if isinstance(action, dict) else None),
+        arguments=_words(properties),
+        read_only=hint if isinstance(hint, bool) else None,
+    )
 
 
 def _translate(failure: McpFailure) -> UpstreamFailure:
@@ -270,6 +341,45 @@ class Upstream:
         if accounts is None:
             raise UpstreamFailure("protocol")
         return accounts
+
+    def list_tools(self) -> ToolListing:
+        """Best effort: the tools the server lists (module docstring)."""
+        tools: list[ListedTool] = []
+        pages = skipped = 0
+        cursor: str | None = None
+        while True:
+            if self._deadline - self._monotonic() < START_SECONDS:
+                outcome = RunCut.code
+                break
+            if pages == TOOL_LIST_PAGES:
+                outcome = "more"
+                break
+            listed = self._checkpointed(partial(self._session.list_tools, cursor))
+            if isinstance(listed, McpFailure):
+                outcome = _translate(listed).code
+                break
+            pages += 1
+            entries = listed.get("tools")
+            if not isinstance(entries, list):
+                outcome = "malformed"
+                break
+            for entry in entries:
+                tool = _listed_tool(entry)
+                if tool is None or len(tools) == TOOL_LIST_MAX:
+                    skipped += 1
+                else:
+                    tools.append(tool)
+            following = listed.get("nextCursor")
+            if following is None:
+                outcome = "ok"
+                break
+            if not isinstance(following, str) or not following:
+                outcome = "malformed"
+                break
+            cursor = following
+        return ToolListing(
+            tools=tuple(tools), pages=pages, skipped=skipped, outcome=outcome
+        )
 
     def find_jobs(
         self,

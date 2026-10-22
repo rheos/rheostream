@@ -62,6 +62,16 @@ JOBFEED_SETTINGS: Final = (
         explicit_per_workspace=False,
         default="",
     ),
+    # When on, each run also asks the provider for ``tools/list`` and logs the tool
+    # names and argument shapes it saw. Best effort; it never touches collection.
+    KeySpec(
+        key="leads.jobfeed.list_tools",
+        type=ValueType.BOOL,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=False,
+    ),
     # The searches a run issues, as the JSON array ``validate_presets`` accepts. Empty
     # (the default) runs the package defaults. The owner sets it per workspace.
     KeySpec(

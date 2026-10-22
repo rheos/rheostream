@@ -1,4 +1,4 @@
-"""Core's allowlisted MCP client: three explicit one-request methods, the tool
+"""Core's allowlisted MCP client: four explicit one-request methods, the tool
 policy checked before anything is sent, JSON and event-stream answers, per-request
 budgets under the caller's deadline, public addresses only, and content-free
 failures.
@@ -33,7 +33,7 @@ MARKERS = (ACCESS, ORG)
 POLICY = ToolPolicy(
     {"list_accounts": None, "find_jobs": {"smart_search", "search", "get"}}
 )
-PERMITTED = {"initialize", "notifications/initialized", "tools/call"}
+PERMITTED = {"initialize", "notifications/initialized", "tools/list", "tools/call"}
 TIMEOUT_EXTENSION = {"connect": 5.0, "read": 5.0, "write": 5.0, "pool": 5.0}
 
 NON_PUBLIC = {
@@ -135,6 +135,9 @@ class FakeMcp:
         self.tool: Handler = lambda request: httpx.Response(
             200, json=rpc(_body(request)["id"], tool_result({"jobs": []}))
         )
+        self.tools: Handler = lambda request: httpx.Response(
+            200, json=rpc(_body(request)["id"], {"tools": [{"name": "find_jobs"}]})
+        )
 
     def initialized(self, request: httpx.Request) -> httpx.Response:
         headers = {} if self.session_id is None else {"Mcp-Session-Id": self.session_id}
@@ -148,6 +151,8 @@ class FakeMcp:
             return self.initialize(request)
         if method == "notifications/initialized":
             return self.notify(request)
+        if method == "tools/list":
+            return self.tools(request)
         return self.tool(request)
 
     def resolve(self, host: str) -> Sequence[str]:
@@ -396,9 +401,67 @@ def test_each_method_sends_exactly_one_request_and_entry_sends_none() -> None:
     assert result == tool_result({"jobs": []})
 
 
+def test_list_tools_sends_one_request_with_or_without_a_cursor() -> None:
+    fake = FakeMcp()
+    with fake.session() as session:
+        ready(session)
+        first = session.list_tools()
+        session.list_tools("cursor-2")
+        session.call_tool("list_accounts", {})
+    assert first == {"tools": [{"name": "find_jobs"}]}
+    assert fake.methods() == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/list",
+        "tools/call",
+    ]
+    listed = [_body(r) for r in fake.requests[2:4]]
+    assert [(b["id"], b["params"]) for b in listed] == [
+        (2, {}),
+        (3, {"cursor": "cursor-2"}),
+    ]
+    assert _body(fake.requests[4])["id"] == 4
+    assert fake.requests[2].headers["Mcp-Session-Id"] == "session-7f3a"
+    assert fake.requests[2].headers["Authorization"] == f"Bearer {ACCESS}"
+
+
+def test_a_cursor_that_is_not_a_string_is_protocol_with_nothing_sent() -> None:
+    fake = FakeMcp()
+    with fake.session() as session:
+        ready(session)
+        exc = mcp_failure(lambda: session.list_tools(7))  # type: ignore[arg-type]
+    assert_content_free(exc, "protocol")
+    assert len(fake.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        lambda r: httpx.Response(401),
+        lambda r: httpx.Response(200, json=rpc(_body(r)["id"], [ORG])),
+        lambda r: httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": _body(r)["id"], "error": {"code": -32601}},
+        ),
+    ],
+)
+def test_a_failed_listing_is_a_content_free_failure(response: Handler) -> None:
+    fake = FakeMcp()
+    fake.tools = response
+    with fake.session() as session:
+        ready(session)
+        exc = mcp_failure(session.list_tools)
+    assert str(exc) in {"unauthorized", "protocol"}
+    assert ORG not in repr(exc)
+    assert exc.__cause__ is None and exc.__context__ is None
+
+
 @pytest.mark.parametrize(
     "steps",
     [
+        ["list_tools"],
+        ["initialize", "list_tools"],
         ["call_tool"],
         ["notify"],
         ["initialize", "call_tool"],
@@ -412,6 +475,7 @@ def test_out_of_order_calls_are_protocol_with_nothing_sent(steps: list[str]) -> 
         "initialize": lambda s: s.initialize(),
         "notify": lambda s: s.notify_initialized(),
         "call_tool": lambda s: s.call_tool("list_accounts", {}),
+        "list_tools": lambda s: s.list_tools(),
     }
     with fake.session() as session:
         for step in steps[:-1]:
@@ -1118,6 +1182,21 @@ def test_a_tool_without_an_action_logs_none(trace_on: pytest.LogCaptureFixture) 
         ready(session)
         session.call_tool("list_accounts", {})
     assert traced(trace_on)[-1]["action"] == "-"
+
+
+def test_a_listing_logs_its_method_and_never_its_cursor(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    fake.tools = lambda r: httpx.Response(
+        200, json=rpc(_body(r)["id"], {"tools": [{"name": BODY}], "nextCursor": CURSOR})
+    )
+    with fake.session() as session:
+        ready(session)
+        session.list_tools(CURSOR)
+    line = traced(trace_on)[-1]
+    assert (line["method"], line["tool"], line["action"]) == ("tools/list", "-", "-")
+    assert (line["status"], line["outcome"]) == ("200", "ok")
 
 
 def test_a_prefixed_tool_is_sent_prefixed_and_traced_by_its_logical_name(
