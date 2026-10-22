@@ -616,6 +616,10 @@ install -m 0755 -o root -g root /root/rheostream-doctor-alert.new /usr/local/sbi
 rm /root/rheostream-doctor-alert.new
 # The state directory, root-only. The script also creates it when missing.
 install -d -m 0700 -o root -g root /var/lib/rheostream-doctor
+# Keep the cron file this install replaces, once, outside /etc/cron.d.
+if [ -e /etc/cron.d/rheostream-doctor ] && [ ! -e /var/lib/rheostream-doctor/cron.pre-page-command ]; then
+  cp -p /etc/cron.d/rheostream-doctor /var/lib/rheostream-doctor/cron.pre-page-command
+fi
 cat > /etc/cron.d/rheostream-doctor <<'CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -631,11 +635,23 @@ To stop paging, delete `/etc/cron.d/rheostream-doctor`. The state file can stay;
 a later install reads it, so a check it already paged does not page again while it
 keeps failing.
 
+The block keeps a copy of the cron file it replaces at
+`/var/lib/rheostream-doctor/cron.pre-page-command`, inside the root-only state
+directory. It copies only when that backup does not exist yet, so running the block
+again for a later update keeps the first copy, the one from before the page
+command. The copy sits outside `/etc/cron.d` on purpose. Debian's cron skips a file
+there whose name has a dot, but other cron daemons run such files, and a backup
+there would run the old doctor next to the new one.
+
 The previous version of this script read a key file for the legacy ticket service
 (`/root/.config/rheostream-doctor.env`). This version never reads it. Leave it in
 place, unread, until the operator's migration window ends, then delete it. Until
-then a rollback needs no new key: reinstall the previous script with the block
-above, pinned to the prior `main` SHA, and restore the old cron variables.
+then a rollback needs no new key. Reinstall the previous script with the block's
+`curl`, `sha256sum` and `install` lines, pinned to the prior `main` SHA, but do not
+run its cron step. Instead restore the old cron file from the backup with
+`install -m 0644 -o root -g root`, from
+`/var/lib/rheostream-doctor/cron.pre-page-command` to
+`/etc/cron.d/rheostream-doctor`. Delete the backup once the migration window ends.
 
 ### Signed website receiver migration
 
