@@ -1,4 +1,4 @@
 {
   "apps/web/src/theme/fonts/geist-latin-wght-normal.woff2": "the vendored Geist web font, a compressed binary; the licence beside it (OFL.txt) is text and is still searched",
-  "docs/media/explainer-plate-iii.jpg": "README thumbnail for the explainer video, a JPEG still of plate III; the README text beside it is searched"
+  "docs/media/explainer-by-design.jpg": "README thumbnail for the explainer video, a JPEG still of its end card; the README text beside it is searched"
 }

@@ -4,10 +4,11 @@ rheoStream is an open framework for agent-assisted work. It runs agent-accessibl
 workspace operations, background jobs and persistent memory through a FastAPI core,
 MCP facade and Next.js shell.
 
-[![rheoStream explainer: the framework drawn as seven construction plates](docs/media/explainer-plate-iii.jpg)](https://youtu.be/168-OWHkdvU)
+[![How rheoStream works, by design: the explainer's end card](docs/media/explainer-by-design.jpg)](https://youtu.be/T7i6fdqUPzc)
 
-[Watch the 1:42 explainer](https://youtu.be/168-OWHkdvU) (music only): the problem, the modules,
-the MCP door, durable jobs, safety classes, and what is built so far.
+[Watch the 2:49 explainer](https://youtu.be/T7i6fdqUPzc) (narrated): one website inquiry followed
+through the design, from the signed intake to a workspace that leaves as one file. It shows the
+system as designed; [Status](#status) says what is built today.
 
 ## What you get
 
