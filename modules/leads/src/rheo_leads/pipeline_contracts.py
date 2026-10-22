@@ -320,10 +320,8 @@ class PermissionOutput(Strict):
 
 CONTACT_TARGETS: Final = frozenset({"person.email", "person.phone"})
 """Fact targets whose values are contact points: ``restricted`` in the tier table."""
-CONTACT_KEYS: Final = frozenset({"verified_email", "external_subject_id"})
-"""Row columns holding a contact point: an observation's verified sender address, and
-the source's identity key for its sender, which sites often fill with an email or a
-phone number."""
+CONTACT_KEYS: Final = frozenset({"verified_email"})
+"""Row columns holding a contact point: an observation's verified sender address."""
 NESTED_TYPES: Final = {
     "qualification": "qualification",
     "drafts": "draft",
@@ -332,9 +330,12 @@ NESTED_TYPES: Final = {
 """Keys of an opportunity's nested rows, by the record type each row is. The rows carry
 no ``ref`` for the renderer's exclusion rule to read, so the projection drops them when
 ``leads.redaction.exclude_types`` lists their type."""
-WITHHELD_KEYS: Final = frozenset({"snapshot"})
+WITHHELD_KEYS: Final = frozenset({"snapshot", "external_subject_id"})
 """Row keys never sent to a model: a handoff's outbound payload, which is the raw body
-a destination would receive and may hold anything its author put in it."""
+a destination would receive and may hold anything its author put in it, and an
+observation's source identity key for its sender. Sites often fill that key with an
+email or a phone number, but it is an identifier, not a contact point, so releasing
+contact values does not release it."""
 
 
 def _projected(

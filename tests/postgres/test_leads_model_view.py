@@ -238,6 +238,15 @@ def test_contact_values_reach_a_model_when_both_levels_allow_them(
     # The allowance is for contact values only, never a restricted extension field.
     assert "value_text" not in fields["ext.jobsearch.client_spend"]
 
+    # Nor the source's subject key, which is an identifier, not a contact point.
+    (link,) = got["data"]["opportunity_observation"]
+    observation = RecordRef(
+        module="leads", record_type="observation", id=link["observation_id"]
+    )
+    seen = tool(intake, "leads_get_observation", observation_ref=observation.format())
+    assert seen["data"]["verified_email"] == EMAIL
+    assert "external_subject_id" not in seen["data"]
+
 
 def test_excluded_record_types_stay_out_of_lists_and_nested_rows(
     intake: Intake,
