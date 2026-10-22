@@ -557,7 +557,10 @@ session, and a timeout kills its whole process group, so a wrapper's child canno
 deliver late. The doctor never holds or reads a messaging credential; the command
 does. If the sender is a script, name its interpreter in the command rather than
 relying on the script's shebang. To run it as another user, wrap it, for example
-`runuser -u <user> -- <sender command>`.
+`runuser -u <user> -- <sender command>`. Do not use a wrapper that starts a new
+session, such as `su -c` or `sudo` with a pty: the doctor kills the page command's
+process group on timeout, and a sender in a new session would escape that kill and
+could deliver late.
 
 Each message is one plain line, passed to the command unchanged. The doctor never
 picks a markup mode, so underscores and asterisks in a FAIL line arrive as written:

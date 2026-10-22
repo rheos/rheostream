@@ -27,9 +27,8 @@ Doctor's lines are content-free by design (counts, ids, slugs, settings keys).
 
 State file: {"version": 1, "paged": {"<check slug>": "<check name>"}}, mode 0600,
 replaced atomically (temp file in the same directory, fsync, rename); a missing
-directory is created 0700. A missing,
-unreadable or wrong-shape file is "unknown": no check counts as paged, so every
-current FAIL pages. It never means all clear.
+directory is created 0700. A missing, unreadable or wrong-shape file is "unknown":
+no check counts as paged, so every current FAIL pages. It never means all clear.
 
 Configuration (environment; the cron file sets what differs from the defaults):
   RHEO_DOCTOR_COMPOSE_PROJECT  compose project label of the app      (required)
