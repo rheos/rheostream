@@ -724,9 +724,11 @@ RHEO__leads__jobfeed__list_tools=false
   five pages) and the worker logs one INFO line, `jobfeed_tools outcome=... tools=[...]`,
   with each tool's name, its `action` values, its top-level argument names and its
   read-only hint. Descriptions and any other text are never kept. It is best effort:
-  a failed or malformed listing is logged by its code and the run collects exactly as
-  it would with the setting off. Turn it on to see what a provider offers, or to match
-  `tool_prefix` to its names.
+  a failed or malformed listing is logged by its code and the run goes on to collect.
+  The listing takes at most 60 seconds of the run's 420 (after a rate-limited answer it
+  waits inside that time before collecting), so against a slow provider the last
+  detail reads of a full run can be cut for the deadline. Turn it on to see what a
+  provider offers, or to match `tool_prefix` to its names, then turn it off.
 - `leads.jobfeed.presets` (workspace scope, default empty) is a JSON array of the
   searches a run issues, replacing the three defaults (one Best Matches page, five
   Most Recent pages, one over-cap refresh page) for that workspace. Each preset has a

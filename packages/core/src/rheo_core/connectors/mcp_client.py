@@ -72,6 +72,7 @@ refuses or one out of order sends nothing and logs nothing.
 
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import Iterable, Iterator, Mapping
@@ -674,6 +675,10 @@ class McpSession:
         anything, may be kept. The cursor is never traced."""
         if cursor is not None and type(cursor) is not str:
             raise McpFailure("protocol")
+        if deadline is not None and (
+            not isinstance(deadline, float | int) or not math.isfinite(deadline)
+        ):
+            raise McpFailure("protocol")
         self._require("ready")
         request_id = self._next_id
         self._next_id += 1
@@ -685,7 +690,9 @@ class McpSession:
             params,
         )
         with _Trace(self._trace, "tools/list") as trace:
-            _, result = self._exchange(body, request_id, trace, deadline=deadline)
+            _, result = self._exchange(
+                body, request_id, trace, deadline=deadline, redact=(cursor,)
+            )
         return result
 
     def call_tool(
@@ -740,6 +747,7 @@ class McpSession:
         trace: _Trace,
         *,
         deadline: float | None = None,
+        redact: tuple[str | None, ...] = (),
     ) -> tuple[EgressResponse, dict[str, object]]:
         """Send one request and return its JSON-RPC ``result`` object."""
         reader = _EventReader(request_id)
@@ -747,7 +755,7 @@ class McpSession:
         def stop(headers: httpx.Headers, chunk: bytes) -> bool:
             return _media_type(headers) == _EVENT_STREAM and reader.feed(chunk)
 
-        response = self._send(body, trace, stop=stop, deadline=deadline)
+        response = self._send(body, trace, stop=stop, deadline=deadline, redact=redact)
         media = _media_type(response.headers)
         message: dict[str, object] | None = None
         if media == _JSON:
@@ -768,9 +776,11 @@ class McpSession:
         *,
         stop: egress.Stop,
         deadline: float | None = None,
+        redact: tuple[str | None, ...] = (),
     ) -> EgressResponse:
         """One bounded POST to the resource URL; a 2xx response or a failure.
-        ``deadline`` only ever brings the session's deadline closer."""
+        ``deadline`` only ever brings the session's deadline closer; ``redact``
+        names request values (a cursor) the trace's error text must not carry."""
         client = self._client
         cutoff = self._deadline if deadline is None else min(deadline, self._deadline)
         remaining = cutoff - self._monotonic()
@@ -812,7 +822,7 @@ class McpSession:
         if trace.error_text is not None:
             trace.error_text = _redact(
                 trace.error_text,
-                (headers["Authorization"], self._session_id),
+                (headers["Authorization"], self._session_id, *redact),
             )[:ERROR_TEXT_LIMIT]
         failed = _status_failure(outcome)
         if failed is not None:

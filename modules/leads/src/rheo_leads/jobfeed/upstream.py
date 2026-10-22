@@ -27,7 +27,9 @@ asked for it) sends ``tools/list`` between the same checkpoints, following
 ``nextCursor`` for at most :data:`TOOL_LIST_PAGES` pages within
 :data:`TOOL_LIST_SECONDS` (each request is cut off at that limit), and never raises an
 :class:`UpstreamFailure` or :class:`RunCut`: a failure ends the listing with its
-code and the run carries on. It keeps only values that pass a fixed pattern (a
+code and the run carries on (after a rate-limited listing, it first waits the
+provider's ``Retry-After`` or :data:`RETRY_SPACING`, whichever is longer, inside the
+same budget). It keeps only values that pass a fixed pattern (a
 tool's name, its ``action`` values, its argument names, its read-only hint), never
 a description or any other text.
 
@@ -368,6 +370,11 @@ class Upstream:
             )
             if isinstance(listed, McpFailure):
                 outcome = _translate(listed).code
+                if outcome == "rate_limited":
+                    # Give the provider room before ``list_accounts``, inside the
+                    # listing's own budget, so a throttled listing does not turn
+                    # into a throttled run.
+                    self._hold_off(listed.retry_after, cutoff)
                 break
             pages += 1
             entries = listed.get("tools")
@@ -391,6 +398,12 @@ class Upstream:
         return ToolListing(
             tools=tuple(tools), pages=pages, skipped=skipped, outcome=outcome
         )
+
+    def _hold_off(self, retry_after: int | None, cutoff: float) -> None:
+        wait = max(RETRY_SPACING, float(retry_after or 0))
+        wait = min(wait, cutoff - self._monotonic())
+        if wait > 0:
+            self._sleep(wait)
 
     def find_jobs(
         self,

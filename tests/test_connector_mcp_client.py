@@ -445,6 +445,18 @@ def test_a_listing_deadline_clips_the_request_budget_and_never_extends_it() -> N
     assert str(exc) == "unavailable"
 
 
+@pytest.mark.parametrize("deadline", [float("nan"), float("inf"), "soon"])
+def test_a_listing_deadline_that_is_not_a_finite_number_is_protocol(
+    deadline: object,
+) -> None:
+    fake = FakeMcp()
+    with fake.session() as session:
+        ready(session)
+        exc = mcp_failure(lambda: session.list_tools(deadline=deadline))  # type: ignore[arg-type]
+    assert_content_free(exc, "protocol")
+    assert len(fake.requests) == 2
+
+
 def test_a_cursor_that_is_not_a_string_is_protocol_with_nothing_sent() -> None:
     fake = FakeMcp()
     with fake.session() as session:
@@ -1216,6 +1228,19 @@ def test_a_listing_logs_its_method_and_never_its_cursor(
     line = traced(trace_on)[-1]
     assert (line["method"], line["tool"], line["action"]) == ("tools/list", "-", "-")
     assert (line["status"], line["outcome"]) == ("200", "ok")
+
+
+def test_a_short_cursor_echoed_in_a_listing_error_is_redacted(
+    trace_on: pytest.LogCaptureFixture,
+) -> None:
+    fake = marked_fake()
+    fake.tools = lambda r: httpx.Response(400, text="invalid cursor c-81f2 given")
+    with fake.session() as session:
+        ready(session)
+        mcp_failure(lambda: session.list_tools("c-81f2"))
+    line = traced(trace_on)[-1]
+    assert "c-81f2" not in line["error_text"]
+    assert mcp_client.REDACTED in line["error_text"]
 
 
 def test_a_prefixed_tool_is_sent_prefixed_and_traced_by_its_logical_name(

@@ -1032,3 +1032,26 @@ def test_near_the_run_deadline_the_run_deadline_is_the_cut_off(rig: Rig) -> None
         listing = upstream.list_tools()
     assert rig.session.list_deadlines == [START + 30.0]
     assert listing.outcome == "ok"
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "waited"), [(None, RETRY_SPACING), (2, RETRY_SPACING), (20, 20.0)]
+)
+def test_a_rate_limited_listing_waits_before_the_accounts_are_listed(
+    rig: Rig, retry_after: int | None, waited: float
+) -> None:
+    rig.session.listing = [McpFailure("rate_limited", retry_after=retry_after)]
+    with rig.upstream() as upstream:
+        listing = upstream.list_tools()
+        upstream.list_accounts()
+    assert listing.outcome == "rate_limited"
+    assert rig.clock.slept == [pytest.approx(waited)]
+    assert rig.log.index("sleep") < rig.log.index("call_tool:list_accounts")
+
+
+def test_a_rate_limited_listing_never_waits_past_its_budget(rig: Rig) -> None:
+    rig.session.listing = [McpFailure("rate_limited", retry_after=3600)]
+    with rig.upstream() as upstream:
+        started = rig.clock.now
+        upstream.list_tools()
+    assert rig.clock.now - started == pytest.approx(TOOL_LIST_SECONDS)
