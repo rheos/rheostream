@@ -1,36 +1,44 @@
-"""The scheduled doctor pager: FAIL lines become tickets, recoveries close them
-(issue #229).
+"""The scheduled doctor pager: a check that starts failing sends one page, a paged
+check that recovers sends one notice (issue #229).
 
 `deploy/doctor/rheostream-doctor-alert.py` runs as a subprocess against a stub
-`docker` on PATH and a local stand-in for the ticket service. No real Docker and no
-real service: the stub records every request, so each test checks exactly what
-would have been filed or closed.
+`docker` on PATH and a stub page command. No real Docker and no real sender: the
+stub saves each message it reads on stdin to its own file and exits with the code
+in STUB_PAGE_EXIT, so each test checks exactly what would have been sent.
 """
 
 from __future__ import annotations
 
+import ast
+import importlib.util
 import json
 import os
+import platform
+import re
+import shlex
 import stat
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from types import ModuleType
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "doctor" / "rheostream-doctor-alert.py"
 PROJECT = "exampleproject"
+HOST = platform.node()
 
 OK_REPORT = """\
 ok   cluster: reachable; server 16.15
 ok   workspace 0000 (example): active
 ok   evidence acceptance 0000 (example): 0 of 0 evidence units settled in the last 24 h
 """
+FAIL_CHECK = "evidence acceptance 0000 (example)"
 FAIL_LINE = (
     "FAIL evidence acceptance 0000 (example): 1 of 3 evidence units settled in the "
     "last 24 h ended gap/acceptance_failed; the evidence of each is lost"
@@ -40,77 +48,14 @@ FAIL_REPORT = (
     f"{FAIL_LINE}\n"
     "ok   workspace 0000 (example): active\n"
 )
-FAIL_REF = "rheostream-doctor:evidence-acceptance-0000-(example)"
-
-
-class TicketStub:
-    def __init__(self) -> None:
-        self.requests: list[tuple[str, str, dict[str, Any]]] = []
-        self.open_tickets: list[dict[str, Any]] = []
-        self.list_status = 200
-        self.write_status = 201
-
-    def handler(self) -> type[BaseHTTPRequestHandler]:
-        stub = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args: object) -> None:
-                pass
-
-            def _reply(self, status: int, body: dict[str, Any]) -> None:
-                raw = json.dumps(body).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
-
-            def _body(self) -> dict[str, Any]:
-                length = int(self.headers.get("Content-Length") or 0)
-                return json.loads(self.rfile.read(length)) if length else {}
-
-            def do_GET(self) -> None:
-                stub.requests.append(("GET", self.path, {}))
-                assert self.headers["Authorization"] == "Bearer test-key"
-                self._reply(
-                    stub.list_status,
-                    {
-                        "tickets": stub.open_tickets,
-                        "total": len(stub.open_tickets),
-                        "page": 1,
-                        "per_page": 100,
-                    },
-                )
-
-            def do_POST(self) -> None:
-                stub.requests.append(("POST", self.path, self._body()))
-                self._reply(stub.write_status, {"id": 1})
-
-            def do_PATCH(self) -> None:
-                stub.requests.append(("PATCH", self.path, self._body()))
-                self._reply(200, {})
-
-        return Handler
-
-    def calls(self, method: str) -> list[tuple[str, dict[str, Any]]]:
-        return [(path, body) for m, path, body in self.requests if m == method]
-
-
-@pytest.fixture
-def svc() -> Iterator[tuple[TicketStub, str]]:
-    stub = TicketStub()
-    server = HTTPServer(("127.0.0.1", 0), stub.handler())
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield stub, f"http://127.0.0.1:{server.server_port}/api"
-    finally:
-        server.shutdown()
+FAIL_SLUG = "evidence-acceptance-0000-(example)"
+FAIL_PAGE = f"rheo.stream doctor FAIL on {HOST}: {FAIL_LINE}"
+FAIL_RECOVERY = f"rheo.stream doctor recovered on {HOST}: {FAIL_CHECK}"
 
 
 def fake_docker(tmp_path: Path, *, containers: str, report: str, code: int) -> Path:
     """A stub `docker`: `ps` prints `containers`; `exec` prints `report`, exits `code`,
-    and leaves a marker, so the preflight test can prove doctor never ran."""
+    and leaves a marker, so a test can prove doctor never ran."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     (tmp_path / "report.txt").write_text(report)
@@ -126,20 +71,77 @@ def fake_docker(tmp_path: Path, *, containers: str, report: str, code: int) -> P
     return bindir
 
 
+def stub_page_command(tmp_path: Path) -> Path:
+    """A stub page command: saves stdin to the next free page-N file, then exits
+    with STUB_PAGE_EXIT (default 0). It records failed attempts too."""
+    pagedir = tmp_path / "pages"
+    pagedir.mkdir(exist_ok=True)
+    script = tmp_path / "page-stub"
+    script.write_text(
+        "#!/bin/sh\n"
+        "i=0\n"
+        f'while [ -e "{pagedir}/page-$i" ]; do i=$((i+1)); done\n'
+        f'cat > "{pagedir}/page-$i"\n'
+        'exit "${STUB_PAGE_EXIT:-0}"\n'
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script
+
+
+def pages(tmp_path: Path) -> list[bytes]:
+    """Every message the stub read, in order."""
+    files = (tmp_path / "pages").glob("page-*")
+    ordered = sorted(files, key=lambda p: int(p.name.removeprefix("page-")))
+    return [p.read_bytes() for p in ordered]
+
+
+def texts(tmp_path: Path) -> list[str]:
+    return [raw.decode("utf-8") for raw in pages(tmp_path)]
+
+
+def state_path(tmp_path: Path) -> Path:
+    path = tmp_path / "state" / "state.json"
+    path.parent.mkdir(exist_ok=True)
+    return path
+
+
+def write_state(tmp_path: Path, paged: dict[str, str]) -> Path:
+    path = state_path(tmp_path)
+    path.write_text(json.dumps({"version": 1, "paged": paged}))
+    return path
+
+
+def read_paged(tmp_path: Path) -> dict[str, str]:
+    data = json.loads(state_path(tmp_path).read_text())
+    assert data["version"] == 1
+    paged: dict[str, str] = data["paged"]
+    return paged
+
+
 def run(
-    tmp_path: Path, url: str, bindir: Path, *args: str
+    tmp_path: Path,
+    bindir: Path,
+    *args: str,
+    page_exit: int = 0,
+    command: str | None = None,
+    state_file: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env_file = tmp_path / "doctor.env"
-    env_file.write_text("TICKETS_API_KEY=test-key\n")
-    env = {
-        **os.environ,
-        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
-        "RHEO_DOCTOR_COMPOSE_PROJECT": PROJECT,
-        "RHEO_DOCTOR_ENV_FILE": str(env_file),
-        "RHEO_DOCTOR_TICKETS_URL": url,
-        "RHEO_DOCTOR_TICKET_FIELDS": '{"area": "infra"}',
-        "RHEO_DOCTOR_LOG": "stderr",
-    }
+    if command is None:
+        # An argument after the path proves the line is split, not run whole.
+        command = f"{shlex.quote(str(stub_page_command(tmp_path)))} --page"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RHEO_DOCTOR_")}
+    env.update(
+        {
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "RHEO_DOCTOR_COMPOSE_PROJECT": PROJECT,
+            "RHEO_DOCTOR_PAGE_COMMAND": command,
+            "RHEO_DOCTOR_STATE_FILE": str(state_file or state_path(tmp_path)),
+            "RHEO_DOCTOR_LOG": "stderr",
+            "STUB_PAGE_EXIT": str(page_exit),
+            **(extra_env or {}),
+        }
+    )
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         env=env,
@@ -149,157 +151,403 @@ def run(
     )
 
 
-def open_ticket(
-    ref: str, ticket_id: int, ticket_type: str = "infra-alert"
-) -> dict[str, Any]:
-    return {
-        "id": ticket_id,
-        "source_ref": ref,
-        "ticket_type": ticket_type,
-        "status": "open",
-    }
+def load_script(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    spec = importlib.util.spec_from_file_location("doctor_alert", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # dataclass resolves its annotations through sys.modules.
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
 
 
-def test_all_ok_files_nothing_and_exits_0(
-    tmp_path: Path, svc: tuple[TicketStub, str]
-) -> None:
-    stub, url = svc
+def test_all_ok_pages_nothing_and_exits_0(tmp_path: Path) -> None:
+    write_state(tmp_path, {})
     bindir = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
-    result = run(tmp_path, url, bindir)
+    result = run(tmp_path, bindir)
     assert result.returncode == 0, result.stderr
-    assert stub.calls("POST") == []
-    assert stub.calls("PATCH") == []
+    assert pages(tmp_path) == []
+    assert read_paged(tmp_path) == {}
 
 
-def test_a_fail_line_files_one_critical_ticket(
-    tmp_path: Path, svc: tuple[TicketStub, str]
-) -> None:
-    stub, url = svc
+# AC 18: transitions.
+
+
+def test_first_fail_pages_once(tmp_path: Path) -> None:
+    write_state(tmp_path, {})
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
-    result = run(tmp_path, url, bindir)
+    result = run(tmp_path, bindir)
     assert result.returncode == 1, result.stderr
-    [(path, body)] = stub.calls("POST")
-    assert path == "/api/tickets"
-    assert body["source_ref"] == FAIL_REF
-    assert body["severity"] == "critical"
-    assert body["ticket_type"] == "infra-alert"
-    # Service-specific fields ride through from RHEO_DOCTOR_TICKET_FIELDS.
-    assert body["area"] == "infra"
-    assert body["provenance"] == "status-poll"
-    assert "gap/acceptance_failed" in body["body"]
-    # Only the FAIL line travels: the ok lines stay out of the ticket.
-    assert "cluster: reachable" not in body["body"]
+    # Only the FAIL line travels: the ok lines stay out of the page.
+    assert texts(tmp_path) == [FAIL_PAGE]
+    assert read_paged(tmp_path) == {FAIL_SLUG: FAIL_CHECK}
+    assert stat.S_IMODE(state_path(tmp_path).stat().st_mode) == 0o600
+    # No temp file is left beside the state file.
+    assert [p.name for p in state_path(tmp_path).parent.iterdir()] == ["state.json"]
 
 
-def test_a_still_failing_check_keeps_its_ticket_open(
-    tmp_path: Path, svc: tuple[TicketStub, str]
-) -> None:
-    stub, url = svc
-    stub.open_tickets = [open_ticket(FAIL_REF, 7)]
-    stub.write_status = (
-        200  # the service dedupes: same source_ref + type updates, no new page
-    )
+def test_second_consecutive_fail_pages_nothing(tmp_path: Path) -> None:
+    write_state(tmp_path, {})
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
-    result = run(tmp_path, url, bindir)
+    assert run(tmp_path, bindir).returncode == 1
+    second = run(tmp_path, bindir)
+    assert second.returncode == 1, second.stderr
+    assert texts(tmp_path) == [FAIL_PAGE]
+    assert read_paged(tmp_path) == {FAIL_SLUG: FAIL_CHECK}
+
+
+def test_recovery_sends_one_notice(tmp_path: Path) -> None:
+    write_state(tmp_path, {})
+    failing = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    assert run(tmp_path, failing).returncode == 1
+    healthy = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
+    result = run(tmp_path, healthy)
+    assert result.returncode == 0, result.stderr
+    assert texts(tmp_path) == [FAIL_PAGE, FAIL_RECOVERY]
+    assert read_paged(tmp_path) == {}
+    # A check that stays healthy sends nothing more.
+    assert run(tmp_path, healthy).returncode == 0
+    assert len(pages(tmp_path)) == 2
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",
+        "[]",
+        '{"version": 2, "paged": {}}',
+        '{"version": 1, "paged": []}',
+        '{"version": 1, "paged": {"cluster": 3}}',
+        b"\xff\xfe".decode("latin-1"),
+        # A wrong-version file that once held this very check still pages it.
+        json.dumps({"version": 2, "paged": {FAIL_SLUG: FAIL_CHECK}}),
+    ],
+)
+def test_unreadable_state_pages(tmp_path: Path, content: str) -> None:
+    """A bad file is unknown, never all clear, even when it once held this check."""
+    state_path(tmp_path).write_text(content, encoding="latin-1")
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    result = run(tmp_path, bindir)
     assert result.returncode == 1, result.stderr
-    assert len(stub.calls("POST")) == 1
-    assert stub.calls("PATCH") == []
+    assert texts(tmp_path) == [FAIL_PAGE]
+    assert "is unreadable" in result.stderr
+    # The run leaves a good file behind.
+    assert read_paged(tmp_path) == {FAIL_SLUG: FAIL_CHECK}
 
 
-def test_a_recovered_check_closes_its_ticket(
-    tmp_path: Path, svc: tuple[TicketStub, str]
+def test_missing_state_pages(tmp_path: Path) -> None:
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    result = run(tmp_path, bindir)
+    assert result.returncode == 1, result.stderr
+    assert texts(tmp_path) == [FAIL_PAGE]
+    assert "is missing" in result.stderr
+    assert read_paged(tmp_path) == {FAIL_SLUG: FAIL_CHECK}
+
+
+def test_missing_state_directory_is_created_and_pages_once(tmp_path: Path) -> None:
+    """A fresh host has no state directory: the first run creates it 0700 and
+    records the page, so the next run does not page the same FAIL again."""
+    path = tmp_path / "fresh" / "doctor" / "state.json"
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    first = run(tmp_path, bindir, state_file=path)
+    assert first.returncode == 1, first.stderr
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert json.loads(path.read_text())["paged"] == {FAIL_SLUG: FAIL_CHECK}
+    second = run(tmp_path, bindir, state_file=path)
+    assert second.returncode == 1, second.stderr
+    assert texts(tmp_path) == [FAIL_PAGE]
+
+
+# AC 19: a page that is not sent is not recorded.
+
+
+def test_page_failure_leaves_check_unrecorded_and_retries(tmp_path: Path) -> None:
+    write_state(tmp_path, {})
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    failed = run(tmp_path, bindir, page_exit=1)
+    assert failed.returncode == 2, failed.stderr
+    assert read_paged(tmp_path) == {}
+    retried = run(tmp_path, bindir)
+    assert retried.returncode == 1, retried.stderr
+    # The stub saw the failed attempt and the retry.
+    assert texts(tmp_path) == [FAIL_PAGE, FAIL_PAGE]
+    assert read_paged(tmp_path) == {FAIL_SLUG: FAIL_CHECK}
+
+
+@pytest.mark.parametrize("how", ["exit 1", "exit 75", "cannot start"])
+def test_page_failure_exits_2(tmp_path: Path, how: str) -> None:
+    write_state(tmp_path, {})
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    if how == "cannot start":
+        result = run(tmp_path, bindir, command=str(tmp_path / "no-such-command"))
+        assert "could not start" in result.stderr
+    else:
+        result = run(tmp_path, bindir, page_exit=int(how.split()[1]))
+        assert f"page command exited {how.split()[1]}" in result.stderr
+    # Exit 2 wins over the FAIL's exit 1.
+    assert result.returncode == 2
+    assert read_paged(tmp_path) == {}
+
+
+def test_failed_recovery_notice_keeps_the_check_paged(tmp_path: Path) -> None:
+    write_state(tmp_path, {FAIL_SLUG: FAIL_CHECK})
+    bindir = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
+    failed = run(tmp_path, bindir, page_exit=1)
+    assert failed.returncode == 2
+    assert read_paged(tmp_path) == {FAIL_SLUG: FAIL_CHECK}
+    retried = run(tmp_path, bindir)
+    assert retried.returncode == 0, retried.stderr
+    assert texts(tmp_path) == [FAIL_RECOVERY, FAIL_RECOVERY]
+    assert read_paged(tmp_path) == {}
+
+
+def test_state_write_failure_exits_2(tmp_path: Path) -> None:
+    # The state file's parent is a regular file, so no directory can be made.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    result = run(tmp_path, bindir, state_file=blocker / "state.json")
+    assert result.returncode == 2
+    assert "cannot write state file" in result.stderr
+    # The page itself still went out.
+    assert texts(tmp_path) == [FAIL_PAGE]
+
+
+def test_page_command_timeout_counts_as_not_sent(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stub, url = svc
-    stub.open_tickets = [
-        open_ticket(FAIL_REF, 7),
-        # Not this pager's: another source, and this prefix under another type.
-        open_ticket("gmail:abc", 8),
-        open_ticket(FAIL_REF, 9, ticket_type="deploy-failure"),
+    """The 60-second bound, shortened: a command that outlives it has not sent."""
+    module = load_script(monkeypatch)
+    module.PAGE_TIMEOUT = 1
+    sleeper = [sys.executable, "-c", "import time; time.sleep(30)"]
+    assert module.page(sleeper, "x") == "timed out after 1 s"
+    assert module.page([sys.executable, "-c", "pass"], "x") is None
+
+
+def test_page_command_timeout_kills_the_whole_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrapper that forks a sender must not deliver after the timeout: the
+    child would write its marker 2 s in, after the 1 s bound has passed."""
+    module = load_script(monkeypatch)
+    module.PAGE_TIMEOUT = 1
+    marker = tmp_path / "delivered"
+    wrapper = [
+        "/bin/sh",
+        "-c",
+        f"(sleep 2; touch {shlex.quote(str(marker))}) & sleep 30",
     ]
-    bindir = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
-    result = run(tmp_path, url, bindir)
-    assert result.returncode == 0, result.stderr
-    assert stub.calls("PATCH") == [("/api/tickets/7", {"status": "done"})]
+    assert module.page(wrapper, "x") == "timed out after 1 s"
+    time.sleep(2.5)
+    assert not marker.exists()
 
 
-def test_a_rejected_key_fails_before_doctor_runs(
-    tmp_path: Path, svc: tuple[TicketStub, str]
+@pytest.mark.parametrize(
+    "unset, command",
+    [
+        ("RHEO_DOCTOR_COMPOSE_PROJECT", None),
+        ("RHEO_DOCTOR_PAGE_COMMAND", ""),
+        (None, "'unbalanced"),
+    ],
+)
+def test_missing_configuration_exits_2_before_doctor_runs(
+    tmp_path: Path, unset: str | None, command: str | None
 ) -> None:
-    """The preflight: a pager that cannot reach its service must fail loudly."""
-    stub, url = svc
-    stub.list_status = 401
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
-    result = run(tmp_path, url, bindir)
+    extra = {unset: ""} if unset == "RHEO_DOCTOR_COMPOSE_PROJECT" else {}
+    result = run(tmp_path, bindir, command=command, extra_env=extra)
     assert result.returncode == 2
-    assert "answered 401" in result.stderr
     assert not (tmp_path / "exec-ran").exists()
-    assert stub.calls("POST") == []
+    assert pages(tmp_path) == []
 
 
-def test_an_unreachable_ticket_service_exits_2(tmp_path: Path) -> None:
-    bindir = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
-    result = run(tmp_path, "http://127.0.0.1:9/api", bindir)
-    assert result.returncode == 2
-    assert "tickets" in result.stderr
+# AC 20 (doctor half): the line reaches the command byte for byte.
 
 
-def test_a_failed_ticket_write_exits_2(
-    tmp_path: Path, svc: tuple[TicketStub, str]
-) -> None:
-    stub, url = svc
-    stub.write_status = 500
+def test_markup_characters_arrive_byte_for_byte(tmp_path: Path) -> None:
+    line = (
+        "FAIL settings: identity.oauth.client_secret is *unset*; "
+        "set RHEO__identity__oauth__client_secret and restart [core_1]"
+    )
+    write_state(tmp_path, {})
+    bindir = fake_docker(tmp_path, containers="core-1", report=f"{line}\n", code=1)
+    result = run(tmp_path, bindir)
+    assert result.returncode == 1, result.stderr
+    expected = f"rheo.stream doctor FAIL on {HOST}: {line}".encode()
+    assert pages(tmp_path) == [expected]
+
+
+# Kept rules.
+
+
+def test_doctor_run_fail_evaluates_no_recoveries(tmp_path: Path) -> None:
+    """A down or restarting container evaluates no check, so a real FAIL must stay
+    paged rather than read as recovered and page again next run."""
+    write_state(tmp_path, {FAIL_SLUG: FAIL_CHECK})
+    down = fake_docker(tmp_path, containers="", report=OK_REPORT, code=0)
+    result = run(tmp_path, down)
+    assert result.returncode == 1, result.stderr
+    [only] = texts(tmp_path)
+    assert only.startswith(f"rheo.stream doctor FAIL on {HOST}: FAIL doctor run: ")
+    assert read_paged(tmp_path) == {FAIL_SLUG: FAIL_CHECK, "doctor-run": "doctor run"}
+    # Once doctor runs again and both checks pass, both recover.
+    healthy = fake_docker(tmp_path, containers="core-1", report=OK_REPORT, code=0)
+    assert run(tmp_path, healthy).returncode == 0
+    assert sorted(texts(tmp_path)[1:]) == sorted(
+        [FAIL_RECOVERY, f"rheo.stream doctor recovered on {HOST}: doctor run"]
+    )
+    assert read_paged(tmp_path) == {}
+
+
+def test_dry_run_sends_and_writes_nothing(tmp_path: Path) -> None:
+    path = write_state(tmp_path, {"cluster": "cluster"})
+    before = path.read_bytes()
     bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
-    result = run(tmp_path, url, bindir)
-    assert result.returncode == 2
-    assert "answered 500" in result.stderr
+    result = run(tmp_path, bindir, "--dry-run")
+    assert result.returncode == 1, result.stderr
+    assert f"state file {path}: ok" in result.stdout
+    assert f"would page: {FAIL_PAGE}" in result.stdout
+    assert (
+        f"would send recovery: rheo.stream doctor recovered on {HOST}: cluster"
+        in result.stdout
+    )
+    assert pages(tmp_path) == []
+    assert path.read_bytes() == before
+
+
+def test_dry_run_reports_a_missing_state_file_and_creates_none(tmp_path: Path) -> None:
+    path = state_path(tmp_path)
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    result = run(tmp_path, bindir, "--dry-run")
+    assert result.returncode == 1, result.stderr
+    assert f"state file {path}: missing" in result.stdout
+    assert not path.exists()
+    assert pages(tmp_path) == []
 
 
 @pytest.mark.parametrize("containers", ["", "core-1 core-2"])
-def test_no_single_core_container_is_a_fail(
-    tmp_path: Path, svc: tuple[TicketStub, str], containers: str
-) -> None:
-    stub, url = svc
+def test_no_single_core_container_is_a_fail(tmp_path: Path, containers: str) -> None:
     bindir = fake_docker(tmp_path, containers=containers, report=OK_REPORT, code=0)
-    result = run(tmp_path, url, bindir)
+    result = run(tmp_path, bindir)
     assert result.returncode == 1, result.stderr
-    [(_, body)] = stub.calls("POST")
-    assert body["source_ref"] == "rheostream-doctor:doctor-run"
+    [only] = texts(tmp_path)
+    assert "FAIL doctor run: expected one running core container" in only
+    assert read_paged(tmp_path) == {"doctor-run": "doctor run"}
 
 
-def test_doctor_exiting_nonzero_without_a_fail_line_is_a_fail(
-    tmp_path: Path, svc: tuple[TicketStub, str]
-) -> None:
-    stub, url = svc
+def test_doctor_exiting_nonzero_without_a_fail_line_is_a_fail(tmp_path: Path) -> None:
     bindir = fake_docker(tmp_path, containers="core-1", report="Traceback\n", code=3)
-    result = run(tmp_path, url, bindir)
+    result = run(tmp_path, bindir)
     assert result.returncode == 1, result.stderr
-    [(_, body)] = stub.calls("POST")
-    assert body["source_ref"] == "rheostream-doctor:doctor-run"
-    assert "exit 3" in body["body"]
+    assert texts(tmp_path) == [
+        f"rheo.stream doctor FAIL on {HOST}: FAIL doctor run: exit 3"
+    ]
 
 
-def test_dry_run_writes_nothing(tmp_path: Path, svc: tuple[TicketStub, str]) -> None:
-    stub, url = svc
-    stub.open_tickets = [open_ticket("rheostream-doctor:cluster", 4)]
-    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
-    result = run(tmp_path, url, bindir, "--dry-run")
-    assert result.returncode == 1, result.stderr
-    assert f"would file {FAIL_REF}" in result.stdout
-    assert "would close rheostream-doctor:cluster" in result.stdout
-    assert stub.calls("POST") == []
-    assert stub.calls("PATCH") == []
+# AC 22 and AC 54 (code half): the page command is the only transport.
+
+NETWORK_MODULES = {
+    "urllib",
+    "http",
+    "socket",
+    "ssl",
+    "requests",
+    "httpx",
+    "aiohttp",
+    "smtplib",
+    "ftplib",
+    "xmlrpc",
+}
 
 
-def test_no_ticket_closes_when_doctor_could_not_run(
-    tmp_path: Path, svc: tuple[TicketStub, str]
+def imported_modules(source: str) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def test_script_has_no_ticket_transport_token_or_current_client() -> None:
+    source = SCRIPT.read_text()
+    lowered = source.lower()
+    for name in (
+        "Tickets",
+        "read_key",
+        "Unavailable",
+        "RHEO_DOCTOR_TICKETS_URL",
+        "RHEO_DOCTOR_ENV_FILE",
+        "RHEO_DOCTOR_TICKET_FIELDS",
+        "CURRENT_ALERT_TOKEN",
+        "CURRENT_API_URL",
+        "alert_writer",
+        "close_by_source",
+        "/api/v1/operations",
+    ):
+        assert name not in source, name
+    # No ticket service and no messaging service is named at all.
+    assert "ticket" not in lowered
+    assert "telegram" not in lowered
+    # No bot-token shape and no workspace id.
+    assert not re.search(r"\d{8,10}:[A-Za-z0-9_-]{30,}", source)
+    assert not re.search(r"ws_[0-9a-f]{32}", source)
+    assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-", source)
+    assert imported_modules(source).isdisjoint(NETWORK_MODULES)
+
+
+class RecordingHandler(BaseHTTPRequestHandler):
+    seen: list[str] = []
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+    def _record(self) -> None:
+        self.seen.append(f"{self.command} {self.path}")
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST = do_PATCH = do_PUT = do_CONNECT = _record
+
+
+@pytest.fixture
+def listener() -> Iterator[tuple[list[str], str]]:
+    seen: list[str] = []
+    handler = type("Handler", (RecordingHandler,), {"seen": seen})
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield seen, f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+
+
+def test_failing_page_command_attempts_no_other_transport(
+    tmp_path: Path, listener: tuple[list[str], str]
 ) -> None:
-    """A down or restarting container evaluates no check, so a real FAIL's ticket must
-    stay open rather than read as recovered and page again next run."""
-    stub, url = svc
-    stub.open_tickets = [open_ticket(FAIL_REF, 7)]
-    bindir = fake_docker(tmp_path, containers="", report=OK_REPORT, code=0)
-    result = run(tmp_path, url, bindir)
-    assert result.returncode == 1, result.stderr
-    [(_, body)] = stub.calls("POST")
-    assert body["source_ref"] == "rheostream-doctor:doctor-run"
-    assert stub.calls("PATCH") == []
+    """Every address a fallback could use points at a local listener, and the old
+    and the Current settings are set: a failing page still contacts nothing."""
+    seen, url = listener
+    write_state(tmp_path, {})
+    bindir = fake_docker(tmp_path, containers="core-1", report=FAIL_REPORT, code=1)
+    result = run(
+        tmp_path,
+        bindir,
+        page_exit=1,
+        extra_env={
+            "RHEO_DOCTOR_TICKETS_URL": url,
+            "CURRENT_API_URL": url,
+            "CURRENT_ALERT_TOKEN": "fake-token-for-test",
+            "http_proxy": url,
+            "https_proxy": url,
+            "HTTP_PROXY": url,
+            "HTTPS_PROXY": url,
+        },
+    )
+    assert result.returncode == 2
+    assert texts(tmp_path) == [FAIL_PAGE]
+    assert seen == []
+    assert imported_modules(SCRIPT.read_text()).isdisjoint(NETWORK_MODULES)

@@ -534,38 +534,72 @@ dump then restores into that empty database. Any other error needs a look.
 ### Scheduled doctor and paging
 
 A host cron job runs `deploy/doctor/rheostream-doctor-alert.py` once an hour. It
-runs `rheo doctor` inside the flagship's core container and turns every `FAIL`
-line into a critical ticket in the operator's ticket service, which pages on a
-critical ticket's creation. A repeat failure updates the same open ticket (same
-`source_ref` and `ticket_type`) rather than paging again, and when the check
-recovers the script closes the ticket, so the next failure pages afresh. The
-script's header has the ticket service contract (list open, create or dedupe,
-close; bearer auth).
+runs `rheo doctor` inside the flagship's core container and pages a person when a
+check starts or stops failing. It pages by running a page command you configure,
+and it keeps the checks it has paged in a state file on the host, so it needs no
+outside service to know what it already sent.
 
-Each run:
+Configuration (environment; the cron file sets them):
 
-1. Reads `TICKETS_API_KEY` from `RHEO_DOCTOR_ENV_FILE`
-   (`/root/.config/rheostream-doctor.env`, root-only) and lists this pager's open
-   tickets from `RHEO_DOCTOR_TICKETS_URL`. That list is also the preflight: if the
-   service is unreachable or rejects the key, the run exits 2 before doctor's
-   result counts, so a broken pager shows up in syslog instead of passing quietly.
-2. Finds exactly one running container with the compose labels
-   `com.docker.compose.project=$RHEO_DOCTOR_COMPOSE_PROJECT` and
-   `com.docker.compose.service=core`. Zero or several becomes a `doctor run` FAIL.
-3. Runs `rheo doctor` there. A non-zero exit with no `FAIL` line is also a
-   `doctor run` FAIL.
-4. Files each `FAIL` line as a ticket (`ticket_type: infra-alert`, `severity:
-   critical`, `provenance: status-poll`, `source_ref: rheostream-doctor:<check>`,
-   plus any fields in `RHEO_DOCTOR_TICKET_FIELDS`, a JSON object). The ticket body
-   is the FAIL line; doctor's lines are counts, ids and settings keys only.
-5. Closes every open `rheostream-doctor:` ticket whose check no longer fails. When
-   doctor itself could not run, no other check was evaluated, so nothing is closed.
+| Name | Default | Meaning |
+|---|---|---|
+| `RHEO_DOCTOR_COMPOSE_PROJECT` | required | compose project label of the flagship |
+| `RHEO_DOCTOR_SERVICE` | `core` | compose service that runs doctor |
+| `RHEO_DOCTOR_PAGE_COMMAND` | required, no default | command that sends one page |
+| `RHEO_DOCTOR_STATE_FILE` | `/var/lib/rheostream-doctor/state.json` | the paged checks |
+| `RHEO_DOCTOR_LOG` | `syslog` | `syslog` or `stderr` |
 
-Exit codes: 0 all ok, 1 at least one FAIL paged, 2 the pager could not do its job.
-Log lines go to syslog under the tag `rheostream-doctor`
-(`journalctl -t rheostream-doctor`). `--dry-run` prints what it would file or
-close and writes nothing. `tests/test_doctor_alert.py` covers every path against
-a stub `docker` and a stand-in ticket service.
+The page command contract: the value is one command line, split with `shlex` and
+run without a shell. The command reads one message on stdin and exits 0 once the
+message is delivered. Each run of it has 60 seconds. A nonzero exit, a command
+that cannot start, or a timeout all mean "not sent". The command runs in its own
+session, and a timeout kills its whole process group, so a wrapper's child cannot
+deliver late. The doctor never holds or reads a messaging credential; the command
+does. If the sender is a script, name its interpreter in the command rather than
+relying on the script's shebang. To run it as another user, wrap it, for example
+`runuser -u <user> -- <sender command>`. Do not use a wrapper that starts a new
+session, such as `su -c` or `sudo` with a pty: the doctor kills the page command's
+process group on timeout, and a sender in a new session would escape that kill and
+could deliver late.
+
+Each message is one plain line, passed to the command unchanged. The doctor never
+picks a markup mode, so underscores and asterisks in a FAIL line arrive as written:
+
+    rheo.stream doctor FAIL on <host>: <doctor's own FAIL line>
+    rheo.stream doctor recovered on <host>: <check name>
+
+Paging follows transitions. The first run in which a check fails sends one page. A
+check that keeps failing sends nothing more. A paged check that stops failing sends
+one recovery notice. A check is recorded as paged only when the command exits 0,
+so a failed page is retried on the next run. When doctor itself cannot run (no
+single core container, an exec failure, a nonzero exit with no `FAIL` line), the
+run pages a `doctor run` FAIL and sends no recovery, because no other check was
+evaluated.
+
+The state file is `{"version": 1, "paged": {"<check slug>": "<check name>"}}`,
+mode 0600, replaced atomically. A missing, unreadable or wrong-shape file means
+"unknown": the run logs an error, counts no check as paged, and pages every
+current FAIL. It never means all clear. The first run after an install logs that
+error once, because the file does not exist yet.
+
+Exit codes: 0 all ok; 1 at least one check fails and every page it needs was sent
+or already recorded; 2 the pager could not do its job (a required setting is
+missing, a page command failed or timed out, or the state file could not be
+written). Exit 2 wins over 1. Log lines go to syslog under the tag
+`rheostream-doctor` (`journalctl -t rheostream-doctor`).
+
+`--dry-run` runs doctor and prints `state file <path>: ok`, `missing` or
+`unreadable`, then a `would page: <line>` or `would send recovery: <line>` line
+for each message. It runs no page command and writes no state, but it still needs
+`RHEO_DOCTOR_PAGE_COMMAND` set. `tests/test_doctor_alert.py` covers every path
+against a stub `docker` and a stub page command.
+
+The doctor does not also file a Current item. Its failures are mostly the flagship
+itself being unwell, which is when a Current write is least likely to land, and a
+second path would page twice for one condition.
+
+The limit: the pager runs on the same box as the flagship. If the whole box fails,
+both go quiet together, and nothing here pages.
 
 #### Install or update on the host
 
@@ -580,23 +614,44 @@ curl -fsSL -o /root/rheostream-doctor-alert.new \
 sha256sum /root/rheostream-doctor-alert.new      # must match your checkout
 install -m 0755 -o root -g root /root/rheostream-doctor-alert.new /usr/local/sbin/rheostream-doctor-alert
 rm /root/rheostream-doctor-alert.new
-# The ticket service key, once: root-only.
-install -d -m 0700 /root/.config
-umask 077; printf 'TICKETS_API_KEY=%s\n' '<key>' > /root/.config/rheostream-doctor.env
+# The state directory, root-only. The script also creates it when missing.
+install -d -m 0700 -o root -g root /var/lib/rheostream-doctor
+# Keep the cron file this install replaces, once, outside /etc/cron.d.
+if [ -e /etc/cron.d/rheostream-doctor ] && [ ! -e /var/lib/rheostream-doctor/cron.pre-page-command ]; then
+  cp -p /etc/cron.d/rheostream-doctor /var/lib/rheostream-doctor/cron.pre-page-command
+fi
 cat > /etc/cron.d/rheostream-doctor <<'CRON'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RHEO_DOCTOR_COMPOSE_PROJECT=<compose project label>
-RHEO_DOCTOR_TICKETS_URL=<ticket service API base>
-RHEO_DOCTOR_TICKET_FIELDS=<JSON object of service-specific fields, or {}>
+RHEO_DOCTOR_PAGE_COMMAND=<sender command>
 7 * * * * root /usr/local/sbin/rheostream-doctor-alert
 CRON
-# Check it without filing anything (same variables as the cron file):
-RHEO_DOCTOR_COMPOSE_PROJECT=... RHEO_DOCTOR_TICKETS_URL=... /usr/local/sbin/rheostream-doctor-alert --dry-run
+# Check it without paging (same variables as the cron file):
+RHEO_DOCTOR_COMPOSE_PROJECT=... RHEO_DOCTOR_PAGE_COMMAND='<sender command>' /usr/local/sbin/rheostream-doctor-alert --dry-run
 ```
 
-To stop paging, delete `/etc/cron.d/rheostream-doctor`. Any tickets it filed stay
-open in the service until closed by hand.
+To stop paging, delete `/etc/cron.d/rheostream-doctor`. The state file can stay;
+a later install reads it, so a check it already paged does not page again while it
+keeps failing.
+
+The block keeps a copy of the cron file it replaces at
+`/var/lib/rheostream-doctor/cron.pre-page-command`, inside the root-only state
+directory. It copies only when that backup does not exist yet, so running the block
+again for a later update keeps the first copy, the one from before the page
+command. The copy sits outside `/etc/cron.d` on purpose. Debian's cron skips a file
+there whose name has a dot, but other cron daemons run such files, and a backup
+there would run the old doctor next to the new one.
+
+The previous version of this script read a key file for the legacy ticket service
+(`/root/.config/rheostream-doctor.env`). This version never reads it. Leave it in
+place, unread, until the operator's migration window ends, then delete it. Until
+then a rollback needs no new key. Reinstall the previous script with the block's
+`curl`, `sha256sum` and `install` lines, pinned to the prior `main` SHA, but do not
+run its cron step. Instead restore the old cron file from the backup with
+`install -m 0644 -o root -g root`, from
+`/var/lib/rheostream-doctor/cron.pre-page-command` to
+`/etc/cron.d/rheostream-doctor`. Delete the backup once the migration window ends.
 
 ### Signed website receiver migration
 
