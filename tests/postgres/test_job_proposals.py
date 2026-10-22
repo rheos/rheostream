@@ -32,11 +32,14 @@ from rheo_contracts import (
     RuntimeRequest,
 )
 from rheo_core.operations import dispatch
+from rheo_core.operations.core_ops import TOOL_CALL
+from rheo_core.operations.tool_facade import call_registered_tool
 from rheo_core.runtime.oneshot import OneShotRunner
 from rheo_core.runtime.registry import AdapterRegistry
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import job, schedule
+from rheo_core.tokens.sets import register_core_tools
 from rheo_leads.proposals import job as proposing
 from rheo_leads.proposals.job import PROPOSE_JOB_KIND, ProposePayload, propose_job
 from rheo_leads.references import ref
@@ -922,3 +925,75 @@ def test_a_milestone_edit_changes_only_what_it_names(drafting: Drafting) -> None
         milestone_id=str(first.id),
         title=None,
     ) == ("input_invalid")
+
+
+PROPOSAL_TOOLS = {
+    "leads_get_proposal": "read",
+    "leads_request_proposal": "draft",
+    "leads_update_proposal": "draft",
+    "leads_delete_proposal": "draft",
+    "leads_set_proposal_section": "draft",
+    "leads_use_library_answer": "draft",
+    "leads_save_library_answer": "mutate",
+    "leads_match_library_answer": "read",
+    "leads_request_pricing": "draft",
+    "leads_set_proposal_milestone": "draft",
+}
+
+
+def test_an_agent_reads_and_edits_a_proposal_over_mcp(drafting: Drafting) -> None:
+    """The proposal operations have MCP names: a discover-then-call token holding
+    every tool-named operation (what agent_default issues) finds them in the
+    catalogue, and reads the saved cover letter by the opportunity's short ID."""
+    i = drafting.i
+    register_core_tools(i.surfaces.tools)
+    named = frozenset(tool.operation for tool in i.surfaces.tools.declarations())
+    agent = drafting.c.owner.model_copy(
+        update={"operation_set": (named & i.surfaces.operations.names()) | {TOOL_CALL}}
+    )
+
+    def tool(called: str, **payload: Any) -> Any:
+        outcome = call_registered_tool(
+            agent,
+            called,
+            payload,
+            consumers=i.consumers,
+            tools=i.surfaces.tools,
+            registry=i.surfaces.operations,
+        )
+        assert outcome.ok, outcome
+        return outcome.result
+
+    listed = tool("operations_catalog", query="leads_", limit=500).tools
+    assert {
+        entry.name: entry.safety_class
+        for entry in listed
+        if entry.name in PROPOSAL_TOOLS
+    } == PROPOSAL_TOOLS
+
+    drafting.set_profile()
+    opportunity = drafting.paste("~025900")
+    short = RecordRef.parse(opportunity).id.hex[-8:]
+    queued = tool(
+        "operations_call", name="leads_request_proposal", input={"ref": short}
+    )
+    assert queued.state == "queued"
+    drafting.sweep()
+
+    got = tool("operations_call", name="leads_get_proposal", input={"ref": short})
+    assert got.opportunity_ref == opportunity
+    assert got.state == "ready"
+    assert got.sections[0].body == LETTER
+    assert got.draft.startswith(LETTER)
+
+    edited = tool(
+        "operations_call",
+        name="leads_set_proposal_section",
+        input={
+            "ref": short,
+            "section_id": str(got.sections[0].id),
+            "body": "An edited letter.",
+        },
+    )
+    assert edited.sections[0].body == "An edited letter."
+    assert edited.sections[0].edited is True
