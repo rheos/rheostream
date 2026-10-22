@@ -1,5 +1,7 @@
 """Operation, role and MCP declarations: the permission and audit surface."""
 
+from typing import Final
+
 from rheo_contracts import (
     AuditSpec,
     Idempotency,
@@ -20,6 +22,9 @@ READ, MUTATE = SafetyClass.READ, SafetyClass.MUTATE
 REFUSALS = (
     " Missing records return not_found; a revision that moved on returns record_stale."
 )
+# Tools whose description states its own refusals, because REFUSALS would be false
+# for them: close by source never returns not_found or record_stale.
+OWN_REFUSALS: Final = frozenset({"current_close_by_source"})
 SPECS = (
     (
         "item.create",
@@ -36,8 +41,9 @@ SPECS = (
         "grouped, reopened (was done) or woke (was snoozed); pass fingerprint (such as "
         "the latest message id) so the same signal twice changes nothing. A repeat "
         "never changes title, body, area or project, and only raises priority. "
-        "Areas come from current_areas; dates are YYYY-MM-DD. area_unknown and "
-        "area_retired refuse an unusable area.",
+        "Returns the action and the item; a caller that cannot use current_get gets "
+        "the action and the item's ref only. Areas come from current_areas; dates "
+        "are YYYY-MM-DD. area_unknown and area_retired refuse an unusable area.",
     ),
     (
         "item.get",
@@ -94,6 +100,24 @@ SPECS = (
         "status takes one. done can only be reopened to open "
         "(transition_not_allowed otherwise). Completing a blocked item is allowed. "
         "snooze_invalid refuses a missing, past or misplaced snooze time.",
+    ),
+    (
+        "item.close_by_source",
+        c.ItemCloseBySource,
+        c.ItemClosed,
+        items.close_by_source,
+        MUTATE,
+        MEMBERS,
+        None,
+        "current_close_by_source",
+        "Close the item that holds this source_kind and source_ref, without knowing "
+        "its ref or revision. Returns closed true with the ref when an open, waiting "
+        "or snoozed item was closed; closed false when no item holds the pair or it "
+        "is already done. A caller that cannot use current_get always gets ref "
+        "null. Closing clears the item's seen fingerprints, so the next "
+        "create with this pair reopens it. note (up to 2000 characters) is added to "
+        "the system comment. This tool never returns not_found or record_stale; a "
+        "bad source_kind, source_ref or note returns input_invalid.",
     ),
     (
         "item.comment",
@@ -224,7 +248,7 @@ TOOLS = (
             operation="current." + name,
             safety_class=safety,
             input_model=model,
-            description=description + REFUSALS,
+            description=description if tool in OWN_REFUSALS else description + REFUSALS,
         )
         for name, model, _, _, safety, _, _, tool, description in SPECS
         if tool

@@ -65,6 +65,9 @@ job_proposal = Table(
     # The screening questions, one per line, as the owner entered them or as the
     # posting embedded them. The source of record for the next draft.
     Column("questions", Text),
+    # The owner said the application form has a field per question, so each gets its
+    # own answer block; off, the cover letter answers them all (0017).
+    Column("separate_answers", Boolean, nullable=False, server_default="false"),
     Column("stage", Text),
     Column("step", Integer),
     Column("total", Integer),

@@ -643,7 +643,7 @@ operation tables in the module documents are authoritative.
 | Three (leads) | `leads_prepare_followup` | draft | owner, member |
 | Three (leads) | `leads_delete` | destructive | owner |
 | Five (current) | `current_get`, `current_list`, `current_list_projects`, `current_areas`, `current_summary` | read | owner, member |
-| Five (current) | `current_create`, `current_update`, `current_status`, `current_comment`, `current_add_dependency`, `current_remove_dependency`, `current_create_project`, `current_update_project` | mutate | owner, member |
+| Five (current) | `current_create`, `current_update`, `current_status`, `current_close_by_source`, `current_comment`, `current_add_dependency`, `current_remove_dependency`, `current_create_project`, `current_update_project` | mutate | owner, member |
 | Five (current) | `current_delete_item`, `current_delete_project` | destructive | owner |
 
 `audit_list` declares `limit` and nothing else. `core.audit.list`'s two opt-ins,
@@ -696,9 +696,9 @@ the operations a token may call; the catalogue is `operations_catalog`. `workspa
 
 **How the mode is represented.** `--discover` adds one operation, `core.tool.call`, to the token's
 snapshot, and holding it is the mode. The three new tools name it, so a token holds all three or
-none. No named package set contains it (`read_only`, `agent_default` and `cli_full` each subtract
-it), so every existing token and every `--set` issuance keeps the direct listing. No schema change:
-the grant is an ordinary `access_token_operation` row, and revoking the token or deleting that row
+none. No named package set contains it (the three rule sets each subtract it, and `alert_writer`
+does not name it), so every existing token and every `--set` issuance keeps the direct listing.
+No schema change: the grant is an ordinary `access_token_operation` row, and revoking the token or deleting that row
 returns nothing but the listing to direct mode. `core.tool.call`'s own handler refuses
 `tool_facade_only` if it is dispatched directly (the `api` surface, a `cli` token): the facade
 answers the three tools itself, and the tool registry refuses any other tool that names the grant.

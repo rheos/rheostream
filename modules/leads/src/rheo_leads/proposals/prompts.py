@@ -18,7 +18,7 @@ from typing import Any, Final
 
 from rheo_leads.proposals.profile import Anecdote, ProposalPolicy
 
-PROMPT_VERSION: Final = "jobproposal.1"
+PROMPT_VERSION: Final = "jobproposal.2"
 # Bump when the analysis contract or the stage list changes; kept on the findings so
 # a weak letter can be traced to the pipeline that wrote it.
 GATE_VERSION: Final = 6
@@ -352,6 +352,15 @@ milestone splits or payment structures — splitting $30 into milestones reads a
 Pricing is then at most ONE plain sentence (work at the posted budget, or name one fixed \
 price), and if the budget is far below the described scope, say plainly what that budget \
 buys and what would be a follow-on, instead of pretending the scope fits."""  # noqa: E501
+
+LETTER_ASKS_INSTRUCTION: Final = """
+
+QUESTIONS ANSWERED IN THE LETTER: The application has one cover letter box, so the \
+letter itself answers each question below, never as separate blocks, headings or a \
+list after it. Answer each one plainly and directly, in a sentence or two where it \
+fits the letter's flow, from the profile only; if it asks about experience the \
+profile lacks, say so honestly. The letter may run to 450 words to fit them. Never \
+add a "---" divider or a bold heading. The questions:"""
 
 QUESTIONS_INSTRUCTION: Final = """
 
@@ -759,6 +768,7 @@ def system_prompt(
     pricing_mode: str | None,
     questions: bool,
     figures: str = "",
+    letter_asks: Sequence[str] = (),
 ) -> str:
     """Everything before the posting: opener, profile, rules, the owner's notes and
     examples, the analysis, anecdotes, the platform note, pricing and questions."""
@@ -784,6 +794,9 @@ def system_prompt(
     )
     if questions:
         text += QUESTIONS_INSTRUCTION
+    asks = [a.strip() for a in letter_asks if a and a.strip()]
+    if asks:
+        text += LETTER_ASKS_INSTRUCTION + "".join(f"\n- {a}" for a in asks)
     return text + OUTPUT_INSTRUCTION
 
 

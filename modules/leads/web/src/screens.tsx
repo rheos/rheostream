@@ -770,6 +770,7 @@ export async function scoring({ shell, query }: ScreenProps) {
           reviewHref={shell.href("review")}
           canRetry={shell.role === "owner"}
           submit={shell.submit}
+          refresh={shell.refresh}
         />
       )}
     </Frame>
@@ -1139,6 +1140,7 @@ export async function detail({ shell, query }: ScreenProps) {
       {job && proposal ? (
         <ProposalWorkflow
           submit={shell.submit}
+          refresh={shell.refresh}
           opportunityRef={str(envelope.ref)}
           proposal={proposal}
           posting={unwrapped(str(job.description))}

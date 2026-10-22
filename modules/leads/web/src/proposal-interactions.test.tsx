@@ -98,10 +98,33 @@ describe("drafting over hand edits", () => {
     expect(host.querySelector('[role="alert"]')).toBeNull();
     await click(button("Replace my edits"));
     expect(submit.mock.calls.map((c) => c[1])).toEqual([
-      { ref: REF, questions: "Rate?", force: false },
-      { ref: REF, questions: "Rate?", force: true },
+      { ref: REF, questions: "Rate?", separate_answers: false, force: false },
+      { ref: REF, questions: "Rate?", separate_answers: false, force: true },
     ]);
     expect(host.textContent).toContain("Queued");
+  });
+});
+
+describe("separate question fields", () => {
+  it("is off by default and sends the owner's choice with the request", async () => {
+    const submit = vi.fn().mockResolvedValue(ok(view("queued")));
+    mount({ submit, proposal: view("idle", { sections: [], draft: null }) });
+    const box = host.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(box?.checked).toBe(false);
+    await click(box as HTMLInputElement);
+    await click(button("Draft proposal"));
+    expect(submit).toHaveBeenCalledWith("leads.jobproposal.request", {
+      ref: REF,
+      questions: "Rate?",
+      separate_answers: true,
+      force: false,
+    });
+  });
+
+  it("shows the stored choice again", () => {
+    mount({ proposal: view("ready", { separate_answers: true }) });
+    const box = host.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(box?.checked).toBe(true);
   });
 });
 
@@ -239,6 +262,46 @@ describe("following a draft", () => {
     act(() => vi.advanceTimersByTime(WAITING_REFRESH_MS));
     expect(reload).toHaveBeenCalledTimes(1);
     expect(button("Stop drafting")).toBeTruthy();
+  });
+  it("follows in place with the shell's refresh and takes in the newest proposal (#443)", async () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    mount({ proposal: view("drafting", { sections: [], questions: "" }), refresh });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_MS * 2);
+    });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    // The refresh renders the screen again with the settled draft, which
+    // stored the posting's own questions.
+    mount({ proposal: view("ready", { questions: "Seeded?" }), refresh });
+    expect(host.textContent).toContain("Fifty.");
+    expect(host.querySelector('[role="status"]')).toBeNull();
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(
+      "Seeded?",
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_MS * 5);
+    });
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+  it("follows again after Check progress (#443)", async () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    mount({ proposal: view("drafting", { sections: [] }), refresh });
+    const note = window.document.createElement("textarea");
+    window.document.body.appendChild(note);
+    type(note, "half a note");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_MS * 3);
+    });
+    expect(refresh).not.toHaveBeenCalled();
+    await click(button("Check progress"));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_MS);
+    });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    note.remove();
   });
   it("never reloads a settled draft", () => {
     vi.useFakeTimers();

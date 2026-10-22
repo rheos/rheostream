@@ -37,30 +37,77 @@
   align-items: center;
   gap: var(--rs-space-3);
 }
+/* Control rows (#440). Every select, the toggle chip and every icon button in
+   a row share one height, radius, border and fill. The shell's base style gives
+   each button and select a 44px min-block-size, which beats a plain height, so
+   these controls set min-block-size themselves; pointer: coarse below puts the
+   44px touch target back. */
 .select {
   display: flex;
-  align-items: center;
-  gap: calc(var(--rs-space-2) * 0.75);
+  align-items: baseline;
+  gap: var(--rs-space-2);
   font-size: var(--rs-font-size-sm);
   color: var(--rs-color-ink-faint);
 }
-.select select {
+/* Wraps a select so it can carry the chevron: a select takes no pseudo-element. */
+.selectWrap {
+  position: relative;
+  display: inline-flex;
+}
+.selectWrap::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: var(--rs-space-2);
+  inline-size: var(--rs-space-4);
+  background: var(--rs-color-ink-dim);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+    center / var(--rs-space-4) no-repeat;
+  pointer-events: none;
+}
+@media (forced-colors: active) {
+  .selectWrap::after {
+    background: CanvasText;
+  }
+}
+.selectWrap:has(select:disabled)::after {
+  background: var(--rs-color-ink-faint);
+}
+.selectWrap select {
+  appearance: none;
+  block-size: var(--rs-space-6);
+  min-block-size: var(--rs-space-6);
+  max-inline-size: calc(var(--rs-space-6) * 8);
+  padding-block: 0;
+  padding-inline: var(--rs-space-3) calc(var(--rs-space-2) + var(--rs-space-4) + var(--rs-space-1));
   background: var(--rs-color-control-bg);
   color: var(--rs-color-ink);
   border: var(--rs-size-hairline) solid var(--rs-color-control-border);
   border-radius: var(--rs-radius-md);
-  padding: calc(var(--rs-space-1) * 1.25) var(--rs-space-2);
   font: inherit;
   font-size: var(--rs-font-size-sm);
   cursor: pointer;
-  max-width: calc(var(--rs-space-6) * 8);
 }
+.selectWrap select:hover:not(:disabled) {
+  border-color: var(--rs-color-accent);
+}
+.selectWrap select:disabled {
+  color: var(--rs-color-ink-faint);
+  cursor: not-allowed;
+}
+/* A toggle, so it is shaped like the selects beside it, not a pill: the
+   pressed state (accent border and fill) says on or off. */
 .chip {
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  block-size: var(--rs-space-6);
+  min-block-size: var(--rs-space-6);
+  padding-block: 0;
+  padding-inline: var(--rs-space-3);
+  background: var(--rs-color-control-bg);
   color: var(--rs-color-ink-dim);
   border: var(--rs-size-hairline) solid var(--rs-color-control-border);
-  border-radius: var(--rs-size-control);
-  padding: calc(var(--rs-space-1) * 1.25) calc(var(--rs-space-3) + var(--rs-space-1) / 2);
+  border-radius: var(--rs-radius-md);
   font: inherit;
   font-size: var(--rs-font-size-sm);
   cursor: pointer;
@@ -222,46 +269,45 @@
   justify-content: flex-end;
   gap: var(--rs-space-2);
 }
-.stageSelect {
-  background: var(--rs-color-control-bg);
-  color: var(--rs-color-ink);
-  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
-  border-radius: var(--rs-radius-md);
-  height: calc(var(--rs-space-6) - var(--rs-space-1) / 2);
-  padding: 0 var(--rs-space-2);
-  font: inherit;
-  font-size: var(--rs-font-size-sm);
-  cursor: pointer;
-  max-width: calc(var(--rs-space-6) * 6);
+.selectWrap .stageSelect {
+  max-inline-size: calc(var(--rs-space-6) * 6);
 }
 .iconButton {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: calc(var(--rs-space-6) - var(--rs-space-1) / 2);
-  height: calc(var(--rs-space-6) - var(--rs-space-1) / 2);
+  inline-size: var(--rs-space-6);
+  block-size: var(--rs-space-6);
+  min-block-size: var(--rs-space-6);
   padding: 0;
-  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
   border-radius: var(--rs-radius-md);
-  background: transparent;
+  background: var(--rs-color-control-bg);
   color: var(--rs-color-ink-dim);
   cursor: pointer;
+}
+.iconButton:disabled {
+  color: var(--rs-color-ink-faint);
+  cursor: not-allowed;
 }
 .iconButton svg {
   width: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
   height: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
 }
-.iconButton:hover {
+.iconButton:hover:not(:disabled) {
   color: var(--rs-color-accent-strong);
   border-color: var(--rs-color-accent);
   text-decoration: none;
 }
-.danger:hover {
+.danger:hover:not(:disabled) {
   color: var(--rs-color-danger);
   border-color: var(--rs-color-danger);
 }
-.copied,
-.copied:hover {
+/* Doubled so it beats either module's .iconButton:hover:not(:disabled) (0,3,0)
+   and proposal's .iconButton, which loads after this file. */
+.copied.copied,
+.copied.copied:hover:not(:disabled) {
   color: var(--rs-color-success);
   border-color: var(--rs-color-success);
 }
@@ -410,22 +456,20 @@
 }
 @media (pointer: coarse) {
   .chip,
-  .select select,
-  .stageSelect,
+  .selectWrap select,
   .iconButton {
-    min-height: var(--rs-size-control);
+    block-size: var(--rs-size-control);
+    min-block-size: var(--rs-size-control);
   }
   .iconButton {
-    min-width: var(--rs-size-control);
-  }
-  .stageSelect {
-    height: auto;
+    inline-size: var(--rs-size-control);
   }
 }
 @media (prefers-reduced-motion: no-preference) {
   .card,
   .chip,
   .iconButton,
+  .selectWrap select,
   .preview {
     transition:
       border-color 150ms ease-out,
@@ -451,7 +495,8 @@
   display: inline-flex;
   align-items: center;
   gap: var(--rs-space-1);
-  height: calc(var(--rs-space-6) - var(--rs-space-1) / 2);
+  block-size: var(--rs-space-6);
+  min-block-size: var(--rs-space-6);
   padding: 0 var(--rs-space-3);
   border: var(--rs-size-hairline) solid var(--rs-color-accent);
   border-radius: var(--rs-radius-md);
@@ -472,6 +517,12 @@
 .promoteButton:disabled {
   opacity: 0.6;
   cursor: default;
+}
+@media (pointer: coarse) {
+  .promoteButton {
+    block-size: var(--rs-size-control);
+    min-block-size: var(--rs-size-control);
+  }
 }
 .holdReasons {
   margin: 0 0 var(--rs-space-3);

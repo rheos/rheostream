@@ -29,6 +29,7 @@ import {
   type VisibilityOptions,
 } from "@/shell/compose";
 import panel from "@/shell/panel.module.css";
+import { refreshScreen } from "@/shell/refresh-screen";
 import { submitModuleForm } from "@/shell/submit-form";
 import { moduleScreenCall } from "@/shell/screen-call";
 import { ShellFrame, type ShellAccount, type ShellNavigationItem } from "@/shell/ShellFrame";
@@ -363,6 +364,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
       callOperation(operation, input, identity),
     ),
     href: (routeId, query) => moduleHref(config, owner, routeId, query),
+    refresh: refreshScreen,
   };
   return (
     <ShellFrame theme={theme} health={health} account={account} navigation={navigation} homeHref={home}>

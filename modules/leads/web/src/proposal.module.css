@@ -163,6 +163,25 @@
   gap: var(--rs-space-2);
   margin: var(--rs-space-3) 0;
 }
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--rs-space-1);
+  margin: 0 0 var(--rs-space-3);
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rs-space-2);
+  font-size: var(--rs-font-size-sm);
+  color: var(--rs-color-ink-dim);
+  cursor: pointer;
+}
+.check input {
+  min-block-size: 0;
+  margin: 0;
+  accent-color: var(--rs-color-accent);
+}
 .primary,
 .ghost,
 .ghostDanger,
@@ -329,14 +348,24 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: calc(var(--rs-space-6) - var(--rs-space-1) / 2);
-  height: calc(var(--rs-space-6) - var(--rs-space-1) / 2);
+  flex: 0 0 auto;
+  inline-size: var(--rs-space-6);
+  block-size: var(--rs-space-6);
+  /* The shell's 44px base min-block-size beats a plain height (#440). */
+  min-block-size: var(--rs-space-6);
   padding: 0;
-  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
   border-radius: var(--rs-radius-md);
-  background: transparent;
+  background: var(--rs-color-control-bg);
   color: var(--rs-color-ink-dim);
   cursor: pointer;
+}
+/* In a row of text buttons the icon takes their height and corner (#440). */
+.actions .iconButton {
+  inline-size: var(--rs-size-control);
+  block-size: var(--rs-size-control);
+  min-block-size: var(--rs-size-control);
+  border-radius: var(--rs-radius-sm);
 }
 .iconButton svg {
   width: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
@@ -503,10 +532,11 @@
   .ghost,
   .ghostDanger,
   .danger {
-    min-height: calc(var(--rs-space-6) * 1.4);
+    min-height: var(--rs-size-control);
   }
   .iconButton {
-    width: calc(var(--rs-space-6) * 1.4);
-    height: calc(var(--rs-space-6) * 1.4);
+    inline-size: var(--rs-size-control);
+    block-size: var(--rs-size-control);
+    min-block-size: var(--rs-size-control);
   }
 }

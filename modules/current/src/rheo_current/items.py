@@ -176,6 +176,15 @@ def higher(current: str, offered: str) -> str:
 # --- create and source dedup -----------------------------------------------------
 
 
+def created(
+    ctx: WorkspaceContext, uow: UnitOfWork, action: c.CreateAction, identifier: UUID
+) -> c.ItemCreated:
+    """The create result: the item for a caller that can read it, else its ref."""
+    if h.reads_items(ctx):
+        return c.ItemCreated(action=action, item=detail(uow, identifier))
+    return c.ItemCreated(action=action, ref=ref("item", identifier))
+
+
 def repeat_signal(
     ctx: WorkspaceContext,
     uow: UnitOfWork,
@@ -200,7 +209,7 @@ def repeat_signal(
                 .where(t.item.c.id == identifier)
                 .values(updated_at=h.now())
             )
-            return c.ItemCreated(action="grouped", item=detail(uow, identifier))
+            return created(ctx, uow, "grouped", identifier)
         uow.connection.execute(
             insert(t.signal).values(
                 item_id=identifier, fingerprint=data.fingerprint, seen_at=h.now()
@@ -230,7 +239,7 @@ def repeat_signal(
     )
     if action == "reopened":
         h.publish_item_event(ctx, uow, "reopened", updated)
-    return c.ItemCreated(action=action, item=detail(uow, identifier))
+    return created(ctx, uow, action, identifier)
 
 
 def create(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemCreate) -> c.ItemCreated:
@@ -280,7 +289,7 @@ def create(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemCreate) -> c.Item
             )
         )
     h.publish_item_event(ctx, uow, "created", record)
-    return c.ItemCreated(action="created", item=detail(uow, identifier))
+    return created(ctx, uow, "created", identifier)
 
 
 # --- reads -----------------------------------------------------------------------
@@ -434,6 +443,51 @@ def set_status(
     elif current == "done":
         h.publish_item_event(ctx, uow, "reopened", updated)
     return detail(uow, record["id"])
+
+
+def close_by_source(
+    ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemCloseBySource
+) -> c.ItemClosed:
+    """Close the item holding a source pair, for writers that know only the pair.
+
+    A found item always loses its seen fingerprints, even when it is already done:
+    otherwise an item a person closed by hand during an outage keeps them, and the
+    next outage with the same fingerprint groups onto the done item without a page.
+    A manual move to done keeps them, so a re-read email thread stays closed.
+    That delete is the only write a no-op close makes.
+
+    A caller that cannot read items always gets a null ref, so a done item and a pair
+    no item holds answer alike and the call cannot test whether a pair exists.
+    """
+    h.lock(uow)
+    found = (
+        uow.connection.execute(
+            select(t.item)
+            .where(
+                t.item.c.source_kind == data.source_kind,
+                t.item.c.source_ref == data.source_ref,
+            )
+            .with_for_update()
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if found is None:
+        return c.ItemClosed(closed=False, ref=None)
+    record = dict(found)
+    reference = ref("item", record["id"]) if h.reads_items(ctx) else None
+    uow.connection.execute(delete(t.signal).where(t.signal.c.item_id == record["id"]))
+    if record["status"] == "done":
+        return c.ItemClosed(closed=False, ref=reference)
+    updated = h.write(
+        uow, t.item, record, status="done", snoozed_until=None, closed_at=h.now()
+    )
+    body = f"Closed by a source signal ({ctx.actor.kind.value})."
+    if data.note is not None:
+        body = f"{body}\n\n{data.note}"
+    add_comment(ctx, uow, record["id"], body, "system")
+    h.publish_item_event(ctx, uow, "completed", updated)
+    return c.ItemClosed(closed=True, ref=reference)
 
 
 def comment(

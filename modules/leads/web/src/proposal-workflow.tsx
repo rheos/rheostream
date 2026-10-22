@@ -57,7 +57,9 @@ export interface WorkflowProps {
   posting: string;
   /** The paste-the-full-posting form, rendered by the screen. */
   paste?: ReactNode;
-  /** Reloads the page; tests pass their own. */
+  /** The shell's in-place refresh: fresh server data, no page load (#443). */
+  refresh?: () => Promise<void>;
+  /** Replaces how the page looks again; tests pass their own. */
   reload?: () => void;
 }
 
@@ -83,8 +85,9 @@ function isField(target: EventTarget | null): boolean {
 }
 
 /** Typing anywhere on the page. A reload would throw the text away, so the
- * page stops reloading itself once someone types and offers a button instead. */
-function useTyped(): boolean {
+ * page stops following the draft once someone types and offers a button
+ * instead; the button clears it, so following resumes (#443). */
+function useTyped(): [boolean, () => void] {
   const [typed, setTyped] = useState(false);
   useEffect(() => {
     const onInput = (event: Event) => {
@@ -93,19 +96,46 @@ function useTyped(): boolean {
     window.addEventListener("input", onInput, true);
     return () => window.removeEventListener("input", onInput, true);
   }, []);
-  return typed;
+  return [typed, () => setTyped(false)];
+}
+
+/** Shows the newest state: in place through the shell's refresh when there is
+ * one, so scroll, the open tab and anything on the page stay put (#443). */
+async function lookAgain(
+  reload?: () => void,
+  refresh?: () => Promise<void>,
+): Promise<void> {
+  if (reload) reload();
+  else if (refresh) await refresh().catch(() => {});
+  else window.location.reload();
 }
 
 /** The job detail's proposal workflow: Posting, Questions and Proposal. */
 export function ProposalWorkflow(props: WorkflowProps) {
   const [view, setView] = useState<Row>(props.proposal);
   const [questions, setQuestions] = useState(str(props.proposal.questions));
+  const [separate, setSeparate] = useState(
+    props.proposal.separate_answers === true,
+  );
   const [stage, setStage] = useState<StageId>(
     draftState(props.proposal) === "idle" ? "posting" : "proposal",
   );
   const tabs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const typed = useTyped();
-  const reload = props.reload;
+  const [typed, clearTyped] = useTyped();
+  // Looking again renders the screen in place when the shell can, so scroll,
+  // the open tab and anything on the page stay put; a full reload otherwise.
+  const { reload, refresh } = props;
+
+  // A refresh brings the server's newest proposal: take it in.
+  const [seen, setSeen] = useState(props.proposal);
+  // The questions follow too unless they hold unsaved text: a draft settled
+  // with none stores the posting's own questions (#443).
+  if (seen !== props.proposal) {
+    setSeen(props.proposal);
+    setView(props.proposal);
+    if (questions.trim() === str(view.questions).trim())
+      setQuestions(str(props.proposal.questions));
+  }
 
   useEffect(() => {
     const sync = () => {
@@ -117,19 +147,26 @@ export function ProposalWorkflow(props: WorkflowProps) {
     return () => window.removeEventListener("hashchange", sync);
   }, []);
 
-  // A queued or running draft: reload until it settles, so the stage line and
-  // then the draft appear on their own. Never while someone has typed on the
-  // page, and only once a minute while the account holds the draft.
+  // A queued or running draft: look again until it settles, so the stage line
+  // and then the draft appear on their own. Never while someone has typed on
+  // the page, and only once a minute while the account holds the draft.
   const running = busy(view);
   const delay = refreshDelay(view);
   useEffect(() => {
     if (!running || typed) return;
-    const timer = setTimeout(
-      () => (reload ? reload() : window.location.reload()),
-      delay,
-    );
-    return () => clearTimeout(timer);
-  }, [running, typed, delay, view, reload]);
+    // One look at a time: the next waits until the last one has landed.
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      await lookAgain(reload, refresh);
+      if (!stopped) timer = setTimeout(tick, delay);
+    };
+    timer = setTimeout(tick, delay);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [running, typed, delay, reload, refresh]);
 
   function select(next: StageId) {
     setStage(next);
@@ -229,9 +266,14 @@ export function ProposalWorkflow(props: WorkflowProps) {
           opportunityRef={props.opportunityRef}
           view={view}
           questions={questions}
+          separate={separate}
+          setSeparate={setSeparate}
           setView={setView}
           paused={running && typed}
-          reload={() => (reload ? reload() : window.location.reload())}
+          reload={() => {
+            clearTyped();
+            void lookAgain(reload, refresh);
+          }}
         />
       </div>
       <div
@@ -306,9 +348,9 @@ function QuestionsPanel(props: {
         </label>
         <InfoTip label="About screening questions">
           <p>
-            The draft answers each one after the cover letter, from your profile
-            only. Leave this empty for a cover letter alone. Questions the posting
-            itself asks are picked up when you draft.
+            The draft answers each one from your profile only, inside the cover
+            letter unless you tick the box by the draft button. Questions the
+            posting itself asks are picked up when you draft.
           </p>
         </InfoTip>
       </div>
@@ -344,6 +386,8 @@ function ProposalPanel(props: {
   opportunityRef: string;
   view: Row;
   questions: string;
+  separate: boolean;
+  setSeparate: (on: boolean) => void;
   setView: SetView;
   paused: boolean;
   reload: () => void;
@@ -396,6 +440,7 @@ function ProposalPanel(props: {
     const done = await call("leads.jobproposal.request", {
       ref: opportunityRef,
       questions: props.questions,
+      separate_answers: props.separate,
       force,
     });
     if (done.code === "draft_edited") setConfirmForce(true);
@@ -459,7 +504,11 @@ function ProposalPanel(props: {
             >
               {editingAll ? "Back to sections" : "Edit the whole draft"}
             </button>
-            <CopyButton text={whole} label="Copy the whole draft" />
+            <CopyButton
+              text={whole}
+              label="Copy the whole draft"
+              className={styles.iconButton}
+            />
           </>
         ) : null}
         {hasDraft || running ? (
@@ -484,6 +533,24 @@ function ProposalPanel(props: {
             </p>
           </InfoTip>
         </div>
+      </div>
+      <div className={styles.option}>
+        <label className={styles.check}>
+          <input
+            type="checkbox"
+            checked={props.separate}
+            disabled={running}
+            onChange={(event) => props.setSeparate(event.target.checked)}
+          />
+          Answer each question in its own field
+        </label>
+        <InfoTip label="About answer fields">
+          <p>
+            Off, the cover letter answers every question itself, for a form with
+            one cover letter box. On, each question gets its own answer after the
+            letter, for a form with a field per question.
+          </p>
+        </InfoTip>
       </div>
       {wholeDirty ? (
         <p className={styles.note} role="status">
@@ -1100,6 +1167,7 @@ function PricingPanel(props: {
             <CopyButton
               text={rows.map(milestoneLine).join("\n")}
               label="Copy every milestone"
+              className={styles.iconButton}
             />
           ) : null}
         </div>
