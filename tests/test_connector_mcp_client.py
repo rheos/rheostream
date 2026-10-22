@@ -426,6 +426,25 @@ def test_list_tools_sends_one_request_with_or_without_a_cursor() -> None:
     assert fake.requests[2].headers["Authorization"] == f"Bearer {ACCESS}"
 
 
+def test_a_listing_deadline_clips_the_request_budget_and_never_extends_it() -> None:
+    fake = FakeMcp()
+    fake.tools = lambda r: httpx.Response(200, stream=Trickle(fake.clock, 1.0))
+    with fake.session() as session:
+        ready(session)
+        start = fake.clock.now
+        exc = mcp_failure(lambda: session.list_tools(deadline=start + 12.0))
+        assert str(exc) == "unavailable"
+        assert fake.clock.now - start <= 12.0 + 1.0
+        sent = len(fake.requests)
+        exc = mcp_failure(lambda: session.list_tools(deadline=fake.clock.now + 4.0))
+        assert str(exc) == "unavailable"
+        assert len(fake.requests) == sent
+    with fake.session(deadline=fake.clock.now + 8.0) as session:
+        ready(session)
+        exc = mcp_failure(lambda: session.list_tools(deadline=fake.clock.now + 100.0))
+    assert str(exc) == "unavailable"
+
+
 def test_a_cursor_that_is_not_a_string_is_protocol_with_nothing_sent() -> None:
     fake = FakeMcp()
     with fake.session() as session:

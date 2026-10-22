@@ -110,6 +110,7 @@ class FakeSession:
     listing: list[dict[str, object] | McpFailure] = field(default_factory=list)
     """The ``tools/list`` answers, in order; then an empty last page."""
     cursors: list[str | None] = field(default_factory=list)
+    list_deadlines: list[float | None] = field(default_factory=list)
     exited: int = 0
 
     def __enter__(self) -> "FakeSession":
@@ -131,9 +132,16 @@ class FakeSession:
     def notify_initialized(self) -> None:
         self.clock.log.append("notify_initialized")
 
-    def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+    def list_tools(
+        self, cursor: str | None = None, *, deadline: float | None = None
+    ) -> dict[str, object]:
         self.clock.log.append("list_tools")
         self.cursors.append(cursor)
+        self.list_deadlines.append(deadline)
+        if deadline is not None and self.clock.now + self.duration > deadline:
+            # A real session's request ends at its cut-off.
+            self.clock.now = max(self.clock.now, deadline)
+            raise McpFailure("unavailable")
         self.clock.now += self.duration
         answer = self.listing.pop(0) if self.listing else {"tools": []}
         if isinstance(answer, McpFailure):
@@ -856,6 +864,7 @@ def test_an_unparseable_search_result_is_a_content_free_protocol_failure(
 
 TOOL_LIST_PAGES = 5
 TOOL_LIST_MAX = 200
+TOOL_LIST_SECONDS = 60.0
 
 
 def listed(name: object, **extra: object) -> dict[str, object]:
@@ -869,7 +878,7 @@ def test_list_tools_keeps_names_actions_arguments_and_the_read_only_hint(
         {
             "tools": [
                 listed(
-                    "upwork__find_jobs",
+                    "acme__find_jobs",
                     description=f"Find jobs for {ORG}",
                     inputSchema={
                         "type": "object",
@@ -881,8 +890,8 @@ def test_list_tools_keeps_names_actions_arguments_and_the_read_only_hint(
                     },
                     annotations={"readOnlyHint": True, "title": ORG},
                 ),
-                listed("upwork__list_invitations", inputSchema={"type": "object"}),
-                listed("upwork__accept_offer", annotations={"readOnlyHint": False}),
+                listed("acme__list_invitations", inputSchema={"type": "object"}),
+                listed("acme__accept_offer", annotations={"readOnlyHint": False}),
                 listed(f"spaced name {ORG}"),
                 listed(7),
                 "not an object",
@@ -894,10 +903,10 @@ def test_list_tools_keeps_names_actions_arguments_and_the_read_only_hint(
     assert listing == ToolListing(
         tools=(
             ListedTool(
-                "upwork__find_jobs", ("search", "get"), ("action", "org_uid"), True
+                "acme__find_jobs", ("search", "get"), ("action", "org_uid"), True
             ),
-            ListedTool("upwork__list_invitations", (), (), None),
-            ListedTool("upwork__accept_offer", (), (), False),
+            ListedTool("acme__list_invitations", (), (), None),
+            ListedTool("acme__accept_offer", (), (), False),
         ),
         pages=1,
         skipped=3,
@@ -990,3 +999,36 @@ def test_list_tools_does_not_delay_the_first_search(rig: Rig) -> None:
         upstream.list_tools()
         upstream.find_jobs("search", ORG, {})
     assert "sleep" not in rig.log
+
+
+def test_a_listing_never_takes_more_than_its_budget(rig: Rig) -> None:
+    """Slow pages: each request is cut off at the listing's budget, and no page
+    starts with too little of it left, so collection keeps the rest of the run."""
+    rig.session.duration = 25.0
+    rig.session.listing = [
+        {"tools": [], "nextCursor": f"cursor-{n}"} for n in range(TOOL_LIST_PAGES)
+    ]
+    with rig.upstream() as upstream:
+        started = rig.clock.now
+        listing = upstream.list_tools()
+        assert rig.clock.now - started <= TOOL_LIST_SECONDS
+    assert (listing.outcome, listing.pages) == ("unavailable", 2)
+    assert rig.session.list_deadlines == [started + TOOL_LIST_SECONDS] * 3
+
+
+def test_a_listing_stops_before_a_page_it_has_no_budget_for(rig: Rig) -> None:
+    rig.session.duration = 27.5
+    rig.session.listing = [
+        {"tools": [], "nextCursor": f"cursor-{n}"} for n in range(TOOL_LIST_PAGES)
+    ]
+    with rig.upstream() as upstream:
+        listing = upstream.list_tools()
+    assert (listing.outcome, listing.pages) == ("budget", 2)
+    assert len(rig.session.cursors) == 2
+
+
+def test_near_the_run_deadline_the_run_deadline_is_the_cut_off(rig: Rig) -> None:
+    with rig.upstream(deadline=START + 30.0) as upstream:
+        listing = upstream.list_tools()
+    assert rig.session.list_deadlines == [START + 30.0]
+    assert listing.outcome == "ok"

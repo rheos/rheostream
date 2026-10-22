@@ -24,7 +24,8 @@ not a transport error, a timeout, a 5xx, an HTTP 429, any other tool error.
 
 **Listing is best effort.** :meth:`Upstream.list_tools` (only when the operator
 asked for it) sends ``tools/list`` between the same checkpoints, following
-``nextCursor`` for at most :data:`TOOL_LIST_PAGES` pages, and never raises an
+``nextCursor`` for at most :data:`TOOL_LIST_PAGES` pages within
+:data:`TOOL_LIST_SECONDS` (each request is cut off at that limit), and never raises an
 :class:`UpstreamFailure` or :class:`RunCut`: a failure ends the listing with its
 code and the run carries on. It keeps only values that pass a fixed pattern (a
 tool's name, its ``action`` values, its argument names, its read-only hint), never
@@ -75,6 +76,9 @@ READ_ONLY_POLICY: Final = read_only_policy()
 
 TOOL_LIST_PAGES: Final = 5
 """The most ``tools/list`` pages one listing reads."""
+TOOL_LIST_SECONDS: Final = 60.0
+"""The most time one listing may take, start to end, every request included; the
+rest of the run's budget stays with collection."""
 TOOL_LIST_MAX: Final = 200
 """The most tools one listing keeps; the rest are counted as skipped."""
 SCHEMA_LIST_MAX: Final = 32
@@ -161,7 +165,9 @@ class Session(Protocol):
 
     def notify_initialized(self) -> None: ...
 
-    def list_tools(self, cursor: str | None = None) -> dict[str, object]: ...
+    def list_tools(
+        self, cursor: str | None = None, *, deadline: float | None = None
+    ) -> dict[str, object]: ...
 
     def call_tool(
         self, name: str, arguments: Mapping[str, object]
@@ -195,8 +201,9 @@ class ListedTool:
 @dataclass(frozen=True)
 class ToolListing:
     """What one best-effort listing saw. ``outcome`` is ``ok`` when the server
-    said there was no more; else ``more`` (the page limit came first), ``run_cut``,
-    ``malformed`` or the :data:`UpstreamCode` of the failed request. ``skipped``
+    said there was no more; else ``more`` (the page limit came first), ``run_cut``
+    (the run's deadline), ``budget`` (:data:`TOOL_LIST_SECONDS`), ``malformed`` or
+    the :data:`UpstreamCode` of the failed request. ``skipped``
     counts tools whose name failed the pattern or that came past the limit."""
 
     tools: tuple[ListedTool, ...]
@@ -347,14 +354,18 @@ class Upstream:
         tools: list[ListedTool] = []
         pages = skipped = 0
         cursor: str | None = None
+        budget = self._monotonic() + TOOL_LIST_SECONDS
+        cutoff = min(budget, self._deadline)
         while True:
-            if self._deadline - self._monotonic() < START_SECONDS:
-                outcome = RunCut.code
+            if cutoff - self._monotonic() < START_SECONDS:
+                outcome = RunCut.code if cutoff == self._deadline else "budget"
                 break
             if pages == TOOL_LIST_PAGES:
                 outcome = "more"
                 break
-            listed = self._checkpointed(partial(self._session.list_tools, cursor))
+            listed = self._checkpointed(
+                partial(self._session.list_tools, cursor, deadline=cutoff)
+            )
             if isinstance(listed, McpFailure):
                 outcome = _translate(listed).code
                 break

@@ -663,8 +663,12 @@ class McpSession:
             self._send(NOTIFY_INITIALIZED_BODY, trace, stop=lambda headers, chunk: True)
         self._state = "ready"
 
-    def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+    def list_tools(
+        self, cursor: str | None = None, *, deadline: float | None = None
+    ) -> dict[str, object]:
         """One ``tools/list``, from ``cursor`` when given; its ``result`` object.
+        ``deadline`` may set an earlier cut-off than the session's for this request
+        (the same 50 s and 5 s rules apply against it).
 
         The result is the server's own text: the caller decides what of it, if
         anything, may be kept. The cursor is never traced."""
@@ -681,7 +685,7 @@ class McpSession:
             params,
         )
         with _Trace(self._trace, "tools/list") as trace:
-            _, result = self._exchange(body, request_id, trace)
+            _, result = self._exchange(body, request_id, trace, deadline=deadline)
         return result
 
     def call_tool(
@@ -730,7 +734,12 @@ class McpSession:
             raise McpFailure("protocol")
 
     def _exchange(
-        self, body: bytes, request_id: int, trace: _Trace
+        self,
+        body: bytes,
+        request_id: int,
+        trace: _Trace,
+        *,
+        deadline: float | None = None,
     ) -> tuple[EgressResponse, dict[str, object]]:
         """Send one request and return its JSON-RPC ``result`` object."""
         reader = _EventReader(request_id)
@@ -738,7 +747,7 @@ class McpSession:
         def stop(headers: httpx.Headers, chunk: bytes) -> bool:
             return _media_type(headers) == _EVENT_STREAM and reader.feed(chunk)
 
-        response = self._send(body, trace, stop=stop)
+        response = self._send(body, trace, stop=stop, deadline=deadline)
         media = _media_type(response.headers)
         message: dict[str, object] | None = None
         if media == _JSON:
@@ -752,10 +761,19 @@ class McpSession:
             raise McpFailure("protocol")
         return response, result
 
-    def _send(self, body: bytes, trace: _Trace, *, stop: egress.Stop) -> EgressResponse:
-        """One bounded POST to the resource URL; a 2xx response or a failure."""
+    def _send(
+        self,
+        body: bytes,
+        trace: _Trace,
+        *,
+        stop: egress.Stop,
+        deadline: float | None = None,
+    ) -> EgressResponse:
+        """One bounded POST to the resource URL; a 2xx response or a failure.
+        ``deadline`` only ever brings the session's deadline closer."""
         client = self._client
-        remaining = self._deadline - self._monotonic()
+        cutoff = self._deadline if deadline is None else min(deadline, self._deadline)
+        remaining = cutoff - self._monotonic()
         if client is None or remaining < MINIMUM_START_SECONDS:
             trace.egress = "not_started"
             raise McpFailure("unavailable")

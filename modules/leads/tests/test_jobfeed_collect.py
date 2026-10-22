@@ -84,7 +84,9 @@ class FakeSession:
     def notify_initialized(self) -> None:
         return None
 
-    def list_tools(self, cursor: str | None = None) -> dict[str, object]:
+    def list_tools(
+        self, cursor: str | None = None, *, deadline: float | None = None
+    ) -> dict[str, object]:
         raise AssertionError("collection never lists tools")
 
     def call_tool(
