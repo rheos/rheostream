@@ -36,6 +36,10 @@ const job: Row = {
     undo: { stage_id: "review", label: "Review" },
   },
 };
+const withFollowup: Row = {
+  ...job,
+  followup: { due_on: "2026-11-20", action: "Send the draft" },
+};
 const other: Row = {
   ...job,
   id: "01a133b6-0000-7000-8000-00000000abcd",
@@ -182,6 +186,18 @@ describe("the queue card's Undo", () => {
       "leads.opportunity.transition",
       expect.objectContaining({ revision: 5 }),
     );
+  });
+  it("shows no follow-up after Undo: the dismiss cancelled it", async () => {
+    const submit = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "ok", result: { revision: 4 } })
+      .mockResolvedValueOnce({ state: "ok", result: { revision: 5 } });
+    mount(submit, { items: [withFollowup, other] });
+    expect(host.textContent).toContain("Send the draft");
+    await act(async () => button("Dismiss Example data service").click());
+    await act(async () => button("Undo: reopen").click());
+    expect(host.textContent).toContain("Example data service");
+    expect(host.textContent).not.toContain("Send the draft");
   });
   it("waits for the dismiss before Undo can run", async () => {
     let settle: (value: unknown) => void = () => {};
