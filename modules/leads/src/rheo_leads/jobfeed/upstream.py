@@ -413,6 +413,11 @@ class Upstream:
             tools=tuple(tools), pages=pages, skipped=skipped, outcome=outcome
         )
 
+    def hold_off(self, retry_after: int | None) -> None:
+        """Wait the provider's ``Retry-After`` or :data:`RETRY_SPACING`, whichever
+        is longer, never past the run's deadline."""
+        self._hold_off(retry_after, self._deadline)
+
     def _hold_off(self, retry_after: int | None, cutoff: float) -> None:
         wait = max(RETRY_SPACING, float(retry_after or 0))
         wait = min(wait, cutoff - self._monotonic())

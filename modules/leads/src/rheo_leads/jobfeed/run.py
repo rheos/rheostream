@@ -58,6 +58,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -351,10 +352,12 @@ def session_phase(
             selection = _select(run, upstream.list_accounts())
             if isinstance(selection, str):
                 if run.probe_invitations:
-                    probe_invitations(upstream, selection, run.tool_prefix)
+                    probe_invitations(
+                        upstream, selection, run.tool_prefix, _probe_hosts(run)
+                    )
                 collected = collect_phase(upstream, run, selection)
                 if run.probe_invitations:
-                    log_detail_shape(upstream.first_detail)
+                    log_detail_shape(upstream.first_detail, _probe_hosts(run))
     except (UpstreamFailure, RunCut) as error:
         stopped = error
     # Every write happens outside the except block, so nothing upstream is
@@ -369,6 +372,13 @@ def session_phase(
         _deliver_and_report(uow, token, run, collected)
     elif collected is not None:
         _end(uow, run, collected)
+
+
+def _probe_hosts(run: _Run) -> tuple[str, ...]:
+    """The hosts a probe shape may name: the job hosts and the provider's own."""
+    provider = urlsplit(run.connection.resource_url).hostname
+    hosts = tuple(resolve().get_list(JOB_HOSTS_KEY))
+    return hosts if provider is None else (*hosts, provider)
 
 
 def _log_tools(listing: ToolListing) -> None:

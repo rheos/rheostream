@@ -80,7 +80,8 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record, job, schedule
 from rheo_core.work.cancellation import JobCancelled
 from rheo_leads.intake.accept import health_write
-from rheo_leads.jobfeed import delivery
+from rheo_leads.jobfeed import delivery, probe
+from rheo_leads.jobfeed.probe import HELP_TOOLS
 from rheo_leads.jobfeed.run import CollectPayload, JobfeedFailure, collect_job
 from rheo_leads.jobfeed.state import (
     AUTHORIZATION_LOST,
@@ -1186,9 +1187,10 @@ def test_with_the_probe_on_a_run_probes_the_invitations_then_collects(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The help and one invitations listing between the account and the searches,
-    one line each plus the first detail's shape, and the run otherwise as before.
-    Under a prefix, the help is asked for by the listed (prefixed) name."""
+    """Each named tool's help and one invitations listing between the account and
+    the searches, a line each plus the first detail's shape, and the run otherwise
+    as before. Under a prefix, the help is asked for by the listed (prefixed) name.
+    Only the help tool and the listing are called; the named tools never are."""
     monkeypatch.setenv(PROBE_ENV, "true")
     monkeypatch.setenv("RHEO__leads__jobfeed__tool_prefix", "acme__")
     caplog.set_level(logging.INFO)
@@ -1200,31 +1202,58 @@ def test_with_the_probe_on_a_run_probes_the_invitations_then_collects(
     mcp.script["list_freelancer_proposals:invitations"] = tool_result(PROBE_INVITATIONS)
     c = connected_collector(intake, served)
     run_at(c, clock)
-    assert mcp.names()[2:5] == [
+    assert mcp.names()[2:18] == [
         "acme__list_accounts",
-        "acme__get_tool_help",
+        *["acme__get_tool_help"] * len(HELP_TOOLS),
         "acme__list_freelancer_proposals:invitations",
     ]
     assert "acme__find_jobs:get" in mcp.names()
-    help_request = next(
-        r for r in mcp.requests if "get_tool_help" in r.content.decode()
-    )
-    assert json.loads(help_request.content)["params"]["arguments"] == {
-        "tool_name": "acme__list_freelancer_proposals"
-    }
+    assert not {n for n in mcp.names() if "manage_" in n or "confirm_" in n}
+    asked = [
+        json.loads(r.content)["params"]["arguments"]
+        for r in mcp.requests
+        if "get_tool_help" in r.content.decode()
+    ]
+    assert asked == [{"tool_name": "acme__" + tool} for tool in HELP_TOOLS]
     lines = probe_lines(caplog)
     assert lines[0] == (
         "jobfeed_probe_help tool=acme__list_freelancer_proposals outcome=ok "
         'text="action invitations: params limit"'
     )
-    assert lines[1] == (
+    assert lines[len(HELP_TOOLS)] == (
         "jobfeed_probe_invitations outcome=ok shape="
         '{"invitations":{"?items":[{"id":"digits19","job":{"title":"text<32"}}],'
         '"?len":1},"status":"word:ok"}'
     )
-    assert lines[2].startswith("jobfeed_probe_detail outcome=ok shape={")
-    assert len(lines) == 3
+    assert lines[-1].startswith("jobfeed_probe_detail outcome=ok shape={")
+    assert len(lines) == len(HELP_TOOLS) + 2
     assert "Fictional" not in " ".join(lines)
+    assert last_error(c) is None
+    quietly_succeeded(c)
+
+
+def test_a_shape_that_cannot_be_built_still_delivers_the_run(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def broken(*args: object, **kwargs: object) -> object:
+        raise ValueError("boom")
+
+    monkeypatch.setenv(PROBE_ENV, "true")
+    monkeypatch.setattr(probe, "shape", broken)
+    caplog.set_level(logging.INFO)
+    mcp.feeds = {"best_match": [[feed_row(1)]]}
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    assert (
+        probe_lines(caplog)[-1]
+        == "jobfeed_probe_detail outcome=shape_failed shape=null"
+    )
+    assert report(c)["imported"] == 1
     assert last_error(c) is None
     quietly_succeeded(c)
 
@@ -1247,15 +1276,17 @@ def test_a_failed_probe_leaves_the_run_untouched(
     run_at(c, clock)
     assert mcp.names()[2:] == [
         "list_accounts",
-        "get_tool_help",
+        *["get_tool_help"] * len(HELP_TOOLS),
         "list_freelancer_proposals:invitations",
         *DEFAULT_SEARCHES,
     ]
     lines = probe_lines(caplog)
     assert lines[0].startswith("jobfeed_probe_help tool=list_freelancer_proposals ")
-    assert " outcome=unavailable " in lines[0]
-    assert lines[1].startswith("jobfeed_probe_invitations outcome=tool_error")
-    assert lines[2] == "jobfeed_probe_detail outcome=none shape=null"
+    assert all(" outcome=unavailable " in line for line in lines[: len(HELP_TOOLS)])
+    assert lines[len(HELP_TOOLS)].startswith(
+        "jobfeed_probe_invitations outcome=tool_error"
+    )
+    assert lines[-1] == "jobfeed_probe_detail outcome=none shape=null"
     assert last_error(c) is None
     assert stored(c.owner).authorization_state == "connected"
     quietly_succeeded(c)

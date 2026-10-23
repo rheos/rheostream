@@ -732,14 +732,20 @@ RHEO__leads__jobfeed__probe_invitations=false
   provider offers, or to match `tool_prefix` to its names, then turn it off.
 - `leads.jobfeed.probe_invitations` (default `false`), temporary. When on, a run also
   sends, after the account is selected and before the searches, a `get_tool_help` for
-  the invitations tool and one invitations listing (`list_freelancer_proposals`,
-  action `invitations`, empty `params`), and keeps its first detail read. Three INFO
-  lines follow: `jobfeed_probe_help` (the provider's help text, printable ASCII, at
-  most 8000 characters), `jobfeed_probe_invitations` and `jobfeed_probe_detail`
-  (each a shape: keys, list lengths and value kinds such as `digits19` or
-  `posting_id`, never a value). Only while it is on does the read-only policy allow
-  those two tools, and only that one action. Best effort: a failure is logged by its
-  code and the run collects as usual. It costs two paced calls, about 11 seconds.
+  each of fourteen tools (the invitations listing and the proposal, milestone,
+  attachment, rate and dashboard tools, which are named and never called) and one
+  invitations listing (`list_freelancer_proposals`, action `invitations`, empty
+  `params`), and keeps its first detail read. INFO lines follow: one
+  `jobfeed_probe_help` per tool (the provider's help text in printable ASCII, with the
+  organization id, digit runs and credential-shaped runs redacted, at most 16000
+  characters), then `jobfeed_probe_invitations` and `jobfeed_probe_detail`. Each of
+  those two is a shape: keys, list lengths and value kinds such as `digits19` or
+  `posting_id`, never a value; a URL shows its host only when it is a job host or the
+  provider's. Only while the setting is on does the read-only policy allow
+  `get_tool_help` and the one `invitations` action. Best effort: a failure is logged
+  by its code (a rate limit ends the probe after the provider's wait) and the run
+  collects as usual. The fifteen paced calls take about 80 seconds of the run's 420,
+  so a full run's last detail reads may be cut. Turn it off after one run.
 - `leads.jobfeed.presets` (workspace scope, default empty) is a JSON array of the
   searches a run issues, replacing the three defaults (one Best Matches page, five
   Most Recent pages, one over-cap refresh page) for that workspace. Each preset has a
