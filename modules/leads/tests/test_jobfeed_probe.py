@@ -14,8 +14,7 @@ from rheo_leads.jobfeed.probe import (
     HELP_TEXT_MAX,
     HELP_TOOLS,
     help_text,
-    log_detail_shape,
-    probe_invitations,
+    probe_run,
     shape,
 )
 from rheo_leads.jobfeed.upstream import RunCut, Upstream, UpstreamFailure
@@ -212,6 +211,20 @@ def test_help_text_redacts_the_org_ids_and_credentials_but_keeps_tool_names() ->
 
 # --- the probe --------------------------------------------------------------------
 
+SEARCH: dict[str, object] = {
+    "status": "ok",
+    "jobs": [{"id": "1700000000000000001", "title": TITLE, "url": "https://x/y"}],
+}
+DETAIL: dict[str, object] = {
+    "status": "ok",
+    "data": {"marketplaceJobPosting": {"content": {"title": TITLE}}},
+}
+FIRST_CALLS: list[tuple[str, object]] = [
+    ("invitations", (ORG, {})),
+    ("smart_search", {"mode": "best_match", "limit": 10}),
+    ("get", {"id": "1700000000000000001"}),
+]
+
 
 @dataclass
 class FakeUpstream:
@@ -219,8 +232,23 @@ class FakeUpstream:
     invitation_answer: dict[str, object] | Exception = field(
         default_factory=lambda: dict(INVITATIONS)
     )
+    search_answer: dict[str, object] | Exception = field(
+        default_factory=lambda: dict(SEARCH)
+    )
+    detail_answer: dict[str, object] | Exception = field(
+        default_factory=lambda: dict(DETAIL)
+    )
     calls: list[tuple[str, object]] = field(default_factory=list)
     holds: list[int | None] = field(default_factory=list)
+
+    def find_jobs(
+        self, action: str, org_uid: str, params: Mapping[str, object]
+    ) -> dict[str, object]:
+        self.calls.append((action, dict(params)))
+        answer = self.search_answer if action == "smart_search" else self.detail_answer
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     def tool_help(self, tool_name: str) -> dict[str, object]:
         self.calls.append(("help", tool_name))
@@ -246,28 +274,48 @@ def _help(text: str) -> dict[str, object]:
 
 
 def _run(fake: FakeUpstream, prefix: str = "acme__") -> None:
-    probe_invitations(cast(Upstream, fake), ORG, prefix, HOSTS)
+    probe_run(cast(Upstream, fake), ORG, prefix, HOSTS)
 
 
-def test_the_probe_asks_every_tools_help_then_lists_invitations(
+def _shape_line(prefix: str, document: object) -> str:
+    return f"{prefix} outcome=ok shape=" + json.dumps(
+        shape(document, hosts=HOSTS), separators=(",", ":"), sort_keys=True
+    )
+
+
+def test_the_help_list_is_every_listed_tool_once() -> None:
+    assert len(HELP_TOOLS) == len(set(HELP_TOOLS)) == 53
+    assert HELP_TOOLS[:2] == ("list_freelancer_proposals", "manage_proposals")
+
+
+def test_a_probe_reads_invitations_a_search_a_detail_then_every_help(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     fake = FakeUpstream()
     with caplog.at_level(logging.INFO, logger="rheo_leads.jobfeed.probe"):
         _run(fake)
     assert fake.calls == [
+        *FIRST_CALLS,
         *(("help", "acme__" + tool) for tool in HELP_TOOLS),
-        ("invitations", (ORG, {})),
+    ]
+    assert _lines(caplog, "jobfeed_probe_invitations") == [
+        _shape_line("jobfeed_probe_invitations", INVITATIONS)
+    ]
+    assert _lines(caplog, "jobfeed_probe_search") == [
+        _shape_line("jobfeed_probe_search", SEARCH)
+    ]
+    assert _lines(caplog, "jobfeed_probe_detail") == [
+        _shape_line("jobfeed_probe_detail", DETAIL)
     ]
     helps = _lines(caplog, "jobfeed_probe_help")
-    assert len(helps) == len(HELP_TOOLS) == 14
+    assert len(helps) == 53
     assert helps[1] == (
         "jobfeed_probe_help tool=acme__manage_proposals outcome=ok "
         'text="help for acme__manage_proposals"'
     )
-    (line,) = _lines(caplog, "jobfeed_probe_invitations")
-    assert line.startswith("jobfeed_probe_invitations outcome=ok shape=")
-    assert json.loads(line.split("shape=", 1)[1]) == shape(INVITATIONS, hosts=HOSTS)
+    assert _lines(caplog, "jobfeed_probe_done") == [
+        "jobfeed_probe_done outcome=ok helps=53 of=53"
+    ]
     _no_markers(caplog)
 
 
@@ -281,18 +329,21 @@ def test_once_the_bare_name_answers_only_bare_names_are_sent(
     )
     with caplog.at_level(logging.INFO, logger="rheo_leads.jobfeed.probe"):
         _run(fake)
-    assert fake.calls[:3] == [
+    assert fake.calls[3:6] == [
         ("help", "acme__list_freelancer_proposals"),
         ("help", "list_freelancer_proposals"),
         ("help", "manage_proposals"),
     ]
-    assert len(fake.calls) == len(HELP_TOOLS) + 2
+    assert len(fake.calls) == len(FIRST_CALLS) + len(HELP_TOOLS) + 1
     assert _lines(caplog, "jobfeed_probe_help")[0] == (
         "jobfeed_probe_help tool=acme__list_freelancer_proposals "
         'outcome=tool_error:UNKNOWN_TOOL text=""'
     )
     assert _lines(caplog, "jobfeed_probe_invitations") == [
         "jobfeed_probe_invitations outcome=tool_error:BAD_PARAMS shape=null"
+    ]
+    assert _lines(caplog, "jobfeed_probe_done") == [
+        "jobfeed_probe_done outcome=ok helps=53 of=53"
     ]
 
 
@@ -306,6 +357,30 @@ def test_without_a_prefix_each_help_is_asked_for_once() -> None:
     ]
 
 
+def test_a_search_without_rows_reads_no_detail(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = FakeUpstream(search_answer={"status": "ok", "jobs": []})
+    with caplog.at_level(logging.INFO, logger="rheo_leads.jobfeed.probe"):
+        _run(fake)
+    assert "get" not in [name for name, _ in fake.calls]
+    assert _lines(caplog, "jobfeed_probe_detail") == [
+        "jobfeed_probe_detail outcome=none shape=null"
+    ]
+
+
+def test_a_failed_search_or_detail_is_logged_and_the_helps_go_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = FakeUpstream(detail_answer=UpstreamFailure("protocol"))
+    with caplog.at_level(logging.INFO, logger="rheo_leads.jobfeed.probe"):
+        _run(fake)
+    assert _lines(caplog, "jobfeed_probe_detail") == [
+        "jobfeed_probe_detail outcome=protocol shape=null"
+    ]
+    assert len(_lines(caplog, "jobfeed_probe_help")) == 53
+
+
 def test_a_rate_limit_waits_out_the_provider_and_ends_the_probe(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -315,13 +390,16 @@ def test_a_rate_limit_waits_out_the_provider_and_ends_the_probe(
         _run(fake)
     assert fake.calls[-1] == ("help", "acme__get_draft")
     assert fake.holds == [30]
-    assert _lines(caplog, "jobfeed_probe_invitations") == []
+    assert _lines(caplog, "jobfeed_probe_done") == [
+        "jobfeed_probe_done outcome=rate_limited helps=2 of=53"
+    ]
 
 
-def test_a_rate_limited_listing_waits_too() -> None:
+def test_a_rate_limited_listing_waits_and_ends_the_probe() -> None:
     fake = FakeUpstream(invitation_answer=UpstreamFailure("rate_limited"))
     _run(fake)
     assert fake.holds == [None]
+    assert fake.calls == [("invitations", (ORG, {}))]
 
 
 def test_a_refused_call_ends_the_probe_without_raising(
@@ -334,7 +412,7 @@ def test_a_refused_call_ends_the_probe_without_raising(
     )
     with caplog.at_level(logging.INFO, logger="rheo_leads.jobfeed.probe"):
         _run(fake)
-    assert fake.calls == [("help", "acme__list_freelancer_proposals")]
+    assert fake.calls == [*FIRST_CALLS, ("help", "acme__list_freelancer_proposals")]
     assert _lines(caplog, "jobfeed_probe_help") == [
         "jobfeed_probe_help tool=acme__list_freelancer_proposals "
         'outcome=refused text=""'
@@ -345,17 +423,20 @@ def test_a_refused_call_ends_the_probe_without_raising(
     assert _lines(caplog, "jobfeed_probe_invitations")[-1] == (
         "jobfeed_probe_invitations outcome=refused shape=null"
     )
+    assert _lines(caplog, "jobfeed_probe_done")[-1] == (
+        "jobfeed_probe_done outcome=refused helps=0 of=53"
+    )
 
 
 def test_a_run_cut_ends_the_probe_without_raising(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    fake = FakeUpstream(help_answers={"acme__list_freelancer_proposals": RunCut()})
+    fake = FakeUpstream(help_answers={"acme__get_draft": RunCut()})
     with caplog.at_level(logging.INFO, logger="rheo_leads.jobfeed.probe"):
         _run(fake)
-    assert fake.calls == [("help", "acme__list_freelancer_proposals")]
-    assert _lines(caplog, "jobfeed_probe_invitations") == [
-        "jobfeed_probe_invitations outcome=run_cut shape=null"
+    assert fake.calls[-1] == ("help", "acme__get_draft")
+    assert _lines(caplog, "jobfeed_probe_done") == [
+        "jobfeed_probe_done outcome=run_cut helps=2 of=53"
     ]
 
 
@@ -364,9 +445,13 @@ def test_a_terminal_failure_is_logged_not_raised() -> None:
     answers: dict[str, dict[str, object] | Exception] = {}
     for tool in HELP_TOOLS:
         answers[tool] = answers["acme__" + tool] = denied
-    fake = FakeUpstream(help_answers=answers, invitation_answer=denied)
+    fake = FakeUpstream(
+        help_answers=answers,
+        invitation_answer=denied,
+        search_answer=denied,
+    )
     _run(fake)
-    assert len(fake.calls) == 2 * len(HELP_TOOLS) + 1
+    assert len(fake.calls) == 2 + 2 * len(HELP_TOOLS)
 
 
 def test_a_shape_that_cannot_be_built_is_logged_not_raised(
@@ -378,27 +463,8 @@ def test_a_shape_that_cannot_be_built_is_logged_not_raised(
     monkeypatch.setattr(probe, "shape", broken)
     with caplog.at_level(logging.INFO, logger="rheo_leads.jobfeed.probe"):
         _run(FakeUpstream())
-        log_detail_shape({"status": "ok"})
-    assert _lines(caplog, "jobfeed_probe_invitations") == [
-        "jobfeed_probe_invitations outcome=shape_failed shape=null"
-    ]
-    assert _lines(caplog, "jobfeed_probe_detail") == [
-        "jobfeed_probe_detail outcome=shape_failed shape=null"
-    ]
-
-
-def test_the_detail_line_is_a_shape_or_none(caplog: pytest.LogCaptureFixture) -> None:
-    detail: dict[str, object] = {
-        "status": "ok",
-        "data": {"marketplaceJobPosting": {"content": {"title": TITLE}}},
-    }
-    with caplog.at_level(logging.INFO, logger="rheo_leads.jobfeed.probe"):
-        log_detail_shape(detail, HOSTS)
-        log_detail_shape(None)
-    lines = [r.getMessage() for r in caplog.records]
-    assert lines == [
-        "jobfeed_probe_detail outcome=ok shape="
-        + json.dumps(shape(detail), separators=(",", ":"), sort_keys=True),
-        "jobfeed_probe_detail outcome=none shape=null",
-    ]
-    assert TITLE not in lines[0]
+    for prefix in ("invitations", "search", "detail"):
+        assert _lines(caplog, f"jobfeed_probe_{prefix}") == [
+            f"jobfeed_probe_{prefix} outcome=shape_failed shape=null"
+        ]
+    assert len(_lines(caplog, "jobfeed_probe_help")) == 53

@@ -26,8 +26,10 @@ Then the MCP session: ``initialize``, the ``initialized`` notification and
 deployment setting ``leads.jobfeed.list_tools`` on, a best-effort ``tools/list``
 comes before ``list_accounts`` and its pattern-checked names go to one INFO line
 (:data:`TOOLS_LOG`); whatever happens to it, the run goes on as if it had not been
-asked. With ``leads.jobfeed.probe_invitations`` on, the account's invitations are
-probed the same way once it is selected (:mod:`rheo_leads.jobfeed.probe`). The fresh
+asked. With ``leads.jobfeed.probe_invitations`` on, the run is a probe instead:
+once the account is selected it reads the invitations, one search page, one detail
+and every tool's help into INFO lines (:mod:`rheo_leads.jobfeed.probe`), delivers
+nothing, and ends stopped on ``probe_only`` with no backoff. The fresh
 account choices are stored before any decision; the account is selected without
 any fallback (:func:`select_organization`), else ``account_selection_required``
 ends the run with no ``find_jobs`` call. An MCP 401 or 403 is terminal, the stored
@@ -98,7 +100,7 @@ from rheo_leads.jobfeed.presets import (
     PresetInvalid,
     configured_presets,
 )
-from rheo_leads.jobfeed.probe import log_detail_shape, probe_invitations
+from rheo_leads.jobfeed.probe import probe_run
 from rheo_leads.jobfeed.state import SCHEDULE_NAME as SCHEDULE_NAME
 from rheo_leads.jobfeed.state import (
     JobfeedConnection,
@@ -146,6 +148,8 @@ INTERNAL_ERROR_LOG: Final = "jobfeed_internal_error %s"
 
 ENDPOINT_MISCONFIGURED: Final = "endpoint_misconfigured"
 PRESETS_INVALID: Final = "presets_invalid"
+PROBE_ONLY: Final = "probe_only"
+"""A probe run's stop code: it collected nothing, by the operator's setting."""
 TOKEN_REFRESH_FAILED: Final = "token_refresh_failed"
 UPSTREAM_RATE_LIMITED: Final = "upstream_rate_limited"
 UPSTREAM_UNAVAILABLE: Final = "upstream_unavailable"
@@ -345,19 +349,17 @@ def session_phase(
             monotonic=deps.clock,
             sleep=deps.sleep,
             tool_prefix=run.tool_prefix,
-            keep_first_detail=run.probe_invitations,
         ) as upstream:
             if run.list_tools:
                 _log_tools(upstream.list_tools())
             selection = _select(run, upstream.list_accounts())
-            if isinstance(selection, str):
-                if run.probe_invitations:
-                    probe_invitations(
-                        upstream, selection, run.tool_prefix, _probe_hosts(run)
-                    )
+            if isinstance(selection, str) and run.probe_invitations:
+                # A probe run collects nothing: its help calls take most of the
+                # budget. It ends as a run stopped on ``probe_only``.
+                probe_run(upstream, selection, run.tool_prefix, _probe_hosts(run))
+                collected = Transient(PROBE_ONLY)
+            elif isinstance(selection, str):
                 collected = collect_phase(upstream, run, selection)
-                if run.probe_invitations:
-                    log_detail_shape(upstream.first_detail, _probe_hosts(run))
     except (UpstreamFailure, RunCut) as error:
         stopped = error
     # Every write happens outside the except block, so nothing upstream is
@@ -368,6 +370,9 @@ def session_phase(
         # Not a failure to back off from: the owner's choice makes the next run
         # due at the end of this claim's window.
         _end(uow, run, selection, backoff=False)
+    elif isinstance(collected, Transient) and collected.code == PROBE_ONLY:
+        # Nor is the operator's probe.
+        _end(uow, run, collected, backoff=False)
     elif isinstance(collected, Collected):
         _deliver_and_report(uow, token, run, collected)
     elif collected is not None:

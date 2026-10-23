@@ -54,6 +54,7 @@ COLLECTOR_HEALTH_CODES: Final = frozenset(
         "collection_partial",
         "endpoint_misconfigured",
         "presets_invalid",
+        "probe_only",
         "registration_failed",
     }
 )

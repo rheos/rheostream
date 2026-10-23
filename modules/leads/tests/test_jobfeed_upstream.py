@@ -174,16 +174,13 @@ class Rig:
     token: LeaseToken
     session: FakeSession
 
-    def upstream(
-        self, *, deadline: float = DEADLINE, keep_first_detail: bool = False
-    ) -> Upstream:
+    def upstream(self, *, deadline: float = DEADLINE) -> Upstream:
         return Upstream(
             self.session,
             self.token,
             deadline=deadline,
             monotonic=self.clock.monotonic,
             sleep=self.clock.sleep,
-            keep_first_detail=keep_first_detail,
         )
 
     def answer(self, document: object) -> dict[str, object]:
@@ -1170,17 +1167,14 @@ def test_a_sensitive_rate_limit_on_the_listing_is_retried_once(rig: Rig) -> None
     assert rig.session.attempts("list_freelancer_proposals") == 2
 
 
-def test_only_the_first_detail_is_kept_and_only_when_asked(rig: Rig) -> None:
-    documents = iter(
-        [{"status": "ok", "n": 1}, {"status": "ok", "n": 2}, {"status": "ok", "n": 3}]
-    )
-    rig.session.script = lambda name, args: rig.answer(next(documents))
-    with rig.upstream(keep_first_detail=True) as upstream:
-        upstream.find_jobs("search", ORG, {})
-        upstream.find_jobs("get", ORG, {"id": "1"})
-        upstream.find_jobs("get", ORG, {"id": "2"})
-    assert upstream.first_detail == {"status": "ok", "n": 2}
-    rig.session.script = lambda name, args: rig.answer({"status": "ok"})
-    with rig.upstream() as plain:
-        plain.find_jobs("get", ORG, {"id": "1"})
-    assert plain.first_detail is None
+def test_hold_off_waits_the_longer_of_retry_after_and_the_spacing(rig: Rig) -> None:
+    with rig.upstream() as upstream:
+        upstream.hold_off(None)
+        upstream.hold_off(30)
+    assert rig.clock.slept == [pytest.approx(RETRY_SPACING), pytest.approx(30.0)]
+
+
+def test_hold_off_never_waits_past_the_deadline(rig: Rig) -> None:
+    with rig.upstream(deadline=START + 10.0) as upstream:
+        upstream.hold_off(600)
+    assert rig.clock.now <= START + 10.0 + EPSILON

@@ -318,16 +318,11 @@ class Upstream:
         monotonic: Callable[[], float],
         sleep: Callable[[float], None],
         tool_prefix: str = "",
-        keep_first_detail: bool = False,
     ) -> None:
         self._session = session
         self._prefix = tool_prefix
         self._list_accounts = tool_prefix + LIST_ACCOUNTS
         self._find_jobs = tool_prefix + FIND_JOBS
-        self._keep_first_detail = keep_first_detail
-        self.first_detail: dict[str, object] | None = None
-        """With ``keep_first_detail``, the first ``get`` document this run read,
-        for the probe's shape line; otherwise always ``None``."""
         self._token = token
         self._deadline = deadline
         self._monotonic = monotonic
@@ -439,8 +434,6 @@ class Upstream:
         document = _document(self._paced(self._find_jobs, arguments, cutoff))
         if document is None:
             raise UpstreamFailure("protocol")
-        if action == "get" and self._keep_first_detail and self.first_detail is None:
-            self.first_detail = document
         return document
 
     def tool_help(self, tool_name: str) -> dict[str, object]:

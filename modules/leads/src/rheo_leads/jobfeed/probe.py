@@ -1,14 +1,16 @@
-"""A temporary, opt-in look at the provider's invitations and proposal tools.
+"""A temporary, opt-in look at the provider's invitations and every tool's help.
 
-With the deployment setting ``leads.jobfeed.probe_invitations`` on, a run asks for
-the help of each tool in :data:`HELP_TOOLS` (the invitations listing and the
-proposal, milestone and attachment tools a later proposal submission would use),
-lists one page of invitations as the selected account, and keeps the first detail
-read's document; each goes to one INFO line. Only the help and the invitations
-listing are ever called: the other tools are named as ``get_tool_help`` arguments,
-never called. It is how the parameters and response shapes are learned without a
-hand-made call: every session starts with a token refresh that rotates the stored
-refresh token, so the probe rides inside a real run.
+With the deployment setting ``leads.jobfeed.probe_invitations`` on, a run is a
+probe instead of a collection (:func:`probe_run`): it lists one page of
+invitations as the selected account, reads one search page and the detail of its
+first row, then asks for the help of every tool in :data:`HELP_TOOLS`; each answer
+goes to one INFO line. Nothing is delivered and nothing is called beyond the help,
+the invitations listing and the usual ``find_jobs``: the other tools are named as
+``get_tool_help`` arguments, never called. It is how parameters and response
+shapes are learned without a hand-made call: every session starts with a token
+refresh that rotates the stored refresh token, so the probe rides inside a real
+run. The help calls take most of a run's budget, which is why the run collects
+nothing else.
 
 What reaches the log:
 
@@ -27,17 +29,17 @@ What reaches the log:
   only under a status-like key (:data:`STATUS_KEYS`). No name, title, id,
   description or message survives.
 
-It is best effort: a failed or refused call is logged by its code, a rate limit
-ends the probe after the provider's wait, a run cut ends it at once, a shape that
-cannot be built is logged as ``shape_failed``, and the run goes on to collect
-exactly as it would have. A cancelled or lost job still stops the run. Remove the
-setting once the shapes are known.
+It never raises for anything the provider answers: a failed or refused call is
+logged by its code, a rate limit ends the probe after the provider's wait, a run
+cut ends it at once, and a shape that cannot be built is logged as
+``shape_failed``. A cancelled or lost job still stops the run. Remove the setting
+once the shapes are known.
 """
 
 import json
 import logging
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime
 from typing import Final
 from urllib.parse import urlsplit
@@ -55,9 +57,12 @@ _log = logging.getLogger(__name__)
 
 HELP_LOG: Final = "jobfeed_probe_help tool=%s outcome=%s text=%s"
 INVITATIONS_LOG: Final = "jobfeed_probe_invitations outcome=%s shape=%s"
+SEARCH_LOG: Final = "jobfeed_probe_search outcome=%s shape=%s"
 DETAIL_LOG: Final = "jobfeed_probe_detail outcome=%s shape=%s"
+DONE_LOG: Final = "jobfeed_probe_done outcome=%s helps=%d of=%d"
 HELP_TEXT_MAX: Final = 16000
 HELP_TOOLS: Final = (
+    # What a proposal submission from Leads would use, first.
     PROPOSALS,
     "manage_proposals",
     "get_draft",
@@ -70,11 +75,54 @@ HELP_TOOLS: Final = (
     "submit_milestones",
     "start_attachment_upload",
     "confirm_attachment_upload",
+    "get_upload_status",
+    "store_uploaded_files",
     "get_rate_insights",
     "get_freelancer_dashboard",
+    # Then every other tool the provider lists.
+    "agency_rooms",
+    "boost_profile",
+    "end_contract",
+    "find_freelancers",
+    "find_saved_jobs",
+    "get_account",
+    "get_agency",
+    "get_agency_dashboard",
+    "get_client_dashboard",
+    "get_client_financials",
+    "get_freelancer_financials",
+    "get_job_posting",
+    "get_messages",
+    "get_profile",
+    "get_tool_help",
+    "invite_freelancer",
+    "list_accounts",
+    "list_client_invitations",
+    "list_client_proposals",
+    "list_contracts",
+    "list_offers",
+    "manage_client_proposals",
+    "manage_meetings",
+    "manage_offers",
+    "manage_talent_lists",
+    "manage_uma_shortlist",
+    "post_job",
+    "respond_to_offer",
+    "save_job",
+    "send_message",
+    "set_tool_mode",
+    "set_tool_permission",
+    "submit_feedback",
+    "update_account",
+    "update_agency",
+    "update_contract",
+    "update_profile",
 )
-"""The tools whose help the probe asks for, by their unprefixed names. Naming a
-tool here sends its name to ``get_tool_help``; it never calls the tool."""
+"""The tools whose help the probe asks for, by their unprefixed names: all 53 the
+provider listed on 2026-10-22. Naming a tool here sends its name to
+``get_tool_help``; it never calls the tool."""
+SEARCH_PARAMS: Final = {"mode": "best_match", "limit": 10}
+"""The one search page a probe reads, for its own shape and a row to read."""
 REDACTED: Final = "[redacted]"
 SHAPE_FAILED: Final = "shape_failed"
 REFUSED: Final = "refused"
@@ -115,6 +163,8 @@ _DIGITS: Final = re.compile(r"[0-9]+")
 _NOT_PRINTABLE: Final = re.compile(r"[^\x20-\x7e]+")
 _LONG_RUN: Final = re.compile(r"[A-Za-z0-9._~+/=-]{24,}")
 _DIGIT_RUN: Final = re.compile(r"[0-9]{10,}")
+_FEED_ID: Final = re.compile(r"[0-9A-Za-z_~-]{1,64}")
+"""What a detail read may send as a row's id, as collection accepts it."""
 
 
 def _bucket(length: int) -> str:
@@ -272,22 +322,49 @@ def _dumps_shape(document: object, hosts: Collection[str]) -> tuple[str, str]:
 
 
 class _Stop(Exception):
-    """The probe ends here; the run goes on."""
+    """The probe ends here, with ``code``; the run then ends as a probe."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 def _failed(upstream: Upstream, failure: UpstreamFailure) -> None:
-    """After a rate limit, wait out the provider and end the probe, so the
-    searches do not start into the same limit."""
+    """After a rate limit, wait out the provider and end the probe, so no further
+    call starts into the same limit."""
     if failure.code == "rate_limited":
         upstream.hold_off(failure.retry_after)
-        raise _Stop()
+        raise _Stop(failure.code)
+
+
+def _document(
+    upstream: Upstream, line: str, call: Callable[[], dict[str, object]]
+) -> dict[str, object] | None:
+    """One probe call's document, or ``None`` after its failure line."""
+    try:
+        return call()
+    except UpstreamFailure as failure:
+        _log.info(line, _code(failure), "null")
+        _failed(upstream, failure)
+        return None
+    except ToolRefused:
+        _log.info(line, REFUSED, "null")
+        raise _Stop(REFUSED) from None
+
+
+def _first_feed_id(page: Mapping[str, object] | None) -> str | None:
+    """The first row's own id on a search page, when it is a short plain token."""
+    jobs = page.get("jobs") if page is not None else None
+    first = jobs[0] if isinstance(jobs, list) and jobs else None
+    found = first.get("id") if isinstance(first, Mapping) else None
+    return found if isinstance(found, str) and _FEED_ID.fullmatch(found) else None
 
 
 def _help(
     upstream: Upstream, tool: str, org_uid: str, prefixes: list[str]
-) -> list[str]:
-    """One tool's help line. The help is asked for under each of ``prefixes`` in
-    turn until one answers; the prefixes left to try for the next tool are
+) -> tuple[list[str], bool]:
+    """One tool's help line, and whether it answered. The help is asked for under
+    each of ``prefixes`` in turn until one answers; the prefixes left to try are
     returned, so once a form of the name works, only that form is sent."""
     for prefix in prefixes:
         name = prefix + tool
@@ -299,45 +376,56 @@ def _help(
             continue
         except ToolRefused:
             _log.info(HELP_LOG, name, REFUSED, '""')
-            raise _Stop() from None
+            raise _Stop(REFUSED) from None
         _log.info(HELP_LOG, name, "ok", json.dumps(help_text(result, (org_uid,))))
-        return [prefix]
-    return prefixes
+        return [prefix], True
+    return prefixes, False
 
 
-def probe_invitations(
+def probe_run(
     upstream: Upstream,
     org_uid: str,
     tool_prefix: str,
     hosts: Collection[str] = (),
 ) -> None:
-    """A help line per :data:`HELP_TOOLS` entry, then the invitations line; never
-    raises for anything the provider answers (module docstring). The listed
-    (prefixed) name is tried first, then the bare one."""
-    prefixes = [tool_prefix, ""] if tool_prefix else [""]
+    """The invitations, search and detail lines, a help line per
+    :data:`HELP_TOOLS` entry, then one ``jobfeed_probe_done`` line saying how it
+    ended and how many tools answered; never raises for anything the provider
+    answers (module docstring). The listed (prefixed) tool name is tried first,
+    then the bare one."""
+    answered = 0
+    outcome = "ok"
     try:
-        for tool in HELP_TOOLS:
-            prefixes = _help(upstream, tool, org_uid, prefixes)
-        try:
-            document = upstream.invitations(org_uid, {})
-        except UpstreamFailure as failure:
-            _log.info(INVITATIONS_LOG, _code(failure), "null")
-            _failed(upstream, failure)
-        except ToolRefused:
-            _log.info(INVITATIONS_LOG, REFUSED, "null")
+        invitations = _document(
+            upstream, INVITATIONS_LOG, lambda: upstream.invitations(org_uid, {})
+        )
+        if invitations is not None:
+            _log.info(INVITATIONS_LOG, *_dumps_shape(invitations, hosts))
+        page = _document(
+            upstream,
+            SEARCH_LOG,
+            lambda: upstream.find_jobs("smart_search", org_uid, SEARCH_PARAMS),
+        )
+        if page is not None:
+            _log.info(SEARCH_LOG, *_dumps_shape(page, hosts))
+        feed_id = _first_feed_id(page)
+        detail = None
+        if feed_id is None:
+            _log.info(DETAIL_LOG, "none", "null")
         else:
-            _log.info(INVITATIONS_LOG, *_dumps_shape(document, hosts))
+            detail = _document(
+                upstream,
+                DETAIL_LOG,
+                lambda: upstream.find_jobs("get", org_uid, {"id": feed_id}),
+            )
+        if detail is not None:
+            _log.info(DETAIL_LOG, *_dumps_shape(detail, hosts))
+        prefixes = [tool_prefix, ""] if tool_prefix else [""]
+        for tool in HELP_TOOLS:
+            prefixes, ok = _help(upstream, tool, org_uid, prefixes)
+            answered += ok
     except RunCut:
-        _log.info(INVITATIONS_LOG, RunCut.code, "null")
-    except _Stop:
-        pass
-
-
-def log_detail_shape(
-    detail: dict[str, object] | None, hosts: Collection[str] = ()
-) -> None:
-    """The first detail read's shape, or ``none`` when no read succeeded."""
-    if detail is None:
-        _log.info(DETAIL_LOG, "none", "null")
-    else:
-        _log.info(DETAIL_LOG, *_dumps_shape(detail, hosts))
+        outcome = RunCut.code
+    except _Stop as stop:
+        outcome = stop.code
+    _log.info(DONE_LOG, outcome, answered, len(HELP_TOOLS))

@@ -63,6 +63,7 @@ const STOPS: Record<string, string> = {
   authorization_required: "needs reconnecting",
   endpoint_misconfigured: "wrong address",
   presets_invalid: "search presets invalid",
+  probe_only: "probe run: nothing collected",
   account_selection_required: "choose an account",
   collection_partial: "cut short",
   token_refresh_failed: "could not renew its login",
