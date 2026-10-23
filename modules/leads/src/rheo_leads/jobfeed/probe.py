@@ -107,6 +107,7 @@ PATH_WORDS: Final = frozenset(
 
 _KEY: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,40}")
 _KEY_DIGITS: Final = re.compile(r"[0-9]{5,}")
+_HEX_KEY: Final = re.compile(r"[0-9a-fA-F]{12,}")
 _ENUM: Final = re.compile(r"[A-Z][A-Z0-9_]{0,39}")
 _WORD: Final = re.compile(r"[a-z][a-z_]{0,23}")
 _POSTING_ID: Final = re.compile(r"~0[12][0-9a-f]+")
@@ -171,10 +172,13 @@ def _text_kind(value: str, hosts: Collection[str]) -> str:
 
 
 def _key_kept(name: object) -> bool:
+    """An identifier-shaped key that is not itself an id: no five-digit run and
+    not a long hexadecimal string. A UUID or an email fails the pattern."""
     return (
         isinstance(name, str)
         and _KEY.fullmatch(name) is not None
         and _KEY_DIGITS.search(name) is None
+        and _HEX_KEY.fullmatch(name) is None
     )
 
 

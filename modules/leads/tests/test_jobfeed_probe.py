@@ -144,6 +144,24 @@ def test_a_word_or_enum_is_shown_only_under_a_status_key() -> None:
     }
 
 
+def test_id_like_keys_are_counted_and_field_names_kept() -> None:
+    keys = {
+        "3f2a9c1e-7b4d-4e8a-9c2f-5d1b7e3a9c04": 1,
+        "a1b2c3d4e5f6a7b8c9d0": 1,
+        "jordan.example@example.com": 1,
+        "order12345": 1,
+        "createdDateTime": 1,
+        "client_record": 1,
+        "address2": 1,
+    }
+    assert shape(keys) == {
+        "createdDateTime": "int",
+        "client_record": "int",
+        "address2": "int",
+        "?skipped": 4,
+    }
+
+
 def test_shapes_are_bounded() -> None:
     deep: object = "leaf"
     for _ in range(20):
