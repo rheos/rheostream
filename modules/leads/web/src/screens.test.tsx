@@ -529,6 +529,7 @@ describe("record fields as a person reads them", () => {
   it("names fields without their storage path", () => {
     expect(fieldLabel("ext.jobsearch.client_hire_rate")).toBe("Client hire rate");
     expect(fieldLabel("ext.jobsearch.posted_on")).toBe("Posted");
+    expect(fieldLabel("ext.jobsearch.invited")).toBe("Invited");
     expect(fieldLabel("ext.other.some_new_field")).toBe("Some new field");
     expect(fieldLabel("message")).toBe("Original message");
     expect(fieldLabel("person.email")).toBe("Email");

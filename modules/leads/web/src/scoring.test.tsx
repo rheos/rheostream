@@ -10,6 +10,7 @@ import {
   busy,
   FAST_REFRESH_MS,
   outcomeLabel,
+  readFailureLabel,
   span,
   stageChip,
   statusLine,
@@ -139,6 +140,17 @@ function markup(tab: ScoringTab, view = VIEW, canRetry = true): string {
 }
 
 describe("the Scoring view's words", () => {
+  it("names a failed invitations listing by its reason", () => {
+    expect(readFailureLabel("invitations:protocol")).toBe(
+      "invitations not listed: unreadable answer",
+    );
+    expect(readFailureLabel("invitations:tool_error:PERMISSION")).toBe(
+      "invitations not listed: refused by the job service (PERMISSION)",
+    );
+    expect(readFailureLabel("tool_error:PERMISSION")).toBe(
+      "refused by the job service (PERMISSION)",
+    );
+  });
   it("says what scoring is doing", () => {
     expect(statusLine(VIEW.status as Row, NOW).text).toBe(
       'Scoring "Example data pipeline" for 42s',

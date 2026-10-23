@@ -896,6 +896,43 @@ def feed_row(
     return row
 
 
+INVITATIONS_NAME = "list_freelancer_proposals:invitations"
+"""How :func:`script_name` names the invitations listing."""
+
+
+def invitation_row(number: int, *, title: str | None = None) -> dict[str, object]:
+    """One pending invitation as the listing names it: its job ``~02<number>``,
+    with a client name and a letter that must never be delivered."""
+    return {
+        "id": f"7{number}",
+        "context": "Freelancer",
+        "client": {"user": {"id": "1", "name": "Pat E."}},
+        "invitationLetter": (
+            "<untrusted_participant_content>"
+            f"{INVITATION_LETTER}"
+            "</untrusted_participant_content>"
+        ),
+        "jobPosting": {
+            "id": str(number),
+            "content": {"title": title or f"Example build {number}"},
+            "url": f"https://www.example.com/jobs/~02{number}?utm_source=invite",
+        },
+    }
+
+
+INVITATION_LETTER = "letter-marker: the client's own invitation text"
+
+
+def invitations_page(*rows: object) -> dict[str, object]:
+    """An invitations listing answering ``rows``, the last page."""
+    return {
+        "status": "ok",
+        "data": {"invitations": list(rows), "totalCount": len(rows)},
+        "hasMore": False,
+        "totalCount": len(rows),
+    }
+
+
 def feed_page(
     action: str,
     params: dict[str, Any],
@@ -963,6 +1000,8 @@ class FakeMcpServer:
     accounts: list[dict[str, object]] = field(default_factory=lambda: [account()])
     feeds: dict[str, list[list[dict[str, object]]]] = field(default_factory=dict)
     details: dict[str, object] = field(default_factory=dict)
+    invitations: list[dict[str, object]] = field(default_factory=list)
+    """The pending invitation rows the listing answers, in order (none by default)."""
     queued: dict[str, list[Responder]] = field(default_factory=dict)
     script: dict[str, Responder] = field(default_factory=dict)
     holds: dict[str, Hold] = field(default_factory=dict)
@@ -1042,6 +1081,8 @@ class FakeMcpServer:
             )
         if name == "list_accounts":
             return accounts_result(*self.accounts)
+        if name == INVITATIONS_NAME:
+            return tool_result(invitations_page(*self.invitations))
         if name.startswith("find_jobs"):
             return self._find_jobs
         return rpc_result(None)

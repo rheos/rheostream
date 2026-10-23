@@ -118,7 +118,11 @@ workspace setting `leads.jobfeed.presets` (see the deployment guide's
 with 50 or fewer proposals that you have not applied to is a discovery: the collector
 reads its full description and delivers it, and routing either attaches it to the
 opportunity that already holds that posting id or creates a new one. A posting no
-opportunity tracks is otherwise skipped. A tracked posting is delivered again only
+opportunity tracks is otherwise skipped. Each run also lists the jobs clients have
+invited you to: an invited job is always read and delivered, whatever its
+competition, and its `ext.jobsearch.invited` field is set, so the queue tags it
+Invited and scoring never holds it back on the client filters (they reach the model
+as conditions to check instead). A tracked posting is delivered again only
 when one of its fields changed, so its proposal count, budget and client record stay
 current. Collected values fill the `ext.jobsearch.*` fields; no person or organization
 is created. Postings arrive through intake like any other source, so receipts,

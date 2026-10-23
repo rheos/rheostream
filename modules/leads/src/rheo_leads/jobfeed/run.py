@@ -288,14 +288,14 @@ def collect_phase(
     reasons = dict(details.reasons)
     if invites.failure is not None:
         reasons[invitation_reason(invites.failure)] = 1
-    listed = 0 if invites.cut else 1
     return Collected(
         sightings=details.sightings,
         fetched=len(collected.rows)
         + collected.invalid_rows
         + len(invites.rows)
         + invites.invalid_rows,
-        pages=collected.pages_used + listed,
+        # Search pages only; the invitations listing is not one.
+        pages=collected.pages_used,
         detail_reads=details.detail_reads,
         errors=collected.invalid_rows
         + details.failures

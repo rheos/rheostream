@@ -715,7 +715,8 @@ RHEO__leads__jobfeed__list_tools=false
   error and dropped; stored posting URLs are rebuilt on the first host in the list.
   Empty (the default) also stops a run before it starts.
 - `leads.jobfeed.tool_prefix` (default empty) goes in front of each tool name a run
-  calls, so `acme__` sends `acme__list_accounts` and `acme__find_jobs`. A provider may
+  calls, so `acme__` sends `acme__list_accounts`, `acme__list_freelancer_proposals`
+  and `acme__find_jobs`. A provider may
   name its tools with a prefix; set this to match what its `tools/list` or a working
   client uses. Letters, digits, `_` and `-` only, at most 64; any other value makes a
   run record `endpoint_misconfigured` before it sends anything.
@@ -986,10 +987,15 @@ intake's alone.
   run starts earlier than the previous claim plus exactly 60 minutes, so a retried or
   duplicated job claims once.
 - **One run.** One token refresh, never retried; the MCP session set-up; the account
-  check; three searches (one page of best matches, up to five pages of the newest
-  postings, one page of postings above 50 proposals), at most 80 rows in all; one
-  detail read for each discovered posting that has 50 or fewer proposals and is not
-  marked applied, at most 60; then the deliveries and the report, committed together.
+  check; one page (at most 10) of the account's pending invitations, best effort,
+  through the read-only invitations action of `list_freelancer_proposals`, the only
+  action of that tool the collector may call; three searches (one page of best
+  matches, up to five pages of the newest postings, one page of postings above 50
+  proposals), at most 80 rows in all; one detail read for each invited job and each
+  discovered posting that has 50 or fewer proposals and is not marked applied, at
+  most 60, invited jobs first; then the deliveries and the report, committed together.
+  A failed invitations listing never stops the run: it completes as
+  `collection_partial` with the reason `invitations:<code>` in its history.
 - **Deadline and pacing.** A run has 420 seconds from its claim. Search and detail
   requests start at least 5.3 seconds apart, and none starts with too little of the
   deadline left; a cut run completes as `collection_partial`. Each MCP request has a
