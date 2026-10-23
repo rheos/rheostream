@@ -175,14 +175,17 @@ and offers **Revoke access** and nothing else.
 The card keeps showing the earlier state until you reload the page.
 
 **Undo and reopen.** Migration `0019_reopen_closed_jobs` gives the Job search preset
-moves from passed and lost back to review (hired stays final). After Dismiss, the
+moves from passed and lost back to every open stage that can close into them (passed
+to review and qualified; lost to review, qualified, applied and interviewing), so an
+undo returns a job to the stage it left. Hired stays final. After Dismiss, the
 queue card's place shows a one-line **Undo**, and a dismiss on the job page returns to
 the queue with the same Undo at the top. Later, a passed or lost job is found with the
 queue's **Show** filter set to Passed, Lost or All stages, and its card and page offer
 **Reopen** in place of the stage select. `leads.ui.queue` carries the way back: each
 item's `dismiss` names its `undo` stage (the stage it was dismissed from when the
 preset allows that move, else the first open one), and a closed item's `transitions`
-list its reopen moves.
+list its reopen moves; Reopen takes the first. A follow-up the dismiss cancelled stays
+cancelled after a reopen: schedule it again.
 
 **Close versus erase.** Closing an opportunity (moving it to hired, lost or passed)
 keeps the posting attached: later sightings refresh the closed opportunity and never

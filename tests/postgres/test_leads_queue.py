@@ -246,7 +246,7 @@ def test_member_reads_the_queue_and_dismiss_follows_the_stage(intake: Intake) ->
     assert cards(intake)["Applied posting"]["dismiss"] == {
         "stage_id": "lost",
         "label": "Lost",
-        "undo": {"stage_id": "review", "label": "Review"},
+        "undo": {"stage_id": "applied", "label": "Applied"},
     }
     member = add_member(
         intake.cluster.backend,

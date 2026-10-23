@@ -210,8 +210,25 @@ describe("the queue card's Undo", () => {
     await act(async () => button("Dismiss Example data service").click());
     await act(async () => button("Undo: reopen").click());
     expect(host.textContent).toContain("Dismissed Example data service.");
-    expect(host.textContent).toContain("Could not undo.");
+    expect(host.textContent).toContain("Could not undo. Try again, or reopen it from Passed.");
     expect(button("Undo: reopen").disabled).toBe(false);
+  });
+  it("sends one undo for a double click", async () => {
+    let settle: (value: unknown) => void = () => {};
+    const submit = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "ok", result: { revision: 4 } })
+      .mockImplementation(() => new Promise((resolve) => (settle = resolve)));
+    mount(submit);
+    await act(async () => button("Dismiss Example data service").click());
+    const undo = button("Undo: reopen");
+    await act(async () => {
+      undo.click();
+      undo.click();
+    });
+    expect(submit).toHaveBeenCalledTimes(2);
+    await act(async () => settle({ state: "ok", result: { revision: 5 } }));
+    expect(host.textContent).not.toContain("Dismissed");
   });
   it("reopens a closed card in the Passed view, which it then leaves", async () => {
     const submit = vi.fn().mockResolvedValue({ state: "ok", result: { revision: 5 } });

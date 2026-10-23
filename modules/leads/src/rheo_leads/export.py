@@ -276,7 +276,7 @@ def import_records(
         # once per version.
         preset_version=4,
         preset_stage=30,
-        preset_transition=61,
+        preset_transition=65,
         preset_requirement=0,
         preset_field=50,
         preset_rubric=4,

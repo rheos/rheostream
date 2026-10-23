@@ -1,10 +1,12 @@
-"""Frozen: a passed or lost job can be reopened to Review.
+"""Frozen: a passed or lost job can be reopened.
 
 The Job search preset had no move out of its closed stages, so a job dismissed by
 mistake stayed closed. A preset version is immutable once used, so the moves arrive
 in a new version: a full copy of the preset's current version (stages, transitions,
-requirements, fields, rubric, template) plus two transitions, ``passed`` to
-``review`` and ``lost`` to ``review``. The preset's current version moves to it, and
+requirements, fields, rubric, template) plus a move from each closed stage back to
+every open stage that can close into it, so an undo returns a job to the stage it
+left: ``passed`` to review and qualified, ``lost`` to review, qualified, applied and
+interviewing. ``hired`` stays final. The preset's current version moves to it, and
 every opportunity on the old current version moves with it, as 0018 did. The new
 version is a strict superset with the same stages and outcomes, so each opportunity
 keeps its stage, its field states and its disposition. A reopen is an ordinary
@@ -26,7 +28,14 @@ depends_on = None
 non_destructive_upgrade = True
 
 PRESET = "019bf0b0-0000-7000-8000-000000000002"
-REOPEN = (("passed", "review"), ("lost", "review"))
+REOPEN = (
+    ("passed", "review"),
+    ("passed", "qualified"),
+    ("lost", "review"),
+    ("lost", "qualified"),
+    ("lost", "applied"),
+    ("lost", "interviewing"),
+)
 
 
 def upgrade() -> None:

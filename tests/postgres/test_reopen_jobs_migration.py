@@ -30,7 +30,17 @@ pytestmark = [
 REVISION = "0019_reopen_closed_jobs"
 PREVIOUS = "0018_invited_jobs"
 PRESET = h.JOBSEARCH_PRESET_ID
-REOPEN = [(PRESET, "lost", "review"), (PRESET, "passed", "review")]
+REOPEN = sorted(
+    (PRESET, start, end)
+    for start, end in (
+        ("passed", "review"),
+        ("passed", "qualified"),
+        ("lost", "review"),
+        ("lost", "qualified"),
+        ("lost", "applied"),
+        ("lost", "interviewing"),
+    )
+)
 
 
 def move(i: Intake, card: dict[str, Any], to: str) -> Any:
@@ -129,12 +139,13 @@ def test_a_dismissed_job_reopens_through_an_audited_transition(intake: Intake) -
     shown = cards(intake, ref=card["ref"])["Example posting"]
     assert shown["stage_kind"] == "terminal" and shown["dismiss"] is None
     assert shown["transitions"] == [
-        {"stage_id": "review", "label": "Review", "kind": "open"}
+        {"stage_id": "review", "label": "Review", "kind": "open"},
+        {"stage_id": "qualified", "label": "Qualified", "kind": "open"},
     ]
     # The reopen is revision-checked and only to the stage the preset allows.
     assert move(intake, card, "review").state == "record_stale"
     closed_card = {**card, "revision": closed.revision}
-    assert move(intake, closed_card, "qualified").state == "transition_not_allowed"
+    assert move(intake, closed_card, "applied").state == "transition_not_allowed"
 
     reopened = move(intake, closed_card, "review")
     assert reopened.ok, reopened
@@ -172,17 +183,20 @@ def test_lost_reopens_and_hired_stays_closed(intake: Intake) -> None:
             moved = move(intake, card, stage)
             assert moved.ok, moved
             card = {**card, "revision": moved.result.revision}
-    # From Applied, a dismiss is a loss, and its undo is Review: Lost has no move
-    # back to Applied.
+    # From Applied, a dismiss is a loss, and its undo goes back to Applied.
     applied = cards(intake)["Applied posting"]
     assert applied["dismiss"] == {
         "stage_id": "lost",
         "label": "Lost",
-        "undo": {"stage_id": "review", "label": "Review"},
+        "undo": {"stage_id": "applied", "label": "Applied"},
     }
     lost = move(intake, applied, "lost")
     assert lost.ok, lost
-    assert move(intake, {**applied, "revision": lost.result.revision}, "review").ok
+    back = move(intake, {**applied, "revision": lost.result.revision}, "applied")
+    assert back.ok, back
+    assert (
+        ok(intake, "opportunity.get", ref=applied["ref"]).data["stage_id"] == "applied"
+    )
     hired = cards(intake, stage_id="hired")["Hired posting"]
     assert hired["transitions"] == []
     assert move(intake, hired, "review").state == "transition_not_allowed"

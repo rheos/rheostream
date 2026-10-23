@@ -534,15 +534,17 @@ export interface QueueProps {
  * revision the dismiss left (unknown while the dismiss is in flight). */
 interface Dismissal {
   to: Move;
+  /** The closed stage the dismiss moved it to, for the failure text. */
+  closed: string;
   revision?: unknown;
   busy: boolean;
   error?: string;
 }
 
-function undoFailed(outcome: { state: string; code?: string }): string {
+function undoFailed(outcome: { state: string; code?: string }, closed: string): string {
   return outcome.state === "refused" && outcome.code === "record_stale"
     ? "This changed since it was dismissed. Reload to see it."
-    : "Could not undo. Try again, or reopen it from Passed.";
+    : `Could not undo. Try again, or reopen it from ${closed || "its closed stage"}.`;
 }
 
 /** The page's address without the dismissed-job parameters. */
@@ -598,6 +600,7 @@ export function JobQueue(props: QueueProps) {
   const [banner, setBanner] = useState<{ busy: boolean; error?: string }>({
     busy: false,
   });
+  const undoing = useRef(new Set<string>());
   const form = useRef<HTMLFormElement>(null);
   const full = useRef<HTMLInputElement>(null);
   const current: Prefs = {
@@ -653,7 +656,11 @@ export function JobQueue(props: QueueProps) {
     setErrors((current) =>
       Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)),
     );
-    if (undo) setDismissals((current) => ({ ...current, [id]: { to: undo, busy: true } }));
+    if (undo)
+      setDismissals((current) => ({
+        ...current,
+        [id]: { to: undo, closed: to.label, busy: true },
+      }));
     else setItems((current) => afterMove(current, id, to, props.stage));
     let outcome;
     try {
@@ -670,7 +677,7 @@ export function JobQueue(props: QueueProps) {
       if (undo) {
         setDismissals((current) => ({
           ...current,
-          [id]: { to: undo, revision, busy: false },
+          [id]: { to: undo, closed: to.label, revision, busy: false },
         }));
         return;
       }
@@ -713,7 +720,9 @@ export function JobQueue(props: QueueProps) {
     const submit = props.submit;
     const id = str(item.id);
     const dismissal = dismissals[id];
-    if (!submit || !dismissal || dismissal.busy) return;
+    if (!submit || !dismissal || dismissal.busy || undoing.current.has(id)) return;
+    // A second click before the re-render must not send a second move.
+    undoing.current.add(id);
     setDismissals((current) => ({
       ...current,
       [id]: { ...dismissal, busy: true, error: undefined },
@@ -728,6 +737,7 @@ export function JobQueue(props: QueueProps) {
     } catch {
       outcome = { state: "unavailable" as const };
     }
+    undoing.current.delete(id);
     if (outcome.state === "ok") {
       const revision = row(outcome.result).revision;
       setItems((current) =>
@@ -741,7 +751,7 @@ export function JobQueue(props: QueueProps) {
       );
       return;
     }
-    const error = undoFailed(outcome);
+    const error = undoFailed(outcome, dismissal.closed);
     setDismissals((current) => ({
       ...current,
       [id]: { ...dismissal, busy: false, error },
@@ -752,7 +762,8 @@ export function JobQueue(props: QueueProps) {
   async function undoBanner() {
     const submit = props.submit;
     const gone = props.dismissed;
-    if (!submit || !gone || banner.busy) return;
+    if (!submit || !gone || banner.busy || undoing.current.has("banner")) return;
+    undoing.current.add("banner");
     setBanner({ busy: true });
     let outcome;
     try {
@@ -768,7 +779,11 @@ export function JobQueue(props: QueueProps) {
       window.location.replace(withoutDismissed(window.location.href));
       return;
     }
-    setBanner({ busy: false, error: undoFailed(outcome) });
+    undoing.current.delete("banner");
+    setBanner({
+      busy: false,
+      error: undoFailed(outcome, str(gone.item.stage_label)),
+    });
   }
 
   const shown = items.filter((each) => !dismissals[str(each.id)]);
