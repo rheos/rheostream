@@ -75,8 +75,13 @@ def preset_edit(
         raise OperationRefused(
             "preset_invalid", "duplicate keys or missing entry stage"
         )
+    # A closed stage may only reopen: its moves lead back to an open stage.
     for start, end in m.transitions:
-        if start not in stages or end not in stages or stages[start].kind == "terminal":
+        if (
+            start not in stages
+            or end not in stages
+            or (stages[start].kind == "terminal" and stages[end].kind == "terminal")
+        ):
             raise OperationRefused("preset_invalid", "invalid transition")
     if len(set(m.transitions)) != len(m.transitions):
         raise OperationRefused("preset_invalid", "duplicate transitions")

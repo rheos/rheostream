@@ -18,7 +18,7 @@ from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 from sqlalchemy import Connection, delete, insert, select, update
 
-from postgres.test_jobfeed_migration import connector
+from postgres.test_jobfeed_migration import HEAD, connector
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
 from postgres.test_leads_pipeline import capture, ok, rewind_leads, setup
@@ -102,7 +102,7 @@ def preset_rows(c: Connection, version: int) -> dict[str, list[tuple[Any, ...]]]
     return found
 
 
-def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> None:
+def test_a_populated_0017_gets_preset_v2_and_mapping_v2(intake: Intake) -> None:
     setup(intake)
     job_pipeline(intake)
     capture(intake, "job", {"subject": "Example job", "posting_id": "~0290"})
@@ -110,7 +110,7 @@ def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> N
     pasted = job_mapping(intake, "job_paste", "manual")
     with open_unit_of_work(intake.ctx) as uow:
         undone = rewind_leads(uow.connection, PREVIOUS)
-        assert undone == (REVISION,)
+        assert undone == ("0019_reopen_closed_jobs", REVISION)
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
@@ -133,15 +133,16 @@ def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> N
         uow.commit()
     assert connections_before[feed][1] == connections_before[pasted][1] == 1
 
-    result = upgrade(intake, target_schema=REVISION)
+    # The operator path upgrades to the loaded head only, which 0019 follows.
+    result = upgrade(intake, target_schema=HEAD)
     assert result.ok and result.result.changed, result
 
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 2
+        assert preset["current_version"] == 3
         (moved,) = rows(c, p.opportunity, id=job["id"])
-        assert moved["preset_version"] == 2
+        assert moved["preset_version"] == 3
         assert {k: v for k, v in moved.items() if k != "preset_version"} == {
             k: v for k, v in job.items() if k != "preset_version"
         }
@@ -212,7 +213,7 @@ def test_a_migrated_feed_connection_delivers_an_invited_job(intake: Intake) -> N
             )
         )
         uow.commit()
-    assert upgrade(intake, target_schema=REVISION).ok
+    assert upgrade(intake, target_schema=HEAD).ok
     ok(
         intake,
         "connection.set_routing",
@@ -231,7 +232,7 @@ def test_a_migrated_feed_connection_delivers_an_invited_job(intake: Intake) -> N
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (job,) = rows(c, p.opportunity, title="Invited example")
-        assert (job["preset_id"], job["preset_version"]) == (PRESET, 2)
+        assert (job["preset_id"], job["preset_version"]) == (PRESET, 3)
         states = {
             r["target"]: r["value_text"]
             for r in rows(c, p.opportunity_field_state, opportunity_id=job["id"])

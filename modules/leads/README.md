@@ -23,7 +23,9 @@ ordinary source text is evidence and never an instruction or permission grant.
 The opportunity pins its preset version and stable stage ID. Display labels can change
 without changing that version's transition rules or terminal outcome. Preset edits
 publish a new immutable version; migration is an explicit revision-checked operation
-on one opportunity with a stage map. Removed extension fields remain readable and
+on one opportunity with a stage map. A terminal stage may have moves back to an open
+stage (a reopen), never to another terminal stage. Reopening is an ordinary transition:
+it clears the disposition and is audited and revision-checked like any other move. Removed extension fields remain readable and
 exportable as orphaned fields. User edits, stages and notes survive new intake. Source
 fields retain their winning observation and are deterministically re-derived from the
 linked set; see [field derivation](../../docs/architecture/intake-and-events.md#field-derivation-fr-37).
@@ -171,6 +173,19 @@ Collected opportunities are kept. It stays available while authorization is requ
 and while job search is turned off: the Job feed card then says collection is paused
 and offers **Revoke access** and nothing else.
 The card keeps showing the earlier state until you reload the page.
+
+**Undo and reopen.** Migration `0019_reopen_closed_jobs` gives the Job search preset
+moves from passed and lost back to every open stage that can close into them (passed
+to review and qualified; lost to review, qualified, applied and interviewing), so an
+undo returns a job to the stage it left. Hired stays final. After Dismiss, the
+queue card's place shows a one-line **Undo**, and a dismiss on the job page returns to
+the queue with the same Undo at the top. Later, a passed or lost job is found with the
+queue's **Show** filter set to Passed, Lost or All stages, and its card and page offer
+**Reopen** in place of the stage select. `leads.ui.queue` carries the way back: each
+item's `dismiss` names its `undo` stage (the stage it was dismissed from when the
+preset allows that move, else the first open one), and a closed item's `transitions`
+list its reopen moves; Reopen takes the first. A follow-up the dismiss cancelled stays
+cancelled after a reopen: schedule it again.
 
 **Close versus erase.** Closing an opportunity (moving it to hired, lost or passed)
 keeps the posting attached: later sightings refresh the closed opportunity and never

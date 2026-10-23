@@ -14,7 +14,7 @@ import {
 } from "./jobfeed-panel";
 import { JobHeader, JobQueue, type Choice } from "./queue-view";
 import type { Sort } from "./queue";
-import { postingUrl } from "./queue";
+import { postingUrl, undoTarget } from "./queue";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import { JobPaste } from "./job-paste";
@@ -594,6 +594,24 @@ export async function queue({ shell, query }: ScreenProps) {
   const hrefs = Object.fromEntries(
     records.map((r) => [str(r.id), shell.href("detail", { ref: detailRef(r) })]),
   );
+  // A job dismissed from its page: Undo is offered while it is still closed.
+  const goneResult =
+    catalogResult.state === "ok" && query.dismissed && shell.submit
+      ? await read(shell, "leads.ui.queue", { ref: query.dismissed.slice(0, 128) })
+      : null;
+  const gone = goneResult ? items(goneResult)[0] : undefined;
+  const goneTo =
+    gone && str(gone.stage_kind) === "terminal"
+      ? undoTarget(gone, query.from ?? "")
+      : null;
+  const dismissed =
+    gone && goneTo
+      ? {
+          item: gone,
+          to: goneTo,
+          href: shell.href("detail", { ref: detailRef(gone) }),
+        }
+      : undefined;
   const names =
     scope.scoped.length > 1
       ? Object.fromEntries(scope.scoped.map((p) => [str(p.id), str(p.name)]))
@@ -662,6 +680,7 @@ export async function queue({ shell, query }: ScreenProps) {
           limited={records.length >= QUEUE_LIMIT}
           nothingYet={nothingYet}
           submit={shell.submit}
+          dismissed={dismissed}
         />
       )}
       {catalogResult.state === "ok" && scope.jobs.length && shell.submit ? (

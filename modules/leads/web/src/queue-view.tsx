@@ -9,6 +9,7 @@ import {
 import type { ShellApi } from "@rheo-stream/web-contract/screen";
 import {
   date,
+  detailRef,
   JOBSEARCH_PRESET_ID,
   row,
   rows,
@@ -19,6 +20,8 @@ import {
 import {
   afterMove,
   age,
+  dismissedHref,
+  DISMISSED_PARAMS,
   fitFor,
   followupFor,
   formatBudget,
@@ -36,7 +39,9 @@ import {
   parsePrefs,
   postingUrl,
   readPrefsText,
+  reopenFor,
   savePrefs,
+  undoFor,
   jobId,
   SORTS,
   sourceLabel,
@@ -287,7 +292,8 @@ export interface Move {
 
 /** The stage select, the open-the-posting link, the optional ID copy and Dismiss:
  * one row of controls for the queue card, the review card and the job detail
- * header alike. ``lead`` goes first in the row (the review card's Promote). */
+ * header alike. ``lead`` goes first in the row (the review card's Promote). A
+ * closed job shows Reopen in the select's place. */
 export function StageActions({
   item,
   onMove,
@@ -306,6 +312,7 @@ export function StageActions({
   const title = str(item.title) || "Untitled opportunity";
   const posting = postingUrl(row(item.fields));
   const target = row(item.dismiss);
+  const reopen = reopenFor(item);
   const next = rows(item.transitions).map(
     (m): Move => ({
       stage_id: str(m.stage_id),
@@ -316,7 +323,18 @@ export function StageActions({
   return (
     <div className={styles.actions}>
       {lead}
-      {stageSelect && onMove && next.length ? (
+      {onMove && reopen ? (
+        <button
+          type="button"
+          className={`${styles.iconButton} ${styles.textButton}`}
+          aria-label={`Reopen ${title} (move to ${reopen.label})`}
+          title={`Reopen: move to ${reopen.label}`}
+          disabled={disabled}
+          onClick={() => onMove(item, reopen)}
+        >
+          Reopen
+        </button>
+      ) : stageSelect && onMove && next.length ? (
         <span className={styles.selectWrap}>
           <select
             className={styles.stageSelect}
@@ -383,6 +401,46 @@ export function StageActions({
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>
         </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** In a dismissed job's place: one line naming it, and Undo. */
+export function UndoNotice({
+  title,
+  href,
+  busy,
+  error,
+  onUndo,
+}: {
+  title: string;
+  href?: string;
+  /** The dismiss or the undo is in flight; Undo waits. */
+  busy: boolean;
+  error?: string;
+  onUndo?: () => void;
+}) {
+  return (
+    <div className={styles.undo}>
+      <p role="status">
+        Dismissed {href ? <a href={href}>{title}</a> : title}.
+      </p>
+      {onUndo ? (
+        <button
+          type="button"
+          className={`${styles.iconButton} ${styles.textButton}`}
+          aria-label={`Undo: reopen ${title}`}
+          disabled={busy}
+          onClick={onUndo}
+        >
+          Undo
+        </button>
+      ) : null}
+      {error ? (
+        <p className={styles.inlineError} role="alert">
+          {error}
+        </p>
       ) : null}
     </div>
   );
@@ -467,6 +525,33 @@ export interface QueueProps {
   /** Shown when the default view has nothing at all. */
   nothingYet: ReactNode;
   submit?: Submit;
+  /** A job just dismissed from its own page, still closed: the queue offers Undo,
+   * a move to ``to``. */
+  dismissed?: { item: Row; to: Move; href: string };
+}
+
+/** A card dismissed in place: the stage an undo moves it back to, and the
+ * revision the dismiss left (unknown while the dismiss is in flight). */
+interface Dismissal {
+  to: Move;
+  /** The closed stage the dismiss moved it to, for the failure text. */
+  closed: string;
+  revision?: unknown;
+  busy: boolean;
+  error?: string;
+}
+
+function undoFailed(outcome: { state: string; code?: string }, closed: string): string {
+  return outcome.state === "refused" && outcome.code === "record_stale"
+    ? "This changed since it was dismissed. Reload to see it."
+    : `Could not undo. Try again, or reopen it from ${closed || "its closed stage"}.`;
+}
+
+/** The page's address without the dismissed-job parameters. */
+function withoutDismissed(href: string): string {
+  const url = new URL(href);
+  for (const name of DISMISSED_PARAMS) url.searchParams.delete(name);
+  return url.href;
 }
 
 /** The saved choices to open a bare queue URL with, or null to stay put. Saved
@@ -511,6 +596,11 @@ export function JobQueue(props: QueueProps) {
     useSyncExternalStore(subscribe, savedText, () => null),
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dismissals, setDismissals] = useState<Record<string, Dismissal>>({});
+  const [banner, setBanner] = useState<{ busy: boolean; error?: string }>({
+    busy: false,
+  });
+  const undoing = useRef(new Set<string>());
   const form = useRef<HTMLFormElement>(null);
   const full = useRef<HTMLInputElement>(null);
   const current: Prefs = {
@@ -521,14 +611,27 @@ export function JobQueue(props: QueueProps) {
   };
 
   useEffect(() => {
+    const here = new URL(window.location.href);
     // A bare queue URL opens the view chosen last time, once a choice exists.
-    if (props.explicit || !form.current || savedText() === null) return;
-    const view = savedView(parsePrefs(savedText()), props);
-    if (!view) return;
-    const url = new URL(form.current.action);
-    for (const [name, value] of Object.entries(view))
-      url.searchParams.set(name, value);
-    window.location.replace(url.href);
+    const view =
+      !props.explicit && form.current && savedText() !== null
+        ? savedView(parsePrefs(savedText()), props)
+        : null;
+    if (view && form.current) {
+      const url = new URL(form.current.action);
+      for (const [name, value] of Object.entries(view))
+        url.searchParams.set(name, value);
+      // A job dismissed from its page keeps its Undo through the redirect.
+      for (const name of DISMISSED_PARAMS) {
+        const value = here.searchParams.get(name);
+        if (value !== null) url.searchParams.set(name, value);
+      }
+      window.location.replace(url.href);
+      return;
+    }
+    // The Undo shows once: a reload or Back does not bring it again.
+    if (DISMISSED_PARAMS.some((name) => here.searchParams.has(name)))
+      window.history.replaceState(window.history.state, "", withoutDismissed(here.href));
     // Runs once: the saved view is applied on arrival, not on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -548,10 +651,17 @@ export function JobQueue(props: QueueProps) {
     const id = str(item.id);
     if (!submit) return;
     const before = items;
+    // A dismiss that can be undone leaves an Undo line where the card was.
+    const undo = undoFor(item, to);
     setErrors((current) =>
       Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)),
     );
-    setItems((current) => afterMove(current, id, to, props.stage));
+    if (undo)
+      setDismissals((current) => ({
+        ...current,
+        [id]: { to: undo, closed: to.label, busy: true },
+      }));
+    else setItems((current) => afterMove(current, id, to, props.stage));
     let outcome;
     try {
       outcome = await submit("leads.opportunity.transition", {
@@ -564,6 +674,13 @@ export function JobQueue(props: QueueProps) {
     }
     if (outcome.state === "ok") {
       const revision = row(outcome.result).revision;
+      if (undo) {
+        setDismissals((current) => ({
+          ...current,
+          [id]: { to: undo, closed: to.label, revision, busy: false },
+        }));
+        return;
+      }
       setItems((current) =>
         current.map((each) =>
           str(each.id) === id && revision !== undefined
@@ -573,14 +690,21 @@ export function JobQueue(props: QueueProps) {
       );
       return;
     }
-    // Put back only this card, where it was, so another move in flight keeps
-    // its own optimistic state.
-    const index = before.findIndex((each) => str(each.id) === id);
-    setItems((current) => {
-      const rest = current.filter((each) => str(each.id) !== id);
-      rest.splice(Math.min(Math.max(index, 0), rest.length), 0, item);
-      return rest;
-    });
+    if (undo) {
+      // The card never left; only its Undo line goes.
+      setDismissals((current) =>
+        Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)),
+      );
+    } else {
+      // Put back only this card, where it was, so another move in flight keeps
+      // its own optimistic state.
+      const index = before.findIndex((each) => str(each.id) === id);
+      setItems((current) => {
+        const rest = current.filter((each) => str(each.id) !== id);
+        rest.splice(Math.min(Math.max(index, 0), rest.length), 0, item);
+        return rest;
+      });
+    }
     setErrors((current) => ({
       ...current,
       [id]:
@@ -590,15 +714,100 @@ export function JobQueue(props: QueueProps) {
     }));
   }
 
+  /** Moves a card dismissed in place back to its open stage; it shows again
+   * where it was, unless the stage filter no longer covers that stage. */
+  async function undoDismiss(item: Row) {
+    const submit = props.submit;
+    const id = str(item.id);
+    const dismissal = dismissals[id];
+    if (!submit || !dismissal || dismissal.busy || undoing.current.has(id)) return;
+    // A second click before the re-render must not send a second move.
+    undoing.current.add(id);
+    setDismissals((current) => ({
+      ...current,
+      [id]: { ...dismissal, busy: true, error: undefined },
+    }));
+    let outcome;
+    try {
+      outcome = await submit("leads.opportunity.transition", {
+        ref: item.ref,
+        revision: dismissal.revision,
+        to_stage_id: dismissal.to.stage_id,
+      });
+    } catch {
+      outcome = { state: "unavailable" as const };
+    }
+    undoing.current.delete(id);
+    if (outcome.state === "ok") {
+      const revision = row(outcome.result).revision;
+      // The dismiss cancelled any pending follow-up; a reopen brings none back.
+      setItems((current) =>
+        (dismissal.to.stage_id === str(item.stage_id)
+          ? current
+          : afterMove(current, id, dismissal.to, props.stage)
+        ).map((each) =>
+          str(each.id) === id ? { ...each, revision, followup: null } : each,
+        ),
+      );
+      setDismissals((current) =>
+        Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)),
+      );
+      return;
+    }
+    const error = undoFailed(outcome, dismissal.closed);
+    setDismissals((current) => ({
+      ...current,
+      [id]: { ...dismissal, busy: false, error },
+    }));
+  }
+
+  /** Reopens the job dismissed from its page; the queue reloads to show it. */
+  async function undoBanner() {
+    const submit = props.submit;
+    const gone = props.dismissed;
+    if (!submit || !gone || banner.busy || undoing.current.has("banner")) return;
+    undoing.current.add("banner");
+    setBanner({ busy: true });
+    let outcome;
+    try {
+      outcome = await submit("leads.opportunity.transition", {
+        ref: gone.item.ref,
+        revision: gone.item.revision,
+        to_stage_id: gone.to.stage_id,
+      });
+    } catch {
+      outcome = { state: "unavailable" as const };
+    }
+    if (outcome.state === "ok") {
+      window.location.replace(withoutDismissed(window.location.href));
+      return;
+    }
+    undoing.current.delete("banner");
+    setBanner({
+      busy: false,
+      error: undoFailed(outcome, str(gone.item.stage_label)),
+    });
+  }
+
+  const shown = items.filter((each) => !dismissals[str(each.id)]);
   const [one, many] = props.noun;
   return (
     <div className={styles.queue}>
       <div className={styles.heading}>
         <h1 className={styles.headingTitle}>Job queue</h1>
         <span className={styles.count} aria-live="polite">
-          {items.length} {items.length === 1 ? one : many}
+          {shown.length} {shown.length === 1 ? one : many}
         </span>
       </div>
+      {props.dismissed ? (
+        <UndoNotice
+          title={str(props.dismissed.item.title) || "Untitled opportunity"}
+          href={props.dismissed.href}
+          busy={banner.busy}
+          error={banner.error}
+          onUndo={props.submit ? undoBanner : undefined}
+        />
+      ) : null}
       <form
         ref={form}
         className={styles.controls}
@@ -694,17 +903,30 @@ export function JobQueue(props: QueueProps) {
         </div>
       ) : (
         <>
-          {items.map((item) => (
-            <Card
-              key={str(item.id)}
-              item={item}
-              href={props.hrefs[str(item.id)] ?? ""}
-              now={props.now}
-              pipeline={props.pipelineNames?.[str(item.pipeline_id)]}
-              error={errors[str(item.id)]}
-              onMove={props.submit ? move : undefined}
-            />
-          ))}
+          {items.map((item) => {
+            const id = str(item.id);
+            const dismissal = dismissals[id];
+            return dismissal ? (
+              <UndoNotice
+                key={id}
+                title={str(item.title) || "Untitled opportunity"}
+                href={props.hrefs[id]}
+                busy={dismissal.busy}
+                error={dismissal.error}
+                onUndo={() => undoDismiss(item)}
+              />
+            ) : (
+              <Card
+                key={id}
+                item={item}
+                href={props.hrefs[id] ?? ""}
+                now={props.now}
+                pipeline={props.pipelineNames?.[str(item.pipeline_id)]}
+                error={errors[id]}
+                onMove={props.submit ? move : undefined}
+              />
+            );
+          })}
           {props.limited ? (
             <p className={styles.footnote}>
               Showing the first {props.items.length}. Narrow the pipeline or
@@ -737,7 +959,7 @@ export function JobHeader({
   const [error, setError] = useState("");
 
   /** Moves the job like a queue card does; the page then shows the new stage,
-   * and a dismissed job returns to the queue. */
+   * and a dismissed job returns to the queue, which offers Undo. */
   async function move(_: Row, to: Move, dismiss = false) {
     if (!submit) return;
     setMoving(true);
@@ -754,7 +976,10 @@ export function JobHeader({
     }
     if (outcome.state === "ok") {
       // Replace: Back from the queue should not reopen a dismissed job.
-      if (dismiss && back) window.location.replace(back);
+      if (dismiss && back)
+        window.location.replace(
+          dismissedHref(back, detailRef(item), str(item.stage_id)),
+        );
       else window.location.reload();
       return;
     }
@@ -832,7 +1057,7 @@ export function JobHeader({
         <FitPill assessment={item.assessment} large />
         {/* Without a stage select (a closed job, or a read-only host) the stage
             still shows, so a dismissed job never looks open. */}
-        {!submit || !rows(item.transitions).length ? (
+        {!submit || !rows(item.transitions).length || reopenFor(item) ? (
           <span
             className={`${styles.badge} ${item.stage_kind === "open" ? styles.stageOpen : styles.stageClosed}`}
           >
