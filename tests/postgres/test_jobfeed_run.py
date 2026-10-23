@@ -1165,6 +1165,119 @@ def test_a_failed_listing_leaves_the_run_untouched(
     quietly_succeeded(c)
 
 
+PROBE_ENV = "RHEO__leads__jobfeed__probe_invitations"
+PROBE_INVITATIONS = {
+    "status": "ok",
+    "invitations": [{"id": "2113000000000000001", "job": {"title": "Fictional"}}],
+}
+
+
+def probe_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records if r.name == "rheo_leads.jobfeed.probe"
+    ]
+
+
+def test_with_the_probe_on_a_run_probes_the_invitations_then_collects(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The help and one invitations listing between the account and the searches,
+    one line each plus the first detail's shape, and the run otherwise as before.
+    Under a prefix, the help is asked for by the listed (prefixed) name."""
+    monkeypatch.setenv(PROBE_ENV, "true")
+    monkeypatch.setenv("RHEO__leads__jobfeed__tool_prefix", "acme__")
+    caplog.set_level(logging.INFO)
+    mcp.tool_prefix = "acme__"
+    mcp.feeds = {"best_match": [[feed_row(1)]]}
+    mcp.script["get_tool_help"] = rpc_result(
+        {"content": [{"type": "text", "text": "action invitations: params limit"}]}
+    )
+    mcp.script["list_freelancer_proposals:invitations"] = tool_result(PROBE_INVITATIONS)
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    assert mcp.names()[2:5] == [
+        "acme__list_accounts",
+        "acme__get_tool_help",
+        "acme__list_freelancer_proposals:invitations",
+    ]
+    assert "acme__find_jobs:get" in mcp.names()
+    help_request = next(
+        r for r in mcp.requests if "get_tool_help" in r.content.decode()
+    )
+    assert json.loads(help_request.content)["params"]["arguments"] == {
+        "tool_name": "acme__list_freelancer_proposals"
+    }
+    lines = probe_lines(caplog)
+    assert lines[0] == (
+        "jobfeed_probe_help tool=acme__list_freelancer_proposals outcome=ok "
+        'text="action invitations: params limit"'
+    )
+    assert lines[1] == (
+        "jobfeed_probe_invitations outcome=ok shape="
+        '{"invitations":{"?items":[{"id":"digits19","job":{"title":"text<32"}}],'
+        '"?len":1},"status":"word:ok"}'
+    )
+    assert lines[2].startswith("jobfeed_probe_detail outcome=ok shape={")
+    assert len(lines) == 3
+    assert "Fictional" not in " ".join(lines)
+    assert last_error(c) is None
+    quietly_succeeded(c)
+
+
+def test_a_failed_probe_leaves_the_run_untouched(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv(PROBE_ENV, "true")
+    caplog.set_level(logging.INFO)
+    mcp.script["get_tool_help"] = lambda r: httpx.Response(500)
+    mcp.script["list_freelancer_proposals:invitations"] = tool_result(
+        {"error": "BAD_PARAMS"}, is_error=True
+    )
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    assert mcp.names()[2:] == [
+        "list_accounts",
+        "get_tool_help",
+        "list_freelancer_proposals:invitations",
+        *DEFAULT_SEARCHES,
+    ]
+    lines = probe_lines(caplog)
+    assert lines[0].startswith("jobfeed_probe_help tool=list_freelancer_proposals ")
+    assert " outcome=unavailable " in lines[0]
+    assert lines[1].startswith("jobfeed_probe_invitations outcome=tool_error")
+    assert lines[2] == "jobfeed_probe_detail outcome=none shape=null"
+    assert last_error(c) is None
+    assert stored(c.owner).authorization_state == "connected"
+    quietly_succeeded(c)
+
+
+def test_with_the_probe_off_no_probe_call_is_sent(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv(PROBE_ENV, raising=False)
+    caplog.set_level(logging.INFO)
+    c = connected_collector(intake, served)
+    run_at(c, clock)
+    assert mcp.names()[2:] == ["list_accounts", *DEFAULT_SEARCHES]
+    assert probe_lines(caplog) == []
+    quietly_succeeded(c)
+
+
 def test_a_token_endpoint_that_turned_private_gets_no_byte(
     intake: Intake,
     served: FakeAuthorizationServer,

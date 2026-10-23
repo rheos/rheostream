@@ -174,13 +174,16 @@ class Rig:
     token: LeaseToken
     session: FakeSession
 
-    def upstream(self, *, deadline: float = DEADLINE) -> Upstream:
+    def upstream(
+        self, *, deadline: float = DEADLINE, keep_first_detail: bool = False
+    ) -> Upstream:
         return Upstream(
             self.session,
             self.token,
             deadline=deadline,
             monotonic=self.clock.monotonic,
             sleep=self.clock.sleep,
+            keep_first_detail=keep_first_detail,
         )
 
     def answer(self, document: object) -> dict[str, object]:
@@ -299,11 +302,14 @@ def real_upstream(
     deadline: float = DEADLINE,
     prefix: str = "",
     policy_prefix: str | None = None,
+    probe: bool = False,
 ) -> Upstream:
     session = McpSession(
         RESOURCE,
         AccessToken(ACCESS),
-        read_only_policy(prefix if policy_prefix is None else policy_prefix),
+        read_only_policy(
+            prefix if policy_prefix is None else policy_prefix, probe=probe
+        ),
         deadline=deadline,
         transport=httpx.MockTransport(mcp.handle),
         resolver=lambda host: [PUBLIC],
@@ -1055,3 +1061,126 @@ def test_a_rate_limited_listing_never_waits_past_its_budget(rig: Rig) -> None:
         started = rig.clock.now
         upstream.list_tools()
     assert rig.clock.now - started == pytest.approx(TOOL_LIST_SECONDS)
+
+
+# --- the opt-in invitations probe's calls -------------------------------------------
+
+
+def test_the_probe_policy_adds_only_the_help_and_the_invitations_listing() -> None:
+    assert dict(read_only_policy("acme__", probe=True)) == {
+        "acme__list_accounts": None,
+        "acme__find_jobs": frozenset({"smart_search", "search", "get"}),
+        "acme__get_tool_help": None,
+        "acme__list_freelancer_proposals": frozenset({"invitations"}),
+    }
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda u: u.tool_help("acme__list_freelancer_proposals"),
+        lambda u: u.invitations(ORG, {}),
+    ],
+    ids=["help", "invitations"],
+)
+def test_without_the_probe_its_calls_are_refused_before_any_send(
+    rig: Rig, call: Callable[[Any], object]
+) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        refused = raises(lambda: call(upstream), ToolRefused)
+    assert str(refused) == "tool_not_allowed"
+    assert len(mcp.requests) == 2
+
+
+@pytest.mark.parametrize("action", ["list", "get", "get_room", "withdraw"])
+def test_the_probe_policy_refuses_every_other_proposals_action(
+    rig: Rig, action: str
+) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__", probe=True) as upstream:
+        refused = raises(
+            lambda: upstream._session.call_tool(
+                "acme__list_freelancer_proposals",
+                {"action": action, "org_uid": ORG, "params": {}},
+            ),
+            ToolRefused,
+        )
+    assert str(refused) == "action_not_allowed"
+    assert len(mcp.requests) == 2
+
+
+def test_the_probe_calls_put_the_exact_arguments_on_the_wire(rig: Rig) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__", probe=True) as upstream:
+        upstream.tool_help("acme__list_freelancer_proposals")
+        upstream.invitations(ORG, {"limit": 10})
+    assert mcp.methods()[2:] == [
+        ("tools/call", "acme__get_tool_help", None),
+        ("tools/call", "acme__list_freelancer_proposals", "invitations"),
+    ]
+    assert json.loads(mcp.requests[2].content)["params"]["arguments"] == {
+        "tool_name": "acme__list_freelancer_proposals"
+    }
+    assert json.loads(mcp.requests[3].content)["params"]["arguments"] == {
+        "action": "invitations",
+        "org_uid": ORG,
+        "params": {"limit": 10},
+    }
+
+
+def test_the_probe_calls_are_paced_with_the_searches(rig: Rig) -> None:
+    with rig.upstream() as upstream:
+        upstream.tool_help("list_freelancer_proposals")
+        upstream.invitations(ORG, {})
+        upstream.find_jobs("search", ORG, {})
+    starts = [at for at, name, _ in rig.session.starts if name != "list_accounts"]
+    gaps = [later - earlier for earlier, later in zip(starts, starts[1:], strict=False)]
+    assert len(starts) == 3
+    assert all(gap >= FIND_JOBS_SPACING - EPSILON for gap in gaps), gaps
+
+
+def test_the_help_result_is_returned_raw_and_a_bad_listing_is_protocol(
+    rig: Rig,
+) -> None:
+    prose: dict[str, object] = {
+        "content": [{"type": "text", "text": "Lists proposals."}]
+    }
+    rig.session.script = lambda name, args: (
+        prose if name == "get_tool_help" else {"content": []}
+    )
+    with rig.upstream() as upstream:
+        assert upstream.tool_help("list_freelancer_proposals") == prose
+        failure = raises(lambda: upstream.invitations(ORG, {}), UpstreamFailure)
+    assert_content_free(failure, "protocol")
+
+
+def test_a_sensitive_rate_limit_on_the_listing_is_retried_once(rig: Rig) -> None:
+    answers: list[object] = [sensitive(), {"status": "ok", "invitations": []}]
+
+    def script(name: str, args: Mapping[str, object]) -> dict[str, object]:
+        answer = answers.pop(0)
+        if isinstance(answer, McpFailure):
+            raise answer
+        return rig.answer(answer)
+
+    rig.session.script = script
+    with rig.upstream() as upstream:
+        assert upstream.invitations(ORG, {}) == {"status": "ok", "invitations": []}
+    assert rig.session.attempts("list_freelancer_proposals") == 2
+
+
+def test_only_the_first_detail_is_kept_and_only_when_asked(rig: Rig) -> None:
+    documents = iter(
+        [{"status": "ok", "n": 1}, {"status": "ok", "n": 2}, {"status": "ok", "n": 3}]
+    )
+    rig.session.script = lambda name, args: rig.answer(next(documents))
+    with rig.upstream(keep_first_detail=True) as upstream:
+        upstream.find_jobs("search", ORG, {})
+        upstream.find_jobs("get", ORG, {"id": "1"})
+        upstream.find_jobs("get", ORG, {"id": "2"})
+    assert upstream.first_detail == {"status": "ok", "n": 2}
+    rig.session.script = lambda name, args: rig.answer({"status": "ok"})
+    with rig.upstream() as plain:
+        plain.find_jobs("get", ORG, {"id": "1"})
+    assert plain.first_detail is None

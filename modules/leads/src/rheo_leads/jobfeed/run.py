@@ -26,7 +26,8 @@ Then the MCP session: ``initialize``, the ``initialized`` notification and
 deployment setting ``leads.jobfeed.list_tools`` on, a best-effort ``tools/list``
 comes before ``list_accounts`` and its pattern-checked names go to one INFO line
 (:data:`TOOLS_LOG`); whatever happens to it, the run goes on as if it had not been
-asked. The fresh
+asked. With ``leads.jobfeed.probe_invitations`` on, the account's invitations are
+probed the same way once it is selected (:mod:`rheo_leads.jobfeed.probe`). The fresh
 account choices are stored before any decision; the account is selected without
 any fallback (:func:`select_organization`), else ``account_selection_required``
 ends the run with no ``find_jobs`` call. An MCP 401 or 403 is terminal, the stored
@@ -96,6 +97,7 @@ from rheo_leads.jobfeed.presets import (
     PresetInvalid,
     configured_presets,
 )
+from rheo_leads.jobfeed.probe import log_detail_shape, probe_invitations
 from rheo_leads.jobfeed.state import SCHEDULE_NAME as SCHEDULE_NAME
 from rheo_leads.jobfeed.state import (
     JobfeedConnection,
@@ -136,6 +138,7 @@ JOB_HOSTS_KEY: Final = "leads.jobfeed.job_hosts"
 TOOL_PREFIX_KEY: Final = "leads.jobfeed.tool_prefix"
 PRESETS_KEY: Final = "leads.jobfeed.presets"
 LIST_TOOLS_KEY: Final = "leads.jobfeed.list_tools"
+PROBE_INVITATIONS_KEY: Final = "leads.jobfeed.probe_invitations"
 TOOLS_LOG: Final = "jobfeed_tools outcome=%s pages=%d count=%d skipped=%d tools=%s"
 INTERNAL_ERROR: Final = "internal_error"
 INTERNAL_ERROR_LOG: Final = "jobfeed_internal_error %s"
@@ -222,6 +225,7 @@ class _Run:
     deadline: float = 0.0
     tool_prefix: str = ""
     list_tools: bool = False
+    probe_invitations: bool = False
     presets: tuple[Preset, ...] = DEFAULT_PRESETS
 
     def auth(self) -> ClientAuth:
@@ -323,7 +327,7 @@ def session_phase(
     session = McpSession(
         run.connection.resource_url,
         access,
-        read_only_policy(run.tool_prefix),
+        read_only_policy(run.tool_prefix, probe=run.probe_invitations),
         deadline=run.deadline,
         transport=deps.transport,
         resolver=deps.resolver,
@@ -340,12 +344,17 @@ def session_phase(
             monotonic=deps.clock,
             sleep=deps.sleep,
             tool_prefix=run.tool_prefix,
+            keep_first_detail=run.probe_invitations,
         ) as upstream:
             if run.list_tools:
                 _log_tools(upstream.list_tools())
             selection = _select(run, upstream.list_accounts())
             if isinstance(selection, str):
+                if run.probe_invitations:
+                    probe_invitations(upstream, selection, run.tool_prefix)
                 collected = collect_phase(upstream, run, selection)
+                if run.probe_invitations:
+                    log_detail_shape(upstream.first_detail)
     except (UpstreamFailure, RunCut) as error:
         stopped = error
     # Every write happens outside the except block, so nothing upstream is
@@ -558,6 +567,7 @@ def _collect(
         return
     run.tool_prefix = tool_prefix
     run.list_tools = settings.get_bool(LIST_TOOLS_KEY)
+    run.probe_invitations = settings.get_bool(PROBE_INVITATIONS_KEY)
     try:
         run.presets = configured_presets(presets_text)
     except PresetInvalid:

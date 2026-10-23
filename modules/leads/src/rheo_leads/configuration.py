@@ -72,6 +72,16 @@ JOBFEED_SETTINGS: Final = (
         explicit_per_workspace=False,
         default=False,
     ),
+    # Temporary: when on, each run also reads the invitations tool's help and one
+    # invitations page and logs their shape, never a value. Best effort.
+    KeySpec(
+        key="leads.jobfeed.probe_invitations",
+        type=ValueType.BOOL,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=False,
+    ),
     # The searches a run issues, as the JSON array ``validate_presets`` accepts. Empty
     # (the default) runs the package defaults. The owner sets it per workspace.
     KeySpec(

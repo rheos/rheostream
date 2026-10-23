@@ -676,9 +676,9 @@ owner connects. Owner-facing behaviour is summarized in the
 
 ### Settings
 
-Eight are deployment settings. Set them in the environment of both `core` (connect,
+Nine are deployment settings. Set them in the environment of both `core` (connect,
 reconnect, the callback) and `worker` (collection); a Coolify deployment attaches its
-`.env` to every service. Values below are placeholders. The ninth,
+`.env` to every service. Values below are placeholders. The tenth,
 `leads.jobfeed.presets`, is a workspace setting an owner writes through
 `core.settings.set`.
 
@@ -691,6 +691,7 @@ RHEO__leads__jobfeed__resource_url=https://mcp.example.com/mcp
 RHEO__leads__jobfeed__job_hosts=jobs.example.com
 RHEO__leads__jobfeed__tool_prefix=acme__
 RHEO__leads__jobfeed__list_tools=false
+RHEO__leads__jobfeed__probe_invitations=false
 ```
 
 - `connectors.oauth_client.enabled` (default `false`) is the operator switch. While it
@@ -729,6 +730,16 @@ RHEO__leads__jobfeed__list_tools=false
   waits inside that time before collecting), so against a slow provider the last
   detail reads of a full run can be cut for the deadline. Turn it on to see what a
   provider offers, or to match `tool_prefix` to its names, then turn it off.
+- `leads.jobfeed.probe_invitations` (default `false`), temporary. When on, a run also
+  sends, after the account is selected and before the searches, a `get_tool_help` for
+  the invitations tool and one invitations listing (`list_freelancer_proposals`,
+  action `invitations`, empty `params`), and keeps its first detail read. Three INFO
+  lines follow: `jobfeed_probe_help` (the provider's help text, printable ASCII, at
+  most 8000 characters), `jobfeed_probe_invitations` and `jobfeed_probe_detail`
+  (each a shape: keys, list lengths and value kinds such as `digits19` or
+  `posting_id`, never a value). Only while it is on does the read-only policy allow
+  those two tools, and only that one action. Best effort: a failure is logged by its
+  code and the run collects as usual. It costs two paced calls, about 11 seconds.
 - `leads.jobfeed.presets` (workspace scope, default empty) is a JSON array of the
   searches a run issues, replacing the three defaults (one Best Matches page, five
   Most Recent pages, one over-cap refresh page) for that workspace. Each preset has a
