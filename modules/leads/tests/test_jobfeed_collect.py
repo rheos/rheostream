@@ -20,7 +20,9 @@ from rheo_leads.jobfeed.collect import (
     CollectResult,
     DetailResult,
     Sighting,
+    collect_invitations,
     collect_presets,
+    invitation_reason,
     merge_sightings,
     read_details,
 )
@@ -92,7 +94,13 @@ class FakeSession:
     def call_tool(
         self, name: str, arguments: Mapping[str, object]
     ) -> dict[str, object]:
-        assert name == "find_jobs"
+        # The invitations listing answers through ``search`` as action
+        # "invitations"; every other call is find_jobs.
+        assert name == (
+            "list_freelancer_proposals"
+            if arguments["action"] == "invitations"
+            else "find_jobs"
+        )
         assert arguments["org_uid"] == ORG
         action = arguments["action"]
         params = arguments["params"]
@@ -729,3 +737,143 @@ def test_a_merged_sighting_keeps_a_feed_id_from_any_row() -> None:
     r = run(details_answer())
     r.details([one])
     assert r.session.calls == [("get", {"id": "feed-1901"})]
+
+
+# --- invitations ------------------------------------------------------------------
+
+
+def invite_row(number: int, **job_changes: object) -> dict[str, object]:
+    job_posting: dict[str, object] = {
+        "id": str(number),
+        "content": {"title": f"Synthetic invited build {number}"},
+        "url": f"https://www.example.com/jobs/~02{number}?utm_source=invite",
+    }
+    job_posting.update(job_changes)
+    return {
+        "id": f"9{number}",
+        "client": {"user": {"name": "Pat E."}},
+        "invitationLetter": "<untrusted_participant_content>x</untrusted_participant_content>",  # noqa: E501
+        "jobPosting": job_posting,
+    }
+
+
+def invitations_page(*rows: object, **changes: object) -> dict[str, object]:
+    document: dict[str, object] = {
+        "status": "ok",
+        "data": {"invitations": list(rows), "totalCount": len(rows)},
+        "hasMore": False,
+    }
+    document.update(changes)
+    return document
+
+
+def listing(answer: object) -> Search:
+    def search(action: str, params: dict[str, Any]) -> object:
+        assert action == "invitations"
+        assert params == {"limit": 10}
+        return answer
+
+    return search
+
+
+def invites(r: Run) -> Any:
+    return collect_invitations(r.upstream, ORG, HOSTS, clock=r.clock.wall)
+
+
+def test_each_listed_invitation_is_an_invited_posting() -> None:
+    r = run(listing(invitations_page(invite_row(2001), invite_row(2002))))
+    result = invites(r)
+    assert r.session.actions() == ["invitations"]
+    assert [p.posting_id for p in result.rows] == ["~022001", "~022002"]
+    assert all(p.invited and p.purpose == "discover" for p in result.rows)
+    assert [p.feed_id for p in result.rows] == ["2001", "2002"]
+    assert (result.invalid_rows, result.failure, result.cut) == (0, None, False)
+
+
+def test_an_invalid_invitation_row_is_counted_and_skipped() -> None:
+    bad = invite_row(2003, url="https://elsewhere.example.org/jobs/~022003")
+    r = run(listing(invitations_page(invite_row(2004), bad, "nope")))
+    result = invites(r)
+    assert [p.posting_id for p in result.rows] == ["~022004"]
+    assert result.invalid_rows == 2
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"status": "error", "data": {"invitations": []}},
+        {"status": "ok", "data": {"invitations": "nope"}},
+        {"status": "ok"},
+        invitations_page(*[invite_row(2100 + n) for n in range(11)]),
+    ],
+)
+def test_a_malformed_listing_is_a_protocol_failure_and_lists_nothing(
+    answer: object,
+) -> None:
+    result = invites(run(listing(answer)))
+    assert result.rows == ()
+    assert result.failure is not None and result.failure.code == "protocol"
+    assert invitation_reason(result.failure) == "invitations:protocol"
+
+
+def test_a_failed_listing_is_returned_not_raised() -> None:
+    refused = McpFailure("tool_error", tool_code="PERMISSION")
+    result = invites(run(listing(refused)))
+    assert result.rows == ()
+    assert result.failure is not None
+    assert invitation_reason(result.failure) == "invitations:tool_error:PERMISSION"
+
+
+def test_a_refused_credential_on_the_listing_is_raised() -> None:
+    r = run(listing(McpFailure("unauthorized")))
+    with pytest.raises(UpstreamFailure) as caught:
+        invites(r)
+    assert caught.value.terminal
+
+
+def test_a_listing_too_near_the_deadline_is_cut_not_sent() -> None:
+    r = run(listing(invitations_page()), deadline=START + 1.0)
+    result = invites(r)
+    assert result.cut and r.session.calls == []
+
+
+def test_an_invited_posting_keeps_its_flag_when_merged_with_a_feed_row() -> None:
+    feed = posting(2201, ordinal=0, at=30, proposal_count=4)
+    invite = invites(run(listing(invitations_page(invite_row(2201))))).rows[0]
+    (merged,) = merge_sightings([invite, feed])
+    assert merged.posting.invited
+    # The newer feed row supplies the competition fields.
+    assert merged.posting.proposal_count == 4
+
+
+def test_an_invited_posting_is_read_whatever_its_competition() -> None:
+    r = run(details_answer())
+    given = sightings(
+        replace(posting(2301, ordinal=0, at=0, applied=True), invited=True),
+        replace(posting(2302, ordinal=0, at=0, proposals_tier="50+"), invited=True),
+        replace(
+            posting(2303, ordinal=2, at=0, purpose="refresh_only", proposal_count=80),
+            invited=True,
+        ),
+    )
+    result = r.details(given)
+    assert [params["id"] for _, params in r.session.calls] == ["2301", "2302", "2303"]
+    assert all(s.detail_ok and s.posting.invited for s in result.sightings)
+
+
+def test_applied_stays_unknown_when_only_invitations_were_seen() -> None:
+    invite = invites(run(listing(invitations_page(invite_row(2401))))).rows[0]
+    (alone,) = merge_sightings([invite])
+    assert alone.posting.applied is None
+    applied = posting(2401, ordinal=0, at=30, applied=True)
+    (merged,) = merge_sightings([invite, applied])
+    assert merged.posting.applied is True
+    not_applied = posting(2401, ordinal=0, at=30)
+    (merged,) = merge_sightings([invite, not_applied])
+    assert merged.posting.applied is False
+
+
+def test_a_listing_with_more_pages_says_so() -> None:
+    page_one = invitations_page(invite_row(2501), hasMore=True)
+    assert invites(run(listing(page_one))).more
+    assert not invites(run(listing(invitations_page(invite_row(2502))))).more

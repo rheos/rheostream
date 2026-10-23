@@ -1,5 +1,5 @@
-"""Version-twelve intake, pipeline, job feed, job scoring, review, proposal and pricing
-snapshot; restore preserves identities.
+"""Version-thirteen intake, pipeline, job feed, job scoring, review, proposal and
+pricing snapshot; restore preserves identities.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. The job feed connection is exported
@@ -271,13 +271,15 @@ def import_records(
         intake_connection=1,
         connection_health=1,
         pipeline_preset=2,
-        preset_version=2,
-        preset_stage=16,
-        preset_transition=35,
+        # Job search has versions 1 and 2 (0018 added ``invited``); its stages,
+        # transitions, fields, rubric and template are seeded once per version.
+        preset_version=3,
+        preset_stage=23,
+        preset_transition=47,
         preset_requirement=0,
-        preset_field=16,
-        preset_rubric=2,
-        preset_template=2,
+        preset_field=33,
+        preset_rubric=3,
+        preset_template=3,
     )
     if counts != expected:
         raise OperationRefused(

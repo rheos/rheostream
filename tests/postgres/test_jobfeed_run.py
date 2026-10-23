@@ -28,6 +28,7 @@ from harness.jobfeed import (
     CLIENT_SECRET,
     FEED_DESCRIPTION,
     FEED_SNIPPET,
+    INVITATION_LETTER,
     ISSUER,
     ORGANIZATION,
     REGISTRATION_TOKEN,
@@ -54,6 +55,8 @@ from harness.jobfeed import (
     drain,
     feed_row,
     grant_type,
+    invitation_row,
+    invitations_page,
     invoke,
     issued,
     jobsearch_pipeline,
@@ -1023,7 +1026,7 @@ def test_a_tool_prefix_sends_the_prefixed_names_and_the_run_succeeds(
     names = tool_names(mcp)
     assert names[0] == "acme__list_accounts"
     assert names.count("acme__list_accounts") == 1
-    assert set(names[1:]) == {"acme__find_jobs"}
+    assert set(names[1:]) == {"acme__list_freelancer_proposals", "acme__find_jobs"}
     assert last_error(c) is None
     quietly_succeeded(c)
 
@@ -1100,7 +1103,7 @@ def test_with_listing_on_a_run_lists_the_tools_then_collects_as_before(
         "notifications/initialized",
         "tools/list",
         "list_accounts",
-        *DEFAULT_SEARCHES,
+        *COLLECTION,
     ]
     assert not set(mcp.names()) & set(WRITE_TOOLS)
     (line,) = tools_lines(caplog)
@@ -1156,7 +1159,7 @@ def test_a_failed_listing_leaves_the_run_untouched(
     mcp.script["tools/list"] = answer
     c = connected_collector(intake, served)
     run_at(c, clock)
-    assert mcp.names()[3:] == ["list_accounts", *DEFAULT_SEARCHES]
+    assert mcp.names()[3:] == ["list_accounts", *COLLECTION]
     (line,) = tools_lines(caplog)
     assert line.startswith(f"jobfeed_tools outcome={outcome} ")
     assert last_error(c) is None
@@ -1757,6 +1760,10 @@ DEFAULT_SEARCHES = [
     "find_jobs:search",
 ]
 """An empty feed: one page per default search, none claiming more."""
+INVITATIONS = "list_freelancer_proposals:invitations"
+COLLECTION = [INVITATIONS, *DEFAULT_SEARCHES]
+"""What a run collects with no invitations and an empty feed: the listing, then
+one page per default search."""
 
 
 def find_jobs_arguments(mcp: FakeMcpServer) -> list[dict[str, Any]]:
@@ -1834,7 +1841,7 @@ def test_the_account_is_selected_without_fallback_after_storing_the_choices(
         assert mcp.names() == SET_UP
         no_collection(mcp)
     else:
-        assert mcp.names() == SET_UP + DEFAULT_SEARCHES
+        assert mcp.names() == SET_UP + COLLECTION
         assert {args["org_uid"] for args in find_jobs_arguments(mcp)} == {selected}
     after = stored(c.owner)
     assert after.authorization_state == "connected"
@@ -1887,7 +1894,7 @@ def test_a_selection_after_a_stop_runs_from_the_end_of_the_claim_window(
     assert after.organization_id == OTHER
     assert last_error(c) is None
     # The first run stopped before collecting; the second collects as the choice.
-    assert mcp.names() == SET_UP + SET_UP + DEFAULT_SEARCHES
+    assert mcp.names() == SET_UP + SET_UP + COLLECTION
     assert {args["org_uid"] for args in find_jobs_arguments(mcp)} == {OTHER}
 
 
@@ -2211,6 +2218,7 @@ ALLOWED_CALLS = {
     ("initialize", None, None),
     ("notifications/initialized", None, None),
     ("tools/call", "list_accounts", None),
+    ("tools/call", "list_freelancer_proposals", "invitations"),
     ("tools/call", "find_jobs", "smart_search"),
     ("tools/call", "find_jobs", "search"),
     ("tools/call", "find_jobs", "get"),
@@ -3033,3 +3041,159 @@ def test_an_invalid_presets_setting_makes_no_request_and_records_it(
     assert after.authorization_state == "connected"
     assert after.run_claimed_at is None
     quietly_succeeded(c)
+
+
+# --- invitations (#458) -------------------------------------------------------------
+
+
+def test_a_listed_invitation_becomes_an_invited_opportunity(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """The listing comes after the account and before the searches. An invited
+    job is read first and delivered whatever its competition, flagged invited;
+    neither the client's name nor the letter is delivered."""
+    c = connected_collector(intake, served)
+    mcp.invitations = [invitation_row(801)]
+    mcp.feeds = {"best_match": [[feed_row(802), feed_row(801, proposals=70)]]}
+    collected(c, clock)
+    names = mcp.names()
+    assert names.index("list_accounts") < names.index(INVITATIONS)
+    assert names.index(INVITATIONS) < names.index("find_jobs:smart_search")
+    assert names.count(INVITATIONS) == 1
+    assert gets(mcp) == ["801", "802"]
+    assert len(opportunities(intake, "~02801")) == 1
+    assert states(intake, "~02801")["ext.jobsearch.invited"] == "true"
+    assert len(opportunities(intake, "~02802")) == 1
+    assert "ext.jobsearch.invited" not in states(intake, "~02802")
+    assert counts(c)["filtered"] == 0
+    delivered = json.dumps(bodies(c))
+    assert INVITATION_LETTER not in delivered and "Pat E." not in delivered
+    assert last_error(c) is None
+    quietly_succeeded(c)
+
+
+def test_a_tracked_job_that_is_later_invited_is_refreshed_as_invited(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.feeds = {"best_match": [[feed_row(811)]]}
+    collected(c, clock)
+    assert "ext.jobsearch.invited" not in states(intake, "~02811")
+    mcp.feeds = {}
+    mcp.invitations = [invitation_row(811)]
+    collected(c, clock, hours=2)
+    assert len(opportunities(intake, "~02811")) == 1
+    assert states(intake, "~02811")["ext.jobsearch.invited"] == "true"
+    assert counts(c)["refreshed"] == 1
+    # Seen again without the invitation, the flag stays.
+    mcp.invitations = []
+    mcp.feeds = {"best_match": [[feed_row(811, tier="10 to 15")]]}
+    collected(c, clock, hours=4)
+    assert states(intake, "~02811")["ext.jobsearch.invited"] == "true"
+    quietly_succeeded(c, runs=3)
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        (lambda r: httpx.Response(503), "invitations:unavailable"),
+        (
+            tool_result({"error": "x"}, is_error=True),
+            "invitations:tool_error",
+        ),
+        (tool_result({"status": "ok", "data": {}}), "invitations:protocol"),
+    ],
+)
+def test_a_failed_listing_never_stops_collection(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    answer: Responder,
+    reason: str,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.script[INVITATIONS] = answer
+    mcp.feeds = {"best_match": [[feed_row(821)]]}
+    collected(c, clock)
+    assert len(opportunities(intake, "~02821")) == 1
+    (run,) = runs(c)
+    assert run["outcome"] == "partial"
+    assert [code.split(":", 2)[:2] for code in run["read_failures"]] == [
+        reason.split(":")
+    ]
+    assert last_error(c) == "collection_partial"
+    stored_after = stored(c.owner)
+    assert stored_after.consecutive_failures == 0 and stored_after.not_before is None
+    quietly_succeeded(c)
+
+
+def test_an_invitation_is_delivered_even_when_every_search_failed(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.invitations = [invitation_row(831)]
+    for name in ("find_jobs:smart_search", "find_jobs:search"):
+        mcp.script[name] = lambda r: httpx.Response(503)
+    collected(c, clock)
+    assert len(opportunities(intake, "~02831")) == 1
+    assert states(intake, "~02831")["ext.jobsearch.invited"] == "true"
+    (run,) = runs(c)
+    assert run["outcome"] == "partial"
+    # The searches' failure is kept, though the invitation kept the run going.
+    assert run["read_failures"] == {"searches:unavailable": 3}
+    quietly_succeeded(c)
+
+
+def test_malformed_search_pages_are_kept_when_an_invitation_is_delivered(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.invitations = [invitation_row(851)]
+    for name in ("find_jobs:smart_search", "find_jobs:search"):
+        mcp.script[name] = tool_result({"status": "error"})
+    collected(c, clock)
+    assert len(opportunities(intake, "~02851")) == 1
+    assert runs(c)[0]["read_failures"] == {"searches:protocol": 3}
+    quietly_succeeded(c)
+
+
+def test_more_invitations_than_one_page_is_kept_in_the_history(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.script[INVITATIONS] = tool_result(
+        {**invitations_page(invitation_row(841)), "hasMore": True}
+    )
+    collected(c, clock)
+    assert len(opportunities(intake, "~02841")) == 1
+    assert runs(c)[0]["read_failures"] == {"invitations:more": 1}
+    quietly_succeeded(c)
+
+
+def test_a_refused_credential_on_the_listing_is_terminal(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.script[INVITATIONS] = lambda r: httpx.Response(401)
+    run_at(c, clock)
+    assert "find_jobs:smart_search" not in mcp.names()
+    assert stored(c.owner).authorization_state == "authorization_required"

@@ -31,7 +31,7 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0009_jobfeed_collector"
-HEAD = "0017_proposal_separate_answers"
+HEAD = "0018_invited_jobs"
 NEW_TABLES = {
     "jobfeed_connection",
     "jobfeed_authorization",
@@ -56,6 +56,18 @@ PROPOSAL_TABLES = {
     # 0016_jobfeed_runs
     "jobfeed_run",
 }
+
+
+PRESET_VERSION_TABLES = {
+    "preset_version",
+    "preset_stage",
+    "preset_transition",
+    "preset_requirement",
+    "preset_field",
+    "preset_rubric",
+    "preset_template",
+}
+"""The tables 0018 adds the Job search preset's version 2 to."""
 
 
 def fingerprint(connection: Connection, schema: str = "leads") -> dict[str, Any]:
@@ -168,6 +180,7 @@ def test_populated_0008_upgrades_additively_to_the_fresh_schema(
         undone = rewind_leads(uow.connection, "0008_attach_by_field")
         assert undone == (
             HEAD,
+            "0017_proposal_separate_answers",
             "0016_jobfeed_runs",
             "0015_model_calls",
             "0014_job_promotion",
@@ -205,7 +218,14 @@ def test_populated_0008_upgrades_additively_to_the_fresh_schema(
         after = table_rows(uow.connection)
         upgraded = fingerprint(uow.connection)
         assert recorded_revisions(uow.connection, "leads") == {HEAD}
-    assert {name: after[name] for name in before} == before
+    # 0018 adds the Job search preset's version 2 (and moves no opportunity of
+    # this workspace, none being a job); every other row is as it was.
+    added = PRESET_VERSION_TABLES | {"pipeline_preset"}
+    assert {name: after[name] for name in before if name not in added} == {
+        name: rows for name, rows in before.items() if name not in added
+    }
+    for name in PRESET_VERSION_TABLES:
+        assert set(before[name]) <= set(after[name]), name
     assert set(after) - set(before) == NEW_TABLES | SCORING_TABLES | PROPOSAL_TABLES
     assert all(
         after[name] == [] for name in NEW_TABLES | SCORING_TABLES | PROPOSAL_TABLES

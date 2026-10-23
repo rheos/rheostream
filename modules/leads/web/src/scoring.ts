@@ -51,7 +51,11 @@ const READ_FAILURES: Record<string, string> = {
   tool_error: "refused by the job service",
   endpoint_misconfigured: "wrong address",
 };
+const INVITATIONS = "invitations:";
 export function readFailureLabel(code: string): string {
+  if (code.startsWith(INVITATIONS)) {
+    return `invitations not listed: ${readFailureLabel(code.slice(INVITATIONS.length))}`;
+  }
   const [kind, detail] = code.split(":", 2);
   const known = READ_FAILURES[kind ?? ""] ?? code.replaceAll("_", " ");
   return kind === "tool_error" && detail ? `${known} (${detail})` : known;

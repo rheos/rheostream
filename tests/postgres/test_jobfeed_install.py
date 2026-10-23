@@ -37,6 +37,7 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_leads import pipeline_common as h
 from rheo_leads.jobfeed import PRODUCTION, Dependencies, dependencies, use_dependencies
 from rheo_leads.jobfeed.install import (
+    MAPPING_VERSION,
     RuleTarget,
     check_mapping_targets,
     install_connection,
@@ -70,6 +71,7 @@ JOBSEARCH = (
     "client_reviews",
     "client_hire_rate",
     "applied",
+    "invited",
 )
 INSTALLED = (
     t.funnel,
@@ -179,7 +181,8 @@ def test_install_writes_two_ordered_rules_and_refuses_a_second(
     assert row["priority"] == 100
     assert row["subject_authenticated"] is False and row["email_verified"] is False
     assert row["source_namespace"] == f"urn:rheo:connection:{connection}"
-    assert row["mapping_version"] == 1 and row["campaign_id"] is None
+    assert row["mapping_version"] == MAPPING_VERSION == 2
+    assert row["campaign_id"] is None
     assert row["signing_secret_ref"] is None
     (funnel,) = rows(i, select(t.funnel).where(t.funnel.c.id == row["funnel_id"]))
     assert funnel["name"] == "Job feed"
@@ -190,7 +193,7 @@ def test_install_writes_two_ordered_rules_and_refuses_a_second(
         ),
     ) == [{"connection_id": connection}]
     mapping = (t.field_mapping.c.id == row["mapping_id"]) & (
-        t.field_mapping.c.version == 1
+        t.field_mapping.c.version == MAPPING_VERSION
     )
     assert [
         (m["source_kind"], m["state"])
@@ -204,7 +207,7 @@ def test_install_writes_two_ordered_rules_and_refuses_a_second(
     )
     assert identity == {
         "mapping_id": row["mapping_id"],
-        "version": 1,
+        "version": MAPPING_VERSION,
         "event_id_path": None,
         "occurred_at_path": "/observed_at",
         "subject_id_path": None,
@@ -574,6 +577,7 @@ def test_collected_posting_creates_no_party(collector: Collector) -> None:
         "client_reviews": 7,
         "client_hire_rate": "0.5",
         "applied": "false",
+        "invited": "true",
     }
     parties = party_count(i)
     accepted = deliver(collector.poll, i, body, "posting-~021234")

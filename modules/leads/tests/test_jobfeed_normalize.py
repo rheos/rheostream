@@ -1,6 +1,7 @@
 """Job feed normalization over synthetic feed rows: no Postgres, no network."""
 
 import importlib.util
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +21,7 @@ from rheo_leads.jobfeed.normalize import (
     POSTING_ID_PATTERN,
     NormalizedPosting,
     apply_detail,
+    normalize_invitation,
     normalize_row,
     parse_number,
 )
@@ -67,22 +69,28 @@ def detail(**record: object) -> dict[str, object]:
     }
 
 
-def preset_kinds() -> dict[str, dict[str, Any]]:
-    """The Job search preset's field kinds, read from its frozen seed migration."""
-    path = (
-        Path(rheo_leads.__file__).parent
-        / "migrations"
-        / "versions"
-        / "0007_jobsearch_preset.py"
-    )
-    spec = importlib.util.spec_from_file_location("jobsearch_preset_seed", path)
+def _migration(name: str) -> ModuleType:
+    path = Path(rheo_leads.__file__).parent / "migrations" / "versions" / name
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec is not None and spec.loader is not None
     module: ModuleType = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return {
+    return module
+
+
+def preset_kinds() -> dict[str, dict[str, Any]]:
+    """The Job search preset's field kinds, read from its frozen migrations: the
+    seed, and the boolean ``invited`` that 0018 adds."""
+    kinds: dict[str, dict[str, Any]] = {
         name: {"type": kind, "enum_values": list(values)}
-        for name, kind, values in module.FIELDS
+        for name, kind, values in _migration("0007_jobsearch_preset.py").FIELDS
     }
+    added = _migration("0018_invited_jobs.py").FIELD
+    kinds[added.removeprefix(JOBSEARCH_TARGET_PREFIX)] = {
+        "type": "boolean",
+        "enum_values": [],
+    }
+    return kinds
 
 
 # --- URL and posting id --------------------------------------------------------
@@ -413,6 +421,7 @@ def test_parse_number(value: object, expected: Decimal | None) -> None:
 
 
 def full_posting(flag: bool) -> NormalizedPosting:
+    """Every field carried; ``invited`` is delivered only when true, so it is."""
     base = posting(
         proposal_count=None if flag else 12,
         proposals_tier="10 to 15",
@@ -425,7 +434,8 @@ def full_posting(flag: bool) -> NormalizedPosting:
             "total_reviews": 8,
         },
     )
-    return apply_detail(base, detail(hire_rate_percent=40), HOSTS)
+    described = apply_detail(base, detail(hire_rate_percent=40), HOSTS)
+    return replace(described, invited=True)
 
 
 @pytest.mark.parametrize("flag", [True, False])
@@ -487,6 +497,7 @@ def test_body_keys_are_exactly_what_the_installed_mapping_reads() -> None:
         "client_reviews",
         "client_hire_rate",
         "applied",
+        "invited",
         "observed_at",
     }
     assert set(BODY_KEYS) <= read
@@ -641,3 +652,86 @@ def test_an_unusable_feed_id_is_left_unknown(value: object) -> None:
         del row["id"]
     result = normalize(row)
     assert result is not None and result.feed_id is None
+
+
+# --- invitations ----------------------------------------------------------------
+
+INVITE_URL = "https://www.example.com/jobs/~0220002?utm_source=invite&utm_medium=x"
+
+
+def invitation(**job: object) -> dict[str, object]:
+    posting_fields: dict[str, object] = {
+        "id": "20002",
+        "content": {"title": "Synthetic invited build"},
+        "url": INVITE_URL,
+    }
+    posting_fields.update(job)
+    return {
+        "id": "300003",
+        "context": "Freelancer",
+        "client": {"user": {"id": "1", "name": "Pat E."}, "parentOrganization": {}},
+        "invitationLetter": "<untrusted_participant_content>Hi</untrusted_participant_content>",  # noqa: E501
+        "jobPosting": posting_fields,
+    }
+
+
+def invited(row: object) -> NormalizedPosting | None:
+    return normalize_invitation(row, HOSTS, observed_at=OBSERVED, search_ordinal=-1)
+
+
+def test_an_invitation_is_an_invited_discovery_posting_of_its_job() -> None:
+    result = invited(invitation())
+    assert result is not None
+    assert result.posting_id == "~0220002"
+    assert result.posting_url == "https://www.example.com/jobs/~0220002"
+    assert result.title == "Synthetic invited build"
+    assert result.feed_id == "20002"
+    assert result.invited is True
+    assert result.purpose == "discover"
+    # An invitation does not say whether the owner applied: unknown, not false.
+    assert result.applied is None
+    assert "applied" not in result.to_body()
+    assert result.description is None
+    assert result.proposal_count is None
+    assert result.search_ordinal == -1
+
+
+def test_an_invitation_keeps_nothing_of_the_client_or_the_letter() -> None:
+    result = invited(invitation())
+    assert result is not None
+    body = result.to_body()
+    assert body["invited"] == "true"
+    text = repr(result) + repr(body)
+    assert "Pat E." not in text and "Hi" not in text and "300003" not in text
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        {},
+        {"jobPosting": "nope"},
+        invitation(url="https://elsewhere.example.org/jobs/~0220002"),
+        invitation(url="http://www.example.com/jobs/~0220002"),
+        invitation(url="https://www.example.com/jobs/~01abc"),
+        invitation(content={"title": "  "}),
+        invitation(content=None),
+    ],
+)
+def test_an_invitation_without_a_valid_job_is_invalid(row: object) -> None:
+    assert invited(row) is None
+
+
+def test_an_invitation_with_an_odd_id_reads_no_detail() -> None:
+    result = invited(invitation(id="20002/../x"))
+    assert result is not None
+    assert result.feed_id is None
+
+
+def test_invited_is_delivered_only_when_true() -> None:
+    plain = posting()
+    assert "invited" not in plain.to_body()
+    assert "invited" not in plain.comparable_fields()
+    flagged = replace(plain, invited=True)
+    assert flagged.to_body()["invited"] == "true"
+    assert flagged.comparable_fields()["invited"] == "true"

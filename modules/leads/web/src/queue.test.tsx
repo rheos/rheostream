@@ -16,6 +16,7 @@ import {
   formatProposals,
   formatRating,
   formatSpend,
+  isInvited,
   isNewClient,
   loadPrefs,
   overCap,
@@ -190,6 +191,11 @@ describe("proposal bands and money", () => {
     expect(formatSpend({})).toBeNull();
     expect(formatRating({ client_rating: "4.9" })).toBe("4.9 rating");
     expect(formatRating({ client_rating: "0" })).toBeNull();
+  });
+  it("calls a job invited only on a stored true", () => {
+    expect(isInvited({ invited: "true" })).toBe(true);
+    expect(isInvited({ invited: "false" })).toBe(false);
+    expect(isInvited({})).toBe(false);
   });
   it("calls a client new only on a known zero spend and zero reviews", () => {
     expect(isNewClient({ client_spend: "0", client_reviews: "0" })).toBe(true);
@@ -428,6 +434,12 @@ describe("queue rendering", () => {
     }
     expect(html).toContain('href="https://jobs.example.com/postings/1"');
     expect(html).toContain("2 jobs");
+  });
+  it("tags an invited job and no other", () => {
+    const invited = { ...full, fields: { ...row(full.fields), invited: "true" } };
+    const html = render({ items: [invited] });
+    expect(html).toContain(">Invited<");
+    expect(render({ items: [full] })).not.toContain(">Invited<");
   });
   it("omits every absent fact on a sparse card and invents no score", () => {
     const html = render({ items: [sparse] });

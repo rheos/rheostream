@@ -144,9 +144,11 @@ def _over_cap(posting: NormalizedPosting) -> bool:
 
 
 def discovery_eligible(sighting: Sighting) -> bool:
-    """At most 50 proposals, not applied, from a discovery search, detail read ok."""
+    """At most 50 proposals, not applied, from a discovery search, detail read ok;
+    or invited. An invited job is delivered whatever its competition, and even when
+    its detail read failed: the client asked, and its title and link are known."""
     posting = sighting.posting
-    return (
+    return posting.invited or (
         sighting.detail_ok
         and posting.purpose == "discover"
         and not posting.applied
@@ -202,7 +204,7 @@ def deliver(
     planned: list[_Planned] = []
     for sighting in sightings:
         posting = delivered_posting(sighting)
-        if posting.applied or _over_cap(posting):
+        if not posting.invited and (posting.applied or _over_cap(posting)):
             result.filtered += 1
         row = rows.get(posting.posting_id)
         stored = None if row is None else parse_digests(row.field_digests)

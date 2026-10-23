@@ -1,14 +1,16 @@
-"""Collection: the search pages, the merge of overlapping sightings, the detail reads.
+"""Collection: the invitations, the search pages, the merge of overlapping sightings,
+the detail reads.
 
 No database access. Every collaborator arrives as an argument: the run's
 :class:`~rheo_leads.jobfeed.upstream.Upstream`, the wall clock that stamps each page's
 rows, and the capability re-read the run handler performs between pages.
 
-:func:`collect_presets` is the one place the run's raw row count is bounded
-(:data:`ROW_CAP`) and the only producer of the rows that detail reads and delivery
-receive. A failed call or page stops its own search and counts one failure; the
-other searches still run. A terminal upstream failure (a refused credential) is
-raised, because every later call would be refused too.
+:func:`collect_invitations` lists the account's pending invitations first, one page,
+best effort. :func:`collect_presets` is the one place the run's raw search row count
+is bounded (:data:`ROW_CAP`). Together they are the only producers of the rows that
+detail reads and delivery receive. A failed call or page stops its own search (or
+the listing) and counts one failure; the rest still run. A terminal upstream failure
+(a refused credential) is raised, because every later call would be refused too.
 """
 
 from collections import Counter
@@ -17,11 +19,26 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Final
 
-from rheo_leads.jobfeed.normalize import NormalizedPosting, apply_detail, normalize_row
+from rheo_leads.jobfeed.normalize import (
+    NormalizedPosting,
+    apply_detail,
+    normalize_invitation,
+    normalize_row,
+)
 from rheo_leads.jobfeed.presets import DISCOVERY_CAP, MAX_LIMIT, Preset
 from rheo_leads.jobfeed.upstream import RunCut, Upstream, UpstreamFailure
 
 ROW_CAP: Final = 80
+INVITATIONS_LIMIT: Final = 10
+"""The most invitations one run lists: the provider's page size. The search row
+cap does not count them."""
+INVITATIONS_FAILED: Final = "invitations"
+"""The run-history reason prefix for a failed invitations listing."""
+INVITATIONS_MORE: Final = "invitations:more"
+"""The run-history reason for a listing that had more than one page."""
+SEARCHES_FAILED: Final = "searches"
+"""The run-history reason prefix for searches that all failed in a run that still
+delivered an invitation."""
 MAX_DETAIL_READS: Final = 60
 OVER_CAP_BAND: Final = "50+"
 
@@ -199,9 +216,85 @@ def collect_presets(
     return result()
 
 
+@dataclass(frozen=True)
+class InvitationResult:
+    rows: tuple[NormalizedPosting, ...]
+    """The invited jobs, valid rows only, in the listing's order."""
+    invalid_rows: int
+    failure: UpstreamFailure | None = None
+    """The listing's failed call, when it failed; collection goes on without it."""
+    cut: bool = False
+    more: bool = False
+    """The provider said more invitations wait past this page; they are read on a
+    later run once earlier ones are answered."""
+
+
+def invitation_reason(failure: UpstreamFailure) -> str:
+    """A failed invitations listing as a run-history reason, content-free."""
+    return f"{INVITATIONS_FAILED}:{read_failure_reason(failure)}"
+
+
+def collect_invitations(
+    upstream: Upstream,
+    org_uid: str,
+    job_hosts: Sequence[str],
+    *,
+    clock: Callable[[], datetime],
+) -> InvitationResult:
+    """The account's pending invitations, one page of at most
+    :data:`INVITATIONS_LIMIT`, best effort: a failed call or page is returned as a
+    failure and the run carries on to the searches. A terminal failure (a refused
+    credential) is raised, because every later call would be refused too.
+
+    Each row's job becomes an invited discovery posting
+    (:func:`~rheo_leads.jobfeed.normalize.normalize_invitation`), so it is read in
+    detail and delivered like a feed row. Its ``search_ordinal`` is -1, ahead of
+    every search."""
+    try:
+        document = upstream.invitations(org_uid, {"limit": INVITATIONS_LIMIT})
+    except RunCut:
+        return InvitationResult(rows=(), invalid_rows=0, cut=True)
+    except UpstreamFailure as failure:
+        if failure.terminal:
+            raise
+        return InvitationResult(rows=(), invalid_rows=0, failure=failure)
+    observed_at = clock()
+    data = document.get("data")
+    listed = data.get("invitations") if isinstance(data, Mapping) else None
+    if (
+        document.get("status") != "ok"
+        or not isinstance(listed, list)
+        or len(listed) > INVITATIONS_LIMIT
+    ):
+        return InvitationResult(
+            rows=(), invalid_rows=0, failure=UpstreamFailure("protocol")
+        )
+    rows: list[NormalizedPosting] = []
+    invalid = 0
+    for entry in listed:
+        posting = normalize_invitation(
+            entry, job_hosts, observed_at=observed_at, search_ordinal=-1
+        )
+        if posting is None:
+            invalid += 1
+        else:
+            rows.append(posting)
+    return InvitationResult(
+        rows=tuple(rows), invalid_rows=invalid, more=document.get("hasMore") is True
+    )
+
+
 def _preference(posting: NormalizedPosting) -> tuple[datetime, int, int]:
     exactness = {True: 2, False: 1, None: 0}[posting.proposal_count_exact]
     return (posting.observed_at, exactness, -posting.search_ordinal)
+
+
+def _applied(group: Sequence[NormalizedPosting]) -> bool | None:
+    """True if any row says so, false if one says not, else unknown."""
+    flags = [row.applied for row in group]
+    if any(flags):
+        return True
+    return False if any(flag is False for flag in flags) else None
 
 
 def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
@@ -209,8 +302,9 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
 
     The newest row (ties: an exact count over a band, then the earlier search, then
     the earlier row) supplies the competition fields, the observation time and every
-    other feed field; ``applied`` holds if any row says so; the purpose is discovery
-    if any row came from a discovery search.
+    other feed field; ``applied`` and ``invited`` hold if any row says so (``applied``
+    stays unknown when only invitations were seen); the purpose is discovery if any
+    row came from a discovery search or an invitation.
     """
     groups: dict[str, list[NormalizedPosting]] = {}
     for row in rows:
@@ -225,7 +319,8 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
             Sighting(
                 replace(
                     preferred,
-                    applied=any(row.applied for row in group),
+                    applied=_applied(group),
+                    invited=any(row.invited for row in group),
                     feed_id=preferred.feed_id
                     or next((row.feed_id for row in group if row.feed_id), None),
                     purpose=(
@@ -240,7 +335,10 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
 
 
 def _eligible(posting: NormalizedPosting) -> bool:
-    return (
+    """Whether a posting gets a detail read. An invited job always does: the
+    client asked, so the discovery filters (applied, the proposal cap) do not
+    apply."""
+    return posting.invited or (
         posting.purpose == "discover"
         and not posting.applied
         and posting.count_band_label != OVER_CAP_BAND

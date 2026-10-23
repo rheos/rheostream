@@ -225,6 +225,7 @@ def test_read_only_policy_is_exactly_the_allowlist() -> None:
     assert dict(READ_ONLY_POLICY) == {
         "list_accounts": None,
         "find_jobs": frozenset({"smart_search", "search", "get"}),
+        "list_freelancer_proposals": frozenset({"invitations"}),
     }
 
 
@@ -376,6 +377,7 @@ def test_a_prefixed_policy_is_the_allowlist_under_the_prefix() -> None:
     assert dict(read_only_policy("acme__")) == {
         "acme__list_accounts": None,
         "acme__find_jobs": frozenset({"smart_search", "search", "get"}),
+        "acme__list_freelancer_proposals": frozenset({"invitations"}),
     }
 
 
@@ -1055,3 +1057,88 @@ def test_a_rate_limited_listing_never_waits_past_its_budget(rig: Rig) -> None:
         started = rig.clock.now
         upstream.list_tools()
     assert rig.clock.now - started == pytest.approx(TOOL_LIST_SECONDS)
+
+
+# --- the invitations listing --------------------------------------------------------
+
+
+@pytest.mark.parametrize("action", ["list", "get", "get_room", "accept_invitation"])
+def test_only_the_invitations_listing_of_the_proposals_tool_is_allowed(
+    rig: Rig, action: str
+) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        refused = raises(
+            lambda: upstream._session.call_tool(
+                "acme__list_freelancer_proposals",
+                {"action": action, "org_uid": ORG, "params": {}},
+            ),
+            ToolRefused,
+        )
+    assert str(refused) == "action_not_allowed"
+    assert len(mcp.requests) == 2
+
+
+def test_a_proposal_write_tool_is_refused_before_any_send(rig: Rig) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        refused = raises(
+            lambda: upstream._session.call_tool(
+                "acme__manage_proposals",
+                {"action": "accept_invitation", "org_uid": ORG, "params": {}},
+            ),
+            ToolRefused,
+        )
+    assert str(refused) == "tool_not_allowed"
+    assert len(mcp.requests) == 2
+
+
+def test_the_invitations_listing_puts_the_exact_arguments_on_the_wire(
+    rig: Rig,
+) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        upstream.invitations(ORG, {"limit": 10})
+    assert mcp.methods()[2:] == [
+        ("tools/call", "acme__list_freelancer_proposals", "invitations"),
+    ]
+    assert json.loads(mcp.requests[2].content)["params"]["arguments"] == {
+        "action": "invitations",
+        "org_uid": ORG,
+        "params": {"limit": 10},
+    }
+
+
+def test_the_invitations_listing_is_paced_with_the_searches(rig: Rig) -> None:
+    with rig.upstream() as upstream:
+        upstream.invitations(ORG, {})
+        upstream.find_jobs("search", ORG, {})
+        upstream.find_jobs("get", ORG, {"id": "1"})
+    starts = [at for at, name, _ in rig.session.starts]
+    gaps = [later - earlier for earlier, later in zip(starts, starts[1:], strict=False)]
+    assert [name for _, name, _ in rig.session.starts][0] == (
+        "list_freelancer_proposals"
+    )
+    assert all(gap >= FIND_JOBS_SPACING - EPSILON for gap in gaps), gaps
+
+
+def test_an_unparseable_listing_is_a_content_free_protocol_failure(rig: Rig) -> None:
+    rig.session.script = lambda name, args: {"content": []}
+    with rig.upstream() as upstream:
+        failure = raises(lambda: upstream.invitations(ORG, {}), UpstreamFailure)
+    assert_content_free(failure, "protocol")
+
+
+def test_a_sensitive_rate_limit_on_the_listing_is_retried_once(rig: Rig) -> None:
+    answers: list[object] = [sensitive(), {"status": "ok", "data": {}}]
+
+    def script(name: str, args: Mapping[str, object]) -> dict[str, object]:
+        answer = answers.pop(0)
+        if isinstance(answer, McpFailure):
+            raise answer
+        return rig.answer(answer)
+
+    rig.session.script = script
+    with rig.upstream() as upstream:
+        assert upstream.invitations(ORG, {}) == {"status": "ok", "data": {}}
+    assert rig.session.attempts("list_freelancer_proposals") == 2

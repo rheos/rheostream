@@ -163,6 +163,7 @@ const EXT_LABELS: Record<string, string> = {
   client_rating: "Client rating",
   client_reviews: "Client reviews",
   client_spend: "Client spend",
+  invited: "Invited",
   job_type: "Job type",
   platform: "Platform",
   posted_on: "Posted",

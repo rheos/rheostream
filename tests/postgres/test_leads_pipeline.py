@@ -1239,6 +1239,69 @@ JOBSEARCH_TABLES = (
 )
 
 
+def _undo_0018(connection: Any) -> None:
+    """Back to the Job search preset's version 1 and each job mapping's previous
+    version: what 0018 added is removed, and what it moved is moved back."""
+    preset = {"preset": str(h.JOBSEARCH_PRESET_ID)}
+    connection.execute(
+        text(
+            "UPDATE leads.opportunity SET preset_version = 1 "
+            "WHERE preset_id = :preset AND preset_version = 2"
+        ),
+        preset,
+    )
+    connection.execute(
+        text("UPDATE leads.pipeline_preset SET current_version = 1 WHERE id = :preset"),
+        preset,
+    )
+    for table in (
+        "preset_requirement",
+        "preset_transition",
+        "preset_field",
+        "preset_rubric",
+        "preset_template",
+        "preset_stage",
+        "preset_version",
+    ):
+        connection.execute(
+            text(
+                f"DELETE FROM leads.{table} WHERE preset_id = :preset AND version = 2"
+            ),
+            preset,
+        )
+    # Only versions 0018 made: a mapping written whole at version 2 by current
+    # code has no version 1 to go back to.
+    added = connection.execute(
+        text(
+            "SELECT r.mapping_id, r.version FROM leads.field_mapping_rule r "
+            "WHERE r.target = 'ext.jobsearch.invited' AND EXISTS ("
+            "SELECT 1 FROM leads.field_mapping m "
+            "WHERE m.id = r.mapping_id AND m.version = r.version - 1)"
+        )
+    ).all()
+    for mapping_id, version in added:
+        keys = {"mapping": mapping_id, "version": version}
+        connection.execute(
+            text(
+                "UPDATE leads.intake_connection SET mapping_version = :version - 1 "
+                "WHERE mapping_id = :mapping AND mapping_version = :version"
+            ),
+            keys,
+        )
+        for table, column in (
+            ("field_mapping_rule", "mapping_id"),
+            ("field_mapping_identity", "mapping_id"),
+            ("field_mapping", "id"),
+        ):
+            connection.execute(
+                text(
+                    f"DELETE FROM leads.{table} "
+                    f"WHERE {column} = :mapping AND version = :version"
+                ),
+                keys,
+            )
+
+
 def _undo_0017(connection: Any) -> None:
     connection.execute(
         text("ALTER TABLE leads.job_proposal DROP COLUMN separate_answers")
@@ -1346,6 +1409,7 @@ def _undo_0005(connection: Any) -> None:
 # Newest first. Each step undoes one frozen Leads migration on a disposable
 # workspace that started at head, so a test can rebuild an exact predecessor.
 LEADS_REVISIONS = (
+    ("0018_invited_jobs", _undo_0018),
     ("0017_proposal_separate_answers", _undo_0017),
     ("0016_jobfeed_runs", _undo_0016),
     ("0015_model_calls", _undo_0015),
@@ -1416,7 +1480,9 @@ def test_jobsearch_preset_is_refused_until_the_capability_is_on(
             .scalars()
             .all()
         )
-    assert "ext.jobsearch.posting_id" in fields and len(fields) == 16
+    # Version 1 (16 fields) and version 2 (the same plus ``invited``, from 0018).
+    assert "ext.jobsearch.posting_id" in fields and len(fields) == 16 + 17
+    assert fields.count("ext.jobsearch.invited") == 1
 
     ok(intake, "core.settings.set", key="leads.capabilities.jobsearch", value=False)
     again = intake.call("leads.pipeline.create", name="Another", preset="job_search")
@@ -1582,6 +1648,7 @@ def test_attach_by_field_survives_frozen_upgrade(intake: Intake) -> None:
     setup(intake)
     with open_unit_of_work(intake.ctx) as uow:
         assert rewind_leads(uow.connection, "0007_jobsearch_preset") == (
+            "0018_invited_jobs",
             "0017_proposal_separate_answers",
             "0016_jobfeed_runs",
             "0015_model_calls",

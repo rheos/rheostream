@@ -92,6 +92,11 @@ export function isNewClient(fields: Row): boolean {
   return amount(fields.client_spend) === 0 && count(fields.client_reviews) === 0;
 }
 
+/** The client invited the owner to this job. */
+export function isInvited(fields: Row): boolean {
+  return str(fields.invited) === "true";
+}
+
 export function paymentVerified(fields: Row): boolean {
   return str(fields.client_payment_verified) === "true";
 }

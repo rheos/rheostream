@@ -39,6 +39,7 @@ from rheo_leads.contracts import AcceptDeliveryInput, PastedJobs, PasteJobsInput
 from rheo_leads.intake.accept import accept_delivery
 from rheo_leads.jobfeed.delivery import canonical_body_digest, encode_body
 from rheo_leads.jobfeed.install import (
+    MAPPING_VERSION,
     RULES,
     RuleTarget,
     check_mapping_targets,
@@ -115,7 +116,7 @@ def _install(
             transport="manual",
             source_namespace=f"urn:rheo:connection:{connection_id}",
             mapping_id=mapping_id,
-            mapping_version=1,
+            mapping_version=MAPPING_VERSION,
             funnel_id=funnel_id,
             campaign_id=None,
             # The job feed's priority: a paste wins a field only on completeness.
