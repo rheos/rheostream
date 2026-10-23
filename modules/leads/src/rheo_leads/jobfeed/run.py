@@ -293,10 +293,12 @@ def collect_phase(
         reasons[invitation_reason(invites.failure)] = 1
     if invites.more:
         reasons[INVITATIONS_MORE] = 1
-    if collected.pages_ok == 0 and failures:
-        # Every search failed, and only the invitations kept the run going: the
-        # failure is kept in the history, though without a backoff.
-        reasons[f"{SEARCHES_FAILED}:{read_failure_reason(failures[0])}"] = len(failures)
+    if collected.pages_ok == 0 and collected.search_failures:
+        # Every search failed (a failed call, or a page that failed its checks),
+        # and only the invitations kept the run going: the failure is kept in the
+        # history, though without a backoff.
+        code = read_failure_reason(failures[0]) if failures else "protocol"
+        reasons[f"{SEARCHES_FAILED}:{code}"] = collected.search_failures
     return Collected(
         sightings=details.sightings,
         fetched=len(collected.rows)

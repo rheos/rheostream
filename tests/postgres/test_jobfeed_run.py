@@ -3154,6 +3154,22 @@ def test_an_invitation_is_delivered_even_when_every_search_failed(
     quietly_succeeded(c)
 
 
+def test_malformed_search_pages_are_kept_when_an_invitation_is_delivered(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.invitations = [invitation_row(851)]
+    for name in ("find_jobs:smart_search", "find_jobs:search"):
+        mcp.script[name] = tool_result({"status": "error"})
+    collected(c, clock)
+    assert len(opportunities(intake, "~02851")) == 1
+    assert runs(c)[0]["read_failures"] == {"searches:protocol": 3}
+    quietly_succeeded(c)
+
+
 def test_more_invitations_than_one_page_is_kept_in_the_history(
     intake: Intake,
     served: FakeAuthorizationServer,

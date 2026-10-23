@@ -720,3 +720,21 @@ def test_an_invited_job_keeps_the_unknown_payment_condition() -> None:
     invited = run_tier1(JobFacts(**{**job.__dict__, "invited": True}), policy)
     assert invited.passed
     assert invited.soft == (*held.failed, tier1.UNKNOWN_PAYMENT)
+
+
+def test_an_invited_new_client_keeps_every_condition() -> None:
+    policy = Tier1Policy()
+    fresh = established(
+        client_spend=Decimal("0"),
+        client_reviews=0,
+        payment_verified=False,
+        proposal_count=80,
+    )
+    held = run_tier1(fresh, policy)
+    assert held.codes == ("payment_unverified",)
+    invited = run_tier1(JobFacts(**{**fresh.__dict__, "invited": True}), policy)
+    assert invited.passed
+    assert invited.soft == (
+        *held.failed,
+        f"More than {policy.max_proposals} proposals already.",
+    )

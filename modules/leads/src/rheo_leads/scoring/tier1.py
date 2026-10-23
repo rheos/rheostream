@@ -148,11 +148,25 @@ def run_tier1(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
     result = _filters(job, policy)
     if job.invited and result.failed:
         unknown = (UNKNOWN_PAYMENT,) if job.payment_verified is None else ()
+        # A new client's filter stops at its first failure; an invited job keeps
+        # every condition, the proposal cap included.
+        crowded = _crowded(policy)
+        over_cap = (
+            job.proposal_count is not None
+            and job.proposal_count > policy.max_proposals
+            and crowded not in result.failed
+        )
         return Tier1Result(
-            soft=result.failed + (result.soft or unknown),
+            soft=result.failed
+            + ((crowded,) if over_cap else ())
+            + (result.soft or unknown),
             new_client=result.new_client,
         )
     return result
+
+
+def _crowded(policy: Tier1Policy) -> str:
+    return f"More than {policy.max_proposals} proposals already."
 
 
 def _filters(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
@@ -161,7 +175,7 @@ def _filters(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
     over_cap = (
         job.proposal_count is not None and job.proposal_count > policy.max_proposals
     )
-    crowded = f"More than {policy.max_proposals} proposals already."
+    crowded = _crowded(policy)
     unknown_payment = UNKNOWN_PAYMENT
     new_client = job.client_spend == 0 and job.client_reviews == 0
     if new_client:
