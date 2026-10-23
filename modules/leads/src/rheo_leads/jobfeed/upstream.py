@@ -4,19 +4,19 @@
 talks to the vendor, and it owns three rules:
 
 **Lease checkpoints around every call.** Each upstream call (``initialize``, the
-``initialized`` notification, ``list_accounts`` and every ``find_jobs``) runs as:
-the pacing wait (``find_jobs`` only), ``token.checkpoint(force=True)``, the one
+``initialized`` notification, ``list_accounts`` and every paced call) runs as:
+the pacing wait (paced calls only), ``token.checkpoint(force=True)``, the one
 session method, then the ordinary ``token.checkpoint()`` straight after it returns
 or fails, before any parse, pacing wait or retry delay. A call starts with a full
 lease, and a long call is followed at once by a fresh one.
 
-**Pacing.** ``find_jobs`` calls, all three actions, start at least
-:data:`FIND_JOBS_SPACING` seconds apart, start to start. When the wait would reach
-the deadline, or less than :data:`START_SECONDS` would remain at the start (checked
-before the wait and again after the forced checkpoint), the call is not made and
-:class:`RunCut` is raised.
+**Pacing.** ``find_jobs`` calls, all three actions, and the invitations listing
+start at least :data:`FIND_JOBS_SPACING` seconds apart, start to start. When the
+wait would reach the deadline, or less than :data:`START_SECONDS` would remain at
+the start (checked before the wait and again after the forced checkpoint), the call
+is not made and :class:`RunCut` is raised.
 
-**Exactly one retry.** A ``find_jobs`` tool error whose code is
+**Exactly one retry.** A paced call's tool error whose code is
 :data:`SENSITIVE_RATE_LIMIT` is retried once with the same arguments, starting at
 least :data:`RETRY_SPACING` seconds after the failure (and never before the normal
 spacing). A second one fails the call as ``rate_limited``. Nothing else is retried:
@@ -60,6 +60,8 @@ from rheo_leads.jobfeed.presets import Action
 
 LIST_ACCOUNTS: Final = "list_accounts"
 FIND_JOBS: Final = "find_jobs"
+PROPOSALS: Final = "list_freelancer_proposals"
+INVITATIONS: Final = "invitations"
 TOOL_PREFIX: Final = re.compile(r"[A-Za-z0-9_-]{0,64}")
 """What the ``leads.jobfeed.tool_prefix`` setting may hold; anything else is a
 misconfigured endpoint."""
@@ -67,9 +69,14 @@ misconfigured endpoint."""
 
 def read_only_policy(prefix: str = "") -> ToolPolicy:
     """The only tools and actions the collector may call, named on the wire with
-    ``prefix`` in front; the session refuses anything else before a byte is sent."""
+    ``prefix`` in front; the session refuses anything else before a byte is sent.
+    Of the proposals tool, only the read-only invitations listing is allowed."""
     return ToolPolicy(
-        {LIST_ACCOUNTS: None, FIND_JOBS: {"smart_search", "search", "get"}},
+        {
+            LIST_ACCOUNTS: None,
+            FIND_JOBS: {"smart_search", "search", "get"},
+            PROPOSALS: {INVITATIONS},
+        },
         prefix=prefix,
     )
 
@@ -314,6 +321,7 @@ class Upstream:
         self._session = session
         self._list_accounts = tool_prefix + LIST_ACCOUNTS
         self._find_jobs = tool_prefix + FIND_JOBS
+        self._proposals = tool_prefix + PROPOSALS
         self._token = token
         self._deadline = deadline
         self._monotonic = monotonic
@@ -417,11 +425,29 @@ class Upstream:
         an earlier cut-off than the run's for this call."""
         cutoff = self._deadline if deadline is None else min(deadline, self._deadline)
         arguments = {"action": action, "org_uid": org_uid, "params": dict(params)}
+        return self._paced(self._find_jobs, arguments, cutoff)
+
+    def invitations(
+        self, org_uid: str, params: Mapping[str, object]
+    ) -> dict[str, object]:
+        """One paced listing of the account's invitations and its JSON document."""
+        arguments = {
+            "action": INVITATIONS,
+            "org_uid": org_uid,
+            "params": dict(params),
+        }
+        return self._paced(self._proposals, arguments, self._deadline)
+
+    def _paced(
+        self, name: str, arguments: Mapping[str, object], cutoff: float
+    ) -> dict[str, object]:
+        """One paced tool call and its JSON document, with the one rate-limit
+        retry (module docstring)."""
         retried = False
         while True:
             self._pace(cutoff)
             outcome = self._checkpointed(
-                lambda: self._session.call_tool(self._find_jobs, arguments),
+                lambda: self._session.call_tool(name, arguments),
                 cutoff=cutoff,
             )
             if (

@@ -27,6 +27,7 @@ import {
   formatRating,
   formatReviews,
   formatSpend,
+  isInvited,
   isNewClient,
   MAX_PROPOSALS,
   overCap,
@@ -216,6 +217,9 @@ function Badges({ item, pipeline }: { item: Row; pipeline?: string }) {
       {source ? <span className={styles.badge}>{source}</span> : null}
       {pipeline ? (
         <span className={styles.badge}>{pipeline}</span>
+      ) : null}
+      {isInvited(fields) ? (
+        <span className={`${styles.badge} ${styles.badgeAccent}`}>Invited</span>
       ) : null}
       {isNewClient(fields) ? (
         <span className={`${styles.badge} ${styles.badgeInfo}`}>New client</span>

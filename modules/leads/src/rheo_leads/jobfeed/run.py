@@ -32,13 +32,17 @@ any fallback (:func:`select_organization`), else ``account_selection_required``
 ends the run with no ``find_jobs`` call. An MCP 401 or 403 is terminal, the stored
 client kept; any other failure is transient and nothing is retried.
 
-Then collection on the open session: the three default searches, paced and capped
-at 80 raw rows, with the capability re-read in a short unit between pages (read off,
-the run stops and writes nothing more); the overlapping sightings merged into one
-per posting; the detail reads, where a failed or omitted read downgrades its
-sighting. When every page call failed, the run ends as an upstream failure with
-the backoff; a later failure, a failed or omitted detail or a deadline cut leaves
-the run complete and partial.
+Then collection on the open session: one page of the account's pending
+invitations, best effort, each invited job a discovery posting flagged ``invited``;
+the searches, paced and capped at 80 raw rows, with the capability re-read in a
+short unit between pages (read off, the run stops and writes nothing more); the
+overlapping sightings merged into one per posting, invited jobs first; the detail
+reads, where a failed or omitted read downgrades its sighting. An invited job is
+delivered whatever its competition and even without its detail. When every search
+page call failed and no invitation was listed, the run ends as an upstream failure
+with the backoff; a failed listing, a later failure, a failed or omitted detail or
+a deadline cut leaves the run complete and partial, a failed listing recorded under
+the ``invitations:<code>`` reason.
 
 Last, the deliveries and the report on the worker's transaction, committed with the
 job's ``succeeded`` row: a forced lease extension, the lifecycle lock and the
@@ -85,7 +89,9 @@ from rheo_leads.intake.accept import health_write
 from rheo_leads.jobfeed import dependencies
 from rheo_leads.jobfeed.collect import (
     Sighting,
+    collect_invitations,
     collect_presets,
+    invitation_reason,
     merge_sightings,
     read_details,
 )
@@ -256,6 +262,7 @@ def collect_phase(
     """
     deps = dependencies()
     job_hosts = resolve().get_list(JOB_HOSTS_KEY)
+    invites = collect_invitations(upstream, organization_id, job_hosts, clock=deps.now)
     collected = collect_presets(
         upstream,
         run.presets,
@@ -267,29 +274,42 @@ def collect_phase(
     if collected.capability_lost:
         return None
     failures = collected.upstream_failures
-    if collected.pages_ok == 0 and failures:
+    if collected.pages_ok == 0 and failures and not invites.rows:
         limited = [f for f in failures if f.code == "rate_limited"]
         return _stopped(limited[0] if limited else failures[0])
+    # Invited rows first: merged, they keep their place, so they are read first.
     details = read_details(
         upstream,
-        merge_sightings(collected.rows),
+        merge_sightings([*invites.rows, *collected.rows]),
         organization_id,
         job_hosts,
         deadline=run.deadline,
     )
+    reasons = dict(details.reasons)
+    if invites.failure is not None:
+        reasons[invitation_reason(invites.failure)] = 1
+    listed = 0 if invites.cut else 1
     return Collected(
         sightings=details.sightings,
-        fetched=len(collected.rows) + collected.invalid_rows,
-        pages=collected.pages_used,
+        fetched=len(collected.rows)
+        + collected.invalid_rows
+        + len(invites.rows)
+        + invites.invalid_rows,
+        pages=collected.pages_used + listed,
         detail_reads=details.detail_reads,
-        errors=collected.invalid_rows + details.failures,
+        errors=collected.invalid_rows
+        + details.failures
+        + invites.invalid_rows
+        + (invites.failure is not None),
         partial=bool(
             collected.search_failures
             or collected.cut
             or details.failures
             or details.cut
+            or invites.failure
+            or invites.cut
         ),
-        read_failures=details.reasons,
+        read_failures=reasons,
     )
 
 

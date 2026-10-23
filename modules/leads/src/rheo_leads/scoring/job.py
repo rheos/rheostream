@@ -159,6 +159,7 @@ READ_TARGETS: Final = (
             "client_rating",
             "client_reviews",
             "client_hire_rate",
+            "invited",
         )
     ),
 )
@@ -297,6 +298,10 @@ def input_digest(title: str, fields: Mapping[str, str], cap: int) -> str:
         "client_hire_rate",
     ):
         facts[name] = _bucket(name, fields.get(EXTENSION + name), cap)
+    if fields.get(EXTENSION + "invited") == "true":
+        # Only an invitation joins the fingerprint, so a job the client invited the
+        # owner to is scored again, and no other job's fingerprint moves.
+        facts["invited"] = True
     canonical = json.dumps(facts, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
 

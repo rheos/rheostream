@@ -67,6 +67,8 @@ class JobFacts:
     client_rating: Decimal | None = None
     client_reviews: int | None = None
     client_hire_rate: Decimal | None = None
+    invited: bool = False
+    """The client invited the owner to this job."""
 
     @classmethod
     def from_fields(cls, title: str, fields: Mapping[str, str]) -> "JobFacts":
@@ -97,6 +99,7 @@ class JobFacts:
             client_rating=_rating(ext("client_rating")),
             client_reviews=reviews,
             client_hire_rate=hire_rate,
+            invited=_flag(ext("invited")) is True,
         )
 
     @property
@@ -136,7 +139,19 @@ def _percent(value: Decimal) -> str:
 
 
 def run_tier1(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
-    """The filters for one job, each failing clause as a sentence the owner reads."""
+    """The filters for one job, each failing clause as a sentence the owner reads.
+
+    An invited job is never held: the client asked, so every clause it fails goes
+    on to the model as a soft condition instead."""
+    result = _filters(job, policy)
+    if job.invited and result.failed:
+        return Tier1Result(
+            soft=result.failed + result.soft, new_client=result.new_client
+        )
+    return result
+
+
+def _filters(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
     if not job.on_default_platform:
         return Tier1Result()
     over_cap = (

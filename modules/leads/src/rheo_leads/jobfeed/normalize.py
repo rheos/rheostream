@@ -67,6 +67,7 @@ BODY_KEYS: tuple[str, ...] = (
     "client_reviews",
     "client_hire_rate",
     "applied",
+    "invited",
     "observed_at",
 )
 # The fields whose change makes a sighting worth delivering. Both observation times
@@ -87,6 +88,7 @@ COMPARABLE_FIELDS: tuple[str, ...] = (
     "client_reviews",
     "client_hire_rate",
     "applied",
+    "invited",
 )
 
 
@@ -197,6 +199,9 @@ class NormalizedPosting:
     # The feed row's own ``id``, which a detail read sends. Never delivered, never
     # compared: ``to_body`` lists its keys explicitly and leaves it out.
     feed_id: str | None = None
+    # The client invited the account to this job. Delivered only when true: a
+    # sighting that is not an invitation says nothing either way.
+    invited: bool = False
 
     def to_body(self) -> dict[str, str | int]:
         """The flat delivery body: unknown values are left out, never zero."""
@@ -218,6 +223,7 @@ class NormalizedPosting:
             "client_reviews": self.client_reviews,
             "client_hire_rate": _optional_decimal(self.client_hire_rate),
             "applied": _flag(self.applied),
+            "invited": _flag(True) if self.invited else None,
             "observed_at": self.observed_at.isoformat(),
         }
         return {key: value for key, value in values.items() if value is not None}
@@ -325,6 +331,59 @@ def normalize_row(
         search_ordinal=search_ordinal,
         count_band_label=band,
         feed_id=_feed_id(row.get("id")),
+    )
+
+
+def normalize_invitation(
+    row: object,
+    job_hosts: Sequence[str],
+    *,
+    observed_at: datetime,
+    search_ordinal: int,
+) -> NormalizedPosting | None:
+    """One invitation row's job as an invited discovery posting, or ``None`` when
+    it fails validation.
+
+    The row names its job by ``jobPosting``: the posting URL (whose path carries the
+    posting id; the query is dropped), the title, and the numeric id a detail read
+    sends. Nothing else of the row is kept: the client's names and the invitation
+    letter are never read. An invitation carries no budget, count or client facts;
+    the detail read supplies what it can, and the rest stays unknown.
+    """
+    if isinstance(job_hosts, str):
+        raise TypeError("job_hosts must be a sequence of host names")
+    if observed_at.tzinfo is None:
+        raise ValueError("observed_at must carry a time zone")
+    job = _mapping(_mapping(row).get("jobPosting"))
+    located = _canonical_url(job.get("url"), job_hosts)
+    title = _mapping(job.get("content")).get("title")
+    if located is None or not isinstance(title, str) or not title.strip():
+        return None
+    url, posting_id = located
+    return NormalizedPosting(
+        posting_id=posting_id,
+        title=title,
+        posting_url=url,
+        description=None,
+        job_type=None,
+        budget_min=None,
+        budget_max=None,
+        proposal_count=None,
+        proposal_count_exact=None,
+        proposal_observed_at=None,
+        posted_on=None,
+        client_payment_verified=None,
+        client_spend=None,
+        client_rating=None,
+        client_reviews=None,
+        client_hire_rate=None,
+        applied=False,
+        observed_at=observed_at,
+        purpose="discover",
+        search_ordinal=search_ordinal,
+        count_band_label=None,
+        feed_id=_feed_id(job.get("id")),
+        invited=True,
     )
 
 

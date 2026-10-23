@@ -653,3 +653,60 @@ def test_an_answer_that_fails_its_checks_is_logged_as_unusable() -> None:
     assert outcome.failure == ASSESSMENT_INVALID
     [(_, _, reported)] = tracker.calls
     assert reported.unusable_kind == ASSESSMENT_INVALID
+
+
+# --- invited jobs ---------------------------------------------------------------------
+
+
+def test_an_invited_job_is_never_held_and_its_clauses_go_to_the_model() -> None:
+    policy = Tier1Policy()
+    crowded = established(
+        proposal_count=80, client_spend=Decimal("10"), payment_verified=False
+    )
+    held = run_tier1(crowded, policy)
+    assert not held.passed and held.codes
+    invited = run_tier1(JobFacts(**{**crowded.__dict__, "invited": True}), policy)
+    assert invited.passed
+    assert invited.codes == ()
+    assert invited.soft == held.failed
+
+
+def test_an_invited_new_client_is_not_held_either() -> None:
+    policy = Tier1Policy()
+    fresh = established(
+        client_spend=Decimal("0"), client_reviews=0, payment_verified=False
+    )
+    assert not run_tier1(fresh, policy).passed
+    result = run_tier1(JobFacts(**{**fresh.__dict__, "invited": True}), policy)
+    assert result.passed and result.new_client and result.soft
+
+
+def test_an_invited_job_that_passes_is_unchanged() -> None:
+    policy = Tier1Policy()
+    job = established()
+    assert run_tier1(JobFacts(**{**job.__dict__, "invited": True}), policy) == (
+        run_tier1(job, policy)
+    )
+
+
+def test_the_invited_field_is_read_from_the_job_fields() -> None:
+    assert JobFacts.from_fields("Example", fields(invited="true")).invited
+    assert not JobFacts.from_fields("Example", fields(invited="false")).invited
+    assert not JobFacts.from_fields("Example", fields()).invited
+
+
+def test_the_model_reads_that_the_job_is_an_invitation() -> None:
+    line = "[Invited - the client invited the freelancer to this job]"
+    invited = JobFacts(**{**established().__dict__, "invited": True})
+    task = tier2.build_task(invited, profile=PROFILE, policy=POLICY, new_client=False)
+    assert line in task
+    plain = tier2.build_task(
+        established(), profile=PROFILE, policy=POLICY, new_client=False
+    )
+    assert line not in plain
+
+
+def test_only_an_invitation_moves_the_digest() -> None:
+    base = input_digest("Example", fields(), 50)
+    assert input_digest("Example", fields(invited="false"), 50) == base
+    assert input_digest("Example", fields(invited="true"), 50) != base

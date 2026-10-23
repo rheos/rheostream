@@ -269,6 +269,8 @@ def job_text(job: JobFacts, *, cap: int, new_client: bool) -> str:
         text += f"\n\n{competition_line(job, cap)}"
         if new_client:
             text += "\n\n[New client - no prior Upwork history]"
+        if job.invited:
+            text += "\n\n[Invited - the client invited the freelancer to this job]"
         client = {
             "payment_verified": job.payment_verified,
             "client_spend": job.client_spend,

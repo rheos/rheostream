@@ -233,7 +233,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=12,
+        format_version=13,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,
