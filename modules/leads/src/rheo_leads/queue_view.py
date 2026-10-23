@@ -5,10 +5,10 @@ columns, its stage, the Job search extension fields and the start of the origina
 message, the latest assessment's ratings and explanation, the pending follow-up,
 whether notes or drafts exist, the source transport, the linked party's display
 name, the stages it may move to next, and the closed stage a dismiss would move
-it to. Sorting by score (then fit) and hiding crowded postings happen here, before
-the limit,
-so the first page is the right one. Contact points, notes,
-draft bodies and full messages stay behind ``leads.opportunity.get``.
+it to, with the open stage an undo would move it back to. Sorting by score (then
+fit) and hiding crowded postings happen here, before the limit, so the first page
+is the right one. Contact points, notes, draft bodies and full messages stay behind
+``leads.opportunity.get``.
 
 With ``held_only`` it is the review queue: Job search jobs the client filters hold
 back and nobody promoted, each with a ``hold`` list of the clauses that held it
@@ -384,7 +384,9 @@ def _transitions(
 ) -> dict[tuple[UUID, int, str], dict[str, Any]]:
     """Per pinned (preset, version, stage): the stages it may move to next, in
     stage order, and the closed stage a dismiss moves to (a disqualifying one before
-    a lost one, or none when neither is allowed)."""
+    a lost one, or none when neither is allowed). A dismiss carries ``undo``, the
+    open stage that closed stage can reopen to: the stage it was dismissed from when
+    that move exists, else the first open one, else none."""
     keys = {(r["preset_id"], r["preset_version"]) for r in records}
     if not keys:
         return {}
@@ -426,6 +428,21 @@ def _transitions(
             if rank < entry["rank"]:
                 entry["rank"] = rank
                 entry["dismiss"] = {"stage_id": r["stage_id"], "label": r["label"]}
+    for (preset, version, start), entry in found.items():
+        dismiss = entry["dismiss"]
+        if dismiss is None:
+            continue
+        back = [
+            {"stage_id": move["stage_id"], "label": move["label"]}
+            for move in found.get((preset, version, dismiss["stage_id"]), {}).get(
+                "next", []
+            )
+            if move["kind"] == "open"
+        ]
+        dismiss["undo"] = next(
+            (move for move in back if move["stage_id"] == start),
+            back[0] if back else None,
+        )
     return found
 
 

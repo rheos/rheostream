@@ -357,6 +357,40 @@ export function afterDismiss(items: Row[], id: string, stage: string): Row[] {
   );
 }
 
+/** Where a dismiss can be undone to: the open stage the server named for the
+ * card's dismiss, when ``to`` is that dismiss. Null for any other move, or when
+ * the closed stage has no way back. */
+export function undoFor(item: Row, to: StageMove): StageMove | null {
+  const dismiss = row(item.dismiss);
+  const undo = row(dismiss.undo);
+  if (to.kind !== "terminal" || to.stage_id !== str(dismiss.stage_id)) return null;
+  if (!str(undo.stage_id)) return null;
+  return { stage_id: str(undo.stage_id), label: str(undo.label), kind: "open" };
+}
+
+/** A closed card's way back: its first open next stage, or null while it is open
+ * or has none. */
+export function reopenFor(item: Row): StageMove | null {
+  return str(item.stage_kind) === "terminal" ? undoTarget(item, "") : null;
+}
+
+/** The queue's query names a job just dismissed from its page, and the stage it
+ * left, so the queue can offer Undo. */
+export const DISMISSED_PARAMS = ["dismissed", "from"] as const;
+export function dismissedHref(back: string, ref: string, from: string): string {
+  const query = new URLSearchParams({ dismissed: ref, from }).toString();
+  return `${back}${back.includes("?") ? "&" : "?"}${query}`;
+}
+/** Of a dismissed job's moves, the one an undo takes: back to the stage it left
+ * when allowed, else its first open one. */
+export function undoTarget(item: Row, from: string): StageMove | null {
+  const open = rows(item.transitions).filter((m) => str(m.kind) === "open");
+  const to = open.find((m) => str(m.stage_id) === from) ?? open[0];
+  return to
+    ? { stage_id: str(to.stage_id), label: str(to.label), kind: "open" }
+    : null;
+}
+
 /** A held job's clause, as the review card's badge names it. */
 const HOLD_LABELS: Record<string, string> = {
   payment_unverified: "Payment unverified",

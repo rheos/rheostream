@@ -545,3 +545,35 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+/* A text control at the icon buttons' height: Reopen and Undo. */
+.textButton {
+  inline-size: auto;
+  padding-inline: var(--rs-space-3);
+  font: inherit;
+  font-size: var(--rs-font-size-sm);
+  cursor: pointer;
+}
+/* In a dismissed card's place, and above the queue after a dismiss on the job
+   page: one line and Undo. */
+.undo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rs-space-2) var(--rs-space-4);
+  margin-bottom: var(--rs-space-4);
+  padding: var(--rs-space-2) var(--rs-space-4);
+  border: var(--rs-size-hairline) dashed var(--rs-color-hairline);
+  border-radius: var(--rs-radius-lg);
+  color: var(--rs-color-ink-dim);
+  font-size: var(--rs-font-size-sm);
+  overflow-wrap: anywhere;
+}
+.undo > p {
+  margin: 0;
+  min-width: 0;
+}
+.undo > .inlineError {
+  flex-basis: 100%;
+  margin: 0;
+}

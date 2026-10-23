@@ -189,7 +189,7 @@ All in the `leads` schema.
 | `pipeline_preset` | `id uuid`, `name`, `current_version integer`, `created_at` | A named preset. Release one ships one: inbound services. |
 | `preset_version` | `preset_id`, `version integer`, `created_at`, `created_by_id`, `note text` | Primary key `(preset_id, version)`. Immutable once created. |
 | `preset_stage` | `preset_id`, `version`, `stage_id slug`, `label text`, `ordinal`, `kind text`, `outcome text null` | `kind` in `open`, `terminal`. Terminal stages map to `outcome` in `succeeded`, `lost`, `disqualified`. `stage_id` is stable across versions; `label` is free. |
-| `preset_transition` | `preset_id`, `version`, `from_stage_id`, `to_stage_id` | Allowed moves. |
+| `preset_transition` | `preset_id`, `version`, `from_stage_id`, `to_stage_id` | Allowed moves. A move out of a `terminal` stage leads to an `open` one (a reopen, which clears the disposition); terminal to terminal is refused. |
 | `preset_requirement` | `preset_id`, `version`, `to_stage_id`, `field text` | Fields that must hold a value before entering `to_stage_id`. Presence only; no expressions. |
 | `preset_field` | `preset_id`, `version`, `target text`, `type text`, `required boolean`, `sensitivity text` | Extension fields `ext.<namespace>.<field>` with `type` from `text`, `integer`, `decimal`, `date`, `boolean`, `enum(values)`. |
 | `preset_rubric` | `preset_id`, `version`, `rubric_slug text`, `rubric_version integer` | The qualification rubric this version uses, named from the package rubrics ([below](#opportunities-parties-qualifications-and-handoffs)). |

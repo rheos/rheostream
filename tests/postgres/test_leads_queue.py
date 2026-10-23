@@ -117,7 +117,11 @@ def test_cards_carry_full_and_sparse_facts(intake: Intake) -> None:
     assert full["preview"].endswith("…") and len(full["preview"]) <= PREVIEW_CHARS + 1
     assert full["stage_id"] == "review" and full["stage_kind"] == "open"
     assert full["stage_label"] == "Review"
-    assert full["dismiss"] == {"stage_id": "passed", "label": "Passed"}
+    assert full["dismiss"] == {
+        "stage_id": "passed",
+        "label": "Passed",
+        "undo": {"stage_id": "review", "label": "Review"},
+    }
     assert [m["stage_id"] for m in full["transitions"]] == [
         "qualified",
         "lost",
@@ -242,6 +246,7 @@ def test_member_reads_the_queue_and_dismiss_follows_the_stage(intake: Intake) ->
     assert cards(intake)["Applied posting"]["dismiss"] == {
         "stage_id": "lost",
         "label": "Lost",
+        "undo": {"stage_id": "review", "label": "Review"},
     }
     member = add_member(
         intake.cluster.backend,
