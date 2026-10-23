@@ -17,7 +17,7 @@ from rheo_core.runtime.oneshot import (
     OneShotFailed,
 )
 from rheo_leads.model_calls import Call
-from rheo_leads.scoring import tier2
+from rheo_leads.scoring import tier1, tier2
 from rheo_leads.scoring.job import (
     ASSESSMENT_INVALID,
     HELD_LINE,
@@ -710,3 +710,13 @@ def test_only_an_invitation_moves_the_digest() -> None:
     base = input_digest("Example", fields(), 50)
     assert input_digest("Example", fields(invited="false"), 50) == base
     assert input_digest("Example", fields(invited="true"), 50) != base
+
+
+def test_an_invited_job_keeps_the_unknown_payment_condition() -> None:
+    policy = Tier1Policy()
+    job = established(payment_verified=None, proposal_count=80)
+    held = run_tier1(job, policy)
+    assert not held.passed and held.soft == ()
+    invited = run_tier1(JobFacts(**{**job.__dict__, "invited": True}), policy)
+    assert invited.passed
+    assert invited.soft == (*held.failed, tier1.UNKNOWN_PAYMENT)

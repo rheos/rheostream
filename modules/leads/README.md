@@ -121,8 +121,9 @@ opportunity that already holds that posting id or creates a new one. A posting n
 opportunity tracks is otherwise skipped. Each run also lists the jobs clients have
 invited you to: an invited job is always read and delivered, whatever its
 competition, and its `ext.jobsearch.invited` field is set, so the queue tags it
-Invited and scoring never holds it back on the client filters (they reach the model
-as conditions to check instead). A tracked posting is delivered again only
+Invited and scoring never holds it back on the client filters: it is scored like a
+job that passed, and the filters it would have failed are kept on its assessment as
+conditions to check. A tracked posting is delivered again only
 when one of its fields changed, so its proposal count, budget and client record stay
 current. Collected values fill the `ext.jobsearch.*` fields; no person or organization
 is created. Postings arrive through intake like any other source, so receipts,

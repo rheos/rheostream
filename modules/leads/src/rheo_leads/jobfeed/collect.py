@@ -34,6 +34,11 @@ INVITATIONS_LIMIT: Final = 10
 cap does not count them."""
 INVITATIONS_FAILED: Final = "invitations"
 """The run-history reason prefix for a failed invitations listing."""
+INVITATIONS_MORE: Final = "invitations:more"
+"""The run-history reason for a listing that had more than one page."""
+SEARCHES_FAILED: Final = "searches"
+"""The run-history reason prefix for searches that all failed in a run that still
+delivered an invitation."""
 MAX_DETAIL_READS: Final = 60
 OVER_CAP_BAND: Final = "50+"
 
@@ -219,6 +224,9 @@ class InvitationResult:
     failure: UpstreamFailure | None = None
     """The listing's failed call, when it failed; collection goes on without it."""
     cut: bool = False
+    more: bool = False
+    """The provider said more invitations wait past this page; they are read on a
+    later run once earlier ones are answered."""
 
 
 def invitation_reason(failure: UpstreamFailure) -> str:
@@ -271,7 +279,9 @@ def collect_invitations(
             invalid += 1
         else:
             rows.append(posting)
-    return InvitationResult(rows=tuple(rows), invalid_rows=invalid)
+    return InvitationResult(
+        rows=tuple(rows), invalid_rows=invalid, more=document.get("hasMore") is True
+    )
 
 
 def _preference(posting: NormalizedPosting) -> tuple[datetime, int, int]:
@@ -279,13 +289,22 @@ def _preference(posting: NormalizedPosting) -> tuple[datetime, int, int]:
     return (posting.observed_at, exactness, -posting.search_ordinal)
 
 
+def _applied(group: Sequence[NormalizedPosting]) -> bool | None:
+    """True if any row says so, false if one says not, else unknown."""
+    flags = [row.applied for row in group]
+    if any(flags):
+        return True
+    return False if any(flag is False for flag in flags) else None
+
+
 def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
     """One sighting per posting id, in first-seen order.
 
     The newest row (ties: an exact count over a band, then the earlier search, then
     the earlier row) supplies the competition fields, the observation time and every
-    other feed field; ``applied`` and ``invited`` hold if any row says so; the
-    purpose is discovery if any row came from a discovery search or an invitation.
+    other feed field; ``applied`` and ``invited`` hold if any row says so (``applied``
+    stays unknown when only invitations were seen); the purpose is discovery if any
+    row came from a discovery search or an invitation.
     """
     groups: dict[str, list[NormalizedPosting]] = {}
     for row in rows:
@@ -300,7 +319,7 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
             Sighting(
                 replace(
                     preferred,
-                    applied=any(row.applied for row in group),
+                    applied=_applied(group),
                     invited=any(row.invited for row in group),
                     feed_id=preferred.feed_id
                     or next((row.feed_id for row in group if row.feed_id), None),

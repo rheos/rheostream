@@ -859,3 +859,21 @@ def test_an_invited_posting_is_read_whatever_its_competition() -> None:
     result = r.details(given)
     assert [params["id"] for _, params in r.session.calls] == ["2301", "2302", "2303"]
     assert all(s.detail_ok and s.posting.invited for s in result.sightings)
+
+
+def test_applied_stays_unknown_when_only_invitations_were_seen() -> None:
+    invite = invites(run(listing(invitations_page(invite_row(2401))))).rows[0]
+    (alone,) = merge_sightings([invite])
+    assert alone.posting.applied is None
+    applied = posting(2401, ordinal=0, at=30, applied=True)
+    (merged,) = merge_sightings([invite, applied])
+    assert merged.posting.applied is True
+    not_applied = posting(2401, ordinal=0, at=30)
+    (merged,) = merge_sightings([invite, not_applied])
+    assert merged.posting.applied is False
+
+
+def test_a_listing_with_more_pages_says_so() -> None:
+    page_one = invitations_page(invite_row(2501), hasMore=True)
+    assert invites(run(listing(page_one))).more
+    assert not invites(run(listing(invitations_page(invite_row(2502))))).more

@@ -113,6 +113,7 @@ LOW_SPEND: Final = "low_spend"
 LOW_RATING: Final = "low_rating"
 LOW_HIRE_RATE: Final = "low_hire_rate"
 HIGH_PROPOSALS: Final = "high_proposals"
+UNKNOWN_PAYMENT: Final = "Payment verification is unknown; confirm it before applying."
 
 
 @dataclass(frozen=True)
@@ -141,12 +142,15 @@ def _percent(value: Decimal) -> str:
 def run_tier1(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
     """The filters for one job, each failing clause as a sentence the owner reads.
 
-    An invited job is never held: the client asked, so every clause it fails goes
-    on to the model as a soft condition instead."""
+    An invited job is never held: the client asked, so it goes to the model like a
+    job that passed, and every clause it fails is kept as a soft condition the owner
+    checks on its assessment (as for a promoted job), unknown payment included."""
     result = _filters(job, policy)
     if job.invited and result.failed:
+        unknown = (UNKNOWN_PAYMENT,) if job.payment_verified is None else ()
         return Tier1Result(
-            soft=result.failed + result.soft, new_client=result.new_client
+            soft=result.failed + (result.soft or unknown),
+            new_client=result.new_client,
         )
     return result
 
@@ -158,7 +162,7 @@ def _filters(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
         job.proposal_count is not None and job.proposal_count > policy.max_proposals
     )
     crowded = f"More than {policy.max_proposals} proposals already."
-    unknown_payment = "Payment verification is unknown; confirm it before applying."
+    unknown_payment = UNKNOWN_PAYMENT
     new_client = job.client_spend == 0 and job.client_reviews == 0
     if new_client:
         if job.payment_verified is False:

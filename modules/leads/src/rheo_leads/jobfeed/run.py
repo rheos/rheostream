@@ -88,12 +88,15 @@ from rheo_core.work.cancellation import CancellationToken, JobCancelled, JobLeas
 from rheo_leads.intake.accept import health_write
 from rheo_leads.jobfeed import dependencies
 from rheo_leads.jobfeed.collect import (
+    INVITATIONS_MORE,
+    SEARCHES_FAILED,
     Sighting,
     collect_invitations,
     collect_presets,
     invitation_reason,
     merge_sightings,
     read_details,
+    read_failure_reason,
 )
 from rheo_leads.jobfeed.delivery import deliver
 from rheo_leads.jobfeed.presets import (
@@ -288,6 +291,12 @@ def collect_phase(
     reasons = dict(details.reasons)
     if invites.failure is not None:
         reasons[invitation_reason(invites.failure)] = 1
+    if invites.more:
+        reasons[INVITATIONS_MORE] = 1
+    if collected.pages_ok == 0 and failures:
+        # Every search failed, and only the invitations kept the run going: the
+        # failure is kept in the history, though without a backoff.
+        reasons[f"{SEARCHES_FAILED}:{read_failure_reason(failures[0])}"] = len(failures)
     return Collected(
         sightings=details.sightings,
         fetched=len(collected.rows)

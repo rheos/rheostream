@@ -189,7 +189,9 @@ class NormalizedPosting:
     client_rating: Decimal | None
     client_reviews: int | None
     client_hire_rate: Decimal | None
-    applied: bool
+    # Whether the owner applied; ``None`` when the sighting does not say (an
+    # invitation row), which is left out of the body rather than sent as false.
+    applied: bool | None
     observed_at: datetime
     purpose: Purpose
     # Index of the originating default search, for tie-breaks between sightings.
@@ -222,7 +224,7 @@ class NormalizedPosting:
             "client_rating": _optional_decimal(self.client_rating),
             "client_reviews": self.client_reviews,
             "client_hire_rate": _optional_decimal(self.client_hire_rate),
-            "applied": _flag(self.applied),
+            "applied": _optional_flag(self.applied),
             "invited": _flag(True) if self.invited else None,
             "observed_at": self.observed_at.isoformat(),
         }
@@ -377,7 +379,7 @@ def normalize_invitation(
         client_rating=None,
         client_reviews=None,
         client_hire_rate=None,
-        applied=False,
+        applied=None,
         observed_at=observed_at,
         purpose="discover",
         search_ordinal=search_ordinal,

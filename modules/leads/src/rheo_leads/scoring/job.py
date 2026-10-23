@@ -29,6 +29,8 @@ scoring failed. Setting the profile again puts failed and unscored jobs back in 
 (``job_promotion``) is not held by tier 1: it goes to the model like a job that
 passed, and the clauses that would have held it are kept on its assessment as
 conditions to check. The promotion is its own row, so it outlives every rescore.
+A job the client invited the owner to (``ext.jobsearch.invited``) is treated the
+same way, by tier 1 itself.
 
 **Content-free.** Log lines carry counts and fixed failure words, and a database
 error leaves as a fixed word. The profile text reaches the model's stdin, and a

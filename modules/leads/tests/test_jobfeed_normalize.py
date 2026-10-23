@@ -688,7 +688,9 @@ def test_an_invitation_is_an_invited_discovery_posting_of_its_job() -> None:
     assert result.feed_id == "20002"
     assert result.invited is True
     assert result.purpose == "discover"
-    assert result.applied is False
+    # An invitation does not say whether the owner applied: unknown, not false.
+    assert result.applied is None
+    assert "applied" not in result.to_body()
     assert result.description is None
     assert result.proposal_count is None
     assert result.search_ordinal == -1

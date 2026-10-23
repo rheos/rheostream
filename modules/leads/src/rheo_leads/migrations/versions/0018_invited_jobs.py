@@ -7,6 +7,9 @@ preset's current version moves to it, and every opportunity on the old current
 version moves with it. The new version is a strict superset with the same stages
 and outcomes, so each opportunity keeps its stage, its field states and its
 disposition; none is orphaned. Opportunities still on an older version stay there.
+Unlike the owner's ``pipeline.migrate_version``, the move bumps no revision and
+writes no ``opportunity.migrated`` event: nothing an owner sees changes, and no
+projection keys on the version.
 
 Mappings are versioned the same way: every intake connection whose job feed or job
 paste mapping lacks the rule gets a new mapping version, a copy of its current one

@@ -56,6 +56,7 @@ from harness.jobfeed import (
     feed_row,
     grant_type,
     invitation_row,
+    invitations_page,
     invoke,
     issued,
     jobsearch_pipeline,
@@ -3146,7 +3147,26 @@ def test_an_invitation_is_delivered_even_when_every_search_failed(
     collected(c, clock)
     assert len(opportunities(intake, "~02831")) == 1
     assert states(intake, "~02831")["ext.jobsearch.invited"] == "true"
-    assert runs(c)[0]["outcome"] == "partial"
+    (run,) = runs(c)
+    assert run["outcome"] == "partial"
+    # The searches' failure is kept, though the invitation kept the run going.
+    assert run["read_failures"] == {"searches:unavailable": 3}
+    quietly_succeeded(c)
+
+
+def test_more_invitations_than_one_page_is_kept_in_the_history(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.script[INVITATIONS] = tool_result(
+        {**invitations_page(invitation_row(841)), "hasMore": True}
+    )
+    collected(c, clock)
+    assert len(opportunities(intake, "~02841")) == 1
+    assert runs(c)[0]["read_failures"] == {"invitations:more": 1}
     quietly_succeeded(c)
 
 
