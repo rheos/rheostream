@@ -91,7 +91,14 @@ The `Type:` line is plain text in the body. Current has no type field.
 
 A repeat never rewrites an item's body. So after a create that reopens, wakes or groups an
 item on a new message, the agent adds one short comment with the gist of that message: who
-wrote, what changed, any new date or amount.
+wrote, what changed, any new date or amount. This comment is separate from the system
+comment Current writes for the repeat, and both are kept.
+
+The gist is its own operation, so it can fail after the create has succeeded. Repeating the
+create does not bring it back: the fingerprint is already seen, so Current only touches the
+update time. Instead, a later run adds a missing gist when the create returns grouped and
+the item's newest comment is still Current's system comment for that same event. If someone
+has commented on the item in between, the missed gist is not added.
 
 ### Failures and the result line
 
@@ -99,7 +106,8 @@ If the first call to Current is refused, or any mail search or read fails, the r
 nothing more and reports failed. A run reports success with nothing filed only when every
 search and read worked. A run ends with one result line: created, grouped, reopened,
 skipped and failed counts, and created and reopened items by area. A failed run is simply
-read again next time; the thread id and fingerprint make every write safe to repeat.
+read again next time. The thread id and fingerprint make every create safe to repeat; a gist
+that failed is recovered by the rule above, not by the repeat.
 
 ## Why it's built this way
 

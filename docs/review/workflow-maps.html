@@ -822,7 +822,7 @@ footer { font-size: 13px; color: var(--muted); max-width: 90ch; display: grid; g
     var cnt = { ok: 0, part: 0, gap: 0 }, wf = W[key];
     wf.ledger.forEach(function (r) { cnt[r[3]]++; });
     var total = wf.ledger.length, tr = document.createElement("tr");
-    tr.innerHTML = '<td class="num">' + (i + 1) + '</td><td><a class="jump" data-goto="' + key + '">' + wf.title + "</a></td>" +
+    tr.innerHTML = '<td class="num">' + (i + 1) + '</td><td><a class="jump" href="#' + key + '" data-goto="' + key + '">' + wf.title + "</a></td>" +
       '<td><div class="bars" aria-hidden="true"><span class="b-ok" style="width:' + (cnt.ok / total * 100) + '%"></span><span class="b-part" style="width:' +
       (cnt.part / total * 100) + '%"></span><span class="b-gap" style="width:' + (cnt.gap / total * 100) + '%"></span></div></td>' +
       '<td class="count">' + cnt.ok + '</td><td class="count">' + cnt.part + '</td><td class="count">' + cnt.gap + "</td>" +
