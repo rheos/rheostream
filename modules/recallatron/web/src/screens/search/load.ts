@@ -2,7 +2,7 @@ import type { ShellApi } from "@rheo-stream/web-contract/screen";
 
 import { callChecked } from "../../call";
 import { loadCoverage, type CoverageState } from "../../components/coverage";
-import { characterCount, excerpt, formatUtc } from "../../format";
+import { characterCount, excerpt, formatMoment } from "../../format";
 import { isHistorySearchResult, isRecallResult } from "../../guards";
 import { HISTORY_SEARCH, RECALL } from "../../operations";
 
@@ -128,7 +128,7 @@ async function loadResults(shell: ShellApi, query: string): Promise<ResultsState
         kind: item.kind,
         title: item.title,
         excerpt: excerpt(item.body, EXCERPT_LENGTH),
-        when: formatUtc(at),
+        when: formatMoment(at, shell.timeZone),
         dateTime: at,
         href: shell.href("item", { ref: item.ref }),
       };
@@ -156,7 +156,7 @@ async function loadHistory(shell: ShellApi, query: string): Promise<HistoryState
       kind: item.kind,
       status: item.status,
       excerpt: excerpt(item.body, EXCERPT_LENGTH),
-      when: formatUtc(item.occurred_at),
+      when: formatMoment(item.occurred_at, shell.timeZone),
       dateTime: item.occurred_at,
       href: shell.href("history-item", { id: item.id }),
     })),

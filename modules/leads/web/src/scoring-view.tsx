@@ -32,6 +32,7 @@ export interface ScoringProps {
   view: Row;
   /** Server render time, so every relative time agrees with the markup. */
   now: number;
+  zone: string;
   tab: ScoringTab;
   /** Job detail links by opportunity reference. */
   hrefs: Record<string, string>;
@@ -63,7 +64,7 @@ function RetryIcon() {
   );
 }
 
-function Chip({ job, now }: { job: Row; now: number }) {
+function Chip({ job, now, zone }: { job: Row; now: number; zone: string }) {
   const score = job.score;
   if (str(job.stage) === "scored" && typeof score === "number") {
     return (
@@ -75,7 +76,7 @@ function Chip({ job, now }: { job: Row; now: number }) {
       </span>
     );
   }
-  const chip = stageChip(job, now);
+  const chip = stageChip(job, now, zone);
   return (
     <span
       className={`${styles.chip} ${styles[`chip_${chip.tone}`] ?? ""}`}
@@ -87,12 +88,22 @@ function Chip({ job, now }: { job: Row; now: number }) {
   );
 }
 
-function JobRow({ job, now, href }: { job: Row; now: number; href?: string }) {
+function JobRow({
+  job,
+  now,
+  zone,
+  href,
+}: {
+  job: Row;
+  now: number;
+  zone: string;
+  href?: string;
+}) {
   const title = str(job.title) || "Untitled job";
   const scored = str(job.stage) === "scored" && job.assessed_at;
   return (
     <li className={styles.row}>
-      <Chip job={job} now={now} />
+      <Chip job={job} now={now} zone={zone} />
       {href ? (
         <a className={styles.rowTitle} href={href}>
           {title}
@@ -112,11 +123,13 @@ function JobRow({ job, now, href }: { job: Row; now: number; href?: string }) {
 function Batch({
   batch,
   now,
+  zone,
   hrefs,
   reviewHref,
 }: {
   batch: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
   reviewHref: string;
 }) {
@@ -137,7 +150,7 @@ function Batch({
   )
     .filter(([key]) => typeof counts[key] === "number" && counts[key] > 0)
     .map(([key, words]) => `${str(counts[key])} ${words}`);
-  const heading = `${batchSource(batch.sources)} · ${clock(batch.started_at, now)}`;
+  const heading = `${batchSource(batch.sources)} · ${clock(batch.started_at, now, zone)}`;
   return (
     <section className={styles.batch} aria-label={heading}>
       <header className={styles.batchHead}>
@@ -154,6 +167,7 @@ function Batch({
               key={str(job.id)}
               job={job}
               now={now}
+              zone={zone}
               href={hrefs[str(job.ref)]}
             />
           ))}
@@ -168,6 +182,7 @@ function Batch({
                 key={str(job.id)}
                 job={job}
                 now={now}
+                zone={zone}
                 href={hrefs[str(job.ref)]}
               />
             ))}
@@ -185,11 +200,13 @@ function Batch({
 function Queue({
   view,
   now,
+  zone,
   hrefs,
   reviewHref,
 }: {
   view: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
   reviewHref: string;
 }) {
@@ -208,6 +225,7 @@ function Queue({
           key={str(batch.started_at)}
           batch={batch}
           now={now}
+          zone={zone}
           hrefs={hrefs}
           reviewHref={reviewHref}
         />
@@ -219,10 +237,12 @@ function Queue({
 function Calls({
   view,
   now,
+  zone,
   hrefs,
 }: {
   view: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
 }) {
   const summary = rows(view.summary);
@@ -342,7 +362,7 @@ function Calls({
                 const href = hrefs[str(c.ref)];
                 return (
                   <tr key={str(c.id)}>
-                    <td className={styles.dim}>{clock(c.started_at, now)}</td>
+                    <td className={styles.dim}>{clock(c.started_at, now, zone)}</td>
                     <td>{purposeLabel(c.purpose)}</td>
                     <td className={styles.jobCell}>
                       {href ? (
@@ -386,7 +406,7 @@ function Calls({
 
 /** The job feed's recent runs: what each brought in, and why any detail read
  * failed, so a bad stretch can be read after the fact (#377). */
-function FeedRuns({ view, now }: { view: Row; now: number }) {
+function FeedRuns({ view, now, zone }: { view: Row; now: number; zone: string }) {
   const runs = rows(view.feed_runs);
   return (
     <>
@@ -415,7 +435,7 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
             const stopped = run.outcome === "stopped";
             return (
               <li key={str(run.id) || `${str(run.finished_at)}-${index}`} className={styles.run}>
-                <span className={styles.runWhen}>{clock(run.finished_at, now)}</span>
+                <span className={styles.runWhen}>{clock(run.finished_at, now, zone)}</span>
                 <span className={styles.runWhat}>
                   {stopped ? (
                     <span className={styles.runStopped}>
@@ -449,13 +469,21 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
 }
 
 /** The status line, with its own one-second clock for the elapsed counter. */
-function Status({ status, now: initial }: { status: Row; now: number }) {
+function Status({
+  status,
+  now: initial,
+  zone,
+}: {
+  status: Row;
+  now: number;
+  zone: string;
+}) {
   const [now, setNow] = useState(initial);
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  const line = statusLine(status, now);
+  const line = statusLine(status, now, zone);
   return (
     <p className={`${styles.status} ${styles[`status_${line.tone}`]}`}>
       <span className={styles.dot} aria-hidden="true" />
@@ -469,7 +497,7 @@ function Status({ status, now: initial }: { status: Row; now: number }) {
  * (and slowly otherwise), unless the window is in the background or a panel is
  * open. Looking again renders in place when the shell can, a reload otherwise. */
 export function ScoringView(props: ScoringProps) {
-  const { view, tab, now, refresh } = props;
+  const { view, tab, now, zone, refresh } = props;
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
   const root = useRef<HTMLDivElement | null>(null);
@@ -579,7 +607,7 @@ export function ScoringView(props: ScoringProps) {
           </p>
         </InfoTip>
       </div>
-      <Status status={row(view.status)} now={now} />
+      <Status status={row(view.status)} now={now} zone={zone} />
       <p className={styles.totals}>
         <span>
           <strong>{queued}</strong> queued
@@ -623,13 +651,14 @@ export function ScoringView(props: ScoringProps) {
         ))}
       </nav>
       {tab === "calls" ? (
-        <Calls view={view} now={now} hrefs={props.hrefs} />
+        <Calls view={view} now={now} zone={zone} hrefs={props.hrefs} />
       ) : tab === "feed" ? (
-        <FeedRuns view={view} now={now} />
+        <FeedRuns view={view} now={now} zone={zone} />
       ) : (
         <Queue
           view={view}
           now={now}
+          zone={zone}
           hrefs={props.hrefs}
           reviewHref={props.reviewHref}
         />

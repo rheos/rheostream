@@ -2,7 +2,6 @@
 import {
   useId,
   useState,
-  useSyncExternalStore,
   useTransition,
   type FormEvent,
 } from "react";
@@ -325,35 +324,19 @@ export function ActionButton({
   );
 }
 
-const subscribe = () => () => {};
-/** False while rendering on the server and during hydration, true afterwards. */
-function useHydrated(): boolean {
-  return useSyncExternalStore(
-    subscribe,
-    () => true,
-    () => false,
-  );
-}
-
 /**
- * A moment shown in the viewer's own time zone. The server does not know it, so the
- * server render shows UTC, labelled, and the browser replaces it once hydrated.
+ * A moment in the viewer's time zone, which the shell learns from the browser
+ * (#465). With no zone it shows UTC, labelled.
  */
-export function LocalTime({ iso }: { iso: string }) {
-  const hydrated = useHydrated();
+export function LocalTime({ iso, zone = "UTC" }: { iso: string; zone?: string }) {
   const d = new Date(iso);
   if (!iso || Number.isNaN(d.valueOf())) return null;
-  const text = hydrated
-    ? new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }).format(d)
-    : `${new Intl.DateTimeFormat("en", {
-        dateStyle: "medium",
-        timeStyle: "short",
-        timeZone: "UTC",
-      }).format(d)} UTC`;
-  return <time dateTime={iso}>{text}</time>;
+  const text = new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: zone,
+  }).format(d);
+  return <time dateTime={iso}>{zone === "UTC" ? `${text} UTC` : text}</time>;
 }
 
 function savedStatus(result: unknown): string {
@@ -381,7 +364,7 @@ function verb(from: Status, to: Status): string {
  * The status controls for one item: only the moves the service allows from its
  * current status, so no button leads to a refusal by construction. Snoozing opens
  * a picker whose quick picks are computed in the browser at the moment of the
- * click, in the viewer's time zone.
+ * click, in the zone times are shown in (the browser's own when none is given).
  */
 export function StatusActions({
   submit,
@@ -391,6 +374,7 @@ export function StatusActions({
   subject,
   compact = false,
   reloadHref,
+  zone,
 }: {
   submit: Submit;
   itemRef: string;
@@ -400,6 +384,8 @@ export function StatusActions({
   subject: string;
   compact?: boolean;
   reloadHref?: string;
+  /** The viewer's zone from the shell (#465). */
+  zone?: string;
 }) {
   const id = useId();
   const [result, setResult] = useState<OperationOutcome | null>(null);
@@ -434,11 +420,11 @@ export function StatusActions({
     });
   }
   function pick(choice: SnoozePick) {
-    const until = snoozeAt(choice, new Date());
+    const until = snoozeAt(choice, new Date(), zone);
     if (until) move("snoozed", until);
   }
   function snoozeCustom() {
-    const until = customSnooze(custom, new Date());
+    const until = customSnooze(custom, new Date(), zone);
     if (until) move("snoozed", until);
     else setCustomError(true);
   }
@@ -489,7 +475,7 @@ export function StatusActions({
         >
           <div className={styles.picks}>
             {SNOOZE_PICKS.filter(
-              (p) => snoozeAt(p.id, pickerOpenedAt) !== null,
+              (p) => snoozeAt(p.id, pickerOpenedAt, zone) !== null,
             ).map((p) => (
               <button
                 key={p.id}

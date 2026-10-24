@@ -1,5 +1,7 @@
 import { ThemePicker } from "@/theme/theme-picker";
 import type { ThemeId } from "@/theme/builtins";
+import { timeZoneNames, type ViewerTimeZone } from "@/time/time-zone";
+import { TimeZonePicker, TimeZoneSync } from "@/time/time-zone-picker";
 import type { ReactNode } from "react";
 
 import { LogoutForm } from "@/components/logout-form";
@@ -73,6 +75,7 @@ export function ShellFrame({
   homeHref,
   children,
   theme = "greenstream-dark",
+  timeZone = null,
 }: {
   health: CoreHealthResult;
   account?: ShellAccount | null;
@@ -84,9 +87,12 @@ export function ShellFrame({
   homeHref?: string;
   children: ReactNode;
   theme?: ThemeId;
+  /** The viewer's zone from its cookie (#465); null until the browser has sent it. */
+  timeZone?: ViewerTimeZone | null;
 }) {
   return (
     <div className={styles.frame}>
+      <TimeZoneSync current={timeZone} />
       {/* The first stop for a keyboard: past the header's links and controls to the
           page itself. `main` has tabIndex -1 so following the link moves focus there
           without adding `main` to the Tab order. */}
@@ -138,6 +144,7 @@ export function ShellFrame({
             {/* No key: remounting on the new theme would drop the focus
                 the select had when its change applied the theme. */}
             <ThemePicker current={theme} />
+            <TimeZonePicker current={timeZone} zones={timeZoneNames()} />
           </SettingsSection>
           {account ? (
             <SettingsSection title="Account">

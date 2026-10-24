@@ -122,6 +122,7 @@ function markup(tab: ScoringTab, view = VIEW, canRetry = true): string {
     <ScoringView
       view={view}
       now={NOW}
+      zone="UTC"
       tab={tab}
       hrefs={{
         [GOOD]: "/leads/detail?ref=good",
@@ -273,6 +274,7 @@ describe("retrying failed jobs", () => {
         <ScoringView
           view={VIEW}
           now={NOW}
+          zone="UTC"
           tab="queue"
           hrefs={{}}
           tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
@@ -318,6 +320,7 @@ describe("following scoring work (#443)", () => {
         <ScoringView
           view={VIEW}
           now={NOW}
+          zone="UTC"
           tab="queue"
           hrefs={{}}
           tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
