@@ -6,11 +6,13 @@ traced through the real tables. Every step is marked as having a home in the sch
 partly having one, or none yet. The worked examples use made-up people, companies and
 mail; the rules and tables are real, read at commit `72b93ea`.
 
-The full page, with tabs, the step-by-step tables, the decision tables and hover notes on
-every flowchart shape, is [workflow-maps.html](workflow-maps.html). Open it in a browser
-from a local checkout. The images below come from that page.
+**The full package is at [rheo.stream/review](https://rheo.stream/review/)**: the
+overview, each workflow's step-by-step table with sources, its decision tables, and a
+flowchart with hover notes on every shape. Its source is in the
+[rheo-stream-site](https://github.com/rheos/rheo-stream-site) repository, under
+`public/review/`. This page keeps a summary and the images.
 
-## What's here so far
+## What's there so far
 
 | Part | State |
 | --- | --- |
@@ -34,29 +36,20 @@ a new lead, a client writing again on finished work, a "payment received" notice
 must not reopen anything, a promotion skipped unread, and an event that has already
 happened.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/email-expected-dark.png">
-  <img alt="The intake run as it should go: six threads, the filing decision for each, what each is filed as, what Current does, and what happens after the run" src="images/email-expected-light.png">
-</picture>
+![The intake run as it should go: six threads, the filing decision for each, what each is filed as, what Current does, and what happens after the run](images/email-expected.png)
 
 ### The same run in the schema
 
 Every box from the picture above, outlined by how well Current's tables hold it, with the
 table or column written in it.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/email-schema-dark.png">
-  <img alt="The same run traced through Current's tables: the mail and the filed items have a home; the filing decisions, the skipped threads and the result line are partly covered" src="images/email-schema-light.png">
-</picture>
+![The same run traced through Current's tables: the mail and the filed items have a home; the filing decisions, the skipped threads and the result line are partly covered](images/email-schema.png)
 
 ### Flowchart
 
 One thread through one run, from the mail search to the result line.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/email-flow-dark.png">
-  <img alt="Flowchart of one thread through an intake run: noise check, read, the action gate, the priority, the create, and what Current does with a repeat" src="images/email-flow-light.png">
-</picture>
+![Flowchart of one thread through an intake run: noise check, read, the action gate, the priority, the create, and what Current does with a repeat](images/email-flow.png)
 
 ### What stands out
 
@@ -78,19 +71,3 @@ One thread through one run, from the mail search to the result line.
    read and whether the last run failed?
 3. Should the mail type be a field, so the queue can filter by it?
 4. Should the sender map live in the workspace, where the screens can show and edit it?
-
-## How the images are made
-
-`workflow-maps.html` has an export mode that shows one diagram alone:
-`?export=email-expected`, `email-schema` or `email-flow`, with `&theme=light` or
-`&theme=dark`. Serve this folder locally and screenshot each one at 2x, for example:
-
-```sh
-python3 -m http.server 8941 --bind 127.0.0.1
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
-  --hide-scrollbars --force-device-scale-factor=2 --window-size=1316,640 \
-  --screenshot=images/email-expected-light.png \
-  "http://127.0.0.1:8941/workflow-maps.html?export=email-expected&theme=light"
-```
-
-The flowchart needs `--window-size=1316,1980`.
