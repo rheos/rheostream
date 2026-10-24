@@ -97,21 +97,24 @@ export function since(value: unknown, now: number): number | null {
   return Number.isNaN(then) ? null : Math.max(0, (now - then) / 1000);
 }
 
-/** A clock time in UTC, with the weekday when it is not today. */
-export function clock(value: unknown, now: number): string {
+/** A clock time, with the weekday when it is not today. Given the viewer's time
+ * zone it reads in that zone with no suffix; without one (the server render) it
+ * reads in UTC and says so. */
+export function clock(value: unknown, now: number, zone?: string): string {
   const d = new Date(str(value));
   if (Number.isNaN(d.valueOf())) return "";
+  const timeZone = zone ?? "UTC";
   const time = new Intl.DateTimeFormat("en", {
     hour: "numeric",
     minute: "2-digit",
-    timeZone: "UTC",
-    timeZoneName: "short",
+    timeZone,
+    ...(zone ? {} : { timeZoneName: "short" as const }),
   }).format(d);
-  const day = (t: number) => Math.floor(t / 86400000);
-  if (day(d.valueOf()) === day(now)) return time;
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone });
+  if (day.format(d) === day.format(now)) return time;
   const weekday = new Intl.DateTimeFormat("en", {
     weekday: "short",
-    timeZone: "UTC",
+    timeZone,
   }).format(d);
   return `${weekday} ${time}`;
 }
@@ -126,6 +129,7 @@ export type Tone = "idle" | "busy" | "warn";
 export function statusLine(
   status: Row,
   now: number,
+  zone?: string,
 ): { tone: Tone; text: string } {
   const state = str(status.state);
   const title = str(status.title) || "a job";
@@ -150,7 +154,7 @@ export function statusLine(
     };
   }
   if (state === "paused") {
-    const until = clock(status.until, now);
+    const until = clock(status.until, now, zone);
     const kind = str(status.failure_kind);
     const when = until ? ` around ${until}` : "";
     return kind === "usage_limited"
@@ -199,9 +203,10 @@ export const STAGE_LABELS: Record<string, string> = {
 export function stageChip(
   job: Row,
   now: number,
+  zone?: string,
 ): { mark: string; title: string; tone: string } {
   const stage = str(job.stage);
-  const retry = clock(job.retry_at, now);
+  const retry = clock(job.retry_at, now, zone);
   switch (stage) {
     case "scoring":
       return { mark: "now", title: "Scoring now", tone: "busy" };

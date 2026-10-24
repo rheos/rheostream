@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ShellApi } from "@rheo-stream/web-contract/screen";
 import { row, rows, str, type Row } from "./data";
 import { InfoTip } from "./info-tip";
@@ -63,7 +63,20 @@ function RetryIcon() {
   );
 }
 
+const noChange = () => () => {};
+/** The viewer's time zone once the page is in the browser. The server render
+ * (and hydration) has none, so clock times start in UTC and then move to the
+ * viewer's zone without a hydration mismatch. */
+function useViewerZone(): string | undefined {
+  return useSyncExternalStore(
+    noChange,
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+    () => undefined,
+  );
+}
+
 function Chip({ job, now }: { job: Row; now: number }) {
+  const zone = useViewerZone();
   const score = job.score;
   if (str(job.stage) === "scored" && typeof score === "number") {
     return (
@@ -75,7 +88,7 @@ function Chip({ job, now }: { job: Row; now: number }) {
       </span>
     );
   }
-  const chip = stageChip(job, now);
+  const chip = stageChip(job, now, zone);
   return (
     <span
       className={`${styles.chip} ${styles[`chip_${chip.tone}`] ?? ""}`}
@@ -120,6 +133,7 @@ function Batch({
   hrefs: Record<string, string>;
   reviewHref: string;
 }) {
+  const zone = useViewerZone();
   const jobs = rows(batch.jobs);
   const held = jobs.filter((j) => str(j.stage) === "held");
   const active = jobs.filter((j) => str(j.stage) !== "held");
@@ -137,7 +151,7 @@ function Batch({
   )
     .filter(([key]) => typeof counts[key] === "number" && counts[key] > 0)
     .map(([key, words]) => `${str(counts[key])} ${words}`);
-  const heading = `${batchSource(batch.sources)} · ${clock(batch.started_at, now)}`;
+  const heading = `${batchSource(batch.sources)} · ${clock(batch.started_at, now, zone)}`;
   return (
     <section className={styles.batch} aria-label={heading}>
       <header className={styles.batchHead}>
@@ -225,6 +239,7 @@ function Calls({
   now: number;
   hrefs: Record<string, string>;
 }) {
+  const zone = useViewerZone();
   const summary = rows(view.summary);
   const calls = rows(view.calls);
   const total = (key: string) =>
@@ -342,7 +357,7 @@ function Calls({
                 const href = hrefs[str(c.ref)];
                 return (
                   <tr key={str(c.id)}>
-                    <td className={styles.dim}>{clock(c.started_at, now)}</td>
+                    <td className={styles.dim}>{clock(c.started_at, now, zone)}</td>
                     <td>{purposeLabel(c.purpose)}</td>
                     <td className={styles.jobCell}>
                       {href ? (
@@ -387,6 +402,7 @@ function Calls({
 /** The job feed's recent runs: what each brought in, and why any detail read
  * failed, so a bad stretch can be read after the fact (#377). */
 function FeedRuns({ view, now }: { view: Row; now: number }) {
+  const zone = useViewerZone();
   const runs = rows(view.feed_runs);
   return (
     <>
@@ -415,7 +431,7 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
             const stopped = run.outcome === "stopped";
             return (
               <li key={str(run.id) || `${str(run.finished_at)}-${index}`} className={styles.run}>
-                <span className={styles.runWhen}>{clock(run.finished_at, now)}</span>
+                <span className={styles.runWhen}>{clock(run.finished_at, now, zone)}</span>
                 <span className={styles.runWhat}>
                   {stopped ? (
                     <span className={styles.runStopped}>
@@ -455,7 +471,7 @@ function Status({ status, now: initial }: { status: Row; now: number }) {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  const line = statusLine(status, now);
+  const line = statusLine(status, now, useViewerZone());
   return (
     <p className={`${styles.status} ${styles[`status_${line.tone}`]}`}>
       <span className={styles.dot} aria-hidden="true" />

@@ -8,6 +8,7 @@ import type { Row } from "./data";
 import {
   batchSource,
   busy,
+  clock,
   FAST_REFRESH_MS,
   outcomeLabel,
   readFailureLabel,
@@ -174,6 +175,17 @@ describe("the Scoring view's words", () => {
     ).toBe("Idle. Last model call 12 min ago.");
     expect(statusLine({ state: "off" }, NOW).tone).toBe("warn");
     expect(statusLine({ state: "no_profile" }, NOW).text).toContain("profile");
+  });
+  it("reads clock times in the viewer's zone, UTC only on the server (#467)", () => {
+    const zone = "America/Vancouver";
+    expect(clock("2026-10-18T13:05:00Z", NOW)).toBe("1:05 PM UTC");
+    expect(clock("2026-10-18T13:05:00Z", NOW, zone)).toBe("6:05 AM");
+    // 01:06Z on the 19th is still the evening of the 18th in Vancouver.
+    const late = Date.parse("2026-10-19T01:30:00Z");
+    expect(clock("2026-10-19T01:06:00Z", late, zone)).toBe("6:06 PM");
+    expect(clock("2026-10-18T21:06:00Z", late, zone)).toBe("2:06 PM");
+    expect(clock("2026-10-17T21:06:00Z", late, zone)).toBe("Sat 2:06 PM");
+    expect(clock("2026-10-17T21:06:00Z", late)).toBe("Sat 9:06 PM UTC");
   });
   it("names stages, outcomes, spans and sources", () => {
     expect(stageChip({ stage: "queued", position: 3 }, NOW).mark).toBe("#3");
