@@ -172,9 +172,10 @@ describe("snooze picks in the shell's zone (#465)", () => {
       "2026-10-12T16:00:00.000Z",
     );
   });
-  it("crosses the November clock change on the zone's clock", () => {
+  it("crosses a clock change on the zone's clock", () => {
+    // Los Angeles: BC no longer falls back from Nov 2026 (tzdata 2026b).
     const saturday = new Date("2026-10-31T22:00:00Z"); // 3 pm PDT
-    expect(snoozeAt("monday", saturday, "America/Vancouver")?.toISOString()).toBe(
+    expect(snoozeAt("monday", saturday, "America/Los_Angeles")?.toISOString()).toBe(
       "2026-11-02T17:00:00.000Z", // 9 am PST
     );
   });

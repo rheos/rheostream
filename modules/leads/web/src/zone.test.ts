@@ -24,8 +24,12 @@ describe("times in the viewer's zone (#465)", () => {
     expect(clock(EVENING, Date.parse("2026-10-24T08:00:00Z"), VAN)).toBe("Fri 8:30 PM");
   });
 
-  it("switches to PST with the clocks in November", () => {
-    expect(moment("2026-11-02T04:30:00Z", "", VAN)).toBe("Nov 1, 2026, 8:30 PM");
+  it("follows a zone's clock change", () => {
+    // Los Angeles, not Vancouver: BC stays on UTC-7 from Nov 2026 (tzdata 2026b),
+    // and the zone data differs by runtime.
+    const LA = "America/Los_Angeles";
+    expect(moment("2026-10-24T03:30:00Z", "", LA)).toBe("Oct 23, 2026, 8:30 PM");
+    expect(moment("2026-11-02T04:30:00Z", "", LA)).toBe("Nov 1, 2026, 8:30 PM");
   });
 
   it("counts a follow-up overdue by the viewer's today", () => {
