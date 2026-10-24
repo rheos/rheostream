@@ -104,6 +104,7 @@ function props(overrides: Partial<QueueProps> = {}): QueueProps {
   return {
     items: [full, sparse],
     now: NOW,
+    zone: "UTC",
     pipelines: [
       { value: "jobs", label: "Job leads" },
       { value: "all", label: "All pipelines" },

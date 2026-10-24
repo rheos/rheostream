@@ -24,6 +24,7 @@ import { ScoringView } from "./scoring-view";
 import {
   data,
   date,
+  zoneOf,
   detailRef,
   pipelineRef,
   JOBSEARCH_PRESET_ID,
@@ -201,7 +202,11 @@ const MONEY = new Set(["budget_min", "budget_max", "client_spend"]);
 /** A field's value as a person reads it: yes or no for flags, money with its
  * sign, rates as percentages, instants as dates, the original message without
  * the feed's marker tag. Anything else shows as stored. */
-export function fieldValue(target: string, text: string): string {
+export function fieldValue(
+  target: string,
+  text: string,
+  zone = "UTC",
+): string {
   const key = target.replace(/^ext\.[a-z0-9_]+\./, "");
   if (target.endsWith("phone")) return phoneDisplay(text);
   if (target === "message") return unwrapped(text);
@@ -218,7 +223,7 @@ export function fieldValue(target: string, text: string): string {
     /_(on|at)$/.test(key) &&
     /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2})?)?$/.test(text)
   )
-    return date(text);
+    return date(text, zone);
   if (key === "job_type" || key === "platform") return sentence(text);
   return text;
 }
@@ -390,8 +395,8 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                               </span>
                               <p className={styles.meta}>
                                 {record.followup_due_on
-                                  ? `Follow up ${date(record.followup_due_on)} · ${str(record.followup_action)}`
-                                  : `Updated ${date(record.updated_at)}`}
+                                  ? `Follow up ${date(record.followup_due_on, zoneOf(shell))} · ${str(record.followup_action)}`
+                                  : `Updated ${date(record.updated_at, zoneOf(shell))}`}
                               </p>
                             </a>
                           </li>
@@ -444,7 +449,7 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                       <td>
                         {record.followup_due_on ? (
                           <>
-                            <div>{date(record.followup_due_on)}</div>
+                            <div>{date(record.followup_due_on, zoneOf(shell))}</div>
                             <div className={styles.meta}>
                               {str(record.followup_action)}
                             </div>
@@ -453,7 +458,7 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                           "Not scheduled"
                         )}
                       </td>
-                      <td>{date(record.updated_at)}</td>
+                      <td>{date(record.updated_at, zoneOf(shell))}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -641,6 +646,7 @@ export async function queue({ shell, query }: ScreenProps) {
         <JobQueue
           items={records}
           now={Date.now()}
+          zone={zoneOf(shell)}
           pipelines={scope.pipelineChoices}
           stages={scope.stageChoices}
           pipeline={scope.pipeline}
@@ -761,6 +767,7 @@ export async function scoring({ shell, query }: ScreenProps) {
         <ScoringView
           view={view}
           now={Date.now()}
+          zone={zoneOf(shell)}
           tab={tab}
           hrefs={hrefs}
           tabHrefs={{
@@ -980,7 +987,7 @@ function JobRecord({
           notes.map((note) => (
             <article className={styles.jobNote} key={str(note.id)}>
               <p className={styles.note}>{str(note.body)}</p>
-              <p className={styles.meta}>{date(note.created_at)}</p>
+              <p className={styles.meta}>{date(note.created_at, zoneOf(shell))}</p>
             </article>
           ))
         ) : (
@@ -1020,7 +1027,7 @@ function JobRecord({
         {record.followup ? (
           <>
             <p className={styles.note}>{str(followup.action)}</p>
-            <p className={styles.meta}>Due {date(followup.due_on)}</p>
+            <p className={styles.meta}>Due {date(followup.due_on, zoneOf(shell))}</p>
             {submit ? (
               <div className={styles.jobRecordActions}>
                 <ActionForm
@@ -1124,7 +1131,7 @@ export async function detail({ shell, query }: ScreenProps) {
       title={str(record.title) || "Opportunity"}
       description={
         result.state === "ok"
-          ? `${str(row(record.stage).label)} · Updated ${date(record.updated_at)}`
+          ? `${str(row(record.stage).label)} · Updated ${date(record.updated_at, zoneOf(shell))}`
           : undefined
       }
       bare={job !== undefined}
@@ -1133,6 +1140,7 @@ export async function detail({ shell, query }: ScreenProps) {
         <JobHeader
           item={job}
           now={Date.now()}
+          zone={zoneOf(shell)}
           submit={shell.submit}
           // Bare, so the queue reopens the view saved when it was last used.
           back={shell.href("queue")}
@@ -1174,7 +1182,7 @@ export async function detail({ shell, query }: ScreenProps) {
                   >
                     <summary>
                       Inquiry ·{" "}
-                      {date(data(source).occurred_at || data(source).created_at)}
+                      {date(data(source).occurred_at || data(source).created_at, zoneOf(shell))}
                     </summary>
                     {source.state !== "ok" ? (
                       <Failure outcome={source} />
@@ -1194,7 +1202,8 @@ export async function detail({ shell, query }: ScreenProps) {
                               {fieldValue(
                                 str(field.target),
                                 str(field.value_text),
-                              ) || label(field.value_kind)}
+zoneOf(shell),
+) || label(field.value_kind)}
                             </dd>
                           </div>
                         ))}
@@ -1211,7 +1220,7 @@ export async function detail({ shell, query }: ScreenProps) {
                 {rows(record.opportunity_note).map((note) => (
                   <article key={str(note.id)}>
                     <p className={styles.note}>{str(note.body)}</p>
-                    <p className={styles.meta}>{date(note.created_at)}</p>
+                    <p className={styles.meta}>{date(note.created_at, zoneOf(shell))}</p>
                   </article>
                 ))}
                 <Form
@@ -1241,7 +1250,7 @@ export async function detail({ shell, query }: ScreenProps) {
                     key={str(draft.id)}
                     open={index === 0}
                   >
-                    <summary>Draft · {date(draft.created_at)}</summary>
+                    <summary>Draft · {date(draft.created_at, zoneOf(shell))}</summary>
                     <p className={styles.note}>{str(draft.body)}</p>
                   </details>
                 ))}
@@ -1271,7 +1280,7 @@ export async function detail({ shell, query }: ScreenProps) {
                 {record.followup ? (
                   <>
                     <p className={styles.note}>{str(followup.action)}</p>
-                    <p>Due {date(followup.due_on)}</p>
+                    <p>Due {date(followup.due_on, zoneOf(shell))}</p>
                     <div className={styles.toolbar}>
                       <Form
                         shell={shell}
@@ -1344,8 +1353,8 @@ export async function detail({ shell, query }: ScreenProps) {
                       <article key={str(reminder.id)}>
                         <p className={styles.note}>{str(reminder.action)}</p>
                         <p className={styles.meta}>
-                          {label(reminder.state)} · Due {date(reminder.due_on)} ·
-                          Resolved {date(reminder.resolved_at)}
+                          {label(reminder.state)} · Due {date(reminder.due_on, zoneOf(shell))} ·
+                          Resolved {date(reminder.resolved_at, zoneOf(shell))}
                         </p>
                       </article>
                     ))}
@@ -1527,7 +1536,7 @@ export async function detail({ shell, query }: ScreenProps) {
                             {str(assessment.objective)}
                           </h3>
                           <p className={styles.meta}>
-                            {date(assessment.created_at)} · Evidence revision{" "}
+                            {date(assessment.created_at, zoneOf(shell))} · Evidence revision{" "}
                             {str(assessment.input_revision)}
                             {assessment.id === qualification.id
                               ? " · Latest assessment"
@@ -1699,9 +1708,9 @@ function ConnectionCard({
       ) : (
         <dl className={styles.facts}>
           <dt>Last accepted</dt>
-          <dd>{date(status.last_accepted_at)}</dd>
+          <dd>{date(status.last_accepted_at, zoneOf(shell))}</dd>
           <dt>Last processed</dt>
-          <dd>{date(status.last_processed_at)}</dd>
+          <dd>{date(status.last_processed_at, zoneOf(shell))}</dd>
           <dt>Processing lag</dt>
           <dd>{str(status.lag_seconds)} seconds</dd>
           <dt>Unresolved failures</dt>

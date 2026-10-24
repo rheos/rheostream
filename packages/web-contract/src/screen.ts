@@ -15,6 +15,9 @@ export interface ShellApi {
    * hosts that cannot; a screen then falls back to reloading the page. */
   refresh?: () => Promise<void>;
   href(routeId: string, query?: Record<string, string | undefined>): string;
+  /** The viewer's IANA time zone (#465), for formatting moments. Absent in hosts
+   * that do not know it; a screen then formats in UTC and labels it so. */
+  timeZone?: string;
 }
 
 /**

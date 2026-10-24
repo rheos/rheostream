@@ -225,7 +225,7 @@ function ItemRows({
                 ) : null}
                 {item.status === "snoozed" && item.snoozedUntil && !item.woke ? (
                   <span>
-                    Until <LocalTime iso={item.snoozedUntil} />
+                    Until <LocalTime iso={item.snoozedUntil} zone={shell.timeZone} />
                   </span>
                 ) : null}
               </p>
@@ -705,7 +705,7 @@ export async function item({ shell, query }: ScreenProps) {
         ) : null}
         {record.blocked ? <span className={styles.flag}>Blocked</span> : null}
       </span>{" "}
-      Updated <LocalTime iso={record.updatedAt} />
+      Updated <LocalTime iso={record.updatedAt} zone={shell.timeZone} />
     </>
   );
   return (
@@ -771,7 +771,7 @@ export async function item({ shell, query }: ScreenProps) {
                     className={c.kind === "system" ? styles.systemNote : undefined}
                   >
                     <p className={styles.commentMeta}>
-                      <strong>{author(c)}</strong> <LocalTime iso={c.createdAt} />
+                      <strong>{author(c)}</strong> <LocalTime iso={c.createdAt} zone={shell.timeZone} />
                     </p>
                     <p className={styles.body}>{c.body}</p>
                   </li>
@@ -804,15 +804,15 @@ export async function item({ shell, query }: ScreenProps) {
             <p>
               {record.woke && record.snoozedUntil ? (
                 <>
-                  Woke up <LocalTime iso={record.snoozedUntil} />
+                  Woke up <LocalTime iso={record.snoozedUntil} zone={shell.timeZone} />
                 </>
               ) : record.status === "snoozed" && record.snoozedUntil ? (
                 <>
-                  Snoozed until <LocalTime iso={record.snoozedUntil} />
+                  Snoozed until <LocalTime iso={record.snoozedUntil} zone={shell.timeZone} />
                 </>
               ) : record.status === "done" && record.closedAt ? (
                 <>
-                  Done <LocalTime iso={record.closedAt} />
+                  Done <LocalTime iso={record.closedAt} zone={shell.timeZone} />
                 </>
               ) : (
                 STATUS_LABEL[record.status]
@@ -927,7 +927,7 @@ export async function item({ shell, query }: ScreenProps) {
               <div>
                 <dt>Created</dt>
                 <dd>
-                  <LocalTime iso={record.createdAt} />
+                  <LocalTime iso={record.createdAt} zone={shell.timeZone} />
                 </dd>
               </div>
             </dl>

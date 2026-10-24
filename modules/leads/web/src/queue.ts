@@ -3,7 +3,7 @@
  * becomes a pill, and how filters, sorting, saved preferences and an optimistic
  * dismiss behave. Kept apart from the components so each rule is tested alone.
  */
-import { row, rows, str, type Row } from "./data";
+import { dayIn, row, rows, str, type Row } from "./data";
 
 /** Above this many proposals a posting is crowded: the chip hides it and the
  * detail header warns. */
@@ -225,12 +225,12 @@ export interface Followup {
   action: string;
   overdue: boolean;
 }
-/** The pending follow-up, with overdue meaning due before today (UTC). */
-export function followupFor(item: Row, now: number): Followup | null {
+/** The pending follow-up, with overdue meaning due before today in the viewer's zone. */
+export function followupFor(item: Row, now: number, zone = "UTC"): Followup | null {
   const followup = row(item.followup);
   const due = str(followup.due_on);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) return null;
-  const today = new Date(now).toISOString().slice(0, 10);
+  const today = dayIn(now, zone);
   return { due, action: str(followup.action), overdue: due < today };
 }
 

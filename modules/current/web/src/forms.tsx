@@ -2,7 +2,6 @@
 import {
   useId,
   useState,
-  useSyncExternalStore,
   useTransition,
   type FormEvent,
 } from "react";
@@ -325,35 +324,19 @@ export function ActionButton({
   );
 }
 
-const subscribe = () => () => {};
-/** False while rendering on the server and during hydration, true afterwards. */
-function useHydrated(): boolean {
-  return useSyncExternalStore(
-    subscribe,
-    () => true,
-    () => false,
-  );
-}
-
 /**
- * A moment shown in the viewer's own time zone. The server does not know it, so the
- * server render shows UTC, labelled, and the browser replaces it once hydrated.
+ * A moment in the viewer's time zone, which the shell learns from the browser
+ * (#465). With no zone it shows UTC, labelled.
  */
-export function LocalTime({ iso }: { iso: string }) {
-  const hydrated = useHydrated();
+export function LocalTime({ iso, zone = "UTC" }: { iso: string; zone?: string }) {
   const d = new Date(iso);
   if (!iso || Number.isNaN(d.valueOf())) return null;
-  const text = hydrated
-    ? new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }).format(d)
-    : `${new Intl.DateTimeFormat("en", {
-        dateStyle: "medium",
-        timeStyle: "short",
-        timeZone: "UTC",
-      }).format(d)} UTC`;
-  return <time dateTime={iso}>{text}</time>;
+  const text = new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: zone,
+  }).format(d);
+  return <time dateTime={iso}>{zone === "UTC" ? `${text} UTC` : text}</time>;
 }
 
 function savedStatus(result: unknown): string {

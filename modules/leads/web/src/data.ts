@@ -35,17 +35,38 @@ export function unwrapped(text: string): string {
 export function label(value: unknown): string {
   return str(value).replaceAll("_", " ");
 }
-export function date(value: unknown): string {
-  const d = new Date(str(value));
+/** The viewer's zone from the shell (#465), or UTC when the host gives none. */
+export function zoneOf(shell: Pick<ShellApi, "timeZone">): string {
+  return shell.timeZone ?? "UTC";
+}
+/** Moments carry a zone label only when they fall back to UTC; in the viewer's
+ * own zone the label is noise. */
+export function zoneLabel(zone: string): { timeZoneName?: "short" } {
+  return zone === "UTC" ? { timeZoneName: "short" } : {};
+}
+/** The calendar day an instant falls on in a zone, as YYYY-MM-DD. */
+export function dayIn(ms: number, zone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: zone,
+  }).format(ms);
+}
+/** A day as "Oct 23, 2026". A bare YYYY-MM-DD is a calendar date and is never
+ * shifted; an instant shows the day it falls on in the viewer's zone. */
+export function date(value: unknown, zone = "UTC"): string {
+  const text = str(value);
+  const d = new Date(text);
   return Number.isNaN(d.valueOf())
     ? "Not yet"
     : new Intl.DateTimeFormat("en", {
         dateStyle: "medium",
-        timeZone: "UTC",
+        timeZone: /^\d{4}-\d{2}-\d{2}$/.test(text) ? "UTC" : zone,
       }).format(d);
 }
-/** A moment to the minute, in UTC and labelled so, or the fallback. */
-export function moment(value: unknown, fallback: string): string {
+/** A moment to the minute in the viewer's zone, or the fallback. */
+export function moment(value: unknown, fallback: string, zone = "UTC"): string {
   const d = new Date(str(value));
   return value == null || Number.isNaN(d.valueOf())
     ? fallback
@@ -55,8 +76,8 @@ export function moment(value: unknown, fallback: string): string {
         day: "numeric",
         hour: "numeric",
         minute: "2-digit",
-        timeZone: "UTC",
-        timeZoneName: "short",
+        timeZone: zone,
+        ...zoneLabel(zone),
       }).format(d);
 }
 export function pageOffset(value: string | undefined): number {
