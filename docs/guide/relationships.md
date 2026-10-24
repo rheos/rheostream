@@ -58,8 +58,7 @@ the organization and a dated affiliation, because creating is not matching.
 ### One authenticated identity, one live party
 
 A partial unique index makes it impossible for two live parties to hold the same
-authenticated identity in one namespace. Matching never crosses a workspace, because the
-lookup runs against the caller's own database.
+authenticated identity in one namespace. Matching never reaches into another workspace.
 
 ### Merging creates an alias
 

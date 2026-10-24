@@ -72,8 +72,7 @@ owner to reconnect.
 ### The deletion cascade
 
 `core.record.delete` is destructive: per-action approval, never a standing grant. The
-coordinator runs in one transaction against the workspace database, which a database per
-workspace makes possible without a distributed step:
+coordinator runs in one database transaction:
 
 1. Recheck the approval and that the record is still at the approved revision.
 2. The owning module deletes the record and everything it owns for it. Deleting an
@@ -140,8 +139,8 @@ minute without spending a retry.
 
 ### Backups are verified before anything old is deleted
 
-A nightly host job dumps every database in the cluster with `pg_dumpall`, because one
-database per workspace means a single-database dump would miss workspaces. It writes to a
+A nightly host job dumps the whole Postgres cluster with `pg_dumpall`, so the control plane
+and every workspace are in one file. It writes to a
 hidden partial file, checks the gzip stream, a minimum size and the dump's closing line,
 and only then renames it. Retention keeps the newest dump from each of the last 14 days
 and the last 8 Sundays, about 20 files, never compares dates with the clock, and never
@@ -155,8 +154,7 @@ into an empty deployment, compare digests.
 
 ## Why it's built this way
 
-A workspace is one database, so it leaves as one artifact, with the same identifiers on
-the other side and a digest to prove the copy matches. Restore is deliberately inert:
+A workspace leaves as one artifact, with the same identifiers on the other side and a digest to prove the copy matches. Restore is deliberately inert:
 approvals, operations and credentials all come back waiting for a person, so moving a
 workspace can never fire off the emails it had queued.
 
