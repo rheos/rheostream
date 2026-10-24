@@ -64,15 +64,26 @@ function RetryIcon() {
 }
 
 const noChange = () => () => {};
+let viewerZone: string | undefined | null = null;
+/** The browser's time zone, or none when it reports one Intl rejects (a
+ * misconfigured system), so times fall back to labelled UTC. */
+function browserZone(): string | undefined {
+  if (viewerZone === null) {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: zone });
+      viewerZone = zone;
+    } catch {
+      viewerZone = undefined;
+    }
+  }
+  return viewerZone;
+}
 /** The viewer's time zone once the page is in the browser. The server render
  * (and hydration) has none, so clock times start in UTC and then move to the
  * viewer's zone without a hydration mismatch. */
 function useViewerZone(): string | undefined {
-  return useSyncExternalStore(
-    noChange,
-    () => Intl.DateTimeFormat().resolvedOptions().timeZone,
-    () => undefined,
-  );
+  return useSyncExternalStore(noChange, browserZone, () => undefined);
 }
 
 function Chip({ job, now }: { job: Row; now: number }) {

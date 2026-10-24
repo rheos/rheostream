@@ -214,8 +214,10 @@
 .score_low {
   color: var(--rs-color-ink-dim);
 }
+/* Not yet known: the low colour, with a dashed edge so it never reads as low. */
 .score_dim {
   color: var(--rs-color-ink-dim);
+  border-style: dashed;
 }
 .meta {
   display: flex;
