@@ -105,7 +105,7 @@ has commented on the item in between, the missed gist is not added.
 If the first call to Current is refused, or any mail search or read fails, the run files
 nothing more and reports failed. A run reports success with nothing filed only when every
 search and read worked. A run ends with one result line: created, grouped, reopened,
-skipped and failed counts, and created and reopened items by area. A failed run is simply
+woke, skipped and failed counts, and created and reopened items by area. A failed run is simply
 read again next time. The thread id and fingerprint make every create safe to repeat; a gist
 that failed is recovered by the rule above, not by the repeat.
 
