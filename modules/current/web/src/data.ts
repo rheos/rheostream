@@ -358,16 +358,24 @@ function wall(ms: number, zone: string) {
     Number(parts.find((part) => part.type === type)?.value);
   return { y: n("year"), m: n("month"), d: n("day"), h: n("hour"), min: n("minute") };
 }
+/** How far a zone's clock is ahead of UTC at an instant, in ms. */
+function offset(ms: number, zone: string): number {
+  const w = wall(ms, zone);
+  return Date.UTC(w.y, w.m - 1, w.d, w.h, w.min) - (ms - (ms % 60000));
+}
 /** The instant a wall-clock time names in a zone (days and hours may overflow,
- * as with `Date.UTC`). A time a spring-forward skips lands just after the gap. */
+ * as with `Date.UTC`). A time the clocks fall back over means its first
+ * occurrence; a time a spring-forward skips moves past the gap by its length
+ * (2:30 becomes 3:30), so a snooze never wakes before the time asked for. */
 function zoned(y: number, m: number, d: number, h: number, min: number, zone: string): Date {
   const target = Date.UTC(y, m - 1, d, h, min);
-  let t = target;
-  for (let i = 0; i < 2; i += 1) {
-    const w = wall(t, zone);
-    t += target - Date.UTC(w.y, w.m - 1, w.d, w.h, w.min);
-  }
-  return new Date(t);
+  const day = 24 * 60 * 60 * 1000;
+  const before = offset(target - day, zone);
+  const after = offset(target + day, zone);
+  const fits = [target - before, target - after]
+    .filter((t) => target - t === offset(t, zone))
+    .sort((a, b) => a - b);
+  return new Date(fits[0] ?? target - before);
 }
 function at(now: Date, addDays: number, hour: number, zone: string): Date {
   const w = wall(now.getTime(), zone);

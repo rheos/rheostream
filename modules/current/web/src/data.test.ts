@@ -186,4 +186,16 @@ describe("snooze picks in the shell's zone (#465)", () => {
     expect(customSnooze("2026-10-09T14:00", vanFriday3pm, "America/Vancouver")).toBeNull();
     expect(customSnooze("2026-13-01T09:00", vanFriday3pm, "America/Vancouver")).toBeNull();
   });
+  it("moves a time the clocks skip past the gap, and takes a repeated time's first pass", () => {
+    const LA = "America/Los_Angeles";
+    const early = new Date("2026-03-01T00:00:00Z");
+    // 2:30 am on Mar 8 does not exist in Los Angeles: 3:30 am PDT.
+    expect(customSnooze("2026-03-08T02:30", early, LA)?.toISOString()).toBe(
+      "2026-03-08T10:30:00.000Z",
+    );
+    // 1:30 am on Nov 1 happens twice: the PDT one.
+    expect(customSnooze("2026-11-01T01:30", early, LA)?.toISOString()).toBe(
+      "2026-11-01T08:30:00.000Z",
+    );
+  });
 });

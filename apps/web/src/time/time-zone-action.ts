@@ -45,8 +45,11 @@ export async function selectTimeZone(form: FormData): Promise<void> {
     browser = form.get("browser");
   const chosen = canonicalTimeZone(choice);
   if (choice === "auto") {
+    // Without scripts there is no browser zone; a fixed zone must not linger on
+    // as if detected, so it falls back to UTC until the browser reports one.
     const previous = readTimeZoneCookie(await cookies());
-    await store({ zone: canonicalTimeZone(browser) ?? previous?.zone ?? "UTC", chosen: false });
+    const kept = previous && !previous.chosen ? previous.zone : null;
+    await store({ zone: canonicalTimeZone(browser) ?? kept ?? "UTC", chosen: false });
   } else if (chosen) {
     await store({ zone: chosen, chosen: true });
   }
