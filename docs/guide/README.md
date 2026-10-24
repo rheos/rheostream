@@ -142,6 +142,7 @@ same contract. ([The MCP door](mcp-and-runtimes.md))
 | [Recallatron](recallatron.md) | Memory with audience and purposes, hybrid recall, correction and supersession |
 | [Leads](leads.md) | Intake from any funnel, observations, pipelines, qualification, handoffs, contact permission |
 | [Current](current.md) | Work items, projects, dependencies, snooze, source dedup, handoffs in |
+| [Email intake](email-intake.md) | The rules an agent follows to file email into Current: the action gate, priority tiers, fingerprints |
 | [Relationships](relationships.md) | Shared parties, authenticated matching, reversible merges |
 | [The rheo agent and channels](rheo-and-channels.md) | One agent across Claude, Telegram and voice, one authorization model |
 | [Connectors](connectors.md) | Intake transports, outbound MCP connectors, destinations |
