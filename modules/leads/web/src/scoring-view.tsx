@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ShellApi } from "@rheo-stream/web-contract/screen";
 import { row, rows, str, type Row } from "./data";
 import { InfoTip } from "./info-tip";
@@ -32,6 +32,7 @@ export interface ScoringProps {
   view: Row;
   /** Server render time, so every relative time agrees with the markup. */
   now: number;
+  zone: string;
   tab: ScoringTab;
   /** Job detail links by opportunity reference. */
   hrefs: Record<string, string>;
@@ -63,31 +64,7 @@ function RetryIcon() {
   );
 }
 
-const noChange = () => () => {};
-let viewerZone: string | undefined | null = null;
-/** The browser's time zone, or none when it reports one Intl rejects (a
- * misconfigured system), so times fall back to labelled UTC. */
-function browserZone(): string | undefined {
-  if (viewerZone === null) {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    try {
-      new Intl.DateTimeFormat("en", { timeZone: zone });
-      viewerZone = zone;
-    } catch {
-      viewerZone = undefined;
-    }
-  }
-  return viewerZone;
-}
-/** The viewer's time zone once the page is in the browser. The server render
- * (and hydration) has none, so clock times start in UTC and then move to the
- * viewer's zone without a hydration mismatch. */
-function useViewerZone(): string | undefined {
-  return useSyncExternalStore(noChange, browserZone, () => undefined);
-}
-
-function Chip({ job, now }: { job: Row; now: number }) {
-  const zone = useViewerZone();
+function Chip({ job, now, zone }: { job: Row; now: number; zone: string }) {
   const score = job.score;
   if (str(job.stage) === "scored" && typeof score === "number") {
     return (
@@ -111,12 +88,22 @@ function Chip({ job, now }: { job: Row; now: number }) {
   );
 }
 
-function JobRow({ job, now, href }: { job: Row; now: number; href?: string }) {
+function JobRow({
+  job,
+  now,
+  zone,
+  href,
+}: {
+  job: Row;
+  now: number;
+  zone: string;
+  href?: string;
+}) {
   const title = str(job.title) || "Untitled job";
   const scored = str(job.stage) === "scored" && job.assessed_at;
   return (
     <li className={styles.row}>
-      <Chip job={job} now={now} />
+      <Chip job={job} now={now} zone={zone} />
       {href ? (
         <a className={styles.rowTitle} href={href}>
           {title}
@@ -136,15 +123,16 @@ function JobRow({ job, now, href }: { job: Row; now: number; href?: string }) {
 function Batch({
   batch,
   now,
+  zone,
   hrefs,
   reviewHref,
 }: {
   batch: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
   reviewHref: string;
 }) {
-  const zone = useViewerZone();
   const jobs = rows(batch.jobs);
   const held = jobs.filter((j) => str(j.stage) === "held");
   const active = jobs.filter((j) => str(j.stage) !== "held");
@@ -179,6 +167,7 @@ function Batch({
               key={str(job.id)}
               job={job}
               now={now}
+              zone={zone}
               href={hrefs[str(job.ref)]}
             />
           ))}
@@ -193,6 +182,7 @@ function Batch({
                 key={str(job.id)}
                 job={job}
                 now={now}
+                zone={zone}
                 href={hrefs[str(job.ref)]}
               />
             ))}
@@ -210,11 +200,13 @@ function Batch({
 function Queue({
   view,
   now,
+  zone,
   hrefs,
   reviewHref,
 }: {
   view: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
   reviewHref: string;
 }) {
@@ -233,6 +225,7 @@ function Queue({
           key={str(batch.started_at)}
           batch={batch}
           now={now}
+          zone={zone}
           hrefs={hrefs}
           reviewHref={reviewHref}
         />
@@ -244,13 +237,14 @@ function Queue({
 function Calls({
   view,
   now,
+  zone,
   hrefs,
 }: {
   view: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
 }) {
-  const zone = useViewerZone();
   const summary = rows(view.summary);
   const calls = rows(view.calls);
   const total = (key: string) =>
@@ -412,8 +406,7 @@ function Calls({
 
 /** The job feed's recent runs: what each brought in, and why any detail read
  * failed, so a bad stretch can be read after the fact (#377). */
-function FeedRuns({ view, now }: { view: Row; now: number }) {
-  const zone = useViewerZone();
+function FeedRuns({ view, now, zone }: { view: Row; now: number; zone: string }) {
   const runs = rows(view.feed_runs);
   return (
     <>
@@ -476,13 +469,21 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
 }
 
 /** The status line, with its own one-second clock for the elapsed counter. */
-function Status({ status, now: initial }: { status: Row; now: number }) {
+function Status({
+  status,
+  now: initial,
+  zone,
+}: {
+  status: Row;
+  now: number;
+  zone: string;
+}) {
   const [now, setNow] = useState(initial);
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  const line = statusLine(status, now, useViewerZone());
+  const line = statusLine(status, now, zone);
   return (
     <p className={`${styles.status} ${styles[`status_${line.tone}`]}`}>
       <span className={styles.dot} aria-hidden="true" />
@@ -496,7 +497,7 @@ function Status({ status, now: initial }: { status: Row; now: number }) {
  * (and slowly otherwise), unless the window is in the background or a panel is
  * open. Looking again renders in place when the shell can, a reload otherwise. */
 export function ScoringView(props: ScoringProps) {
-  const { view, tab, now, refresh } = props;
+  const { view, tab, now, zone, refresh } = props;
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
   const root = useRef<HTMLDivElement | null>(null);
@@ -606,7 +607,7 @@ export function ScoringView(props: ScoringProps) {
           </p>
         </InfoTip>
       </div>
-      <Status status={row(view.status)} now={now} />
+      <Status status={row(view.status)} now={now} zone={zone} />
       <p className={styles.totals}>
         <span>
           <strong>{queued}</strong> queued
@@ -650,13 +651,14 @@ export function ScoringView(props: ScoringProps) {
         ))}
       </nav>
       {tab === "calls" ? (
-        <Calls view={view} now={now} hrefs={props.hrefs} />
+        <Calls view={view} now={now} zone={zone} hrefs={props.hrefs} />
       ) : tab === "feed" ? (
-        <FeedRuns view={view} now={now} />
+        <FeedRuns view={view} now={now} zone={zone} />
       ) : (
         <Queue
           view={view}
           now={now}
+          zone={zone}
           hrefs={props.hrefs}
           reviewHref={props.reviewHref}
         />

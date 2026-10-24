@@ -238,10 +238,12 @@ function Badges({ item, pipeline }: { item: Row; pipeline?: string }) {
 export function Meta({
   item,
   now,
+  zone = "UTC",
   detail = false,
 }: {
   item: Row;
   now: number;
+  zone?: string;
   detail?: boolean;
 }) {
   const fields = row(item.fields);
@@ -260,13 +262,21 @@ export function Meta({
         <span className={styles.flag}>New client</span>
       ) : null}
       {party ? <span>{party}</span> : null}
-      <span>{age(item, now)}</span>
+      <span>{age(item, now, zone)}</span>
     </div>
   );
 }
 
-function FollowupLine({ item, now }: { item: Row; now: number }) {
-  const followup = followupFor(item, now);
+function FollowupLine({
+  item,
+  now,
+  zone,
+}: {
+  item: Row;
+  now: number;
+  zone: string;
+}) {
+  const followup = followupFor(item, now, zone);
   if (!followup) return null;
   return (
     <p
@@ -392,6 +402,7 @@ function Card({
   item,
   href,
   now,
+  zone,
   pipeline,
   error,
   onMove,
@@ -399,6 +410,7 @@ function Card({
   item: Row;
   href: string;
   now: number;
+  zone: string;
   pipeline?: string;
   error?: string;
   onMove?: (item: Row, to: Move) => void;
@@ -416,8 +428,8 @@ function Card({
         </div>
         <FitPill assessment={item.assessment} />
       </div>
-      <Meta item={item} now={now} />
-      <FollowupLine item={item} now={now} />
+      <Meta item={item} now={now} zone={zone} />
+      <FollowupLine item={item} now={now} zone={zone} />
       {summary ? (
         <p className={`${styles.reason} ${styles.clamped}`} title={summary}>
           {summary}
@@ -442,6 +454,8 @@ export interface QueueProps {
   items: Row[];
   /** Server render time, so every relative time agrees with the markup. */
   now: number;
+  /** The viewer's zone, so "overdue" means before today where they are. */
+  zone: string;
   pipelines: Choice[];
   stages: Choice[];
   /** The effective selections (the URL's, or the defaults). */
@@ -700,6 +714,7 @@ export function JobQueue(props: QueueProps) {
               item={item}
               href={props.hrefs[str(item.id)] ?? ""}
               now={props.now}
+              zone={props.zone}
               pipeline={props.pipelineNames?.[str(item.pipeline_id)]}
               error={errors[str(item.id)]}
               onMove={props.submit ? move : undefined}
@@ -723,11 +738,13 @@ export function JobQueue(props: QueueProps) {
 export function JobHeader({
   item,
   now,
+  zone = "UTC",
   submit,
   back,
 }: {
   item: Row;
   now: number;
+  zone?: string;
   /** Absent on a read-only host: then only the open link shows. */
   submit?: Submit;
   /** Where Dismiss returns to: the job queue. */
@@ -794,7 +811,7 @@ export function JobHeader({
             title
           )}
         </h1>
-        <Meta item={item} now={now} detail />
+        <Meta item={item} now={now} zone={zone} detail />
         <div className={styles.verdictRow}>
           {verdict ? <p className={styles.verdict}>{verdict}</p> : null}
           <InfoTip label="Why this score, and the record details" align="start" wide>
@@ -867,7 +884,7 @@ export function JobHeader({
           before you spend anything applying.
         </div>
       ) : null}
-      <FollowupLine item={item} now={now} />
+      <FollowupLine item={item} now={now} zone={zone} />
     </header>
   );
 }

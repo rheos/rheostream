@@ -6,6 +6,7 @@ import {
   JOBSEARCH_PRESET_ID,
   label,
   moment,
+  zoneOf,
   rows,
   str,
   type Row,
@@ -239,9 +240,9 @@ export function JobFeedCollector({
       ) : null}
       <dl className={styles.facts}>
         <dt>Last completed check</dt>
-        <dd>{moment(collector.last_completed_at, "Not yet")}</dd>
+        <dd>{moment(collector.last_completed_at, "Not yet", zoneOf(shell))}</dd>
         <dt>Next check not before</dt>
-        <dd>{moment(collector.next_run_not_before, "Not scheduled")}</dd>
+        <dd>{moment(collector.next_run_not_before, "Not scheduled", zoneOf(shell))}</dd>
         <dt>Health</dt>
         <dd>
           {declined ? "Last reconnect did not finish" : healthLabel(code)}
